@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.log
+*.tmp
+
+# runtime data / caches
+objects/
+data/report_ingestion/raw/
+data/report_ingestion/extracted/
+data/report_ingestion/report_registry.json
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

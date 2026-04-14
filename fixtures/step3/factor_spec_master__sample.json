@@ -1,0 +1,36 @@
+{
+  "factor_id": "CPV",
+  "linked_idea_id": "STEP2_SAMPLE_CPV",
+  "report_id": "STEP3_SAMPLE_CPV",
+  "canonical_spec": {
+    "formula_text": "CPV = ZScore(PV_corr_deRet20) + ZScore(PV_corr_trend)",
+    "required_inputs": [
+      "分钟收盘价",
+      "分钟成交量",
+      "20日收益率（Ret20）",
+      "20日波动率（Vol20）",
+      "市值"
+    ],
+    "operators": ["corr()", "mean()", "std()", "regression()", "residual()", "ZScore()"],
+    "time_series_steps": [
+      "计算单日分钟价量相关系数",
+      "回溯20日形成均值、标准差与趋势信号"
+    ],
+    "cross_sectional_steps": [
+      "做中性化",
+      "做横截面标准化",
+      "组合为 CPV"
+    ],
+    "preprocessing": ["剔除异常股票"],
+    "normalization": ["横截面Z-Score标准化"],
+    "neutralization": ["市值中性化", "剔除Ret20/Vol20影响"],
+    "rebalance_frequency": "月度调仓"
+  },
+  "ambiguities": [
+    "分钟频率未明确（1分钟或5分钟）",
+    "相关系数类型未明确（Pearson或Spearman）"
+  ],
+  "human_review_required": false,
+  "chief_decision": null,
+  "opus_invoked": false
+}

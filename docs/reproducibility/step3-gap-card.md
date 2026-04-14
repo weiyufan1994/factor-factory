@@ -1,19 +1,19 @@
 # Step 3 gap card
 
 ## Current judgment
-Not yet Bernard/Mac reproducible-level.
+Step 3 has now advanced beyond pure documentation: it has a first tiny committed fixture bundle design.
+It is still not as clean as Step 1 because the current Step 3 scripts expect object-path installation plus local input snapshots.
 
 ## Already in repo
 - skill wrapper under `skills/factor-forge-step3*`
 - scripts: `run_step3.py`, `run_step3b.py`, `validate_step3.py`, `validate_step3b.py`
-- input/output contracts and execution checklist references
+- contracts / reproducibility docs / sample command cards
+- first tiny fixture bundle under `fixtures/step3/`
 
-## Missing for reproducible push
-- promoted engineering layer outside skill-only placement
-- tiny committed fixture under `fixtures/step3/`
-- one stable sample run path
-- one explicit success criterion
-- environment/runtime declaration
+## Remaining reproducibility gaps
+- current sample path still installs fixture files into runner-expected object locations instead of consuming a direct fixture namespace
+- Step 3 validation is tightly coupled to local-input snapshot presence
+- environment/runtime declaration still needs formalization
 
-## Current blocker
-The step has meaningful code, but reproducibility still depends on non-formalized upstream objects and missing fixture design.
+## Next hardening step
+Refactor Step 3 scripts or add a cleaner repo-native wrapper so committed fixture paths can be consumed directly without object-path copying and monkeypatching.

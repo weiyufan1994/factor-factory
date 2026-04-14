@@ -1,0 +1,13 @@
+# Step 3 Input Contract
+- required: `factorforge/objects/factor_spec_master/factor_spec_master__{report_id}.json`
+- required: `factorforge/objects/alpha_idea_master/alpha_idea_master__{report_id}.json`
+- optional: `factorforge/objects/handoff/handoff_to_step3__{report_id}.json`
+- step must fail explicitly if required inputs are missing
+- filename `{report_id}` and JSON internal `report_id` must be internally consistent
+- if alias ids are used, normalization must be explicit rather than implied by copied files
+- Step 3A/3B must record whether the current run is `sample` or `full` when local snapshots are produced
+- qlib-facing semantics should be declared as early as Step 3 input interpretation:
+  - raw code/date aliases may remain (`ts_code`, `trade_date`, `trade_time`)
+  - but downstream semantic targets (`instrument`, `datetime`) must be explicit in adapter/config artifacts rather than inferred ad hoc in Step 4
+- append-only feature growth is allowed and expected; new columns such as `pe`, `pb`, `market_cap`, `industry_code`, or custom alpha/risk fields should extend the contract rather than replace it
+- if a Step 3 run depends on user-selectable parameters not already frozen in artifacts (for example sample vs wider window, benchmark assumptions embedded into data prep, universe restriction, or special proxy approval), the skill must ask for confirmation before execution

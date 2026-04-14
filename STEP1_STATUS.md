@@ -1,31 +1,43 @@
-# Step 1 MVP Status
+# Step 1 status in current repo context
 
-## Scope
-Report Ingestion and Alpha Idea Extraction (single-route MVP)
+This file is retained for historical continuity, but it should **not** be read as the top-level definition of the repository anymore.
 
-## Done
-- S3/local source registry and cache skeleton
-- PDF-skill-driven structured intake prompt
-- Structured intake contract with:
-  - subfactors
-  - final_factor
-  - formula_clues
-  - code_clues
-  - implementation_clues
-  - evidence_clues
-  - ambiguities
-- report_map normalization and writeback
-- alpha_thesis normalization and writeback
-- ambiguity_review normalization and writeback
-- two real-report validation passes:
-  - 东吴证券《高频价量相关性，意想不到的选股因子》
-  - 开源证券《大小单重定标与资金流因子改进》 (prompt regression validated)
+## Current interpretation
 
-## Not done yet
-- challenger second route
-- chief merge / alpha_idea_master
-- fully automatic pdf-skill bridge inside the pipeline runtime
-- stronger validation / provenance checks
+Step 1 is now:
+- the earliest engineering layer that was built first,
+- the first fully articulated report-ingestion / alpha-idea extraction path,
+- one step inside the broader Step1–Step5 FactorForge pipeline.
 
-## Current conclusion
-Step 1 MVP is complete; full Step 1 is not yet complete.
+It is **not** the whole repository identity.
+
+## Historical Step 1 scope
+
+The original Step 1 engineering scope covered report ingestion and alpha idea extraction.
+Its first construction path started as a single-route MVP and then expanded into a fuller dual-route design.
+
+## Historically completed pieces
+
+- source registry / cache skeleton
+- PDF-skill-driven structured intake path
+- structured intake contract
+- report-map normalization and writeback
+- alpha thesis normalization and writeback
+- ambiguity review normalization and writeback
+- dual-route plus chief-merge path
+- `alpha_idea_master` canonicalization
+
+## Current repo-level reminder
+
+If you are trying to understand the repository today, read in this order instead:
+1. `README.md`
+2. `docs/closeouts/step1-step5-minimal-reproducibility-acceptance-2026-04-14.md`
+3. `docs/reproducibility/README.md`
+4. `docs/contracts/step1-contract.md` through `docs/contracts/step5-contract.md`
+
+## Current judgment
+
+The truthful repo-level statement is:
+
+> FactorForge is now a Step1–Step5 repository with committed minimal reproducibility.
+> Step 1 remains the earliest engineering substrate, but not the whole architectural story.

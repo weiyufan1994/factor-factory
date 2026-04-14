@@ -1,3 +1,5 @@
+> [中文版本](FIXTURE_SPEC.zh-CN.md)
+
 # Step 3 fixture spec
 
 ## Purpose

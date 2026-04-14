@@ -1,3 +1,5 @@
+> [中文版本](README.zh-CN.md)
+
 # Step 2 fixtures
 
 ## Current committed fixture set

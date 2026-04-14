@@ -1,12 +1,14 @@
+> [中文版本](step1-repro-card.zh-CN.md)
+
 # Step 1 reproducibility card
 
 ## Current judgment
 Step 1 is now the first module with a concrete tiny committed reproducibility substrate in repository form.
 
 ## Engineering implementation already in repo
-- `modules/report_ingestion/**`
-- `prompts/step1_*`
-- `schemas/report_map.schema.json`
+- `skills/factor_forge_step1/modules/report_ingestion/**`
+- `skills/factor_forge_step1/prompts/step1_*`
+- `skills/factor_forge_step1/schemas/report_map.schema.json`
 
 ## Skill wrapper already in repo
 - `skills/factor-forge-step1.skill`
@@ -14,7 +16,7 @@ Step 1 is now the first module with a concrete tiny committed reproducibility su
 
 ## Stable execution entry already in repo
 Primary code entry:
-- `modules/report_ingestion/orchestration/run_step1.py`
+- `skills/factor_forge_step1/modules/report_ingestion/orchestration/run_step1.py`
 
 Minimal committed reproducibility runner:
 - `scripts/run_step1_sample.sh`

@@ -1,3 +1,5 @@
+> [中文版本](step5-gap-card.zh-CN.md)
+
 # Step 5 gap card
 
 ## Current judgment

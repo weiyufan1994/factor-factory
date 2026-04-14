@@ -1,3 +1,5 @@
+> [中文版本](repo-layering-and-naming.zh-CN.md)
+
 # Repo layering and naming doctrine
 
 ## Purpose
@@ -32,9 +34,9 @@ This layer exists so the repo does not depend purely on hidden local state or ch
 ### C. Engineering implementation layer
 This is the real implementation substrate.
 
-- `modules/`
-- `prompts/`
-- `schemas/`
+- `skills/factor_forge_step1/modules/`
+- `skills/factor_forge_step1/prompts/`
+- `skills/factor_forge_step1/schemas/`
 - `skills/`
 
 This layer is allowed to reflect historical build order.
@@ -96,7 +98,7 @@ Keep runnable tiny sample entry points explicit and step-indexed.
 Use these terms consistently:
 
 - **minimal reproducibility chain** — committed tiny-fixture path across Step1–Step5
-- **engineering layer** — implementation substrate such as modules/prompts/skills
+- **engineering layer** — implementation substrate such as step-specific modules/prompts/schemas under `skills/` plus skill wrappers
 - **runtime layer** — produced objects, runs, archives, evaluations
 - **truthful partial sample** — a sample that intentionally shows partial status instead of fake success
 

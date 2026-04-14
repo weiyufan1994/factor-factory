@@ -11,8 +11,8 @@ PARENT = ROOT.parent
 if str(PARENT) not in sys.path:
     sys.path.insert(0, str(PARENT))
 
-from factorforge.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
-from factorforge.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
 
 
 def main() -> None:

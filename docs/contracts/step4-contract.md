@@ -1,3 +1,5 @@
+> [中文版本](step4-contract.zh-CN.md)
+
 # Step 4 contract
 
 ## Current judgment

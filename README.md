@@ -1,3 +1,5 @@
+> [中文版本](README.zh-CN.md)
+
 # FactorForge
 
 FactorForge is a **Step1–Step5 factor research pipeline repository** with a committed **minimal reproducibility chain**.
@@ -7,7 +9,7 @@ The repository should now be read in this order:
 2. **`docs/reproducibility/`** — what is minimally reproducible today,
 3. **`docs/contracts/`** — step-level input/output/runtime contracts,
 4. **`fixtures/step*/` + `scripts/run_step*_sample.*`** — the tiny runnable sample path,
-5. **`modules/` / `skills/` / runtime object paths** — engineering implementation layers.
+5. **`skills/` / runtime object paths** — step-specific engineering implementation layers and outputs.
 
 ## Current repo judgment
 
@@ -53,9 +55,9 @@ Use this layer first if you are trying to understand or reproduce the repo.
 ### 2) Engineering implementation layer
 Use this layer when you need to inspect how the pipeline is actually implemented.
 
-- `modules/` — current Step 1 engineering substrate
-- `prompts/` — prompt assets, currently Step 1-heavy
-- `schemas/` — schema assets used by the engineering layer
+- `skills/factor_forge_step1/modules/` — current Step 1 engineering substrate
+- `skills/factor_forge_step1/prompts/` — prompt assets, currently Step 1-heavy
+- `skills/factor_forge_step1/schemas/` — schema assets used by the engineering layer
 - `skills/` — skill wrappers and step packages
 
 ### 3) Runtime/output layer

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from factorforge.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
-from factorforge.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
-from factorforge.modules.report_ingestion.adapters.s3_pdf_adapter import S3PdfAdapter
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.adapters.s3_pdf_adapter import S3PdfAdapter
 
 
 def run_step1_for_html(project_root: str | Path, html_path: str | Path) -> dict:

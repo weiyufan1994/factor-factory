@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from factorforge.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
-from factorforge.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
+from factorforge.skills.factor_forge_step1.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
 
 
 def run_html_smoke_test(project_root: str | Path) -> dict:

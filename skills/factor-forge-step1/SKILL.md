@@ -79,8 +79,8 @@ Run the Python pipeline script:
 cd /home/ubuntu/.openclaw/workspace/factorforge
 python3 -c "
 import sys; sys.path.insert(0, '.')
-from modules.report_ingestion.orchestration.wiring import build_step1_pipeline
-from modules.report_ingestion.registry.report_registry import ReportRegistry
+from skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
+from skills.factor_forge_step1.modules.report_ingestion.registry.report_registry import ReportRegistry
 from pathlib import Path
 
 project_root = Path('/home/ubuntu/.openclaw/workspace/factorforge')
@@ -93,7 +93,7 @@ challenger_raw = open('/tmp/challenger_raw.txt').read()
 # Build registry source (use existing or create minimal)
 registry = ReportRegistry(project_root / 'data' / 'report_ingestion' / 'report_registry.json')
 rec = registry.get(report_id)
-from modules.report_ingestion.registry.report_source_contract import ReportSource
+from skills.factor_forge_step1.modules.report_ingestion.registry.report_source_contract import ReportSource
 source = ReportSource(**{k: v for k, v in rec.items() if k in {'report_id','source_type','source_uri','title','broker','author','published_at','local_cache_path','metadata','tags','status'}})
 
 pipe = build_step1_pipeline(project_root)

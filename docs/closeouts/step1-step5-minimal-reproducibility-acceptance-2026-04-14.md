@@ -1,3 +1,5 @@
+> [中文版本](step1-step5-minimal-reproducibility-acceptance-2026-04-14.zh-CN.md)
+
 # 2026-04-14 — Step1–Step5 minimal reproducibility acceptance note
 
 - Repository: `factorforge`

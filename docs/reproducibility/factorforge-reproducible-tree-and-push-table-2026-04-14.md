@@ -1,3 +1,5 @@
+> [中文版本](factorforge-reproducible-tree-and-push-table-2026-04-14.zh-CN.md)
+
 # 2026-04-14 — FactorFactory reproducible tree + Step1–5 push table
 
 - Workstream: `FactorFactory 仓库结构化整理 + Bernard/Mac 可复现边界`
@@ -43,8 +45,8 @@ factorforge/
 │       ├── step5/
 │       ├── common/
 │       └── report_ingestion/
-├── prompts/
-├── schemas/
+├── skills/factor_forge_step1/prompts/
+├── skills/factor_forge_step1/schemas/
 ├── skills/
 │   ├── factor-forge-step1.skill
 │   ├── factor-forge-step1/
@@ -90,7 +92,7 @@ It should include:
 - step-specific source code
 
 **Current state**
-- Step 1 has this layer most clearly, currently under `modules/report_ingestion/**`
+- Step 1 has this layer most clearly, currently under `skills/factor_forge_step1/modules/report_ingestion/**`
 - Step 2–5 mostly have code embedded under `skills/factor-forge-step*/scripts` and `skills/factor-forge-step5/modules`
 
 **Recommended direction**
@@ -135,9 +137,9 @@ Without doing a huge refactor first, the repository can already become much more
 
 ### Keep now
 - `skills/`
-- `prompts/`
-- `schemas/`
-- `modules/report_ingestion/**` (Step 1 engineering layer)
+- `skills/factor_forge_step1/prompts/`
+- `skills/factor_forge_step1/schemas/`
+- `skills/factor_forge_step1/modules/report_ingestion/**` (Step 1 engineering layer)
 
 ### Add soon
 - `docs/reproducibility/`
@@ -172,7 +174,7 @@ Without doing a huge refactor first, the repository can already become much more
 ### Step 1
 #### What should be pushed
 - skill package
-- `modules/report_ingestion/**`
+- `skills/factor_forge_step1/modules/report_ingestion/**`
 - prompts
 - schemas
 - a tiny reproducibility fixture

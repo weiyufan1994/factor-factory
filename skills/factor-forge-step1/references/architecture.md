@@ -3,7 +3,7 @@
 ## Module Map
 
 ```
-modules/report_ingestion/
+skills/factor_forge_step1/modules/report_ingestion/
 ├── intake/
 │   ├── pdf_skill_client.py      ← parses pdf skill JSON → StructuredIntake
 │   ├── pdf_skill_prompts.py     ← primary/challenger prompt builders

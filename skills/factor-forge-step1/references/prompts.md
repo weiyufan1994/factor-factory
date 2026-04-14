@@ -19,7 +19,7 @@ Same JSON structure as primary. Differences in instruction layer:
 
 ## Chief Merge Prompt
 
-Located at: `factorforge/prompts/step1_chief_merge.md`
+Located at: `factorforge/skills/factor_forge_step1/prompts/step1_chief_merge.md`
 
 Key decisions the chief must make:
 1. Accept/reject each subfactor

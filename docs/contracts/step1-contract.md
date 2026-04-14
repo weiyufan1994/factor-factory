@@ -1,3 +1,5 @@
+> [中文版本](step1-contract.zh-CN.md)
+
 # Step 1 contract
 
 ## Input class
@@ -19,9 +21,9 @@ A successful Step 1 sample run should materialize artifacts equivalent in class 
 - ambiguity_review artifact
 
 ## Engineering dependency layer
-- `modules/report_ingestion/**`
-- `prompts/step1_*`
-- `schemas/report_map.schema.json`
+- `skills/factor_forge_step1/modules/report_ingestion/**`
+- `skills/factor_forge_step1/prompts/step1_*`
+- `skills/factor_forge_step1/schemas/report_map.schema.json`
 
 ## Skill wrapper layer
 - `skills/factor-forge-step1*`

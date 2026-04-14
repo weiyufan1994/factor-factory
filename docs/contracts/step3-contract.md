@@ -1,3 +1,5 @@
+> [中文版本](step3-contract.zh-CN.md)
+
 # Step 3 contract
 
 ## Current judgment

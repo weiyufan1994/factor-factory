@@ -102,8 +102,9 @@ That historical fact should not be mistaken for the current architectural intent
 2. `docs/reproducibility/README.md`
 3. `docs/contracts/README.md`
 4. `docs/contracts/step1-contract.md` through `step5-contract.md`
-5. `fixtures/step*/README.md`
-6. `scripts/run_step*_sample.sh`
+5. `docs/plans/private-fund-grade-factor-factory-gap-roadmap-2026-04-14.md`
+6. `fixtures/step*/README.md`
+7. `scripts/run_step*_sample.sh`
 
 ## Runtime note
 
@@ -121,6 +122,11 @@ Typical minimal sample runs:
 ./scripts/run_step4_sample.sh
 ./scripts/run_step5_sample.sh
 ```
+
+## Roadmap documents
+
+For the next-stage build path from the current CPV-backed minimal chain to a private-fund-grade factor factory, see:
+- `docs/plans/private-fund-grade-factor-factory-gap-roadmap-2026-04-14.md`
 
 ## Current cleanup stance
 

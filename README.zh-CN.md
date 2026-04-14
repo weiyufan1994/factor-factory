@@ -102,8 +102,9 @@ Step 1 仍然非常重要，但它现在应被理解为：
 2. `docs/reproducibility/README.md`
 3. `docs/contracts/README.md`
 4. `docs/contracts/step1-contract.md` 到 `step5-contract.md`
-5. `fixtures/step*/README.md`
-6. `scripts/run_step*_sample.sh`
+5. `docs/plans/private-fund-grade-factor-factory-gap-roadmap-2026-04-14.zh-CN.md`
+6. `fixtures/step*/README.md`
+7. `scripts/run_step*_sample.sh`
 
 ## 运行说明补充
 
@@ -120,6 +121,11 @@ Step 1 仍然非常重要，但它现在应被理解为：
 ./scripts/run_step4_sample.sh
 ./scripts/run_step5_sample.sh
 ```
+
+## 路线图文档
+
+如果要查看从当前 CPV 样例最小链路继续走向私募级因子工厂的下一阶段建设路径，请见：
+- `docs/plans/private-fund-grade-factor-factory-gap-roadmap-2026-04-14.zh-CN.md`
 
 ## 当前清理原则
 

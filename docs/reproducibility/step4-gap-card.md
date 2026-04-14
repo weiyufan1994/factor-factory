@@ -1,18 +1,18 @@
 # Step 4 gap card
 
 ## Current judgment
-Not yet Bernard/Mac reproducible-level.
+Step 4 has now advanced beyond pure documentation: it has a first tiny committed fixture bundle design centered on a truthful partial sample.
 
 ## Already in repo
 - skill wrapper under `skills/factor-forge-step4*`
-- scripts: `run_step4.py`, `validate_step4.py`, `self_quant_adapter.py`, `qlib_backtest_adapter.py`
-- input/output contract references
+- run/validate scripts and backend adapters
+- contracts / reproducibility docs / sample command cards
+- first tiny fixture bundle under `fixtures/step4/`
 
-## Missing for reproducible push
-- tiny committed fixture under `fixtures/step4/`
-- sample run command that does not depend on huge minute parquet or private runtime outputs
-- clearer separation between engineering layer and runtime artifact layer
-- explicit environment/runtime declaration
+## Remaining reproducibility gaps
+- current sample path still installs fixture files into runner-expected object locations instead of consuming a direct fixture namespace
+- backend diversity is not yet exercised in the tiny sample path (current tiny sample uses self_quant quick path)
+- environment/runtime declaration still needs formalization
 
-## Current blocker
-The code exists, but current execution semantics depend on local objects/data that are too heavy or too private to serve as Bernard/Mac reproducibility substrate.
+## Next hardening step
+Refactor Step 4 runner or add a cleaner repo-native wrapper so committed fixture paths can be consumed directly without object-path copying.

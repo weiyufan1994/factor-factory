@@ -1,35 +1,33 @@
 # Step 4 contract
 
 ## Current judgment
-Step 4 has real execution/evaluation code, but is not yet Bernard/Mac directly reproducible-level.
+Step 4 now has a first tiny committed reproducibility substrate design centered on a truthful partial-window sample.
+
+## Current committed reproducibility inputs
+- `fixtures/step4/factor_spec_master__sample.json`
+- `fixtures/step4/data_prep_master__sample.json`
+- `fixtures/step4/handoff_to_step4__sample.json`
+- `fixtures/step4/minute_input__sample.csv`
+- `fixtures/step4/daily_input__sample.csv`
+- `fixtures/step4/factor_impl__sample.py`
+
+## Current committed sample runner
+- `scripts/run_step4_sample.sh`
+- `scripts/run_step4_sample.py`
 
 ## Input class
-- `factor_spec_master__{report_id}.json`
-- `data_prep_master__{report_id}.json`
-- `handoff_to_step4__{report_id}.json`
+- factor spec
+- data prep master
+- handoff_to_step4
+- tiny local minute/daily inputs
+- runnable implementation file
 
 ## Output class
 - `factor_run_master__{report_id}.json`
 - `factor_run_diagnostics__{report_id}.json`
-- optional run artifacts under `runs/{report_id}/`
-- optional backend outputs under `evaluations/{report_id}/{backend}/`
+- sample run outputs under `runs/{report_id}/`
+- evaluation payload(s)
 - `handoff_to_step5__{report_id}.json`
 
-## Current code layer in repo
-- `skills/factor-forge-step4/scripts/run_step4.py`
-- `skills/factor-forge-step4/scripts/validate_step4.py`
-- `skills/factor-forge-step4/scripts/self_quant_adapter.py`
-- `skills/factor-forge-step4/scripts/qlib_backtest_adapter.py`
-
-## Current reproducibility gap
-- no tiny committed fixture under `fixtures/step4/`
-- current practical execution paths still assume local objects/data beyond a formalized small fixture
-- no exact committed minimal sample run command proven against a tiny fixture
-- environment/runtime declaration not formalized
-
-## Minimum reproducible push requirement
-- stable code layer
-- tiny committed Step 4 fixture
-- exact sample run command
-- explicit success criterion
-- environment/runtime declaration
+## Reproducibility warning
+This tiny fixture is deliberately a partial-window sample. It proves truthful Step 4 partial execution rather than pretending full-window success.

@@ -3,33 +3,28 @@
 ## Purpose
 Provide the smallest committed input package that lets Bernard/Mac exercise Step 4 execution/diagnostic logic without huge local data packages.
 
-## Minimum fixture contents
-- one tiny `factor_spec_master` sample object
-- one tiny `data_prep_master` sample object
-- one tiny `handoff_to_step4` sample object
-- if Step 4 requires value-level input, use a tiny controlled sample dataset rather than production parquet
+## Current committed fixture bundle
+- `factor_spec_master__sample.json`
+- `data_prep_master__sample.json`
+- `handoff_to_step4__sample.json`
+- `minute_input__sample.csv`
+- `daily_input__sample.csv`
+- `factor_impl__sample.py`
 
-## Required fields that must remain truthful
-- `report_id`
-- `factor_id`
-- execution-path fields required by the runner
-- enough evaluation-plan / handoff detail for visible backend decisions
+## Why this fixture is intentionally partial
+The tiny local sample only covers two trade dates while the target window spans a larger period.
+That is deliberate: it proves the `partial` branch honestly.
 
 ## Acceptable fixture form
 - synthetic but schema-truthful JSON
-- tiny tabular sample if strictly needed
+- tiny csv local inputs
+- tiny runnable implementation file
 - small enough to commit safely
 
 ## Not acceptable as fixture
-- full minute parquet snapshots
-- private local run outputs copied from EC2 and called fixture
-- giant evaluations directory used as a stand-in for reproducibility
-
-## Future target files
-- `fixtures/step4/factor_spec_master__sample.json`
-- `fixtures/step4/data_prep_master__sample.json`
-- `fixtures/step4/handoff_to_step4__sample.json`
-- optional tiny tabular sample in csv/json form
+- giant minute parquet snapshots
+- private EC2 runtime outputs passed off as fixture inputs
+- fake success fixtures that erase the true partial-window nature of the tiny sample
 
 ## Success criterion linkage
 This fixture must be sufficient for the sample command in `scripts/run_step4_sample.sh` to generate the Step 4 output artifact class set described in `docs/contracts/step4-contract.md`.

@@ -1,0 +1,46 @@
+{
+  "report_id": "STEP5_SAMPLE_CPV",
+  "factor_id": "CPV",
+  "run_status": "partial",
+  "factor_run_master_path": "/home/ubuntu/.openclaw/workspace/factorforge/objects/factor_run_master/factor_run_master__STEP5_SAMPLE_CPV.json",
+  "diagnostics_path": "/home/ubuntu/.openclaw/workspace/factorforge/objects/validation/factor_run_diagnostics__STEP5_SAMPLE_CPV.json",
+  "output_paths": [
+    "/home/ubuntu/.openclaw/workspace/factorforge/runs/STEP5_SAMPLE_CPV/factor_values__STEP5_SAMPLE_CPV.parquet",
+    "/home/ubuntu/.openclaw/workspace/factorforge/runs/STEP5_SAMPLE_CPV/factor_values__STEP5_SAMPLE_CPV.csv",
+    "/home/ubuntu/.openclaw/workspace/factorforge/runs/STEP5_SAMPLE_CPV/run_metadata__STEP5_SAMPLE_CPV.json"
+  ],
+  "sample_window_target": {"start": "20160104", "end": "20160329", "calendar": "A-share trading days"},
+  "sample_window_actual": {"start": "20160104", "end": "20160105"},
+  "coverage_ratio": null,
+  "row_count": 4,
+  "date_count": 2,
+  "ticker_count": 2,
+  "evaluation_plan": {
+    "backends": [{"name": "self_quant_analyzer", "mode": "quick"}],
+    "metric_policy": "extensible"
+  },
+  "evaluation_results": {
+    "backend_runs": [
+      {
+        "backend": "self_quant_analyzer",
+        "status": "success",
+        "summary": {
+          "rank_ic_mean": -1.0,
+          "pearson_ic_mean": -1.0
+        },
+        "artifact_paths": [
+          "/home/ubuntu/.openclaw/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
+        ],
+        "payload_path": "/home/ubuntu/.openclaw/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
+      }
+    ]
+  },
+  "key_warnings": [
+    "factor_spec_master ambiguities present: 2 item(s); Step 4 did not invent missing semantics.",
+    "implementation path resolved from handoff_to_step4:factor_impl_ref"
+  ],
+  "failure_reason": null,
+  "can_enter_step5": true,
+  "recommended_step5_scope": "partial_scope_only",
+  "notes_for_step5": ["partial result: evaluate only covered window/instruments"]
+}

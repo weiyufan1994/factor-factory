@@ -1,0 +1,31 @@
+{
+  "report_id": "STEP5_SAMPLE_CPV",
+  "factor_id": "CPV",
+  "run_status": "partial",
+  "evaluation_plan": {
+    "backends": [{"name": "self_quant_analyzer", "mode": "quick"}],
+    "metric_policy": "extensible"
+  },
+  "evaluation_results": {
+    "backend_runs": [
+      {
+        "backend": "self_quant_analyzer",
+        "status": "success",
+        "summary": {
+          "rank_ic_mean": -1.0,
+          "pearson_ic_mean": -1.0
+        },
+        "artifact_paths": [
+          "/home/ubuntu/.openclaw/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
+        ],
+        "payload_path": "/home/ubuntu/.openclaw/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
+      }
+    ]
+  },
+  "issues": [],
+  "recommendation": {
+    "can_handoff_to_step5": true,
+    "recommended_status": "partial",
+    "next_action": "Proceed to Step 5 using declared evaluation scope."
+  }
+}

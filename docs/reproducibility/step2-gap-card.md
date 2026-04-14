@@ -1,19 +1,19 @@
 # Step 2 gap card
 
 ## Current judgment
-Not yet Bernard/Mac reproducible-level.
+Step 2 has now advanced beyond pure documentation: it has a first tiny committed fixture bundle design.
+It is still not as clean as Step 1 because the current runner expects multiple upstream object files in fixed runtime paths.
 
 ## Already in repo
 - skill wrapper under `skills/factor-forge-step2*`
 - executable entry script `skills/factor-forge-step2/scripts/run_step2.py`
-- references for architecture/prompts/schema
+- contracts / reproducibility docs / sample command cards
+- first tiny fixture bundle under `fixtures/step2/`
 
-## Missing for reproducible push
-- promoted engineering layer outside skill-only placement
-- tiny committed fixture under `fixtures/step2/`
-- exact sample run command
-- explicit success criterion
-- environment/runtime declaration
+## Remaining reproducibility gaps
+- the current sample path still installs fixture files into runner-expected object locations instead of consuming a clean fixture namespace directly
+- engineering layer is still primarily skill-packaged
+- environment/runtime declaration still needs formalization
 
-## Current blocker
-Core logic is visible but still primarily packaged as skill-side execution, not yet a clearly separated repo engineering layer plus fixture layer.
+## Next hardening step
+Refactor Step 2 runner or add a thin repo-native wrapper so fixture paths can be consumed directly without object-path copying.

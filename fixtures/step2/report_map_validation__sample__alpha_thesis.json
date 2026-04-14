@@ -1,0 +1,22 @@
+{
+  "report_id": "STEP2_SAMPLE_CPV",
+  "title": "Step 2 Sample CPV Thesis",
+  "thesis_name": "CPV",
+  "economic_logic": "价量相关性三维特征包含高频增量Alpha。",
+  "behavioral_logic": "平均、波动、趋势共同反映主力资金运作阶段。",
+  "causal_chain": "融合价量相关性均值/波动/趋势 -> 剥离传统因子 -> 形成CPV。",
+  "direction": "Negative",
+  "key_variables": [
+    "分钟收盘价",
+    "分钟成交量",
+    "20日收益率（Ret20）",
+    "20日波动率（Vol20）",
+    "市值"
+  ],
+  "signals": [
+    "PV_corr_avg",
+    "PV_corr_std",
+    "PV_corr_trend",
+    "CPV"
+  ]
+}

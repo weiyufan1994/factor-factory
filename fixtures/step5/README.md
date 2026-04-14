@@ -1,1 +1,4 @@
-Step 5 fixture placeholder. Replace with tiny reproducibility fixture, not runtime output.
+# Step 5 fixtures
+
+See `FIXTURE_SPEC.md` for the formal Step 5 fixture boundary.
+Use this directory only for tiny committed reproducibility inputs, never for large runtime outputs.

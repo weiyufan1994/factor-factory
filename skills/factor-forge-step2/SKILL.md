@@ -260,12 +260,21 @@ Content: `factor_spec_master` ref + `alpha_idea_master` ref + `report_id`.
 - [ ] No `TODO` / `TO_BE_FILLED` / placeholder residues
 - [ ] `human_review_required` is false OR true with documented ambiguities
 
+## Repository alignment note
+
+Current repository reproducibility docs for Step 2 live at:
+- `docs/contracts/step2-contract.md`
+- `docs/reproducibility/step2-gap-card.md`
+- `scripts/run_step2_sample.sh`
+
+Treat those files as the authoritative current repo-level reproducibility notes when they differ from older path assumptions in chat history.
+
 ## Run Command
 
 ```bash
-# Manual single-step run:
-cd /home/ubuntu/.openclaw/workspace
-python3 factorforge/modules/spec_extraction/run_step2.py --report-id <report_id>
+# Current skill-side runner path in repo:
+cd /home/ubuntu/.openclaw/workspace/factorforge
+python3 skills/factor-forge-step2/scripts/run_step2.py --report-id <report_id>
 
 # Or via skill:
 # Give Humphrey: report_id of a completed Step 1 run

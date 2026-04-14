@@ -58,6 +58,15 @@ python3 skills/factor-forge-step5/scripts/run_step5.py --report-id <report_id>
 python3 skills/factor-forge-step5/scripts/validate_step5.py --report-id <report_id>
 ```
 
+## Repository alignment note
+
+Current repository reproducibility docs for Step 5 live at:
+- `docs/contracts/step5-contract.md`
+- `docs/reproducibility/step5-gap-card.md`
+- `scripts/run_step5_sample.sh`
+
+Treat those files as the authoritative current repo-level reproducibility notes when deciding whether Step 5 is merely skill-visible or Bernard/Mac reproducible-level.
+
 ## Acceptance
 
 - `factor_case_master` exists

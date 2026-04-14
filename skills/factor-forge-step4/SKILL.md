@@ -96,6 +96,15 @@ python3 skills/factor-forge-step4/scripts/run_step4.py --report-id <report_id>
 python3 skills/factor-forge-step4/scripts/validate_step4.py --report-id <report_id>
 ```
 
+## Repository alignment note
+
+Current repository reproducibility docs for Step 4 live at:
+- `docs/contracts/step4-contract.md`
+- `docs/reproducibility/step4-gap-card.md`
+- `scripts/run_step4_sample.sh`
+
+Treat those files as the authoritative current repo-level reproducibility notes when deciding whether Step 4 is merely skill-visible or Bernard/Mac reproducible-level.
+
 ## Acceptance
 
 - `factor_run_master` exists

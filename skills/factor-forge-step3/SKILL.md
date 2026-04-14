@@ -107,6 +107,15 @@ A Step 3 run is acceptable only if all of the following are true:
 - `handoff_to_step4` references exact Step 3A / 3B artifact paths
 - at least one real code artifact exists under `factorforge/generated_code/{report_id}/`
 
+## Repository alignment note
+
+Current repository reproducibility docs for Step 3 live at:
+- `docs/contracts/step3-contract.md`
+- `docs/reproducibility/step3-gap-card.md`
+- `scripts/run_step3_sample.sh`
+
+Treat those files as the authoritative current repo-level reproducibility notes when deciding whether Step 3 is merely skill-visible or Bernard/Mac reproducible-level.
+
 ## Publishing note
 
 This skill is intended to be ClawHub-publishable after Step 3 references and contracts remain aligned with scripts. The release boundary is:

@@ -1,18 +1,27 @@
 # Step 1 fixtures
 
-This directory should hold tiny committed Step 1 reproducibility inputs.
-
-## Intended first fixture
+## Current committed fixture set
 - `sample_factor_report.html`
+- `sample_intake_response.json`
 
-## Fixture requirements
-- must be small enough to commit safely
-- must not rely on private runtime outputs
-- must exercise the HTML ingestion path for `run_step1_for_html`
-- should be sufficient to reproduce Step 1 artifact classes on Bernard/Mac
+## Purpose
+These files provide the first tiny committed Step 1 reproducibility substrate for Bernard/Mac.
 
-## Not acceptable as fixture
-- huge PDFs
-- private raw caches
-- runtime-generated outputs copied from `objects/` and called input
-- anything that depends on unpublished local machine state
+## Current path exercised
+- local HTML ingestion path
+- structured intake parsing path
+- report_map / validation artifact writing path
+
+## Current runner
+- `scripts/run_step1_sample.sh`
+- `scripts/run_step1_sample.py`
+
+## Success expectation
+A successful sample run should materialize Step 1 artifact classes equivalent to:
+- intake validation artifact
+- report_map artifact
+- alpha_thesis artifact
+- ambiguity_review artifact
+
+## Important boundary
+This fixture is intentionally tiny and schema-truthful. It is not meant to represent full production report complexity.

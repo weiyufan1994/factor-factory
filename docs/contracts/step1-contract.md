@@ -3,12 +3,16 @@
 ## Input class
 A normalized report source consumed through the Step 1 ingestion pipeline.
 
-## Recommended minimal reproducibility input
-A tiny local HTML file routed through:
-- `run_step1_for_html(project_root, html_path)`
+## Current committed reproducibility input
+- `fixtures/step1/sample_factor_report.html`
+- `fixtures/step1/sample_intake_response.json`
+
+## Current committed sample runner
+- `scripts/run_step1_sample.sh`
+- `scripts/run_step1_sample.py`
 
 ## Output class
-A successful Step 1 run should materialize artifacts equivalent in class to:
+A successful Step 1 sample run should materialize artifacts equivalent in class to:
 - intake validation artifact
 - report_map artifact
 - alpha_thesis artifact
@@ -23,4 +27,4 @@ A successful Step 1 run should materialize artifacts equivalent in class to:
 - `skills/factor-forge-step1*`
 
 ## Reproducibility warning
-Skill visibility alone is not enough. Bernard/Mac direct reproduction requires the engineering layer, a tiny committed fixture, and an exact sample run command.
+This tiny fixture proves the Step 1 artifact-class flow on Bernard/Mac, but it is not a claim that full production report complexity is reproduced.

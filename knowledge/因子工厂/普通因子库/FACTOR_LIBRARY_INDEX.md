@@ -14,6 +14,7 @@
 | ALPHA004_PAPER_20160101_20250711 | Alpha004(原始) | `(-1 * Ts_Rank(rank(low), 9))` | 0.036 | 0.276 | — | ✅ validated |
 | ALPHA005_PAPER_20160101_20250711 | Alpha005 | `(-TsRank(rank(delta(TsArgMax(close9d,8),7)),9))` | ≈0 | ≈0 | — | ❌ reject |
 | ALPHA006_PAPER_20160101_20250711 | Alpha006 | `(-1 * corr(open, volume, 10))` | 0.026 | 0.309 | +0.001% | ✅ iterate |
+| ALPHA007_PAPER_20160101_20250711 | Alpha007(varC) | `((adv60<vol) ? ((-1*tsrank*sign(delta7))) : 0)` | 0.047 | 0.490 | — | ✅ iterate |
 
 ---
 

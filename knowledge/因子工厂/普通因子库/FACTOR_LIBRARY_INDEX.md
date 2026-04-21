@@ -12,6 +12,7 @@
 | PB_VALUE_20160101_20250711 | PB | `rank(PB)` | 0.070 | 0.528 | +0.056% | ✅ validated |
 | SIZE_MCAP_20160101_20250711 | SIZE | `rank(mcap)` | 0.068 | 0.520 | +0.051% | ✅ validated |
 | ALPHA004_PAPER_20160101_20250711 | Alpha004(原始) | `(-1 * Ts_Rank(rank(low), 9))` | 0.036 | 0.276 | — | ✅ validated |
+| ALPHA005_PAPER_20160101_20250711 | Alpha005 | `(-TsRank(rank(delta(TsArgMax(close9d,8),7)),9))` | ≈0 | ≈0 | — | ❌ reject |
 
 ---
 

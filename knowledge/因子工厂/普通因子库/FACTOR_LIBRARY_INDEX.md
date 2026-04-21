@@ -14,7 +14,7 @@
 | ALPHA004_PAPER_20160101_20250711 | Alpha004(原始) | `(-1 * Ts_Rank(rank(low), 9))` | 0.036 | 0.276 | — | ✅ validated |
 | ALPHA005_PAPER_20160101_20250711 | Alpha005 | `(-TsRank(rank(delta(TsArgMax(close9d,8),7)),9))` | ≈0 | ≈0 | — | ❌ reject |
 | ALPHA006_PAPER_20160101_20250711 | Alpha006 | `(-1 * corr(open, volume, 10))` | 0.026 | 0.309 | +0.001% | ✅ iterate |
-| ALPHA007_PAPER_20160101_20250711 | Alpha007(varC) | `((adv60<vol) ? ((-1*tsrank*sign(delta7))) : 0)` | 0.047 | 0.490 | — | ✅ iterate |
+| ALPHA007_PAPER_20160101_20250711 | Alpha007(kurt-skew) | `folded * (1 + 0.5*(kurt_zs - skew_zs))` | 0.057 | 0.678 | +0.022% | ✅ validated |
 
 ---
 
@@ -28,18 +28,17 @@
 | PB | 0.070 | 0.528 | +0.308% | +0.056% | 多头明确 |
 | SIZE | 0.068 | 0.520 | +0.292% | +0.051% | 多头明确 |
 | short_low_vol | 0.054 | **0.609** | +0.283% | +0.032% | 空头侧 |
-| short_low_turnover | 0.050 | 0.573 | +0.265% | -0.055% | 空头侧 |
-| Alpha004(原始) | 0.036 | 0.276 | +0.179% | — | 纯空头 |
+| Alpha007(kurt-skew) | **0.057** | **0.678** | +0.298% | +0.022% | regime-adap |
 
 ---
 
 ## 关键结论
 
-1. **combo_mcap_vol 是全场最优**：IC 最高（0.072），G10 多头最强（+0.071%），spread 最宽（+0.380%/天）
-2. **tsrank 是必要条件**：去掉 tsrank 后 IC 损失 2/3（SIZE_PB_blend）
-3. **combo 优势来自空头**：combo 的 G01=-0.309% vs 单因子 -0.240%，"双重恶劣"叠加效果显著
-4. **PB/SIZE 因子独立有效**：中性化后 IR 仍有提升，存在独立于对方的纯信号
-5. **IC 方向陷阱**：纯 size 信号 IC=+0.069 但实战方向相反，必须 NAV 验证
+1. **combo_mcap_vol 是全场最优（纯 IC）**：IC=0.072，spread 最宽（+0.380%/天），G10=+0.071%
+2. **Alpha007(kurt-skew) 是单调性最佳**：rho=0.988, p<0.0001，完美单调，G10 稳定在正值区间
+3. **Regime 加权的意义**：kurtosis+skewness 组合将 crash regime 的判断内化到公式，牺牲了部分 IC（0.068→0.057）换取单调性
+4. **skewness > kurtosis**：|skew| 和 kurt-skew 都能改善单调性；raw skew 和 negated skew 方向错误
+5. **市值中性无效**：因子对小市值暴露本来低，mcap neutralize 几乎不影响结果
 
 ---
 

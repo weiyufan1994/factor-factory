@@ -1,0 +1,29 @@
+{
+  "report_id": "ALPHA004_PAPER_20160101_20250711",
+  "formula": "(-1*Ts_Rank(rank(low),9))",
+  "formula_flip": "(+1*Ts_Rank(rank(low),9))",
+  "raw": {
+    "rank_ic_mean": 0.03647266957146206,
+    "rank_ic_ir": 0.27587770898445235,
+    "ls_spread_mean": 0.0017905951122726596,
+    "ls_spread_ir": 0.19746335312432983,
+    "top_decile_mean": -0.0003723416360620288,
+    "bottom_decile_mean": -0.0020511097902767765
+  },
+  "sign_flip": {
+    "rank_ic_mean": -0.03647266957146206,
+    "rank_ic_ir": -0.27587770898445235,
+    "ls_spread_mean": -0.0016667982609839687,
+    "ls_spread_ir": -0.19053475210696197,
+    "top_decile_mean": -0.001929672455486616,
+    "bottom_decile_mean": -0.00018350095764231992
+  },
+  "mcap_neutral": {
+    "rank_ic_mean": 0.03647266957146206,
+    "rank_ic_ir": 0.27587770898445235,
+    "ls_spread_mean": 0.0017905951122726596,
+    "ls_spread_ir": 0.19746335312432983,
+    "top_decile_mean": -0.0003723416360620288,
+    "bottom_decile_mean": -0.0020511097902767765
+  }
+}

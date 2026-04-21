@@ -1,0 +1,28 @@
+{
+  "variants": {
+    "short_low_mcap": {
+      "rank_ic_mean": 0.06938347803220878,
+      "rank_ic_ir": 0.52034969048713,
+      "ls_spread_mean": 0.002842846766841458,
+      "ls_spread_ir": 0.45749322147936833,
+      "top_decile_mean": -4.3075703578199936e-05,
+      "bottom_decile_mean": -0.0023998644096506604
+    },
+    "short_low_vol": {
+      "rank_ic_mean": 0.053598903850039514,
+      "rank_ic_ir": 0.6094250548302327,
+      "ls_spread_mean": 0.0028325680048485705,
+      "ls_spread_ir": 0.47879407135271473,
+      "top_decile_mean": 0.0003214242420337728,
+      "bottom_decile_mean": -0.0025111437628147974
+    },
+    "short_low_volstd": {
+      "rank_ic_mean": 0.014425445757066823,
+      "rank_ic_ir": 0.1782537339045756,
+      "ls_spread_mean": 0.0007312704054054637,
+      "ls_spread_ir": 0.1304555047841163,
+      "top_decile_mean": -0.00030047877855865366,
+      "bottom_decile_mean": -0.0010360868625304402
+    }
+  }
+}

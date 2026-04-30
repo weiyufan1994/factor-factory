@@ -55,6 +55,29 @@
     "neutralization": ["string"],
     "rebalance_frequency": "string"
   },
+  "thesis": {
+    "alpha_thesis": "string",
+    "target_prediction": "string",
+    "economic_mechanism": "string"
+  },
+  "math_discipline_review": {
+    "step1_random_object": "string",
+    "target_statistic": "string",
+    "information_set_legality": "string",
+    "expected_failure_modes": ["string"]
+  },
+  "learning_and_innovation": {
+    "similar_case_lessons_imported": ["string"],
+    "innovative_idea_seeds": ["string"],
+    "reuse_instruction_for_future_agents": ["string"]
+  },
+  "research_contract": {
+    "target_statistic": "string",
+    "economic_mechanism": "string",
+    "expected_failure_modes": ["string"],
+    "innovative_idea_seeds": ["string"],
+    "reuse_instruction_for_future_agents": ["string"]
+  },
   "ambiguities": ["string"],
   "human_review_required": false,
   "chief_decision": "string|null",

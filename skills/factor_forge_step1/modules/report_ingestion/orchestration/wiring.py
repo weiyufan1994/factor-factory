@@ -12,8 +12,11 @@ from ..writers.object_writer import ObjectWriter
 
 def build_step1_pipeline(project_root: str | Path) -> Step1Pipeline:
     root = Path(project_root)
+    schema_root = root / "schemas"
+    if not schema_root.exists():
+        schema_root = root / "skills" / "factor_forge_step1" / "schemas"
     registry = ReportRegistry(root / "data" / "report_ingestion" / "report_registry.json")
-    schema_validator = SchemaValidator(root / "schemas")
+    schema_validator = SchemaValidator(schema_root)
     pdf_skill_client = PdfSkillClient()
     report_map_builder = ReportMapBuilder(schema_validator=schema_validator)
     object_writer = ObjectWriter(root / "objects")

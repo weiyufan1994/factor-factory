@@ -1,0 +1,22 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+
+# EC2 host timezone is UTC. These schedules target Asia/Shanghai market/update windows.
+# 18:40 Beijing: daily OHLCV/basic/adj-factor catch-up and canonical merge.
+40 10 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh daily
+
+# 19:20 Beijing: post-close board, moneyflow, topic, KPL, CYQ perf, factor-pro, margin data.
+20 11 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh close-core
+
+# 10:05-15:05 Beijing hourly plus 21:00 Beijing final refresh for THS hot lists.
+5 2-7 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh hot
+0 13 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh hot
+
+# 20:30 Beijing: incremental report_rc only.
+30 12 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh report-rc
+
+# 21:10 Beijing: rolling financial statement/disclosure refresh.
+10 13 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh finance
+
+# 22:20 Beijing: CYQ chips are large, so keep them in their own late slot.
+20 14 * * 1-5 /home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取/tushare_ec2_cron_entrypoint.sh chips

@@ -39,3 +39,22 @@ A contract should be stable enough that a reader does not need to reconstruct th
 
 These contracts document the current first-version Step1–Step5 minimal reproducibility chain.
 They do not claim final architecture purity or full production packaging.
+
+## Runtime Context
+
+Step workers should not independently guess artifact paths. Use the shared runtime context contract:
+
+- `factorforge-runtime-context-contract.md`
+- `factorforge-runtime-context-contract.zh-CN.md`
+
+Python entrypoint:
+
+```python
+from factor_factory.runtime_context import resolve_factorforge_context
+```
+
+Manifest entrypoint:
+
+```bash
+python3 scripts/build_factorforge_runtime_context.py --report-id <report_id> --write
+```

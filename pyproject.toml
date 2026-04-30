@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "factor-factory"
+version = "0.1.0"
+description = "Shared data access and research helpers for FactorFactory"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Humphrey" }
+]
+dependencies = [
+  "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+step4 = [
+  "pyarrow>=14.0",
+]
+qlib = [
+  "pyarrow>=14.0",
+  "pyqlib>=0.9.7",
+]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["factor_factory*"]
+exclude = ["archive*", "evaluations*", "generated_code*", "runs*"]

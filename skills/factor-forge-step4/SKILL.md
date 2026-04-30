@@ -23,6 +23,19 @@ Current intended backend structure:
 Current practical backend maturity:
 - `self_quant_analyzer` quick mode is production-usable on the current EC2 resource envelope
 - `qlib_backtest` now has both a sample-stub layer and a native minimal backtest path; native execution depends on qlib-friendly signal formatting, especially `instrument` / `datetime` semantics
+- Standard Step4 evidence is mandatory. Agents must not fill missing Step4 evidence with ad hoc plotting scripts or one-off notebooks.
+
+## Research Discipline
+
+Step 4 produces evidence; it does not declare victory.
+
+Every serious Step4 run should separate:
+- signal evidence: IC, rank IC, grouped spread, decile monotonicity,
+- portfolio evidence: NAV/account, turnover, cost sensitivity, drawdown, benchmark relation,
+- robustness evidence: window, year, regime, universe, and liquidity buckets,
+- evidence gaps: positive IC but weak portfolio, backend success but missing payload, good spread driven only by short side.
+
+These distinctions must be visible enough for Step5/6 to judge whether the metrics support the return source or only the current implementation.
 
 ## Inputs
 
@@ -39,6 +52,20 @@ Current practical backend maturity:
 - optional backend-specific evaluation artifacts under:
   - `factorforge/evaluations/{report_id}/{backend}/`
 - `factorforge/objects/handoff/handoff_to_step5__{report_id}.json`
+
+Mandatory `self_quant_analyzer` artifacts:
+- `rank_ic_timeseries.png`
+- `pearson_ic_timeseries.png`
+- `coverage_by_day.png`
+- `quantile_returns_10groups.csv`
+- `quantile_nav_10groups.csv`
+- `quantile_counts_10groups.csv`
+- `quantile_summary_table.csv`
+- `long_short_returns_10groups.csv`
+- `long_short_nav_10groups.csv`
+- `quantile_nav_10groups.png`
+- `quantile_counts_10groups.png`
+- `long_short_nav_10groups.png`
 
 ## factor_run_master schema
 
@@ -87,21 +114,26 @@ Current practical backend maturity:
 8. No polished prose counts as completion.
 9. If execution depends on user-selectable run parameters not already frozen in handoff/artifacts — e.g. benchmark, account size, topk, n_drop, deal price, cost model, universe, sample vs wider window, or whether to run quick-only vs deeper/native backtest — the skill must ask and confirm before launching the run.
 10. qlib-native evaluators must treat signal formatting as a first-class contract item; if `instrument` / `datetime` naming or market-code normalization is unresolved, the run should be marked blocked rather than silently coercing inconsistent semantics.
+11. Manual/temporary plotting is forbidden for official evidence. If a plot/table is needed, add it to the Step4 backend contract and rerun Step4.
+12. Decile NAV and long-short NAV must be computed from daily group returns/spreads and normalized to start at `1.0`; subtracting NAV levels is invalid.
 
 ## Execution chain
 
 ```bash
 cd /home/ubuntu/.openclaw/workspace
-python3 skills/factor-forge-step4/scripts/run_step4.py --report-id <report_id>
-python3 skills/factor-forge-step4/scripts/validate_step4.py --report-id <report_id>
+python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 4 --end-step 4
 ```
+
+Direct `run_step4.py` / `validate_step4.py` commands are debug-only and are blocked by default for formal writes. Official agent-led runs must use `scripts/run_factorforge_ultimate.py` and produce an `ultimate_run_report__<report_id>.json` proof.
+
+Legacy/sample Step4 entry points that look formal, including `scripts/run_step4_sample.py`, must hard block before writing canonical `objects/`, `runs/`, `generated_code/`, `evaluations/`, or `archive/` artifacts. Do not add environment bypasses to these sample blockers.
 
 ## Repository alignment note
 
 Current repository reproducibility docs for Step 4 live at:
 - `docs/contracts/step4-contract.md`
 - `docs/reproducibility/step4-gap-card.md`
-- `scripts/run_step4_sample.sh`
+- `scripts/run_step4_sample.sh` (blocked from canonical writes; use the ultimate wrapper for formal execution)
 
 Treat those files as the authoritative current repo-level reproducibility notes when deciding whether Step 4 is merely skill-visible or Bernard/Mac reproducible-level.
 
@@ -115,4 +147,6 @@ Treat those files as the authoritative current repo-level reproducibility notes 
 - `evaluation_plan` is explicit in the run envelope
 - `evaluation_results.backend_runs` exists even if some backends are skipped
 - backend-specific payload paths are real when a backend claims success/partial
+- `self_quant_analyzer.standard_metric_contract` exists and has no blocking checks
+- all mandatory `self_quant_analyzer` tables/plots exist
 - no placeholders remain

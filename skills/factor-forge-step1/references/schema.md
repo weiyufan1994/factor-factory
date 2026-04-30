@@ -79,7 +79,24 @@ class StructuredIntake:
     {"ambiguity": "string", "recommended_handling": "string"}
   ],
   "chief_confidence": "high|medium|low",
-  "chief_rationale": "string"
+  "chief_rationale": "string",
+  "research_discipline": {
+    "step1_random_object": "string",
+    "target_statistic_hint": "string",
+    "information_set_hint": "explicit_lag_or_delay_documented|requires_researcher_confirmation_no_forward_leakage|possible_forward_reference_requires_human_review",
+    "initial_return_source_hypothesis": "risk_premium|information_advantage|constraint_driven_arbitrage|mixed",
+    "what_must_be_true": ["string"],
+    "what_would_break_it": ["string"],
+    "similar_case_lessons_imported": ["string"]
+  },
+  "math_discipline_review": {
+    "step1_random_object": "string",
+    "target_statistic": "string",
+    "information_set_legality": "string"
+  },
+  "learning_and_innovation": {
+    "similar_case_lessons_imported": ["string"]
+  }
 }
 ```
 

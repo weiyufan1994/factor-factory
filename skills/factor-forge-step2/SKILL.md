@@ -9,6 +9,19 @@ description: Step 2 of the Factor Factory pipeline — Factor Spec Extraction an
 
 Step 2 converts an `alpha_idea_master` into a machine-readable `factor_spec_master` — the authoritative construction blueprint for implementing the factor in Step 3.
 
+## Research Discipline
+
+Step 2 is the canonical-spec guardrail. It must verify:
+- the spec preserves the author's original thesis rather than rewriting it into a convenient local formula,
+- every lag/window/rank/normalization/neutralization choice is explicit,
+- information used at time `t` is legally available at time `t`,
+- boundary-sensitive transforms such as rank, bucket, winsorize, truncate, argmax, and argmin are called out,
+- critical ambiguities trigger `human_review_required` instead of being silently guessed.
+- the Step1 random object and similar-case lessons are preserved instead of lost at spec extraction time,
+- the canonical spec states the target statistic, economic mechanism, expected failure modes, innovative idea seeds, and reuse instructions for future agents.
+
+The output should be precise enough that two independent implementers would build the same kind of factor.
+
 ## Model Assignment
 
 | Role | Model | When to use |
@@ -85,6 +98,29 @@ Both primary and challenger produce this schema:
     "normalization": ["string"],
     "neutralization": ["string"],
     "rebalance_frequency": "string"
+  },
+  "thesis": {
+    "alpha_thesis": "string",
+    "target_prediction": "string",
+    "economic_mechanism": "string"
+  },
+  "math_discipline_review": {
+    "step1_random_object": "string",
+    "target_statistic": "string",
+    "information_set_legality": "string",
+    "expected_failure_modes": ["string"]
+  },
+  "learning_and_innovation": {
+    "similar_case_lessons_imported": ["string"],
+    "innovative_idea_seeds": ["string"],
+    "reuse_instruction_for_future_agents": ["string"]
+  },
+  "research_contract": {
+    "target_statistic": "string",
+    "economic_mechanism": "string",
+    "expected_failure_modes": ["string"],
+    "innovative_idea_seeds": ["string"],
+    "reuse_instruction_for_future_agents": ["string"]
   },
   "ambiguities": ["string"],
   "human_review_required": false,
@@ -254,6 +290,9 @@ Content: `factor_spec_master` ref + `alpha_idea_master` ref + `report_id`.
 
 - [ ] `factor_spec_master` file exists at correct path
 - [ ] `canonical_spec` has all required fields (formula_text, operators, time_series_steps, cross_sectional_steps, preprocessing, normalization, neutralization, rebalance_frequency)
+- [ ] `thesis.alpha_thesis`, `thesis.target_prediction`, and `thesis.economic_mechanism` exist
+- [ ] `math_discipline_review.target_statistic` and `math_discipline_review.expected_failure_modes` exist
+- [ ] `learning_and_innovation.innovative_idea_seeds` and `reuse_instruction_for_future_agents` exist
 - [ ] `ambiguities` array is non-empty if human review is needed
 - [ ] `opus_invoked` field is present and correctly set (true only if chief was called)
 - [ ] All three validation artifacts exist
@@ -274,12 +313,14 @@ Treat those files as the authoritative current repo-level reproducibility notes 
 ```bash
 # Current skill-side runner path in repo:
 cd /home/ubuntu/.openclaw/workspace/factorforge
-python3 skills/factor-forge-step2/scripts/run_step2.py --report-id <report_id>
+python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 2 --end-step 2
 
 # Or via skill:
 # Give Humphrey: report_id of a completed Step 1 run
 # Humphrey will execute the full Step 2 pipeline automatically
 ```
+
+Direct `run_step2.py` / `validate_step2.py` commands are developer-debug only. Formal agent runs must use `scripts/run_factorforge_ultimate.py` so Step2 writes through the same runtime proof path consumed by Step3-6.
 
 ## Report ID
 

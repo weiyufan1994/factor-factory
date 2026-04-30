@@ -30,6 +30,22 @@ Step 2 目前已有第一套极简提交的可复现性底层设计，但仍比 
 - 一致性审计产物
 - Step 3 handoff 产物
 
+## 研究合约字段
+
+Step 2 是 canonical spec 的第一道闸门。`factor_spec_master` 必须包含：
+- `thesis.alpha_thesis`
+- `thesis.target_prediction`
+- `thesis.economic_mechanism`
+- `math_discipline_review.step1_random_object`
+- `math_discipline_review.target_statistic`
+- `math_discipline_review.information_set_legality`
+- `math_discipline_review.expected_failure_modes`
+- `learning_and_innovation.similar_case_lessons_imported`
+- `learning_and_innovation.innovative_idea_seeds`
+- `learning_and_innovation.reuse_instruction_for_future_agents`
+
+Step 3 handoff 必须继续携带 `research_contract`、`math_discipline_review` 与 `learning_and_innovation`。
+
 ## 当前代码层位置
 - `skills/factor-forge-step2/scripts/run_step2.py`
 - `skills/factor-forge-step2/**`

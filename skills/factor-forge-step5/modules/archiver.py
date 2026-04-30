@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import List, Tuple
 
 
+def _resolve_factorforge_root(root: Path) -> Path:
+    if (root / "objects").exists():
+        return root
+    return root / "factorforge"
+
+
 def init_archive_dir(report_id: str, workspace_root: Path | str) -> Path:
     """Initialise the canonical archive directory for a given report.
 
@@ -16,8 +22,8 @@ def init_archive_dir(report_id: str, workspace_root: Path | str) -> Path:
     Returns:
         Path to the created archive directory.
     """
-    root = Path(workspace_root)
-    archive_dir = root / "factorforge" / "archive" / report_id
+    root = _resolve_factorforge_root(Path(workspace_root))
+    archive_dir = root / "archive" / report_id
     archive_dir.mkdir(parents=True, exist_ok=True)
     return archive_dir
 

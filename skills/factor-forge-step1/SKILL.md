@@ -14,7 +14,30 @@ Runs the complete Step 1 pipeline on a single research report PDF:
 3. **Report map + thesis** — both routes produce structured thesis objects
 4. **Diff** — intake_diff and thesis_diff compare primary vs challenger
 5. **Chief merge** — authoritative adjudication producing canonical alpha_idea_master
-6. **Writeback** — all objects written to workspace; handoff file ready for Step 2
+6. **Research discipline standardization** — attach random object, target statistic hint, information-set hint, return-source hypothesis, and similar-case lessons
+7. **Writeback** — all objects written to workspace; handoff file ready for Step 2
+
+## Research Discipline
+
+Step 1 must not stop at report summary. It must identify:
+- the random object the paper/report is trying to predict,
+- the target statistic: expected return, rank, volatility, tail, regime, or other object,
+- the tradable information set and possible leakage risks,
+- the initial return-source hypothesis: `risk_premium`, `information_advantage`, `constraint_driven_arbitrage`, or `mixed`,
+- what must be true and what would break the thesis.
+
+These fields are later consumed by Step6; weak Step1 understanding makes later iteration look clever but shallow.
+
+Step1 outputs must include:
+- `research_discipline.step1_random_object`
+- `research_discipline.target_statistic_hint`
+- `research_discipline.information_set_hint`
+- `research_discipline.initial_return_source_hypothesis`
+- `research_discipline.similar_case_lessons_imported`
+- `research_discipline.what_must_be_true`
+- `research_discipline.what_would_break_it`
+
+The deterministic standardizer/validator is a developer-debug fallback after an existing Step1 route. Formal agent-led research should let the Step1 route emit canonical artifacts, then continue from Step2 via `scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 2 --end-step 6`.
 
 ## Prerequisites
 
@@ -132,6 +155,8 @@ All objects are written under `/home/ubuntu/.openclaw/workspace/factorforge/obje
 | Challenger thesis | `validation/report_map_validation__${report_id}__challenger_alpha_thesis.json` |
 | Alpha idea master | `alpha_idea_master/alpha_idea_master__${report_id}.json` |
 | Handoff | `handoff/handoff__${report_id}.json` |
+
+`alpha_idea_master` must carry Step1 research discipline fields either directly or under `research_discipline`, plus compatible `math_discipline_review.step1_random_object` and `learning_and_innovation.similar_case_lessons_imported` for downstream consumers.
 
 ## Report ID Convention
 

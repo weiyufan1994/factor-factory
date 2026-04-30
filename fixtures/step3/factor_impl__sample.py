@@ -2,6 +2,18 @@ from __future__ import annotations
 
 import pandas as pd
 
+# CONTEXT:
+# - This sample implementation is copied into generated_code during Step3 sample run.
+# - It demonstrates a minimal CPV-like pipeline for local integration checks.
+
+# CONTRACT:
+# - Inputs must include normalized Step3 fields.
+# - Output columns must be exactly: ts_code, trade_date, cpv_factor.
+
+# RISK:
+# - Scaling coefficients are heuristic and are not investment-ready.
+# - amount is used as a lightweight liquidity/size proxy in this sample.
+
 
 def compute_factor(minute_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd.DataFrame:
     required_minute = ['ts_code', 'trade_date', 'close', 'vol', 'amount']

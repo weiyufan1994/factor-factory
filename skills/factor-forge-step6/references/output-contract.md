@@ -1,0 +1,16 @@
+# Step 6 Output Contract
+- main: `factorforge/objects/research_iteration_master/research_iteration_master__{report_id}.json`
+- required: `factorforge/objects/factor_library_all/factor_record__{report_id}.json`
+- optional: `factorforge/objects/factor_library_official/factor_record__{report_id}.json`
+- required: one or more writebacks under `factorforge/objects/research_knowledge_base/`
+- optional: `factorforge/objects/handoff/handoff_to_step3b__{report_id}.json`
+- allowed decisions: `promote_official|iterate|reject|needs_human_review`
+- validator result: `PASS|WARN|BLOCK`
+- `research_judgment.research_memo.math_discipline_review.kill_criteria` is required before promote/archive final.
+- `research_judgment.research_memo.learning_and_innovation.reuse_instruction_for_future_agents` is required before archive final.
+- `research_judgment.research_memo.experience_chain` is required so future agents can retrieve the full search trajectory.
+- `research_judgment.research_memo.revision_taxonomy` is required and must distinguish macro, micro, portfolio, and stop/kill decisions.
+- `research_judgment.research_memo.program_search_policy.method_library` must include `genetic_algorithm`, `bayesian_search`, `reinforcement_learning`, and `multi_agent_parallel_exploration`.
+- `research_judgment.research_memo.diversity_position` is required before official promotion.
+- `dd_view_edge_trade` is disallowed in Step6 outputs.
+- `information_set_legality=illegal*` is always `BLOCK`; `requires_researcher_confirmation_no_forward_leakage` cannot be promoted.

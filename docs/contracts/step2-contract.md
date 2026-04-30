@@ -30,6 +30,21 @@ Step 2 now has a first tiny committed reproducibility substrate design, but it i
 - consistency audit artifact
 - Step 3 handoff artifact
 
+## Research contract fields
+Step 2 is the first canonical-spec gate. `factor_spec_master` must include:
+- `thesis.alpha_thesis`
+- `thesis.target_prediction`
+- `thesis.economic_mechanism`
+- `math_discipline_review.step1_random_object`
+- `math_discipline_review.target_statistic`
+- `math_discipline_review.information_set_legality`
+- `math_discipline_review.expected_failure_modes`
+- `learning_and_innovation.similar_case_lessons_imported`
+- `learning_and_innovation.innovative_idea_seeds`
+- `learning_and_innovation.reuse_instruction_for_future_agents`
+
+The Step 3 handoff must carry `research_contract`, `math_discipline_review`, and `learning_and_innovation` forward.
+
 ## Current code layer in repo
 - `skills/factor-forge-step2/scripts/run_step2.py`
 - `skills/factor-forge-step2/**`

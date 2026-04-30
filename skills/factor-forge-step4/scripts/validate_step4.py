@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-W = Path('/home/ubuntu/.openclaw/workspace')
-OBJ = W / 'factorforge' / 'objects'
+REPO_ROOT = Path(__file__).resolve().parents[3]
+LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
+OBJ = FACTORFORGE / 'objects'
 ALLOWED = {'success', 'partial', 'failed'}
 
 
@@ -95,6 +98,9 @@ def main() -> None:
         proposed_status = 'failed'
     else:
         for item in backend_runs:
+            if item.get('status') not in {'success', 'partial', 'failed', 'skipped'}:
+                issues.append({'severity': 'error', 'code': 'INVALID_BACKEND_STATUS', 'message': 'backend run status must be explicit', 'evidence': item})
+                proposed_status = 'failed'
             if item.get('status') in {'success', 'partial'}:
                 payload_path = item.get('payload_path')
                 if not payload_path or not Path(payload_path).exists():
@@ -102,6 +108,10 @@ def main() -> None:
                     proposed_status = 'failed'
                 else:
                     payload = load_json(Path(payload_path))
+                    payload_status = payload.get('status')
+                    if payload_status in {'success', 'partial', 'failed', 'skipped'} and payload_status != item.get('status'):
+                        issues.append({'severity': 'error', 'code': 'BACKEND_STATUS_PAYLOAD_MISMATCH', 'message': 'backend run status must match payload status', 'evidence': {'backend_run': item.get('status'), 'payload': payload_status, 'payload_path': payload_path}})
+                        proposed_status = 'failed'
                     if item.get('backend') == 'qlib_backtest':
                         if payload.get('mode') not in {'sample_stub', 'native_minimal'}:
                             issues.append({'severity': 'error', 'code': 'QLIB_MODE_INVALID', 'message': 'qlib_backtest payload must declare supported mode', 'evidence': payload})
@@ -118,6 +128,58 @@ def main() -> None:
                                 if not ap or not Path(ap).exists():
                                     issues.append({'severity': 'error', 'code': 'QLIB_NATIVE_ARTIFACT_MISSING', 'message': f'missing qlib native artifact: {key}', 'evidence': artifacts})
                                     proposed_status = 'failed'
+                    if item.get('backend') == 'self_quant_analyzer':
+                        contract = payload.get('standard_metric_contract') or {}
+                        artifacts = payload.get('artifacts') or {}
+                        if not contract:
+                            issues.append({'severity': 'error', 'code': 'SELF_QUANT_STANDARD_CONTRACT_MISSING', 'message': 'self_quant_analyzer must emit standard_metric_contract'})
+                            proposed_status = 'failed'
+                        else:
+                            blocking_count = contract.get('blocking_issue_count')
+                            if blocking_count not in {0, None}:
+                                issues.append({'severity': 'error', 'code': 'SELF_QUANT_STANDARD_CONTRACT_BLOCKING', 'message': 'self_quant_analyzer standard metric contract has blocking issues', 'evidence': contract})
+                                proposed_status = 'failed'
+                        required_artifacts = [
+                            'rank_ic_timeseries_png',
+                            'pearson_ic_timeseries_png',
+                            'coverage_by_day_png',
+                            'quantile_returns_10groups_csv',
+                            'quantile_nav_10groups_csv',
+                            'quantile_counts_10groups_csv',
+                            'quantile_summary_table_csv',
+                            'long_short_returns_10groups_csv',
+                            'long_short_nav_10groups_csv',
+                            'quantile_nav_10groups_png',
+                            'quantile_counts_10groups_png',
+                            'long_short_nav_10groups_png',
+                            'long_side_returns_csv',
+                            'long_side_nav_csv',
+                            'long_side_turnover_csv',
+                            'long_side_nav_png',
+                            'cost_adjusted_long_side_nav_png',
+                        ]
+                        for key in required_artifacts:
+                            ap = artifacts.get(key)
+                            if not ap or not Path(ap).exists():
+                                issues.append({'severity': 'error', 'code': 'SELF_QUANT_ARTIFACT_MISSING', 'message': f'missing self_quant standard artifact: {key}', 'evidence': artifacts})
+                                proposed_status = 'failed'
+                        long_side = payload.get('long_side_performance') or {}
+                        required_long_side_fields = [
+                            'long_side_annual_return',
+                            'long_side_sharpe',
+                            'long_side_max_drawdown',
+                            'long_side_recovery_days',
+                            'long_side_turnover_mean_daily',
+                            'trading_cogs_daily',
+                            'cost_adjusted_long_side_sharpe',
+                        ]
+                        missing_long_side = [key for key in required_long_side_fields if long_side.get(key) is None]
+                        if missing_long_side:
+                            issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_EVIDENCE_MISSING', 'message': 'self_quant_analyzer must emit complete long-side risk-adjusted evidence', 'evidence': {'missing': missing_long_side}})
+                            proposed_status = 'failed'
+                        if long_side.get('metric_period') != 'daily' or long_side.get('annualization_factor') is None:
+                            issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_UNITS_MISSING', 'message': 'self_quant_analyzer long-side evidence must declare metric_period and annualization_factor', 'evidence': long_side})
+                            proposed_status = 'failed'
 
     if diagnostics.get('run_status') != run_master.get('run_status'):
         issues.append({'severity': 'warning', 'code': 'RUN_STATUS_MISMATCH', 'message': 'diagnostics run_status differs from run_master', 'evidence': {'run_master': run_master.get('run_status'), 'diagnostics': diagnostics.get('run_status')}})
@@ -139,6 +201,8 @@ def main() -> None:
     write_json(revision_path, revision)
     print(f'RESULT: {verdict}')
     print(f'VALIDATED_RUN_STATUS: {proposed_status}')
+    if verdict != 'PASS':
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

@@ -19,6 +19,20 @@
 - report_map artifact
 - alpha_thesis artifact
 - ambiguity_review artifact
+- 带研究纪律字段的 alpha_idea_master
+
+## 研究纪律字段
+
+Step 1 必须保留研报原始 thesis，同时补齐后续审查需要的结构：
+- `research_discipline.step1_random_object`
+- `research_discipline.target_statistic_hint`
+- `research_discipline.information_set_hint`
+- `research_discipline.initial_return_source_hypothesis`
+- `research_discipline.what_must_be_true`
+- `research_discipline.what_would_break_it`
+- `research_discipline.similar_case_lessons_imported`
+
+为兼容 Step2/5/6，`math_discipline_review.step1_random_object` 与 `learning_and_innovation.similar_case_lessons_imported` 也应存在。
 
 ## 工程依赖层
 - `skills/factor_forge_step1/modules/report_ingestion/**`

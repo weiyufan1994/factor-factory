@@ -18,6 +18,12 @@
 - draft expression: `factorforge/generated_code/{report_id}/qlib_expression_draft__{report_id}.json`
 - execution scaffold: `factorforge/generated_code/{report_id}/hybrid_execution_scaffold__{report_id}.json`
 - handoff: `factorforge/objects/handoff/handoff_to_step4__{report_id}.json`
+- Step2 research context carried into all Step3B artifacts:
+  - `step2_research_context.target_statistic`
+  - `step2_research_context.economic_mechanism`
+  - `step2_research_context.expected_failure_modes`
+  - `step2_research_context.reuse_instruction_for_future_agents`
+  - `step2_research_context.implementation_invariants`
 - schema field expected in plan / handoff when local snapshots exist:
   - `first_run_outputs.status`
   - `first_run_outputs.output_paths`
@@ -31,6 +37,9 @@
 
 ## Contract integrity rules
 - `report_id` must agree across filename, JSON payload, and handoff refs
+- Step3B must consume Step2's `factor_spec_master` plus optional `handoff_to_step3`; it must not strip the research contract down to only a formula
+- `step2_research_context` must be identical across implementation plan, qlib expression draft, hybrid scaffold, and Step4 handoff
+- `missing_*` Step2 research-context sentinel values are validation failures, not acceptable defaults
 - local input snapshot scope must be internally consistent across minute/daily layers
 - a Step 3B PASS without factor values is only acceptable when no Step 3A local execution snapshots exist
 - qlib-facing outputs should preserve a stable semantic mapping for:

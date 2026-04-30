@@ -13,6 +13,8 @@
 | SIZE_MCAP_20160101_20250711 | SIZE | `rank(mcap)` | 0.068 | 0.520 | +0.051% | ✅ validated |
 | ALPHA004_PAPER_20160101_20250711 | Alpha004(原始) | `(-1 * Ts_Rank(rank(low), 9))` | 0.036 | 0.276 | — | ✅ validated |
 | ALPHA005_PAPER_20160101_20250711 | Alpha005 | `(-TsRank(rank(delta(TsArgMax(close9d,8),7)),9))` | ≈0 | ≈0 | — | ❌ reject |
+| ALPHA008_PAPER_20160101_20250711 | Alpha008 | `(-1 * rank(((sum(open,5)*sum(returns,5))-delay(...))))` | 0.018 | 0.159 | — | ❌ reject |
+| ALPHA009_PAPER_20160101_20250711 | Alpha009 | regime-adaptive: monotonic_up→delta, mixed→-delta | 0.020 | 0.171 | — | ❌ reject |
 | ALPHA006_PAPER_20160101_20250711 | Alpha006 | `(-1 * corr(open, volume, 10))` | 0.026 | 0.309 | +0.001% | ✅ iterate |
 | ALPHA007_PAPER_20160101_20250711 | Alpha007(kurt-skew) | `folded * (1 + 0.5*(kurt_zs - skew_zs))` | 0.057 | 0.678 | +0.022% | ✅ validated |
 

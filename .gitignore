@@ -7,6 +7,18 @@ __pycache__/
 
 # runtime data / caches
 objects/
+runs/
+evaluations/
+generated_code/
+archive/
+factorforge/
+data/clean/
+data/raw/
+output/
+tmp/
+factor_factory.egg-info/
+.obsidian/
+knowledge/retrieval/
 data/report_ingestion/raw/
 data/report_ingestion/extracted/
 data/report_ingestion/report_registry.json

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from ..intake.structured_intake_contract import StructuredIntake
+from ..research_discipline import attach_step1_research_discipline
 
 
 def merge_to_alpha_idea_master(
@@ -15,7 +16,7 @@ def merge_to_alpha_idea_master(
     """Build the canonical alpha_idea_master object from all inputs."""
     ff = chief_decision.get('final_factor', {})
 
-    return {
+    alpha_idea_master = {
         'report_id': primary_intake.report_id,
         'report_meta': primary_intake.report_meta,
         'final_factor': {
@@ -48,3 +49,10 @@ def merge_to_alpha_idea_master(
             'challenger_thesis_route': 'challenger',
         }
     }
+    return attach_step1_research_discipline(
+        alpha_idea_master,
+        None,
+        primary_thesis,
+        challenger_thesis,
+        chief_decision,
+    )

@@ -7,12 +7,11 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-PARENT = ROOT.parent
-if str(PARENT) not in sys.path:
-    sys.path.insert(0, str(PARENT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from factorforge.skills.factor_forge_step1.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
-from factorforge.skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
+from skills.factor_forge_step1.modules.report_ingestion.adapters.html_report_adapter import HtmlReportAdapter
+from skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
 
 
 def main() -> None:

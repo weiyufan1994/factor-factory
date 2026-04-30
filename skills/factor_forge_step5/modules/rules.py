@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Tuple
 VALID_FINAL_STATUS = {"validated", "partial", "failed"}
 
 
+def _resolve_factorforge_root(root: Path) -> Path:
+    if (root / "objects").exists():
+        return root
+    return root / "factorforge"
+
+
 def _get_diagnostic_summary(frm: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(frm.get("diagnostic_summary"), dict):
         return frm["diagnostic_summary"]
@@ -20,7 +26,8 @@ def _get_diagnostic_summary(frm: Dict[str, Any]) -> Dict[str, Any]:
 
 def load_step5_inputs(report_id: str, workspace_root: str | Path) -> Dict[str, Any]:
     root = Path(workspace_root)
-    obj = root / "factorforge" / "objects"
+    ff_root = _resolve_factorforge_root(root)
+    obj = ff_root / "objects"
 
     paths = {
         "factor_run_master": obj / "factor_run_master" / f"factor_run_master__{report_id}.json",
@@ -32,6 +39,7 @@ def load_step5_inputs(report_id: str, workspace_root: str | Path) -> Dict[str, A
     bundle: Dict[str, Any] = {
         "report_id": report_id,
         "workspace_root": str(root),
+        "factorforge_root": str(ff_root),
         "paths": {name: str(path) for name, path in paths.items()},
         "objects": {},
         "missing_optional": [],
@@ -95,9 +103,45 @@ def validate_input_consistency(bundle: Dict[str, Any]) -> Tuple[bool, List[str],
 
 def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -> str:
     frm = bundle["objects"].get("factor_run_master") or {}
+    quality_gate = evaluation.get("step4_quality_gate") or {}
+    if quality_gate.get("verdict") == "BLOCK":
+        return "failed"
+
     run_status = frm.get("run_status")
     backend_summary = evaluation.get("backend_summary") or []
     successful_backend_count = sum(1 for item in backend_summary if item.get("status") == "success")
+    metric_bundle: Dict[str, Any] = {}
+    for item in backend_summary:
+        if isinstance(item.get("key_metrics"), dict):
+            metric_bundle.update(item["key_metrics"])
+    required_long_side = [
+        "long_side_annual_return",
+        "long_side_annual_volatility",
+        "long_side_sharpe",
+        "long_side_max_drawdown",
+        "long_side_recovery_days",
+        "long_side_turnover_mean_daily",
+        "trading_cogs_daily",
+        "trading_cogs_annual",
+        "cost_adjusted_annual_return",
+        "cost_adjusted_long_side_sharpe",
+    ]
+    long_side_evidence_complete = all(metric_bundle.get(key) is not None for key in required_long_side)
+    revenue = metric_bundle.get("long_side_annual_return")
+    volatility = metric_bundle.get("long_side_annual_volatility")
+    drawdown = metric_bundle.get("long_side_max_drawdown")
+    trading_cogs_annual = metric_bundle.get("trading_cogs_annual")
+    try:
+        economic_net_alpha = (
+            float(revenue)
+            - float(trading_cogs_annual)
+            - 0.5 * float(volatility) * float(volatility)
+            - 0.03 * (2.0 * abs(float(volatility)))
+            - abs(float(drawdown)) / 6.0
+        )
+    except Exception:
+        economic_net_alpha = None
+    factor_business_quality_complete = economic_net_alpha is not None
     output_paths = frm.get("output_paths") or []
     existing_outputs = [p for p in output_paths if Path(p).exists()]
     artifact_ready = bool(evaluation.get("artifact_ready"))
@@ -113,7 +157,7 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
         return "partial"
 
     if run_status == "success":
-        if artifact_ready and existing_outputs and successful_backend_count >= 1:
+        if artifact_ready and existing_outputs and successful_backend_count >= 1 and long_side_evidence_complete and factor_business_quality_complete:
             return "validated"
         return "partial"
 
@@ -134,4 +178,6 @@ def build_evaluation_summary(frm: Dict[str, Any], evaluation: Dict[str, Any]) ->
         "ticker_count": diag.get("ticker_count"),
         "backend_count": len(backend_summary),
         "successful_backend_count": successful_backend_count,
+        "step4_quality_gate_verdict": (evaluation.get("step4_quality_gate") or {}).get("verdict"),
+        "step4_quality_gate_blocking_issue_count": (evaluation.get("step4_quality_gate") or {}).get("blocking_issue_count"),
     }

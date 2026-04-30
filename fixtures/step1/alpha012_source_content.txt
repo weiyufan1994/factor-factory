@@ -1,0 +1,62 @@
+# Alpha#12 Source Content
+# From: "101 Formulaic Alphas" by Zura Kakushadze, Wilmott Magazine 2016(84)
+# Formula: (sign(delta(volume, 1)) * (-1 * delta(close, 1)))
+# Retrieved from: https://arxiv.org/pdf/1601.00991
+
+## Source Metadata
+- Title: 101 Formulaic Alphas
+- Author: Zura Kakushadze (Quantigic Solutions LLC & Free University of Tbilisi)
+- Publication: Wilmott Magazine 2016(84), pp. 72-80
+- Source Type: Academic/practitioner paper (WorldQuant LLC proprietary formulas, used with permission)
+- Formula: Alpha#12: (sign(delta(volume, 1)) * (-1 * delta(close, 1)))
+
+## Function Definitions (Appendix A.2)
+- sign(x) = standard definition (+1 for positive, -1 for negative, 0 for zero)
+- delta(x, d) = today's value of x minus the value of x d days ago
+- rank(x) = cross-sectional rank
+- delay(x, d) = value of x d days ago
+- correlation(x, y, d) = time-serial correlation of x and y for the past d days
+- ts_rank(x, d) = time-series rank in the past d days
+
+## Input Data
+- close, open, high, low, volume = standard daily price/volume
+- vwap = daily volume-weighted average price
+- returns = daily close-to-close returns
+- adv{d} = average daily dollar volume for the past d days
+
+## Alpha#12 Context from the Paper
+The paper categorizes alphas broadly into mean-reversion (contrarian) and momentum types.
+Alpha#12 is listed in Appendix A as a standalone formula without explicit author commentary.
+The paper notes these alphas are "price-volume" based (daily close-to-close returns, open, close, high, low, volume, vwap).
+Average holding period: 0.6-6.4 days (short-horizon).
+Average pair-wise correlation: 15.9% (low correlation across alphas).
+Returns strongly correlated with volatility; no significant dependence on turnover.
+
+## Author's General Alpha Description (Section 2)
+"Very coarsely, one can think of alpha signals as based on mean-reversion or momentum.
+A mean-reversion alpha has a sign opposite to the return on which it is based...
+In complex alphas elements of mean-reversion and momentum can be mixed."
+
+## What is known about Alpha#12:
+- Formula: sign(delta(volume, 1)) * (-1 * delta(close, 1))
+- Structure: sign(volume change direction) × (negative of price change direction)
+- This is a contrarian/meAN-REVERSION type based on the paper's classification
+- Delay: appears to be delay-1 (uses today's volume delta and today's price delta; to be traded next day)
+- Holding period: likely short (1-2 days) based on the paper's general characterization of these alphas
+
+## Intended interpretation of Alpha#12 signal logic:
+- When volume increases (delta(volume,1) > 0, sign = +1), the signal amplifies (-1 * delta_close)
+  - If price is up (delta_close > 0): signal is negative → short bias
+  - If price is down (delta_close < 0): signal is positive → long bias
+- When volume decreases (delta(volume,1) < 0, sign = -1), the signal flips
+  - If price is up: signal is positive → long bias
+  - If price is down: signal is negative → short bias
+- Overall: signal is positive (long) when price moves AGAINST volume direction (price up on falling volume, or price down on rising volume)
+- Signal is negative (short) when price moves WITH volume direction (price up on rising volume, or price down on falling volume)
+- This is a volume-confirmation filter applied to price reversal
+
+## Notes on the formula:
+- sign(delta(volume,1)) is binary (+1/-1), discarding volume change magnitude
+- The formula does NOT use: rank(), delay(), ts_rank(), or any time-series aggregation
+- It is a pure 1-day signal based on first differences of volume and price
+- Final transform (from paper convention): cross-sectional rank of the raw signal values

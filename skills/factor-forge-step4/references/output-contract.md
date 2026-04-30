@@ -7,4 +7,16 @@
 - `factor_run_master` should expose:
   - `evaluation_plan`
   - `evaluation_results.backend_runs`
-- Step 4 standardizes the run envelope, not a frozen universal metric list
+- Step 4 standardizes the run envelope plus a mandatory self-quant evidence pack.
+- `self_quant_analyzer` must emit:
+  - `standard_metric_contract`
+  - `ic_summary`
+  - `group_backtest_summary`
+  - `quantile_returns_10groups.csv`
+  - `quantile_nav_10groups.csv`
+  - `quantile_counts_10groups.csv`
+  - `quantile_summary_table.csv`
+  - `long_short_returns_10groups.csv`
+  - `long_short_nav_10groups.csv`
+  - rank/pearson IC plots, coverage plot, decile NAV plot, decile count plot, long-short NAV plot
+- Manual temporary plotting is not accepted as official Step4 evidence.

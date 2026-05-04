@@ -1,6 +1,17 @@
 """Thin local data access layer for FactorFactory daily datasets."""
 
+from .api import (
+    build_data_requirement,
+    describe_dataset,
+    list_datasets,
+    load_dataset,
+    resolve_dataset,
+    resolve_daily_dataset,
+    resolve_dataset_fields,
+    write_data_requirement,
+)
 from .calendar import get_trade_calendar, list_open_trade_dates
+from .catalog import DatasetEntry, load_catalog, upsert_dataset, write_catalog
 from .clean_layer import (
     CleanDailyLayerPaths,
     clean_daily_layer_ready,
@@ -79,8 +90,10 @@ from .topic_liquidity import (
 __all__ = [
     'LocalTusharePaths',
     'CleanDailyLayerPaths',
+    'DatasetEntry',
     'add_datetime_column',
     'align_topic_liquidity_to_daily',
+    'build_data_requirement',
     'build_forward_return_frame',
     'clean_daily_layer_ready',
     'daily_basic_to_qlib_features',
@@ -89,6 +102,7 @@ __all__ = [
     'default_clean_daily_layer_root',
     'default_local_data_root',
     'default_signal_column_name',
+    'describe_dataset',
     'align_events_to_daily',
     'get_daily',
     'get_clean_daily',
@@ -124,9 +138,15 @@ __all__ = [
     'infer_signal_column',
     'inspect_trade_date_csv_root',
     'list_daily_basic_trade_dates',
+    'list_datasets',
     'list_open_trade_dates',
     'list_tushare_dataset_names',
+    'load_catalog',
     'load_clean_daily_layer',
+    'load_dataset',
+    'resolve_daily_dataset',
+    'resolve_dataset',
+    'resolve_dataset_fields',
     'load_daily_snapshot',
     'load_factor_values',
     'load_factor_values_with_signal',
@@ -141,4 +161,7 @@ __all__ = [
     'combine_periodic_sources',
     'to_qlib_frame',
     'to_qlib_signal_frame',
+    'upsert_dataset',
+    'write_catalog',
+    'write_data_requirement',
 ]

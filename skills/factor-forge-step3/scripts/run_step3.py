@@ -23,11 +23,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.data_access import (
     CleanDailyLayerPaths,
+    build_data_requirement,
     clean_daily_layer_ready,
-    inspect_trade_date_csv_root,
     load_clean_daily_layer,
+    load_dataset,
+    resolve_dataset,
+    resolve_daily_dataset,
     resolve_clean_daily_layer_paths,
-    resolve_local_tushare_paths,
+    write_data_requirement,
 )
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
@@ -36,7 +39,6 @@ WORKSPACE = FF.parent
 OBJ = FF / 'objects'
 RUNS = FF / 'runs'
 REAL_CPV_BASE = WORKSPACE / 'tmp' / 'cpv_run_2016'
-LOCAL_TUSHARE = resolve_local_tushare_paths()
 CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
 
 
@@ -213,6 +215,268 @@ def is_cpv_like_factor(factor_id: str, canonical: dict) -> bool:
     return has_core_fields and has_pv_semantics
 
 
+FIELD_KEYWORDS = {
+    'open': ['open', '开盘'],
+    'high': ['high', '最高'],
+    'low': ['low', '最低'],
+    'close': ['close', '收盘'],
+    'volume': ['volume', 'vol', '成交量'],
+    'amount': ['amount', '成交额'],
+    'pct_chg': ['pct_chg', 'return', 'ret', '收益率', '涨跌幅'],
+    'turnover_rate': ['turnover_rate', 'turnover', '换手'],
+    'market_cap': ['market_cap', 'total_mv', 'circ_mv', '市值'],
+    'pe': ['pe', '市盈率'],
+    'pb': ['pb', '市净率'],
+    'ps': ['ps', '市销率'],
+}
+
+MINUTE_DATASET_ID = 'minute_bar'
+REQUIRED_MINUTE_FIELDS = [
+    'ts_code',
+    'trade_date',
+    'trade_time',
+    'bar_time',
+    'minute_index',
+    'open',
+    'high',
+    'low',
+    'close',
+    'volume',
+    'amount',
+]
+
+
+def infer_required_daily_fields(canonical: dict, need_daily_basic: bool) -> list[str]:
+    """Extract a conservative Step3A daily data contract from Step2 text."""
+    text_parts: list[str] = []
+    for key in ['formula_text', 'raw_formula_text']:
+        if canonical.get(key):
+            text_parts.append(str(canonical[key]))
+    for key in ['required_inputs', 'operators', 'time_series_steps', 'cross_sectional_steps', 'preprocessing', 'normalization']:
+        value = canonical.get(key)
+        if isinstance(value, list):
+            text_parts.extend(str(item) for item in value)
+        elif value:
+            text_parts.append(str(value))
+    text = ' '.join(text_parts).lower()
+    fields = ['ts_code', 'trade_date']
+    for logical, keywords in FIELD_KEYWORDS.items():
+        if any(keyword.lower() in text for keyword in keywords):
+            fields.append(logical)
+    if need_daily_basic:
+        fields.extend(['turnover_rate', 'market_cap', 'pe', 'pb', 'ps'])
+    if len(fields) <= 2:
+        fields.extend(['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg'])
+    return list(dict.fromkeys(fields))
+
+
+def api_window_value(value):
+    normalized = _normalize_window_date(value)
+    if normalized == 'current':
+        return None
+    return normalized
+
+
+def data_requirement_path(report_id: str) -> Path:
+    return OBJ / 'data_requirements' / f'factorforge_data_requirement__{report_id}.json'
+
+
+def build_step3a_data_api_resolution(required_daily_fields: list[str], required_minute_fields: list[str]) -> dict:
+    daily_resolution = resolve_daily_dataset(required_daily_fields)
+    minute_resolution = resolve_dataset(MINUTE_DATASET_ID, required_minute_fields) if required_minute_fields else None
+    catalog_exists = bool(daily_resolution.get('catalog_exists') or (minute_resolution or {}).get('catalog_exists'))
+    catalog_path = daily_resolution.get('catalog_path') or (minute_resolution or {}).get('catalog_path')
+    child_resolutions = [daily_resolution, *([minute_resolution] if minute_resolution else [])]
+    missing_datasets = [
+        item['dataset_id']
+        for item in child_resolutions
+        if item and item.get('status') == 'missing_dataset'
+    ]
+    missing_fields = {
+        item['dataset_id']: item.get('missing_fields') or []
+        for item in child_resolutions
+        if item and item.get('status') == 'missing_fields'
+    }
+    if not catalog_exists and not data_api_strict_required():
+        status = 'catalog_absent_legacy_shared_clean_fallback'
+    elif missing_datasets:
+        status = 'missing_dataset'
+    elif missing_fields:
+        status = 'missing_fields'
+    else:
+        status = 'ready'
+    resolution = {
+        'dataset_id': 'step3a_data_contract',
+        'status': status,
+        'catalog_path': catalog_path,
+        'catalog_exists': catalog_exists,
+        'required_daily_fields': required_daily_fields,
+        'required_minute_fields': required_minute_fields,
+        'daily_resolution': daily_resolution,
+        'minute_resolution': minute_resolution,
+        'resolved_fields': {
+            'clean_daily_bar': daily_resolution.get('resolved_fields') or {},
+            **({'minute_bar': minute_resolution.get('resolved_fields') or {}} if minute_resolution else {}),
+        },
+        'missing_fields': missing_fields,
+        'missing_datasets': missing_datasets,
+        'available_datasets': daily_resolution.get('available_datasets') or (minute_resolution or {}).get('available_datasets') or [],
+    }
+    if status != 'ready':
+        reasons = []
+        for item in child_resolutions:
+            if item and item.get('error'):
+                reasons.append(item['error'])
+        if status == 'catalog_absent_legacy_shared_clean_fallback':
+            reasons.append(f'FactorForge data catalog is absent at {catalog_path}; legacy fallback is recorded explicitly.')
+        resolution['error'] = ' '.join(reasons)
+    return resolution
+
+
+def write_step3a_data_requirement(report_id: str, sample_window: dict, resolution: dict) -> str:
+    required_datasets = [
+        {
+            'dataset_id': 'clean_daily_bar',
+            'frequency': '1day',
+            'columns': resolution.get('required_daily_fields') or [],
+            'required_transform': 'clean daily bars plus daily_basic enhancements, qlib-normalized field names',
+        }
+    ]
+    if resolution.get('required_minute_fields'):
+        required_datasets.append({
+            'dataset_id': MINUTE_DATASET_ID,
+            'frequency': '1min',
+            'columns': resolution.get('required_minute_fields') or [],
+            'required_transform': 'clean minute bars with qlib-normalized intraday fields',
+        })
+    unresolved = list(resolution.get('missing_datasets') or [])
+    unresolved.extend(key for key, value in (resolution.get('missing_fields') or {}).items() if value and key not in unresolved)
+    dataset_id = unresolved[0] if len(unresolved) == 1 else 'step3a_data_contract'
+    columns = []
+    for item in required_datasets:
+        columns.extend(item['columns'])
+    requirement = build_data_requirement(
+        dataset_id,
+        reason=(
+            'Step3A requires all factor inputs to resolve through the FactorForge Data API catalog. '
+            'Do not search raw/local paths or rebuild clean data inside factor research.'
+        ),
+        start=api_window_value(sample_window.get('start')),
+        end=api_window_value(sample_window.get('end')),
+        columns=list(dict.fromkeys(columns)),
+        frequency='mixed' if len(required_datasets) > 1 else required_datasets[0]['frequency'],
+        required_transform='publish the missing Step3A research-ready data mart(s) and update the catalog',
+    )
+    requirement['required_datasets'] = required_datasets
+    requirement['resolution'] = resolution
+    path = write_data_requirement(requirement, data_requirement_path(report_id))
+    return path.name
+
+
+def data_api_requirement_result(report_id: str, sample_window: dict, resolution: dict) -> dict:
+    ref = write_step3a_data_requirement(report_id, sample_window, resolution)
+    return {
+        'snapshot_note': f'Data API contract is not ready: {resolution.get("status")}. Requirement written to {ref}.',
+        'snapshot_source': 'data_api_requirement',
+        'input_mode': 'blocked',
+        'data_api_resolution': resolution,
+        'data_requirement_ref': ref,
+        'data_requirement_refs': [ref],
+    }
+
+
+def materialize_data_api_contract_slice(report_id: str, sample_window: dict, resolution: dict) -> dict:
+    daily_resolution = resolution['daily_resolution']
+    resolved_fields = daily_resolution.get('resolved_fields') or {}
+    requested_columns = list(dict.fromkeys(resolved_fields.values()))
+    local_dir = RUNS / report_id / 'step3a_local_inputs'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    daily_csv = local_dir / f'daily_input__{report_id}.csv'
+    daily_meta = local_dir / f'daily_input_meta__{report_id}.json'
+    if daily_csv.exists() or daily_csv.is_symlink():
+        daily_csv.unlink()
+
+    daily_df = load_dataset(
+        'clean_daily_bar',
+        start=api_window_value(sample_window.get('start')),
+        end=api_window_value(sample_window.get('end')),
+        columns=requested_columns,
+        catalog_path=daily_resolution.get('catalog_path'),
+    )
+    daily_df.to_csv(daily_csv, index=False)
+    meta = {
+        'source': 'factorforge_data_api',
+        'dataset_id': 'clean_daily_bar',
+        'catalog_path': daily_resolution.get('catalog_path'),
+        'dataset': daily_resolution.get('dataset'),
+        'required_fields': resolution.get('required_daily_fields') or [],
+        'resolved_fields': resolved_fields,
+        'slice_summary': {
+            'rows': int(len(daily_df)),
+            'tickers': int(daily_df['ts_code'].nunique()) if 'ts_code' in daily_df.columns and not daily_df.empty else 0,
+            'trade_date_min': str(daily_df['trade_date'].min()) if 'trade_date' in daily_df.columns and not daily_df.empty else None,
+            'trade_date_max': str(daily_df['trade_date'].max()) if 'trade_date' in daily_df.columns and not daily_df.empty else None,
+            'columns': list(daily_df.columns),
+        },
+    }
+    daily_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+    result = {
+        'daily_df_csv': str(daily_csv.relative_to(WORKSPACE)),
+        'daily_input_meta': str(daily_meta.relative_to(WORKSPACE)),
+        'daily_input_meta_json': str(daily_meta.relative_to(WORKSPACE)),
+        'snapshot_source': 'factorforge_data_api',
+        'input_mode': 'daily_only',
+        'data_api_resolution': resolution,
+        'daily_filter_policy': 'factorforge_data_api_catalog_slice',
+    }
+    minute_resolution = resolution.get('minute_resolution')
+    if minute_resolution:
+        minute_fields = minute_resolution.get('resolved_fields') or {}
+        minute_columns = list(dict.fromkeys(minute_fields.values()))
+        minute_csv = local_dir / f'minute_input__{report_id}.csv'
+        minute_meta = local_dir / f'minute_input_meta__{report_id}.json'
+        if minute_csv.exists() or minute_csv.is_symlink():
+            minute_csv.unlink()
+        minute_df = load_dataset(
+            MINUTE_DATASET_ID,
+            start=api_window_value(sample_window.get('start')),
+            end=api_window_value(sample_window.get('end')),
+            columns=minute_columns,
+            catalog_path=minute_resolution.get('catalog_path'),
+        )
+        minute_df.to_csv(minute_csv, index=False)
+        minute_payload = {
+            'source': 'factorforge_data_api',
+            'dataset_id': MINUTE_DATASET_ID,
+            'catalog_path': minute_resolution.get('catalog_path'),
+            'dataset': minute_resolution.get('dataset'),
+            'required_fields': resolution.get('required_minute_fields') or [],
+            'resolved_fields': minute_fields,
+            'slice_summary': {
+                'rows': int(len(minute_df)),
+                'tickers': int(minute_df['ts_code'].nunique()) if 'ts_code' in minute_df.columns and not minute_df.empty else 0,
+                'trade_date_min': str(minute_df['trade_date'].min()) if 'trade_date' in minute_df.columns and not minute_df.empty else None,
+                'trade_date_max': str(minute_df['trade_date'].max()) if 'trade_date' in minute_df.columns and not minute_df.empty else None,
+                'columns': list(minute_df.columns),
+            },
+        }
+        minute_meta.write_text(json.dumps(minute_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        result.update({
+            'minute_df_csv': str(minute_csv.relative_to(WORKSPACE)),
+            'minute_input_meta': str(minute_meta.relative_to(WORKSPACE)),
+            'minute_input_meta_json': str(minute_meta.relative_to(WORKSPACE)),
+            'input_mode': 'daily_and_minute',
+        })
+    actual_window = {
+        'start': meta['slice_summary']['trade_date_min'] or sample_window.get('start'),
+        'end': meta['slice_summary']['trade_date_max'] or sample_window.get('end'),
+        'calendar': sample_window.get('calendar'),
+    }
+    result['sample_window_actual'] = actual_window
+    result['snapshot_note'] = 'Step3A input sliced from FactorForge Data API catalog datasets.'
+    return result
+
+
 def inspect_minute_root(path: Path) -> dict | None:
     if not path.exists():
         return None
@@ -298,6 +562,7 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
     }
     return {
         'daily_df_csv': str(daily_csv.relative_to(WORKSPACE)),
+        'daily_input_meta': str(daily_meta.relative_to(WORKSPACE)),
         'daily_input_meta_json': str(daily_meta.relative_to(WORKSPACE)),
         'sample_window_actual': actual_window,
         'snapshot_note': f'Daily input sliced from shared clean daily layer at {CLEAN_DAILY_LAYER.daily_parquet}.',
@@ -442,9 +707,23 @@ def build_local_cpv_snapshots(report_id: str, sample_window: dict):
     }
 
 
-def build_local_daily_snapshot(report_id: str, sample_window: dict):
-    # Daily-only factors should read the shared clean layer and only materialize a report-scoped slice.
-    return materialize_shared_daily_slice(report_id, sample_window)
+def data_api_strict_required() -> bool:
+    return os.getenv('FACTORFORGE_REQUIRE_DATA_API', '').strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def build_local_daily_snapshot(report_id: str, sample_window: dict, required_fields: list[str] | None = None):
+    # Daily-only factors prefer the cataloged Data API. Legacy clean-layer fallback is allowed only
+    # when no catalog has been published yet, so existing local research does not hard fail during migration.
+    fields = required_fields or ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+    resolution = build_step3a_data_api_resolution(fields, [])
+    catalog_path = Path(str(resolution.get('catalog_path') or '')).expanduser()
+    if resolution.get('status') == 'ready':
+        return materialize_data_api_contract_slice(report_id, sample_window, resolution)
+    if resolution.get('status') == 'catalog_absent_legacy_shared_clean_fallback' and not catalog_path.exists():
+        legacy = materialize_shared_daily_slice(report_id, sample_window)
+        legacy['data_api_resolution'] = resolution | {'fallback_policy': 'allowed_until_factorforge_data_catalog_is_published'}
+        return legacy
+    return data_api_requirement_result(report_id, sample_window, resolution)
 
 
 def build_step3a(report_id: str):
@@ -460,6 +739,9 @@ def build_step3a(report_id: str):
     need_minute = bool(re.search(r'minute|分钟|高频', required_text, re.I)) or cpv_like
     need_daily = True
     need_daily_basic = cpv_like or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
+    required_daily_fields = infer_required_daily_fields(canonical, need_daily_basic)
+    required_minute_fields = REQUIRED_MINUTE_FIELDS if need_minute else []
+    data_api_resolution = build_step3a_data_api_resolution(required_daily_fields, required_minute_fields)
 
     sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
     data_sources = []
@@ -471,13 +753,13 @@ def build_step3a(report_id: str):
 
     if need_minute:
         data_sources.append({
-            'name': 'tushare_minute_bars',
-            'kind': 's3',
-            'path': 's3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/',
-            'fields': ['ts_code', 'trade_time', 'trade_date', 'bar_time', 'minute_index', 'open', 'close', 'high', 'low', 'vol', 'amount'],
+            'name': 'minute_bar',
+            'kind': 'factorforge_data_api_catalog',
+            'path': 'catalog://minute_bar',
+            'fields': required_minute_fields,
             'normalized_dataset': 'minute_bar'
         })
-        coverage.append({'name': 'minute_2016q1', 'status': 'pass', 'detail': '20160104-20160329 共57个交易日已确认存在'})
+        coverage.append({'name': 'minute_bar', 'status': 'pending', 'detail': 'resolved through FactorForge Data API catalog or explicit legacy fallback'})
         field_mapping.update({
             'instrument': 'ts_code',
             'date': 'trade_date',
@@ -493,13 +775,13 @@ def build_step3a(report_id: str):
 
     if need_daily:
         data_sources.append({
-            'name': 'tushare_daily_bars',
-            'kind': 's3',
-            'path': 's3://yufan-data-lake/tushares/行情数据/daily.csv',
-            'fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
-            'normalized_dataset': 'daily_bar'
+            'name': 'clean_daily_bar',
+            'kind': 'factorforge_data_api_catalog',
+            'path': 'catalog://clean_daily_bar',
+            'fields': required_daily_fields,
+            'normalized_dataset': 'clean_daily_bar'
         })
-        coverage.append({'name': 'daily_history', 'status': 'pass', 'detail': 'daily.csv 已确认可用'})
+        coverage.append({'name': 'clean_daily_bar', 'status': 'pending', 'detail': 'resolved through FactorForge Data API catalog or explicit legacy fallback'})
         field_mapping.update({
             'daily_open': 'open',
             'daily_high': 'high',
@@ -510,27 +792,12 @@ def build_step3a(report_id: str):
             'daily_amount': 'amount'
         })
 
-    daily_basic_meta = inspect_trade_date_csv_root(LOCAL_TUSHARE.daily_basic_dir)
     if need_daily_basic:
-        data_sources.append({
-            'name': 'tushare_daily_basic_incremental',
-            'kind': 's3_partitioned',
-            'path': 's3://yufan-data-lake/tushares/行情数据/daily_basic_incremental/',
-            'fields': ['ts_code', 'trade_date', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'],
-            'normalized_dataset': 'daily_basic'
+        coverage.append({
+            'name': 'clean_daily_bar_daily_basic_enhancements',
+            'status': 'pending',
+            'detail': 'valuation and turnover fields must resolve through clean_daily_bar; missing fields block and write a data requirement',
         })
-        if daily_basic_meta:
-            coverage.append({
-                'name': 'daily_basic_local_cache',
-                'status': 'pass',
-                'detail': f'daily_basic local cache detected at {daily_basic_meta["path"]} with {daily_basic_meta["trade_date_count"]} trade_date partitions'
-            })
-        else:
-            coverage.append({
-                'name': 'daily_basic_incremental',
-                'status': 'pass',
-                'detail': 'daily_basic_incremental is treated as the canonical valuation/basic layer and should be synced locally after the backfill completes'
-            })
         field_mapping.update({
             'daily_turnover_rate': 'turnover_rate',
             'daily_turnover_rate_f': 'turnover_rate_f',
@@ -548,9 +815,8 @@ def build_step3a(report_id: str):
         })
 
     local_input_paths = {}
-    if cpv_like:
-        # CPV should prefer daily_basic for valuation / scale / turnover features.
-        # Only keep risks that are truly unresolved in the current data contract.
+    if need_minute:
+        # Keep only non-catalog research risks here; data availability must be resolved above.
         proxy_rules.extend([
             {
                 'missing_field': 'industry_dummy',
@@ -559,35 +825,97 @@ def build_step3a(report_id: str):
                 'risk': 'high'
             }
         ])
-        local_input_paths = build_local_cpv_snapshots(report_id, sample_window)
-        notes.append('CPV 当前应优先使用 daily_basic_incremental 中的 total_mv / circ_mv / turnover_rate / pe / pb 等字段')
+        if data_api_resolution.get('status') == 'ready':
+            local_input_paths = materialize_data_api_contract_slice(report_id, sample_window, data_api_resolution)
+        elif data_api_resolution.get('status') == 'catalog_absent_legacy_shared_clean_fallback':
+            local_input_paths = build_local_cpv_snapshots(report_id, sample_window)
+            local_input_paths['data_api_resolution'] = data_api_resolution | {
+                'fallback_policy': 'allowed_until_factorforge_data_catalog_is_published',
+            }
+        else:
+            local_input_paths = data_api_requirement_result(report_id, sample_window, data_api_resolution)
+        notes.append('CPV/minute Step 3A inputs must resolve through clean_daily_bar and minute_bar when the Data API catalog exists.')
+        notes.append('Daily_basic / valuation / market-cap fields are required on clean_daily_bar in this contract.')
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
-        if snapshot_source in {'shared_clean_daily_layer', 'synthetic_fallback'}:
+        if snapshot_source in {'factorforge_data_api', 'shared_clean_daily_layer', 'synthetic_fallback'}:
             notes.append('Step 3A 已生成 Step 4 可直接消费的本地输入快照，供集成证明与样例执行使用')
         if snapshot_note:
             notes.append(str(snapshot_note))
-        if snapshot_source in {'real_local_insufficient', 'missing_real_local_data', 'missing_clean_daily_layer'}:
+        if snapshot_source == 'data_api_requirement':
+            blocked.append({
+                'code': 'FACTORFORGE_DATA_API_REQUIREMENT',
+                'detail': snapshot_note,
+                'data_requirement_ref': local_input_paths.get('data_requirement_ref'),
+            })
+        elif snapshot_source in {'real_local_insufficient', 'missing_real_local_data', 'missing_clean_daily_layer'}:
             blocked.append({
                 'code': 'SHARED_CLEAN_DAILY_LAYER_MISSING' if snapshot_source == 'missing_clean_daily_layer' else 'LOCAL_MINUTE_HISTORY_INSUFFICIENT',
                 'detail': snapshot_note,
             })
     else:
-        local_input_paths = build_local_daily_snapshot(report_id, sample_window)
+        local_input_paths = build_local_daily_snapshot(report_id, sample_window, required_daily_fields)
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
+        data_api_resolution = local_input_paths.get('data_api_resolution') or {}
         if snapshot_note:
             notes.append(str(snapshot_note))
-        if snapshot_source == 'missing_clean_daily_layer':
+        if snapshot_source == 'data_api_requirement':
+            blocked.append({
+                'code': 'FACTORFORGE_DATA_API_REQUIREMENT',
+                'detail': snapshot_note,
+                'data_requirement_ref': local_input_paths.get('data_requirement_ref'),
+            })
+        elif snapshot_source == 'missing_clean_daily_layer':
             blocked.append({
                 'code': 'SHARED_CLEAN_DAILY_LAYER_MISSING',
                 'detail': snapshot_note,
             })
+        if data_api_resolution.get('status') == 'ready':
+            coverage.append({
+                'name': 'factorforge_data_api_step3a_contract',
+                'status': 'pass',
+                'detail': f"Step3A data contract resolved from catalog {data_api_resolution.get('catalog_path')}",
+            })
+        elif data_api_resolution.get('status') == 'catalog_absent_legacy_shared_clean_fallback':
+            coverage.append({
+                'name': 'factorforge_data_api_catalog',
+                'status': 'legacy_fallback',
+                'detail': f"catalog absent at {data_api_resolution.get('catalog_path')}; shared clean layer fallback recorded explicitly",
+            })
+        elif data_api_resolution:
+            coverage.append({
+                'name': 'factorforge_data_api_step3a_contract',
+                'status': 'blocked',
+                'detail': data_api_resolution.get('error') or snapshot_note or str(data_api_resolution),
+            })
+    if need_minute:
+        if data_api_resolution.get('status') == 'ready':
+            coverage.append({
+                'name': 'factorforge_data_api_step3a_contract',
+                'status': 'pass',
+                'detail': f"clean_daily_bar and minute_bar resolved from catalog {data_api_resolution.get('catalog_path')}",
+            })
+        elif data_api_resolution.get('status') == 'catalog_absent_legacy_shared_clean_fallback':
+            coverage.append({
+                'name': 'factorforge_data_api_catalog',
+                'status': 'legacy_fallback',
+                'detail': f"catalog absent at {data_api_resolution.get('catalog_path')}; CPV/minute legacy fallback recorded explicitly",
+            })
+        else:
+            coverage.append({
+                'name': 'factorforge_data_api_step3a_contract',
+                'status': 'blocked',
+                'detail': data_api_resolution.get('error') or str(data_api_resolution),
+            })
 
     feasibility = 'blocked' if blocked else ('proxy_ready' if proxy_rules else 'ready')
-    notes.append(
-        'Step 3A reads the shared clean daily layer and only materializes report-scoped slices. Heavy daily cleaning is owned by scripts/build_clean_daily_layer.py.'
-    )
+    if local_input_paths.get('snapshot_source') == 'factorforge_data_api':
+        notes.append('Step 3A reads clean_daily_bar through the FactorForge Data API catalog and materializes only report-scoped slices.')
+    elif (local_input_paths.get('data_api_resolution') or {}).get('status') == 'catalog_absent_legacy_shared_clean_fallback':
+        notes.append('Step 3A used the legacy shared clean fallback only because the Data API catalog file is absent; this is not Data API ready.')
+    else:
+        notes.append('Step 3A must use clean_daily_bar through the FactorForge Data API catalog; missing dataset or fields are emitted as data requirements.')
 
     data_prep_master = {
         'report_id': report_id,
@@ -601,6 +929,11 @@ def build_step3a(report_id: str):
         'implementation_notes': notes,
         'blocked_items': blocked,
         'local_input_paths': local_input_paths,
+        'data_api_resolution': local_input_paths.get('data_api_resolution'),
+        'data_requirement_ref': local_input_paths.get('data_requirement_ref'),
+        'data_requirement_refs': local_input_paths.get('data_requirement_refs') or [],
+        'required_daily_fields': required_daily_fields,
+        'required_minute_fields': required_minute_fields,
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
     }
 
@@ -646,6 +979,9 @@ def build_step3a(report_id: str):
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'sample_window': sample_window,
         'local_input_paths': local_input_paths,
+        'data_api_resolution': local_input_paths.get('data_api_resolution'),
+        'data_requirement_ref': local_input_paths.get('data_requirement_ref'),
+        'data_requirement_refs': local_input_paths.get('data_requirement_refs') or [],
         'step4_access_rule': 'Step 4 should prefer Step 3A normalized local inputs / adapter config, not raw S3 paths directly.'
     }
 
@@ -696,7 +1032,10 @@ def main():
         'final_result': data_prep_master['feasibility'],
         'checks': data_prep_master['coverage_checks'],
         'proxy_count': len(data_prep_master['proxy_rules']),
-        'local_input_paths': data_prep_master['local_input_paths']
+        'local_input_paths': data_prep_master['local_input_paths'],
+        'data_api_resolution': data_prep_master.get('data_api_resolution'),
+        'data_requirement_ref': data_prep_master.get('data_requirement_ref'),
+        'data_requirement_refs': data_prep_master.get('data_requirement_refs') or [],
     })
     # COMMENT_POLICY: execution_handoff
     # Step 3A handoff is the contract boundary for Step 4 input resolution.
@@ -708,7 +1047,10 @@ def main():
         'qlib_adapter_config_ref': qlib_path.name,
         'implementation_plan_master_ref': impl_path.name,
         'factor_spec_master_ref': f'factor_spec_master__{report_id}.json',
-        'local_input_paths': data_prep_master['local_input_paths']
+        'local_input_paths': data_prep_master['local_input_paths'],
+        'data_api_resolution': data_prep_master.get('data_api_resolution'),
+        'data_requirement_ref': data_prep_master.get('data_requirement_ref'),
+        'data_requirement_refs': data_prep_master.get('data_requirement_refs') or [],
     })
     write_json(handoff_path, handoff_payload)
 

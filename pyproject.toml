@@ -19,6 +19,9 @@ dependencies = [
 step4 = [
   "pyarrow>=14.0",
 ]
+s3 = [
+  "pyarrow>=14.0",
+]
 qlib = [
   "pyarrow>=14.0",
   "pyqlib>=0.9.7",

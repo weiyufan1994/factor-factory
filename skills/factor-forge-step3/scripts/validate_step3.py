@@ -86,12 +86,60 @@ if __name__ == '__main__':
     if handoff.get('execution_mode') is not None:
         assert handoff.get('execution_mode') == impl_mode
     assert isinstance(prep.get('local_input_paths'), dict)
+    data_api_resolution = prep.get('data_api_resolution')
+    assert isinstance(data_api_resolution, dict), 'data_prep_master.data_api_resolution is required for all Step3A outputs'
+    assert qcfg.get('data_api_resolution') == data_api_resolution, 'qlib_adapter_config.data_api_resolution must match data_prep_master'
+    assert handoff.get('data_api_resolution') == data_api_resolution, 'handoff_to_step4.data_api_resolution must match data_prep_master'
+    status = data_api_resolution.get('status')
+    assert status, 'data_api_resolution.status is required'
+    assert status in {'ready', 'missing_dataset', 'missing_fields', 'catalog_absent_legacy_shared_clean_fallback'}, f'unsupported data_api_resolution.status={status}'
+    daily_resolution = data_api_resolution.get('daily_resolution')
+    assert isinstance(daily_resolution, dict), 'data_api_resolution.daily_resolution is required'
+    assert daily_resolution.get('dataset_id') == 'clean_daily_bar', 'Step3A daily leg must resolve clean_daily_bar'
+    minute_resolution = data_api_resolution.get('minute_resolution')
+    if data_api_resolution.get('required_minute_fields'):
+        assert isinstance(minute_resolution, dict), 'minute/high-frequency Step3A must include minute_resolution'
+        assert minute_resolution.get('dataset_id') == 'minute_bar', 'minute/high-frequency Step3A must resolve minute_bar'
+
+    if prep['feasibility'] in {'ready', 'proxy_ready'}:
+        assert status in {'ready', 'catalog_absent_legacy_shared_clean_fallback'}, (
+            f'non-blocked Step3A requires ready or explicit catalog-absent fallback, got {status}'
+        )
+    if status == 'ready':
+        assert isinstance(data_api_resolution.get('resolved_fields'), dict) and data_api_resolution['resolved_fields'], 'ready Data API resolution must include resolved_fields'
+        assert prep.get('local_input_paths', {}).get('snapshot_source') == 'factorforge_data_api', 'ready Data API resolution must drive the local snapshot source'
+        daily_meta_rel = prep.get('local_input_paths', {}).get('daily_input_meta') or prep.get('local_input_paths', {}).get('daily_input_meta_json')
+        assert daily_meta_rel and (WORKSPACE / daily_meta_rel).exists(), 'ready Data API resolution must write daily_input_meta'
+        if minute_resolution:
+            minute_meta_rel = prep.get('local_input_paths', {}).get('minute_input_meta') or prep.get('local_input_paths', {}).get('minute_input_meta_json')
+            assert minute_meta_rel and (WORKSPACE / minute_meta_rel).exists(), 'ready minute Data API resolution must write minute_input_meta'
+    if status in {'missing_dataset', 'missing_fields'}:
+        req_ref = prep.get('data_requirement_ref')
+        assert req_ref, 'missing Data API resolution must carry data_requirement_ref'
+        assert qcfg.get('data_requirement_ref') == req_ref, 'qlib_adapter_config must carry matching data_requirement_ref'
+        assert handoff.get('data_requirement_ref') == req_ref, 'handoff_to_step4 must carry matching data_requirement_ref'
+        assert handoff.get('step3a_ready') is False, 'missing Data API resolution must set handoff_to_step4.step3a_ready=false'
+        req_path = OBJ / 'data_requirements' / req_ref
+        assert req_path.exists(), f'missing data requirement object: {req_path}'
+        requirement = load(req_path)
+        assert requirement.get('type') == 'factorforge_data_requirement', 'data requirement must use factorforge_data_requirement type'
+        assert requirement.get('resolution') == data_api_resolution, 'data requirement must embed the exact Step3A data_api_resolution'
+        assert prep.get('feasibility') == 'blocked', 'missing Data API fields/dataset must block Step3A feasibility'
+    if status == 'catalog_absent_legacy_shared_clean_fallback':
+        assert data_api_resolution.get('catalog_exists') is False, 'catalog absent fallback is valid only when the catalog file does not exist'
+        catalog_path = data_api_resolution.get('catalog_path')
+        assert catalog_path and not Path(catalog_path).expanduser().exists(), 'catalog absent fallback is invalid when the catalog file exists'
+        assert prep.get('local_input_paths', {}).get('snapshot_source') != 'factorforge_data_api', 'catalog absent fallback must not masquerade as Data API ready'
+        assert prep.get('local_input_paths', {}).get('daily_filter_policy') != 'factorforge_data_api_catalog_slice', 'catalog absent fallback must not use Data API ready policy'
     minute_rel = prep['local_input_paths'].get('minute_df_parquet') or prep['local_input_paths'].get('minute_df_csv')
     daily_rel = prep['local_input_paths'].get('daily_df_csv') or prep['local_input_paths'].get('daily_df_parquet')
     input_mode = str(prep['local_input_paths'].get('input_mode') or '')
     if prep['feasibility'] == 'blocked':
         assert prep.get('blocked_items'), 'blocked feasibility must carry explicit blocked_items'
-        assert not (minute_rel and daily_rel), 'blocked feasibility must not claim executable local snapshots'
+        if status in {'missing_dataset', 'missing_fields'}:
+            assert not minute_rel and not daily_rel, 'missing Data API resolution must not claim executable local snapshots'
+        else:
+            assert not (minute_rel and daily_rel), 'blocked feasibility must not claim executable local snapshots'
     else:
         assert daily_rel and (WORKSPACE / daily_rel).exists(), 'missing local input snapshot: daily_df_(csv/parquet)'
         if input_mode == 'daily_only':

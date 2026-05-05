@@ -248,6 +248,7 @@ def _load_s3_parquet_with_pyarrow(
     request: DatasetRequest,
     columns: list[str],
 ) -> pd.DataFrame:
+    import pyarrow as pa
     import pyarrow.dataset as ds
     import pyarrow.fs as fs
 
@@ -256,7 +257,11 @@ def _load_s3_parquet_with_pyarrow(
     if not region:
         region = fs.resolve_s3_region(bucket)
     filesystem = fs.S3FileSystem(region=region) if region else fs.S3FileSystem()
-    dataset = ds.dataset(f'{bucket}/{key}', filesystem=filesystem, format='parquet', partitioning='hive')
+    partitioning = 'hive'
+    if entry.partition_columns:
+        partition_schema = pa.schema([(column, pa.large_string()) for column in entry.partition_columns])
+        partitioning = ds.partitioning(partition_schema, flavor='hive')
+    dataset = ds.dataset(f'{bucket}/{key}', filesystem=filesystem, format='parquet', partitioning=partitioning)
     filters = _pyarrow_filter(entry, request)
     table = dataset.to_table(columns=columns or None, filter=filters)
     return table.to_pandas()

@@ -33,6 +33,31 @@ def load(p):
     return json.loads(Path(p).read_text(encoding='utf-8'))
 
 
+def path_exists(rel: str | None) -> bool:
+    return bool(rel) and (WORKSPACE / rel).exists()
+
+
+def assert_report_scoped_snapshot(report_id: str, rel: str | None) -> None:
+    assert rel, f'missing report-scoped snapshot path for {report_id}'
+    parts = Path(rel).parts
+    assert 'runs' in parts and report_id in parts and 'step3a_local_inputs' in parts, (
+        f'snapshot must be report-scoped under runs/{report_id}/step3a_local_inputs: {rel}'
+    )
+    assert path_exists(rel), f'missing local input snapshot: {rel}'
+
+
+def assert_data_api_metadata(dataset_id: str, meta: dict) -> None:
+    assert isinstance(meta.get('query'), dict), f'{dataset_id} Data API metadata requires query'
+    assert isinstance(meta.get('schema'), dict), f'{dataset_id} Data API metadata requires schema'
+    assert isinstance(meta.get('coverage'), dict), f'{dataset_id} Data API metadata requires coverage'
+    assert isinstance(meta.get('source'), dict), f'{dataset_id} Data API metadata requires source'
+    assert isinstance(meta.get('freshness'), dict), f'{dataset_id} Data API metadata requires freshness'
+    assert isinstance(meta.get('resolved_fields'), dict), f'{dataset_id} Data API metadata requires resolved_fields'
+    assert 'warnings' in meta, f'{dataset_id} Data API metadata requires warnings'
+    assert meta['query'].get('dataset') == dataset_id, f'{dataset_id} query.dataset mismatch'
+    assert meta['schema'].get('dataset') == dataset_id, f'{dataset_id} schema.dataset mismatch'
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
@@ -92,54 +117,77 @@ if __name__ == '__main__':
     assert handoff.get('data_api_resolution') == data_api_resolution, 'handoff_to_step4.data_api_resolution must match data_prep_master'
     status = data_api_resolution.get('status')
     assert status, 'data_api_resolution.status is required'
-    assert status in {'ready', 'missing_dataset', 'missing_fields', 'catalog_absent_legacy_shared_clean_fallback'}, f'unsupported data_api_resolution.status={status}'
-    daily_resolution = data_api_resolution.get('daily_resolution')
-    assert isinstance(daily_resolution, dict), 'data_api_resolution.daily_resolution is required'
-    assert daily_resolution.get('dataset_id') == 'clean_daily_bar', 'Step3A daily leg must resolve clean_daily_bar'
-    minute_resolution = data_api_resolution.get('minute_resolution')
+    assert status in {'ready', 'proxy_ready', 'blocked', 'catalog_missing', 'catalog_absent'}, f'unsupported data_api_resolution.status={status}'
+    assert data_api_resolution.get('engine') == 'factor_factory.data_api', 'Step3A must record factor_factory.data_api as the resolution engine'
+    datasets_meta = data_api_resolution.get('datasets')
+    assert isinstance(datasets_meta, dict), 'data_api_resolution.datasets is required'
+    daily_meta = datasets_meta.get('clean_daily_bar')
+    assert isinstance(daily_meta, dict), 'Step3A daily leg must resolve clean_daily_bar through DataApiClient'
+    minute_meta = datasets_meta.get('minute_bar')
     if data_api_resolution.get('required_minute_fields'):
-        assert isinstance(minute_resolution, dict), 'minute/high-frequency Step3A must include minute_resolution'
-        assert minute_resolution.get('dataset_id') == 'minute_bar', 'minute/high-frequency Step3A must resolve minute_bar'
+        assert isinstance(minute_meta, dict), 'minute/high-frequency Step3A must include minute_bar Data API metadata'
 
     if prep['feasibility'] in {'ready', 'proxy_ready'}:
-        assert status in {'ready', 'catalog_absent_legacy_shared_clean_fallback'}, (
-            f'non-blocked Step3A requires ready or explicit catalog-absent fallback, got {status}'
+        assert status in {'ready', 'proxy_ready'}, (
+            f'non-blocked Step3A requires ready/proxy_ready DataApiClient result, got {status}'
         )
-    if status == 'ready':
+    if status in {'ready', 'proxy_ready'}:
+        for dataset_id, meta in datasets_meta.items():
+            assert_data_api_metadata(dataset_id, meta)
+            assert meta.get('status') in {'ready', 'proxy_ready'}, f'{dataset_id} metadata must not be blocked under {status}'
+            coverage = meta.get('coverage') or {}
+            duplicate_count = int(coverage.get('duplicate_key_count') or 0)
+            if duplicate_count > 0:
+                assert meta.get('query', {}).get('allow_duplicate_keys') is True, (
+                    f'{dataset_id} duplicate_key_count={duplicate_count} cannot be ready unless allow_duplicate_keys is true'
+                )
+            fields = meta.get('query', {}).get('fields') or []
+            if 'volume' in fields:
+                resolved = meta.get('resolved_fields') or {}
+                assert resolved.get('volume') == 'vol', f'{dataset_id} volume must resolve through DataApiResult metadata to vol'
+        if status == 'proxy_ready':
+            assert any(meta.get('proxy_rules') for meta in datasets_meta.values()), 'proxy_ready requires DataApiResult proxy_rules'
         assert isinstance(data_api_resolution.get('resolved_fields'), dict) and data_api_resolution['resolved_fields'], 'ready Data API resolution must include resolved_fields'
-        assert prep.get('local_input_paths', {}).get('snapshot_source') == 'factorforge_data_api', 'ready Data API resolution must drive the local snapshot source'
+        assert prep.get('local_input_paths', {}).get('snapshot_source') == 'factor_factory.data_api', 'ready Data API resolution must drive the local snapshot source'
+        daily_rel = prep.get('local_input_paths', {}).get('daily_df_csv') or prep.get('local_input_paths', {}).get('daily_df_parquet')
+        assert_report_scoped_snapshot(report_id, daily_rel)
+        if 'volume' in (daily_meta.get('query') or {}).get('fields', []):
+            import pandas as pd
+            daily_df = pd.read_parquet(WORKSPACE / daily_rel) if str(daily_rel).endswith('.parquet') else pd.read_csv(WORKSPACE / daily_rel, nrows=5)
+            assert 'vol' in daily_df.columns and 'volume' not in daily_df.columns, 'daily snapshot must keep native vol and not rename to volume'
         daily_meta_rel = prep.get('local_input_paths', {}).get('daily_input_meta') or prep.get('local_input_paths', {}).get('daily_input_meta_json')
         assert daily_meta_rel and (WORKSPACE / daily_meta_rel).exists(), 'ready Data API resolution must write daily_input_meta'
-        if minute_resolution:
+        if minute_meta:
+            minute_rel = prep.get('local_input_paths', {}).get('minute_df_csv') or prep.get('local_input_paths', {}).get('minute_df_parquet')
+            assert_report_scoped_snapshot(report_id, minute_rel)
             minute_meta_rel = prep.get('local_input_paths', {}).get('minute_input_meta') or prep.get('local_input_paths', {}).get('minute_input_meta_json')
             assert minute_meta_rel and (WORKSPACE / minute_meta_rel).exists(), 'ready minute Data API resolution must write minute_input_meta'
-    if status in {'missing_dataset', 'missing_fields'}:
+    if status in {'blocked', 'catalog_missing', 'catalog_absent'}:
         req_ref = prep.get('data_requirement_ref')
-        assert req_ref, 'missing Data API resolution must carry data_requirement_ref'
+        assert req_ref, 'blocked Data API resolution must carry data_requirement_ref'
         assert qcfg.get('data_requirement_ref') == req_ref, 'qlib_adapter_config must carry matching data_requirement_ref'
         assert handoff.get('data_requirement_ref') == req_ref, 'handoff_to_step4 must carry matching data_requirement_ref'
-        assert handoff.get('step3a_ready') is False, 'missing Data API resolution must set handoff_to_step4.step3a_ready=false'
+        assert handoff.get('step3a_ready') is False, 'blocked Data API resolution must set handoff_to_step4.step3a_ready=false'
         req_path = OBJ / 'data_requirements' / req_ref
         assert req_path.exists(), f'missing data requirement object: {req_path}'
         requirement = load(req_path)
         assert requirement.get('type') == 'factorforge_data_requirement', 'data requirement must use factorforge_data_requirement type'
         assert requirement.get('resolution') == data_api_resolution, 'data requirement must embed the exact Step3A data_api_resolution'
-        assert prep.get('feasibility') == 'blocked', 'missing Data API fields/dataset must block Step3A feasibility'
-    if status == 'catalog_absent_legacy_shared_clean_fallback':
-        assert data_api_resolution.get('catalog_exists') is False, 'catalog absent fallback is valid only when the catalog file does not exist'
+        assert prep.get('feasibility') == 'blocked', 'blocked Data API result must block Step3A feasibility'
+        assert not prep.get('local_input_paths', {}).get('daily_df_csv') and not prep.get('local_input_paths', {}).get('daily_df_parquet'), 'blocked Data API result must not write executable daily snapshot'
+        assert not prep.get('local_input_paths', {}).get('minute_df_csv') and not prep.get('local_input_paths', {}).get('minute_df_parquet'), 'blocked Data API result must not write executable minute snapshot'
+    if status in {'catalog_missing', 'catalog_absent'}:
+        assert data_api_resolution.get('catalog_exists') is False, 'catalog missing status is valid only when the catalog file does not exist'
         catalog_path = data_api_resolution.get('catalog_path')
-        assert catalog_path and not Path(catalog_path).expanduser().exists(), 'catalog absent fallback is invalid when the catalog file exists'
-        assert prep.get('local_input_paths', {}).get('snapshot_source') != 'factorforge_data_api', 'catalog absent fallback must not masquerade as Data API ready'
-        assert prep.get('local_input_paths', {}).get('daily_filter_policy') != 'factorforge_data_api_catalog_slice', 'catalog absent fallback must not use Data API ready policy'
+        assert catalog_path and not Path(catalog_path).expanduser().exists(), 'catalog missing status is invalid when the catalog file exists'
+        assert handoff.get('step3a_ready') is False, 'catalog missing must set handoff_to_step4.step3a_ready=false'
+        assert prep.get('local_input_paths', {}).get('snapshot_source') == 'data_api_requirement', 'catalog missing must write a data requirement, not a snapshot'
     minute_rel = prep['local_input_paths'].get('minute_df_parquet') or prep['local_input_paths'].get('minute_df_csv')
     daily_rel = prep['local_input_paths'].get('daily_df_csv') or prep['local_input_paths'].get('daily_df_parquet')
     input_mode = str(prep['local_input_paths'].get('input_mode') or '')
     if prep['feasibility'] == 'blocked':
         assert prep.get('blocked_items'), 'blocked feasibility must carry explicit blocked_items'
-        if status in {'missing_dataset', 'missing_fields'}:
-            assert not minute_rel and not daily_rel, 'missing Data API resolution must not claim executable local snapshots'
-        else:
-            assert not (minute_rel and daily_rel), 'blocked feasibility must not claim executable local snapshots'
+        assert not minute_rel and not daily_rel, 'blocked feasibility must not claim executable local snapshots'
     else:
         assert daily_rel and (WORKSPACE / daily_rel).exists(), 'missing local input snapshot: daily_df_(csv/parquet)'
         if input_mode == 'daily_only':

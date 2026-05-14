@@ -171,6 +171,7 @@ def _normalize_window_date(value):
 
 def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
     canonical = fsm.get('canonical_spec') or {}
+    source_metadata = fsm.get('source_metadata') or {}
     candidates = [
         canonical.get('sample_window'),
         canonical.get('backtest_window'),
@@ -180,6 +181,12 @@ def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
         handoff.get('backtest_window'),
         handoff.get('step4_backtest_window'),
     ]
+    if source_metadata.get('window_start') or source_metadata.get('window_end'):
+        candidates.append({
+            'start': source_metadata.get('window_start'),
+            'end': source_metadata.get('window_end'),
+            'calendar': source_metadata.get('calendar'),
+        })
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
@@ -652,12 +659,13 @@ def build_step3a(report_id: str):
     implementation_plan_stub = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'preferred_execution_mode': 'hybrid' if cpv_like else 'direct_python',
-        'candidate_paths': ['direct_python', 'qlib_operator', 'hybrid'],
+        'preferred_execution_mode': 'hybrid' if cpv_like else 'direct_code',
+        'implementation_mode': 'hybrid' if cpv_like else 'direct_code',
+        'candidate_paths': ['operator', 'hybrid', 'direct_code'],
         'current_decision': 'defer_to_step3b',
         'notes': [
             'Step 3A 已完成数据/API层，并补齐本地输入快照用于 Step 4 集成执行',
-            '若 qlib 算子无法完整表达，则回退 direct_python'
+            '正式实现顺序为 operator -> hybrid -> direct_code；无法保证正确时必须 BLOCK'
         ]
     }
 

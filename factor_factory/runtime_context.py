@@ -324,6 +324,32 @@ class FactorForgeContext:
                 'taskbook': str(self.search_branch_taskbook_path(report_id, branch_id)),
                 'result': str(self.search_branch_result_path(report_id, branch_id)),
             }
+        spec_path = Path(objects['factor_spec_master'])
+        spec_identity: dict[str, Any] = {}
+        if spec_path.exists():
+            try:
+                spec_identity = (load_json(spec_path).get('artifact_identity') or {})
+            except Exception:
+                spec_identity = {}
+        manifest['manifest_identity'] = {
+            'report_id': report_id,
+            'factor_id': spec_identity.get('factor_id'),
+            'source_type': spec_identity.get('source_type'),
+            'implementation_mode': spec_identity.get('implementation_mode'),
+            'contract_version': spec_identity.get('contract_version'),
+            'producer': spec_identity.get('producer'),
+            'upstream_producer': spec_identity.get('upstream_producer'),
+            'formula_hash': spec_identity.get('formula_hash'),
+            'code_hash': spec_identity.get('code_hash'),
+            'code_contract_hash': spec_identity.get('code_contract_hash'),
+            'custom_block_hash': spec_identity.get('custom_block_hash'),
+            'hybrid_hash': spec_identity.get('hybrid_hash'),
+            'spec_hash': spec_identity.get('spec_hash'),
+            'branch_id': branch_id or spec_identity.get('branch_id') or 'main',
+            'run_id': spec_identity.get('run_id'),
+            'parent_run_id': spec_identity.get('parent_run_id'),
+            'artifact_role': spec_identity.get('artifact_role'),
+        }
         return manifest
 
     def write_manifest(self, report_id: str, branch_id: str | None = None) -> Path:

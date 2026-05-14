@@ -142,3 +142,22 @@ When Step6 begins, use both:
 - Do not leave a case without asking what future Bernard/Humphrey/Codex should learn from it.
 - The ordinary factor library contains every attempt; the official library contains only factors with serious research approval.
 - Knowledge should be portable: future agents must be able to learn from both success and failure.
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Correctness Over Completion
+
+FactorForge does not optimize for "ran to completion"; it optimizes for correctly researching one factor. If implementation, evidence, or identity cannot be proven, the correct action is BLOCK with a precise reason.
+
+## Provenance Strengthening
+
+- No provenance, no archive; no evidence identity, no promotion. Research notes must keep the source factor/report/branch/run, implementation mode, spec/code/formula hashes, Step4 evidence, and Step3B mode decision visible.
+- Similar case knowledge is not same-factor evidence unless artifact identity matches. Use retrieved cases as analogies or anti-patterns, not as proof for the current factor.
+- Iterate creates a child branch and never overwrites `main`; revision briefs must carry parent identity and explicit lineage.

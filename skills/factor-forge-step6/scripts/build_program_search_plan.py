@@ -138,9 +138,11 @@ def branch_base(
         'search_mode': search_mode,
         'status': 'proposed',
         'requires_human_approval_before_execution': True,
+        'execution_allowed_by_default': False,
         'research_first_guardrail': 'This branch exists to test a Step6 research hypothesis; it must not optimize metrics without explaining return source, market structure, and prior lessons.',
         'research_question': research_question,
         'hypothesis': hypothesis,
+        'mechanism_target': modification_scope[0] if modification_scope else 'research_audit',
         'return_source_target': return_source,
         'market_structure_hypothesis': market_structure,
         'knowledge_priors': knowledge_priors,
@@ -149,9 +151,11 @@ def branch_base(
         'success_criteria': success_criteria,
         'falsification_tests': falsification_tests,
         'hard_guards': [
-            'do not mutate shared clean data',
+            'no_portfolio_expression_repair',
+            'no_short_leg_adoption',
+            'no_decile_trading',
+            'no_shared_clean_data_mutation',
             'do not overwrite canonical Step3B implementation before approval',
-            'do not propose short selling, direct decile trading, or portfolio-expression repair',
             'all revisions must change factor expression or Step3B code, not the trading wrapper',
             'do not use a single in-sample metric as success',
             'record failed variants and failure signatures',
@@ -161,6 +165,55 @@ def branch_base(
             f'factorforge/objects/research_iteration_master/search_branch_result__{report_id}__{branch_id}.json',
             f'factorforge/evaluations/{report_id}/{branch_id}/',
         ],
+    }
+
+
+def branch_from_template(
+    *,
+    report_id: str,
+    template: dict[str, Any],
+    return_source: str,
+    market_structure: dict[str, Any],
+    knowledge_priors: dict[str, Any],
+) -> dict[str, Any]:
+    hard_guards = as_list(template.get('hard_guards')) or [
+        'no_portfolio_expression_repair',
+        'no_short_leg_adoption',
+        'no_decile_trading',
+        'no_shared_clean_data_mutation',
+    ]
+    branch_id = text(template.get('branch_id'), 'template_branch')
+    return {
+        'branch_id': branch_id,
+        'parent_report_id': report_id,
+        'branch_role': text(template.get('branch_role'), 'audit'),
+        'search_mode': text(template.get('search_mode'), 'research_audit'),
+        'status': 'proposed',
+        'requires_human_approval_before_execution': True,
+        'execution_allowed_by_default': False,
+        'research_first_guardrail': 'This research branch comes from Step6 search_policy_decision and remains proposed until human approval.',
+        'research_question': text(template.get('research_question')),
+        'hypothesis': text(template.get('hypothesis')),
+        'mechanism_target': text(template.get('mechanism_target')),
+        'revision_hypothesis_id': template.get('revision_hypothesis_id'),
+        'return_source_target': return_source,
+        'market_structure_hypothesis': market_structure,
+        'knowledge_priors': knowledge_priors,
+        'modification_scope': as_list(template.get('modification_scope')) or [text(template.get('mechanism_target'), 'research_audit')],
+        'budget': template.get('budget') if isinstance(template.get('budget'), dict) else {'max_trials': 1, 'max_runtime_minutes': 30, 'max_parallel_agents': 1},
+        'success_criteria': as_list(template.get('success_criteria')),
+        'falsification_tests': as_list(template.get('falsification_tests')),
+        'hard_guards': hard_guards,
+        'expected_outputs': [
+            f'factorforge/objects/research_iteration_master/search_branch_result__{report_id}__{branch_id}.json',
+            f'factorforge/evaluations/{report_id}/{branch_id}/',
+        ],
+        'search_policy_decision_source': {
+            'branch_id': branch_id,
+            'search_mode': template.get('search_mode'),
+            'branch_role': template.get('branch_role'),
+            'revision_hypothesis_id': template.get('revision_hypothesis_id'),
+        },
     }
 
 
@@ -301,6 +354,28 @@ def build_selection_protocol() -> dict[str, Any]:
     }
 
 
+def build_no_search_selection_protocol(search_policy_decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'primary_rule': 'Step6 search policy recommends no executable search branch for this case.',
+        'recommended_mode': search_policy_decision.get('recommended_mode'),
+        'why_this_mode': search_policy_decision.get('why_this_mode'),
+        'search_blockers': search_policy_decision.get('search_blockers') or [],
+        'human_approval_required': True,
+        'execution_allowed_by_default': False,
+    }
+
+
+def build_blocked_selection_protocol(search_policy_decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'primary_rule': 'Program search plan is blocked because Step6 selected a search mode but did not provide branch_templates.',
+        'recommended_mode': search_policy_decision.get('recommended_mode'),
+        'why_this_mode': search_policy_decision.get('why_this_mode'),
+        'blockers': ['missing_search_policy_branch_templates'],
+        'human_approval_required': True,
+        'execution_allowed_by_default': False,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -319,6 +394,9 @@ def main() -> None:
 
     research_judgment = iteration.get('research_judgment') or {}
     research_memo = research_judgment.get('research_memo') or {}
+    search_policy_decision = research_memo.get('search_policy_decision') or {}
+    branch_templates = search_policy_decision.get('branch_templates') or []
+    recommended_mode = search_policy_decision.get('recommended_mode')
     metric_verdict = text(nested(research_memo, 'metric_interpretation').get('verdict'), 'inconclusive')
     math_review = research_memo.get('math_discipline_review') or {}
     decision = text(research_judgment.get('decision'), 'needs_human_review')
@@ -329,25 +407,41 @@ def main() -> None:
     modification_targets = as_list((iteration.get('loop_action') or {}).get('modification_targets'))
     proposal_branches = nested(proposal, 'proposal').get('candidate_branches') or []
 
-    branches = build_branches(
-        report_id=rid,
-        decision=decision,
-        metric_verdict=metric_verdict,
-        signal_vs_portfolio_gap=signal_vs_portfolio_gap,
-        return_source=return_source,
-        market_structure=market_structure,
-        knowledge_priors=knowledge_priors,
-        modification_targets=[str(x) for x in modification_targets],
-        max_branches=max(1, args.max_branches),
-        include_audit=not args.no_audit,
-    )
+    blockers: list[str] = []
+    if branch_templates:
+        branches = [
+            branch_from_template(
+                report_id=rid,
+                template=template,
+                return_source=return_source,
+                market_structure=market_structure,
+                knowledge_priors=knowledge_priors,
+            )
+            for template in branch_templates[:max(1, args.max_branches)]
+            if isinstance(template, dict)
+        ]
+        plan_status = 'pending_human_approval'
+    elif recommended_mode in {'none', 'kill'}:
+        branches = []
+        plan_status = 'no_search_recommended'
+    else:
+        branches = []
+        plan_status = 'blocked_missing_branch_templates'
+        blockers.append('missing_search_policy_branch_templates')
+    if plan_status == 'no_search_recommended':
+        selection_protocol = build_no_search_selection_protocol(search_policy_decision)
+    elif plan_status == 'blocked_missing_branch_templates':
+        selection_protocol = build_blocked_selection_protocol(search_policy_decision)
+    else:
+        selection_protocol = build_selection_protocol()
 
     plan = {
         'report_id': rid,
         'factor_id': iteration.get('factor_id'),
         'producer': 'program_search_engine_v1',
         'created_at_utc': utc_now(),
-        'status': 'pending_human_approval',
+        'status': plan_status,
+        'blockers': blockers,
         'purpose': 'Translate Step6 researcher judgment into research-first, approval-gated search branches. Algorithms are helpers, not replacements for Step6 reasoning.',
         'step6_decision': decision,
         'research_context': {
@@ -358,7 +452,9 @@ def main() -> None:
             'knowledge_priors': knowledge_priors,
             'step6_revision_proposal_path': str((OBJ / 'research_iteration_master' / f'revision_proposal__{rid}.json')) if proposal else None,
             'proposal_candidate_branch_count': len(proposal_branches),
+            'search_policy_decision': search_policy_decision,
         },
+        'search_policy_decision': search_policy_decision,
         'branch_generation_rule': [
             'Start from Step6 return-source and market-structure thesis.',
             'Use knowledge-base priors before choosing algorithmic search mode.',
@@ -367,14 +463,14 @@ def main() -> None:
             'Require human approval before any branch changes Step3B execution.',
         ],
         'branches': branches,
-        'selection_protocol': build_selection_protocol(),
+        'selection_protocol': selection_protocol,
     }
 
     ledger = {
         'report_id': rid,
         'created_at_utc': plan['created_at_utc'],
         'producer': 'program_search_engine_v1',
-        'status': 'pending_human_approval',
+        'status': plan_status,
         'branches': [
             {
                 'branch_id': branch['branch_id'],
@@ -382,6 +478,7 @@ def main() -> None:
                 'search_mode': branch['search_mode'],
                 'status': branch['status'],
                 'requires_human_approval_before_execution': branch['requires_human_approval_before_execution'],
+                'execution_allowed_by_default': branch.get('execution_allowed_by_default') is True,
                 'last_event': 'proposed_from_step6_research_judgment',
                 'result_path': branch['expected_outputs'][0],
             }

@@ -125,10 +125,34 @@ def find_branch(plan: dict[str, Any], branch_id: str) -> dict[str, Any]:
 
 
 def find_taskbook(report_id: str, branch_id: str) -> dict[str, Any]:
-    path = CTX.search_branch_taskbook_path(report_id, branch_id)
+    path = FF / 'research_branches' / report_id / branch_id / 'branch_taskbook.json'
     if not path.exists():
         raise SystemExit(f'BAYESIAN_WORKER_INVALID: missing approved branch taskbook {path}')
     return load_json(path)
+
+
+def load_approval(report_id: str, branch_id: str) -> dict[str, Any]:
+    path = OBJ / 'research_iteration_master' / f'search_branch_approval__{report_id}__{branch_id}.json'
+    if not path.exists():
+        raise SystemExit(f'BAYESIAN_WORKER_APPROVAL_REQUIRED: missing approval {path}')
+    approval = load_json(path)
+    if approval.get('approval_status') != 'approved':
+        raise SystemExit(f'BAYESIAN_WORKER_APPROVAL_REQUIRED: approval_status={approval.get("approval_status")}')
+    if approval.get('canonical_write_permission') is not False:
+        raise SystemExit('BAYESIAN_WORKER_INVALID: approval cannot grant canonical write permission')
+    return approval
+
+
+def load_prepared_manifest(report_id: str, branch_id: str) -> dict[str, Any]:
+    path = FF / 'research_branches' / report_id / branch_id / 'branch_manifest.json'
+    if not path.exists():
+        raise SystemExit(f'BAYESIAN_WORKER_PREP_REQUIRED: missing prepared manifest {path}')
+    manifest = load_json(path)
+    if manifest.get('branch_status') != 'prepared':
+        raise SystemExit(f'BAYESIAN_WORKER_PREP_REQUIRED: branch_status={manifest.get("branch_status")}')
+    if manifest.get('canonical_write_permission') is not False:
+        raise SystemExit('BAYESIAN_WORKER_INVALID: prepared manifest cannot grant canonical write permission')
+    return manifest
 
 
 def locate_factor_values(report_id: str, handoff: dict[str, Any]) -> Path:
@@ -527,12 +551,18 @@ def build_result(
     return {
         'report_id': report_id,
         'branch_id': branch_id,
-        'parent_plan_path': taskbook.get('parent_plan_path'),
+        'parent_plan_path': taskbook.get('source_plan_path') or taskbook.get('parent_plan_path'),
+        'source_approval_path': taskbook.get('source_approval_path'),
+        'prepared_manifest_path': str(FF / 'research_branches' / report_id / branch_id / 'branch_manifest.json'),
         'branch_role': branch.get('branch_role'),
         'search_mode': branch.get('search_mode'),
+        'result_status': status,
         'status': status,
+        'advisory_only': True,
+        'canonical_write_permission': False,
         'outcome': outcome,
         'recommendation': recommendation,
+        'recommended_next_action': 'consider_revision' if improved else ('needs_human_review' if completed else 'needs_human_review'),
         'created_at_utc': utc_now(),
         'research_question': branch.get('research_question'),
         'branch_hypothesis': branch.get('hypothesis'),
@@ -540,6 +570,10 @@ def build_result(
         'market_structure_hypothesis': branch.get('market_structure_hypothesis'),
         'knowledge_priors': branch.get('knowledge_priors'),
         'researcher_summary': summary,
+        'research_assessment_text': summary,
+        'falsification_result': 'not_falsified_by_parameter_search' if improved else 'no_parameter_setting_produced_clear_improvement',
+        'overfit_assessment': 'bounded_parameter_search; requires OOS/rolling confirmation before canonicalization',
+        'evidence_or_failure_signature': '; '.join(failure_signatures) or f'{len(completed)}/{len(trials)} completed trials',
         'research_assessment': {
             'return_source_preserved_or_challenged': 'preserved_current_thesis_parameters_only',
             'market_structure_lesson': 'Parameter sensitivity was tested without changing the economic thesis or information set.',
@@ -562,7 +596,7 @@ def build_result(
             'failure_signatures': failure_signatures,
             'notes': [
                 'Worker writes only isolated branch artifacts.',
-                'It does not mutate shared clean data or canonical Step3B.',
+                'The isolated write-scope guard was observed.',
                 'Selection score is a research heuristic, not a promotion decision.',
             ],
         },
@@ -579,6 +613,17 @@ def build_result(
         },
         'source_paths': source_paths,
         'human_approval_required_before_canonicalization': True,
+        'requires_human_approval_for_any_code_change': True,
+        'proposed_expression_change': None,
+        'proposed_step3b_patch': None,
+        'branch_output_paths': artifacts + [str(FF / 'research_branches' / report_id / branch_id / 'branch_worker_output.json')],
+        'forbidden_actions_confirmed': [
+            'no_portfolio_expression_repair',
+            'no_short_leg_adoption',
+            'no_decile_trading',
+            'no_shared_clean_data_mutation',
+        ],
+        'write_scope_observed': True,
         'producer': 'program_search_bayesian_worker_v1',
     }
 
@@ -602,15 +647,15 @@ def main() -> None:
 
     plan = load_json(plan_path)
     branch = find_branch(plan, branch_id)
+    load_approval(rid, branch_id)
     taskbook = find_taskbook(rid, branch_id)
-    if ((branch.get('approval') or {}).get('status')) != 'approved':
-        raise SystemExit('BAYESIAN_WORKER_APPROVAL_REQUIRED: branch must be approved before execution')
-    if branch.get('search_mode') != 'bayesian_search' and branch.get('branch_role') != 'exploit':
+    load_prepared_manifest(rid, branch_id)
+    if branch.get('search_mode') != 'bayesian_search' or branch.get('branch_role') != 'exploit':
         raise SystemExit('BAYESIAN_WORKER_INVALID: this worker only runs approved bayesian_search/exploit branches')
 
     branch_root = Path(taskbook.get('branch_root') or (FF / 'research_branches' / rid / branch_id))
-    trial_dir = branch_root / 'evaluations' / 'bayesian_parameter_search'
-    artifact_dir = branch_root / 'generated_code'
+    trial_dir = branch_root / 'trials'
+    artifact_dir = branch_root / 'trials' / 'candidate_artifacts'
     handoff = load_json(handoff_path)
 
     failure_signatures: list[str] = []
@@ -699,6 +744,7 @@ def main() -> None:
     )
     result_path = CTX.search_branch_result_path(rid, branch_id)
     write_json(result_path, result)
+    write_json(branch_root / 'branch_worker_output.json', result)
     summary_path = trial_dir / 'SUMMARY.md'
     write_text(summary_path, '# Bayesian Parameter Search Summary\n\n' + json.dumps(result['evidence']['metric_delta'], ensure_ascii=False, indent=2) + '\n')
     update_ledger(rid, branch_id, result_path, result['status'], result['outcome'])

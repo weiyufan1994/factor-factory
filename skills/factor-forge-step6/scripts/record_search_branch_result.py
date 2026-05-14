@@ -68,13 +68,27 @@ def update_ledger(ledger_path: Path, branch_id: str, result_path: Path, status: 
     write_json(ledger_path, ledger)
 
 
+def map_recommendation(value: str) -> str:
+    mapping = {
+        'use_branch_for_next_step3b': 'consider_revision',
+        'keep_exploring': 'needs_human_review',
+        'kill_branch': 'reject_branch',
+        'repair_workflow_first': 'needs_human_review',
+        'needs_human_review': 'needs_human_review',
+        'consider_revision': 'consider_revision',
+        'reject_branch': 'reject_branch',
+        'kill_factor': 'kill_factor',
+    }
+    return mapping.get(value, 'needs_human_review')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
     ap.add_argument('--branch-id', required=True)
     ap.add_argument('--status', required=True, choices=['completed', 'failed', 'killed', 'blocked', 'inconclusive'])
     ap.add_argument('--outcome', required=True, choices=['improved', 'not_improved', 'bug_found', 'thesis_rejected', 'needs_more_evidence', 'inconclusive'])
-    ap.add_argument('--recommendation', required=True, choices=['use_branch_for_next_step3b', 'keep_exploring', 'kill_branch', 'repair_workflow_first', 'needs_human_review'])
+    ap.add_argument('--recommendation', required=True, choices=['use_branch_for_next_step3b', 'keep_exploring', 'kill_branch', 'repair_workflow_first', 'needs_human_review', 'consider_revision', 'reject_branch', 'kill_factor'])
     ap.add_argument('--summary', required=True)
     ap.add_argument('--payload-json', default=None, help='Optional JSON file with metrics/evidence/research_assessment overrides.')
     ap.add_argument('--artifact-path', action='append', default=[])
@@ -88,6 +102,12 @@ def main() -> None:
         raise SystemExit(f'SEARCH_BRANCH_RESULT_INVALID: missing program search plan {plan_path}')
     plan = load_json(plan_path)
     branch = find_branch(plan, args.branch_id)
+    approval_path = OBJ / 'research_iteration_master' / f'search_branch_approval__{rid}__{args.branch_id}.json'
+    manifest_path = FF / 'research_branches' / rid / args.branch_id / 'branch_manifest.json'
+    if not approval_path.exists():
+        raise SystemExit(f'SEARCH_BRANCH_RESULT_INVALID: missing approval {approval_path}')
+    if not manifest_path.exists():
+        raise SystemExit(f'SEARCH_BRANCH_RESULT_INVALID: missing prepared manifest {manifest_path}')
     payload = load_payload(args.payload_json)
 
     research_assessment = {
@@ -109,11 +129,17 @@ def main() -> None:
         'report_id': rid,
         'branch_id': args.branch_id,
         'parent_plan_path': str(plan_path),
+        'source_approval_path': str(approval_path),
+        'prepared_manifest_path': str(manifest_path),
         'branch_role': branch.get('branch_role'),
         'search_mode': branch.get('search_mode'),
+        'result_status': args.status,
         'status': args.status,
+        'advisory_only': True,
+        'canonical_write_permission': False,
         'outcome': args.outcome,
         'recommendation': args.recommendation,
+        'recommended_next_action': map_recommendation(args.recommendation),
         'created_at_utc': utc_now(),
         'research_question': branch.get('research_question'),
         'branch_hypothesis': branch.get('hypothesis'),
@@ -121,10 +147,24 @@ def main() -> None:
         'market_structure_hypothesis': branch.get('market_structure_hypothesis'),
         'knowledge_priors': branch.get('knowledge_priors'),
         'researcher_summary': args.summary,
+        'research_assessment_text': args.summary,
+        'falsification_result': research_assessment['falsification_result'],
+        'overfit_assessment': research_assessment['overfit_assessment'],
+        'evidence_or_failure_signature': '; '.join(evidence['failure_signatures']) or json.dumps(evidence['metric_delta'], ensure_ascii=False),
         'research_assessment': research_assessment,
         'evidence': evidence,
         'selection_protocol_snapshot': plan.get('selection_protocol') or {},
         'human_approval_required_before_canonicalization': True,
+        'requires_human_approval_for_any_code_change': True,
+        'proposed_expression_change': None,
+        'proposed_step3b_patch': None,
+        'forbidden_actions_confirmed': [
+            'no_portfolio_expression_repair',
+            'no_short_leg_adoption',
+            'no_decile_trading',
+            'no_shared_clean_data_mutation',
+        ],
+        'write_scope_observed': True,
         'producer': 'program_search_engine_v1',
     }
 

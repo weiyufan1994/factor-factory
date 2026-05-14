@@ -5,6 +5,9 @@
 ## Purpose
 Step 5 is the first case-closure and evidence-quality gate after Step 4. It must not judge alpha quality from malformed Step 4 outputs. If Step 4 evidence is missing, internally inconsistent, or obviously buggy, Step 5 must mark the case as failed/blocked and send it back for Step 4 repair.
 
+## Mechanism math contract preservation
+Step5 copies the upstream `mechanism_math_contract` into `factor_case_master` and references its core fields from `math_discipline_review.mechanism_math_contract_ref`. Step5 does not redo mechanism inference and does not allow the math contract to replace evidence identity, long-side risk-adjusted evidence, archive policy, or prewrite gates.
+
 ## Inputs
 - `factor_run_master__{report_id}.json`
 - `factor_spec_master__{report_id}.json`
@@ -18,6 +21,29 @@ Step 5 is the first case-closure and evidence-quality gate after Step 4. It must
 - `factor_evaluation__{report_id}.json`
 - archive bundle under `archive/{report_id}/`
 - copied `step4_quality_gate` in both evaluation and case master
+
+Both `factor_case_master` and `factor_evaluation` must preserve the Step4 provenance chain:
+
+- `artifact_identity`
+- `evidence_identity`
+- `implementation_mode_decision`
+- `source_evidence_refs`
+- `evidence_quality`
+
+No provenance, no archive. No evidence identity, no validated case close.
+
+Validated Step5 requires:
+
+- strict identity match to `factor_run_master`
+- a successful or partial Step4 backend
+- required self-quant long-only evidence
+- long-side annual return, volatility, Sharpe, max drawdown, recovery days, turnover, trading COGS, and cost-adjusted Sharpe
+- `identity_chain_verified=true`
+- `mode_decision_present=true`
+
+Similar-case evidence is not same-factor evidence unless artifact identity matches.
+
+The provenance gate must execute before `archive_artifacts()`. If it fails, Step 5 may write only a failed/non-validated case plus `objects/validation/step5_prewrite_block__{report_id}.json`; it must not archive artifacts or write a Step6 handoff for a validated-looking case.
 
 ## Mandatory Step4 quality gate
 Step 5 must run `step4_quality_gate` before writing a validated or partial research conclusion. The gate is an evidence-integrity check, not alpha judgment.

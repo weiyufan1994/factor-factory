@@ -27,6 +27,9 @@ It does not generate raw metrics itself. Instead it:
 ## Outputs
 
 - `factorforge/objects/research_iteration_master/research_iteration_master__{report_id}.json`
+- mandatory user-facing loop research brief:
+  - `factorforge/objects/research_iteration_master/loop_research_brief__{report_id}__iter{iteration_no}.md`
+  - `factorforge/objects/research_iteration_master/loop_research_brief__{report_id}__iter{iteration_no}.json`
 - `factorforge/objects/factor_library_all/factor_record__{report_id}.json`
 - optional `factorforge/objects/factor_library_official/factor_record__{report_id}.json`
 - one or more knowledge records under `factorforge/objects/research_knowledge_base/`
@@ -69,6 +72,12 @@ It does not generate raw metrics itself. Instead it:
 28. Preferred revision direction is economic linearity: make higher factor values correspond more directly and monotonically to the economic state expected to earn risk-adjusted long-side returns.
 29. Treat every factor like a business: long-side return is revenue, trading COGS defaults to `turnover * 0.3%`, volatility is operating instability/risk-capital pressure, `-0.5 * sigma^2` is volatility drag on geometric growth, max drawdown is capital impairment, and recovery time is payback/depreciation. Risk budget follows Sharpe, drawdown, recovery, capacity, and confidence.
 30. Default Step6 promotion objective is `long_side_risk_adjusted_alpha`: candidate Sharpe >= `0.50`, official Sharpe >= `0.80`, max drawdown no worse than `-35%`, and recovery days preferably <= `252`.
+31. Every successful formal Step6 loop must write `loop_research_brief__<report_id>__iter<n>.md/json` and link it from `research_iteration_master.loop_research_brief`. The brief must answer economic interpretation, metrics/chart evidence, metric analysis, knowledge comparison, next research direction, and final loop conclusion. Missing brief, missing core metrics, missing required chart keys, or long-short chart evidence not labeled `diagnostic_only` is a validation block.
+32. Step6 must carry the `mechanism_math_contract` into `mechanism_analysis`,
+revision hypotheses, and the loop research brief. The math contract is an
+explanatory and revision-discipline layer only: it must not replace Step4/5
+evidence, bypass provenance gates, justify promotion on its own, or authorize
+canonical Step3B changes without the existing loop authorization.
 
 ## Research Analyst Standard
 
@@ -201,3 +210,224 @@ python3 scripts/query_factorforge_retrieval_index.py --query "UBL monotonicity p
 - `docs/contracts/step6-contract.zh-CN.md`
 - `docs/operations/factor-research-loop.zh-CN.md`
 - `docs/operations/factorforge-math-research-discipline.zh-CN.md`
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Correctness Over Completion
+
+Step6 treats failure as research knowledge. Knowledge/library writeback must preserve factor/report/branch/run identity and must not promote or generalize lessons across factors unless provenance explicitly shows a matched identity or a similar-case import.
+
+## Provenance Strengthening
+
+- No evidence identity, no promotion: `research_iteration_master`, `factor_library_all`, `factor_library_official`, and `research_knowledge_base` must preserve `artifact_identity`, `evidence_identity`, `source_case_identity`, `implementation_mode_decision`, `decision_lineage`, and `knowledge_provenance`.
+- Official promotion requires `factor_case_master.final_status=validated`, verified identity chain, successful required Step4 evidence, long-side risk-adjusted metrics, and no unresolved correctness risk.
+- Similar case knowledge is not same-factor evidence. Knowledge records must declare `knowledge_scope` as `same_factor`, `similar_case`, `general_methodology`, or `anti_pattern`, and same-factor scope requires matching factor identity.
+- Iterate creates a child branch and never overwrites main. `handoff_to_step3b` must carry `parent_identity`, `new_branch_id`, `parent_run_id`, `must_preserve`, `must_change`, and `forbidden_changes`.
+- The provenance gate runs before any `research_iteration_master`, library, knowledge, official, or Step3B handoff write. If the gate fails, Step6 writes only `objects/validation/step6_prewrite_block__<report_id>.json`.
+
+## Research Intelligence Contract
+
+Step6 `research_memo` must include:
+
+- `evidence_audit`
+- `mechanism_analysis`
+- `case_comparison`
+- `revision_strategy`
+- `search_policy_decision`
+
+`evidence_audit` decides whether Step4/5 evidence is usable before Step6 reasons
+about promotion or revision. It must include backend integrity, metric
+consistency, factor value health, long-side evidence quality, cost/turnover
+risk, data or implementation suspicions, and `evidence_verdict`.
+
+Official promotion is forbidden when evidence is blocked, return source is
+unknown, or mechanism fit is contradicted. Iteration must propose expression or
+Step3B code changes and must not repair results through portfolio expression,
+short-leg adoption, decile trading, rebalance mechanics, or shared clean-data
+mutation.
+
+## Mechanism Reasoner And Case Comparator
+
+Step6 must explain the return source before interpreting metrics. `mechanism_analysis`
+must classify the factor family, return source, mechanism fit, necessary
+conditions, observed-vs-expected metric signature, failure regimes,
+classification evidence, and classification uncertainty. Positive IC or
+long-short spread alone is never mechanism proof.
+
+`case_comparison` must use retrieval results as judgment inputs, not as a pasted
+list. It must separate `same_factor`, `similar_case`, `general_methodology`, and
+`anti_pattern` lessons. Same-factor lessons require matching identity/hash
+lineage; similar cases are analogy only and cannot support official promotion.
+If retrieval is empty, Step6 must record a knowledge gap and treat the case as a
+future retrieval anchor.
+
+## Revision Strategist
+
+`revision_strategy` is an expression-level research plan, not a portfolio repair
+plan. It must classify the primary failure signature as one of
+`cost_too_high`, `long_side_negative`, `non_monotonic`, `unstable_regime`,
+`implementation_suspect`, `mechanism_unclear`, `same_factor_identity_mismatch`,
+or `none`.
+
+If `revision_quality=actionable`, every hypothesis must include a unique
+`hypothesis_id`, mechanism target, expression or Step3B-code change, at least two
+expected metric changes, at least two falsification tests, at least two kill
+criteria, overfit risk, and an explicit `why_not_portfolio_fix`. It must carry
+all four forbidden changes:
+
+- `no_portfolio_expression_repair`
+- `no_short_leg_adoption`
+- `no_decile_trading`
+- `no_shared_clean_data_mutation`
+
+`implementation_suspect` and `same_factor_identity_mismatch` are blocked
+revision states: do not generate normal expression mutations until evidence or
+provenance is repaired. A valid promote decision should normally have
+`revision_needed=false`, no revision hypotheses, and `revision_quality=not_needed`.
+
+## Agentic Revision Council
+
+Step6 is the investment-committee and loop-control layer. When evidence supports
+`iterate` but the revision direction is non-obvious, the main agent should form
+a Revision Council from the Step1-5 record instead of privately inventing a
+single change.
+
+The main agent owns the council. It builds the read-only packet, defines an
+exploration graph, delegates independent directions to subagents when the
+runtime supports it, keeps dependent directions sequential, validates every
+proposal, and merges the final advisory conclusion. Subagents never own the
+formal Factor Forge loop.
+
+Council roles are role-based and runtime-agnostic. A main agent may perform them
+itself or dispatch subagents. Typical roles are:
+
+- `symbolic_law_discovery`
+- `evidence_auditor`
+- `economic_mechanism`
+- `formula_engineer`
+- `cost_turnover`
+- `regime_robustness`
+- `knowledge_retrieval_critic`
+
+Each role receives the same read-only council packet and writes at most one
+isolated proposal under:
+
+- `objects/research_iteration_master/revision_council/{report_id}/`
+
+Council proposals must never write or modify:
+
+- `objects/handoff/handoff_to_step3b__{report_id}.json`
+- `generated_code/{report_id}/`
+- `objects/factor_library_official/`
+- `data/clean/`
+- `runs/`, `evaluations/`, or `archive/`
+- canonical factor expressions or Step3B implementations
+
+### Wrapper Attachment Mode
+
+The official wrapper may explicitly request Council-primary revision attachment
+with `--council-mode off|auto|scaffold|agentic`. `off` is the default and leaves
+Step6 behavior unchanged. `scaffold` runs packet generation, deterministic
+proposal generation, merge, attach, and `validate_step6.py` after Step6 core.
+`auto` runs that chain only when Step6 already shows a revision need and the
+evidence/case gates are not blocked. `agentic` requires
+`--agentic-council-executor`. `none` blocks with
+`BLOCK_REVISION_COUNCIL_AGENTIC_EXECUTOR_REQUIRED`; `real_agent` blocks with
+`BLOCK_REVISION_COUNCIL_REAL_AGENT_NOT_IMPLEMENTED`; `local_mock` runs the
+Phase K.1 artifact contract path without spawning real subagents.
+`dispatch_manifest` writes dispatch-ready task packets and, with
+`--agentic-dispatch-adapter manual_file`, a manual assignment bundle. It does
+not merge, attach, import results, or call real agent APIs.
+
+Agentic dispatch artifacts must include
+`runtime_dispatch_policy.policy_version=factorforge_runtime_dispatch_policy_v1`.
+Factor Forge remains provider-agnostic: `provider_required_by_factor_forge`
+must be false, subagents inherit the main runtime model/provider by default,
+and provider/model override is allowed only when explicitly requested by the
+user. Codex runtime may spawn Codex subagents directly and must not choose
+external providers. OpenClaw runtime may spawn OpenClaw subagents using the
+main provider/model by default. Manual-file dispatch accepts only validator
+passing result JSON; provider/model identity is not sufficient for acceptance.
+
+Attached Council output sets `final_revision_strategy.source=revision_council`
+but remains `loop_authorization=advisory_only` unless a separate human-approved
+Step3B path exists. The wrapper must guard forbidden side effects around
+handoff, generated code, official library, and clean data artifacts.
+
+### Explicit Research Derivation Requirement
+
+Every council proposal must include a public, auditable `derivation_record`.
+This is not hidden model chain-of-thought. It is the research artifact that lets
+future agents and reviewers understand what was assumed, derived, rejected, and
+learned.
+
+A valid `derivation_record` must include:
+
+- `research_question`
+- explicit `assumptions`, each with status, why it is needed, and how to
+  falsify it
+- `mathematical_objects` with meaning, unit or dimension, and information set
+- `selected_tools` with why each tool was selected, what it can answer, and what
+  it cannot answer
+- optional `rejected_tools` with reasons
+- ordered `derivation_steps`, including formulas or symbolic relations when a
+  formula is claimed
+- `derived_implications` tied to expected metric signatures
+- `revision_hypotheses` with expression direction, expected metric changes,
+  falsification tests, and kill criteria
+- `confidence_and_limits`, including mathematical confidence, empirical
+  confidence, known gaps, and an overclaim guard
+
+No explicit derivation record means no valid council proposal. No valid council
+proposal means no branch template. No accepted derivation means no Step3B
+revision brief.
+
+After Council merge, the agent must build a user-facing derivation appendix:
+
+```bash
+python3 skills/factor-forge-step6/scripts/build_council_derivation_appendix.py --report-id <report_id>
+```
+
+The appendix must write:
+
+- `objects/research_iteration_master/revision_council/{report_id}/council_derivation_appendix__{report_id}.json`
+- `objects/research_iteration_master/revision_council/{report_id}/council_derivation_appendix__{report_id}.md`
+
+This appendix consolidates the selected Council outputs' public derivation
+records: assumptions, mathematical objects, selected tools, formula claims,
+derivation steps, limiting cases, falsification tests, kill criteria, and
+candidate revision laws. It remains advisory-only and must not write Step3B
+handoffs, generated code, official library records, clean data, runs,
+evaluations, or archives.
+
+### Symbolic Law Discovery Role
+
+`symbolic_law_discovery` treats the formula as a mathematical object, not just
+an implementation string. It may choose any justified mathematics, including
+unit and dimensional analysis, scaling laws, invariance, limiting cases,
+perturbation reasoning, stochastic processes, stochastic calculus, jump
+processes, natural market time, Fourier/spectral analysis, robust statistics,
+tail distributions, linear projection, functional analysis, dynamical systems,
+stopping-time reasoning, information theory, or market microstructure theory.
+It must not mechanically apply every tool. It must explain why each selected
+tool is relevant and what it rules out. It may also say the current information
+is under-specified and refuse to derive a confident mechanism.
+
+Mathematical plausibility is hypothesis generation only. It cannot promote a
+factor, authorize Step3B modification, replace Step4/5 evidence, or bypass
+provenance and human-approval gates.
+
+### Deterministic Scaffold Status
+
+The deterministic local council is a scaffold for smoke tests and a fallback for
+low-depth advisory output. It is not the full agentic research mode. If a
+proposal is scaffold-generated, record `producer=deterministic_scaffold` and
+`research_depth=low`. Formal research should prefer agentic council reasoning
+when the runtime supports main-agent or subagent proposal generation.

@@ -6,10 +6,14 @@ Consumes Step 1 artifacts and produces Step 2 side artifacts + factor_spec_maste
 import argparse
 import json
 import os
+import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FACTORFORGE.parent
@@ -18,6 +22,37 @@ VALIDATION = OBJECTS / 'validation'
 SPEC_MASTER_DIR = OBJECTS / 'factor_spec_master'
 HANDOFF_DIR = OBJECTS / 'handoff'
 REGISTRY_PATH = FACTORFORGE / 'data' / 'report_ingestion' / 'report_registry.json'
+SUPPORTED_SOURCE_TYPES = {'pdf_report', 'paper_canonical_formula', 'natural_language_hypothesis'}
+STEP2_SOURCE_CONTRACT_VERSION = 'factorforge_step2_source_contract_v2'
+HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
+DEFAULT_FORBIDDEN_CODE_PATTERNS = [
+    r'shift\s*\(\s*-\d+',
+    'future_return',
+    'next_return',
+    'forward_return',
+    'label',
+    'target',
+    'future_',
+    'lookahead',
+    r'lead\s*\(',
+]
+SOURCE_TYPE_STEP2_PRODUCER = {
+    'pdf_report': 'step2_pdf_report',
+    'paper_canonical_formula': 'step12_canonical_formula_intake',
+    'natural_language_hypothesis': 'step12_hypothesis_intake',
+}
+
+from factor_factory.artifact_identity import (
+    build_artifact_identity,
+    build_code_contract_hash,
+    build_custom_block_hash,
+    build_formula_hash,
+    build_spec_hash,
+    stable_hash,
+)
+from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
+from factor_factory.formula import parse_formula, to_qlib_expression
+from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
@@ -101,6 +136,215 @@ def read_step1_upstream(report_id: str) -> Tuple[Dict[str, Any], Dict[str, Any],
     challenger_thesis = load_json(VALIDATION / f'report_map_validation__{report_id}__challenger_alpha_thesis.json')
     primary_report_map = load_json(OBJECTS / 'report_maps' / f'report_map__{report_id}__primary.json')
     return primary_thesis, challenger_thesis, primary_report_map
+
+
+def normalize_source_type(aim: Dict[str, Any]) -> str:
+    raw = str(aim.get('source_type') or aim.get('source_kind') or '').strip()
+    if raw in {'pdf', 'html', 'report', 'research_report'}:
+        return 'pdf_report'
+    if not raw:
+        return 'pdf_report'
+    if raw not in SUPPORTED_SOURCE_TYPES:
+        raise ValueError(f'unsupported source_type for Step2: {raw}')
+    return raw
+
+
+def formal_step2_producer(source_type: str) -> str:
+    return SOURCE_TYPE_STEP2_PRODUCER[source_type]
+
+
+def infer_implementation_mode(source_type: str, primary: Dict[str, Any], aim: Dict[str, Any]) -> str:
+    explicit = aim.get('implementation_mode') or primary.get('implementation_mode')
+    if explicit:
+        value = str(explicit)
+        if value in {'operator', 'direct_code', 'hybrid'}:
+            return value
+    if source_type == 'paper_canonical_formula':
+        return 'operator'
+    if source_type == 'natural_language_hypothesis':
+        return 'direct_code'
+    return 'hybrid'
+
+
+def build_mode_decision(implementation_mode: str, primary: Dict[str, Any]) -> Dict[str, Any]:
+    formula_ir = primary.get('formula_ir')
+    parse_error = primary.get('formula_parse_error')
+    operator_success = (
+        implementation_mode == 'operator'
+        and isinstance(formula_ir, dict)
+        and formula_ir.get('parse_status') == 'success'
+    )
+    return {
+        'selected_mode': implementation_mode,
+        'operator_attempted': True,
+        'operator_result': 'success' if operator_success else ('failed' if parse_error else 'not_applicable'),
+        'operator_failure_reason': None if operator_success else (parse_error or 'source requires non-operator implementation contract'),
+        'hybrid_attempted': implementation_mode in {'hybrid', 'direct_code'},
+        'hybrid_result': 'success' if implementation_mode == 'hybrid' else 'not_applicable',
+        'hybrid_failure_reason': None if implementation_mode == 'hybrid' else 'not selected by Step2 contract',
+        'direct_code_attempted': implementation_mode == 'direct_code',
+        'direct_code_result': 'success' if implementation_mode == 'direct_code' else 'not_applicable',
+        'direct_code_failure_reason': None if implementation_mode == 'direct_code' else 'not selected by Step2 contract',
+        'final_decision_reason': (
+            'formula parsed into registered operator IR'
+            if operator_success else
+            'natural-language or family-specific implementation requires non-operator contract'
+        ),
+    }
+
+
+def build_hybrid_contract(primary: Dict[str, Any], aim: Dict[str, Any]) -> Dict[str, Any]:
+    raw_contract = aim.get('implementation_contract') or primary.get('implementation_contract') or {}
+    raw_operator = raw_contract.get('operator_subgraph') or primary.get('operator_subgraph') or {}
+    formula_text = (
+        raw_operator.get('formula_text')
+        or primary.get('operator_subgraph_formula')
+        or primary.get('raw_formula_text')
+        or aim.get('operator_subgraph_formula')
+        or aim.get('raw_formula')
+        or ''
+    )
+    formula_ir = raw_operator.get('formula_ir')
+    if not isinstance(formula_ir, dict) and formula_text:
+        formula_ir = parse_formula(str(formula_text))
+    operator_subgraph = {
+        'formula_text': formula_text,
+        'formula_ir_version': (formula_ir or {}).get('formula_ir_version'),
+        'formula_ir': formula_ir or {},
+        'operator_set': (formula_ir or {}).get('operator_set') or raw_operator.get('operator_set') or [],
+        'required_fields': (formula_ir or {}).get('required_fields') or raw_operator.get('required_fields') or [],
+        'resolved_fields': (formula_ir or {}).get('resolved_fields') or raw_operator.get('resolved_fields') or {},
+        'formula_hash': (formula_ir or {}).get('formula_hash') or raw_operator.get('formula_hash') or stable_hash({'formula_text': formula_text}),
+    }
+
+    raw_blocks = raw_contract.get('custom_blocks') or primary.get('custom_blocks') or aim.get('custom_blocks') or []
+    custom_blocks = []
+    block_hash_inputs = []
+    for idx, block in enumerate(raw_blocks if isinstance(raw_blocks, list) else [raw_blocks]):
+        if not isinstance(block, dict):
+            continue
+        source_code = block.get('source_code') or block.get('code') or block.get('custom_source') or ''
+        normalized = {
+            'name': block.get('name') or f'custom_block_{idx + 1}',
+            'purpose': block.get('purpose') or 'custom hybrid post-processing block',
+            'function_name': block.get('function_name') or 'apply_custom_block',
+            'input_schema': block.get('input_schema') or {'columns': ['ts_code', 'trade_date', 'operator_value'] + list(block.get('required_fields') or [])},
+            'output_schema': block.get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']},
+            'required_fields': block.get('required_fields') or [],
+            'forbidden_patterns': list(dict.fromkeys(DEFAULT_FORBIDDEN_CODE_PATTERNS + list(block.get('forbidden_patterns') or []))),
+            'source_code': source_code,
+        }
+        block_hash = stable_hash({
+            'source_code': source_code,
+            'contract': {k: v for k, v in normalized.items() if k not in {'custom_block_hash'}},
+        })
+        normalized['custom_block_hash'] = block.get('custom_block_hash') or block_hash
+        block_hash_inputs.append({'name': normalized['name'], 'custom_block_hash': normalized['custom_block_hash']})
+        custom_blocks.append(normalized)
+
+    custom_block_hash = raw_contract.get('custom_block_hash') or stable_hash(block_hash_inputs)
+    required_custom_fields = []
+    for block in custom_blocks:
+        required_custom_fields.extend(str(field) for field in (block.get('required_fields') or []) if field)
+    boundary = raw_contract.get('boundary') or {
+        'operator_outputs': ['operator_value'],
+        'custom_inputs': list(dict.fromkeys(['ts_code', 'trade_date', 'operator_value'] + required_custom_fields)),
+        'custom_outputs': ['factor_value'],
+        'protected_operator_outputs': ['operator_value'],
+        'allow_operator_output_overwrite': False,
+    }
+    formula_hash = operator_subgraph.get('formula_hash')
+    hybrid_hash = raw_contract.get('hybrid_hash') or stable_hash({
+        'formula_hash': formula_hash,
+        'custom_block_hash': custom_block_hash,
+        'boundary': boundary,
+    })
+    return {
+        'mode': 'hybrid',
+        'implementation_mode': 'hybrid',
+        'hybrid_contract_version': HYBRID_CONTRACT_VERSION,
+        'operator_subgraph': operator_subgraph,
+        'custom_blocks': custom_blocks,
+        'boundary': boundary,
+        'formula_hash': formula_hash,
+        'custom_block_hash': custom_block_hash,
+        'hybrid_hash': hybrid_hash,
+    }
+
+
+def explicit_family_plugin_selection(aim: Dict[str, Any], primary: Dict[str, Any]) -> Dict[str, Any]:
+    """Propagate only explicit structured family-plugin declarations.
+
+    Free-text mentions such as "shadow", "Williams", "candle", "CPV", or "UBL"
+    may become suggestions, but they must not become executable plugin selection.
+    """
+    contract = aim.get('implementation_contract') or {}
+    decision = aim.get('family_plugin_decision') or contract.get('family_plugin_decision') or {}
+    family = aim.get('factor_family') or contract.get('factor_family') or primary.get('factor_family')
+    plugin = aim.get('family_plugin') or contract.get('family_plugin') or primary.get('family_plugin')
+    allowed = bool(aim.get('family_plugin_allowed') or contract.get('family_plugin_allowed') or primary.get('family_plugin_allowed'))
+    if allowed and family and plugin:
+        evidence = (
+            decision.get('explicit_evidence')
+            or aim.get('family_plugin_explicit_evidence')
+            or contract.get('family_plugin_explicit_evidence')
+            or primary.get('family_plugin_explicit_evidence')
+            or []
+        )
+        evidence = as_list(evidence)
+        return {
+            'factor_family': str(family),
+            'family_plugin': str(plugin),
+            'family_plugin_allowed': True,
+            'family_plugin_decision': {
+                'decision_version': decision.get('decision_version') or FAMILY_PLUGIN_DECISION_VERSION,
+                'plugin_selected': True,
+                'plugin_id': str(plugin),
+                'selection_reason': decision.get('selection_reason') or 'Explicit source artifact declared this family plugin.',
+                'explicit_evidence': evidence,
+                'not_selected_by_free_text': decision.get('not_selected_by_free_text', True),
+                'human_review_required': bool(decision.get('human_review_required', not evidence)),
+            },
+        }
+
+    suggestion_text = text_blob(aim, primary)
+    if any(token in suggestion_text for token in ['shadow', 'williams', 'candlestick', '上影线', '下影线']):
+        return {
+            'family_plugin_suggestion': {
+                'suggested_family': 'shadow_candlestick',
+                'reason': 'source text mentions shadow/candlestick semantics',
+                'formal_selection': False,
+                'human_review_required': True,
+            }
+        }
+    if 'cpv' in suggestion_text or 'price-volume' in suggestion_text or '价量' in suggestion_text:
+        return {
+            'family_plugin_suggestion': {
+                'suggested_family': 'cpv',
+                'reason': 'source text mentions CPV or price-volume semantics',
+                'formal_selection': False,
+                'human_review_required': True,
+            }
+        }
+    return {}
+
+
+def load_source_context(report_id: str, aim: Dict[str, Any]) -> Dict[str, Any]:
+    source_type = normalize_source_type(aim)
+    if source_type == 'pdf_report':
+        pdf_path = locate_pdf_path(report_id, aim)
+        print(f'[FOUND] pdf_path={pdf_path}')
+    else:
+        pdf_path = None
+        print(f'[SOURCE] {source_type}: no report_registry/PDF lookup required')
+    primary_thesis, challenger_thesis, primary_report_map = read_step1_upstream(report_id)
+    return {
+        'source_type': source_type,
+        'pdf_path': pdf_path,
+        'primary_thesis': primary_thesis,
+        'challenger_thesis': challenger_thesis,
+        'primary_report_map': primary_report_map,
+    }
 
 
 def list_unresolved_ambiguities(aim: Dict[str, Any]) -> List[str]:
@@ -363,6 +607,152 @@ def build_challenger_spec(report_id: str, aim: Dict[str, Any], challenger: Dict[
     }
 
 
+def infer_formula_inputs(formula: str, fallback: List[Any]) -> List[str]:
+    aliases = {'vol': 'volume', 'returns': 'return', 'ret': 'return'}
+    tokens = re.findall(r'\b(?:open|high|low|close|vwap|volume|vol|amount|turnover|returns?|ret|adv\d*)\b', formula.lower())
+    out: List[str] = []
+    for token in tokens:
+        out.append('volume' if token.startswith('adv') else aliases.get(token, token))
+    out.extend(str(x) for x in fallback if x)
+    return list(dict.fromkeys(out)) or ['close', 'volume']
+
+
+def infer_formula_operators(formula: str, fallback: List[Any]) -> List[str]:
+    known = [
+        'rank', 'correlation', 'corr', 'sum', 'mean', 'std', 'delta', 'delay',
+        'ts_rank', 'argmax', 'argmin', 'decay_linear', 'signedpower', 'scale',
+        'indneutralize', 'regression', 'zscore',
+    ]
+    text = formula.lower()
+    operators = [f'{name}()' for name in known if name in text]
+    operators.extend(str(x) for x in fallback if x)
+    return list(dict.fromkeys(operators)) or ['formula_expression()']
+
+
+def build_primary_spec_from_pdf(report_id: str, aim: Dict[str, Any], thesis: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
+    return build_primary_spec(report_id, aim, thesis, report_map)
+
+
+def build_primary_spec_from_canonical_formula(report_id: str, aim: Dict[str, Any], thesis: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
+    formula = str(aim.get('raw_formula') or thesis.get('raw_formula_text') or report_map.get('raw_formula') or '').strip()
+    required_inputs = infer_formula_inputs(formula, as_list(thesis.get('key_variables') or report_map.get('variables')))
+    operators = infer_formula_operators(formula, as_list(thesis.get('operators') or report_map.get('operators')))
+    formula_ir = None
+    formula_parse_error = None
+    qlib_expression = None
+    try:
+        formula_ir = parse_formula(formula)
+        if formula_ir.get('parse_status') == 'success':
+            required_inputs = formula_ir.get('required_fields') or required_inputs
+            operators = [f'{op}()' for op in (formula_ir.get('operator_set') or [])] or operators
+        else:
+            formula_parse_error = '; '.join(str(item) for item in (formula_ir.get('parse_errors') or [])) or 'formula parse failed'
+        qlib_expression = to_qlib_expression(formula_ir)
+    except Exception as exc:
+        formula_parse_error = str(exc)
+    return {
+        'factor_id': aim.get('factor_id') or thesis.get('factor_id') or report_id,
+        'report_id': report_id,
+        'route': 'primary',
+        'source_type': 'paper_canonical_formula',
+        'producer': 'step2_canonical_formula_spec_builder',
+        'raw_formula_text': formula,
+        'formula_ir': formula_ir,
+        'formula_parse_error': formula_parse_error,
+        'qlib_expression': qlib_expression,
+        'operators': operators,
+        'required_inputs': required_inputs,
+        'time_series_steps': [
+            'Parse the canonical formula into its Alpha101-style operator tree.',
+            'Apply each rolling or lagged operator using only data available at the rebalance date.',
+            'Preserve published window lengths and rank/correlation semantics unless Step3B records a reviewed deviation.',
+        ],
+        'cross_sectional_steps': [
+            'Compute the canonical formula score for each stock.',
+            'Apply cross-sectional ranking/normalization exactly where specified by the source formula.',
+            'Pass the final score to Step4 as the long-side candidate signal.',
+        ],
+        'preprocessing': ['Apply the canonical Factor Forge universe filters and missing-data policy before formula evaluation.'],
+        'normalization': ['Preserve formula-defined rank/scale operations; otherwise Step3B must document any added normalization.'],
+        'neutralization': ['No neutralization is implied by the canonical formula unless Step3B/Step4 explicitly evaluates it as a variant.'],
+        'rebalance_frequency': 'daily signal; portfolio rebalance cadence remains a Step4 evaluation setting',
+        'implementation_assumptions': [
+            'Alpha101 operator semantics are treated as source-of-truth.',
+            'Window alignment must avoid forward-looking data.',
+        ],
+        'explicit_items': [formula],
+        'inferred_items': ['Data-field aliases must be resolved conservatively by Step3B.'],
+        'ambiguities': as_list(aim.get('ambiguities')),
+        'direction': aim.get('expected_direction') or 'formula_defined',
+    }
+
+
+def build_challenger_spec_from_canonical_formula(report_id: str, aim: Dict[str, Any], challenger: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
+    spec = build_primary_spec_from_canonical_formula(report_id, aim, challenger, report_map)
+    spec.update({
+        'route': 'challenger',
+        'producer': 'step2_canonical_formula_challenger_spec_builder',
+        'time_series_steps': spec['time_series_steps'] + [
+            'Independently audit every window and nested operator to catch off-by-one or rank-domain errors.'
+        ],
+        'inferred_items': spec['inferred_items'] + [
+            'Challenger must flag source convention uncertainty instead of silently changing formula semantics.'
+        ],
+    })
+    return spec
+
+
+def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thesis: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
+    variables = list(dict.fromkeys(as_list(aim.get('candidate_variables')) + as_list(thesis.get('key_variables')) + as_list(report_map.get('variables'))))
+    formula_text = str((aim.get('final_factor') or {}).get('assembly_steps', [''])[0] or thesis.get('raw_formula_text') or f'hypothesis_score({", ".join(str(x) for x in variables)})')
+    return {
+        'factor_id': (aim.get('final_factor') or {}).get('name') or aim.get('title') or report_id,
+        'report_id': report_id,
+        'route': 'primary',
+        'source_type': 'natural_language_hypothesis',
+        'producer': 'step2_hypothesis_spec_builder',
+        'raw_formula_text': formula_text,
+        'operators': list(dict.fromkeys(as_list(thesis.get('operators')) + ['change()', 'rank()', 'zscore()', 'lag_guard()'])),
+        'required_inputs': variables or ['close', 'return'],
+        'time_series_steps': [
+            'Convert the stated hypothesis into lag-safe feature changes or levels.',
+            'Apply disclosure-lag controls for any fundamental fields before scoring.',
+            'Mark unresolved formula choices for human review instead of inventing precision.',
+        ],
+        'cross_sectional_steps': [
+            'Transform the hypothesis strength into a cross-sectional score.',
+            'Rank or z-score the score only after lag and availability checks are explicit.',
+        ],
+        'preprocessing': ['Use standard universe filters and enforce data availability at rebalance time.'],
+        'normalization': ['Cross-sectional rank or z-score; exact choice requires review when the hypothesis is underspecified.'],
+        'neutralization': ['Style/industry neutralization is an evaluation variant unless the hypothesis explicitly requires it.'],
+        'rebalance_frequency': 'monthly by default for fundamental hypotheses unless Step3B justifies another cadence',
+        'implementation_assumptions': [
+            'Natural-language intake is a research contract, not executable code.',
+            'Ambiguous variables and lags remain human-review items until resolved.',
+        ],
+        'explicit_items': [aim.get('raw_user_hypothesis') or thesis.get('signals')],
+        'inferred_items': ['Formula expression is a conservative placeholder derived from the user hypothesis.'],
+        'ambiguities': as_list(aim.get('ambiguities')),
+        'direction': aim.get('expected_direction') or 'positive_if_hypothesis_strengthens',
+    }
+
+
+def build_challenger_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], challenger: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
+    spec = build_primary_spec_from_hypothesis(report_id, aim, challenger, report_map)
+    spec.update({
+        'route': 'challenger',
+        'producer': 'step2_hypothesis_challenger_spec_builder',
+        'time_series_steps': spec['time_series_steps'] + [
+            'Challenge whether each proposed variable is observable before the target return window.'
+        ],
+        'inferred_items': spec['inferred_items'] + [
+            'Challenger should ask for human confirmation when variable mapping or expected direction is not explicit.'
+        ],
+    })
+    return spec
+
+
 def score_consistency(primary: Dict[str, Any], challenger: Dict[str, Any], aim: Dict[str, Any]) -> Dict[str, Any]:
     mismatches = []
     missing_steps = []
@@ -404,18 +794,48 @@ def score_consistency(primary: Dict[str, Any], challenger: Dict[str, Any], aim: 
 
 def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[str, Any], consistency: Dict[str, Any], thesis: Dict[str, Any]) -> Dict[str, Any]:
     score = consistency.get('consistency_score', 1.0)
-    human_review_required = score < 0.7
+    source_type = normalize_source_type(aim)
+    producer = formal_step2_producer(source_type)
+    upstream_producer = aim.get('producer') or producer
+    implementation_mode = infer_implementation_mode(source_type, primary, aim)
+    branch_id = str(aim.get('branch_id') or 'main')
+    run_id = str(aim.get('run_id') or 'run_001')
+    parent_run_id = aim.get('parent_run_id')
+    human_review_required = score < 0.7 or bool(aim.get('human_review_required'))
     chief_decision = None
     if human_review_required:
         chief_decision = f'CONSISTENCY_SCORE_TOO_LOW: {score} — needs chief review'
     research_contract = build_step2_research_contract(primary, consistency, aim, thesis)
+    research_contract['producer'] = producer
+    family_plugin_selection = explicit_family_plugin_selection(aim, primary)
+    hybrid_contract = build_hybrid_contract(primary, aim) if implementation_mode == 'hybrid' else None
 
-    return {
+    master = {
+        'contract_version': STEP2_SOURCE_CONTRACT_VERSION,
         'factor_id': primary.get('factor_id', report_id),
         'linked_idea_id': aim.get('report_id', report_id),
         'report_id': report_id,
+        'source_type': source_type,
+        'implementation_mode': implementation_mode,
+        'producer': producer,
+        'upstream_producer': upstream_producer,
+        'source_metadata': {
+            'factor_id': aim.get('factor_id'),
+            'source_name': aim.get('source_name'),
+            'source_url': aim.get('source_url'),
+            'title': aim.get('title'),
+            'window_start': aim.get('window_start'),
+            'window_end': aim.get('window_end'),
+        },
         'canonical_spec': {
             'formula_text': primary.get('raw_formula_text', ''),
+            'formula_ir': primary.get('formula_ir'),
+            'formula_parse_error': primary.get('formula_parse_error'),
+            'parse_status': ((primary.get('formula_ir') or {}).get('parse_status') if isinstance(primary.get('formula_ir'), dict) else None),
+            'qlib_expression': primary.get('qlib_expression'),
+            'operator_set': ((primary.get('formula_ir') or {}).get('operator_set') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('operators', []),
+            'required_fields': ((primary.get('formula_ir') or {}).get('required_fields') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('required_inputs', []),
+            'resolved_fields': ((primary.get('formula_ir') or {}).get('resolved_fields') if isinstance(primary.get('formula_ir'), dict) else None) or {},
             'required_inputs': primary.get('required_inputs', []),
             'operators': primary.get('operators', []),
             'time_series_steps': primary.get('time_series_steps', []),
@@ -423,8 +843,51 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'preprocessing': primary.get('preprocessing', []),
             'normalization': primary.get('normalization', []),
             'neutralization': primary.get('neutralization', []),
-            'rebalance_frequency': primary.get('rebalance_frequency', '')
+            'rebalance_frequency': primary.get('rebalance_frequency', ''),
+            'implementation_assumptions': primary.get('implementation_assumptions', []),
+            'operator_subgraph': (hybrid_contract or {}).get('operator_subgraph'),
+            'custom_blocks': (hybrid_contract or {}).get('custom_blocks') or primary.get('custom_blocks') or [],
+            'boundary': (hybrid_contract or {}).get('boundary'),
         },
+        'implementation_contract': {
+            'implementation_mode': implementation_mode,
+            'mode': implementation_mode,
+            'branch_id': branch_id,
+            'run_id': run_id,
+            'parent_run_id': parent_run_id,
+            'code_contract': {
+                'code_contract_version': 'factorforge_direct_code_contract_v1',
+                'function_name': 'compute_factor',
+                'input_schema': {},
+                'output_schema': {
+                    'columns': ['ts_code', 'trade_date', 'factor_value'],
+                },
+                'required_fields': primary.get('required_inputs', []),
+                'information_set_rules': ['no future-looking fields or negative shifts'],
+                'forbidden_patterns': [
+                    r'shift\s*\(\s*-\d+',
+                    'future_return',
+                    'next_return',
+                    'label',
+                    'target',
+                    'future_',
+                    'lookahead',
+                ],
+            } if implementation_mode == 'direct_code' else None,
+            'output_schema': {
+                'columns': ['ts_code', 'trade_date', 'factor_value'],
+            } if implementation_mode == 'direct_code' else None,
+            'mode_contract': (
+                'pure_formula_operator_graph'
+                if implementation_mode == 'operator' else
+                'agent_reviewed_direct_code_contract'
+                if implementation_mode == 'direct_code' else
+                'operator_subgraph_plus_custom_code_blocks'
+            ),
+            **(hybrid_contract or {}),
+        },
+        **{k: v for k, v in family_plugin_selection.items() if k in {'factor_family', 'family_plugin', 'family_plugin_allowed', 'family_plugin_decision', 'family_plugin_suggestion'}},
+        'implementation_mode_decision': build_mode_decision(implementation_mode, primary),
         'thesis': {
             'alpha_thesis': thesis.get('thesis_name') or (aim.get('final_factor') or {}).get('name'),
             'target_prediction': research_contract['target_statistic'],
@@ -447,16 +910,91 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         'chief_decision': chief_decision,
         'opus_invoked': False
     }
+    if family_plugin_selection.get('family_plugin_allowed'):
+        for key in ['factor_family', 'family_plugin', 'family_plugin_allowed', 'family_plugin_decision']:
+            master['implementation_contract'][key] = family_plugin_selection[key]
+    elif family_plugin_selection.get('family_plugin_suggestion'):
+        master['implementation_contract']['family_plugin_suggestion'] = family_plugin_selection['family_plugin_suggestion']
+    mechanism_math_contract = (
+        primary.get('mechanism_math_contract')
+        or aim.get('mechanism_math_contract')
+        or build_mechanism_math_contract(master)
+    )
+    master['mechanism_math_contract'] = mechanism_math_contract
+    master['canonical_spec']['mechanism_math_contract'] = mechanism_math_contract
+    master['math_discipline_review']['mechanism_math_contract_ref'] = {
+        'math_model_status': mechanism_math_contract.get('math_model_status'),
+        'model_family': mechanism_math_contract.get('model_family'),
+        'state_or_object': mechanism_math_contract.get('state_or_object'),
+        'target_functional': mechanism_math_contract.get('target_functional'),
+        'monotonicity_claim': mechanism_math_contract.get('monotonicity_claim'),
+    }
+    spec_hash = build_spec_hash(master)
+    formula_ir = (master.get('canonical_spec') or {}).get('formula_ir')
+    formula_hash = (
+        formula_ir.get('formula_hash')
+        if implementation_mode in {'operator', 'hybrid'} and isinstance(formula_ir, dict) and formula_ir.get('formula_hash')
+        else build_formula_hash(master)
+    )
+    code_contract_hash = build_code_contract_hash(master)
+    if implementation_mode == 'hybrid' and hybrid_contract:
+        formula_hash = hybrid_contract.get('formula_hash') or formula_hash
+        custom_block_hash = hybrid_contract.get('custom_block_hash')
+        hybrid_hash = hybrid_contract.get('hybrid_hash')
+    else:
+        custom_block_hash = build_custom_block_hash(master)
+        hybrid_hash = stable_hash({'formula_hash': formula_hash, 'custom_block_hash': custom_block_hash})
+    identity = build_artifact_identity(
+        report_id=report_id,
+        factor_id=str(master.get('factor_id') or report_id),
+        source_type=source_type,
+        implementation_mode=implementation_mode,
+        contract_version=STEP2_SOURCE_CONTRACT_VERSION,
+        producer=producer,
+        upstream_producer=upstream_producer,
+        spec_hash=spec_hash,
+        branch_id=branch_id,
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        artifact_role='factor_spec_master',
+        formula_hash=formula_hash if implementation_mode in {'operator', 'hybrid'} else None,
+        code_contract_hash=code_contract_hash if implementation_mode == 'direct_code' else None,
+        custom_block_hash=custom_block_hash if implementation_mode == 'hybrid' else None,
+        hybrid_hash=hybrid_hash if implementation_mode == 'hybrid' else None,
+    )
+    if family_plugin_selection.get('family_plugin_allowed'):
+        identity['factor_family'] = family_plugin_selection.get('factor_family')
+        identity['family_plugin'] = family_plugin_selection.get('family_plugin')
+        identity['not_generic_fallback'] = True
+    master['spec_hash'] = spec_hash
+    master['artifact_identity'] = identity
+    return master
 
 
 def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> None:
     master = load_json(factor_spec_master_path)
     handoff = {
+        'contract_version': STEP2_SOURCE_CONTRACT_VERSION,
         'report_id': report_id,
+        'source_type': master.get('source_type'),
+        'implementation_mode': master.get('implementation_mode'),
+        'factor_family': master.get('factor_family'),
+        'family_plugin': master.get('family_plugin'),
+        'family_plugin_allowed': master.get('family_plugin_allowed'),
+        'family_plugin_decision': master.get('family_plugin_decision'),
+        'family_plugin_suggestion': master.get('family_plugin_suggestion'),
+        'artifact_identity': {
+            **(master.get('artifact_identity') or {}),
+            'artifact_role': 'handoff_to_step3',
+        },
+        'spec_hash': master.get('spec_hash'),
+        'producer': master.get('producer'),
+        'upstream_producer': master.get('upstream_producer'),
         'step2_status': 'factor_spec_master_ready',
         'factor_spec_master_ref': factor_spec_master_path.name,
         'research_contract': master.get('research_contract') or {},
         'math_discipline_review': master.get('math_discipline_review') or {},
+        'mechanism_math_contract': master.get('mechanism_math_contract') or {},
         'learning_and_innovation': master.get('learning_and_innovation') or {},
     }
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)
@@ -466,13 +1004,22 @@ def run_step2(report_id: str, dry_run: bool = False) -> None:
     print(f'Step 2 independent run for report_id={report_id}')
     print(f'dry_run={dry_run}')
     aim = load_alpha_idea_master(report_id)
-    pdf_path = locate_pdf_path(report_id, aim)
-    print(f'[FOUND] pdf_path={pdf_path}')
-    primary_thesis, challenger_thesis, primary_report_map = read_step1_upstream(report_id)
+    source_context = load_source_context(report_id, aim)
+    source_type = source_context['source_type']
+    primary_thesis = source_context['primary_thesis']
+    challenger_thesis = source_context['challenger_thesis']
+    primary_report_map = source_context['primary_report_map']
     print('[LOAD] Step 1 upstream artifacts ready')
 
-    primary = build_primary_spec(report_id, aim, primary_thesis, primary_report_map)
-    challenger = build_challenger_spec(report_id, aim, challenger_thesis, primary_report_map)
+    if source_type == 'paper_canonical_formula':
+        primary = build_primary_spec_from_canonical_formula(report_id, aim, primary_thesis, primary_report_map)
+        challenger = build_challenger_spec_from_canonical_formula(report_id, aim, challenger_thesis, primary_report_map)
+    elif source_type == 'natural_language_hypothesis':
+        primary = build_primary_spec_from_hypothesis(report_id, aim, primary_thesis, primary_report_map)
+        challenger = build_challenger_spec_from_hypothesis(report_id, aim, challenger_thesis, primary_report_map)
+    else:
+        primary = build_primary_spec_from_pdf(report_id, aim, primary_thesis, primary_report_map)
+        challenger = build_challenger_spec(report_id, aim, challenger_thesis, primary_report_map)
     consistency = score_consistency(primary, challenger, aim)
     master = build_factor_spec_master(report_id, aim, primary, consistency, primary_thesis)
 

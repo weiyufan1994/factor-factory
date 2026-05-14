@@ -3,15 +3,19 @@
 # Step 1 契约
 
 ## 输入类别
-一个经过规范化的研报来源，由 Step 1 ingestion pipeline 消费。
+Step 1 是研究来源 intake 层，职责是把任何被批准的研究来源转成 `alpha_idea_master`。
+
+允许的 `source_type`：
+- `pdf_report`：本地 PDF/HTML/report registry 来源。
+- `paper_canonical_formula`：论文或 canonical formula 来源，例如 Alpha101，需要 source metadata 与公式文本。
+- `natural_language_hypothesis`：用户自然语言研究假设，必须先结构化，再进入 Step 2。
 
 ## 当前已提交的可复现输入
 - `fixtures/step1/sample_factor_report.html`
 - `fixtures/step1/sample_intake_response.json`
 
-## 当前已提交的 sample runner
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+## runner 状态
+sample/debug runner 只能作为 archived 或 isolated debug helper。正式 Step1/2 intake 必须使用批准的 producer，不得手写下游 Step3 artifact。
 
 ## 输出类别
 一次成功的 Step 1 样本运行，应产出与以下类别等价的 artifact：
@@ -20,6 +24,11 @@
 - alpha_thesis artifact
 - ambiguity_review artifact
 - 带研究纪律字段的 alpha_idea_master
+
+`alpha_idea_master` 必须包含：
+- `source_type`
+- `producer`
+- `contract_version`
 
 ## 研究纪律字段
 
@@ -33,6 +42,9 @@ Step 1 必须保留研报原始 thesis，同时补齐后续审查需要的结构
 - `research_discipline.similar_case_lessons_imported`
 
 为兼容 Step2/5/6，`math_discipline_review.step1_random_object` 与 `learning_and_innovation.similar_case_lessons_imported` 也应存在。
+
+## producer 闸门
+正式 Step2 只能消费批准 producer 的 Step1 输出。任何包含 `manual`、`debug`、`fake`、`posthoc`、`unknown`、`adhoc`、`ad_hoc` 的 producer 字符串，一律不得进入正式 Step3。
 
 ## 工程依赖层
 - `skills/factor_forge_step1/modules/report_ingestion/**`

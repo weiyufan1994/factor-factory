@@ -24,6 +24,8 @@ from skills.factor_forge_step5.modules.validator import (  # type: ignore
     check_final_status_enum,
     check_no_placeholder_text,
 )
+from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 
 OBJ = FF / 'objects'
 ARCH = FF / 'archive'
@@ -48,6 +50,95 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def artifact_identity_checks(left_label: str, left: dict, right_label: str, right: dict):
+    checks = []
+    left_identity = left.get('artifact_identity') or {}
+    right_identity = right.get('artifact_identity') or {}
+    required = ['report_id', 'factor_id', 'source_type', 'implementation_mode', 'contract_version', 'producer', 'spec_hash', 'branch_id', 'artifact_role']
+    checks.append(check(f'{left_label}_artifact_identity_present', isinstance(left_identity, dict) and bool(left_identity), f'{left_label}.artifact_identity missing'))
+    checks.append(check(f'{right_label}_artifact_identity_present', isinstance(right_identity, dict) and bool(right_identity), f'{right_label}.artifact_identity missing'))
+    checks.append(check(f'{left_label}_artifact_identity_required', all(nonempty_str(left_identity.get(k)) for k in required), f'{left_label}.artifact_identity required fields missing: {left_identity}'))
+    checks.append(check(f'{right_label}_artifact_identity_required', all(nonempty_str(right_identity.get(k)) for k in required), f'{right_label}.artifact_identity required fields missing: {right_identity}'))
+    if left_identity and right_identity:
+        try:
+            assert_identity_matches_strict(
+                left_identity,
+                right_identity,
+                expected_label=left_label,
+                actual_label=right_label,
+                allowed_role_transitions={(left_identity.get('artifact_role'), right_identity.get('artifact_role'))},
+            )
+            checks.append(check(f'{left_label}_{right_label}_identity_match', True))
+        except AssertionError as exc:
+            checks.append(check(f'{left_label}_{right_label}_identity_match', False, str(exc)))
+    return checks
+
+
+def check_identity_transition(expected_label: str, expected: dict, actual_label: str, actual: dict, actual_role: str):
+    expected_identity = expected.get('artifact_identity') or {}
+    actual_identity = actual.get('artifact_identity') or {}
+    if not expected_identity or not actual_identity:
+        return [check(f'{expected_label}_{actual_label}_strict_identity', False, f'{expected_label}/{actual_label} artifact_identity missing')]
+    try:
+        assert_identity_matches_strict(
+            expected_identity,
+            actual_identity,
+            expected_label=expected_label,
+            actual_label=actual_label,
+            allowed_role_transitions={(expected_identity.get('artifact_role'), actual_role)},
+        )
+        return [check(f'{expected_label}_{actual_label}_strict_identity', True)]
+    except AssertionError as exc:
+        return [check(f'{expected_label}_{actual_label}_strict_identity', False, str(exc))]
+
+
+def evidence_identity_checks(case: dict, ev: dict, frm: dict):
+    checks = []
+    evidence_identity = case.get('evidence_identity') or {}
+    evidence_quality = case.get('evidence_quality') or {}
+    implementation_mode_decision = case.get('implementation_mode_decision') or {}
+    source_refs = case.get('source_evidence_refs') or {}
+    run_identity = frm.get('artifact_identity') or {}
+    evidence_run_identity = evidence_identity.get('factor_run_master_identity') or {}
+
+    checks.append(check('case_evidence_identity_present', isinstance(evidence_identity, dict) and bool(evidence_identity), 'factor_case_master.evidence_identity missing'))
+    checks.append(check('case_implementation_mode_decision_present', isinstance(implementation_mode_decision, dict) and bool(implementation_mode_decision), 'factor_case_master.implementation_mode_decision missing'))
+    checks.append(check('case_source_evidence_refs_present', isinstance(source_refs, dict) and bool(source_refs), 'factor_case_master.source_evidence_refs missing'))
+    checks.append(check('case_evidence_quality_present', isinstance(evidence_quality, dict) and bool(evidence_quality), 'factor_case_master.evidence_quality missing'))
+    checks.append(check('evidence_identity_factor_run_ref_present', nonempty_str(evidence_identity.get('factor_run_master_ref')), 'evidence_identity.factor_run_master_ref missing'))
+    checks.append(check('evidence_identity_backend_refs_present', nonempty_list(evidence_identity.get('step4_backend_payload_refs')), 'evidence_identity.step4_backend_payload_refs missing'))
+    checks.append(check('evidence_identity_mode_decision_present', isinstance(evidence_identity.get('implementation_mode_decision'), dict) and bool(evidence_identity.get('implementation_mode_decision')), 'evidence_identity.implementation_mode_decision missing'))
+
+    if run_identity and evidence_run_identity:
+        try:
+            assert_identity_matches_strict(
+                run_identity,
+                evidence_run_identity,
+                expected_label='factor_run_master',
+                actual_label='evidence_identity.factor_run_master_identity',
+                allowed_role_transitions={(run_identity.get('artifact_role'), evidence_run_identity.get('artifact_role'))},
+            )
+            checks.append(check('evidence_identity_factor_run_identity_match', True))
+        except AssertionError as exc:
+            checks.append(check('evidence_identity_factor_run_identity_match', False, str(exc)))
+    else:
+        checks.append(check('evidence_identity_factor_run_identity_match', False, 'factor_run_master identity missing from evidence_identity'))
+
+    required_quality = [
+        'step4_has_successful_backend',
+        'self_quant_required_and_present',
+        'long_side_metrics_present',
+        'identity_chain_verified',
+        'mode_decision_present',
+    ]
+    checks.append(check('evidence_quality_required_flags_present', all(key in evidence_quality for key in required_quality), f'evidence_quality missing required flags: {evidence_quality}'))
+    if case.get('final_status') == 'validated':
+        for key in required_quality:
+            checks.append(check(f'validated_requires_{key}', evidence_quality.get(key) is True, f'validated Step5 requires evidence_quality.{key}=true'))
+        checks.append(check('validated_evaluation_evidence_identity_present', isinstance(ev.get('evidence_identity'), dict) and bool(ev.get('evidence_identity')), 'validated factor_evaluation.evidence_identity missing'))
+    return checks
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -56,6 +147,7 @@ if __name__ == '__main__':
 
     case_path = OBJ / 'factor_case_master' / f'factor_case_master__{rid}.json'
     eval_path = OBJ / 'validation' / f'factor_evaluation__{rid}.json'
+    frm_path = OBJ / 'factor_run_master' / f'factor_run_master__{rid}.json'
     arch_dir = ARCH / rid
 
     checks = []
@@ -64,16 +156,23 @@ if __name__ == '__main__':
 
     case_exists = check_file_exists(case_path)
     eval_exists = check_file_exists(eval_path)
+    frm_exists = check_file_exists(frm_path)
     archive_nonempty = check_archive_dir_nonempty(arch_dir)
 
     checks.append(check('factor_case_master_exists', case_exists['exists'], f'missing {case_path}'))
     checks.append(check('factor_evaluation_exists', eval_exists['exists'], f'missing {eval_path}'))
+    checks.append(check('factor_run_master_exists', frm_exists['exists'], f'missing {frm_path}'))
     checks.append(check('archive_dir_exists', arch_dir.exists(), f'missing {arch_dir}'))
     checks.append(check('archive_dir_nonempty', archive_nonempty['nonempty'], f'empty archive {arch_dir}'))
 
-    if case_exists['exists'] and eval_exists['exists']:
+    if case_exists['exists'] and eval_exists['exists'] and frm_exists['exists']:
         case = load_json(case_path)
         ev = load_json(eval_path)
+        frm = load_json(frm_path)
+        checks.extend(artifact_identity_checks('factor_case_master', case, 'factor_evaluation', ev))
+        checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))
+        checks.extend(check_identity_transition('factor_run_master', frm, 'factor_evaluation', ev, 'factor_evaluation'))
+        checks.extend(evidence_identity_checks(case, ev, frm))
 
         final_status = case.get('final_status')
         final_status_check = check_final_status_enum(final_status)
@@ -103,12 +202,17 @@ if __name__ == '__main__':
         quality_gate = ev.get('step4_quality_gate') or {}
         case_quality_gate = case.get('step4_quality_gate') or {}
         math_review = case.get('math_discipline_review') or {}
+        mechanism_math_contract = case.get('mechanism_math_contract') or math_review.get('mechanism_math_contract') or {}
+        mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
         adoption_constraints = case.get('adoption_constraints') or {}
         long_side_review = case.get('long_side_review') or math_review.get('long_side_objective') or {}
         information_set_legality = str(math_review.get('information_set_legality') or '').lower()
         overfit_risk = math_review.get('overfit_risk')
 
         checks.append(check('math_discipline_review_present', isinstance(math_review, dict) and bool(math_review), 'Step5 factor_case_master.math_discipline_review missing'))
+        checks.append(check('mechanism_math_contract_present', isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract), 'Step5 factor_case_master.mechanism_math_contract missing'))
+        checks.append(check('mechanism_math_contract_valid', not mechanism_math_failures, f'Step5 mechanism_math_contract invalid: {mechanism_math_failures}'))
+        checks.append(check('mechanism_math_contract_ref_present', isinstance(math_review.get('mechanism_math_contract_ref'), dict) and bool(math_review.get('mechanism_math_contract_ref')), 'Step5 math_discipline_review.mechanism_math_contract_ref missing'))
         checks.append(check('information_set_legality_present', nonempty_str(math_review.get('information_set_legality')), 'information_set_legality missing'))
         checks.append(check('spec_stability_present', isinstance(math_review.get('spec_stability'), dict) and bool(math_review.get('spec_stability')), 'spec_stability missing'))
         checks.append(check('signal_vs_portfolio_gap_present', nonempty_str(math_review.get('signal_vs_portfolio_gap')), 'signal_vs_portfolio_gap missing'))

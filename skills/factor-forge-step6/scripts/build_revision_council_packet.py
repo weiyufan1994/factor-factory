@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+LEGACY_WORKSPACE = Path("/home/ubuntu/.openclaw/workspace")
+FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if (LEGACY_WORKSPACE / "factorforge").exists() else REPO_ROOT))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+OBJ = FF / "objects"
+TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
+BASELINE_VERSION = "factorforge_revision_council_forbidden_writeback_baseline_v1"
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def relpath(path: Path) -> str:
+    try:
+        return str(path.relative_to(FF))
+    except ValueError:
+        return str(path)
+
+
+def should_skip_digest_path(path: Path) -> bool:
+    name = path.name
+    return (
+        name == "__pycache__"
+        or name == ".DS_Store"
+        or name.endswith(".lock")
+        or name.endswith(".tmp")
+        or name.endswith(".swp")
+        or name.endswith(".swx")
+        or name.startswith(".#")
+        or name.startswith("~$")
+    )
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def directory_digest(path: Path) -> str:
+    entries: list[dict[str, Any]] = []
+    for item in sorted(path.rglob("*"), key=lambda p: p.relative_to(path).as_posix()):
+        if any(should_skip_digest_path(part) for part in item.relative_to(path).parents):
+            continue
+        if should_skip_digest_path(item):
+            continue
+        if not item.is_file():
+            continue
+        stat = item.stat()
+        entries.append(
+            {
+                "relative_path": item.relative_to(path).as_posix(),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "sha256": sha256_file(item),
+            }
+        )
+    payload = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def snapshot_path(path: Path, kind: str) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "path": relpath(path),
+        "exists": path.exists(),
+        "kind": kind,
+        "mtime_ns": None,
+    }
+    if not path.exists():
+        if kind == "file":
+            snapshot["sha256"] = None
+        else:
+            snapshot["digest"] = None
+        return snapshot
+    stat = path.stat()
+    snapshot["mtime_ns"] = stat.st_mtime_ns
+    if kind == "file":
+        snapshot["sha256"] = sha256_file(path) if path.is_file() else None
+    else:
+        snapshot["digest"] = directory_digest(path) if path.is_dir() else None
+    return snapshot
+
+
+def forbidden_writeback_baseline(report_id: str) -> dict[str, Any]:
+    paths = {
+        "handoff_to_step3b": snapshot_path(OBJ / "handoff" / f"handoff_to_step3b__{report_id}.json", "file"),
+        "generated_code": snapshot_path(FF / "generated_code" / report_id, "directory"),
+        "official_library": snapshot_path(OBJ / "factor_library_official" / f"factor_record__{report_id}.json", "file"),
+        "data_clean": snapshot_path(FF / "data" / "clean", "directory"),
+    }
+    return {
+        "contract_version": BASELINE_VERSION,
+        "captured_at": utc_now(),
+        "paths": paths,
+    }
+
+
+def nested(data: dict[str, Any], *keys: str) -> dict[str, Any]:
+    cur: Any = data
+    for key in keys:
+        if not isinstance(cur, dict):
+            return {}
+        cur = cur.get(key)
+    return cur if isinstance(cur, dict) else {}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--report-id", required=True)
+    args = parser.parse_args()
+    rid = args.report_id
+
+    paths = {
+        "research_iteration_master": OBJ / "research_iteration_master" / f"research_iteration_master__{rid}.json",
+        "factor_case_master": OBJ / "factor_case_master" / f"factor_case_master__{rid}.json",
+        "factor_evaluation": OBJ / "validation" / f"factor_evaluation__{rid}.json",
+        "factor_run_master": OBJ / "factor_run_master" / f"factor_run_master__{rid}.json",
+        "handoff_to_step6": OBJ / "handoff" / f"handoff_to_step6__{rid}.json",
+        "factor_spec_master": OBJ / "factor_spec_master" / f"factor_spec_master__{rid}.json",
+    }
+    required = ["research_iteration_master", "factor_case_master", "factor_evaluation", "factor_run_master"]
+    missing = [str(paths[name]) for name in required if not paths[name].exists()]
+    if missing:
+        print(TOKEN_MISSING + ": " + json.dumps({"missing": missing}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)
+
+    iteration = load_json(paths["research_iteration_master"])
+    case = load_json(paths["factor_case_master"])
+    evaluation = load_json(paths["factor_evaluation"])
+    run = load_json(paths["factor_run_master"])
+    handoff = load_json(paths["handoff_to_step6"]) if paths["handoff_to_step6"].exists() else {}
+    spec = load_json(paths["factor_spec_master"]) if paths["factor_spec_master"].exists() else {}
+
+    memo = nested(iteration, "research_judgment", "research_memo")
+    canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
+    metrics: dict[str, Any] = {}
+    for item in evaluation.get("backend_summary") or []:
+        if isinstance(item, dict) and isinstance(item.get("key_metrics"), dict):
+            metrics.update(item["key_metrics"])
+
+    brief_ref = iteration.get("loop_research_brief") or {}
+    brief_json = {}
+    if isinstance(brief_ref, dict) and brief_ref.get("json_path") and Path(brief_ref["json_path"]).exists():
+        brief_json = load_json(Path(brief_ref["json_path"]))
+
+    packet = {
+        "contract_version": "factorforge_revision_council_packet_v1",
+        "report_id": rid,
+        "artifact_identity": iteration.get("artifact_identity") or case.get("artifact_identity") or run.get("artifact_identity") or {},
+        "factor_formula": canonical.get("formula_text") or spec.get("formula_text") or nested(brief_json, "economic_interpretation").get("formula"),
+        "implementation_mode": (iteration.get("artifact_identity") or {}).get("implementation_mode") or (run.get("artifact_identity") or {}).get("implementation_mode"),
+        "mechanism_math_contract": (
+            spec.get("mechanism_math_contract")
+            or case.get("mechanism_math_contract")
+            or handoff.get("mechanism_math_contract")
+            or nested(memo, "mechanism_analysis").get("mechanism_math_contract")
+            or {}
+        ),
+        "research_memo": {
+            "evidence_audit": memo.get("evidence_audit") or {},
+            "mechanism_analysis": memo.get("mechanism_analysis") or {},
+            "case_comparison": memo.get("case_comparison") or {},
+            "revision_strategy": memo.get("revision_strategy") or {},
+            "search_policy_decision": memo.get("search_policy_decision") or {},
+        },
+        "loop_research_brief": {
+            "reference": brief_ref,
+            "decision_snapshot": nested(brief_json, "decision_snapshot"),
+            "mechanism_math_summary": brief_json.get("mechanism_math_summary") or {},
+        },
+        "metrics": metrics,
+        "chart_evidence": brief_json.get("chart_evidence") or {},
+        "program_search_policy": memo.get("search_policy_decision") or memo.get("program_search_policy") or {},
+        "source_paths": {key: str(value) for key, value in paths.items() if value.exists()},
+        "forbidden_writeback_baseline": forbidden_writeback_baseline(rid),
+    }
+
+    out = OBJ / "research_iteration_master" / "revision_council" / rid / f"revision_council_packet__{rid}.json"
+    write_json(out, packet)
+    print(json.dumps({"status": "written", "path": str(out), "report_id": rid}, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

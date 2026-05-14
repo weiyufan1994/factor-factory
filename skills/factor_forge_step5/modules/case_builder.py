@@ -354,6 +354,7 @@ def build_step5_math_discipline_review(bundle: Dict[str, Any], evaluation: Dict[
     fsm = bundle["objects"].get("factor_spec_master") or {}
     frm = bundle["objects"].get("factor_run_master") or {}
     canonical = fsm.get("canonical_spec") or {}
+    mechanism_math_contract = fsm.get("mechanism_math_contract") or canonical.get("mechanism_math_contract") or {}
     formula_text = str(canonical.get("formula_text") or "")
     operators = [str(item).lower() for item in _as_list(canonical.get("operators"))]
     preprocessing = [str(item).lower() for item in _as_list(canonical.get("preprocessing"))]
@@ -415,6 +416,14 @@ def build_step5_math_discipline_review(bundle: Dict[str, Any], evaluation: Dict[
         "information_set_legality": information_set_legality,
         "spec_stability": spec_stability,
         "signal_vs_portfolio_gap": signal_vs_portfolio_gap,
+        "mechanism_math_contract_ref": {
+            "math_model_status": mechanism_math_contract.get("math_model_status"),
+            "model_family": mechanism_math_contract.get("model_family"),
+            "state_or_object": mechanism_math_contract.get("state_or_object"),
+            "target_functional": mechanism_math_contract.get("target_functional"),
+            "monotonicity_claim": mechanism_math_contract.get("monotonicity_claim"),
+            "expected_metric_signature": mechanism_math_contract.get("expected_metric_signature") or {},
+        },
         "long_side_objective": long_side_review,
         "monotonicity_objective": "Higher factor values should map to stronger expected long-side returns; decile spreads are diagnostics only.",
         "revision_scope_constraint": LONG_ONLY_ADOPTION_CONSTRAINTS["revision_scope"],
@@ -489,6 +498,7 @@ def build_factor_case_master(
     frm = bundle["objects"].get("factor_run_master") or {}
     fsm = bundle["objects"].get("factor_spec_master") or {}
     dpm = bundle["objects"].get("data_prep_master") or {}
+    mechanism_math_contract = fsm.get("mechanism_math_contract") or (fsm.get("canonical_spec") or {}).get("mechanism_math_contract") or {}
 
     case = {
         "report_id": bundle["report_id"],
@@ -512,6 +522,7 @@ def build_factor_case_master(
             "archive_paths": archive_paths,
         },
         "math_discipline_review": build_step5_math_discipline_review(bundle, evaluation),
+        "mechanism_math_contract": mechanism_math_contract,
         "adoption_constraints": LONG_ONLY_ADOPTION_CONSTRAINTS,
         "long_side_review": build_long_side_review(evaluation),
         "step4_quality_gate": evaluation.get("step4_quality_gate") or {},

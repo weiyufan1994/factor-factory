@@ -194,7 +194,7 @@ if __name__ == '__main__':
     write_text(next_abs, wrapper)
 
     handoff4['factor_impl_ref'] = next_rel
-    handoff4['execution_mode'] = handoff4.get('execution_mode') or 'direct_python'
+    handoff4['execution_mode'] = handoff4.get('execution_mode') or 'direct_code'
     handoff4['step6_iteration_applied'] = {
         'iteration_no': iteration_no,
         'applied_at_utc': utc_now(),

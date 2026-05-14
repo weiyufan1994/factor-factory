@@ -34,6 +34,13 @@ Always reason in this order:
 
 Do **not** start from IC/backtest metrics alone.
 
+Every completed Step6 loop must also leave a user-facing `loop_research_brief`
+artifact in Markdown and JSON. The brief is not a chat summary: it is the
+durable research note that explains economic interpretation, metric/chart
+evidence, knowledge comparison, next research direction, and the final loop
+conclusion. Long-short and decile evidence must be labeled diagnostic-only, and
+the next direction must explain why portfolio-expression repair is forbidden.
+
 ## Current Trading Mandate
 
 The current Factor Forge mandate is **long-only**:
@@ -144,6 +151,14 @@ When reviewing Step5/Step6 output, require `math_discipline_review`:
 
 If these cannot be answered, do not promote the factor.
 
+Mechanism Math Contract v1 extends this discipline. Each factor should
+preferably state the economic mechanism, mathematical model family, state or
+object, observable estimator, target functional, expected metric signature,
+revision operators, falsification tests, and kill criteria. `under_specified`
+is acceptable when the mechanism is not yet clear; pretending a mechanism exists
+is not. The contract sharpens research reasoning but never replaces real
+Step4/5 evidence or promotion gates.
+
 Use repo reference:
 - `docs/operations/factorforge-math-research-discipline.zh-CN.md`
 
@@ -177,3 +192,96 @@ Typical usage pattern:
 - `references/framework.md`
 - `references/step6-contract.md`
 - `references/playbook.md`
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Step6 Research Intelligence
+
+When reviewing Step6 output, require `research_memo` to carry:
+
+- `evidence_audit`
+- `mechanism_analysis`
+- `case_comparison`
+- `revision_strategy`
+- `search_policy_decision`
+
+`evidence_audit` is the first gate: all-skipped backends, missing self-quant
+long-side evidence, missing long-side risk metrics, invalid factor values, or
+identity failures make evidence unusable. Long-short or short-side diagnostics
+may explain failure but cannot justify adoption.
+
+`revision_strategy` must target factor expression or Step3B code. It must state
+why the fix is not a portfolio-expression, short-leg, decile-trading, rebalance,
+or clean-data mutation workaround. Program search remains approval-gated and
+must serve the research hypothesis.
+
+## Mechanism Reasoner And Case Comparator
+
+Step6 reasoning must first identify the return source and factor family, then
+ask whether the observed long-side evidence matches the expected mechanism
+signature. IC, long-short spread, or a weak short side cannot establish a
+mechanism.
+
+Case comparison must actively use retrieval. Same-factor cases require matching
+factor identity and hash lineage. Similar cases, general methodology, and
+anti-patterns may inform judgment, but must not be treated as same-factor
+evidence or promotion support. Empty retrieval is a cold-start knowledge gap and
+should be written as a future retrieval anchor when provenance gates pass.
+
+## Revision Strategist
+
+Step6 revision proposals must be falsifiable factor-expression or Step3B-code
+changes. They must not repair adoption by changing portfolio expression,
+short-leg exposure, decile trading, rebalance mechanics, or shared clean data.
+
+Actionable revision hypotheses must name the failure signature, mechanism
+target, expression change, expected metric changes, falsification tests, kill
+criteria, overfit risk, and why the change is not a portfolio fix. Evidence or
+provenance failures such as `implementation_suspect` and
+`same_factor_identity_mismatch` should block normal expression revision until
+the upstream issue is repaired. A clean promotion should not invent a revision:
+`revision_needed=false`, no hypotheses, and `revision_quality=not_needed`.
+
+## Revision Council Discipline
+
+The Revision Council is Step6's investment-committee method for difficult
+iterate decisions. It is not tied to named agents. Any main agent using Factor
+Forge Ultimate may run the council itself or delegate role-specific proposals to
+subagents when the runtime supports safe delegation.
+
+Use council output only as advisory research material. Council proposals can
+challenge symbolic laws, evidence quality, mechanism fit, expression design,
+cost/turnover behavior, regime robustness, and retrieval lessons. They cannot
+promote a factor, approve execution, write `handoff_to_step3b`, modify
+generated code, mutate shared clean data, or write official-library records.
+
+The main agent must define an exploration graph. Independent hypotheses may be
+explored in parallel; dependent hypotheses must be explored sequentially. For
+example, evidence-audit concerns should be resolved before expression mutation,
+and symbolic-law findings should be checked by formula feasibility before any
+Step3B revision brief is accepted.
+
+Every council proposal must include an explicit `derivation_record`: research
+question, assumptions, mathematical objects, selected and rejected tools,
+formula or symbolic derivation steps, derived implications, revision
+hypotheses, expected metric changes, falsification tests, kill criteria,
+confidence limits, and an overclaim guard. This is a public research artifact
+for knowledge-base learning, not hidden chain-of-thought. A proposal without a
+substantive derivation record is invalid.
+
+The symbolic-law role should treat the factor formula as a mathematical object:
+state variable, estimator mapping, target functional, invariance or scaling
+claim, limiting cases, stochastic or statistical structure, and falsification
+tests. It may use dimensional analysis, stochastic calculus, spectral analysis,
+projection, robust statistics, functional analysis, dynamical systems, stopping
+time, information theory, or other justified tools. It should select tools based
+on the factor and evidence, not apply a fixed checklist. Mathematical
+plausibility is not evidence and must be checked against Step4/5/6 evidence and
+provenance gates before any future human-approved implementation work.

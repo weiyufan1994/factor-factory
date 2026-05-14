@@ -3,7 +3,10 @@
 # Step 2 contract
 
 ## Current judgment
-Step 2 now has a first tiny committed reproducibility substrate design, but it is still more upstream-artifact-dependent than Step 1.
+Step 2 is the canonical spec gate. It consumes `alpha_idea_master` from the approved Step 1 intake layer and emits `factor_spec_master`, `handoff_to_step3`, and research context for Step3B.
+
+## Mechanism math contract
+`factor_spec_master` carries `mechanism_math_contract` with version `factorforge_mechanism_math_contract_v1`. It is generated for operator, direct_code, and hybrid modes as an incremental research layer. `specified` contracts must include model family, math toolkits, economic mechanism, state/object, observable inputs, estimator mapping, target functional, monotonicity claim, information set, expected metric signature, revision operators, falsification tests, and kill criteria. If the mechanism is not responsibly formalizable, Step2 records `math_model_status=under_specified` with `under_specified_reason` and `next_human_research_question`.
 
 ## Current committed reproducibility inputs
 - `fixtures/step2/alpha_idea_master__sample.json`
@@ -12,16 +15,18 @@ Step 2 now has a first tiny committed reproducibility substrate design, but it i
 - `fixtures/step2/report_map__sample__primary.json`
 - `fixtures/step2/sample_report_stub.pdf`
 
-## Current committed sample runner
-- `scripts/run_step2_sample.sh`
-- `scripts/run_step2_sample.py`
+## Runner status
+Sample/debug runners are archived or debug-blocked for canonical writes. Formal Step2 execution must use the approved producer contract and must not be replaced by handwritten JSON.
 
 ## Input class
 - `alpha_idea_master__{report_id}.json`
 - primary alpha thesis artifact
 - challenger alpha thesis artifact
 - primary report_map artifact
-- path resolution substrate sufficient for current runner
+- `source_type`: one of `pdf_report`, `paper_canonical_formula`, `natural_language_hypothesis`
+- approved producer metadata
+
+`pdf_report` may resolve report registry/PDF context. `paper_canonical_formula` and `natural_language_hypothesis` must not require a local PDF.
 
 ## Output class
 - `factor_spec_master__{report_id}.json`
@@ -29,6 +34,32 @@ Step 2 now has a first tiny committed reproducibility substrate design, but it i
 - challenger raw spec artifact
 - consistency audit artifact
 - Step 3 handoff artifact
+
+Both `factor_spec_master` and `handoff_to_step3` must include:
+- `contract_version = factorforge_step2_source_contract_v2`
+- `source_type`
+- `producer`
+- `upstream_producer`
+- `implementation_mode = operator | direct_code | hybrid`
+- `spec_hash`
+- `artifact_identity`
+- `research_contract`
+- `math_discipline_review`
+- `learning_and_innovation`
+
+`artifact_identity` must include `report_id`, `factor_id`, `source_type`, `implementation_mode`, `contract_version`, `producer`, `upstream_producer`, `spec_hash`, `branch_id`, and `artifact_role`. Operator mode requires `formula_hash`; direct-code mode requires `code_hash` or `code_contract_hash`; hybrid mode requires `formula_hash` and `custom_block_hash`.
+
+## Operator formula contract
+
+For `implementation_mode=operator`, Step2 must parse `formula_text` into `formula_ir` using `factorforge_formula_ir_v1`. The spec must carry `formula_hash`, `operator_set`, `required_fields`, `resolved_fields`, `field_aliases`, and `parse_status`. `paper_canonical_formula` sources require successful Formula IR. Unknown operators, malformed syntax, negative windows, future-looking operators, and missing field aliases are BLOCK conditions.
+
+The qlib expression bridge is explicit supported/unsupported metadata. Unsupported qlib operators must not be silently replaced by approximate expressions. Step3B uses the pandas reference evaluator as the parity oracle for generated operator code.
+
+## Hybrid contract
+
+`implementation_mode=hybrid` requires `factorforge_hybrid_contract_v1`. The contract must contain an `operator_subgraph` with Formula IR, nonempty `custom_blocks`, a boundary schema, and `formula_hash`, `custom_block_hash`, and `hybrid_hash`. Missing or mismatched fields are `BLOCK_INVALID_HYBRID_CONTRACT`.
+
+Custom blocks must declare function name, input/output schema, required fields, forbidden patterns, and source code. Operator outputs are protected by default; custom code cannot overwrite them unless the boundary explicitly allows it.
 
 ## Research contract fields
 Step 2 is the first canonical-spec gate. `factor_spec_master` must include:
@@ -44,6 +75,21 @@ Step 2 is the first canonical-spec gate. `factor_spec_master` must include:
 - `learning_and_innovation.reuse_instruction_for_future_agents`
 
 The Step 3 handoff must carry `research_contract`, `math_discipline_review`, and `learning_and_innovation` forward.
+
+Step3B must build `step2_research_context` from these fields and reject missing sentinel values.
+
+## Producer gate
+Allowed Step2 producers:
+- `step2_pdf_report`
+- `step12_canonical_formula_intake`
+- `step12_hypothesis_intake`
+
+Source-to-producer mapping is strict:
+- `pdf_report` -> `step2_pdf_report`
+- `paper_canonical_formula` -> `step12_canonical_formula_intake`
+- `natural_language_hypothesis` -> `step12_hypothesis_intake`
+
+Producer fields must be nonempty and allowlisted at `factor_spec_master.producer`, `factor_spec_master.upstream_producer`, `factor_spec_master.research_contract.producer`, `handoff_to_step3.producer`, and `handoff_to_step3.research_contract.producer`. Any `manual`, `debug`, `fake`, `posthoc`, `unknown`, `adhoc`, or `ad_hoc` producer string blocks formal Step3.
 
 ## Current code layer in repo
 - `skills/factor-forge-step2/scripts/run_step2.py`

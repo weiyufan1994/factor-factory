@@ -133,6 +133,7 @@ def update_ledger(ledger_path: Path, branch_id: str, taskbook_path: Path) -> Non
             branch['status'] = 'prepared'
             branch['last_event'] = 'approved_branch_taskbook_prepared'
             branch['taskbook_path'] = str(taskbook_path)
+            branch['branch_manifest_path'] = str(taskbook_path.parent / 'branch_manifest.json')
             branch['updated_at_utc'] = utc_now()
             break
     write_json(ledger_path, ledger)
@@ -152,27 +153,38 @@ def main() -> None:
 
     plan = load_json(plan_path)
     branch = find_branch(plan, args.branch_id)
-    if ((branch.get('approval') or {}).get('status')) != 'approved':
-        raise SystemExit('PROGRAM_SEARCH_BRANCH_APPROVAL_REQUIRED: approve branch before preparing taskbook')
+    approval_path = OBJ / 'research_iteration_master' / f'search_branch_approval__{rid}__{args.branch_id}.json'
+    if not approval_path.exists():
+        raise SystemExit(f'PROGRAM_SEARCH_BRANCH_APPROVAL_REQUIRED: missing approval {approval_path}')
+    approval = load_json(approval_path)
+    if approval.get('approval_status') != 'approved':
+        raise SystemExit(f'PROGRAM_SEARCH_BRANCH_APPROVAL_REQUIRED: approval_status={approval.get("approval_status")}')
+    if approval.get('canonical_write_permission') is not False:
+        raise SystemExit('PROGRAM_SEARCH_BRANCH_PREP_INVALID: approval cannot grant canonical write permission')
 
     branch_root = FF / 'research_branches' / rid / args.branch_id
+    manifest_path = branch_root / 'branch_manifest.json'
+    if manifest_path.exists():
+        raise SystemExit(f'PROGRAM_SEARCH_BRANCH_PREP_INVALID: branch already prepared {manifest_path}')
     allowed_write_scope = [
-        str(branch_root / 'generated_code'),
-        str(branch_root / 'evaluations'),
-        str(branch_root / 'notes'),
+        str(branch_root),
         str(OBJ / 'research_iteration_master' / f'search_branch_result__{rid}__{args.branch_id}.json'),
+        str(OBJ / 'research_iteration_master' / f'search_branch_ledger__{rid}.json'),
     ]
-    for rel in ['generated_code', 'evaluations', 'notes']:
-        (branch_root / rel).mkdir(parents=True, exist_ok=True)
+    branch_root.mkdir(parents=True, exist_ok=True)
 
     taskbook = {
         'report_id': rid,
         'branch_id': args.branch_id,
         'created_at_utc': utc_now(),
-        'status': 'prepared',
-        'parent_plan_path': str(plan_path),
+        'branch_status': 'prepared',
+        'source_plan_path': str(plan_path),
+        'source_approval_path': str(approval_path),
         'branch': branch,
         'allowed_write_scope': allowed_write_scope,
+        'canonical_write_permission': False,
+        'execution_allowed': False,
+        'requires_worker_specific_command': True,
         'must_not_do': [
             'do not mutate shared clean data',
             'do not overwrite canonical Step3B implementation',
@@ -191,10 +203,39 @@ def main() -> None:
         'branch_root': str(branch_root),
         'producer': 'program_search_engine_v1',
     }
+    manifest = {
+        'report_id': rid,
+        'branch_id': args.branch_id,
+        'branch_status': 'prepared',
+        'source_plan_path': str(plan_path),
+        'source_approval_path': str(approval_path),
+        'isolated_workspace': str(branch_root),
+        'allowed_write_scope': allowed_write_scope,
+        'forbidden_write_scope': [
+            'objects/handoff',
+            f'generated_code/{rid}',
+            'data/clean',
+            'objects/factor_library_official',
+            'objects/implementation_plan_master',
+        ],
+        'canonical_write_permission': False,
+        'execution_allowed': False,
+        'requires_worker_specific_command': True,
+    }
+    input_snapshot = {
+        'report_id': rid,
+        'branch_id': args.branch_id,
+        'source_plan_path': str(plan_path),
+        'source_approval_path': str(approval_path),
+        'branch_snapshot': branch,
+        'search_policy_decision': plan.get('search_policy_decision') or {},
+    }
 
-    taskbook_path = OBJ / 'research_iteration_master' / f'search_branch_taskbook__{rid}__{args.branch_id}.json'
-    taskbook_md_path = branch_root / 'TASKBOOK.md'
+    taskbook_path = branch_root / 'branch_taskbook.json'
+    taskbook_md_path = branch_root / 'README.md'
     write_json(taskbook_path, taskbook)
+    write_json(manifest_path, manifest)
+    write_json(branch_root / 'input_snapshot.json', input_snapshot)
     write_text(taskbook_md_path, build_markdown(rid, branch, taskbook))
     update_ledger(ledger_path, args.branch_id, taskbook_path)
 

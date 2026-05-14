@@ -29,8 +29,23 @@ from skills.factor_forge_step5.modules.rules import (  # type: ignore
 from skills.factor_forge_step5.modules.evaluator import build_factor_evaluation  # type: ignore
 from skills.factor_forge_step5.modules.case_builder import build_factor_case_master  # type: ignore
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.provenance import (
+    build_evidence_identity,
+    build_evidence_quality,
+    build_source_evidence_refs,
+    derive_identity,
+)
 
 OBJ = FF / 'objects'
+
+STEP5_PREWRITE_REQUIRED_FLAGS = [
+    'identity_chain_verified',
+    'mode_decision_present',
+    'self_quant_required_and_present',
+    'long_side_metrics_present',
+    'step4_has_successful_backend',
+]
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
@@ -111,10 +126,71 @@ def build_handoff_to_step6(bundle: dict, evaluation: dict, case: dict, evaluatio
         "lessons": case.get("lessons") or [],
         "next_actions": case.get("next_actions") or [],
         "math_discipline_review": case.get("math_discipline_review") or {},
+        "mechanism_math_contract": case.get("mechanism_math_contract") or {},
         "backend_summary": evaluation.get("backend_summary") or [],
         "known_limits": case.get("known_limits") or [],
+        "artifact_identity": case.get("artifact_identity") or {},
+        "evidence_identity": case.get("evidence_identity") or {},
+        "implementation_mode_decision": case.get("implementation_mode_decision") or {},
+        "source_evidence_refs": case.get("source_evidence_refs") or {},
+        "evidence_quality": case.get("evidence_quality") or {},
         "created_by_step": "step5",
     }
+
+
+def step5_prewrite_failures(evidence_quality: dict) -> list[str]:
+    failures = [
+        key for key in STEP5_PREWRITE_REQUIRED_FLAGS
+        if evidence_quality.get(key) is not True
+    ]
+    missing_long = evidence_quality.get('missing_long_side_metrics') or []
+    if missing_long and 'long_side_metrics_present' not in failures:
+        failures.append('missing_long_side_metrics:' + ','.join(str(item) for item in missing_long))
+    return failures
+
+
+def write_step5_prewrite_block(
+    *,
+    rid: str,
+    reasons: list[str],
+    evaluation: dict,
+    case: dict,
+    evaluation_path: Path,
+    case_path: Path,
+) -> None:
+    evaluation['evaluation_status'] = 'failed'
+    evaluation['prewrite_blocked'] = True
+    evaluation['prewrite_block_reasons'] = reasons
+    case['final_status'] = 'failed'
+    case['archive_status'] = 'skipped'
+    case['prewrite_blocked'] = True
+    case['prewrite_block_reasons'] = reasons
+    case['not_validated'] = True
+    case.setdefault('evidence', {})['archive_paths'] = []
+    write_json(evaluation_path, evaluation)
+    print(f'[WRITE] {evaluation_path}')
+    write_json(case_path, case)
+    print(f'[WRITE] {case_path}')
+    diagnostic = {
+        'report_id': rid,
+        'prewrite_blocked': True,
+        'prewrite_block_reasons': reasons,
+        'archive_status': 'skipped',
+        'case_write_mode': 'failed_only',
+        'would_have_written': [
+            'factor_case_master_failed_only',
+        ],
+        'skipped_writes': [
+            'archive',
+            'handoff_to_step6',
+            'factor_case_master_validated',
+        ],
+        'evidence_quality': case.get('evidence_quality') or {},
+        'evidence_identity': case.get('evidence_identity') or {},
+    }
+    diag_path = OBJ / 'validation' / f'step5_prewrite_block__{rid}.json'
+    write_json(diag_path, diagnostic)
+    print(f'[WRITE] {diag_path}')
 
 
 if __name__ == '__main__':
@@ -138,13 +214,39 @@ if __name__ == '__main__':
         raise SystemExit('STEP5_INPUT_INVALID: ' + '; '.join(errors))
 
     evaluation = build_factor_evaluation(bundle)
+    factor_run_master = ((bundle.get('objects') or {}).get('factor_run_master') or {})
+    base_identity = factor_run_master.get('artifact_identity') or {}
+    evaluation['artifact_identity'] = derive_identity(base_identity, 'factor_evaluation', 'step5')
+    try:
+        assert_identity_matches_strict(
+            base_identity,
+            evaluation['artifact_identity'],
+            expected_label='factor_run_master',
+            actual_label='factor_evaluation',
+            allowed_role_transitions={(base_identity.get('artifact_role'), 'factor_evaluation')},
+        )
+        identity_chain_verified = True
+    except AssertionError:
+        identity_chain_verified = False
+    evidence_identity = build_evidence_identity(
+        factorforge_root=FF,
+        report_id=rid,
+        factor_run_master=factor_run_master,
+        factor_evaluation=evaluation,
+    )
+    evaluation['evidence_identity'] = evidence_identity
+    evaluation['implementation_mode_decision'] = evidence_identity.get('implementation_mode_decision') or {}
     evaluation['warnings'] = list(dict.fromkeys((evaluation.get('warnings') or []) + warnings))
     final_status = determine_final_status(bundle, evaluation)
     evaluation['evaluation_status'] = final_status
+    evaluation['evidence_quality'] = build_evidence_quality(
+        factor_run_master=factor_run_master,
+        factor_evaluation=evaluation,
+        evidence_identity=evidence_identity,
+        identity_chain_verified=identity_chain_verified,
+    )
 
     evaluation_path = OBJ / 'validation' / f'factor_evaluation__{rid}.json'
-    write_json(evaluation_path, evaluation)
-    print(f'[WRITE] {evaluation_path}')
 
     case = build_factor_case_master(
         bundle=bundle,
@@ -153,7 +255,49 @@ if __name__ == '__main__':
         final_status=final_status,
         evaluation_path=str(evaluation_path),
     )
+    case['artifact_identity'] = derive_identity(base_identity, 'factor_case_master', 'step5')
+    try:
+        assert_identity_matches_strict(
+            base_identity,
+            case['artifact_identity'],
+            expected_label='factor_run_master',
+            actual_label='factor_case_master',
+            allowed_role_transitions={(base_identity.get('artifact_role'), 'factor_case_master')},
+        )
+        identity_chain_verified = identity_chain_verified and True
+    except AssertionError:
+        identity_chain_verified = False
+    evidence_identity = build_evidence_identity(
+        factorforge_root=FF,
+        report_id=rid,
+        factor_run_master=factor_run_master,
+        factor_case_master=case,
+        factor_evaluation=evaluation,
+    )
+    case['evidence_identity'] = evidence_identity
+    case['implementation_mode_decision'] = evidence_identity.get('implementation_mode_decision') or {}
+    case['source_evidence_refs'] = build_source_evidence_refs(evidence_identity)
+    case['evidence_quality'] = build_evidence_quality(
+        factor_run_master=factor_run_master,
+        factor_evaluation=evaluation,
+        evidence_identity=evidence_identity,
+        identity_chain_verified=identity_chain_verified,
+    )
     case_path = OBJ / 'factor_case_master' / f'factor_case_master__{rid}.json'
+    prewrite_failures = step5_prewrite_failures(case['evidence_quality'])
+    if prewrite_failures:
+        write_step5_prewrite_block(
+            rid=rid,
+            reasons=prewrite_failures,
+            evaluation=evaluation,
+            case=case,
+            evaluation_path=evaluation_path,
+            case_path=case_path,
+        )
+        raise SystemExit('STEP5_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
+
+    write_json(evaluation_path, evaluation)
+    print(f'[WRITE] {evaluation_path}')
     write_json(case_path, case)
     print(f'[WRITE] {case_path}')
 
@@ -170,6 +314,7 @@ if __name__ == '__main__':
         case_path=case_path,
         archive_paths=archive_paths,
     )
+    handoff_to_step6['artifact_identity'] = derive_identity(base_identity, 'handoff_to_step6', 'step5')
     handoff_path = OBJ / 'handoff' / f'handoff_to_step6__{rid}.json'
     write_json(handoff_path, handoff_to_step6)
     print(f'[WRITE] {handoff_path}')

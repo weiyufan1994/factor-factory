@@ -24,10 +24,62 @@ if str(FF) not in sys.path:
 
 from skills.factor_forge_step5.modules.io import load_json, write_json  # type: ignore
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.provenance import (
+    build_decision_lineage,
+    build_evidence_identity,
+    build_knowledge_provenance,
+    derive_identity as derive_provenance_identity,
+)
+from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
-RETRIEVAL_INDEX = REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'
+RETRIEVAL_INDEX = Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'))
+LOOP_RESEARCH_BRIEF_VERSION = 'factorforge_loop_research_brief_v1'
+REQUIRED_LOOP_BRIEF_CHART_KEYS = [
+    'rank_ic_timeseries',
+    'pearson_ic_timeseries',
+    'long_side_nav',
+    'cost_adjusted_long_side_nav',
+    'quantile_nav',
+    'long_short_nav_diagnostic_only',
+    'coverage_by_day',
+]
+CORE_LOOP_BRIEF_METRICS = [
+    'rank_ic_mean',
+    'rank_ic_ir',
+    'pearson_ic_mean',
+    'pearson_ic_ir',
+    'long_side_annual_return',
+    'long_side_annual_volatility',
+    'long_side_sharpe',
+    'long_side_max_drawdown',
+    'long_side_recovery_days',
+    'long_side_turnover_mean_daily',
+    'trading_cogs_annual',
+    'cost_adjusted_annual_return',
+    'cost_adjusted_long_side_sharpe',
+    'cost_adjusted_long_side_max_drawdown',
+    'group_top_decile_mean_return',
+    'group_bottom_decile_mean_return',
+    'group_long_short_spread_mean',
+    'group_long_short_spread_ir',
+]
+CHART_ARTIFACT_FILENAMES = {
+    'rank_ic_timeseries': 'rank_ic_timeseries.png',
+    'pearson_ic_timeseries': 'pearson_ic_timeseries.png',
+    'long_side_nav': 'long_side_nav.png',
+    'cost_adjusted_long_side_nav': 'cost_adjusted_long_side_nav.png',
+    'quantile_nav': 'quantile_nav_10groups.png',
+    'long_short_nav_diagnostic_only': 'long_short_nav_10groups.png',
+    'coverage_by_day': 'coverage_by_day.png',
+}
+
+
+def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step6') -> dict[str, Any]:
+    return derive_provenance_identity(parent, role, producer)
 EMBEDDING_MATRIX = REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_embeddings.npy'
 EMBEDDING_META = REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_embedding_metadata.jsonl'
 EMBEDDING_ENDPOINT = os.getenv('FACTORFORGE_EMBEDDING_ENDPOINT', 'http://127.0.0.1:8008/v1/embeddings')
@@ -735,6 +787,1124 @@ def build_metric_interpretation(metrics: dict[str, Any], payloads: dict[str, dic
     }
 
 
+def _direction(value: float | None) -> str:
+    if value is None:
+        return 'missing'
+    if value > 0:
+        return 'positive'
+    if value < 0:
+        return 'negative'
+    return 'neutral'
+
+
+def _backend_bucket(backend_runs: list[dict[str, Any]], statuses: set[str]) -> list[str]:
+    return [
+        str(item.get('backend'))
+        for item in backend_runs
+        if str(item.get('status')) in statuses and item.get('backend')
+    ]
+
+
+def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]], headline_metrics: dict[str, Any]) -> dict[str, Any]:
+    run_master = bundle['factor_run_master']
+    case = bundle['factor_case_master']
+    evaluation = bundle['factor_evaluation']
+    backend_runs = (((run_master.get('evaluation_results') or {}).get('backend_runs')) or [])
+    successful = _backend_bucket(backend_runs, {'success'})
+    partial = _backend_bucket(backend_runs, {'partial'})
+    skipped = _backend_bucket(backend_runs, {'skipped'})
+    failed = _backend_bucket(backend_runs, {'failed'})
+    self_quant_status = next((str(item.get('status')) for item in backend_runs if item.get('backend') == 'self_quant_analyzer'), 'missing')
+    self_quant_present = self_quant_status in {'success', 'partial'} and bool(payloads.get('self_quant_analyzer'))
+    all_skipped = bool(backend_runs) and not successful and not partial
+    payload_missing = [
+        str(item.get('backend'))
+        for item in backend_runs
+        if str(item.get('status')) in {'success', 'partial'} and item.get('backend') not in payloads
+    ]
+    fallback_or_stub = [
+        str(item.get('backend'))
+        for item in backend_runs
+        if any(token in str(item).lower() for token in ['stub', 'fallback', 'placeholder'])
+    ]
+
+    rank_ic = _safe_float(headline_metrics.get('rank_ic_mean'))
+    long_return = _safe_float(headline_metrics.get('long_side_annual_return'))
+    top_daily = _safe_float(headline_metrics.get('group_top_decile_mean_return'))
+    bottom_daily = _safe_float(headline_metrics.get('group_bottom_decile_mean_return'))
+    spread = _safe_float(headline_metrics.get('group_long_short_spread_mean'))
+    short_side_dominance = bool(
+        (spread is not None and spread > 0)
+        and (
+            (long_return is not None and long_return <= 0)
+            or (top_daily is not None and top_daily <= 0)
+            or (bottom_daily is not None and bottom_daily < 0 and (top_daily is None or abs(bottom_daily) > abs(top_daily)))
+        )
+    )
+    if rank_ic is None or (long_return is None and top_daily is None):
+        ic_long_side_consistency = 'unknown'
+    elif (rank_ic > 0 and (long_return or top_daily or 0) > 0) or (rank_ic < 0 and (long_return or top_daily or 0) < 0):
+        ic_long_side_consistency = 'consistent'
+    elif rank_ic == 0 or (long_return or top_daily or 0) == 0:
+        ic_long_side_consistency = 'mixed'
+    else:
+        ic_long_side_consistency = 'conflicting'
+    if top_daily is None or bottom_daily is None:
+        monotonicity_support = 'unknown'
+    elif top_daily > bottom_daily and top_daily > 0:
+        monotonicity_support = 'strong'
+    elif top_daily > bottom_daily:
+        monotonicity_support = 'partial'
+    else:
+        monotonicity_support = 'weak'
+    if ic_long_side_consistency == 'consistent' and monotonicity_support in {'strong', 'partial'} and not short_side_dominance:
+        metric_verdict = 'supportive'
+    elif short_side_dominance or ic_long_side_consistency == 'conflicting':
+        metric_verdict = 'negative'
+    elif ic_long_side_consistency == 'unknown':
+        metric_verdict = 'inconclusive'
+    else:
+        metric_verdict = 'mixed'
+
+    required_long_side = [
+        'long_side_annual_return',
+        'long_side_annual_volatility',
+        'long_side_sharpe',
+        'long_side_max_drawdown',
+        'long_side_recovery_days',
+        'long_side_turnover_mean_daily',
+        'trading_cogs_daily',
+        'trading_cogs_annual',
+        'cost_adjusted_annual_return',
+        'cost_adjusted_long_side_sharpe',
+    ]
+    missing_long = [key for key in required_long_side if headline_metrics.get(key) is None]
+    sharpe = _safe_float(headline_metrics.get('long_side_sharpe'))
+    max_drawdown = _safe_float(headline_metrics.get('long_side_max_drawdown'))
+    recovery_days = _safe_float(headline_metrics.get('long_side_recovery_days'))
+    turnover = _safe_float(headline_metrics.get('long_side_turnover_mean_daily') or headline_metrics.get('turnover_mean'))
+    explicit_cogs_daily = _safe_float(headline_metrics.get('trading_cogs_daily'))
+    turnover_times_30bps_daily = abs(turnover) * DEFAULT_TURNOVER_COST_RATE if turnover is not None else None
+    cogs_daily = explicit_cogs_daily if explicit_cogs_daily is not None else turnover_times_30bps_daily
+    cogs_annual = _safe_float(headline_metrics.get('trading_cogs_annual'))
+    if cogs_annual is None and cogs_daily is not None:
+        cogs_annual = cogs_daily * 252
+    cost_adjusted_return = _safe_float(headline_metrics.get('cost_adjusted_annual_return'))
+    cost_adjusted_sharpe = _safe_float(headline_metrics.get('cost_adjusted_long_side_sharpe'))
+
+    if sharpe is None:
+        sharpe_status = 'missing'
+    elif sharpe >= LONG_SIDE_PERFORMANCE_THRESHOLDS['official_min_sharpe']:
+        sharpe_status = 'official_ready'
+    elif sharpe >= LONG_SIDE_PERFORMANCE_THRESHOLDS['candidate_min_sharpe']:
+        sharpe_status = 'candidate'
+    elif sharpe >= 0:
+        sharpe_status = 'weak'
+    else:
+        sharpe_status = 'negative'
+    if max_drawdown is None:
+        drawdown_status = 'missing'
+    elif max_drawdown < -0.50:
+        drawdown_status = 'hard_breach'
+    elif max_drawdown < LONG_SIDE_PERFORMANCE_THRESHOLDS['max_drawdown_soft_limit']:
+        drawdown_status = 'soft_breach'
+    else:
+        drawdown_status = 'acceptable'
+    if recovery_days is None:
+        recovery_status = 'missing'
+    elif recovery_days <= LONG_SIDE_PERFORMANCE_THRESHOLDS['recovery_days_soft_limit']:
+        recovery_status = 'acceptable'
+    else:
+        recovery_status = 'slow'
+    if cost_adjusted_return is None and cost_adjusted_sharpe is None:
+        cost_adjusted_status = 'missing'
+    elif (cost_adjusted_return is not None and cost_adjusted_return < 0) or (cost_adjusted_sharpe is not None and cost_adjusted_sharpe < 0):
+        cost_adjusted_status = 'negative'
+    else:
+        cost_adjusted_status = 'positive'
+    if missing_long:
+        long_side_verdict = 'blocked'
+    elif long_return is not None and long_return > 0 and sharpe_status in {'official_ready', 'candidate'} and cost_adjusted_status == 'positive':
+        long_side_verdict = 'supportive'
+    elif long_return is not None and long_return > 0:
+        long_side_verdict = 'mixed'
+    elif long_return is not None:
+        long_side_verdict = 'weak'
+    else:
+        long_side_verdict = 'blocked'
+
+    diagnostic = run_master.get('diagnostic_summary') or {}
+    row_count = _safe_float(diagnostic.get('row_count') or run_master.get('row_count'))
+    date_count = _safe_float(diagnostic.get('date_count') or run_master.get('date_count'))
+    ticker_count = _safe_float(diagnostic.get('ticker_count') or run_master.get('ticker_count'))
+    nan_ratio = _safe_float(diagnostic.get('nan_ratio') or diagnostic.get('factor_value_nan_ratio'))
+    low_variance = bool(diagnostic.get('constant_factor') or diagnostic.get('low_variance_factor'))
+    factor_value_verdict = 'unknown'
+    if row_count is not None and row_count <= 0:
+        factor_value_verdict = 'blocked'
+    elif low_variance:
+        factor_value_verdict = 'weak'
+    elif row_count is not None and date_count is not None and ticker_count is not None:
+        factor_value_verdict = 'usable'
+
+    suspicions: list[str] = []
+    if all_skipped:
+        suspicions.append('all_backends_skipped')
+    if not self_quant_present:
+        suspicions.append('self_quant_required_evidence_missing')
+    if payload_missing:
+        suspicions.append('backend_payload_missing:' + ','.join(payload_missing))
+    if fallback_or_stub:
+        suspicions.append('fallback_or_stub_backend_detected:' + ','.join(fallback_or_stub))
+    case_quality = case.get('evidence_quality') or {}
+    if case_quality.get('identity_chain_verified') is False:
+        suspicions.append('step5_identity_chain_not_verified')
+    if not case_quality.get('long_side_metrics_present', True):
+        suspicions.append('step5_long_side_metrics_missing')
+    if not run_master.get('implementation_mode_decision'):
+        suspicions.append('step3b_mode_decision_missing_or_not_propagated')
+    if (run_master.get('implementation_mode_decision') or {}).get('selected_mode') == 'blocked':
+        suspicions.append('step3b_implementation_blocked')
+
+    gross_return = _safe_float(headline_metrics.get('long_side_annual_return'))
+    cogs_destroy_alpha = bool(
+        gross_return is not None
+        and gross_return > 0
+        and cost_adjusted_return is not None
+        and cost_adjusted_return < 0
+    )
+    high_turnover = bool(turnover is not None and turnover > 0.5)
+    if cogs_destroy_alpha:
+        suspicions.append('trading_cost_destroyed_positive_gross_alpha')
+    if high_turnover:
+        suspicions.append('high_turnover_cost_risk')
+
+    if all_skipped or not self_quant_present or missing_long or factor_value_verdict == 'blocked' or case_quality.get('identity_chain_verified') is False:
+        evidence_verdict = 'blocked'
+    elif cogs_destroy_alpha or high_turnover or failed or skipped or metric_verdict in {'mixed', 'negative', 'inconclusive'}:
+        evidence_verdict = 'usable_with_warnings'
+    else:
+        evidence_verdict = 'usable'
+
+    return {
+        'backend_integrity': {
+            'run_status': run_master.get('run_status'),
+            'successful_backends': successful,
+            'partial_backends': partial,
+            'skipped_backends': skipped,
+            'failed_backends': failed,
+            'self_quant_required_and_present': self_quant_present,
+            'all_backends_skipped': all_skipped,
+            'payload_missing_backends': payload_missing,
+            'fallback_or_stub_backends': fallback_or_stub,
+            'backend_verdict': 'blocked' if all_skipped or not self_quant_present else 'usable_with_warnings' if failed or skipped or partial else 'usable',
+        },
+        'metric_consistency': {
+            'rank_ic_direction': _direction(rank_ic),
+            'long_side_direction': _direction(long_return if long_return is not None else top_daily),
+            'short_side_dominance_suspected': short_side_dominance,
+            'ic_long_side_consistency': ic_long_side_consistency,
+            'monotonicity_support': monotonicity_support,
+            'metric_verdict': metric_verdict,
+        },
+        'factor_value_health': {
+            'row_count': row_count,
+            'date_count': date_count,
+            'ticker_count': ticker_count,
+            'nan_ratio': nan_ratio if nan_ratio is not None else 'unknown',
+            'constant_or_low_variance_suspected': low_variance,
+            'rolling_window_initial_nan_expected': 'unknown',
+            'factor_value_verdict': factor_value_verdict,
+        },
+        'long_side_evidence_quality': {
+            'long_side_return_positive': bool(long_return is not None and long_return > 0),
+            'sharpe_status': sharpe_status,
+            'drawdown_status': drawdown_status,
+            'recovery_status': recovery_status,
+            'cost_adjusted_status': cost_adjusted_status,
+            'missing_long_side_metrics': missing_long,
+            'long_side_verdict': long_side_verdict,
+        },
+        'cost_and_turnover_risk': {
+            'turnover': turnover,
+            'trading_cogs_rule': 'trading COGS = turnover * 0.3%',
+            'turnover_times_30bps_daily': turnover_times_30bps_daily,
+            'trading_cogs_daily_used': cogs_daily,
+            'trading_cogs_annual_used': cogs_annual,
+            'gross_annual_return': gross_return,
+            'cost_adjusted_annual_return': cost_adjusted_return,
+            'cost_adjusted_long_side_sharpe': cost_adjusted_sharpe,
+            'turnover_too_high': high_turnover,
+            'cogs_destroy_alpha': cogs_destroy_alpha,
+            'high_revenue_bad_business_factor': cogs_destroy_alpha,
+        },
+        'data_or_implementation_suspicions': suspicions,
+        'evidence_verdict': evidence_verdict,
+    }
+
+
+def _step6_spec_text(bundle: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    spec = bundle.get('factor_spec_master') or {}
+    idea = bundle.get('alpha_idea_master') or {}
+    canonical = spec.get('canonical_spec') or {}
+    parts = [
+        str(bundle['factor_run_master'].get('factor_id') or ''),
+        str(bundle['factor_run_master'].get('report_id') or ''),
+        str(canonical.get('formula_text') or ''),
+        ' '.join(str(item) for item in _as_list(canonical.get('required_inputs'))),
+        ' '.join(str(item) for item in _as_list(canonical.get('operators'))),
+        ' '.join(str(item) for item in _as_list(canonical.get('time_series_steps'))),
+        ' '.join(str(item) for item in _as_list(canonical.get('cross_sectional_steps'))),
+        ' '.join(str(item) for item in _as_list(canonical.get('implementation_assumptions'))),
+        json.dumps(idea, ensure_ascii=False),
+    ]
+    return ' '.join(parts).lower(), canonical
+
+
+def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    spec = bundle.get('factor_spec_master') or {}
+    case = bundle.get('factor_case_master') or {}
+    handoff = bundle.get('handoff_to_step6') or {}
+    canonical = spec.get('canonical_spec') or {}
+    for candidate in [
+        spec.get('mechanism_math_contract'),
+        canonical.get('mechanism_math_contract'),
+        case.get('mechanism_math_contract'),
+        handoff.get('mechanism_math_contract'),
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return build_mechanism_math_contract(spec or canonical or bundle)
+
+
+def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    revision_ops = contract.get('revision_operators') if isinstance(contract.get('revision_operators'), list) else []
+    first_op = revision_ops[0] if revision_ops and isinstance(revision_ops[0], dict) else {}
+    return {
+        'math_model_status': contract.get('math_model_status') or 'under_specified',
+        'model_family': contract.get('model_family') or 'other',
+        'math_toolkits': contract.get('math_toolkits') or [],
+        'state_or_object': contract.get('state_or_object') or 'under_specified',
+        'factor_as_estimator': contract.get('factor_as_estimator') or 'under_specified',
+        'target_functional': contract.get('target_functional') or 'under_specified',
+        'monotonicity_claim': contract.get('monotonicity_claim') or 'under_specified',
+        'expected_metric_signature': contract.get('expected_metric_signature') or {},
+        'revision_operator_summary': first_op,
+        'under_specified_reason': contract.get('under_specified_reason'),
+        'next_human_research_question': contract.get('next_human_research_question'),
+    }
+
+
+def _contains_any(text: str, tokens: set[str]) -> bool:
+    return any(token in text for token in tokens)
+
+
+def _classify_mechanism_family(text: str, canonical: dict[str, Any]) -> tuple[str, list[str], str]:
+    operators = {str(item).lower() for item in _as_list(canonical.get('operators'))}
+    inputs = {str(item).lower() for item in _as_list(canonical.get('required_inputs'))}
+    price_fields = {'open', 'high', 'low', 'close', 'vwap', 'price', 'return', 'returns', 'pct_chg'}
+    volume_fields = {'volume', 'vol', 'amount', 'turnover', 'liquidity'}
+    evidence: list[str] = []
+
+    has_price = bool(inputs & price_fields) or _contains_any(text, price_fields)
+    has_volume = bool(inputs & volume_fields) or _contains_any(text, volume_fields)
+    has_corr = 'correlation' in operators or 'corr' in operators or 'correlation(' in text or 'rolling_corr' in text
+    if has_corr and has_price and has_volume:
+        evidence.extend(['correlation_operator', 'price_field', 'volume_or_liquidity_field'])
+        return 'price_volume_correlation', evidence, 'low'
+    if _contains_any(text, {'illiquidity', 'impact', 'spread', 'liquidity', 'turnover', 'amount'}) or (has_volume and not has_price):
+        evidence.append('liquidity_or_turnover_terms')
+        return 'liquidity_shock', evidence, 'medium'
+    if _contains_any(text, {'stddev', 'std', 'variance', 'volatility', 'atr', 'range', 'high-low'}):
+        evidence.append('volatility_or_range_terms')
+        return 'volatility', evidence, 'medium'
+    if _contains_any(text, {'reversal', 'overreaction', 'mean_revert', 'mean revert'}) or ('delta' in operators and ('-1' in text or 'negative' in text)):
+        evidence.append('short_window_reversal_terms')
+        return 'reversal', evidence, 'medium'
+    if _contains_any(text, {'momentum', 'trend', 'strength', 'continuation'}) and (has_price or has_volume):
+        evidence.append('trend_or_confirmation_terms')
+        return 'momentum_confirmation', evidence, 'medium'
+    if _contains_any(text, {'cashflow', 'cash_flow', 'earnings', 'revenue', 'profit', 'margin', 'contract liability', 'liability', 'inventory', 'fundamental'}):
+        evidence.append('fundamental_information_terms')
+        return 'fundamental_quality', evidence, 'medium'
+    if _contains_any(text, {'index inclusion', 'transfer board', 'convertible', 'etf', 'mandate', 'insurance', 'public fund', 'constraint', 'northbound'}):
+        evidence.append('event_or_institutional_constraint_terms')
+        return 'event_constraint', evidence, 'medium'
+    return 'other', ['no_specific_mechanism_family_rule_matched'], 'high'
+
+
+def _return_source_for_family(factor_family: str, text: str, uncertainty: str) -> str:
+    if uncertainty == 'high' and factor_family == 'other':
+        return 'unknown'
+    if factor_family in {'price_volume_correlation', 'reversal', 'momentum_confirmation', 'liquidity_shock', 'volatility'}:
+        return 'behavioral_microstructure'
+    if factor_family == 'fundamental_quality':
+        return 'information_advantage'
+    if factor_family == 'event_constraint':
+        return 'constraint_driven_arbitrage'
+    if _contains_any(text, {'risk premium', 'style', 'value', 'size', 'beta', 'lowvol'}):
+        return 'risk_premium'
+    return 'mixed' if uncertainty != 'high' else 'unknown'
+
+
+def build_mechanism_analysis(
+    bundle: dict[str, Any],
+    payloads: dict[str, dict[str, Any]],
+    headline_metrics: dict[str, Any],
+    evidence_audit: dict[str, Any],
+    retrieval_context: dict[str, Any],
+) -> dict[str, Any]:
+    del payloads
+    text, canonical = _step6_spec_text(bundle)
+    mechanism_math_contract = mechanism_math_contract_from_bundle(bundle)
+    mechanism_math_summary = mechanism_math_summary_from_contract(mechanism_math_contract)
+    factor_family, classification_evidence_items, uncertainty = _classify_mechanism_family(text, canonical)
+    return_source = _return_source_for_family(factor_family, text, uncertainty)
+    metrics = evidence_audit.get('metric_consistency') or {}
+    long_quality = evidence_audit.get('long_side_evidence_quality') or {}
+    cost_risk = evidence_audit.get('cost_and_turnover_risk') or {}
+    evidence_verdict = evidence_audit.get('evidence_verdict')
+    similar = retrieval_context.get('similar_cases') or []
+    similar_success = [
+        item for item in similar
+        if str(item.get('decision')) == 'promote_official'
+        and str(item.get('knowledge_scope') or '') in {'same_factor', 'similar_case'}
+    ]
+    similar_failure = [item for item in similar if str(item.get('decision')) in {'reject', 'iterate', 'needs_human_review'}]
+
+    if factor_family == 'price_volume_correlation':
+        hypothesis = (
+            'The formula tests whether recent price-position ranks and volume ranks co-move. '
+            'The mechanism is behavioral microstructure: volume-confirmed price pressure, exhaustion, or liquidity shock must map monotonically to next-period long-side return, not merely to a long-short diagnostic.'
+        )
+        necessary = [
+            'price-volume co-movement must map monotonically to next-period long-side expected return',
+            'the signal must not be driven only by the weak short side',
+            'turnover and cost-adjusted return must remain acceptable',
+        ]
+        failures = [
+            'high turnover consumes the gross signal',
+            'price-volume correlation captures noisy liquidity shock rather than persistent information',
+            'direction flips across regimes',
+        ]
+    elif factor_family == 'liquidity_shock':
+        hypothesis = 'The factor appears to monetize a liquidity or turnover shock; it must show long-side compensation after explicit turnover cost.'
+        necessary = ['liquidity shock must predict future long-side return', 'capacity and turnover cost must not erase gross revenue']
+        failures = ['transaction cost consumes signal', 'crowding compresses liquidity premium', 'signal concentrates in hard-to-trade names']
+    elif factor_family == 'fundamental_quality':
+        hypothesis = 'The factor appears to encode delayed fundamental information that the market may incorporate gradually.'
+        necessary = ['input timing must be legal', 'fundamental signal must be stale enough for the market to underreact', 'effect must survive industry/regime checks']
+        failures = ['market reprices faster', 'accounting feature only works in narrow industries', 'reporting lag is mis-specified']
+    elif factor_family == 'event_constraint':
+        hypothesis = 'The factor appears to rely on repeated behavior caused by institutional or market-structure constraints.'
+        necessary = ['objective constraint must be real and persistent', 'trading path must be executable after cost', 'edge must not be pure one-off event timing']
+        failures = ['rule changes remove constraint', 'capacity closes spread', 'execution cost overwhelms expected return']
+    else:
+        hypothesis = 'Mechanism remains under-specified; Step6 cannot identify a testable return source from the current formula/spec/thesis.'
+        necessary = ['human researcher must restate the return source before promotion', 'Step4 long-side evidence alone is insufficient without a testable mechanism']
+        failures = ['ambiguous mechanism', 'data-mined transform without stable economic state', 'unexplained regime dependence']
+
+    short_dominance = bool(metrics.get('short_side_dominance_suspected'))
+    cost_negative = long_quality.get('cost_adjusted_status') == 'negative' or bool(cost_risk.get('cogs_destroy_alpha'))
+    long_negative = long_quality.get('long_side_return_positive') is False
+    strong_mechanism_support = bool((canonical.get('mechanism_analysis') or {}).get('strong_mechanism_support'))
+    if evidence_verdict == 'blocked' or short_dominance or long_negative:
+        fit = 'contradicted'
+    elif return_source == 'unknown':
+        fit = 'weak'
+    elif evidence_verdict == 'usable' and metrics.get('metric_verdict') == 'supportive' and not cost_negative and (similar_success or strong_mechanism_support):
+        fit = 'strong'
+    elif evidence_verdict in {'usable', 'usable_with_warnings'} and metrics.get('metric_verdict') in {'supportive', 'mixed'}:
+        fit = 'partial' if not cost_negative else 'weak'
+    else:
+        fit = 'weak'
+
+    expected_signature = {
+        'rank_ic': 'positive_or_consistent_with_declared_direction',
+        'long_side_return': 'positive_high_score_long_side',
+        'cost_adjusted_sharpe': 'positive_after_turnover_times_30bps',
+        'monotonicity': 'high_score_group_outperforms_without_short_side_dominance',
+        'case_support': 'similar failures or successes should change confidence, never bypass evidence gates',
+    }
+    observed_signature = {
+        'rank_ic_direction': metrics.get('rank_ic_direction'),
+        'long_side_direction': metrics.get('long_side_direction'),
+        'short_side_dominance_suspected': short_dominance,
+        'metric_verdict': metrics.get('metric_verdict'),
+        'long_side_verdict': long_quality.get('long_side_verdict'),
+        'cost_adjusted_status': long_quality.get('cost_adjusted_status'),
+        'turnover_too_high': cost_risk.get('turnover_too_high'),
+        'similar_success_count': len(similar_success),
+        'similar_failure_count': len(similar_failure),
+    }
+
+    return {
+        'return_source': return_source,
+        'factor_family': factor_family,
+        'mechanism_hypothesis': hypothesis,
+        'necessary_conditions': necessary,
+        'expected_metric_signature': expected_signature,
+        'observed_metric_signature': observed_signature,
+        'mechanism_fit': fit,
+        'failure_regimes': failures,
+        'what_would_change_my_mind': [
+            'Cost-adjusted high-score long-side evidence becomes positive and stable across regimes.',
+            'Mechanism-specific monotonicity improves without relying on short-side losses.',
+            'Comparable cases with verified provenance support the same mechanism under similar turnover and evidence conditions.',
+        ],
+        'classification_evidence': {
+            'matched_rules': classification_evidence_items,
+            'formula_text': canonical.get('formula_text'),
+            'required_inputs': _as_list(canonical.get('required_inputs')),
+            'operators': _as_list(canonical.get('operators')),
+            'retrieved_success_cases': len(similar_success),
+            'retrieved_failure_cases': len(similar_failure),
+            'strong_mechanism_support': strong_mechanism_support,
+            'mechanism_math_model_family': mechanism_math_summary.get('model_family'),
+            'mechanism_math_status': mechanism_math_summary.get('math_model_status'),
+        },
+        'classification_uncertainty': uncertainty,
+        'mechanism_math_contract': mechanism_math_contract,
+        'mechanism_math_summary': mechanism_math_summary,
+    }
+
+
+def _case_snippet(item: dict[str, Any]) -> str:
+    return str(item.get('snippet') or item.get('lesson_hint') or item.get('text') or '').strip()
+
+
+def build_case_comparison(
+    mechanism_analysis: dict[str, Any],
+    retrieval_context: dict[str, Any],
+    current_identity: dict[str, Any],
+    research_memo: dict[str, Any],
+) -> dict[str, Any]:
+    similar = retrieval_context.get('similar_cases') or []
+    current_factor = str(current_identity.get('factor_id') or '')
+    current_formula_hash = current_identity.get('formula_hash')
+    family = mechanism_analysis.get('factor_family')
+    evidence_audit = research_memo.get('evidence_audit') or {}
+    cost_risk = evidence_audit.get('cost_and_turnover_risk') or {}
+    metrics = evidence_audit.get('metric_consistency') or {}
+
+    same_factor_cases: list[dict[str, Any]] = []
+    similar_case_cases: list[dict[str, Any]] = []
+    anti_pattern_cases: list[dict[str, Any]] = []
+    identity_mismatch_cases: list[dict[str, Any]] = []
+    for item in similar:
+        item_identity = item.get('artifact_identity') or item.get('source_identity') or {}
+        item_factor = str(item_identity.get('factor_id') or item.get('factor_id') or '')
+        item_formula = item_identity.get('formula_hash') or item.get('formula_hash')
+        scope = str(item.get('knowledge_scope') or '')
+        item_family = item.get('factor_family')
+        failure_signature = str(item.get('failure_signature') or '').lower()
+        normalized = dict(item)
+        normalized['reuse_as'] = 'analogy_only'
+        if scope == 'same_factor':
+            mismatch_fields: list[str] = []
+            if item_factor != current_factor:
+                mismatch_fields.append('factor_id')
+            if current_formula_hash and item_formula != current_formula_hash:
+                mismatch_fields.append('formula_hash')
+            for field in ['code_hash', 'code_contract_hash', 'custom_block_hash', 'hybrid_hash', 'branch_id', 'run_id']:
+                expected_value = current_identity.get(field)
+                actual_value = item_identity.get(field) or item.get(field)
+                if expected_value and actual_value != expected_value:
+                    mismatch_fields.append(field)
+            if mismatch_fields:
+                identity_mismatch_cases.append({
+                    'case_id': item.get('report_id') or item.get('source_path') or item.get('doc_type') or 'retrieved_same_factor_case',
+                    'reason': 'same_factor_identity_mismatch',
+                    'mismatch_fields': sorted(set(mismatch_fields)),
+                    'expected_identity': current_identity,
+                    'actual_identity': item_identity or item,
+                })
+                continue
+            normalized['reuse_as'] = 'same_factor_history_with_provenance_check'
+            same_factor_cases.append(normalized)
+        elif scope == 'anti_pattern' or failure_signature in {'short_side_dominance', 'high_turnover_cost', 'cost_too_high'}:
+            anti_pattern_cases.append(normalized)
+            similar_case_cases.append(normalized)
+        elif scope in {'similar_case', 'general_methodology'} or item_family == family:
+            similar_case_cases.append(normalized)
+        elif item:
+            similar_case_cases.append(normalized)
+
+    similar_success_cases = [item for item in similar_case_cases if str(item.get('decision')) == 'promote_official'][:3]
+    similar_failure_cases = [
+        item for item in similar_case_cases
+        if str(item.get('decision')) in {'reject', 'iterate', 'needs_human_review'} or item in anti_pattern_cases
+    ][:3]
+    mechanism_neighbors = [
+        {
+            'neighbor_family': 'momentum_confirmation',
+            'reason': 'price-volume correlation can represent volume-confirmed price pressure if trend state separation improves long-side monotonicity.',
+            'reuse_as': 'possible explore branch, not adoption evidence',
+        },
+        {
+            'neighbor_family': 'liquidity_shock',
+            'reason': 'the same operator pattern may capture short-horizon liquidity shock or exhaustion instead of a stable premium.',
+            'reuse_as': 'mechanism challenge',
+        },
+    ] if family == 'price_volume_correlation' else [
+        {
+            'neighbor_family': str(family or 'other'),
+            'reason': 'neighbor exploration is advisory and cannot replace same-run evidence.',
+            'reuse_as': 'research analogy only',
+        }
+    ]
+
+    imported_lessons: list[str] = []
+    rejected_lessons: list[str] = []
+    if similar_failure_cases:
+        imported_lessons.append('This case imports the prior anti-pattern that positive long-short spread is not enough when top long-side evidence is weak or short-side dominated.')
+    if anti_pattern_cases and bool(metrics.get('short_side_dominance_suspected')):
+        imported_lessons.append('Retrieved anti-pattern reinforces that short-side dominance is diagnostic only and cannot support adoption.')
+    for item in similar_failure_cases[:2]:
+        snippet = _case_snippet(item)
+        if snippet:
+            imported_lessons.append(f'Retrieved failure lesson: {snippet[:220]}')
+
+    similar_success_condition_mismatch = bool(
+        similar_success_cases
+        and (cost_risk.get('cogs_destroy_alpha') or cost_risk.get('turnover_too_high'))
+    )
+    if similar_success_condition_mismatch:
+        imported_lessons.append('Retrieved similar success was reviewed only as a condition check; its low-turnover success does not transfer to this high-cost case.')
+        rejected_lessons.append('A prior similar success is not directly imported because the current case has materially worse turnover/cost-adjusted evidence.')
+    elif similar_success_cases:
+        imported_lessons.append('Retrieved similar success was reviewed as analogy only and does not override current-run evidence gates.')
+        rejected_lessons.append('Similar success cases remain analogy only; they are not same-factor evidence and cannot justify official promotion.')
+    rejected_lessons.append('Do not reuse similar-case evidence as same-factor evidence unless artifact identity and hash lineage match.')
+
+    any_retrieved = bool(same_factor_cases or similar_case_cases or anti_pattern_cases)
+    knowledge_gap = [] if any_retrieved else [
+        'No comparable retrieved case was available; this run should become a future retrieval anchor with full mechanism and evidence provenance.',
+    ]
+    why_different = [
+        'Current decision must stand on this run identity, Step4 long-side evidence, and mechanism fit rather than retrieved analogy.',
+    ]
+    if cost_risk.get('turnover_too_high'):
+        why_different.append('Current turnover/cost profile differs materially from low-turnover successes.')
+    if metrics.get('short_side_dominance_suspected'):
+        why_different.append('Current long-short appearance is contaminated by short-side dominance, so similar spread success is not transferable.')
+
+    return {
+        'similar_success_cases': similar_success_cases,
+        'similar_failure_cases': similar_failure_cases,
+        'mechanism_neighbors': mechanism_neighbors,
+        'imported_lessons': imported_lessons or (['cold_start_no_retrieved_case_lesson'] if not any_retrieved else []),
+        'rejected_lessons': rejected_lessons,
+        'why_this_case_is_different': why_different,
+        'knowledge_gap': knowledge_gap,
+        'retrieval_used': bool(retrieval_context.get('retrieval_index_available')) or bool(similar),
+        'same_factor_cases': same_factor_cases,
+        'similar_case_cases': similar_case_cases,
+        'anti_pattern_cases': anti_pattern_cases,
+        'identity_mismatch_cases': identity_mismatch_cases,
+        'case_comparison_verdict': 'blocked' if identity_mismatch_cases else 'usable',
+        'similar_success_condition_mismatch': similar_success_condition_mismatch,
+        'similar_case_promotion_evidence_used': False,
+    }
+
+
+REVISION_FORBIDDEN_CHANGES = [
+    'no_portfolio_expression_repair',
+    'no_short_leg_adoption',
+    'no_decile_trading',
+    'no_shared_clean_data_mutation',
+]
+
+
+def _primary_failure_signature(
+    evidence_audit: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+    case_comparison: dict[str, Any],
+) -> str:
+    long_quality = evidence_audit.get('long_side_evidence_quality') or {}
+    cost_risk = evidence_audit.get('cost_and_turnover_risk') or {}
+    metrics = evidence_audit.get('metric_consistency') or {}
+    suspicions = evidence_audit.get('data_or_implementation_suspicions') or []
+    backend = evidence_audit.get('backend_integrity') or {}
+    factor_health = evidence_audit.get('factor_value_health') or {}
+    if case_comparison.get('case_comparison_verdict') == 'blocked' or case_comparison.get('identity_mismatch_cases'):
+        return 'same_factor_identity_mismatch'
+    if (
+        evidence_audit.get('evidence_verdict') == 'blocked'
+        or backend.get('all_backends_skipped')
+        or long_quality.get('long_side_verdict') == 'blocked'
+        or factor_health.get('factor_value_verdict') == 'blocked'
+        or 'step3b_implementation_blocked' in suspicions
+        or 'step3b_mode_decision_missing_or_not_propagated' in suspicions
+    ):
+        return 'implementation_suspect'
+    if long_quality.get('long_side_return_positive') is False:
+        return 'long_side_negative'
+    if cost_risk.get('cogs_destroy_alpha') or long_quality.get('cost_adjusted_status') == 'negative':
+        return 'cost_too_high'
+    if metrics.get('monotonicity_support') == 'weak' or metrics.get('short_side_dominance_suspected'):
+        return 'non_monotonic'
+    if mechanism_analysis.get('mechanism_fit') in {'weak', 'contradicted'}:
+        return 'mechanism_unclear'
+    if evidence_audit.get('evidence_verdict') == 'usable_with_warnings':
+        return 'unstable_regime'
+    return 'none'
+
+
+def _revision_hypothesis(
+    *,
+    hypothesis_id: str,
+    hypothesis: str,
+    mechanism_target: str,
+    expression_change: str,
+    mode: str,
+    expected_metric_change: list[str],
+    falsification_tests: list[str],
+    overfit: str,
+    kill_criteria: list[str],
+) -> dict[str, Any]:
+    target_text = f'{mechanism_target} {expression_change}'.lower()
+    if 'mechanism' in target_text:
+        revision_target_math_object = 'model_family_challenge'
+    elif 'regime' in target_text or 'state' in target_text:
+        revision_target_math_object = 'state_variable'
+    elif 'smooth' in target_text or 'persistence' in target_text or 'window' in target_text:
+        revision_target_math_object = 'estimator_kernel'
+    else:
+        revision_target_math_object = 'estimator_kernel'
+    return {
+        'hypothesis_id': hypothesis_id,
+        'hypothesis': hypothesis,
+        'mechanism_target': mechanism_target,
+        'expression_change': expression_change,
+        'revision_target_math_object': revision_target_math_object,
+        'math_change': expression_change,
+        'expected_metric_effect': expected_metric_change,
+        'math_falsification_tests': falsification_tests,
+        'implementation_mode_preference': mode,
+        'expected_metric_change': expected_metric_change,
+        'falsification_tests': falsification_tests,
+        'risk_of_overfit': overfit,
+        'kill_criteria': kill_criteria,
+        'why_not_portfolio_fix': 'This revision changes the factor expression or Step3B code path; portfolio expression, short-leg adoption, decile trading, rebalance mechanics, and clean-data mutation are explicitly forbidden.',
+        'forbidden_changes': REVISION_FORBIDDEN_CHANGES,
+    }
+
+
+def build_revision_strategy(
+    decision: str,
+    headline_metrics: dict[str, Any],
+    evidence_audit: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+    case_comparison: dict[str, Any],
+    framework: dict[str, Any],
+    existing_math_discipline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    del headline_metrics, framework
+    mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or {}
+    mechanism_math_summary = mechanism_analysis.get('mechanism_math_summary') or mechanism_math_summary_from_contract(mechanism_math_contract)
+    failure_signature = _primary_failure_signature(evidence_audit, mechanism_analysis, case_comparison)
+    if decision == 'iterate' and failure_signature == 'none':
+        failure_signature = 'mechanism_unclear'
+    revision_needed = decision in {'iterate', 'needs_human_review'} or failure_signature not in {'none'}
+    hypotheses: list[dict[str, Any]] = []
+    revision_quality = 'not_needed'
+    reject_reason = 'No rejection: revision or monitoring remains available.'
+
+    if failure_signature in {'implementation_suspect', 'same_factor_identity_mismatch'}:
+        revision_quality = 'blocked'
+        reject_reason = (
+            'Revision is blocked until evidence/provenance is repaired.'
+            if failure_signature == 'implementation_suspect'
+            else 'Revision is blocked until same-factor retrieval contamination and identity mismatch are repaired.'
+        )
+    elif failure_signature == 'none':
+        revision_quality = 'not_needed'
+        revision_needed = False
+        hypotheses = []
+    else:
+        revision_quality = 'actionable'
+        if failure_signature == 'cost_too_high':
+            hypotheses.append(_revision_hypothesis(
+                hypothesis_id='rev_cost_persistence_001',
+                hypothesis='Gross alpha is present but monetization fails because the expression is too short-lived and turnover-heavy.',
+                mechanism_target='Make the price/volume pressure state more persistent so high factor values represent durable pressure instead of one-day liquidity noise.',
+                expression_change='Replace the raw short-window signal with a persistence-confirmed expression: smooth the operator output, require multi-day agreement, or add a durable-signal confirmation term to lower turnover at the factor-expression level.',
+                mode='operator',
+                expected_metric_change=[
+                    'lower long_side_turnover_mean_daily',
+                    'positive cost_adjusted_annual_return',
+                    'higher cost_adjusted_long_side_sharpe',
+                ],
+                falsification_tests=[
+                    'Reject if turnover remains high after expression-level smoothing or persistence confirmation.',
+                    'Reject if cost-adjusted Sharpe remains negative despite positive gross return.',
+                ],
+                overfit='medium',
+                kill_criteria=[
+                    'Kill branch if cost-adjusted annual return remains negative.',
+                    'Kill branch if turnover reduction also eliminates long-side annual return.',
+                ],
+            ))
+        elif failure_signature == 'long_side_negative':
+            hypotheses.append(_revision_hypothesis(
+                hypothesis_id='rev_direction_state_001',
+                hypothesis='High factor scores currently do not map to positive long-side return; sign or state interpretation may be inverted or mixing exhaustion with confirmation.',
+                mechanism_target='Align high factor values with the intended positive economic state rather than relying on the weak side.',
+                expression_change='Revise the expression direction and state split: test sign orientation, separate exhaustion versus confirmation states, and keep the branch only if high-score long-side returns become positive.',
+                mode='operator',
+                expected_metric_change=[
+                    'positive long_side_annual_return',
+                    'positive long_side_sharpe',
+                    'reduced short_side_dominance_suspected',
+                ],
+                falsification_tests=[
+                    'Reject if high-score long-side return remains non-positive after sign/state revision.',
+                    'Reject if apparent improvement still comes only from bottom-decile losses.',
+                ],
+                overfit='medium',
+                kill_criteria=[
+                    'Kill branch if top/high-score long-side annual return remains non-positive.',
+                    'Kill branch if long-short improvement is driven by short-side diagnostics only.',
+                ],
+            ))
+        elif failure_signature == 'non_monotonic':
+            hypotheses.append(_revision_hypothesis(
+                hypothesis_id='rev_monotonic_state_001',
+                hypothesis='The current expression mixes opposing mechanisms, so rank/decile ordering is not economically linear.',
+                mechanism_target='Create a more monotonic factor state by separating or conditioning the mixed mechanism.',
+                expression_change='Revise the expression to linearize the mechanism: split the signal by state variable, isolate confirmation from reversal, or transform the operator output so top scores represent a single economic condition.',
+                mode='hybrid',
+                expected_metric_change=[
+                    'stronger monotonicity_support',
+                    'top/high-score group outperforms middle and low groups',
+                    'long-side Sharpe improves without short-side dependence',
+                ],
+                falsification_tests=[
+                    'Reject if top group remains weaker than middle groups.',
+                    'Reject if monotonicity improves only through bottom-decile deterioration.',
+                ],
+                overfit='high',
+                kill_criteria=[
+                    'Kill branch if monotonicity_support remains weak.',
+                    'Kill branch if state split creates unstable regime-only performance.',
+                ],
+            ))
+        elif failure_signature == 'unstable_regime':
+            hypotheses.append(_revision_hypothesis(
+                hypothesis_id='rev_regime_guard_001',
+                hypothesis='The mechanism may be valid only in specific volatility/liquidity regimes.',
+                mechanism_target='Condition the expression on a legal state variable that represents the mechanism regime.',
+                expression_change='Add a factor-expression regime guard using volatility or liquidity state so the signal fires only when the hypothesized mechanism is active.',
+                mode='hybrid',
+                expected_metric_change=[
+                    'lower max drawdown',
+                    'shorter recovery days',
+                    'more stable annual slices',
+                ],
+                falsification_tests=[
+                    'Reject if guarded expression does not improve drawdown or recovery.',
+                    'Reject if regime guard merely cherry-picks a small unstable sample.',
+                ],
+                overfit='high',
+                kill_criteria=[
+                    'Kill branch if recovery days remain slow.',
+                    'Kill branch if performance concentrates in one unreproducible regime.',
+                ],
+            ))
+        elif failure_signature == 'mechanism_unclear':
+            hypotheses.append(_revision_hypothesis(
+                hypothesis_id='rev_mechanism_challenge_001',
+                hypothesis='The current expression lacks a testable return source; parameter tuning would be data mining.',
+                mechanism_target='Restate and test the return-source hypothesis before changing parameters.',
+                expression_change='Create a mechanism-challenge expression that isolates one hypothesized state variable and preserves only transforms tied to that return source; reject if no testable mechanism can be stated.',
+                mode='unknown',
+                expected_metric_change=[
+                    'clearer observed_metric_signature',
+                    'known return_source instead of unknown',
+                    'mechanism_fit improves from weak/contradicted to partial before any promotion',
+                ],
+                falsification_tests=[
+                    'Reject if return_source remains unknown after the challenge branch.',
+                    'Reject if mechanism fit remains weak or contradicted even with cleaner expression state.',
+                ],
+                overfit='unknown',
+                kill_criteria=[
+                    'Kill branch if no falsifiable mechanism can be written.',
+                    'Kill branch if improvements are only metric cosmetic without mechanism evidence.',
+                ],
+            ))
+        else:
+            revision_quality = 'weak'
+
+    if decision == 'reject' and revision_quality == 'actionable':
+        if failure_signature == 'long_side_negative':
+            reject_reason_out = (
+                'Rejected for current admission because the high-score long side is negative. '
+                'The expression-level hypothesis is retained as an advisory future research idea, '
+                'not an approved iterate loop, and Step6 must not write a Step3B handoff.'
+            )
+        else:
+            reject_reason_out = (
+                f'Rejected for current admission because primary_failure_signature={failure_signature}. '
+                'Any actionable expression-level hypothesis is advisory future research only, '
+                'not an approved iterate loop, and Step6 must not write a Step3B handoff.'
+            )
+    elif decision == 'reject' or revision_quality == 'blocked':
+        reject_reason_out = reject_reason
+    else:
+        reject_reason_out = 'No rejection: revision or monitoring remains available.'
+
+    if revision_quality == 'blocked':
+        loop_authorization = 'blocked'
+    elif decision == 'iterate' and revision_quality == 'actionable' and not case_comparison.get('similar_success_condition_mismatch'):
+        loop_authorization = 'approved_for_step3b_handoff'
+    else:
+        loop_authorization = 'advisory_only'
+
+    return {
+        'revision_needed': bool(revision_needed),
+        'primary_failure_signature': failure_signature,
+        'revision_hypotheses': hypotheses,
+        'reject_reason_if_no_revision': reject_reason_out,
+        'revision_quality': revision_quality,
+        'loop_authorization': loop_authorization,
+        'mechanism_math_contract_ref': mechanism_math_summary,
+        'math_discipline_ref': existing_math_discipline or {},
+        'requires_human_approval_before_code_change': bool(revision_needed),
+    }
+
+
+def _search_branch_template(
+    *,
+    branch_id: str,
+    branch_role: str,
+    search_mode: str,
+    research_question: str,
+    hypothesis: str,
+    mechanism_target: str,
+    revision_hypothesis_id: str | None,
+    success_criteria: list[str],
+    falsification_tests: list[str],
+) -> dict[str, Any]:
+    return {
+        'branch_id': branch_id,
+        'branch_role': branch_role,
+        'search_mode': search_mode,
+        'research_question': research_question,
+        'hypothesis': hypothesis,
+        'mechanism_target': mechanism_target,
+        'revision_hypothesis_id': revision_hypothesis_id,
+        'success_criteria': success_criteria,
+        'falsification_tests': falsification_tests,
+        'hard_guards': REVISION_FORBIDDEN_CHANGES,
+        'requires_human_approval_before_execution': True,
+        'execution_allowed_by_default': False,
+    }
+
+
+def _first_revision_hypothesis_id(revision_strategy: dict[str, Any]) -> str | None:
+    hypotheses = revision_strategy.get('revision_hypotheses') or []
+    if hypotheses and isinstance(hypotheses[0], dict):
+        value = hypotheses[0].get('hypothesis_id')
+        return str(value) if value else None
+    return None
+
+
+def build_search_policy_decision(
+    decision: str,
+    evidence_audit: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+    case_comparison: dict[str, Any],
+    revision_strategy: dict[str, Any],
+    framework: dict[str, Any],
+) -> dict[str, Any]:
+    del framework
+    signature = str(revision_strategy.get('primary_failure_signature') or 'none')
+    quality = str(revision_strategy.get('revision_quality') or '')
+    loop_authorization = str(revision_strategy.get('loop_authorization') or '')
+    revision_hypothesis_id = _first_revision_hypothesis_id(revision_strategy)
+    blockers: list[str] = []
+    rationale: list[str] = [
+        f'primary_failure_signature={signature}',
+        f'revision_quality={quality}',
+        f'loop_authorization={loop_authorization}',
+        f'mechanism_fit={mechanism_analysis.get("mechanism_fit")}',
+    ]
+    branch_templates: list[dict[str, Any]] = []
+
+    if evidence_audit.get('evidence_verdict') == 'blocked' or signature == 'implementation_suspect':
+        mode = 'audit'
+        why = 'Evidence or implementation is suspect; audit/repair must precede exploit or explore search.'
+        blockers.append('implementation_or_evidence_suspect')
+        branch_templates.append(_search_branch_template(
+            branch_id='audit_evidence_and_implementation',
+            branch_role='audit',
+            search_mode='research_audit',
+            research_question='Is the failure caused by evidence, backend, identity, or implementation defects rather than factor economics?',
+            hypothesis='Repair provenance, evidence, and implementation fidelity before any expression or parameter search.',
+            mechanism_target='evidence_integrity_and_implementation_fidelity',
+            revision_hypothesis_id=None,
+            success_criteria=['Step4/5 evidence identity verifies', 'required long-side metrics are present', 'implementation mode decision and hashes are consistent'],
+            falsification_tests=['If backend evidence remains missing, do not search formulas', 'If identity or implementation hash mismatch persists, keep Step6 blocked'],
+        ))
+    elif case_comparison.get('case_comparison_verdict') == 'blocked' or signature == 'same_factor_identity_mismatch':
+        mode = 'audit'
+        why = 'Same-factor retrieval identity mismatch blocks research search until provenance is repaired.'
+        blockers.append('same_factor_identity_mismatch')
+        branch_templates.append(_search_branch_template(
+            branch_id='audit_same_factor_provenance',
+            branch_role='audit',
+            search_mode='research_audit',
+            research_question='Which retrieved same-factor record has mismatched factor/hash/run lineage?',
+            hypothesis='The knowledge retrieval set is contaminated and must be repaired before it can guide revisions.',
+            mechanism_target='knowledge_provenance_integrity',
+            revision_hypothesis_id=None,
+            success_criteria=['same_factor retrieved records match factor identity and hashes', 'similar cases are downgraded to analogy only'],
+            falsification_tests=['If same-factor identity cannot be reconciled, block writeback and search', 'If provenance remains ambiguous, require human review'],
+        ))
+    elif signature == 'cost_too_high' and quality == 'actionable' and loop_authorization == 'approved_for_step3b_handoff':
+        mode = 'bayesian_exploit'
+        why = 'Cost failure is local enough for controlled smoothing/persistence parameter search.'
+        branch_templates.append(_search_branch_template(
+            branch_id='exploit_cost_persistence',
+            branch_role='exploit',
+            search_mode='bayesian_search',
+            research_question='Can expression-level smoothing or persistence reduce turnover without destroying the thesis?',
+            hypothesis='Preserve the mechanism while testing smoothing, persistence, and lower-turnover expression settings.',
+            mechanism_target='durable_signal_lower_turnover',
+            revision_hypothesis_id=revision_hypothesis_id,
+            success_criteria=['cost-adjusted annual return improves', 'turnover decreases', 'long-side Sharpe is not worse'],
+            falsification_tests=['lower turnover destroys the gross signal', 'cost-adjusted Sharpe remains negative'],
+        ))
+    elif signature == 'non_monotonic' and quality == 'actionable' and loop_authorization == 'approved_for_step3b_handoff':
+        mode = 'genetic_explore'
+        why = 'Non-monotonic behavior suggests mixed mechanisms; controlled expression exploration is appropriate.'
+        branch_templates.append(_search_branch_template(
+            branch_id='explore_monotonic_state_split',
+            branch_role='explore',
+            search_mode='genetic_algorithm',
+            research_question='Can expression mutation separate mixed mechanisms into a monotonic long-side state?',
+            hypothesis='Mutate the expression through state split, operator transform, or direction test while preserving the mechanism.',
+            mechanism_target='monotonic_state_separation',
+            revision_hypothesis_id=revision_hypothesis_id,
+            success_criteria=['monotonicity improves', 'top long-side return improves', 'long-side Sharpe improves without short-side dependence'],
+            falsification_tests=['no monotonic improvement', 'top group remains weaker than middle groups'],
+        ))
+    elif signature == 'long_side_negative':
+        if decision == 'reject' and loop_authorization == 'advisory_only':
+            mode = 'kill'
+            why = 'Current case is rejected; the direction hypothesis is advisory only and not an executable loop.'
+            blockers.append('current_case_rejected')
+        elif decision == 'iterate' and loop_authorization == 'approved_for_step3b_handoff':
+            mode = 'mechanism_challenge'
+            why = 'Long-side direction failure requires mechanism and sign-state challenge before parameter tuning.'
+            branch_templates.append(_search_branch_template(
+                branch_id='challenge_long_side_direction',
+                branch_role='macro',
+                search_mode='mechanism_challenge',
+                research_question='Is high-score direction inverted or mixing exhaustion with confirmation?',
+                hypothesis='Clarify the economic state before authorizing expression mutation.',
+                mechanism_target='long_side_direction_mechanism',
+                revision_hypothesis_id=revision_hypothesis_id,
+                success_criteria=['high-score long-side return becomes positive', 'short-side dominance is reduced'],
+                falsification_tests=['improvement still comes only from bottom-decile losses', 'high-score long side remains non-positive'],
+            ))
+        else:
+            mode = 'kill'
+            why = 'Long-side direction failure is advisory only without loop authorization.'
+            blockers.append('current_case_rejected')
+    elif signature == 'mechanism_unclear' or mechanism_analysis.get('mechanism_fit') in {'weak', 'contradicted'}:
+        mode = 'mechanism_challenge'
+        why = 'Mechanism must be clarified before Bayesian parameter tuning or broad search.'
+        if loop_authorization == 'approved_for_step3b_handoff':
+            branch_templates.append(_search_branch_template(
+                branch_id='challenge_return_source',
+                branch_role='macro',
+                search_mode='mechanism_challenge',
+                research_question='Can the factor express a testable return source and necessary conditions?',
+                hypothesis='Clarify return source and necessary conditions before parameter tuning.',
+                mechanism_target='return_source_clarification',
+                revision_hypothesis_id=revision_hypothesis_id,
+                success_criteria=['return_source becomes known and testable', 'necessary conditions are measurable', 'mechanism_fit improves before promotion'],
+                falsification_tests=['no testable mechanism can be stated', 'metric improvement is cosmetic without mechanism evidence'],
+            ))
+        elif (
+            decision == 'iterate'
+            and quality == 'actionable'
+            and loop_authorization == 'advisory_only'
+            and mechanism_analysis.get('mechanism_fit') in {'contradicted', 'weak', 'partial'}
+        ):
+            why = 'Advisory-only mechanism challenge is warranted because gross signal exists but cost-adjusted alpha and mechanism fit are weak or contradicted.'
+            branch_templates.append(_search_branch_template(
+                branch_id='challenge_mechanism_cost_contradiction',
+                branch_role='macro',
+                search_mode='mechanism_challenge',
+                research_question='Why does the gross price-volume signal exist while cost-adjusted alpha fails?',
+                hypothesis='Price-volume correlation may capture either persistent pressure or noisy liquidity shock; test whether persistence confirmation, smoothing, or information delay can separate the mechanism.',
+                mechanism_target='price_volume_cost_contradiction',
+                revision_hypothesis_id=revision_hypothesis_id,
+                success_criteria=[
+                    'explain whether price-volume correlation represents persistent pressure or noisy liquidity shock',
+                    'identify whether persistence confirmation, smoothing, or delay is required before any expression change',
+                    'show that cost-adjusted long-side evidence can improve without relying on forbidden adoption shortcuts',
+                ],
+                falsification_tests=[
+                    'if smoothing or persistence removes the gross signal, reject the mechanism as noise',
+                    'if cost-adjusted long-side evidence remains negative after mechanism clarification, keep the branch advisory',
+                ],
+            ))
+            branch_templates[-1]['advisory_only'] = True
+            branch_templates[-1]['step3b_handoff_allowed'] = False
+            blockers.append('advisory_only')
+        else:
+            blockers.append('advisory_only')
+    elif signature == 'none' and revision_strategy.get('revision_needed') is False and decision == 'promote_official':
+        mode = 'none'
+        why = 'No search is recommended after official promotion and no revision-needed signal.'
+    else:
+        mode = 'audit' if loop_authorization == 'blocked' else 'mechanism_challenge'
+        why = 'Defaulting to non-executable research challenge because loop authorization is not an approved Step3B handoff.'
+        if loop_authorization == 'advisory_only':
+            blockers.append('advisory_only')
+
+    if loop_authorization == 'advisory_only':
+        for branch in branch_templates:
+            branch['advisory_only'] = True
+            branch['execution_allowed_by_default'] = False
+        rationale.append('advisory_only prevents executable Step3B branch by default')
+
+    return {
+        'recommended_mode': mode,
+        'why_this_mode': why,
+        'branch_templates': branch_templates,
+        'human_approval_required': True,
+        'forbidden_search': REVISION_FORBIDDEN_CHANGES,
+        'search_blockers': blockers,
+        'selection_rationale': rationale,
+    }
+
+
+def should_write_step3b_handoff(
+    decision: str,
+    revision_strategy: dict[str, Any],
+    case_comparison: dict[str, Any],
+    search_policy_decision: dict[str, Any],
+) -> bool:
+    del search_policy_decision
+    if decision != 'iterate':
+        return False
+    if revision_strategy.get('revision_quality') != 'actionable':
+        return False
+    if revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff':
+        return False
+    if case_comparison.get('similar_success_condition_mismatch') is True:
+        return False
+    if case_comparison.get('case_comparison_verdict') == 'blocked':
+        return False
+    return True
+
+
 def build_formula_understanding(bundle: dict[str, Any]) -> dict[str, Any]:
     spec = bundle.get('factor_spec_master') or {}
     canonical = spec.get('canonical_spec') or {}
@@ -1224,12 +2394,22 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
             'factor_id': doc.get('factor_id'),
             'doc_type': doc.get('doc_type'),
             'decision': doc.get('decision'),
+            'knowledge_scope': doc.get('knowledge_scope'),
+            'factor_family': doc.get('factor_family') or doc.get('mechanism_family'),
+            'failure_signature': doc.get('failure_signature'),
+            'formula_hash': doc.get('formula_hash'),
+            'artifact_identity': doc.get('artifact_identity') or doc.get('source_identity') or {},
+            'source_identity': doc.get('source_identity') or doc.get('artifact_identity') or {},
             'source_path': doc.get('source_path'),
             'overlap_terms': sorted(overlap)[:12],
             'snippet': snippet,
         })
 
-    embedding_available = EMBEDDING_MATRIX.exists() and EMBEDDING_META.exists()
+    embedding_available = (
+        os.getenv('FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL') != '1'
+        and EMBEDDING_MATRIX.exists()
+        and EMBEDDING_META.exists()
+    )
     query_vec = embed_query(query_text) if embedding_available else None
     if embedding_available and query_vec is not None:
         try:
@@ -1251,6 +2431,12 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
                         'factor_id': doc.get('factor_id'),
                         'doc_type': doc.get('doc_type'),
                         'decision': doc.get('decision'),
+                        'knowledge_scope': doc.get('knowledge_scope'),
+                        'factor_family': doc.get('factor_family') or doc.get('mechanism_family'),
+                        'failure_signature': doc.get('failure_signature'),
+                        'formula_hash': doc.get('formula_hash'),
+                        'artifact_identity': doc.get('artifact_identity') or doc.get('source_identity') or {},
+                        'source_identity': doc.get('source_identity') or doc.get('artifact_identity') or {},
                         'source_path': doc.get('source_path'),
                         'overlap_terms': [],
                         'snippet': str(doc.get('text') or '')[:280],
@@ -1811,6 +2997,76 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         retrieval_context,
     )
     diversity_position = build_diversity_position(framework, retrieval_context, decision)
+    evidence_audit = build_evidence_audit(bundle, payloads, metrics)
+    mechanism_analysis = build_mechanism_analysis(bundle, payloads, metrics, evidence_audit, retrieval_context)
+    current_identity = (run_master.get('artifact_identity') or case.get('artifact_identity') or {})
+    case_comparison = build_case_comparison(mechanism_analysis, retrieval_context, current_identity, {'evidence_audit': evidence_audit})
+    if (
+        decision == 'promote_official'
+        and mechanism_analysis.get('mechanism_fit') != 'strong'
+        and mechanism_analysis.get('return_source') != 'unknown'
+    ):
+        decision = 'iterate'
+        thesis = 'Factor has usable evidence but needs mechanism support before official promotion.'
+        experience_chain = build_experience_chain(
+            str(report_id),
+            str(factor_id),
+            iteration_no,
+            decision,
+            strengths,
+            weaknesses,
+            retrieval_context,
+            prior_iteration_no,
+        )
+        revision_taxonomy = build_revision_taxonomy(
+            framework,
+            metric_interpretation,
+            math_discipline,
+            modification_targets,
+            decision,
+        )
+        program_search_policy = build_program_search_policy(
+            framework,
+            metric_interpretation,
+            math_discipline,
+            decision,
+            modification_targets,
+            retrieval_context,
+        )
+        diversity_position = build_diversity_position(framework, retrieval_context, decision)
+    revision_strategy = build_revision_strategy(
+        decision,
+        metrics,
+        evidence_audit,
+        mechanism_analysis,
+        case_comparison,
+        framework,
+        math_discipline,
+    )
+    search_policy_decision = build_search_policy_decision(
+        decision,
+        evidence_audit,
+        mechanism_analysis,
+        case_comparison,
+        revision_strategy,
+        framework,
+    )
+    program_search_policy.setdefault('recommended_next_search', {})['branches'] = search_policy_decision.get('branch_templates') or []
+    program_search_policy['recommended_next_search']['recommended_mode'] = search_policy_decision.get('recommended_mode')
+    program_search_policy['recommended_next_search']['requires_human_approval_before_code_change'] = search_policy_decision.get('human_approval_required') is True
+    program_search_policy['recommended_next_search']['execution_allowed_by_default'] = False
+    program_search_policy['recommended_next_search']['selection_rationale'] = search_policy_decision.get('selection_rationale') or []
+    should_modify_step3b = should_write_step3b_handoff(
+        decision,
+        revision_strategy,
+        case_comparison,
+        search_policy_decision,
+    )
+    research_memo['evidence_audit'] = evidence_audit
+    research_memo['mechanism_analysis'] = mechanism_analysis
+    research_memo['case_comparison'] = case_comparison
+    research_memo['revision_strategy'] = revision_strategy
+    research_memo['search_policy_decision'] = search_policy_decision
     research_memo['experience_chain'] = experience_chain
     research_memo['revision_taxonomy'] = revision_taxonomy
     research_memo['program_search_policy'] = program_search_policy
@@ -1882,13 +3138,14 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         },
         'retrieval_context': retrieval_context,
         'loop_action': {
-            'should_modify_step3b': decision == 'iterate',
+            'should_modify_step3b': should_modify_step3b,
+            'loop_authorization': revision_strategy.get('loop_authorization'),
             'modification_targets': modification_targets,
             'parallel_exploration_branches': (program_search_policy.get('recommended_next_search') or {}).get('branches') or [],
             'search_methods': list((program_search_policy.get('method_library') or {}).keys()),
-            'requires_human_approval_before_code_change': decision == 'iterate',
-            'next_runner': 'step3b' if decision == 'iterate' else 'stop',
-            'stop_reason': None if decision == 'iterate' else decision,
+            'requires_human_approval_before_code_change': should_modify_step3b,
+            'next_runner': 'step3b' if should_modify_step3b else 'stop',
+            'stop_reason': None if should_modify_step3b else (revision_strategy.get('loop_authorization') or decision),
         },
         'upstream_handoff': {
             'step5_handoff_path': str(bundle['paths']['handoff_to_step6']),
@@ -1934,6 +3191,12 @@ def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> di
         'program_search_policy': iteration['knowledge_writeback'].get('program_search_policy'),
         'diversity_position': iteration['knowledge_writeback'].get('diversity_position'),
         'research_memo': iteration['research_judgment'].get('research_memo'),
+        'evidence_identity': iteration.get('evidence_identity') or {},
+        'source_case_identity': iteration.get('source_case_identity') or {},
+        'implementation_mode_decision': iteration.get('implementation_mode_decision') or {},
+        'decision_lineage': iteration.get('decision_lineage') or {},
+        'knowledge_provenance': iteration.get('knowledge_provenance') or {},
+        'promotion_gate': iteration.get('promotion_gate') or {},
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
@@ -1968,22 +3231,602 @@ def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
         'program_search_policy': iteration['knowledge_writeback'].get('program_search_policy'),
         'diversity_position': iteration['knowledge_writeback'].get('diversity_position'),
         'research_memo': iteration['knowledge_writeback'].get('research_memo'),
+        'knowledge_scope': 'same_factor',
+        'source_identity': iteration.get('source_case_identity') or {},
+        'evidence_identity': iteration.get('evidence_identity') or {},
+        'source_case_identity': iteration.get('source_case_identity') or {},
+        'implementation_mode_decision': iteration.get('implementation_mode_decision') or {},
+        'decision_lineage': iteration.get('decision_lineage') or {},
+        'knowledge_provenance': iteration.get('knowledge_provenance') or {},
+        'can_be_reused_by_future_agents': True,
+        'reuse_constraints': [
+            'Only reuse as same-factor evidence when artifact_identity matches.',
+            'Use as similar-case analogy when factor/report/branch/run identity differs.',
+        ],
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
 
 
 def build_handoff_to_step3b(iteration: dict[str, Any]) -> dict[str, Any]:
+    parent_identity = iteration.get('source_case_identity') or {}
+    parent_branch = str(parent_identity.get('branch_id') or 'main')
+    new_branch = f'{parent_branch}_iter_{int(iteration.get("iteration_no") or 1):03d}'
     return {
         'report_id': iteration['report_id'],
         'factor_id': iteration['factor_id'],
         'trigger': 'step6_iteration',
+        'parent_identity': parent_identity,
+        'new_branch_id': new_branch,
+        'parent_run_id': parent_identity.get('run_id'),
+        'revision_reason': iteration['research_judgment'].get('thesis'),
+        'revision_target': parent_identity.get('implementation_mode'),
+        'must_preserve': [
+            'source_type',
+            'factor_id',
+            'original_formula_or_hypothesis',
+        ],
+        'must_change': iteration['loop_action']['modification_targets'],
+        'forbidden_changes': [
+            'portfolio expression',
+            'decile trading',
+            'short-side adoption',
+        ],
         'modification_targets': iteration['loop_action']['modification_targets'],
         'research_judgment': iteration['research_judgment'],
         'knowledge_writeback': iteration['knowledge_writeback'],
+        'artifact_identity': derive_identity(parent_identity, 'handoff_to_step3b'),
+        'evidence_identity': iteration.get('evidence_identity') or {},
+        'source_case_identity': parent_identity,
+        'implementation_mode_decision': iteration.get('implementation_mode_decision') or {},
+        'decision_lineage': iteration.get('decision_lineage') or {},
+        'knowledge_provenance': iteration.get('knowledge_provenance') or {},
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
+
+
+def _metric_or_none(metrics: dict[str, Any], key: str) -> Any:
+    value = metrics.get(key)
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _brief_scalar(value: Any) -> str:
+    if value is None:
+        return 'missing'
+    if isinstance(value, float):
+        return f'{value:.6g}'
+    return str(value)
+
+
+def _brief_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _brief_first_nonempty(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return 'missing: source field unavailable'
+
+
+def find_loop_brief_chart_evidence(report_id: str) -> dict[str, str]:
+    search_roots = [
+        EVAL / report_id / 'self_quant_analyzer',
+        FF / 'archive' / report_id / 'evaluations' / 'self_quant_analyzer',
+    ]
+    evidence: dict[str, str] = {}
+    searched = ', '.join(str(root) for root in search_roots)
+    for key, filename in CHART_ARTIFACT_FILENAMES.items():
+        found = None
+        for root in search_roots:
+            candidate = root / filename
+            if candidate.exists():
+                found = str(candidate)
+                break
+        evidence[key] = found or f'missing: {filename} not found under {searched}'
+    return evidence
+
+
+def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
+    research_judgment = iteration.get('research_judgment') or {}
+    research_memo = research_judgment.get('research_memo') or {}
+    metrics = (iteration.get('evidence_summary') or {}).get('headline_metrics') or {}
+    mechanism = research_memo.get('mechanism_analysis') or {}
+    mechanism_math_contract = mechanism.get('mechanism_math_contract') or mechanism_math_contract_from_bundle(bundle)
+    mechanism_math_summary = mechanism.get('mechanism_math_summary') or mechanism_math_summary_from_contract(mechanism_math_contract)
+    case_comparison = research_memo.get('case_comparison') or {}
+    revision_strategy = research_memo.get('revision_strategy') or {}
+    search_policy = research_memo.get('search_policy_decision') or {}
+    evidence_audit = research_memo.get('evidence_audit') or {}
+    math_discipline = research_memo.get('math_discipline_review') or {}
+    formula_understanding = research_memo.get('formula_understanding') or {}
+    metric_interpretation = research_memo.get('metric_interpretation') or {}
+    long_side_quality = (evidence_audit.get('long_side_evidence_quality') or {})
+    metric_consistency = (evidence_audit.get('metric_consistency') or {})
+    cost_turnover = (evidence_audit.get('cost_and_turnover_risk') or {})
+    spec = bundle.get('factor_spec_master') or {}
+    canonical = spec.get('canonical_spec') or {}
+    decision = str(research_judgment.get('decision') or '')
+    branch_templates = search_policy.get('branch_templates') or []
+    first_branch = branch_templates[0] if branch_templates and isinstance(branch_templates[0], dict) else {}
+    hypotheses = revision_strategy.get('revision_hypotheses') or []
+    first_hypothesis = hypotheses[0] if hypotheses and isinstance(hypotheses[0], dict) else {}
+    promotion_gate = iteration.get('promotion_gate') or {}
+    promoted = decision == 'promote_official' and promotion_gate.get('official_promotion_allowed') is True
+
+    brief_metrics = {key: _metric_or_none(metrics, key) for key in CORE_LOOP_BRIEF_METRICS}
+    brief_metrics['backend_statuses'] = (iteration.get('evidence_summary') or {}).get('backend_statuses') or {}
+
+    gross_return = _safe_float(metrics.get('long_side_annual_return'))
+    net_return = _safe_float(metrics.get('cost_adjusted_annual_return'))
+    turnover = _safe_float(metrics.get('long_side_turnover_mean_daily') or metrics.get('turnover_mean'))
+    sharpe = _safe_float(metrics.get('long_side_sharpe'))
+    cost_sharpe = _safe_float(metrics.get('cost_adjusted_long_side_sharpe'))
+    contradiction = []
+    support = []
+    if gross_return is not None and gross_return > 0:
+        support.append(f'Gross long-side annual return is positive at {_brief_scalar(gross_return)}.')
+    if _safe_float(metrics.get('rank_ic_mean')) is not None and _safe_float(metrics.get('rank_ic_mean')) > 0:
+        support.append(f'Rank IC mean is positive at {_brief_scalar(metrics.get("rank_ic_mean"))}.')
+    if net_return is not None and net_return < 0:
+        contradiction.append(f'Cost-adjusted annual return is negative at {_brief_scalar(net_return)}.')
+    if cost_sharpe is not None and cost_sharpe < 0:
+        contradiction.append(f'Cost-adjusted long-side Sharpe is negative at {_brief_scalar(cost_sharpe)}.')
+    if metric_consistency.get('short_side_dominance_suspected') is True:
+        contradiction.append('Long-short diagnostics may be driven by short-side weakness; this is diagnostic only, not adoption evidence.')
+    if not support:
+        support.append('No strong supporting metric was available; treat this loop as evidence-gathering rather than promotion-ready.')
+    if not contradiction:
+        contradiction.append('No major contradiction was detected beyond normal robustness and monitoring requirements.')
+
+    current_conclusion = (
+        'Promoted to official library because evidence, mechanism, and promotion gate requirements are met.'
+        if promoted
+        else 'Not promoted. Step6 keeps this result as research evidence and requires more proof or human-approved revision before promotion.'
+    )
+    if decision == 'iterate' and revision_strategy.get('loop_authorization') == 'advisory_only':
+        current_conclusion += ' The next branch is advisory only and does not authorize a Step3B handoff.'
+
+    return {
+        'brief_version': LOOP_RESEARCH_BRIEF_VERSION,
+        'report_id': iteration.get('report_id'),
+        'factor_id': iteration.get('factor_id'),
+        'iteration_no': iteration.get('iteration_no'),
+        'created_at_utc': utc_now(),
+        'decision_snapshot': {
+            'decision': decision,
+            'promotion_status': 'official' if promoted else 'not_promoted',
+            'loop_authorization': revision_strategy.get('loop_authorization') or ('not_needed' if not revision_strategy.get('revision_needed') else 'blocked'),
+            'search_policy': search_policy.get('recommended_mode'),
+            'next_branch': first_branch.get('branch_id') or (
+                'advisory_or_human_approval_required' if decision == 'iterate' else 'none'
+            ),
+            'human_approval_required': search_policy.get('human_approval_required') is True or revision_strategy.get('requires_human_approval_before_code_change') is True,
+        },
+        'economic_interpretation': {
+            'formula': str(canonical.get('formula_text') or 'missing: canonical formula unavailable'),
+            'plain_english_interpretation': _brief_first_nonempty(
+                formula_understanding.get('plain_language'),
+                mechanism.get('mechanism_hypothesis'),
+            ),
+            'return_source': mechanism.get('return_source') or 'unknown',
+            'factor_family': mechanism.get('factor_family') or 'other',
+            'random_object': math_discipline.get('step1_random_object') or 'missing: random object unavailable',
+            'target_statistic': math_discipline.get('target_statistic') or 'missing: target statistic unavailable',
+            'information_set': math_discipline.get('information_set_legality') or 'missing: information-set review unavailable',
+            'mechanism_hypothesis': mechanism.get('mechanism_hypothesis') or 'missing: mechanism hypothesis unavailable',
+            'why_long_side_should_work': _brief_first_nonempty(
+                (mechanism.get('expected_metric_signature') or {}).get('long_side_thesis'),
+                metric_interpretation.get('summary'),
+                research_judgment.get('thesis'),
+            ),
+            'necessary_conditions': _brief_list(mechanism.get('necessary_conditions')),
+            'failure_regimes': _brief_list(mechanism.get('failure_regimes')),
+            'mechanism_fit': mechanism.get('mechanism_fit') or 'unknown',
+        },
+        'metrics': brief_metrics,
+        'chart_evidence': find_loop_brief_chart_evidence(str(iteration.get('report_id') or '')),
+        'metric_analysis': {
+            'supporting_evidence': support,
+            'contradicting_evidence': contradiction,
+            'cost_turnover_analysis': (
+                f'Daily turnover={_brief_scalar(turnover)}; annual trading COGS={_brief_scalar(metrics.get("trading_cogs_annual"))}; '
+                f'cost-adjusted annual return={_brief_scalar(net_return)}. '
+                f"Cost verdict: {long_side_quality.get('cost_adjusted_status') or cost_turnover.get('turnover_verdict') or 'unknown'}."
+            ),
+            'drawdown_recovery_analysis': (
+                f'Max drawdown={_brief_scalar(metrics.get("long_side_max_drawdown"))}; '
+                f'recovery days={_brief_scalar(metrics.get("long_side_recovery_days"))}. '
+                f"Drawdown status: {long_side_quality.get('drawdown_status') or 'unknown'}; "
+                f"recovery status: {long_side_quality.get('recovery_status') or 'unknown'}."
+            ),
+            'monotonicity_analysis': (
+                f"Monotonicity support is {metric_consistency.get('monotonicity_support') or 'unknown'}; "
+                f'top decile mean={_brief_scalar(metrics.get("group_top_decile_mean_return"))}, '
+                f'bottom decile mean={_brief_scalar(metrics.get("group_bottom_decile_mean_return"))}.'
+            ),
+            'short_side_long_short_diagnostic': (
+                'Long-short and decile evidence are diagnostic_only. '
+                f'Long-short spread mean={_brief_scalar(metrics.get("group_long_short_spread_mean"))}, '
+                f'IR={_brief_scalar(metrics.get("group_long_short_spread_ir"))}; '
+                f"short-side dominance suspected={metric_consistency.get('short_side_dominance_suspected')}."
+            ),
+            'implementation_or_data_concerns': _brief_list(evidence_audit.get('data_or_implementation_suspicions')),
+        },
+        'knowledge_comparison': {
+            'same_factor_cases': _brief_list(case_comparison.get('same_factor_cases')),
+            'similar_success_cases': _brief_list(case_comparison.get('similar_success_cases')),
+            'similar_failure_cases': _brief_list(case_comparison.get('similar_failure_cases')),
+            'imported_lessons': _brief_list(case_comparison.get('imported_lessons')),
+            'rejected_lessons': _brief_list(case_comparison.get('rejected_lessons')),
+            'anti_patterns': _brief_list(case_comparison.get('anti_pattern_cases')),
+        },
+        'mechanism_math_summary': mechanism_math_summary,
+        'next_research_direction': {
+            'primary_failure_signature': revision_strategy.get('primary_failure_signature') or 'none',
+            'revision_hypothesis': first_hypothesis.get('hypothesis') or revision_strategy.get('reject_reason_if_no_revision') or 'No expression revision is currently approved.',
+            'expression_level_change': first_hypothesis.get('expression_change') or 'none',
+            'revision_target_math_object': first_hypothesis.get('revision_target_math_object') or (mechanism_math_summary.get('revision_operator_summary') or {}).get('revision_target_math_object') or 'under_specified',
+            'math_change': first_hypothesis.get('math_change') or (mechanism_math_summary.get('revision_operator_summary') or {}).get('math_change') or 'under_specified',
+            'why_not_portfolio_fix': first_hypothesis.get('why_not_portfolio_fix') or 'Portfolio expression, rebalance changes, short-leg adoption, and decile trading are forbidden repair paths; only factor expression or Step3B code changes may be considered after human approval.',
+            'search_policy': search_policy.get('recommended_mode') or 'none',
+            'branch_template': first_branch,
+            'success_criteria': _brief_list(first_branch.get('success_criteria') or first_hypothesis.get('expected_metric_change')),
+            'falsification_tests': _brief_list(first_branch.get('falsification_tests') or first_hypothesis.get('falsification_tests')),
+            'kill_criteria': _brief_list(first_hypothesis.get('kill_criteria') or math_discipline.get('kill_criteria')),
+        },
+        'final_loop_conclusion': {
+            'current_conclusion': current_conclusion,
+            'promotion_requirements': (
+                ['Promotion requirements already met: case validated, identity/evidence verified, long-side evidence official-ready, mechanism support accepted.']
+                if promoted else
+                [
+                    'Identity and evidence chain must remain verified.',
+                    'Long-side risk-adjusted evidence must meet promotion thresholds after costs.',
+                    'Mechanism fit must be strong or supported by matching same-factor/strong mechanism evidence.',
+                    'Any Step3B change requires human approval before code changes.',
+                ]
+            ),
+            'human_decision_required': bool(search_policy.get('human_approval_required') is True or decision != 'promote_official'),
+        },
+    }
+
+
+def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
+    decision = brief.get('decision_snapshot') or {}
+    econ = brief.get('economic_interpretation') or {}
+    metrics = brief.get('metrics') or {}
+    charts = brief.get('chart_evidence') or {}
+    analysis = brief.get('metric_analysis') or {}
+    knowledge = brief.get('knowledge_comparison') or {}
+    math_summary = brief.get('mechanism_math_summary') or {}
+    next_dir = brief.get('next_research_direction') or {}
+    conclusion = brief.get('final_loop_conclusion') or {}
+
+    def bullet_list(items: Any) -> str:
+        values = _brief_list(items)
+        if not values:
+            return '- missing'
+        return '\n'.join(f'- {json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else item}' for item in values)
+
+    metric_rows = [
+        ('Rank IC mean', 'rank_ic_mean', 'Direction and magnitude of rank correlation.'),
+        ('Rank IC IR', 'rank_ic_ir', 'Stability of rank IC.'),
+        ('Pearson IC mean', 'pearson_ic_mean', 'Linear IC diagnostic.'),
+        ('Pearson IC IR', 'pearson_ic_ir', 'Stability of Pearson IC.'),
+        ('Long-side annual return', 'long_side_annual_return', 'Gross long-side revenue.'),
+        ('Long-side annual volatility', 'long_side_annual_volatility', 'Risk-capital pressure.'),
+        ('Long-side Sharpe', 'long_side_sharpe', 'Risk-adjusted long-side quality.'),
+        ('Max drawdown', 'long_side_max_drawdown', 'Capital impairment.'),
+        ('Recovery days', 'long_side_recovery_days', 'Payback/recovery burden.'),
+        ('Daily turnover', 'long_side_turnover_mean_daily', 'Trading intensity.'),
+        ('Annual trading COGS', 'trading_cogs_annual', 'Turnover cost burden.'),
+        ('Cost-adjusted annual return', 'cost_adjusted_annual_return', 'Net long-side return after costs.'),
+        ('Cost-adjusted Sharpe', 'cost_adjusted_long_side_sharpe', 'Net risk-adjusted long-side quality.'),
+    ]
+    table = ['| Metric | Value | Interpretation |', '|---|---:|---|']
+    for label, key, interpretation in metric_rows:
+        table.append(f'| {label} | {_brief_scalar(metrics.get(key))} | {interpretation} |')
+
+    branch_template = next_dir.get('branch_template') or {}
+    branch_text = json.dumps(branch_template, ensure_ascii=False) if branch_template else 'none'
+    return f"""# Factor Forge Loop Brief: {brief.get('report_id')} / Iteration {brief.get('iteration_no')}
+
+## 1. Decision Snapshot
+
+- Decision: {decision.get('decision')}
+- Promotion status: {decision.get('promotion_status')}
+- Loop authorization: {decision.get('loop_authorization')}
+- Search policy: {decision.get('search_policy')}
+- Next branch: {decision.get('next_branch')}
+- Human approval required: {decision.get('human_approval_required')}
+
+## 2. Economic Interpretation
+
+- Formula: {econ.get('formula')}
+- Plain-English interpretation: {econ.get('plain_english_interpretation')}
+- Return source: {econ.get('return_source')}
+- Factor family: {econ.get('factor_family')}
+- Random object: {econ.get('random_object')}
+- Target statistic: {econ.get('target_statistic')}
+- Information set: {econ.get('information_set')}
+- Mechanism hypothesis: {econ.get('mechanism_hypothesis')}
+- Why this should earn long-side return: {econ.get('why_long_side_should_work')}
+- Necessary conditions:
+{bullet_list(econ.get('necessary_conditions'))}
+- Failure regimes:
+{bullet_list(econ.get('failure_regimes'))}
+- Mechanism fit: {econ.get('mechanism_fit')}
+
+## 3. Evidence And Metrics
+
+{chr(10).join(table)}
+
+## 4. Chart Evidence
+
+- Rank IC time series: {charts.get('rank_ic_timeseries')}
+- Pearson IC time series: {charts.get('pearson_ic_timeseries')}
+- Long-side NAV: {charts.get('long_side_nav')}
+- Cost-adjusted long-side NAV: {charts.get('cost_adjusted_long_side_nav')}
+- Quantile NAV: {charts.get('quantile_nav')}
+- Long-short NAV, diagnostic only: {charts.get('long_short_nav_diagnostic_only')}
+- Coverage by day: {charts.get('coverage_by_day')}
+
+## 5. Metric Analysis
+
+- What supports the factor:
+{bullet_list(analysis.get('supporting_evidence'))}
+- What contradicts the factor:
+{bullet_list(analysis.get('contradicting_evidence'))}
+- Cost / turnover analysis: {analysis.get('cost_turnover_analysis')}
+- Drawdown / recovery analysis: {analysis.get('drawdown_recovery_analysis')}
+- Monotonicity analysis: {analysis.get('monotonicity_analysis')}
+- Short-side / long-short diagnostic: {analysis.get('short_side_long_short_diagnostic')}
+- Implementation/data concerns:
+{bullet_list(analysis.get('implementation_or_data_concerns'))}
+
+## 6. Knowledge Comparison
+
+- Same-factor cases:
+{bullet_list(knowledge.get('same_factor_cases'))}
+- Similar successful cases:
+{bullet_list(knowledge.get('similar_success_cases'))}
+- Similar failed cases:
+{bullet_list(knowledge.get('similar_failure_cases'))}
+- Imported lessons:
+{bullet_list(knowledge.get('imported_lessons'))}
+- Rejected lessons:
+{bullet_list(knowledge.get('rejected_lessons'))}
+- Anti-patterns:
+{bullet_list(knowledge.get('anti_patterns'))}
+
+## 7. Next Research Direction
+
+- Primary failure signature: {next_dir.get('primary_failure_signature')}
+- Revision hypothesis: {next_dir.get('revision_hypothesis')}
+- Expression-level change: {next_dir.get('expression_level_change')}
+- Why not portfolio fix: {next_dir.get('why_not_portfolio_fix')}
+- Search policy: {next_dir.get('search_policy')}
+- Branch template: {branch_text}
+- Revision target math object: {next_dir.get('revision_target_math_object')}
+- Math change: {next_dir.get('math_change')}
+- Success criteria:
+{bullet_list(next_dir.get('success_criteria'))}
+- Falsification tests:
+{bullet_list(next_dir.get('falsification_tests'))}
+- Kill criteria:
+{bullet_list(next_dir.get('kill_criteria'))}
+
+## 8. Final Loop Conclusion
+
+- Current conclusion: {conclusion.get('current_conclusion')}
+- What must happen before next promotion consideration:
+{bullet_list(conclusion.get('promotion_requirements'))}
+- Human decision required: {conclusion.get('human_decision_required')}
+
+## 9. Mechanism Math Summary
+
+- Math model status: {math_summary.get('math_model_status')}
+- Model family: {math_summary.get('model_family')}
+- Math toolkits:
+{bullet_list(math_summary.get('math_toolkits'))}
+- State or object: {math_summary.get('state_or_object')}
+- Factor as estimator: {math_summary.get('factor_as_estimator')}
+- Target functional: {math_summary.get('target_functional')}
+- Monotonicity claim: {math_summary.get('monotonicity_claim')}
+- Expected metric signature: {json.dumps(math_summary.get('expected_metric_signature') or {}, ensure_ascii=False)}
+- Revision operator summary: {json.dumps(math_summary.get('revision_operator_summary') or {}, ensure_ascii=False)}
+- Under-specified reason: {math_summary.get('under_specified_reason') or 'not_applicable'}
+- Next human research question: {math_summary.get('next_human_research_question') or 'not_applicable'}
+"""
+
+
+def write_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
+    report_id = str(iteration.get('report_id') or '')
+    iteration_no = int(iteration.get('iteration_no') or 0)
+    created_at = utc_now()
+    brief = build_loop_research_brief(iteration, bundle)
+    brief['created_at_utc'] = created_at
+    markdown_path = OBJ / 'research_iteration_master' / f'loop_research_brief__{report_id}__iter{iteration_no}.md'
+    json_path = OBJ / 'research_iteration_master' / f'loop_research_brief__{report_id}__iter{iteration_no}.json'
+    write_json(json_path, brief)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(render_loop_research_brief_markdown(brief), encoding='utf-8')
+    return {
+        'markdown_path': str(markdown_path),
+        'json_path': str(json_path),
+        'brief_version': LOOP_RESEARCH_BRIEF_VERSION,
+        'iteration_no': iteration_no,
+        'created_at_utc': created_at,
+    }
+
+
+def promotion_gate(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
+    case = bundle['factor_case_master']
+    evidence_quality = case.get('evidence_quality') or {}
+    research_memo = (((iteration.get('research_judgment') or {}).get('research_memo')) or {})
+    evidence_audit = research_memo.get('evidence_audit') or {}
+    mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+    mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or mechanism_math_contract_from_bundle(bundle)
+    unresolved_correctness_risk = bool(
+        research_memo.get('unresolved_correctness_risk')
+        or research_memo.get('human_review_required')
+        or (iteration.get('implementation_mode_decision') or {}).get('human_review_required')
+    )
+    checks = {
+        'case_validated': case.get('final_status') == 'validated',
+        'identity_chain_verified': evidence_quality.get('identity_chain_verified') is True,
+        'long_side_metrics_present': evidence_quality.get('long_side_metrics_present') is True,
+        'step4_has_successful_backend': evidence_quality.get('step4_has_successful_backend') is True,
+        'mode_decision_present': bool(iteration.get('implementation_mode_decision')),
+        'no_unresolved_correctness_risk': not unresolved_correctness_risk,
+        'evidence_audit_not_blocked': evidence_audit.get('evidence_verdict') != 'blocked',
+        'mechanism_return_source_known': mechanism_analysis.get('return_source') != 'unknown',
+        'mechanism_not_contradicted': mechanism_analysis.get('mechanism_fit') != 'contradicted',
+        'mechanism_math_not_invalid': mechanism_math_contract.get('math_model_status') != 'invalid',
+    }
+    blocked = [key for key, ok in checks.items() if not ok]
+    return {
+        'official_promotion_allowed': not blocked,
+        'checks': checks,
+        'promote_blocked_reason': blocked,
+    }
+
+
+def _strict_identity_gate(expected_label: str, expected: dict[str, Any], actual_label: str, actual: dict[str, Any], actual_role: str) -> list[str]:
+    expected_identity = expected.get('artifact_identity') or {}
+    actual_identity = actual.get('artifact_identity') or {}
+    if not expected_identity or not actual_identity:
+        return [f'{expected_label}/{actual_label} artifact_identity missing']
+    try:
+        assert_identity_matches_strict(
+            expected_identity,
+            actual_identity,
+            expected_label=expected_label,
+            actual_label=actual_label,
+            allowed_role_transitions={(expected_identity.get('artifact_role'), actual_role)},
+        )
+        return []
+    except AssertionError as exc:
+        return [str(exc)]
+
+
+def step6_prewrite_failures(
+    *,
+    iteration: dict[str, Any],
+    all_record: dict[str, Any],
+    knowledge_record: dict[str, Any],
+    official_record: dict[str, Any] | None,
+    handoff_to_step3b: dict[str, Any] | None,
+    bundle: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    case = bundle['factor_case_master']
+    run = bundle['factor_run_master']
+    required_iteration = [
+        'source_case_identity',
+        'decision_lineage',
+        'knowledge_provenance',
+        'implementation_mode_decision',
+        'evidence_identity',
+    ]
+    for key in required_iteration:
+        if not isinstance(iteration.get(key), dict) or not iteration.get(key):
+            failures.append(f'{key}_missing')
+
+    research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    evidence_audit = research_memo.get('evidence_audit') or {}
+    if evidence_audit.get('evidence_verdict') == 'blocked':
+        failures.append('evidence_audit_evidence_verdict_blocked')
+    case_comparison = research_memo.get('case_comparison') or {}
+    if case_comparison.get('case_comparison_verdict') == 'blocked':
+        failures.append('case_comparison_verdict_blocked')
+    if case_comparison.get('identity_mismatch_cases'):
+        failures.append('same_factor_identity_mismatch')
+
+    failures.extend(_strict_identity_gate('factor_run_master', run, 'factor_case_master', case, 'factor_case_master'))
+    failures.extend(_strict_identity_gate('factor_case_master', case, 'research_iteration_master', iteration, 'research_iteration_master'))
+    failures.extend(_strict_identity_gate('factor_case_master', case, 'factor_library_all', all_record, 'factor_library_all'))
+    failures.extend(_strict_identity_gate('factor_case_master', case, 'research_knowledge_base', knowledge_record, 'research_knowledge_base'))
+    if official_record is not None:
+        failures.extend(_strict_identity_gate('factor_case_master', case, 'factor_library_official', official_record, 'factor_library_official'))
+
+    case_quality = case.get('evidence_quality') or {}
+    for key in [
+        'identity_chain_verified',
+        'mode_decision_present',
+        'self_quant_required_and_present',
+        'long_side_metrics_present',
+        'step4_has_successful_backend',
+    ]:
+        if case_quality.get(key) is not True:
+            failures.append(f'case_evidence_quality_{key}_not_true')
+
+    if iteration['research_judgment']['decision'] == 'promote_official':
+        gate = iteration.get('promotion_gate') or {}
+        if gate.get('official_promotion_allowed') is not True:
+            failures.append('official_promotion_gate_failed:' + ','.join(gate.get('promote_blocked_reason') or []))
+        if official_record is None:
+            failures.append('official_record_missing_for_promote_official')
+
+    if knowledge_record.get('knowledge_scope') == 'same_factor':
+        source_identity = knowledge_record.get('source_identity') or {}
+        target_factor = knowledge_record.get('factor_id')
+        if source_identity.get('factor_id') != target_factor:
+            failures.append('same_factor_knowledge_cross_factor')
+    if not (knowledge_record.get('knowledge_provenance') or {}).get('not_same_factor_unless_identity_matches'):
+        failures.append('knowledge_provenance_identity_guard_missing')
+
+    if iteration['loop_action']['should_modify_step3b']:
+        if not handoff_to_step3b:
+            failures.append('iterate_handoff_missing')
+        else:
+            parent_identity = handoff_to_step3b.get('parent_identity') or {}
+            if not parent_identity:
+                failures.append('iterate_parent_identity_missing')
+            if not handoff_to_step3b.get('parent_run_id'):
+                failures.append('iterate_parent_run_id_missing')
+            if not handoff_to_step3b.get('new_branch_id'):
+                failures.append('iterate_new_branch_id_missing')
+            source_identity = iteration.get('source_case_identity') or {}
+            if handoff_to_step3b.get('parent_run_id') != source_identity.get('run_id'):
+                failures.append('iterate_parent_run_id_mismatch')
+    return failures
+
+
+def write_step6_prewrite_block(
+    *,
+    report_id: str,
+    decision: str,
+    reasons: list[str],
+    would_have_written: list[str],
+) -> None:
+    diagnostic = {
+        'report_id': report_id,
+        'decision': decision,
+        'prewrite_blocked': True,
+        'prewrite_block_reasons': reasons,
+        'would_have_written': would_have_written,
+        'skipped_writes': [
+            'research_iteration_master',
+            'factor_library_all',
+            'factor_library_official',
+            'research_knowledge_base',
+            'handoff_to_step3b',
+        ],
+    }
+    diag_path = OBJ / 'validation' / f'step6_prewrite_block__{report_id}.json'
+    write_json(diag_path, diagnostic)
+    print(f'[WRITE] {diag_path}')
 
 
 def main() -> None:
@@ -2005,6 +3848,36 @@ def main() -> None:
     bundle = load_required_inputs(report_id)
     payloads = load_backend_payloads(report_id, bundle['factor_run_master'])
     iteration = build_iteration_payload(bundle, payloads)
+    base_identity = (
+        bundle['factor_case_master'].get('artifact_identity')
+        or bundle['factor_run_master'].get('artifact_identity')
+        or {}
+    )
+    iteration['artifact_identity'] = derive_identity(base_identity, 'research_iteration_master')
+    iteration['evidence_identity'] = build_evidence_identity(
+        factorforge_root=FF,
+        report_id=str(report_id),
+        factor_run_master=bundle['factor_run_master'],
+        factor_case_master=bundle['factor_case_master'],
+        factor_evaluation=bundle['factor_evaluation'],
+        handoff=bundle['handoff_to_step6'],
+        backend_payloads=payloads,
+    )
+    iteration['source_case_identity'] = bundle['factor_case_master'].get('artifact_identity') or {}
+    iteration['implementation_mode_decision'] = iteration['evidence_identity'].get('implementation_mode_decision') or {}
+    iteration['decision_lineage'] = build_decision_lineage(
+        decision=iteration['research_judgment']['decision'],
+        factor_case_master=bundle['factor_case_master'],
+        factor_run_master=bundle['factor_run_master'],
+        evidence_identity=iteration['evidence_identity'],
+    )
+    similar_cases = (((iteration.get('research_judgment') or {}).get('research_memo') or {}).get('learning_and_innovation') or {}).get('similar_case_lessons_imported') or []
+    iteration['knowledge_provenance'] = build_knowledge_provenance(
+        source_identity=iteration['source_case_identity'],
+        decision=iteration['research_judgment']['decision'],
+        similar_cases_imported=similar_cases,
+    )
+    iteration['promotion_gate'] = promotion_gate(iteration, bundle)
 
     iteration_path = OBJ / 'research_iteration_master' / f'research_iteration_master__{report_id}.json'
     all_library_path = OBJ / 'factor_library_all' / f'factor_record__{report_id}.json'
@@ -2012,25 +3885,93 @@ def main() -> None:
     knowledge_path = OBJ / 'research_knowledge_base' / f'knowledge_record__{report_id}.json'
     step3b_handoff_path = OBJ / 'handoff' / f'handoff_to_step3b__{report_id}.json'
 
+    all_record = build_factor_record(iteration, bundle)
+    all_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_all')
+    all_record['evidence_identity'] = iteration['evidence_identity']
+    all_record['source_case_identity'] = iteration['source_case_identity']
+    all_record['implementation_mode_decision'] = iteration['implementation_mode_decision']
+    all_record['decision_lineage'] = iteration['decision_lineage']
+    all_record['knowledge_provenance'] = iteration['knowledge_provenance']
+    all_record['promotion_gate'] = iteration['promotion_gate']
+    knowledge_record = build_knowledge_record(iteration)
+    knowledge_record['artifact_identity'] = derive_identity(base_identity, 'research_knowledge_base')
+    knowledge_record['evidence_identity'] = iteration['evidence_identity']
+    knowledge_record['source_case_identity'] = iteration['source_case_identity']
+    knowledge_record['source_identity'] = iteration['source_case_identity']
+    knowledge_record['implementation_mode_decision'] = iteration['implementation_mode_decision']
+    knowledge_record['decision_lineage'] = iteration['decision_lineage']
+    knowledge_record['knowledge_provenance'] = iteration['knowledge_provenance']
+    knowledge_record['provenance'] = {
+        **(knowledge_record.get('provenance') or {}),
+        'factor_id': base_identity.get('factor_id'),
+        'report_id': base_identity.get('report_id'),
+        'branch_id': base_identity.get('branch_id'),
+        'run_id': base_identity.get('run_id'),
+        'implementation_mode': base_identity.get('implementation_mode'),
+        'spec_hash': base_identity.get('spec_hash'),
+        'formula_hash': base_identity.get('formula_hash'),
+        'code_hash': base_identity.get('code_hash') or base_identity.get('code_contract_hash'),
+        'hybrid_hash': base_identity.get('hybrid_hash'),
+    }
+
+    official_record = None
+    if iteration['research_judgment']['decision'] == 'promote_official' and iteration['promotion_gate']['official_promotion_allowed']:
+        official_record = dict(all_record)
+        official_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_official')
+        official_record['promotion_gate'] = iteration['promotion_gate']
+
+    handoff_to_step3b = build_handoff_to_step3b(iteration) if iteration['loop_action']['should_modify_step3b'] else None
+    would_have_written = [
+        'research_iteration_master',
+        'factor_library_all',
+        'research_knowledge_base',
+    ]
+    if official_record is not None:
+        would_have_written.append('factor_library_official')
+    if handoff_to_step3b is not None:
+        would_have_written.append('handoff_to_step3b')
+    prewrite_failures = step6_prewrite_failures(
+        iteration=iteration,
+        all_record=all_record,
+        knowledge_record=knowledge_record,
+        official_record=official_record,
+        handoff_to_step3b=handoff_to_step3b,
+        bundle=bundle,
+    )
+    if prewrite_failures:
+        write_step6_prewrite_block(
+            report_id=str(report_id),
+            decision=iteration['research_judgment']['decision'],
+            reasons=prewrite_failures,
+            would_have_written=would_have_written,
+        )
+        raise SystemExit('STEP6_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
+
+    iteration['loop_research_brief'] = write_loop_research_brief(iteration, bundle)
+    print(f"[WRITE] {iteration['loop_research_brief']['json_path']}")
+    print(f"[WRITE] {iteration['loop_research_brief']['markdown_path']}")
     write_json(iteration_path, iteration)
     print(f'[WRITE] {iteration_path}')
-
-    all_record = build_factor_record(iteration, bundle)
     write_json(all_library_path, all_record)
     print(f'[WRITE] {all_library_path}')
-
-    knowledge_record = build_knowledge_record(iteration)
     write_json(knowledge_path, knowledge_record)
     print(f'[WRITE] {knowledge_path}')
 
-    if iteration['research_judgment']['decision'] == 'promote_official':
-        write_json(official_library_path, all_record)
+    if official_record is not None:
+        write_json(official_library_path, official_record)
         print(f'[WRITE] {official_library_path}')
+    elif iteration['research_judgment']['decision'] == 'promote_official':
+        all_record['promote_blocked_reason'] = iteration['promotion_gate']['promote_blocked_reason']
+        iteration['promote_blocked_reason'] = iteration['promotion_gate']['promote_blocked_reason']
+        write_json(iteration_path, iteration)
+        write_json(all_library_path, all_record)
+        if official_library_path.exists():
+            official_library_path.unlink()
     elif official_library_path.exists():
         official_library_path.unlink()
 
-    if iteration['loop_action']['should_modify_step3b']:
-        write_json(step3b_handoff_path, build_handoff_to_step3b(iteration))
+    if handoff_to_step3b is not None:
+        write_json(step3b_handoff_path, handoff_to_step3b)
         print(f'[WRITE] {step3b_handoff_path}')
     elif step3b_handoff_path.exists():
         step3b_handoff_path.unlink()

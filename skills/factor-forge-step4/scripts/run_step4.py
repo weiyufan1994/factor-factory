@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import importlib.util
 import json
 import math
@@ -38,6 +39,13 @@ from factor_factory.runtime_context import (
 )
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
+
+
+def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step4') -> dict[str, Any]:
+    identity = dict(parent or {})
+    identity['artifact_role'] = role
+    identity['producer'] = producer
+    return identity
 
 
 def enforce_direct_step_policy(manifest_path_arg: str | None = None) -> None:
@@ -390,6 +398,27 @@ def import_module_from_path(path: Path):
     return module
 
 
+def compute_factor_with_contract(module: Any, daily_df: Any, minute_df: Any) -> Any:
+    """Call factor implementations without assuming legacy argument order."""
+    fn = getattr(module, 'compute_factor')
+    try:
+        params = list(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        params = []
+
+    if params:
+        first = params[0].lower()
+        if 'daily' in first:
+            return fn(daily_df, minute_df)
+        if 'minute' in first:
+            return fn(minute_df, daily_df)
+
+    try:
+        return fn(daily_df=daily_df, minute_df=minute_df)
+    except TypeError:
+        return fn(minute_df, daily_df)
+
+
 def build_failure_outputs(report_id: str, factor_id: str | None, implementation_path: str | None, sample_window: dict[str, Any], run_dir: Path, input_paths: dict[str, Path], issues: list[dict[str, Any]], warnings: list[str], failure_reason: str, failed_stage: str, start_utc: str, revision_of: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
     diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
@@ -541,6 +570,12 @@ def main() -> None:
         fsm = load_json(input_paths['factor_spec_master'])
         dpm = load_json(input_paths['data_prep_master'])
         handoff = load_json(input_paths['handoff_to_step4'])
+        base_identity = handoff.get('artifact_identity') or fsm.get('artifact_identity') or {}
+        implementation_mode_decision = (
+            handoff.get('implementation_mode_decision')
+            or fsm.get('implementation_mode_decision')
+            or {}
+        )
         factor_id = fsm.get('factor_id')
 
         v_issues, v_warnings = validate_inputs(report_id, fsm, dpm, handoff, input_paths)
@@ -625,7 +660,7 @@ def main() -> None:
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
-        result_df = module.compute_factor(minute_df, daily_df)
+        result_df = compute_factor_with_contract(module, daily_df, minute_df)
 
         if result_df is None or len(result_df) == 0:
             issues.append({'severity': 'error', 'code': 'EMPTY_MAIN_RESULT', 'message': 'main result not materially generated', 'evidence': {'rows': 0}})
@@ -674,6 +709,7 @@ def main() -> None:
         meta = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'implementation_mode_decision': implementation_mode_decision,
             'implementation_path': str(impl_path),
             'started_at_utc': start_utc,
             'finished_at_utc': utc_now(),
@@ -695,6 +731,7 @@ def main() -> None:
         run_master = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
             'run_status': run_status,
             'implementation_path': str(impl_path),
             'output_paths': [str(parquet_path), str(csv_path), str(meta_path)],
@@ -704,6 +741,7 @@ def main() -> None:
             'signal_column': signal_col,
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
+            'implementation_mode_decision': implementation_mode_decision,
             'failure_reason': failure_reason,
             'started_at_utc': start_utc,
             'finished_at_utc': utc_now(),
@@ -743,6 +781,7 @@ def main() -> None:
             'diagnostic_generated_at_utc': utc_now(),
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
+            'implementation_mode_decision': implementation_mode_decision,
             'input_validation': {
                 'exists_check': {k: v.exists() for k, v in input_paths.items()},
                 'schema_check': {'frozen_schema_execution': True},
@@ -801,6 +840,7 @@ def main() -> None:
         handoff_out = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
             'run_status': run_status,
             'factor_run_master_path': str(run_master_path),
             'diagnostics_path': str(diag_path),
@@ -814,6 +854,7 @@ def main() -> None:
             'signal_column': signal_col,
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
+            'implementation_mode_decision': implementation_mode_decision,
             'key_warnings': warnings,
             'failure_reason': None,
             'can_enter_step5': True,

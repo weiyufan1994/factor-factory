@@ -13,6 +13,9 @@ Step 6 是 **研究闭环控制层**。
 
 它的职责是把单次因子实验，沉淀成可累积的因子库与知识库，并在需要时把流程送回 Step 3B 继续改公式。
 
+## 机制数学合约
+Step6 在 `research_memo.mechanism_analysis` 下保留 `mechanism_math_contract`，用它约束 revision hypothesis 指向具体数学对象，并在每份 loop research brief 中写入 `mechanism_math_summary`。`math_model_status=invalid` 不允许 official promotion；`under_specified` 必须写明原因和下一步人工研究问题。数学层只用于解释和 revision discipline，不能绕过 evidence audit、case comparison、search policy、loop authorization、provenance 或 promotion gate。
+
 ## 目标
 
 Step 6 的存在意义，是让因子工厂具备“记忆”和“进化”能力，而不是每次都像新人一样重新研究。
@@ -40,6 +43,9 @@ Step 6 的存在意义，是让因子工厂具备“记忆”和“进化”能�
 ## 输出
 
 - `factorforge/objects/research_iteration_master/research_iteration_master__{report_id}.json`
+- 必须生成的 loop research brief：
+  - `factorforge/objects/research_iteration_master/loop_research_brief__{report_id}__iter{iteration_no}.md`
+  - `factorforge/objects/research_iteration_master/loop_research_brief__{report_id}__iter{iteration_no}.json`
 - `factorforge/objects/factor_library_all/factor_record__{report_id}.json`
 - 可选正式库记录：
   - `factorforge/objects/factor_library_official/factor_record__{report_id}.json`
@@ -54,6 +60,44 @@ Step 6 的存在意义，是让因子工厂具备“记忆”和“进化”能�
   - `factorforge/objects/research_iteration_master/program_search_merge__{report_id}.json`
   - `factorforge/objects/research_iteration_master/search_branch_taskbook__{report_id}__{branch_id}.json`
   - `factorforge/research_branches/{report_id}/{branch_id}/TASKBOOK.md`
+
+所有 Step6 写回对象都必须保留：
+
+- `artifact_identity`
+- `evidence_identity`
+- `source_case_identity`
+- `implementation_mode_decision`
+- `decision_lineage`
+- `knowledge_provenance`
+
+没有 evidence identity，不允许 promotion；没有 run/branch identity，不允许知识写回。相似案例不是 same-factor evidence，除非 identity 匹配。
+
+正式库 promotion 必须满足：
+
+- `factor_case_master.final_status == validated`
+- `evidence_quality.identity_chain_verified == true`
+- Step4 必需证据成功
+- long-side risk-adjusted evidence 完整
+- Step3B `implementation_mode_decision` 存在
+- 无 stale / cross-branch / cross-run identity mismatch
+- 无 unresolved correctness risk
+
+iterate 必须创建 child branch lineage，不能覆盖 `main`。`handoff_to_step3b` 必须包含 `parent_identity`、`new_branch_id`、`parent_run_id`、`must_preserve`、`must_change`、`forbidden_changes`。
+
+provenance gate 必须在任何 canonical Step6 writeback 之前执行。如果 gate 失败，Step 6 只能写 `objects/validation/step6_prewrite_block__{report_id}.json`，不得写 `research_iteration_master`、`factor_library_all`、`factor_library_official`、`research_knowledge_base` 或 `handoff_to_step3b`。
+
+provenance gate 通过后，每次正式 Step6 loop 都必须写一份终端用户可读的 loop research brief，并在 `research_iteration_master.loop_research_brief` 中引用。brief 不是空模板，必须使用真实 Step4/5/6 证据，覆盖：
+
+- decision snapshot；
+- economic interpretation；
+- evidence metrics；
+- chart evidence；
+- metric analysis；
+- knowledge comparison；
+- next research direction；
+- final loop conclusion。
+
+核心 metric 字段不得为空。图表文件缺失时可以写 `missing: <reason>`，但 required chart key 必须保留。long-short 与 decile evidence 只能作为 diagnostic-only，不得被写成 adoption instrument。
 
 ## 核心决策状态
 
@@ -228,6 +272,13 @@ Step 6 必须把每条因子尝试归入以下状态之一：
     "modification_targets": ["string"],
     "next_runner": "step3b|stop",
     "stop_reason": "string|null"
+  },
+  "loop_research_brief": {
+    "markdown_path": "factorforge/objects/research_iteration_master/loop_research_brief__{report_id}__iter{iteration_no}.md",
+    "json_path": "factorforge/objects/research_iteration_master/loop_research_brief__{report_id}__iter{iteration_no}.json",
+    "brief_version": "factorforge_loop_research_brief_v1",
+    "iteration_no": 1,
+    "created_at_utc": "string"
   }
 }
 ```
@@ -264,6 +315,7 @@ Step 6 必须把每条因子尝试归入以下状态之一：
 24. Step 6 必须写出 `experience_chain`，把当前尝试、历史相似案例、失败签名和写回规则作为搜索轨迹保存。
 25. Step 6 必须写出 `revision_taxonomy`，明确区分 macro revision、micro revision、portfolio revision 和 stop/kill。
 26. Step 6 必须写出 `program_search_policy`，其中至少包含 `genetic_algorithm`、`bayesian_search`、`reinforcement_learning`、`multi_agent_parallel_exploration` 四类方法库。
+27. `validate_step6.py` 必须在 loop research brief 缺失、brief JSON 版本不是 `factorforge_loop_research_brief_v1`、八个主 section 缺失、核心 metric 为空、required chart key 缺失、long-short chart 未标记 diagnostic-only、`why_not_portfolio_fix` 为空或 final conclusion 为空时 BLOCK。
 27. `reinforcement_learning` 默认是未来策略学习器，只有当知识库积累了足够 revision trajectory 后才应自动决策；当前单因子迭代优先使用遗传式公式突变、贝叶斯参数搜索和多分支并行探索。
 28. 若决策为 `iterate`，`program_search_policy.recommended_next_search.branches` 不得为空，并且任何代码改动前必须保留人工确认闸门。
 29. Program search 是 Step6 研究判断的补充，不是替代。任何搜索分支都必须先写清收益来源、市场结构/客观约束、知识库先验、成功标准和反证标准，才能进入算法搜索或子代理执行。
@@ -497,3 +549,142 @@ Step 6 必须把每条因子尝试归入以下状态之一：
 - 达到正式入库门槛
 - 已经没有明确改进空间
 - 需要人工复核后再继续
+
+## 研究智能 Contract
+
+正式 Step6 输出必须在 `research_judgment.research_memo` 下包含五个对象：
+
+- `evidence_audit`
+- `mechanism_analysis`
+- `case_comparison`
+- `revision_strategy`
+- `search_policy_decision`
+
+`evidence_audit` 必须审计 backend 完整性、指标一致性、factor value
+健康度、long-side evidence 质量、成本和换手风险、数据或实现疑点，并给出
+`evidence_verdict=usable|usable_with_warnings|blocked`。
+
+`mechanism_analysis` 必须声明收益来源、因子家族、机制假设、必要条件、
+预期和实际指标特征、机制匹配度、失败区间以及什么证据会改变判断。
+当 `return_source=unknown` 或 `mechanism_fit=contradicted` 时，不允许
+`promote_official`。
+
+`revision_strategy` 必须指向 factor expression 或 Step3B code 修改，
+不能通过 portfolio expression、short leg、decile trading 或 rebalance
+mechanics 修复。`iterate` 决策必须至少有一条 revision hypothesis，并包含
+`expression_change`、预期指标变化、overfit 风险、kill criteria 和
+`why_not_portfolio_fix`。
+
+`search_policy_decision` 除 `recommended_mode=kill` 外必须要求人工审批，并且
+`forbidden_search` 必须包含：
+
+- `no_portfolio_expression_repair`
+- `no_short_leg_adoption`
+- `no_decile_trading`
+- `no_shared_clean_data_mutation`
+
+如果 `evidence_audit.evidence_verdict=blocked`，Step6 validator 必须 BLOCK
+闭环完成和正式入库。
+
+## Agentic Revision Council Contract
+
+Revision Council 是 Step6 的 advisory research artifact，不是正常 Step6
+validator 的必需输入，也不能绕过现有 promotion、writeback 或 loop-control
+逻辑。只有当主 agent 后续通过现有人类审批和 wrapper 路径选择某个分支时，
+它才可能影响下一轮 Step3B revision。
+
+Council 是 role-based，不绑定任何具体 agent 名称。主 agent 可以自己生成
+proposal，也可以把不同角色委派给 subagents。无论由谁生成，都必须遵守同一
+proposal schema、显性推导记录和写入边界。
+
+Council 允许写入的范围只有：
+
+- `objects/research_iteration_master/revision_council/{report_id}/revision_council_packet__{report_id}.json`
+- `objects/research_iteration_master/revision_council/{report_id}/proposal__{report_id}__{agent_role}.json`
+- `objects/research_iteration_master/revision_council/{report_id}/revision_council_summary__{report_id}.json`
+
+Council 禁止写入或修改：
+
+- `objects/handoff/handoff_to_step3b__{report_id}.json`
+- `generated_code/{report_id}/`
+- `objects/factor_library_official/`
+- `data/clean/`
+- `runs/`, `evaluations/`, `archive/`
+- canonical Step3B implementation
+- canonical factor expression
+
+Ultimate wrapper 的 Council 接入必须显式开启。`run_factorforge_ultimate.py`
+默认 `--council-mode off`，保持旧路径不变。`--council-mode scaffold` 在
+Step6 core 成功后运行 deterministic Council packet/proposal/merge/attach，并重新
+执行 `validate_step6.py`。`--council-mode auto` 只在 Step6 已经显示需要 revision
+且 evidence / case-comparison gate 未 blocked 时触发。`--council-mode agentic`
+必须显式指定 `--agentic-council-executor`：`none` 以
+`BLOCK_REVISION_COUNCIL_AGENTIC_EXECUTOR_REQUIRED` BLOCK；`real_agent` 以
+`BLOCK_REVISION_COUNCIL_REAL_AGENT_NOT_IMPLEMENTED` BLOCK；`local_mock` 运行
+Phase K.1 artifact contract 路径，生成 agentic taskbook、本地 mock agent results、
+校验 result、merge、attach，并重新执行 `validate_step6.py`。`dispatch_manifest`
+只生成 dispatch-ready task packets，并停在 `status=awaiting_agent_results`；
+配合 `--agentic-dispatch-adapter manual_file` 时，还会生成人工分发用 assignment
+markdown 和 result dropbox template，但不 merge、不 attach。
+
+Agentic Council dispatch 是 runtime-aware，但仍然 provider-agnostic。taskbook、
+dispatch manifest、task packet、manual manifest 和 assignment markdown 都必须写入
+`runtime_dispatch_policy`，版本为 `factorforge_runtime_dispatch_policy_v1`。
+允许的 runtime 是 `codex`、`openclaw`、`manual_file`、`unknown`。Subagent 默认继承
+主运行时的 model/provider；Factor Forge 不要求 provider，也不能自行选择外部
+provider。只有用户显式要求时，才能记录 provider/model override。Codex assignment
+必须说明 Codex subagents 默认继承当前 Codex model，且不得调用外部 provider。
+OpenClaw assignment 必须说明 subagents 默认继承主 agent provider/model。Manual-file
+assignment 必须说明 provider/model 身份本身不足以验收，只有通过 validator 的 JSON
+result 才能被收口。
+
+Wrapper 接入后仍然是 advisory-only。Council attachment 可以设置
+`final_revision_strategy.source=revision_council`，但不得写 Step3B handoff、
+official record、generated code 或 clean data。Wrapper 必须在 Council chain 前后
+记录 forbidden artifacts 快照，并在出现 side effect 时 BLOCK。
+
+Council proposal 必须保持 advisory-only，任何后续执行都需要人工审批，并且
+`execution_allowed_by_default=false`。数学化和 symbolic-law 推理只能提出可证伪
+的研究方向，不能替代 Step4/5/6 evidence，也不能作为 promotion shortcut。
+
+每个 council proposal 都必须包含 `derivation_record`。该记录是可公开审计、
+可沉淀到知识库的研究 artifact，不是隐藏 chain-of-thought。它至少必须包括：
+
+- `research_question`
+- assumptions，并说明状态、必要性和证伪路径
+- mathematical objects，并说明含义、单位或量纲、information set
+- selected tools，并说明选择原因、适用范围和局限
+- rejected tools，如果相关
+- 有序 derivation steps；如果声称公式推导，必须写出公式或 symbolic relation
+- derived implications 和 expected metric signatures
+- revision hypotheses，包括 expression direction、expected metric changes、
+  falsification tests、kill criteria
+- confidence limits 和 overclaim guard
+
+缺少实质性 `derivation_record` 的 proposal 必须 invalid。Council summary 不能把
+未通过 schema、forbidden-change guard、derivation-record 检查和写入边界检查的
+proposal 提升为 `branch_templates`。没有 accepted derivation，就不能形成 Step3B
+revision brief。
+
+Council merge 后，正式 Council run 还必须写一个公开推导附录：
+
+- `objects/research_iteration_master/revision_council/{report_id}/council_derivation_appendix__{report_id}.json`
+- `objects/research_iteration_master/revision_council/{report_id}/council_derivation_appendix__{report_id}.md`
+
+该附录把被选中的 Council 结果中的 assumptions、mathematical objects、
+selected tools、formula claims、derivation steps、limiting cases、
+falsification tests、kill criteria 和 candidate revision laws 汇总成用户和未来
+agent 可读的研究 artifact。它仍然只是 advisory-only evidence，不能授权或执行
+canonical Step3B、generated code、official library、clean data、runs、
+evaluations 或 archive 写入。
+
+`symbolic_law_discovery` 可以使用任何有理由的数学工具，包括量纲分析、标度律、
+stochastic process、stochastic calculus、jump process、stopping time、Fourier/
+spectral analysis、robust statistics、tail distribution、projection geometry、
+functional analysis、dynamical systems、information theory、market microstructure
+等。它必须根据公式和 evidence 选择工具，也可以拒绝不适用的工具；不得机械地套用
+固定 checklist。
+
+deterministic local council 只是 scaffold/smoke/fallback mode。scaffold proposal
+必须标记 `producer=deterministic_scaffold` 和 `research_depth=low`，不得被包装成
+深度 agentic research 结论。

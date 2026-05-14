@@ -16,15 +16,154 @@ if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
 from skills.factor_forge_step5.modules.io import load_json  # type: ignore
+from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.revision_council.guards import FORBIDDEN_TEXT_TOKEN, FORBIDDEN_PATTERNS
+from factor_factory.revision_council.validator import validate_revision_council_proposal
+from validate_agentic_council_result import validate_agentic_result
 
 OBJ = FF / 'objects'
 VALID_DECISIONS = {'promote_official', 'iterate', 'reject', 'needs_human_review'}
 VALID_METRIC_VERDICTS = {'supportive', 'mixed', 'negative', 'inconclusive'}
+VALID_EVIDENCE_VERDICTS = {'usable', 'usable_with_warnings', 'blocked'}
+VALID_RETURN_SOURCES = {
+    'risk_premium',
+    'information_advantage',
+    'constraint_driven_arbitrage',
+    'behavioral_microstructure',
+    'mixed',
+    'unknown',
+}
+VALID_FACTOR_FAMILIES = {
+    'price_volume_correlation',
+    'reversal',
+    'momentum_confirmation',
+    'liquidity_shock',
+    'volatility',
+    'fundamental_quality',
+    'event_constraint',
+    'other',
+}
+VALID_MECHANISM_FITS = {'strong', 'partial', 'weak', 'contradicted'}
+VALID_CLASSIFICATION_UNCERTAINTY = {'low', 'medium', 'high'}
+VALID_PRIMARY_FAILURE_SIGNATURES = {
+    'cost_too_high',
+    'long_side_negative',
+    'non_monotonic',
+    'unstable_regime',
+    'implementation_suspect',
+    'mechanism_unclear',
+    'same_factor_identity_mismatch',
+    'none',
+}
+VALID_IMPLEMENTATION_MODE_PREFERENCES = {'operator', 'hybrid', 'direct_code', 'unknown'}
+VALID_OVERFIT_RISKS = {'low', 'medium', 'high', 'unknown'}
+VALID_REVISION_QUALITIES = {'actionable', 'weak', 'blocked', 'not_needed'}
+VALID_LOOP_AUTHORIZATIONS = {'approved_for_step3b_handoff', 'advisory_only', 'blocked'}
+REQUIRED_REVISION_FORBIDDEN_CHANGES = {
+    'no_portfolio_expression_repair',
+    'no_short_leg_adoption',
+    'no_decile_trading',
+    'no_shared_clean_data_mutation',
+}
+FORBIDDEN_EXPRESSION_REPAIR_TERMS = [
+    'portfolio',
+    'rebalance',
+    'short leg',
+    'short-leg',
+    'long-short',
+    'decile trading',
+    'buy q1/sell q10',
+    'buy q10/sell q1',
+]
+VALID_SEARCH_POLICY_MODES = {
+    'audit',
+    'bayesian_exploit',
+    'genetic_explore',
+    'mechanism_challenge',
+    'multi_agent_parallel',
+    'kill',
+    'none',
+}
+REQUIRED_FORBIDDEN_SEARCH = {
+    'no_portfolio_expression_repair',
+    'no_short_leg_adoption',
+    'no_decile_trading',
+    'no_shared_clean_data_mutation',
+}
 REQUIRED_SEARCH_METHODS = {
     'genetic_algorithm',
     'bayesian_search',
     'reinforcement_learning',
     'multi_agent_parallel_exploration',
+}
+LOOP_RESEARCH_BRIEF_VERSION = 'factorforge_loop_research_brief_v1'
+REQUIRED_LOOP_BRIEF_SECTIONS = {
+    'decision_snapshot',
+    'economic_interpretation',
+    'metrics',
+    'chart_evidence',
+    'metric_analysis',
+    'knowledge_comparison',
+    'next_research_direction',
+    'final_loop_conclusion',
+    'mechanism_math_summary',
+}
+REQUIRED_LOOP_BRIEF_CHART_KEYS = {
+    'rank_ic_timeseries',
+    'pearson_ic_timeseries',
+    'long_side_nav',
+    'cost_adjusted_long_side_nav',
+    'quantile_nav',
+    'long_short_nav_diagnostic_only',
+    'coverage_by_day',
+}
+CORE_LOOP_BRIEF_METRICS = {
+    'rank_ic_mean',
+    'rank_ic_ir',
+    'pearson_ic_mean',
+    'pearson_ic_ir',
+    'long_side_annual_return',
+    'long_side_annual_volatility',
+    'long_side_sharpe',
+    'long_side_max_drawdown',
+    'long_side_recovery_days',
+    'long_side_turnover_mean_daily',
+    'trading_cogs_annual',
+    'cost_adjusted_annual_return',
+    'cost_adjusted_long_side_sharpe',
+    'cost_adjusted_long_side_max_drawdown',
+    'group_top_decile_mean_return',
+    'group_bottom_decile_mean_return',
+    'group_long_short_spread_mean',
+    'group_long_short_spread_ir',
+}
+SPECIFIED_MECHANISM_MATH_SUMMARY_FIELDS = {
+    'model_family',
+    'state_or_object',
+    'factor_as_estimator',
+    'target_functional',
+    'expected_metric_signature',
+    'revision_operator_summary',
+}
+REVISION_MATH_OBJECTS = {
+    'estimator_kernel',
+    'lag_window',
+    'state_variable',
+    'projection_operator',
+    'smoothing_regularization',
+    'stopping_rule',
+    'threshold_boundary',
+    'model_family_challenge',
+}
+VALID_FINAL_REVISION_SOURCES = {'revision_council', 'deterministic_fallback', 'none'}
+COUNCIL_FORBIDDEN_SKIP_KEYS = {
+    'hard_guards',
+    'forbidden_search',
+    'forbidden_changes',
+    'forbidden_changes_ack',
+    'why_not_portfolio_fix',
+    'why_no_automatic_step3b_handoff',
 }
 
 
@@ -47,6 +186,10 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def list_value(value) -> bool:
+    return isinstance(value, list)
+
+
 def nested_dict(root: dict, *keys: str) -> dict:
     cur = root
     for key in keys:
@@ -66,6 +209,431 @@ def has_key_recursive(value, target: str) -> bool:
     return False
 
 
+def empty_string_paths(value, prefix: str = '$') -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            paths.extend(empty_string_paths(child, f'{prefix}.{key}'))
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            paths.extend(empty_string_paths(child, f'{prefix}[{idx}]'))
+    elif isinstance(value, str) and not value.strip():
+        paths.append(prefix)
+    return paths
+
+
+def resolve_artifact_path(value: str | None) -> Path:
+    if not value:
+        return FF / '__missing_artifact_path__'
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return FF / path
+
+
+def present_metric(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text or text.startswith('missing:'):
+            return False
+        try:
+            float(text)
+            return True
+        except Exception:
+            return False
+    try:
+        float(value)
+        return True
+    except Exception:
+        return False
+
+
+def scan_forbidden_revision_text(value, prefix: str = '$') -> list[dict]:
+    findings: list[dict] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in COUNCIL_FORBIDDEN_SKIP_KEYS:
+                continue
+            findings.extend(scan_forbidden_revision_text(child, f'{prefix}.{key}'))
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            findings.extend(scan_forbidden_revision_text(child, f'{prefix}[{idx}]'))
+    elif isinstance(value, str):
+        normalized = ' '.join(value.lower().split())
+        for pattern in FORBIDDEN_PATTERNS:
+            if pattern in normalized:
+                findings.append({'path': prefix, 'pattern': pattern})
+    return findings
+
+
+def proposal_by_id(report_id: str, proposal_id: str) -> tuple[Path | None, dict | None]:
+    council_dir = OBJ / 'research_iteration_master' / 'revision_council' / report_id
+    for path in sorted(council_dir.glob(f'proposal__{report_id}__*.json')):
+        try:
+            proposal = load_json(path)
+        except Exception:
+            continue
+        if proposal.get('proposal_id') == proposal_id:
+            return path, proposal
+    for path in sorted((council_dir / 'agent_results').glob(f'agent_result__{report_id}__*.json')):
+        try:
+            result = load_json(path)
+        except Exception:
+            continue
+        if result.get('task_id') == proposal_id:
+            return path, result
+    return None, None
+
+
+def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
+    checks: list[dict] = []
+    ref = iteration.get('loop_research_brief') or {}
+    checks.append(check('loop_research_brief_ref_present', isinstance(ref, dict) and bool(ref), 'loop_research_brief reference missing'))
+    if not isinstance(ref, dict) or not ref:
+        return checks
+
+    md_path = resolve_artifact_path(ref.get('markdown_path'))
+    json_path = resolve_artifact_path(ref.get('json_path'))
+    checks.append(check('loop_research_brief_markdown_exists', md_path.exists(), f'missing loop research brief markdown: {md_path}'))
+    checks.append(check('loop_research_brief_json_exists', json_path.exists(), f'missing loop research brief json: {json_path}'))
+    checks.append(check('loop_research_brief_ref_version', ref.get('brief_version') == LOOP_RESEARCH_BRIEF_VERSION, f'invalid loop brief ref version: {ref.get("brief_version")}'))
+    checks.append(check('loop_research_brief_ref_iteration_no', ref.get('iteration_no') == iteration.get('iteration_no'), 'loop brief iteration_no must match research_iteration_master'))
+    if not json_path.exists():
+        return checks
+
+    try:
+        brief = load_json(json_path)
+    except Exception as exc:
+        checks.append(check('loop_research_brief_json_loadable', False, f'failed to load loop research brief json: {exc}'))
+        return checks
+    checks.append(check('loop_research_brief_json_loadable', True))
+    checks.append(check('loop_research_brief_version', brief.get('brief_version') == LOOP_RESEARCH_BRIEF_VERSION, f'invalid loop brief version: {brief.get("brief_version")}'))
+    missing_sections = sorted(REQUIRED_LOOP_BRIEF_SECTIONS - set(brief.keys()))
+    checks.append(check('loop_research_brief_sections_present', not missing_sections, f'loop brief missing sections: {missing_sections}'))
+    checks.append(check('loop_research_brief_report_id_match', brief.get('report_id') == iteration.get('report_id'), 'loop brief report_id mismatch'))
+    checks.append(check('loop_research_brief_factor_id_match', brief.get('factor_id') == iteration.get('factor_id'), 'loop brief factor_id mismatch'))
+    checks.append(check('loop_research_brief_iteration_match', brief.get('iteration_no') == iteration.get('iteration_no'), 'loop brief iteration_no mismatch'))
+
+    metrics = brief.get('metrics') if isinstance(brief.get('metrics'), dict) else {}
+    missing_metrics = sorted(key for key in CORE_LOOP_BRIEF_METRICS if not present_metric(metrics.get(key)))
+    checks.append(check('loop_research_brief_core_metrics_present', not missing_metrics, f'loop brief core metrics missing/empty: {missing_metrics}'))
+
+    charts = brief.get('chart_evidence') if isinstance(brief.get('chart_evidence'), dict) else {}
+    missing_charts = sorted(REQUIRED_LOOP_BRIEF_CHART_KEYS - set(charts.keys()))
+    checks.append(check('loop_research_brief_chart_keys_present', not missing_charts, f'loop brief chart_evidence missing keys: {missing_charts}'))
+    checks.append(check(
+        'loop_research_brief_long_short_diagnostic_key',
+        'long_short_nav_diagnostic_only' in charts and 'long_short_nav' not in charts,
+        'loop brief long-short chart must be keyed as long_short_nav_diagnostic_only',
+    ))
+    checks.append(check(
+        'loop_research_brief_why_not_portfolio_fix',
+        nonempty_str(nested_dict(brief, 'next_research_direction').get('why_not_portfolio_fix')),
+        'loop brief next_research_direction.why_not_portfolio_fix missing',
+    ))
+    checks.append(check(
+        'loop_research_brief_current_conclusion',
+        nonempty_str(nested_dict(brief, 'final_loop_conclusion').get('current_conclusion')),
+        'loop brief final_loop_conclusion.current_conclusion missing',
+    ))
+    math_summary = brief.get('mechanism_math_summary') if isinstance(brief.get('mechanism_math_summary'), dict) else {}
+    checks.append(check(
+        'loop_research_brief_mechanism_math_summary_present',
+        isinstance(math_summary, dict) and bool(math_summary),
+        'loop brief mechanism_math_summary missing',
+    ))
+    status = math_summary.get('math_model_status')
+    checks.append(check(
+        'loop_research_brief_mechanism_math_status_present',
+        nonempty_str(status),
+        'loop brief mechanism_math_summary.math_model_status missing',
+    ))
+    if status == 'specified':
+        missing_math_summary = sorted(
+            key for key in SPECIFIED_MECHANISM_MATH_SUMMARY_FIELDS
+            if not (
+                (isinstance(math_summary.get(key), dict) and bool(math_summary.get(key)))
+                or (isinstance(math_summary.get(key), list) and bool(math_summary.get(key)))
+                or nonempty_str(math_summary.get(key))
+            )
+        )
+        checks.append(check(
+            'loop_research_brief_specified_mechanism_math_complete',
+            not missing_math_summary,
+            f'specified mechanism_math_summary missing fields: {missing_math_summary}',
+        ))
+    if status == 'under_specified':
+        checks.append(check(
+            'loop_research_brief_under_specified_reason_present',
+            nonempty_str(math_summary.get('under_specified_reason')),
+            'under_specified mechanism_math_summary requires under_specified_reason',
+        ))
+        checks.append(check(
+            'loop_research_brief_under_specified_next_question_present',
+            nonempty_str(math_summary.get('next_human_research_question')),
+            'under_specified mechanism_math_summary requires next_human_research_question',
+        ))
+    if status == 'invalid':
+        checks.append(check(
+            'loop_research_brief_invalid_math_no_promotion',
+            decision != 'promote_official',
+            'invalid mechanism math contract cannot promote_official',
+        ))
+    if decision == 'iterate':
+        snapshot = nested_dict(brief, 'decision_snapshot')
+        next_dir = nested_dict(brief, 'next_research_direction')
+        next_branch = str(snapshot.get('next_branch') or '')
+        branch_template = next_dir.get('branch_template')
+        checks.append(check(
+            'loop_research_brief_iterate_next_direction',
+            bool(next_branch and next_branch != 'none') or isinstance(branch_template, dict) and bool(branch_template) or snapshot.get('loop_authorization') in {'advisory_only', 'blocked'},
+            'iterate loop brief must include a next branch or explicit advisory/approval reason',
+        ))
+    if decision == 'promote_official':
+        requirements = nested_dict(brief, 'final_loop_conclusion').get('promotion_requirements')
+        text = json.dumps(requirements, ensure_ascii=False).lower()
+        checks.append(check(
+            'loop_research_brief_promote_requirements_met',
+            nonempty_list(requirements) and ('met' in text or 'already' in text),
+            'promote_official loop brief must explain promotion requirements already met',
+        ))
+    if md_path.exists():
+        markdown = md_path.read_text(encoding='utf-8')
+        required_headers = [f'## {idx}.' for idx in range(1, 9)]
+        missing_headers = [header for header in required_headers if header not in markdown]
+        checks.append(check('loop_research_brief_markdown_sections', not missing_headers, f'loop brief markdown missing sections: {missing_headers}'))
+        if (iteration.get('revision_council_ref') or {}).get('enabled') is True:
+            checks.append(check(
+                'loop_research_brief_council_markdown_section_present_when_enabled',
+                '## Revision Council Summary' in markdown,
+                'loop brief missing Revision Council Summary markdown section while revision_council_ref.enabled=true',
+            ))
+    if (iteration.get('revision_council_ref') or {}).get('enabled') is True:
+        council_section = brief.get('revision_council_summary')
+        checks.append(check(
+            'loop_research_brief_council_section_present_when_enabled',
+            isinstance(council_section, dict) and bool(council_section),
+            'loop brief JSON missing revision_council_summary while revision_council_ref.enabled=true',
+        ))
+        if isinstance(council_section, dict):
+            checks.append(check(
+                'loop_research_brief_council_no_auto_handoff_reason',
+                nonempty_str(council_section.get('why_no_automatic_step3b_handoff')),
+                'loop brief revision_council_summary.why_no_automatic_step3b_handoff missing',
+            ))
+    return checks
+
+
+def artifact_identity_checks(left_label: str, left: dict, right_label: str, right: dict):
+    checks = []
+    left_identity = left.get('artifact_identity') or {}
+    right_identity = right.get('artifact_identity') or {}
+    required = ['report_id', 'factor_id', 'source_type', 'implementation_mode', 'contract_version', 'producer', 'spec_hash', 'branch_id', 'artifact_role']
+    checks.append(check(f'{left_label}_artifact_identity_present', isinstance(left_identity, dict) and bool(left_identity), f'{left_label}.artifact_identity missing'))
+    checks.append(check(f'{right_label}_artifact_identity_present', isinstance(right_identity, dict) and bool(right_identity), f'{right_label}.artifact_identity missing'))
+    checks.append(check(f'{left_label}_artifact_identity_required', all(nonempty_str(left_identity.get(k)) for k in required), f'{left_label}.artifact_identity required fields missing: {left_identity}'))
+    checks.append(check(f'{right_label}_artifact_identity_required', all(nonempty_str(right_identity.get(k)) for k in required), f'{right_label}.artifact_identity required fields missing: {right_identity}'))
+    if left_identity and right_identity:
+        try:
+            assert_identity_matches_strict(
+                left_identity,
+                right_identity,
+                expected_label=left_label,
+                actual_label=right_label,
+                allowed_role_transitions={(left_identity.get('artifact_role'), right_identity.get('artifact_role'))},
+            )
+            checks.append(check(f'{left_label}_{right_label}_identity_match', True))
+        except AssertionError as exc:
+            checks.append(check(f'{left_label}_{right_label}_identity_match', False, str(exc)))
+    return checks
+
+
+def check_identity_transition(expected_label: str, expected: dict, actual_label: str, actual: dict, actual_role: str):
+    expected_identity = expected.get('artifact_identity') or {}
+    actual_identity = actual.get('artifact_identity') or {}
+    if not expected_identity or not actual_identity:
+        return [check(f'{expected_label}_{actual_label}_strict_identity', False, f'{expected_label}/{actual_label} artifact_identity missing')]
+    try:
+        assert_identity_matches_strict(
+            expected_identity,
+            actual_identity,
+            expected_label=expected_label,
+            actual_label=actual_label,
+            allowed_role_transitions={(expected_identity.get('artifact_role'), actual_role)},
+        )
+        return [check(f'{expected_label}_{actual_label}_strict_identity', True)]
+    except AssertionError as exc:
+        return [check(f'{expected_label}_{actual_label}_strict_identity', False, str(exc))]
+
+
+def provenance_checks(label: str, obj: dict):
+    checks = []
+    checks.append(check(f'{label}_evidence_identity_present', isinstance(obj.get('evidence_identity'), dict) and bool(obj.get('evidence_identity')), f'{label}.evidence_identity missing'))
+    checks.append(check(f'{label}_source_case_identity_present', isinstance(obj.get('source_case_identity'), dict) and bool(obj.get('source_case_identity')), f'{label}.source_case_identity missing'))
+    checks.append(check(f'{label}_implementation_mode_decision_present', isinstance(obj.get('implementation_mode_decision'), dict) and bool(obj.get('implementation_mode_decision')), f'{label}.implementation_mode_decision missing'))
+    checks.append(check(f'{label}_decision_lineage_present', isinstance(obj.get('decision_lineage'), dict) and bool(obj.get('decision_lineage')), f'{label}.decision_lineage missing'))
+    checks.append(check(f'{label}_knowledge_provenance_present', isinstance(obj.get('knowledge_provenance'), dict) and bool(obj.get('knowledge_provenance')), f'{label}.knowledge_provenance missing'))
+    return checks
+
+
+def official_gate_checks(iteration: dict, case: dict, official_record: dict | None):
+    checks = []
+    decision = ((iteration.get('research_judgment') or {}).get('decision'))
+    case_quality = case.get('evidence_quality') or {}
+    promotion_gate = iteration.get('promotion_gate') or {}
+    if decision == 'promote_official':
+        checks.append(check('official_promotion_gate_present', isinstance(promotion_gate, dict) and bool(promotion_gate), 'promotion_gate missing for official promotion'))
+        checks.append(check('official_promotion_gate_allows', promotion_gate.get('official_promotion_allowed') is True, f'official promotion gate blocked: {promotion_gate.get("promote_blocked_reason")}'))
+        checks.append(check('official_requires_case_validated', case.get('final_status') == 'validated', 'official promotion requires factor_case_master.final_status=validated'))
+        for key in ['identity_chain_verified', 'long_side_metrics_present', 'step4_has_successful_backend', 'mode_decision_present']:
+            checks.append(check(f'official_requires_{key}', case_quality.get(key) is True, f'official promotion requires evidence_quality.{key}=true'))
+        checks.append(check('official_record_exists_when_promoted', isinstance(official_record, dict), 'official promotion requires factor_library_official record'))
+    return checks
+
+
+def knowledge_scope_checks(iteration: dict, knowledge: dict):
+    checks = []
+    scope = knowledge.get('knowledge_scope')
+    source_identity = knowledge.get('source_identity') or knowledge.get('source_case_identity') or {}
+    knowledge_identity = knowledge.get('artifact_identity') or {}
+    checks.append(check('knowledge_scope_valid', scope in {'same_factor', 'similar_case', 'general_methodology', 'anti_pattern'}, f'invalid knowledge_scope: {scope}'))
+    checks.append(check('knowledge_source_identity_present', isinstance(source_identity, dict) and bool(source_identity), 'knowledge source_identity missing'))
+    if scope == 'same_factor':
+        checks.append(check(
+            'knowledge_same_factor_identity_match',
+            source_identity.get('factor_id') == knowledge.get('factor_id') == knowledge_identity.get('factor_id'),
+            'same_factor knowledge must not cross factor_id',
+        ))
+    if scope == 'similar_case':
+        checks.append(check(
+            'similar_case_not_same_factor_evidence',
+            ((iteration.get('research_judgment') or {}).get('decision') != 'promote_official'),
+            'similar_case knowledge cannot support official promotion as same-factor evidence',
+        ))
+    checks.append(check(
+        'knowledge_reuse_constraints_present',
+        nonempty_list(knowledge.get('reuse_constraints')),
+        'knowledge record must declare reuse_constraints',
+    ))
+    provenance = knowledge.get('knowledge_provenance') or {}
+    checks.append(check(
+        'knowledge_provenance_not_same_factor_guard',
+        provenance.get('not_same_factor_unless_identity_matches') is True,
+        'knowledge_provenance.not_same_factor_unless_identity_matches must be true',
+    ))
+    return checks
+
+
+def iterate_lineage_checks(iteration: dict, handoff_path: Path):
+    checks = []
+    decision = ((iteration.get('research_judgment') or {}).get('decision'))
+    if decision != 'iterate':
+        return checks
+    if not handoff_path.exists():
+        checks.append(check('iterate_handoff_lineage_present', False, f'missing {handoff_path}'))
+        return checks
+    handoff = load_json(handoff_path)
+    parent_identity = handoff.get('parent_identity') or {}
+    source_identity = iteration.get('source_case_identity') or {}
+    checks.append(check('iterate_parent_identity_present', isinstance(parent_identity, dict) and bool(parent_identity), 'handoff_to_step3b.parent_identity missing'))
+    checks.append(check('iterate_new_branch_id_present', nonempty_str(handoff.get('new_branch_id')), 'handoff_to_step3b.new_branch_id missing'))
+    checks.append(check('iterate_parent_run_id_present', nonempty_str(handoff.get('parent_run_id')), 'handoff_to_step3b.parent_run_id missing'))
+    checks.append(check('iterate_parent_run_matches_source', handoff.get('parent_run_id') == source_identity.get('run_id'), 'iterate parent_run_id must match source run_id'))
+    checks.append(check('iterate_parent_identity_matches_source', parent_identity.get('run_id') == source_identity.get('run_id') and parent_identity.get('branch_id') == source_identity.get('branch_id'), 'iterate parent_identity must match source_case_identity'))
+    checks.append(check('iterate_preserve_change_forbidden_present', nonempty_list(handoff.get('must_preserve')) and nonempty_list(handoff.get('must_change')) and nonempty_list(handoff.get('forbidden_changes')), 'iterate handoff must declare must_preserve/must_change/forbidden_changes'))
+    checks.append(check('iterate_decision_lineage_present', isinstance(handoff.get('decision_lineage'), dict) and bool(handoff.get('decision_lineage')), 'iterate handoff decision_lineage missing'))
+    return checks
+
+
+def revision_council_attachment_checks(iteration: dict, research_memo: dict, step3b_handoff_path: Path) -> list[dict]:
+    checks: list[dict] = []
+    report_id = str(iteration.get('report_id') or '')
+    ref = iteration.get('revision_council_ref') or {}
+    final_strategy = research_memo.get('final_revision_strategy') or {}
+    if not ref and not final_strategy:
+        return checks
+
+    source = final_strategy.get('source') if isinstance(final_strategy, dict) else None
+    checks.append(check('final_revision_strategy_source_enum', source in VALID_FINAL_REVISION_SOURCES, f'invalid final_revision_strategy.source: {source}'))
+    if not isinstance(ref, dict) or ref.get('enabled') is not True:
+        checks.append(check('revision_council_ref_valid', False, 'revision_council_ref.enabled must be true when final_revision_strategy is present'))
+        return checks
+
+    summary_path = resolve_artifact_path(ref.get('summary_path'))
+    packet_path = resolve_artifact_path(ref.get('packet_path'))
+    checks.append(check('revision_council_ref_valid', ref.get('enabled') is True and ref.get('status') == 'completed', 'revision_council_ref must be enabled and completed'))
+    checks.append(check('revision_council_packet_exists_when_enabled', packet_path.exists(), f'missing revision council packet: {packet_path}'))
+    checks.append(check('revision_council_summary_exists_when_enabled', summary_path.exists(), f'missing revision council summary: {summary_path}'))
+    checks.append(check('revision_council_no_canonical_write_permission', ref.get('canonical_write_permission') is False, 'revision_council_ref.canonical_write_permission must be false'))
+    checks.append(check('revision_council_no_execution_by_default', ref.get('execution_allowed_by_default') is False, 'revision_council_ref.execution_allowed_by_default must be false'))
+    checks.append(check('revision_council_human_approval_required', ref.get('human_approval_required') is True, 'revision council attachment must require human approval'))
+
+    summary: dict = {}
+    if summary_path.exists():
+        try:
+            summary = load_json(summary_path)
+        except Exception as exc:
+            checks.append(check('revision_council_summary_loadable', False, f'failed to load revision council summary: {exc}'))
+    if summary:
+        branches = summary.get('recommended_branch_templates') or []
+        checks.append(check('revision_council_summary_no_canonical_write_permission', summary.get('canonical_write_permission') is not True, 'revision council summary must not grant canonical_write_permission'))
+        checks.append(check('revision_council_summary_no_execution_by_default', summary.get('execution_allowed_by_default') is False, 'revision council summary.execution_allowed_by_default must be false'))
+        checks.append(check(
+            'revision_council_summary_branches_no_execution',
+            all((not isinstance(branch, dict)) or branch.get('execution_allowed_by_default') is False for branch in branches),
+            'revision council branch templates must not execute by default',
+        ))
+
+    if source == 'revision_council':
+        selected_ids = final_strategy.get('selected_council_proposal_ids') or []
+        checks.append(check('final_revision_strategy_council_requires_valid_summary', summary_path.exists(), 'final_revision_strategy.source=revision_council requires summary file'))
+        checks.append(check('final_revision_strategy_selected_proposals_present', nonempty_list(selected_ids), 'revision_council final strategy requires selected proposal ids'))
+        checks.append(check('final_revision_strategy_human_approval_gate', final_strategy.get('approval_required_before_step3b') is True or final_strategy.get('requires_human_approval_before_code_change') is True, 'final revision strategy must require human approval before Step3B changes'))
+        checks.append(check(
+            'final_revision_strategy_no_forbidden_changes',
+            not scan_forbidden_revision_text(final_strategy),
+            f'final_revision_strategy contains forbidden change text: {scan_forbidden_revision_text(final_strategy)[:5]}',
+        ))
+        for idx, proposal_id in enumerate(selected_ids if isinstance(selected_ids, list) else []):
+            if not nonempty_str(proposal_id):
+                checks.append(check(f'final_revision_strategy_selected_proposal_{idx}_id_valid', False, 'selected proposal id must be nonempty string'))
+                continue
+            proposal_path, proposal = proposal_by_id(report_id, proposal_id)
+            checks.append(check(f'final_revision_strategy_selected_proposal_{idx}_exists', proposal is not None, f'selected council proposal missing: {proposal_id}'))
+            if not isinstance(proposal, dict):
+                continue
+            is_agentic_result = proposal.get('result_version') == 'factorforge_agentic_revision_council_result_v1'
+            derivation = proposal.get('public_derivation_record') if is_agentic_result else proposal.get('derivation_record')
+            checks.append(check(
+                f'final_revision_strategy_selected_proposal_{idx}_derivation_record_present',
+                isinstance(derivation, dict) and bool(derivation),
+                f'selected council proposal missing derivation_record: {proposal_id}',
+            ))
+            proposal_reasons = validate_agentic_result(proposal) if is_agentic_result else validate_revision_council_proposal(proposal)
+            checks.append(check(
+                f'final_revision_strategy_selected_proposal_{idx}_valid',
+                not proposal_reasons,
+                f'selected council proposal invalid: {proposal_path}: {proposal_reasons}',
+            ))
+            forbidden = scan_forbidden_revision_text(proposal)
+            checks.append(check(
+                f'final_revision_strategy_selected_proposal_{idx}_no_forbidden_text',
+                not forbidden,
+                FORBIDDEN_TEXT_TOKEN + ':' + ','.join(f"{item['path']}={item['pattern']}" for item in forbidden[:5]),
+            ))
+
+    checks.append(check(
+        'handoff_absent_without_approved_final_revision_strategy',
+        final_strategy.get('loop_authorization') == 'approved_for_step3b_handoff' or not step3b_handoff_path.exists(),
+        'handoff_to_step3b requires approved final_revision_strategy.loop_authorization',
+    ))
+    return checks
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -78,21 +646,42 @@ if __name__ == '__main__':
     knowledge_path = OBJ / 'research_knowledge_base' / f'knowledge_record__{rid}.json'
     step3b_handoff_path = OBJ / 'handoff' / f'handoff_to_step3b__{rid}.json'
     step6_handoff_path = OBJ / 'handoff' / f'handoff_to_step6__{rid}.json'
+    frm_path = OBJ / 'factor_run_master' / f'factor_run_master__{rid}.json'
+    case_path = OBJ / 'factor_case_master' / f'factor_case_master__{rid}.json'
 
     checks = []
     errors = []
 
     for label, path in [
         ('research_iteration_master_exists', iteration_path),
+        ('factor_run_master_exists', frm_path),
+        ('factor_case_master_exists', case_path),
         ('factor_library_all_exists', all_library_path),
         ('knowledge_record_exists', knowledge_path),
     ]:
         checks.append(check(label, path.exists(), f'missing {path}'))
 
-    if iteration_path.exists() and all_library_path.exists() and knowledge_path.exists():
+    if iteration_path.exists() and all_library_path.exists() and knowledge_path.exists() and frm_path.exists() and case_path.exists():
         iteration = load_json(iteration_path)
         all_record = load_json(all_library_path)
         knowledge = load_json(knowledge_path)
+        frm = load_json(frm_path)
+        case = load_json(case_path)
+        official_record = load_json(official_library_path) if official_library_path.exists() else None
+        checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))
+        checks.extend(check_identity_transition('factor_case_master', case, 'research_iteration_master', iteration, 'research_iteration_master'))
+        checks.extend(check_identity_transition('factor_case_master', case, 'factor_library_all', all_record, 'factor_library_all'))
+        checks.extend(check_identity_transition('factor_case_master', case, 'research_knowledge_base', knowledge, 'research_knowledge_base'))
+        if official_record:
+            checks.extend(check_identity_transition('factor_case_master', case, 'factor_library_official', official_record, 'factor_library_official'))
+        checks.extend(artifact_identity_checks('research_iteration_master', iteration, 'factor_library_all', all_record))
+        checks.extend(artifact_identity_checks('research_iteration_master', iteration, 'knowledge_record', knowledge))
+        checks.extend(provenance_checks('research_iteration_master', iteration))
+        checks.extend(provenance_checks('factor_library_all', all_record))
+        checks.extend(provenance_checks('research_knowledge_base', knowledge))
+        checks.extend(official_gate_checks(iteration, case, official_record))
+        checks.extend(knowledge_scope_checks(iteration, knowledge))
+        checks.append(check('knowledge_provenance_branch_run_present', nonempty_str(nested_dict(knowledge, 'provenance').get('branch_id')) and nonempty_str(nested_dict(knowledge, 'provenance').get('run_id')), 'knowledge provenance must keep branch_id/run_id'))
 
         decision = iteration.get('research_judgment', {}).get('decision')
         checks.append(check('decision_enum', decision in VALID_DECISIONS, f'invalid decision: {decision}'))
@@ -106,6 +695,7 @@ if __name__ == '__main__':
         checks.append(check('knowledge_return_hypothesis_present', isinstance(knowledge.get('return_source_hypothesis'), str), 'return_source_hypothesis missing'))
         checks.append(check('framework_review_checklist_present', isinstance(iteration.get('research_judgment', {}).get('factor_investing_framework', {}).get('review_checklist'), list), 'review_checklist missing'))
         checks.append(check('knowledge_revision_principles_present', isinstance(knowledge.get('revision_principles'), list), 'revision_principles missing'))
+        checks.extend(loop_research_brief_checks(iteration, str(decision)))
 
         research_judgment = iteration.get('research_judgment') or {}
         research_memo = research_judgment.get('research_memo') or {}
@@ -124,6 +714,11 @@ if __name__ == '__main__':
         revision_taxonomy = research_memo.get('revision_taxonomy') or research_judgment.get('revision_taxonomy') or {}
         program_search_policy = research_memo.get('program_search_policy') or research_judgment.get('program_search_policy') or {}
         diversity_position = research_memo.get('diversity_position') or research_judgment.get('diversity_position') or {}
+        evidence_audit = research_memo.get('evidence_audit') or {}
+        mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+        case_comparison = research_memo.get('case_comparison') or {}
+        revision_strategy = research_memo.get('revision_strategy') or {}
+        search_policy_decision = research_memo.get('search_policy_decision') or {}
         method_library = program_search_policy.get('method_library') or {}
         search_branches = ((program_search_policy.get('recommended_next_search') or {}).get('branches')) or []
         information_set_legality = str(math_discipline.get('information_set_legality') or '').lower()
@@ -133,8 +728,284 @@ if __name__ == '__main__':
             + (metric_interpretation.get('negative_evidence') or [])
             + (metric_interpretation.get('ambiguities') or [])
         )
+        checks.extend(revision_council_attachment_checks(iteration, research_memo, step3b_handoff_path))
 
         checks.append(check('research_memo_present', isinstance(research_memo, dict) and bool(research_memo), 'research_memo missing or empty'))
+        for field, value in [
+            ('evidence_audit', evidence_audit),
+            ('mechanism_analysis', mechanism_analysis),
+            ('case_comparison', case_comparison),
+            ('revision_strategy', revision_strategy),
+            ('search_policy_decision', search_policy_decision),
+        ]:
+            checks.append(check(f'research_intelligence_{field}_present', isinstance(value, dict) and bool(value), f'research_memo.{field} missing or empty'))
+            checks.append(check(
+                f'research_intelligence_{field}_no_empty_strings',
+                not empty_string_paths(value),
+                f'research_memo.{field} contains empty string fields: {empty_string_paths(value)[:5]}',
+            ))
+
+        backend_integrity = evidence_audit.get('backend_integrity') or {}
+        metric_consistency = evidence_audit.get('metric_consistency') or {}
+        factor_value_health = evidence_audit.get('factor_value_health') or {}
+        long_side_quality = evidence_audit.get('long_side_evidence_quality') or {}
+        cost_turnover = evidence_audit.get('cost_and_turnover_risk') or {}
+        checks.append(check('evidence_audit_backend_integrity_present', isinstance(backend_integrity, dict) and bool(backend_integrity), 'evidence_audit.backend_integrity missing'))
+        checks.append(check('evidence_audit_metric_consistency_present', isinstance(metric_consistency, dict) and bool(metric_consistency), 'evidence_audit.metric_consistency missing'))
+        checks.append(check('evidence_audit_factor_value_health_present', isinstance(factor_value_health, dict) and bool(factor_value_health), 'evidence_audit.factor_value_health missing'))
+        checks.append(check('evidence_audit_long_side_quality_present', isinstance(long_side_quality, dict) and bool(long_side_quality), 'evidence_audit.long_side_evidence_quality missing'))
+        checks.append(check('evidence_audit_cost_turnover_present', isinstance(cost_turnover, dict) and bool(cost_turnover), 'evidence_audit.cost_and_turnover_risk missing'))
+        checks.append(check('evidence_audit_suspicions_list', list_value(evidence_audit.get('data_or_implementation_suspicions')), 'evidence_audit.data_or_implementation_suspicions must be a list'))
+        checks.append(check('evidence_audit_verdict_enum', evidence_audit.get('evidence_verdict') in VALID_EVIDENCE_VERDICTS, f"invalid evidence_verdict: {evidence_audit.get('evidence_verdict')}"))
+        checks.append(check(
+            'evidence_audit_not_blocked',
+            evidence_audit.get('evidence_verdict') != 'blocked',
+            'evidence_audit.evidence_verdict=blocked cannot validate closed-loop Step6 output',
+        ))
+        checks.append(check(
+            'evidence_blocked_cannot_promote',
+            evidence_audit.get('evidence_verdict') != 'blocked' or decision != 'promote_official',
+            'blocked evidence_audit cannot promote_official',
+        ))
+        checks.append(check(
+            'evidence_blocked_no_official_record',
+            evidence_audit.get('evidence_verdict') != 'blocked' or not official_library_path.exists(),
+            'blocked evidence_audit must not write official record',
+        ))
+
+        checks.append(check('mechanism_return_source_enum', mechanism_analysis.get('return_source') in VALID_RETURN_SOURCES, f"invalid return_source: {mechanism_analysis.get('return_source')}"))
+        checks.append(check('mechanism_factor_family_enum', mechanism_analysis.get('factor_family') in VALID_FACTOR_FAMILIES, f"invalid factor_family: {mechanism_analysis.get('factor_family')}"))
+        checks.append(check('mechanism_hypothesis_present', nonempty_str(mechanism_analysis.get('mechanism_hypothesis')), 'mechanism_hypothesis missing'))
+        checks.append(check('mechanism_necessary_conditions_present', nonempty_list(mechanism_analysis.get('necessary_conditions')), 'necessary_conditions missing'))
+        checks.append(check('mechanism_expected_signature_present', isinstance(mechanism_analysis.get('expected_metric_signature'), dict) and bool(mechanism_analysis.get('expected_metric_signature')), 'expected_metric_signature missing'))
+        checks.append(check('mechanism_observed_signature_present', isinstance(mechanism_analysis.get('observed_metric_signature'), dict) and bool(mechanism_analysis.get('observed_metric_signature')), 'observed_metric_signature missing'))
+        checks.append(check('mechanism_fit_enum', mechanism_analysis.get('mechanism_fit') in VALID_MECHANISM_FITS, f"invalid mechanism_fit: {mechanism_analysis.get('mechanism_fit')}"))
+        checks.append(check('mechanism_failure_regimes_present', nonempty_list(mechanism_analysis.get('failure_regimes')), 'failure_regimes missing'))
+        checks.append(check('mechanism_mind_change_present', nonempty_list(mechanism_analysis.get('what_would_change_my_mind')), 'what_would_change_my_mind missing'))
+        checks.append(check('mechanism_classification_evidence_present', isinstance(mechanism_analysis.get('classification_evidence'), dict) and bool(mechanism_analysis.get('classification_evidence')), 'classification_evidence missing'))
+        checks.append(check('mechanism_classification_uncertainty_enum', mechanism_analysis.get('classification_uncertainty') in VALID_CLASSIFICATION_UNCERTAINTY, f"invalid classification_uncertainty: {mechanism_analysis.get('classification_uncertainty')}"))
+        mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or {}
+        mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        checks.append(check(
+            'mechanism_math_contract_present',
+            isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract),
+            'mechanism_analysis.mechanism_math_contract missing',
+        ))
+        checks.append(check(
+            'mechanism_math_contract_valid',
+            not mechanism_math_failures,
+            f'mechanism_analysis.mechanism_math_contract invalid: {mechanism_math_failures}',
+        ))
+        checks.append(check(
+            'invalid_mechanism_math_cannot_promote',
+            decision != 'promote_official' or mechanism_math_contract.get('math_model_status') != 'invalid',
+            'official promotion is forbidden when mechanism_math_contract.math_model_status=invalid',
+        ))
+        checks.append(check(
+            'unknown_or_contradicted_mechanism_cannot_promote',
+            decision != 'promote_official' or (
+                mechanism_analysis.get('return_source') != 'unknown'
+                and mechanism_analysis.get('mechanism_fit') != 'contradicted'
+            ),
+            'official promotion requires known return_source and non-contradicted mechanism_fit',
+        ))
+
+        for field in [
+            'similar_success_cases',
+            'similar_failure_cases',
+            'mechanism_neighbors',
+            'imported_lessons',
+            'rejected_lessons',
+            'why_this_case_is_different',
+            'knowledge_gap',
+            'same_factor_cases',
+            'similar_case_cases',
+            'anti_pattern_cases',
+            'identity_mismatch_cases',
+        ]:
+            checks.append(check(f'case_comparison_{field}_list', list_value(case_comparison.get(field)), f'case_comparison.{field} must be a list'))
+        checks.append(check(
+            'case_comparison_verdict_not_blocked',
+            case_comparison.get('case_comparison_verdict') != 'blocked',
+            'case_comparison_verdict=blocked cannot validate Step6 output',
+        ))
+        checks.append(check(
+            'case_comparison_identity_mismatch_absent',
+            not case_comparison.get('identity_mismatch_cases'),
+            f"same_factor retrieval identity mismatch: {case_comparison.get('identity_mismatch_cases')}",
+        ))
+        checks.append(check('case_comparison_retrieval_used_bool', isinstance(case_comparison.get('retrieval_used'), bool), 'case_comparison.retrieval_used must be bool'))
+        checks.append(check('case_comparison_imported_lessons_present', nonempty_list(case_comparison.get('imported_lessons')), 'case_comparison.imported_lessons missing'))
+        checks.append(check('case_comparison_difference_present', nonempty_list(case_comparison.get('why_this_case_is_different')), 'case_comparison.why_this_case_is_different missing'))
+        retrieved_case_count = sum(len(case_comparison.get(key) or []) for key in ['same_factor_cases', 'similar_case_cases', 'anti_pattern_cases'])
+        checks.append(check(
+            'case_comparison_cold_start_gap_present',
+            retrieved_case_count > 0 or nonempty_list(case_comparison.get('knowledge_gap')),
+            'case_comparison.knowledge_gap must be nonempty when no cases were retrieved',
+        ))
+        checks.append(check(
+            'case_comparison_retrieved_lessons_used',
+            retrieved_case_count == 0 or nonempty_list(case_comparison.get('imported_lessons')) or nonempty_list(case_comparison.get('rejected_lessons')),
+            'retrieved cases require imported_lessons or rejected_lessons',
+        ))
+        source_identity_for_compare = iteration.get('source_case_identity') or {}
+        same_factor_bad = []
+        for idx, item in enumerate(case_comparison.get('same_factor_cases') or []):
+            item_identity = item.get('artifact_identity') or item.get('source_identity') or {}
+            item_factor = item_identity.get('factor_id') or item.get('factor_id')
+            item_formula = item_identity.get('formula_hash') or item.get('formula_hash')
+            if item_factor != source_identity_for_compare.get('factor_id'):
+                same_factor_bad.append(f'idx={idx}:factor_id')
+            if item_formula and source_identity_for_compare.get('formula_hash') and item_formula != source_identity_for_compare.get('formula_hash'):
+                same_factor_bad.append(f'idx={idx}:formula_hash')
+        checks.append(check('case_comparison_same_factor_identity_match', not same_factor_bad, f'same_factor_cases identity mismatch: {same_factor_bad}'))
+        checks.append(check(
+            'similar_case_not_promotion_evidence',
+            case_comparison.get('similar_case_promotion_evidence_used') is not True,
+            'similar_case_cases cannot be used as official promotion evidence',
+        ))
+
+        checks.append(check('revision_strategy_revision_needed_bool', isinstance(revision_strategy.get('revision_needed'), bool), 'revision_strategy.revision_needed must be boolean'))
+        checks.append(check('revision_strategy_failure_signature_enum', revision_strategy.get('primary_failure_signature') in VALID_PRIMARY_FAILURE_SIGNATURES, f"invalid primary_failure_signature: {revision_strategy.get('primary_failure_signature')}"))
+        checks.append(check('revision_strategy_quality_enum', revision_strategy.get('revision_quality') in VALID_REVISION_QUALITIES, f"invalid revision_quality: {revision_strategy.get('revision_quality')}"))
+        checks.append(check('revision_strategy_loop_authorization_enum', revision_strategy.get('loop_authorization') in VALID_LOOP_AUTHORIZATIONS, f"invalid loop_authorization: {revision_strategy.get('loop_authorization')}"))
+        checks.append(check(
+            'revision_strategy_human_approval_gate',
+            revision_strategy.get('revision_needed') is False or revision_strategy.get('requires_human_approval_before_code_change') is True,
+            'revision_strategy.requires_human_approval_before_code_change must be true when revision_needed=true',
+        ))
+        checks.append(check('revision_strategy_hypotheses_list', list_value(revision_strategy.get('revision_hypotheses')), 'revision_hypotheses must be a list'))
+        for idx, hypothesis in enumerate(revision_strategy.get('revision_hypotheses') or []):
+            expression_change = str(hypothesis.get('expression_change') or '').lower()
+            forbidden_expression_terms = [term for term in FORBIDDEN_EXPRESSION_REPAIR_TERMS if term in expression_change]
+            forbidden_changes = set(hypothesis.get('forbidden_changes') or [])
+            checks.append(check(f'revision_hypothesis_{idx}_id_present', nonempty_str(hypothesis.get('hypothesis_id')), 'revision hypothesis_id missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_hypothesis_present', nonempty_str(hypothesis.get('hypothesis')), 'revision hypothesis text missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_mechanism_target_present', nonempty_str(hypothesis.get('mechanism_target')), 'revision mechanism_target missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_expression_change_present', nonempty_str(hypothesis.get('expression_change')), 'revision expression_change missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_target_math_object_enum', hypothesis.get('revision_target_math_object') in REVISION_MATH_OBJECTS, f"invalid revision_target_math_object: {hypothesis.get('revision_target_math_object')}"))
+            checks.append(check(f'revision_hypothesis_{idx}_math_change_present', nonempty_str(hypothesis.get('math_change')), 'revision math_change missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_expected_metric_effect_present', nonempty_list(hypothesis.get('expected_metric_effect')), 'revision expected_metric_effect missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_math_falsification_tests_present', nonempty_list(hypothesis.get('math_falsification_tests')), 'revision math_falsification_tests missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_mode_preference_enum', hypothesis.get('implementation_mode_preference') in VALID_IMPLEMENTATION_MODE_PREFERENCES, f"invalid implementation_mode_preference: {hypothesis.get('implementation_mode_preference')}"))
+            checks.append(check(f'revision_hypothesis_{idx}_expected_metric_change_present', nonempty_list(hypothesis.get('expected_metric_change')), 'expected_metric_change missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_expected_metric_change_minimum', len(hypothesis.get('expected_metric_change') or []) >= 2, 'expected_metric_change must contain at least 2 items'))
+            checks.append(check(f'revision_hypothesis_{idx}_falsification_tests_present', nonempty_list(hypothesis.get('falsification_tests')), 'falsification_tests missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_falsification_tests_minimum', len(hypothesis.get('falsification_tests') or []) >= 2, 'falsification_tests must contain at least 2 items'))
+            checks.append(check(f'revision_hypothesis_{idx}_overfit_enum', hypothesis.get('risk_of_overfit') in VALID_OVERFIT_RISKS, f"invalid risk_of_overfit: {hypothesis.get('risk_of_overfit')}"))
+            checks.append(check(f'revision_hypothesis_{idx}_kill_criteria_present', nonempty_list(hypothesis.get('kill_criteria')), 'kill_criteria missing'))
+            checks.append(check(f'revision_hypothesis_{idx}_kill_criteria_minimum', len(hypothesis.get('kill_criteria') or []) >= 2, 'kill_criteria must contain at least 2 items'))
+            checks.append(check(f'revision_hypothesis_{idx}_why_not_portfolio_fix_present', nonempty_str(hypothesis.get('why_not_portfolio_fix')), 'why_not_portfolio_fix missing'))
+            checks.append(check(
+                f'revision_hypothesis_{idx}_forbidden_changes_complete',
+                REQUIRED_REVISION_FORBIDDEN_CHANGES.issubset(forbidden_changes),
+                f'forbidden_changes must contain {sorted(REQUIRED_REVISION_FORBIDDEN_CHANGES)}',
+            ))
+            checks.append(check(
+                f'revision_hypothesis_{idx}_expression_change_no_portfolio_repair_terms',
+                not forbidden_expression_terms,
+                f'expression_change contains forbidden portfolio repair terms: {forbidden_expression_terms}',
+            ))
+        checks.append(check(
+            'iterate_requires_revision_strategy',
+            decision != 'iterate' or (
+                revision_strategy.get('revision_needed') is True
+                and nonempty_list(revision_strategy.get('revision_hypotheses'))
+                and revision_strategy.get('revision_quality') == 'actionable'
+                and all(nonempty_str(item.get('expression_change')) and nonempty_str(item.get('why_not_portfolio_fix')) for item in revision_strategy.get('revision_hypotheses') or [])
+            ),
+            'iterate requires revision_needed=true, revision_quality=actionable, and expression-level revision hypotheses',
+        ))
+        checks.append(check(
+            'blocked_failure_signature_blocks_revision',
+            revision_strategy.get('primary_failure_signature') not in {'implementation_suspect', 'same_factor_identity_mismatch'} or (
+                revision_strategy.get('revision_quality') == 'blocked'
+                and not revision_strategy.get('revision_hypotheses')
+            ),
+            'implementation_suspect/same_factor_identity_mismatch must use blocked revision_quality and no actionable expression revision',
+        ))
+        checks.append(check(
+            'mechanism_unclear_requires_challenge_or_reject',
+            revision_strategy.get('primary_failure_signature') != 'mechanism_unclear' or (
+                revision_strategy.get('revision_quality') in {'actionable', 'blocked'}
+                and (
+                    any('mechanism' in str(item.get('mechanism_target') or item.get('hypothesis') or '').lower() for item in revision_strategy.get('revision_hypotheses') or [])
+                    or nonempty_str(revision_strategy.get('reject_reason_if_no_revision'))
+                )
+            ),
+            'mechanism_unclear requires a mechanism challenge hypothesis or reject rationale',
+        ))
+        checks.append(check(
+            'reject_requires_revision_reject_reason',
+            decision != 'reject' or nonempty_str(revision_strategy.get('reject_reason_if_no_revision')),
+            'reject requires revision_strategy.reject_reason_if_no_revision',
+        ))
+        handoff_authorized = (
+            decision == 'iterate'
+            and revision_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
+            and revision_strategy.get('revision_quality') == 'actionable'
+            and case_comparison.get('case_comparison_verdict') != 'blocked'
+            and case_comparison.get('similar_success_condition_mismatch') is not True
+        )
+        checks.append(check(
+            'step3b_handoff_authorization_consistency',
+            revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff' or handoff_authorized,
+            'approved Step3B handoff requires decision=iterate, actionable revision, usable case comparison, and no similar-success condition mismatch',
+        ))
+        checks.append(check(
+            'condition_mismatch_not_handoff_authorized',
+            case_comparison.get('similar_success_condition_mismatch') is not True or revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff',
+            'similar success condition mismatch must remain advisory and cannot authorize Step3B handoff',
+        ))
+
+        checks.append(check('search_policy_decision_mode_enum', search_policy_decision.get('recommended_mode') in VALID_SEARCH_POLICY_MODES, f"invalid recommended_mode: {search_policy_decision.get('recommended_mode')}"))
+        checks.append(check('search_policy_decision_reason_present', nonempty_str(search_policy_decision.get('why_this_mode')), 'search_policy_decision.why_this_mode missing'))
+        branch_templates = search_policy_decision.get('branch_templates') or []
+        checks.append(check('search_policy_decision_branch_templates_list', list_value(branch_templates), 'search_policy_decision.branch_templates must be a list'))
+        for idx, branch in enumerate(branch_templates):
+            hard_guards = set(branch.get('hard_guards') or []) if isinstance(branch, dict) else set()
+            checks.append(check(f'search_branch_{idx}_object', isinstance(branch, dict), 'search_policy_decision branch template must be an object'))
+            if not isinstance(branch, dict):
+                continue
+            checks.append(check(f'search_branch_{idx}_branch_id_present', nonempty_str(branch.get('branch_id')), 'branch_id missing'))
+            checks.append(check(f'search_branch_{idx}_role_present', branch.get('branch_role') in {'audit', 'exploit', 'explore', 'macro'}, f"invalid branch_role: {branch.get('branch_role')}"))
+            checks.append(check(f'search_branch_{idx}_mode_present', branch.get('search_mode') in {'research_audit', 'bayesian_search', 'genetic_algorithm', 'mechanism_challenge', 'multi_agent_parallel_exploration'}, f"invalid search_mode: {branch.get('search_mode')}"))
+            checks.append(check(f'search_branch_{idx}_question_present', nonempty_str(branch.get('research_question')), 'research_question missing'))
+            checks.append(check(f'search_branch_{idx}_hypothesis_present', nonempty_str(branch.get('hypothesis')), 'hypothesis missing'))
+            checks.append(check(f'search_branch_{idx}_mechanism_target_present', nonempty_str(branch.get('mechanism_target')), 'mechanism_target missing'))
+            checks.append(check(f'search_branch_{idx}_success_criteria_present', nonempty_list(branch.get('success_criteria')), 'success_criteria missing'))
+            checks.append(check(f'search_branch_{idx}_falsification_tests_present', nonempty_list(branch.get('falsification_tests')), 'falsification_tests missing'))
+            checks.append(check(
+                f'search_branch_{idx}_hard_guards_complete',
+                REQUIRED_FORBIDDEN_SEARCH.issubset(hard_guards),
+                f'branch hard_guards must contain {sorted(REQUIRED_FORBIDDEN_SEARCH)}',
+            ))
+            checks.append(check(f'search_branch_{idx}_approval_required', branch.get('requires_human_approval_before_execution') is True, 'branch must require human approval before execution'))
+            checks.append(check(f'search_branch_{idx}_execution_disabled', branch.get('execution_allowed_by_default') is False, 'branch execution_allowed_by_default must be false'))
+        checks.append(check(
+            'advisory_loop_no_executable_branch',
+            revision_strategy.get('loop_authorization') != 'advisory_only' or all((branch.get('execution_allowed_by_default') is False) for branch in branch_templates if isinstance(branch, dict)),
+            'advisory_only search branches must not be executable by default',
+        ))
+        checks.append(check(
+            'none_or_kill_branch_policy',
+            search_policy_decision.get('recommended_mode') not in {'none', 'kill'} or all((branch.get('execution_allowed_by_default') is False and branch.get('advisory_only') is True) for branch in branch_templates if isinstance(branch, dict)),
+            'none/kill modes must have no executable branch templates',
+        ))
+        checks.append(check(
+            'search_policy_decision_human_approval_required',
+            search_policy_decision.get('human_approval_required') is True,
+            'search_policy_decision.human_approval_required must be true',
+        ))
+        forbidden_search = set(search_policy_decision.get('forbidden_search') or [])
+        checks.append(check(
+            'search_policy_decision_forbidden_search_required',
+            REQUIRED_FORBIDDEN_SEARCH.issubset(forbidden_search),
+            f'search_policy_decision.forbidden_search must contain {sorted(REQUIRED_FORBIDDEN_SEARCH)}',
+        ))
+        checks.append(check('search_policy_decision_blockers_list', list_value(search_policy_decision.get('search_blockers')), 'search_blockers must be a list'))
+        checks.append(check('search_policy_decision_rationale_list', nonempty_list(search_policy_decision.get('selection_rationale')), 'selection_rationale must be nonempty'))
+
         checks.append(check('research_memo_formula_plain_language_present', nonempty_str(formula_understanding.get('plain_language')), 'formula understanding plain_language missing'))
         checks.append(check('research_memo_formula_break_conditions_present', nonempty_list(formula_understanding.get('what_would_break_it')), 'formula break conditions missing'))
         checks.append(check('research_memo_return_source_present', nonempty_str(return_source.get('primary_hypothesis')) and nonempty_str(return_source.get('explanation')), 'return source analysis missing'))
@@ -204,8 +1075,10 @@ if __name__ == '__main__':
         checks.append(check('diversity_position_present', isinstance(diversity_position, dict) and bool(diversity_position), 'diversity_position missing from Step6 research judgment'))
         checks.append(check(
             'iterate_requires_exploration_branches',
-            decision != 'iterate' or nonempty_list(search_branches),
-            'iterate decisions must include program_search_policy.recommended_next_search.branches',
+            decision != 'iterate'
+            or revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff'
+            or nonempty_list(search_branches),
+            'approved iterate decisions must include program_search_policy.recommended_next_search.branches',
         ))
         checks.append(check(
             'iterate_requires_human_approval_gate',
@@ -241,10 +1114,11 @@ if __name__ == '__main__':
         else:
             checks.append(check('official_library_absent_when_not_promoted', not official_library_path.exists(), 'official library record should not exist'))
 
-        if decision == 'iterate':
-            checks.append(check('handoff_to_step3b_exists', step3b_handoff_path.exists(), f'missing {step3b_handoff_path}'))
+        if handoff_authorized:
+            checks.extend(iterate_lineage_checks(iteration, step3b_handoff_path))
+            checks.append(check('handoff_to_step3b_exists_when_authorized', step3b_handoff_path.exists(), f'missing {step3b_handoff_path}'))
         else:
-            checks.append(check('handoff_to_step3b_absent_when_not_iterate', not step3b_handoff_path.exists(), 'handoff_to_step3b should not exist'))
+            checks.append(check('handoff_to_step3b_absent_when_not_authorized', not step3b_handoff_path.exists(), 'handoff_to_step3b requires explicit approved_for_step3b_handoff authorization'))
 
     warnings = []
     for item in checks:

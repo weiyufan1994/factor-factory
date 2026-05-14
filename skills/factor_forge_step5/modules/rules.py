@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 VALID_FINAL_STATUS = {"validated", "partial", "failed"}
+LONG_SIDE_CANDIDATE_MIN_SHARPE = 0.50
 
 
 def _resolve_factorforge_root(root: Path) -> Path:
@@ -127,6 +128,17 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
         "cost_adjusted_long_side_sharpe",
     ]
     long_side_evidence_complete = all(metric_bundle.get(key) is not None for key in required_long_side)
+    try:
+        long_side_supportive = (
+            float(metric_bundle.get("long_side_annual_return")) > 0.0
+            and float(metric_bundle.get("long_side_sharpe")) >= LONG_SIDE_CANDIDATE_MIN_SHARPE
+            and (
+                metric_bundle.get("rank_ic_mean") is None
+                or float(metric_bundle.get("rank_ic_mean")) > 0.0
+            )
+        )
+    except Exception:
+        long_side_supportive = False
     revenue = metric_bundle.get("long_side_annual_return")
     volatility = metric_bundle.get("long_side_annual_volatility")
     drawdown = metric_bundle.get("long_side_max_drawdown")
@@ -157,7 +169,14 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
         return "partial"
 
     if run_status == "success":
-        if artifact_ready and existing_outputs and successful_backend_count >= 1 and long_side_evidence_complete and factor_business_quality_complete:
+        if (
+            artifact_ready
+            and existing_outputs
+            and successful_backend_count >= 1
+            and long_side_evidence_complete
+            and factor_business_quality_complete
+            and long_side_supportive
+        ):
             return "validated"
         return "partial"
 

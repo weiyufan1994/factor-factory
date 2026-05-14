@@ -57,5 +57,29 @@ Step4 handoff、生成代码审查注释，以及首跑 metadata（如果生成�
 target statistic、economic mechanism、expected failure modes、reuse instructions 和
 implementation invariants，让 Step4/5/6 评价的是被实现的研究假设，而不是孤立的数值列。
 
+## 实现与因子身份隔离
+正式 Step3B 必须消费带 `manifest_identity` 与显式路径的 runtime manifest。必须拒绝路径猜测、按 mtime 选最新文件、跨 report 或跨 factor 复用。`artifact_identity` 链必须从 `factor_spec_master` 到 `implementation_plan_master`、generated code metadata、`handoff_to_step4` 在 `report_id`、`factor_id`、`source_type`、`implementation_mode`、`contract_version`、`spec_hash`、`branch_id` 上一致。
+
+允许的 implementation mode 只有 `operator`、`direct_code`、`hybrid`。mode 不一致、stale `spec_hash`、branch 错误、复制其他 factor 的 generated code、或缺失 manifest identity，都属于 contract failure。
+
+## Implementation mode 决策审计
+Step3B 必须把 `implementation_mode_decision` 写入 `implementation_plan_master`、generated-code metadata、`handoff_to_step4`、首跑 metadata（如生成），以及 ultimate proof summary。决策记录必须使用 `factorforge_implementation_mode_decision_v1`，明确 selected mode 或 `blocked`，记录 operator/hybrid/direct_code 的尝试结果或 not-applicable 原因，并保留最终 correctness reason。如果 selected mode 是 `blocked`，Step3B 不得写正式 factor values。
+
+## 正确性优先于完成度
+Step3B 必须按 `operator -> hybrid -> direct_code` 尝试；如果无法证明正确性，就 BLOCK。UBL/CPV/shadow/candle/Williams 逻辑只能作为显式 family plugin 或 fixture。unsupported operator parity、缺失 `formula_ir`、不安全 direct code、或模糊 proxy 改写都必须 BLOCK，不能降级为 warning。
+
+## Operator / Qlib engine
+Operator mode 是 Formula IR 执行路径，不只是一个标签。Step3B 必须消费 `formula_ir`，验证 `parse_status=success`，确认所有算子在 registry 中，按 Step3A schema 解析字段 alias，生成 pandas `compute_factor`，并用 pandas reference evaluator 做 parity validation。生成 metadata 必须包含 `implementation_source=formula_ir_pandas_codegen`、`formula_hash`、`operator_set`、`required_fields`、`resolved_fields`、`code_hash` 和 qlib bridge status。
+
+qlib expression bridge 必须显式声明 supported 或 unsupported。unsupported qlib operator 不能被近似替代。parser failure、unsupported operator、字段 alias 缺失、code hash 不一致或 parity failure 都必须 BLOCK，且不得生成正式 factor values。
+
+## Hybrid execution engine
+Hybrid mode 是有边界的组合：Formula IR operator subgraph 加上声明过的 custom Python block。Step3B 必须用 pandas reference parity 验证 operator subgraph，用 direct-code 泄漏规则扫描 custom source，校验 `formula_hash`、`custom_block_hash`、`hybrid_hash`，并在写 ready artifact 前验证 boundary。
+
+生成的 hybrid code 必须用 `FACTORFORGE_OPERATOR_SUBGRAPH` 和 `FACTORFORGE_CUSTOM_BLOCK` markers 分隔 operator 和 custom 区域。除非 `allow_operator_output_overwrite=true`，custom block 不得覆盖受保护的 operator output；unsafe 或 unsupported hybrid contract 必须 BLOCK。
+
+## Family plugin 边界
+UBL、CPV、shadow candlestick、candle、Williams 等 family-specific 代码必须放在 `factor_factory.factor_families` registry 后面。Step3B 只有在 Step2 显式声明 `factor_family`、`family_plugin`、`family_plugin_allowed=true`，并写出带非 free-text 证据的 `factorforge_family_plugin_decision_v1` 时才能执行 plugin。`factor_id`、公式文本、thesis 关键词最多只能产生人工复核建议，不能触发 plugin。
+
 ## 可复现性警告
 Step 3 的极小复现目前依赖一个薄封装层，将 fixture 文件安装到 runner 期望的对象和本地输入路径，因为现有 Step 3 脚本围绕该对象合约构建。

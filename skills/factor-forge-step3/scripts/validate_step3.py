@@ -68,7 +68,9 @@ if __name__ == '__main__':
     assert qcfg.get('date_field') in {'trade_date', 'datetime'}, 'qlib adapter must declare date field explicitly'
 
     impl_mode = impl.get('implementation_mode') or impl.get('preferred_execution_mode')
-    assert impl_mode in {'direct_python', 'qlib_operator', 'hybrid'}
+    assert impl_mode in {'operator', 'direct_code', 'hybrid'}, (
+        f'formal implementation_mode must be operator/direct_code/hybrid, got {impl_mode}'
+    )
     if 'calculation_steps' in impl:
         assert isinstance(impl.get('calculation_steps'), list) and impl['calculation_steps']
     if 'code_artifacts' in impl:

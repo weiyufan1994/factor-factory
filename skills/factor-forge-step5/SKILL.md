@@ -10,6 +10,11 @@ description: Step 5 of the Factor Forge pipeline — evaluation, archival, and k
 Step 5 closes the loop.
 It takes the executed factor run, evaluates what happened, archives the result, and writes back reusable knowledge.
 
+Step 5 preserves the upstream `mechanism_math_contract` from Step 2. It may
+reference the contract in `math_discipline_review`, but it must not redo
+mechanism inference or use mathematical explanation as a substitute for Step4/5
+long-side evidence, provenance, or prewrite gates.
+
 ## Research Discipline
 
 Step 5 is not just file archiving. It must compress Step4 evidence into a reusable case:
@@ -104,3 +109,24 @@ Treat those files as the authoritative current repo-level reproducibility notes 
 - validator output uses `PASS|WARN|BLOCK`
 - `step4_quality_gate` exists in both `factor_evaluation` and `factor_case_master`
 - a blocking Step4 quality gate forces `final_status=failed`
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Correctness Over Completion
+
+Step5 must reject invalid or stale evidence. Case records must preserve strict `artifact_identity`, evidence identity, branch/run provenance, and long-only risk-adjusted evidence before any validated conclusion.
+
+## Provenance Strengthening
+
+- No provenance, no archive: `factor_case_master` must carry `artifact_identity`, `evidence_identity`, `implementation_mode_decision`, `source_evidence_refs`, and `evidence_quality`.
+- No evidence identity, no case close: validated Step5 requires strict identity match to `factor_run_master`, successful Step4 backend evidence, self-quant long-side evidence, and mode-decision provenance.
+- Similar-case evidence is not same-factor evidence. Step5 may preserve analogies, but it must not treat another factor/report/branch/run as this case's evidence.
+- Downstream Step6 promotion is allowed only when Step5 records `identity_chain_verified=true` and long-only risk-adjusted metrics are present.
+- The provenance gate runs before `archive_artifacts()`. If identity/evidence/mode-decision quality is incomplete, Step5 may write only a failed case plus `objects/validation/step5_prewrite_block__<report_id>.json`; it must not archive or hand off a validated-looking case.

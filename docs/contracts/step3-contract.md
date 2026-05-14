@@ -58,5 +58,29 @@ context must preserve at least target statistic, economic mechanism, expected fa
 reuse instructions, and implementation invariants so Step4/5/6 evaluate the implemented thesis
 rather than an isolated numeric column.
 
+## Implementation and factor identity isolation
+Formal Step3B must consume a runtime manifest with `manifest_identity` and explicit paths. It must reject path guessing, latest-mtime selection, and cross-report or cross-factor reuse. The `artifact_identity` chain must match from `factor_spec_master` to `implementation_plan_master`, generated code metadata, and `handoff_to_step4` on `report_id`, `factor_id`, `source_type`, `implementation_mode`, `contract_version`, `spec_hash`, and `branch_id`.
+
+Allowed implementation modes are `operator`, `direct_code`, and `hybrid`. A mode mismatch, stale `spec_hash`, wrong branch, copied factor-specific generated code, or missing manifest identity is a contract failure.
+
+## Implementation mode decision audit trail
+Step3B must write `implementation_mode_decision` to `implementation_plan_master`, generated-code metadata, `handoff_to_step4`, first-run metadata when generated, and the ultimate proof summary. The decision record must use `factorforge_implementation_mode_decision_v1`, state the selected mode or `blocked`, record operator/hybrid/direct_code attempts or explicit not-applicable reasons, and preserve the final correctness reason. If the selected mode is `blocked`, Step3B must not write formal factor values.
+
+## Correctness over completion
+Step3B must try `operator`, then `hybrid`, then `direct_code`, and BLOCK if correctness cannot be proven. UBL/CPV/shadow/candle/Williams logic is allowed only as an explicit family plugin or fixture. Unsupported operator parity, missing `formula_ir`, unsafe direct code, or ambiguous proxy rewrites are BLOCK conditions, not warnings.
+
+## Operator / Qlib engine
+Operator mode is a Formula IR execution path, not a label. Step3B must consume `formula_ir`, verify `parse_status=success`, confirm all operators are registered, resolve required fields against the Step3A schema, generate a pandas `compute_factor`, and validate it against the pandas reference evaluator. Generated metadata must include `implementation_source=formula_ir_pandas_codegen`, `formula_hash`, `operator_set`, `required_fields`, `resolved_fields`, `code_hash`, and qlib bridge status.
+
+The qlib expression bridge must declare supported or unsupported operators explicitly. Unsupported qlib operators may not be approximated. Parser failures, unsupported operators, missing aliases, code-hash mismatch, or parity failure must BLOCK and must not produce formal factor values.
+
+## Hybrid execution engine
+Hybrid mode is a bounded composition: Formula IR operator subgraph plus one or more declared custom Python blocks. Step3B must validate the operator subgraph with pandas reference parity, scan custom source with the direct-code leakage rules, verify `formula_hash`, `custom_block_hash`, and `hybrid_hash`, and validate the boundary before writing ready artifacts.
+
+Generated hybrid code must expose separate operator and custom sections using `FACTORFORGE_OPERATOR_SUBGRAPH` and `FACTORFORGE_CUSTOM_BLOCK` markers. Custom blocks cannot overwrite protected operator outputs unless `allow_operator_output_overwrite=true`; unsafe or unsupported hybrid contracts must BLOCK.
+
+## Family plugin boundary
+Family-specific code such as UBL, CPV, shadow candlestick, candle, or Williams logic must live behind the `factor_factory.factor_families` registry. Step3B may execute it only when Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with non-free-text evidence. `factor_id`, formula prose, or thesis keywords may suggest human review, but must never trigger a plugin.
+
 ## Reproducibility warning
 Step 3 tiny reproduction currently relies on a thin wrapper that installs fixture files into the runner-expected object and local-input paths, because the existing Step 3 scripts are built around that object contract.

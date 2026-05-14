@@ -9,6 +9,14 @@ description: Step 2 of the Factor Factory pipeline — Factor Spec Extraction an
 
 Step 2 converts an `alpha_idea_master` into a machine-readable `factor_spec_master` — the authoritative construction blueprint for implementing the factor in Step 3.
 
+Step 2 also emits `mechanism_math_contract` as an incremental research
+discipline layer. The contract formalizes the intended mapping from economic
+mechanism to mathematical object, observable estimator, expected metric
+signature, revision operators, falsification tests, and kill criteria. If the
+mechanism cannot be responsibly formalized, Step 2 records
+`math_model_status=under_specified` with a human research question rather than
+inventing a mechanism.
+
 ## Research Discipline
 
 Step 2 is the canonical-spec guardrail. It must verify:
@@ -329,3 +337,28 @@ Use the same report_id as Step 1:
 RPT_pdf_{8-char-hash}_{YYYY-MM-DD}_{broker}_{title}
 ```
 Example: `RPT_pdf_fde3cba2_20200223-东吴证券-东吴证券_技术分析拥抱选股因子_系列研究_一_高频价量相关性_意想不到的选股因子`
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Correctness Over Completion
+
+FactorForge is a general-purpose factor research framework, not a UBL/CPV/Alpha101-specific calculator. Step2 must preserve the original formula/hypothesis, write auditable mode-decision context, and mark unsupported or ambiguous implementation as BLOCK/human-review instead of inventing a runnable substitute.
+
+## Operator Formula Contract
+
+For `implementation_mode=operator`, Step2 must parse `formula_text` into `formula_ir` using `factorforge_formula_ir_v1`. The spec must include `formula_hash`, `operator_set`, `required_fields`, `resolved_fields`, and `parse_status`. `paper_canonical_formula` sources require a successful `formula_ir`; unsupported syntax, unknown operators, negative windows, or missing field aliases must BLOCK rather than falling through to hybrid/direct_code.
+
+The qlib bridge is explicit: Step2 may write a qlib expression draft only when the registry supports each operator. Unsupported qlib operators must be recorded as unsupported, not silently rewritten. The pandas reference evaluator is the parity ground truth for Step3B operator codegen.
+
+## Hybrid Contract
+
+Hybrid mode is a bounded composition of an operator subgraph plus explicit custom Python blocks. Step2 must write `factorforge_hybrid_contract_v1` with `operator_subgraph`, nonempty `custom_blocks`, `boundary`, `formula_hash`, `custom_block_hash`, and `hybrid_hash`. Missing boundary/schema/hash fields must BLOCK as `BLOCK_INVALID_HYBRID_CONTRACT`.
+
+Custom blocks are not free-form unsafe code: they must declare `function_name`, input/output schema, required fields, forbidden patterns, and source code. Operator outputs are protected by default; overwriting them requires an explicit boundary permission.

@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
+REPORT_ALPHA013_LIKE = "STEP6_INTEL_ALPHA013_LIKE_ADVISORY_MECHANISM_CHALLENGE_BRANCH"
+REPORT_COLD_START = "STEP6_INTEL_COLD_START_KNOWLEDGE_GAP"
+REPORT_MECHANISM_UNCLEAR = "STEP6_INTEL_MECHANISM_UNCLEAR_REVISION"
+REPORT_IDS = [REPORT_ALPHA013_LIKE, REPORT_COLD_START, REPORT_MECHANISM_UNCLEAR]
+POLLUTION_MARKERS = ["factorforge_agentic_council_dispatch", "STEP6_INTEL"]
+
+
+def is_tmp(path: Path) -> bool:
+    raw = str(path)
+    resolved = str(path.resolve())
+    return raw.startswith("/tmp/") or resolved.startswith("/tmp/") or resolved.startswith("/private/tmp/")
+
+
+def file_snapshot() -> set[str]:
+    files: set[str] = set()
+    for rel in CANONICAL_ROOTS:
+        root = REPO_ROOT / rel
+        if root.exists():
+            files.update(str(item.relative_to(REPO_ROOT)) for item in root.rglob("*") if item.is_file())
+    return files
+
+
+def pollution_matches(new_files: set[str]) -> list[str]:
+    needles = sorted(set(REPORT_IDS + POLLUTION_MARKERS))
+    return sorted(item for item in new_files if any(needle in item for needle in needles))
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def should_skip_digest_path(path: Path) -> bool:
+    name = path.name
+    return name in {"__pycache__", ".DS_Store"} or name.endswith((".lock", ".tmp", ".swp", ".swx"))
+
+
+def directory_digest(path: Path) -> str | None:
+    if not path.exists() or not path.is_dir():
+        return None
+    entries: list[dict[str, Any]] = []
+    for item in sorted(path.rglob("*"), key=lambda p: p.relative_to(path).as_posix()):
+        rel = item.relative_to(path)
+        if any(should_skip_digest_path(part) for part in rel.parents):
+            continue
+        if should_skip_digest_path(item) or not item.is_file():
+            continue
+        stat = item.stat()
+        entries.append({"relative_path": rel.as_posix(), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": sha256_file(item)})
+    return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def run_cmd(root: Path, cmd: list[str], extra_env: dict[str, str] | None = None) -> dict[str, Any]:
+    env = dict(os.environ)
+    env["FACTORFORGE_ROOT"] = str(root)
+    if extra_env:
+        env.update(extra_env)
+    proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, text=True, capture_output=True)
+    return {"command": cmd, "rc": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
+
+
+def result(case: str, ok: bool, expected: str, actual: dict[str, Any]) -> dict[str, Any]:
+    return {"case": case, "ok": bool(ok), "expected": expected, "actual": actual}
+
+
+def setup_fixtures(root: Path) -> dict[str, Any]:
+    return run_cmd(root, [sys.executable, "scripts/run_step6_intelligence_smoke.py", "--fresh", "--root", str(root)])
+
+
+def council_dir(root: Path, rid: str) -> Path:
+    return root / "objects" / "research_iteration_master" / "revision_council" / rid
+
+
+def proof_path(root: Path, rid: str) -> Path:
+    return root / "objects" / "runtime_context" / f"ultimate_run_report__{rid}.json"
+
+
+def dispatch_manifest_path(root: Path, rid: str) -> Path:
+    return council_dir(root, rid) / f"dispatch_manifest__{rid}.json"
+
+
+def run_ultimate_dispatch(root: Path, rid: str, *, runtime: str | None = None, provider: str | None = None, model: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    cmd = [
+        sys.executable,
+        "scripts/run_factorforge_ultimate.py",
+        "--report-id",
+        rid,
+        "--start-step",
+        "6",
+        "--end-step",
+        "6",
+        "--skip-researcher-packets",
+        "--factorforge-root",
+        str(root),
+        "--council-mode",
+        "agentic",
+        "--agentic-council-executor",
+        "dispatch_manifest",
+    ]
+    if runtime:
+        cmd.extend(["--runtime-dispatch", runtime])
+    if provider:
+        cmd.extend(["--subagent-provider", provider])
+    if model:
+        cmd.extend(["--subagent-model", model])
+    proc = run_cmd(root, cmd)
+    return proc, load_json(proof_path(root, rid))
+
+
+def validate_dispatch(root: Path, rid: str) -> dict[str, Any]:
+    return run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py", "--report-id", rid])
+
+
+def case_dispatch_happy(root: Path) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    before_code = directory_digest(root / "generated_code" / rid)
+    before_clean = directory_digest(root / "data" / "clean")
+    proc, proof = run_ultimate_dispatch(root, rid)
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    policy = manifest.get("runtime_dispatch_policy") or {}
+    validate = validate_dispatch(root, rid)
+    after_code = directory_digest(root / "generated_code" / rid)
+    after_clean = directory_digest(root / "data" / "clean")
+    summary_exists = (council_dir(root, rid) / f"revision_council_summary__{rid}.json").exists()
+    iteration = load_json(root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json")
+    ok = (
+        proc["rc"] == 0
+        and proof.get("status") == "PASS"
+        and (proof.get("revision_council") or {}).get("status") == "awaiting_agent_results"
+        and (proof.get("revision_council") or {}).get("effective_mode") == "agentic_dispatch_manifest"
+        and manifest.get("agent_task_count") == 5
+        and policy.get("runtime") == "unknown"
+        and policy.get("provider_required_by_factor_forge") is False
+        and len(manifest.get("agent_tasks") or []) == 5
+        and validate["rc"] == 0
+        and not summary_exists
+        and not iteration.get("revision_council_ref")
+        and not (root / "objects" / "handoff" / f"handoff_to_step3b__{rid}.json").exists()
+        and not (root / "objects" / "factor_library_official" / f"factor_record__{rid}.json").exists()
+        and before_code == after_code
+        and before_clean == after_clean
+    )
+    return result(
+        "dispatch_manifest_happy_path",
+        ok,
+        "dispatch package created and wrapper awaits agent results without merge/attach",
+        {
+            "run": proc,
+            "revision_council": proof.get("revision_council"),
+            "manifest_agent_task_count": manifest.get("agent_task_count"),
+            "runtime_policy": policy,
+            "validate_dispatch": validate,
+            "summary_exists": summary_exists,
+            "revision_council_ref_attached": bool(iteration.get("revision_council_ref")),
+            "generated_code_unchanged": before_code == after_code,
+            "data_clean_unchanged": before_clean == after_clean,
+        },
+    )
+
+
+def case_dispatch_runtime_policy(root: Path, runtime: str, *, provider: str | None = None, model: str | None = None) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    proc, proof = run_ultimate_dispatch(root, rid, runtime=runtime, provider=provider, model=model)
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    validate = validate_dispatch(root, rid)
+    policy = manifest.get("runtime_dispatch_policy") or {}
+    tasks = manifest.get("agent_tasks") or []
+    first_packet = load_json(root / tasks[0]["task_packet_path"]) if tasks else {}
+    ok = (
+        proc["rc"] == 0
+        and proof.get("status") == "PASS"
+        and validate["rc"] == 0
+        and policy.get("runtime") == runtime
+        and first_packet.get("runtime_dispatch_policy") == policy
+    )
+    if provider:
+        ok = ok and ((policy.get("manual_provider_override") or {}).get("provider") == provider)
+    if model:
+        ok = ok and ((policy.get("model_override") or {}).get("model") == model)
+    return result(f"dispatch_runtime_policy_{runtime}{'_override' if provider or model else ''}", ok, f"runtime={runtime} policy validates and propagates to task packet", {"run": proc, "validate": validate, "runtime_policy": policy, "task_policy": first_packet.get("runtime_dispatch_policy")})
+
+
+def mutate_dispatch_manifest_policy_case(root: Path, case_name: str, mutate: Callable[[dict[str, Any]], None], expected_token: str) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    manifest_path = dispatch_manifest_path(root, rid)
+    original = load_json(manifest_path)
+    try:
+        manifest = load_json(manifest_path)
+        policy = manifest.get("runtime_dispatch_policy") or {}
+        mutate(policy)
+        manifest["runtime_dispatch_policy"] = policy
+        write_json(manifest_path, manifest)
+        proc = validate_dispatch(root, rid)
+    finally:
+        write_json(manifest_path, original)
+    token_present = expected_token in (proc["stdout_tail"] + proc["stderr_tail"])
+    return result(case_name, proc["rc"] == 1 and token_present, expected_token, {"validate": proc, "token_present": token_present})
+
+
+def mutate_dispatch_case(root: Path, case_name: str, mutate: Callable[[dict[str, Any], Path], None], expected_token: str) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    manifest_path = dispatch_manifest_path(root, rid)
+    manifest = load_json(manifest_path)
+    task_path = root / (manifest.get("agent_tasks") or [{}])[0].get("task_packet_path")
+    original_manifest = copy.deepcopy(manifest)
+    original_task = load_json(task_path)
+    try:
+        target = load_json(task_path)
+        mutate(target, task_path)
+        if task_path.exists():
+            write_json(task_path, target)
+        proc = validate_dispatch(root, rid)
+    finally:
+        write_json(task_path, original_task)
+        write_json(manifest_path, original_manifest)
+    token_present = expected_token in (proc["stdout_tail"] + proc["stderr_tail"])
+    return result(case_name, proc["rc"] == 1 and token_present, expected_token, {"validate": proc, "token_present": token_present})
+
+
+def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_identifier: bool = True) -> dict[str, Any]:
+    task_packet = load_json(root / task["task_packet_path"])
+    task_id = task["task_id"]
+    role = task["agent_role"]
+    payload = {
+        "result_version": "factorforge_agentic_revision_council_result_v1",
+        "status": "final",
+        "report_id": rid,
+        "task_id": task_id,
+        "agent_role": role,
+        "producer": "real_agent",
+        "research_depth": "medium",
+        "proposal_generation_mode": "agentic",
+        "canonical_write_permission": False,
+        "execution_allowed_by_default": False,
+        "human_approval_required": True,
+        "public_derivation_record": {
+            "research_question": task_packet.get("research_question"),
+            "assumptions": [{"assumption": "Step6 packet evidence is the input.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Invalidate if packet provenance is blocked."}],
+            "mathematical_objects": [{"name": "agentic_state", "meaning": "Agent-specific estimator state.", "unit_or_dimension": "dimensionless", "information_set": "factor timestamp evidence only"}],
+            "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links public claims to metric signatures.", "what_it_can_answer": "Whether a hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical code changes."}],
+            "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | agentic_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for dispatch smoke."}],
+            "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a testable estimator-state claim.", "depends_on": []}],
+            "limiting_cases": ["If net evidence remains negative, reject.", "If gross evidence disappears, reject."],
+            "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
+            "kill_criteria": ["High-score long side remains non-positive.", "Improvement exists only in diagnostic spread metrics."],
+            "overclaim_guard": "This real-agent-shaped result is advisory-only and cannot authorize code writes.",
+        },
+        "candidate_revision_laws": [
+            {
+                "law_id": f"{task_id}_real_law_001",
+                "revision_type": "mechanism_challenge",
+                "law_statement": "Test the estimator-state mechanism before any revision approval.",
+                "expression_change_direction": "Challenge persistence, scale, and falsification requirements at expression level.",
+                "expected_metric_change": ["Net long-side evidence should improve if the state is valid.", "Turnover or estimator variance should not worsen materially."],
+                "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under the expression hypothesis."],
+                "kill_criteria": ["High-score long side remains non-positive.", "Only diagnostic spread metrics improve."],
+                "why_not_portfolio_fix": "This is an expression and mechanism test, not a trading wrapper change.",
+            }
+        ],
+        "recommended_branch_templates": [],
+        "blocked_reason": None,
+    }
+    if include_identifier:
+        payload["agent_identifier"] = f"agent_test_{role}"
+    return payload
+
+
+def case_fake_real_agent_result(root: Path, include_identifier: bool) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    task = (manifest.get("agent_tasks") or [])[0]
+    payload = fake_real_agent_result(root, rid, task, include_identifier=include_identifier)
+    mutation_path = root / "mutations" / ("fake_real_agent_valid.json" if include_identifier else "fake_real_agent_missing_identifier.json")
+    write_json(mutation_path, payload)
+    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_result.py", "--report-id", rid, "--result-path", str(mutation_path)])
+    if include_identifier:
+        ok = proc["rc"] == 0
+        name = "fake_real_agent_result_valid"
+        expected = "validate result PASS"
+    else:
+        token = "BLOCK_REVISION_COUNCIL_AGENTIC_REAL_AGENT_IDENTIFIER_MISSING"
+        ok = proc["rc"] == 1 and token in (proc["stdout_tail"] + proc["stderr_tail"])
+        name = "fake_real_agent_missing_identifier_block"
+        expected = token
+    return result(name, ok, expected, {"validate": proc, "result_path": str(mutation_path)})
+
+
+def build_dispatch(root: Path, rid: str, runtime: str = "unknown") -> list[dict[str, Any]]:
+    return [
+        run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_revision_council_packet.py", "--report-id", rid]),
+        run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", rid, "--executor", "dispatch_manifest", "--runtime-dispatch", runtime]),
+        run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py", "--report-id", rid]),
+        run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py", "--report-id", rid]),
+    ]
+
+
+def case_finalize_missing_result(root: Path) -> dict[str, Any]:
+    rid = REPORT_MECHANISM_UNCLEAR
+    runs = build_dispatch(root, rid)
+    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/finalize_agentic_council_dispatch.py", "--report-id", rid])
+    token = "BLOCK_AGENTIC_COUNCIL_COLLECTION_MISSING"
+    ok = all(item["rc"] == 0 for item in runs) and proc["rc"] == 1 and token in (proc["stdout_tail"] + proc["stderr_tail"])
+    return result("finalize_missing_required_result_block", ok, token, {"setup_runs": runs, "finalize": proc})
+
+
+def case_finalize_all_real_agent_results(root: Path) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    runs = build_dispatch(root, rid)
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    for task in manifest.get("agent_tasks") or []:
+        payload = fake_real_agent_result(root, rid, task, include_identifier=True)
+        write_json(root / task["expected_result_path"], payload)
+    collect = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/collect_agentic_council_results.py", "--report-id", rid])
+    before_code = directory_digest(root / "generated_code" / rid)
+    before_clean = directory_digest(root / "data" / "clean")
+    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/finalize_agentic_council_dispatch.py", "--report-id", rid])
+    after_code = directory_digest(root / "generated_code" / rid)
+    after_clean = directory_digest(root / "data" / "clean")
+    summary = load_json(council_dir(root, rid) / f"revision_council_summary__{rid}.json")
+    iteration = load_json(root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json")
+    final = (((iteration.get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
+    selected_ids = final.get("selected_council_proposal_ids") or []
+    ok = (
+        all(item["rc"] == 0 for item in runs)
+        and collect["rc"] == 0
+        and proc["rc"] == 0
+        and summary.get("selection_source") == "agentic_results"
+        and len(summary.get("valid_agent_results") or []) == 5
+        and final.get("source") == "revision_council"
+        and selected_ids
+        and all(isinstance(item, str) and item.startswith("agent_") for item in selected_ids)
+        and not (root / "objects" / "handoff" / f"handoff_to_step3b__{rid}.json").exists()
+        and not (root / "objects" / "factor_library_official" / f"factor_record__{rid}.json").exists()
+        and before_code == after_code
+        and before_clean == after_clean
+    )
+    return result(
+        "finalize_all_fake_real_agent_results_pass",
+        ok,
+        "finalize validates, merges, attaches, and preserves canonical write boundaries",
+        {
+            "setup_runs": runs,
+            "collect": collect,
+            "finalize": proc,
+            "selection_source": summary.get("selection_source"),
+            "valid_agent_results": len(summary.get("valid_agent_results") or []),
+            "selected_ids": selected_ids,
+            "generated_code_unchanged": before_code == after_code,
+            "data_clean_unchanged": before_clean == after_clean,
+        },
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fresh", action="store_true")
+    parser.add_argument("--root", default=f"/tmp/factorforge_agentic_council_dispatch_{int(time.time())}")
+    args = parser.parse_args()
+    root = Path(args.root).expanduser().resolve()
+    if not is_tmp(root):
+        print("BLOCK_NON_TMP_FACTORFORGE_ROOT")
+        return 1
+    if args.fresh and root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+    before = file_snapshot()
+    cases: list[dict[str, Any]] = []
+    fixture = setup_fixtures(root)
+    cases.append(result("step6_intelligence_fixture", fixture["rc"] == 0, "fixture setup", {"fixture": fixture}))
+    if fixture["rc"] == 0:
+        cases.append(case_dispatch_happy(root))
+        cases.append(case_dispatch_runtime_policy(root, "codex"))
+        cases.append(case_dispatch_runtime_policy(root, "openclaw"))
+        cases.append(case_dispatch_runtime_policy(root, "unknown", provider="minimax", model="MiniMax-M2.7"))
+        run_ultimate_dispatch(root, REPORT_ALPHA013_LIKE)
+        cases.append(
+            mutate_dispatch_manifest_policy_case(
+                root,
+                "dispatch_invalid_runtime_block",
+                lambda policy: policy.update({"runtime": "invalid_runtime"}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_RUNTIME_INVALID",
+            )
+        )
+        cases.append(
+            mutate_dispatch_manifest_policy_case(
+                root,
+                "dispatch_provider_required_block",
+                lambda policy: policy.update({"provider_required_by_factor_forge": True}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_PROVIDER_REQUIRED_BY_FACTOR_FORGE",
+            )
+        )
+        cases.append(
+            mutate_dispatch_manifest_policy_case(
+                root,
+                "dispatch_external_provider_without_override_block",
+                lambda policy: policy.update({"external_provider_selection_allowed": True, "manual_provider_override": None}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_EXTERNAL_PROVIDER_SELECTION_WITHOUT_OVERRIDE",
+            )
+        )
+        cases.append(
+            mutate_dispatch_manifest_policy_case(
+                root,
+                "dispatch_override_missing_reason_block",
+                lambda policy: policy.update({"manual_provider_override": {"provider": "minimax"}}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_MANUAL_PROVIDER_OVERRIDE_REASON_INVALID",
+            )
+        )
+        cases.append(
+            mutate_dispatch_case(
+                root,
+                "dispatch_missing_task_packet_block",
+                lambda packet, path: path.unlink(),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_PACKET_MISSING",
+            )
+        )
+        cases.append(
+            mutate_dispatch_case(
+                root,
+                "dispatch_result_path_outside_scope_block",
+                lambda packet, path: packet.update({"expected_result_path": "objects/research_iteration_master/bad_result.json"}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_RESULT_PATH_OUTSIDE_SCOPE",
+            )
+        )
+        cases.append(
+            mutate_dispatch_case(
+                root,
+                "dispatch_task_canonical_write_permission_block",
+                lambda packet, path: packet.update({"canonical_write_permission": True}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_CANONICAL_WRITE_PERMISSION",
+            )
+        )
+        cases.append(
+            mutate_dispatch_case(
+                root,
+                "dispatch_task_execution_allowed_block",
+                lambda packet, path: packet.update({"execution_allowed_by_default": True}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_EXECUTION_ALLOWED_BY_DEFAULT",
+            )
+        )
+        cases.append(
+            mutate_dispatch_case(
+                root,
+                "dispatch_missing_required_output_block",
+                lambda packet, path: packet.update({"required_outputs": ["public_derivation_record"]}),
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_REQUIRED_OUTPUTS_MISSING",
+            )
+        )
+        cases.append(case_fake_real_agent_result(root, include_identifier=True))
+        cases.append(case_fake_real_agent_result(root, include_identifier=False))
+        cases.append(case_finalize_missing_result(root))
+        cases.append(case_finalize_all_real_agent_results(root))
+    after = file_snapshot()
+    polluted = pollution_matches(after - before)
+    summary = {
+        "verdict": "ACCEPT" if all(item["ok"] for item in cases) and not polluted else "BLOCK",
+        "root_policy": {"factorforge_root": str(root), "is_tmp": True, "enforced": True},
+        "cases": cases,
+        "canonical_pollution": {"polluted": bool(polluted), "new_files": polluted},
+        "notes": [
+            "Synthetic /tmp-only agentic Council dispatch contract smoke.",
+            "No real external subagents, search workers, clean-data processing, Step3B handoff, or official promotion.",
+        ],
+    }
+    out = root / "agentic_council_dispatch_smoke_summary.json"
+    write_json(out, summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"[SUMMARY] {out}")
+    return 0 if summary["verdict"] == "ACCEPT" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

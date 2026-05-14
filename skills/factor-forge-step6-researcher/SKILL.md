@@ -83,3 +83,19 @@ Direct `skills/factor-forge-step6/scripts/run_step6.py` or `validate_step6.py` c
 ## Output Contract
 
 Use `references/researcher-memo-schema.md`.
+
+## Provenance Strengthening
+
+- No provenance, no archive; no evidence identity, no promotion. Researcher memos must preserve which factor, report, branch, run, implementation mode, hash chain, Step4 evidence, and Step3B mode decision produced the conclusion.
+- Similar case knowledge is only analogy unless artifact identity matches. Mark imported lessons as similar-case priors, not same-factor evidence.
+- Iterate recommendations must create child-branch lineage and must not overwrite `main`; include parent identity, revision target, must-preserve fields, must-change fields, and forbidden changes.
+
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.

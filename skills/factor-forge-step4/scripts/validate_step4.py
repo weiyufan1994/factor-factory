@@ -4,15 +4,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FACTORFORGE / 'objects'
 ALLOWED = {'success', 'partial', 'failed'}
+
+from factor_factory.artifact_identity import assert_identity_matches_strict
 
 
 def utc_now() -> str:
@@ -27,6 +32,18 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'[WRITE] {path}')
+
+
+def identity_or_issue(label: str, payload: dict[str, Any], issues: list[dict[str, Any]]) -> dict[str, Any]:
+    identity = payload.get('artifact_identity') or {}
+    required = ['report_id', 'factor_id', 'source_type', 'implementation_mode', 'contract_version', 'producer', 'spec_hash', 'branch_id', 'artifact_role']
+    if not isinstance(identity, dict) or not identity:
+        issues.append({'severity': 'error', 'code': f'{label.upper()}_ARTIFACT_IDENTITY_MISSING', 'message': f'{label}.artifact_identity missing'})
+        return {}
+    missing = [key for key in required if not identity.get(key)]
+    if missing:
+        issues.append({'severity': 'error', 'code': f'{label.upper()}_ARTIFACT_IDENTITY_INCOMPLETE', 'message': f'{label}.artifact_identity missing fields', 'evidence': {'missing': missing}})
+    return identity
 
 
 def main() -> None:
@@ -49,6 +66,23 @@ def main() -> None:
     handoff = load_json(handoff_path)
 
     issues: list[dict[str, Any]] = []
+    run_identity = identity_or_issue('factor_run_master', run_master, issues)
+    handoff_identity = identity_or_issue('handoff_to_step5', handoff, issues)
+    if run_identity and handoff_identity:
+        try:
+            assert_identity_matches_strict(
+                run_identity,
+                handoff_identity,
+                expected_label='factor_run_master',
+                actual_label='handoff_to_step5',
+                allowed_role_transitions={('factor_run_master', 'handoff_to_step5')},
+            )
+        except AssertionError as exc:
+            issues.append({'severity': 'error', 'code': 'STEP4_ARTIFACT_IDENTITY_MISMATCH', 'message': str(exc)})
+        if run_identity.get('artifact_role') != 'factor_run_master':
+            issues.append({'severity': 'error', 'code': 'STEP4_RUN_MASTER_ROLE_INVALID', 'message': f"factor_run_master artifact_role={run_identity.get('artifact_role')}"})
+        if handoff_identity.get('artifact_role') != 'handoff_to_step5':
+            issues.append({'severity': 'error', 'code': 'STEP4_HANDOFF_ROLE_INVALID', 'message': f"handoff_to_step5 artifact_role={handoff_identity.get('artifact_role')}"})
     proposed_status = run_master.get('run_status')
 
     if proposed_status not in ALLOWED:
@@ -97,6 +131,14 @@ def main() -> None:
         issues.append({'severity': 'error', 'code': 'MISSING_BACKEND_RUNS', 'message': 'factor_run_master must expose evaluation_results.backend_runs'})
         proposed_status = 'failed'
     else:
+        successful_backends = [item for item in backend_runs if item.get('status') in {'success', 'partial'}]
+        if not successful_backends:
+            issues.append({'severity': 'error', 'code': 'BLOCK_NO_SUCCESSFUL_BACKEND', 'message': 'Step4 must have at least one successful or partial backend; all-skipped/all-failed evidence cannot pass'})
+            proposed_status = 'failed'
+        self_quant = next((item for item in backend_runs if item.get('backend') == 'self_quant_analyzer' or item.get('name') == 'self_quant_analyzer'), None)
+        if not self_quant or self_quant.get('status') not in {'success', 'partial'}:
+            issues.append({'severity': 'error', 'code': 'BLOCK_MISSING_SELF_QUANT_EVIDENCE', 'message': 'formal Step4 requires self_quant_analyzer success/partial long-only evidence'})
+            proposed_status = 'failed'
         for item in backend_runs:
             if item.get('status') not in {'success', 'partial', 'failed', 'skipped'}:
                 issues.append({'severity': 'error', 'code': 'INVALID_BACKEND_STATUS', 'message': 'backend run status must be explicit', 'evidence': item})
@@ -166,14 +208,26 @@ def main() -> None:
                         long_side = payload.get('long_side_performance') or {}
                         required_long_side_fields = [
                             'long_side_annual_return',
+                            'long_side_annual_volatility',
                             'long_side_sharpe',
                             'long_side_max_drawdown',
                             'long_side_recovery_days',
                             'long_side_turnover_mean_daily',
+                            'turnover',
                             'trading_cogs_daily',
+                            'trading_cogs',
                             'cost_adjusted_long_side_sharpe',
                         ]
-                        missing_long_side = [key for key in required_long_side_fields if long_side.get(key) is None]
+                        aliases = {
+                            'long_side_turnover_mean_daily': ['long_side_turnover_mean_daily', 'turnover'],
+                            'turnover': ['turnover', 'long_side_turnover_mean_daily'],
+                            'trading_cogs_daily': ['trading_cogs_daily', 'trading_cogs'],
+                            'trading_cogs': ['trading_cogs', 'trading_cogs_daily'],
+                        }
+                        missing_long_side = [
+                            key for key in required_long_side_fields
+                            if all(long_side.get(alias) is None for alias in aliases.get(key, [key]))
+                        ]
                         if missing_long_side:
                             issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_EVIDENCE_MISSING', 'message': 'self_quant_analyzer must emit complete long-side risk-adjusted evidence', 'evidence': {'missing': missing_long_side}})
                             proposed_status = 'failed'

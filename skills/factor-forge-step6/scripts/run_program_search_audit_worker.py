@@ -248,15 +248,27 @@ def main() -> None:
     branch_id = args.branch_id
     plan_path = OBJ / 'research_iteration_master' / f'program_search_plan__{rid}.json'
     ledger_path = OBJ / 'research_iteration_master' / f'search_branch_ledger__{rid}.json'
-    taskbook_path = OBJ / 'research_iteration_master' / f'search_branch_taskbook__{rid}__{branch_id}.json'
+    branch_root = FF / 'research_branches' / rid / branch_id
+    taskbook_path = branch_root / 'branch_taskbook.json'
+    manifest_path = branch_root / 'branch_manifest.json'
+    approval_path = OBJ / 'research_iteration_master' / f'search_branch_approval__{rid}__{branch_id}.json'
     if not plan_path.exists():
         raise SystemExit(f'AUDIT_WORKER_INVALID: missing program search plan {plan_path}')
     plan = load_json(plan_path)
     branch = find_branch(plan, branch_id)
     if branch.get('branch_role') != 'audit':
         raise SystemExit(f'AUDIT_WORKER_INVALID: branch {branch_id} is not an audit branch')
-    if not args.allow_unapproved and ((branch.get('approval') or {}).get('status') != 'approved') and not taskbook_path.exists():
-        raise SystemExit('AUDIT_WORKER_APPROVAL_REQUIRED: approve and prepare the audit branch, or pass --allow-unapproved for smoke/audit-only diagnostics')
+    if not args.allow_unapproved:
+        if not approval_path.exists():
+            raise SystemExit(f'AUDIT_WORKER_APPROVAL_REQUIRED: missing approval {approval_path}')
+        approval = load_json(approval_path)
+        if approval.get('approval_status') != 'approved':
+            raise SystemExit(f'AUDIT_WORKER_APPROVAL_REQUIRED: approval_status={approval.get("approval_status")}')
+        if not manifest_path.exists():
+            raise SystemExit(f'AUDIT_WORKER_PREP_REQUIRED: missing prepared manifest {manifest_path}')
+        manifest = load_json(manifest_path)
+        if manifest.get('branch_status') != 'prepared':
+            raise SystemExit(f'AUDIT_WORKER_PREP_REQUIRED: branch_status={manifest.get("branch_status")}')
 
     issues: list[dict[str, Any]] = []
     artifacts: list[str] = []
@@ -327,11 +339,17 @@ def main() -> None:
         'report_id': rid,
         'branch_id': branch_id,
         'parent_plan_path': str(plan_path),
+        'source_approval_path': str(approval_path) if approval_path.exists() else None,
+        'prepared_manifest_path': str(manifest_path) if manifest_path.exists() else None,
         'branch_role': branch.get('branch_role'),
         'search_mode': branch.get('search_mode'),
+        'result_status': status,
         'status': status,
+        'advisory_only': True,
+        'canonical_write_permission': False,
         'outcome': outcome,
         'recommendation': recommendation,
+        'recommended_next_action': 'needs_human_review' if recommendation in {'keep_exploring', 'repair_workflow_first', 'needs_human_review'} else 'reject_branch',
         'created_at_utc': utc_now(),
         'research_question': branch.get('research_question'),
         'branch_hypothesis': branch.get('hypothesis'),
@@ -339,6 +357,10 @@ def main() -> None:
         'market_structure_hypothesis': branch.get('market_structure_hypothesis'),
         'knowledge_priors': branch.get('knowledge_priors'),
         'researcher_summary': summary,
+        'research_assessment_text': summary,
+        'falsification_result': falsification_result,
+        'overfit_assessment': overfit_assessment,
+        'evidence_or_failure_signature': '; '.join([row['code'] for row in errors]) or '; '.join([row['code'] for row in warnings]) or 'audit_no_blocking_issue',
         'research_assessment': {
             'return_source_preserved_or_challenged': 'audit_preserves_step6_return_source_hypothesis_unless_evidence_chain_is_blocked',
             'market_structure_lesson': 'audit_worker checks whether evidence is clean enough before market-structure or formula search.',
@@ -366,10 +388,22 @@ def main() -> None:
         },
         'selection_protocol_snapshot': plan.get('selection_protocol') or {},
         'human_approval_required_before_canonicalization': True,
+        'requires_human_approval_for_any_code_change': True,
+        'proposed_expression_change': None,
+        'proposed_step3b_patch': None,
+        'branch_output_paths': [str(branch_root / 'branch_worker_output.json')],
+        'forbidden_actions_confirmed': [
+            'no_portfolio_expression_repair',
+            'no_short_leg_adoption',
+            'no_decile_trading',
+            'no_shared_clean_data_mutation',
+        ],
+        'write_scope_observed': True,
         'producer': 'program_search_audit_worker_v1',
     }
     out = OBJ / 'research_iteration_master' / f'search_branch_result__{rid}__{branch_id}.json'
     write_json(out, result)
+    write_json(branch_root / 'branch_worker_output.json', result)
     update_ledger(ledger_path, branch_id, out, status, outcome)
     print(f'RESULT: {status.upper()} {outcome} {recommendation}')
     if errors:

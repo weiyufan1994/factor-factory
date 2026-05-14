@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, importlib.util, json
+import argparse, hashlib, importlib.util, json
 import os
 import re
 import sys
@@ -23,7 +23,50 @@ CODEGEN = FF / 'generated_code'
 RUNS = FF / 'runs'
 
 from factor_factory.data_access import infer_signal_column, normalize_trade_date_series
+from factor_factory.artifact_identity import assert_identity_matches, stable_hash
+from factor_factory.factor_families.base import FAMILY_PLUGIN_PRODUCER
+from factor_factory.factor_families.registry import (
+    FamilyPluginContractError,
+    explicit_plugin_identity_fields,
+    has_family_plugin_declaration,
+    resolve_family_plugin,
+)
+from factor_factory.formula.pandas_codegen import generate_pandas_formula_code, operator_metadata
+from factor_factory.formula.parser import resolve_formula_fields_for_schema
+from factor_factory.formula.qlib_codegen import to_qlib_expression
+from factor_factory.formula.registry import operator_meta
+from factor_factory.formula.evaluator import evaluate_formula_frame
+from factor_factory.formula.parity import compare_outputs, make_operator_fixture
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+
+MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
+HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
+FORBIDDEN_CUSTOM_BLOCK_PATTERNS = [
+    r'shift\s*\(\s*-\d+',
+    r'\bfuture_return\b',
+    r'\bnext_return\b',
+    r'\bforward_return\b',
+    r'\blabel\b',
+    r'\btarget\b',
+    r'\by_true\b',
+    r'\bfuture_',
+    r'\blead\s*\(',
+    r'\blookahead\b',
+]
+DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
+    'ts_code',
+    'trade_date',
+    'open',
+    'high',
+    'low',
+    'close',
+    'volume',
+    'vol',
+    'amount',
+    'pct_chg',
+    'returns',
+    'return',
+]
 
 
 def utc_now() -> str:
@@ -84,6 +127,133 @@ def resolve_step_runtime_python() -> str:
 
 def load_json(p: Path):
     return json.loads(p.read_text(encoding='utf-8'))
+
+
+def nested_path(data: dict | None, *keys: str) -> Path | None:
+    current = data or {}
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return Path(current).expanduser() if current else None
+
+
+def require_formal_manifest(manifest: dict | None) -> None:
+    if os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1' and not manifest:
+        raise SystemExit('BLOCKED_MISSING_RUNTIME_MANIFEST: formal Step3B requires explicit runtime manifest paths and manifest_identity.')
+
+
+def load_manifest_identity(manifest: dict | None) -> dict:
+    return (manifest or {}).get('manifest_identity') or {}
+
+
+def assert_spec_identity_matches_manifest(spec: dict, manifest: dict | None) -> dict:
+    identity = spec.get('artifact_identity') or {}
+    if not identity:
+        raise SystemExit('BLOCKED_MISSING_ARTIFACT_IDENTITY: factor_spec_master.artifact_identity is required.')
+    manifest_identity = load_manifest_identity(manifest)
+    if manifest is not None:
+        if not manifest_identity:
+            raise SystemExit('BLOCKED_MISSING_MANIFEST_IDENTITY: runtime manifest must carry manifest_identity.')
+        try:
+            assert_identity_matches(identity, manifest_identity, left_label='factor_spec_master', right_label='manifest')
+        except AssertionError as exc:
+            raise SystemExit(f'BLOCKED_ARTIFACT_IDENTITY_MISMATCH: {exc}') from exc
+    return identity
+
+
+def derive_child_identity(parent: dict, *, artifact_role: str, producer: str, code_hash: str | None = None, family_fields: dict | None = None) -> dict:
+    out = dict(parent)
+    out['artifact_role'] = artifact_role
+    out['producer'] = producer
+    out['code_hash'] = code_hash or out.get('code_hash')
+    if family_fields:
+        out.update(family_fields)
+    return out
+
+
+def build_mode_decision_start(spec_identity: dict, spec: dict) -> dict:
+    mode = spec_identity.get('implementation_mode') or spec.get('implementation_mode')
+    decision = {
+        'decision_version': MODE_DECISION_VERSION,
+        'selected_mode': 'blocked',
+        'requested_mode': mode,
+        'operator_attempted': False,
+        'operator_result': 'not_applicable',
+        'operator_failure_reason': None,
+        'hybrid_attempted': False,
+        'hybrid_result': 'not_applicable',
+        'hybrid_failure_reason': None,
+        'direct_code_attempted': False,
+        'direct_code_result': 'not_applicable',
+        'direct_code_failure_reason': None,
+        'final_decision_reason': None,
+        'correctness_risk': 'high',
+        'human_review_required': True,
+    }
+    if mode == 'operator':
+        decision['operator_attempted'] = True
+        decision['operator_result'] = 'failed'
+    elif mode == 'hybrid':
+        decision['operator_attempted'] = True
+        decision['operator_result'] = 'not_applicable'
+        decision['operator_failure_reason'] = 'Step2 selected hybrid mode; operator-only implementation was not applicable to this contract.'
+        decision['hybrid_attempted'] = True
+        decision['hybrid_result'] = 'failed'
+    elif mode == 'direct_code':
+        decision['operator_attempted'] = True
+        decision['operator_result'] = 'not_applicable'
+        decision['operator_failure_reason'] = 'Step2 selected direct_code mode; operator implementation was not applicable to this contract.'
+        decision['hybrid_attempted'] = True
+        decision['hybrid_result'] = 'not_applicable'
+        decision['hybrid_failure_reason'] = 'Step2 selected direct_code mode; hybrid implementation was not applicable to this contract.'
+        decision['direct_code_attempted'] = True
+        decision['direct_code_result'] = 'failed'
+    else:
+        decision['final_decision_reason'] = f'Unsupported implementation_mode: {mode}'
+    return decision
+
+
+def finalize_mode_decision_success(decision: dict, selected_mode: str, reason: str) -> dict:
+    out = dict(decision)
+    out['selected_mode'] = selected_mode
+    out['correctness_risk'] = 'medium' if selected_mode == 'direct_code' else 'low'
+    out['human_review_required'] = selected_mode in {'direct_code', 'hybrid'}
+    out['final_decision_reason'] = reason
+    if selected_mode == 'operator':
+        out['operator_attempted'] = True
+        out['operator_result'] = 'success'
+        out['operator_failure_reason'] = None
+    elif selected_mode == 'hybrid':
+        out['hybrid_attempted'] = True
+        out['hybrid_result'] = 'success'
+        out['hybrid_failure_reason'] = None
+    elif selected_mode == 'direct_code':
+        out['direct_code_attempted'] = True
+        out['direct_code_result'] = 'success'
+        out['direct_code_failure_reason'] = None
+    return out
+
+
+def finalize_mode_decision_blocked(decision: dict, mode: str | None, reason: str) -> dict:
+    out = dict(decision)
+    out['selected_mode'] = 'blocked'
+    out['correctness_risk'] = 'high'
+    out['human_review_required'] = True
+    out['final_decision_reason'] = reason
+    if mode == 'operator':
+        out['operator_attempted'] = True
+        out['operator_result'] = 'failed'
+        out['operator_failure_reason'] = reason
+    elif mode == 'hybrid':
+        out['hybrid_attempted'] = True
+        out['hybrid_result'] = 'failed'
+        out['hybrid_failure_reason'] = reason
+    elif mode == 'direct_code':
+        out['direct_code_attempted'] = True
+        out['direct_code_result'] = 'failed'
+        out['direct_code_failure_reason'] = reason
+    return out
 
 
 def write_json(p: Path, data):
@@ -285,6 +455,8 @@ def generate_first_run_factor_values(
     implementation_path: Path,
     local_inputs: dict,
     step2_research_context: dict,
+    mode_decision: dict | None = None,
+    artifact_identity: dict | None = None,
 ) -> dict:
     """Run only the factor implementation and materialize factor_values.
 
@@ -311,7 +483,10 @@ def generate_first_run_factor_values(
 
     minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
     daily_df = read_df(daily_path)
-    result_df = module.compute_factor(minute_df, daily_df)
+    try:
+        result_df = module.compute_factor(daily_df=daily_df, minute_df=minute_df)
+    except TypeError:
+        result_df = module.compute_factor(minute_df, daily_df)
     if result_df is None or len(result_df) == 0:
         raise SystemExit('Step3B first-run implementation returned empty factor values')
     if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
@@ -333,6 +508,7 @@ def generate_first_run_factor_values(
     metadata = {
         'report_id': report_id,
         'factor_id': factor_id,
+        'artifact_identity': derive_child_identity(artifact_identity or {}, artifact_role='step3b_first_run_metadata', producer='step3b_first_run') if artifact_identity else None,
         'producer': 'step3b_first_run',
         'implementation_path': str(implementation_path),
         'signal_column': signal_col,
@@ -348,6 +524,7 @@ def generate_first_run_factor_values(
             'daily': str(daily_path),
         },
         'step2_research_context': step2_research_context,
+        'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
         'boundary_note': 'Step3B first-run produced factor values only; Step4 owns IC/NAV/backtest evaluation.',
     }
@@ -370,315 +547,522 @@ def signal_column_name(factor_id: str | None) -> str:
     return raw if raw.endswith('_factor') else f'{raw}_factor'
 
 
-def build_cpv_artifacts(report_id: str, prep: dict, spec: dict):
-    factor_id = spec.get('factor_id', 'CPV')
-    signal_col = signal_column_name(factor_id)
-    canonical = spec.get('canonical_spec', {})
-    sample = prep.get('sample_window', {})
+def _add_schema_value(columns: set[str], value) -> None:
+    if not value:
+        return
+    if isinstance(value, str):
+        columns.add(value)
+    elif isinstance(value, dict):
+        for key in ['name', 'column', 'field', 'actual_column']:
+            if value.get(key):
+                columns.add(str(value[key]))
 
-    # Step 3B exports both:
-    # 1) plan/schema objects consumed by downstream steps
-    # 2) editable code artifacts meant for IDE-side collaboration
+
+def explicit_step3a_schema_columns(prep: dict) -> list[str]:
+    columns: set[str] = set()
+    candidate_keys = [
+        'available_columns',
+        'clean_data_columns',
+        'daily_columns',
+        'daily_df_columns',
+        'resolved_columns',
+    ]
+    for key in candidate_keys:
+        value = prep.get(key)
+        if isinstance(value, list):
+            for item in value:
+                _add_schema_value(columns, item)
+    for key in ['daily_schema', 'schema', 'field_schema']:
+        value = prep.get(key)
+        if isinstance(value, dict):
+            columns.update(str(item) for item in value.keys() if item)
+        elif isinstance(value, list):
+            for item in value:
+                _add_schema_value(columns, item)
+    for key in ['field_mappings', 'resolved_fields']:
+        value = prep.get(key)
+        if isinstance(value, dict):
+            columns.update(str(item) for item in value.values() if item)
+    return sorted(columns)
+
+
+def read_snapshot_columns(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    suffix = path.suffix.lower()
+    if suffix == '.parquet':
+        try:
+            import pyarrow.parquet as pq
+            return list(pq.read_schema(path).names)
+        except Exception:
+            import pandas as pd
+            return list(pd.read_parquet(path).head(0).columns)
+    import pandas as pd
+    return list(pd.read_csv(path, nrows=0).columns)
+
+
+def local_snapshot_schema_columns(prep: dict) -> list[str]:
+    local_inputs = prep.get('local_input_paths') or {}
+    daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+    columns: set[str] = set()
+    for raw in [daily_rel, minute_rel]:
+        path = resolve_local_input_path(raw)
+        if path and path.exists():
+            columns.update(read_snapshot_columns(path))
+    return sorted(columns)
+
+
+def infer_operator_schema(prep: dict) -> dict:
+    explicit_columns = explicit_step3a_schema_columns(prep)
+    if explicit_columns:
+        return {'columns': explicit_columns, 'source': 'step3a_schema', 'strict': True}
+    snapshot_columns = local_snapshot_schema_columns(prep)
+    if snapshot_columns:
+        return {'columns': snapshot_columns, 'source': 'local_snapshot_schema', 'strict': True}
+    return {'columns': list(DEFAULT_OPERATOR_SCHEMA_COLUMNS), 'source': 'default_plan_schema', 'strict': False}
+
+
+def pending_first_run_outputs(reason: str) -> dict:
+    return {
+        'status': 'pending',
+        'no_first_run_reason': reason,
+        'factor_values_path': None,
+        'output_paths': [],
+        'run_metadata_path': None,
+        'producer': 'step3b',
+    }
+
+
+def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: dict):
+    canonical = spec.get('canonical_spec') or {}
+    factor_id = spec.get('factor_id') or report_id
+    formula_ir = canonical.get('formula_ir')
+    if not isinstance(formula_ir, dict):
+        raise SystemExit('BLOCK_UNSUPPORTED_OPERATOR_MODE: operator Step3B requires formula_ir.')
+    if formula_ir.get('parse_status') != 'success':
+        raise SystemExit(
+            'BLOCK_UNSUPPORTED_FORMULA_SYNTAX: '
+            + '; '.join(str(item) for item in (formula_ir.get('parse_errors') or ['formula_ir parse failed']))
+        )
+    operator_schema = infer_operator_schema(prep)
+    try:
+        resolved_ir = resolve_formula_fields_for_schema(formula_ir, operator_schema['columns'])
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+    for operator in resolved_ir.get('operator_set') or []:
+        meta = operator_meta(str(operator))
+        if meta.get('supports_pandas') is not True:
+            raise SystemExit(f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}')
+    if identity.get('formula_hash') and identity.get('formula_hash') != resolved_ir.get('formula_hash'):
+        raise SystemExit(
+            'BLOCK_OPERATOR_FORMULA_HASH_MISMATCH: '
+            f"identity={identity.get('formula_hash')} formula_ir={resolved_ir.get('formula_hash')}"
+        )
+
+    qlib_expression = to_qlib_expression(resolved_ir)
+    metadata = {
+        **operator_metadata(resolved_ir),
+        'implementation_mode': 'operator',
+        'implementation_source': 'formula_ir_pandas_codegen',
+        'qlib_expression': qlib_expression,
+    }
+    python_stub = generate_pandas_formula_code(report_id=report_id, factor_id=factor_id, formula_ir=resolved_ir)
     implementation_plan = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'implementation_mode': 'hybrid',
-        'rationale': [
-            '分钟级相关性计算与多段残差剥离更适合 direct_python',
-            '字段组织与后续数据访问可尽量靠近 qlib 标准层',
-            '因此当前最佳路径为 hybrid'
-        ],
-        'inputs': {
-            'minute_dataset': 'tushare_minute_bars',
-            'daily_dataset': 'tushare_daily_bars',
-            'sample_window': sample,
-            'required_fields': ['ts_code', 'trade_date', 'trade_time', 'close', 'vol', 'amount', 'pct_chg']
-        },
-        'proxy_rules': prep.get('proxy_rules', []),
-        'calculation_steps': [
-            '读取分钟级行情，按股票和交易日组织',
-            '计算单日分钟 price-volume 相关系数',
-            '构造 PV_corr_avg / market_corr / trend 信号',
-            '对 amount 代理的规模项做中性化',
-            '生成最终 CPV 因子值'
-        ],
-        'code_artifacts': {
-            'python_stub': f'factor_impl_stub__{report_id}.py',
-            'qlib_expression_draft': f'qlib_expression_draft__{report_id}.json',
-            'hybrid_execution_scaffold': f'hybrid_execution_scaffold__{report_id}.json'
-        },
+        'producer': 'step3b_operator_formula_codegen',
+        'implementation_mode': 'operator',
+        'implementation_status': 'ready',
+        'formula_ir': resolved_ir,
+        'formula_hash': resolved_ir.get('formula_hash'),
+        'operator_set': resolved_ir.get('operator_set') or [],
+        'required_fields': resolved_ir.get('required_fields') or [],
+        'resolved_fields': resolved_ir.get('resolved_fields') or {},
+        'operator_schema': operator_schema,
+        'qlib_expression': qlib_expression,
+        'metadata': metadata,
+        'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
         'step4_contract': {
-            'runner_entry': f'generated_code/{report_id}/factor_impl_stub__{report_id}.py',
-            'execution_mode': 'hybrid',
-            'expected_outputs': [
-                f'factorforge/runs/{report_id}/factor_values__{report_id}.parquet',
-                f'factorforge/runs/{report_id}/factor_values__{report_id}.csv',
-                f'factorforge/runs/{report_id}/run_metadata__{report_id}.json',
-                f'factorforge/objects/factor_run_master/factor_run_master__{report_id}.json'
-            ]
+            'execution_mode': 'operator',
+            'runner_entry': None,
+            'expected_outputs': ['factor_values'],
         },
-        'first_run_outputs': {
-            'status': 'pending',
-            'output_paths': [],
-            'run_metadata_path': None,
-            'producer': 'step3b'
-        }
+        'first_run_outputs': pending_first_run_outputs('no_local_snapshots_available'),
     }
-
-    python_stub = f'''"""\nAuto-generated Step 3B factor implementation stub for {factor_id}.\nThis file is intended for IDE-side editing before Step 4 execution.\n"""\n\nfrom pathlib import Path\nimport pandas as pd\nimport numpy as np\n\nREPORT_ID = {report_id!r}\nFACTOR_ID = {factor_id!r}\nSIGNAL_COLUMN = {signal_col!r}\n\n# CONTEXT:\n# - This module is generated by Step 3B and then edited in Cursor/Trae with human review.\n# - Step 4 will import compute_factor() directly, so this file is execution-critical.\n\n# CONTRACT:\n# - Input columns must follow Step 3A normalized mapping.\n# - Output schema must be: ['ts_code', 'trade_date', SIGNAL_COLUMN].\n# - Function must stay deterministic for the same input snapshot.\n\n# RISK:\n# - `amount` is currently used as a proxy for missing market_cap/turnover fields.\n# - Any proxy change must be reflected in Step 2/3 specs to keep lineage auditable.\n\n\ndef load_inputs(minute_df: pd.DataFrame, daily_df: pd.DataFrame):\n    \"\"\"Step 3A has already resolved paths / fields / proxies.\n    Step 4 should pass normalized DataFrames into this implementation.\n    \"\"\"\n    return minute_df.copy(), daily_df.copy()\n\n\ndef compute_factor(minute_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd.DataFrame:\n    \"\"\"CPV hybrid implementation skeleton.\n\n    To be refined in IDE before Step 4 execution.\n    Current design:\n    1. minute-level price-volume correlation\n    2. aggregate daily signals\n    3. amount-based neutralization proxy\n    4. trend signal\n    5. equal-weight merge\n    \"\"\"\n    required_minute = ['ts_code', 'trade_date', 'trade_time', 'close', 'vol', 'amount']\n    required_daily = ['ts_code', 'trade_date', 'pct_chg', 'vol', 'amount']\n    for c in required_minute:\n        if c not in minute_df.columns:\n            raise KeyError(f'missing minute column: {{c}}')\n    for c in required_daily:\n        if c not in daily_df.columns:\n            raise KeyError(f'missing daily column: {{c}}')\n\n    # Keep empty-by-default output so reviewer can safely fill logic in IDE.\n    out = pd.DataFrame(columns=['ts_code', 'trade_date', SIGNAL_COLUMN])\n    return out\n\n\ndef main():\n    raise SystemExit('This is a Step 3B generated stub. Edit in IDE, then invoke from Step 4 runner.')\n\n\nif __name__ == '__main__':\n    main()\n'''
-
-    qlib_expression = {
+    qlib_payload = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'status': 'draft',
-        'mode': 'hybrid_only',
-        'reason': 'CPV contains minute-level correlation and residualization; qlib expression can cover field semantics but not the full logic cleanly.',
-        'candidate_expression_parts': {
-            'daily_return': '$ret',
-            'daily_volume': '$volume',
-            'daily_amount': '$amount'
-        },
-        'non_qlib_parts': [
-            'minute-level price-volume correlation',
-            'cross-step residualization chain',
-            'trend merge logic'
-        ]
+        'implementation_mode': 'operator',
+        'implementation_source': 'formula_ir_pandas_codegen',
+        'formula_ir': resolved_ir,
+        'operator_schema': operator_schema,
+        'qlib_expression': qlib_expression,
+        'metadata': metadata,
     }
-
     hybrid_scaffold = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'execution_mode': 'hybrid',
-        'data_layer': 'Step 3A qlib-normalized adapter',
-        'compute_layer': {
-            'python_required': [
-                'minute-level corr',
-                'cross-sectional neutralization',
-                'trend merge'
-            ],
-            'qlib_compatible': [
-                'field access',
-                'daily feature loading',
-                'future extension for expression-backed pieces'
-            ]
+        'implementation_mode': 'operator',
+        'implementation_source': 'formula_ir_pandas_codegen',
+        'formula_ir': resolved_ir,
+        'operator_schema': operator_schema,
+        'hybrid_status': 'not_applicable_operator_only',
+        'boundary': {
+            'operator_outputs': ['factor_value'],
+            'custom_inputs': [],
+            'custom_outputs': [],
         },
-        'ide_edit_expected': True
+        'metadata': metadata,
     }
+    return implementation_plan, python_stub, qlib_payload, hybrid_scaffold
 
-    return implementation_plan, python_stub, qlib_expression, hybrid_scaffold
+
+def _block_source(block: dict) -> str:
+    return str(block.get('source_code') or block.get('code') or block.get('custom_source') or '')
 
 
-def is_alpha002_spec(spec: dict) -> bool:
-    factor_id = str(spec.get('factor_id') or '').upper()
-    canonical = spec.get('canonical_spec') or {}
-    label = str((spec.get('paper_ref') or {}).get('formula_label') or canonical.get('formula_label') or '').upper()
-    formula_text = str(canonical.get('formula_text') or '').lower()
-    return (
-        factor_id in {'ALPHA002', 'ALPHA#2', 'ALPHA2'}
-        or label in {'ALPHA#2', 'ALPHA002', 'ALPHA2'}
-        or ('correlation' in formula_text and 'delta(log(volume)' in formula_text and '(close - open)' in formula_text)
+def _custom_block_hash(block: dict) -> str:
+    source_code = _block_source(block)
+    normalized = dict(block)
+    normalized['source_code'] = source_code
+    normalized.pop('custom_block_hash', None)
+    return stable_hash({'source_code': source_code, 'contract': normalized})
+
+
+def _scan_custom_block_source(block: dict) -> None:
+    source = _block_source(block)
+    if not source.strip():
+        raise SystemExit('BLOCK_INVALID_HYBRID_CONTRACT: custom block source_code missing')
+    patterns = list(dict.fromkeys(FORBIDDEN_CUSTOM_BLOCK_PATTERNS + [str(p) for p in (block.get('forbidden_patterns') or []) if p]))
+    hits = []
+    for pattern in patterns:
+        try:
+            regex = re.compile(pattern, flags=re.IGNORECASE)
+        except re.error as exc:
+            raise SystemExit(
+                f'BLOCK_HYBRID_CUSTOM_BLOCK_INVALID_FORBIDDEN_PATTERN: pattern={pattern!r}, error={exc}'
+            ) from exc
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if regex.search(line):
+                hits.append({'pattern': pattern, 'line': lineno, 'text': line.strip()[:180]})
+    if hits:
+        raise SystemExit(f'BLOCK_HYBRID_CUSTOM_BLOCK_LEAKAGE_PATTERN: {hits}')
+
+
+def _assert_no_operator_output_overwrite(custom_blocks: list[dict], boundary: dict) -> None:
+    if boundary.get('allow_operator_output_overwrite') is True:
+        return
+    protected = set(boundary.get('protected_operator_outputs') or boundary.get('operator_outputs') or ['operator_value'])
+    for block in custom_blocks:
+        source = _block_source(block)
+        for name in protected:
+            patterns = [
+                rf'\[[^\n\]]*["\']{re.escape(name)}["\'][^\n\]]*\]\s*=',
+                rf'\.loc\[[^\n]*["\']{re.escape(name)}["\'][^\n]*\]\s*=',
+                rf'\.assign\([^\n)]*{re.escape(name)}\s*=',
+            ]
+            if any(re.search(pattern, source) for pattern in patterns):
+                raise SystemExit(f'BLOCK_HYBRID_OPERATOR_OUTPUT_OVERWRITE: {name}')
+
+
+def _assert_hybrid_contract(spec: dict, identity: dict) -> dict:
+    contract = spec.get('implementation_contract') or {}
+    if contract.get('hybrid_contract_version') != HYBRID_CONTRACT_VERSION:
+        raise SystemExit(f'BLOCK_INVALID_HYBRID_CONTRACT: hybrid_contract_version must be {HYBRID_CONTRACT_VERSION}')
+    operator_subgraph = contract.get('operator_subgraph') or {}
+    formula_ir = operator_subgraph.get('formula_ir') if isinstance(operator_subgraph.get('formula_ir'), dict) else {}
+    custom_blocks = contract.get('custom_blocks') or []
+    boundary = contract.get('boundary') or {}
+    if not operator_subgraph or not formula_ir:
+        raise SystemExit('BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph.formula_ir missing')
+    if formula_ir.get('parse_status') != 'success':
+        raise SystemExit(f"BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph formula_ir parse failed {formula_ir.get('parse_errors')}")
+    if not isinstance(custom_blocks, list) or not custom_blocks:
+        raise SystemExit('BLOCK_INVALID_HYBRID_CONTRACT: custom_blocks missing')
+    if not isinstance(boundary, dict) or not boundary:
+        raise SystemExit('BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING')
+    required_hashes = ['formula_hash', 'custom_block_hash', 'hybrid_hash']
+    missing = [key for key in required_hashes if not contract.get(key) or not identity.get(key)]
+    if missing:
+        raise SystemExit(f'BLOCK_INVALID_HYBRID_CONTRACT: missing hashes {missing}')
+    for key in required_hashes:
+        if contract.get(key) != identity.get(key):
+            raise SystemExit(f'BLOCK_HYBRID_HASH_MISMATCH: {key} identity={identity.get(key)} contract={contract.get(key)}')
+    return contract
+
+
+def _validate_hybrid_hashes(contract: dict, resolved_ir: dict) -> None:
+    formula_hash = resolved_ir.get('formula_hash')
+    if formula_hash != contract.get('formula_hash'):
+        raise SystemExit(f'BLOCK_HYBRID_HASH_MISMATCH: formula_hash {formula_hash} != {contract.get("formula_hash")}')
+    block_hash_inputs = []
+    for block in contract.get('custom_blocks') or []:
+        actual = _custom_block_hash(block)
+        declared = block.get('custom_block_hash')
+        if declared and actual != declared:
+            raise SystemExit(f'BLOCK_HYBRID_HASH_MISMATCH: custom block {block.get("name")} hash mismatch')
+        block_hash_inputs.append({'name': block.get('name'), 'custom_block_hash': declared or actual})
+    actual_custom_hash = stable_hash(block_hash_inputs)
+    if actual_custom_hash != contract.get('custom_block_hash'):
+        raise SystemExit(f'BLOCK_HYBRID_HASH_MISMATCH: custom_block_hash {actual_custom_hash} != {contract.get("custom_block_hash")}')
+    actual_hybrid_hash = stable_hash({
+        'formula_hash': contract.get('formula_hash'),
+        'custom_block_hash': contract.get('custom_block_hash'),
+        'boundary': contract.get('boundary') or {},
+    })
+    if actual_hybrid_hash != contract.get('hybrid_hash'):
+        raise SystemExit(f'BLOCK_HYBRID_HASH_MISMATCH: hybrid_hash {actual_hybrid_hash} != {contract.get("hybrid_hash")}')
+
+
+def generate_hybrid_code(*, report_id: str, factor_id: str, formula_ir: dict, custom_block: dict, boundary: dict, contract: dict) -> str:
+    formula_ir_literal = json.dumps(formula_ir, ensure_ascii=False, sort_keys=True, indent=2)
+    source = _block_source(custom_block).rstrip()
+    function_name = custom_block.get('function_name') or 'apply_custom_block'
+    return f'''from __future__ import annotations
+
+import pandas as pd
+
+from factor_factory.formula.evaluator import evaluate_formula_frame
+
+
+REPORT_ID = {report_id!r}
+FACTOR_ID = {factor_id!r}
+FORMULA_IR = {formula_ir_literal}
+BOUNDARY = {boundary!r}
+HYBRID_METADATA = {{'hybrid_contract_version': {contract.get('hybrid_contract_version')!r}, 'formula_hash': {contract.get('formula_hash')!r}, 'custom_block_hash': {contract.get('custom_block_hash')!r}, 'hybrid_hash': {contract.get('hybrid_hash')!r}}}
+
+
+# <FACTORFORGE_OPERATOR_SUBGRAPH_BEGIN>
+def compute_operator_subgraph(daily_df: pd.DataFrame) -> pd.DataFrame:
+    operator_df = evaluate_formula_frame(FORMULA_IR, daily_df)
+    return operator_df.rename(columns={{"factor_value": "operator_value"}})
+# <FACTORFORGE_OPERATOR_SUBGRAPH_END>
+
+
+# <FACTORFORGE_CUSTOM_BLOCK_BEGIN>
+{source}
+# <FACTORFORGE_CUSTOM_BLOCK_END>
+
+
+def compute_factor(daily_df: pd.DataFrame, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    operator_df = compute_operator_subgraph(daily_df)
+    out = {function_name}(operator_df, daily_df)
+    return out
+'''
+
+
+def _smoke_hybrid_code(python_stub: str, formula_ir: dict) -> None:
+    namespace: dict = {}
+    exec(compile(python_stub, '<hybrid_codegen_smoke>', 'exec'), namespace)
+    compute_operator = namespace.get('compute_operator_subgraph')
+    compute_factor = namespace.get('compute_factor')
+    if not callable(compute_operator):
+        raise SystemExit('BLOCK_HYBRID_OPERATOR_PARITY_FAILED: compute_operator_subgraph missing')
+    if not callable(compute_factor):
+        raise SystemExit('BLOCK_HYBRID_COMBINED_SMOKE_FAILED: compute_factor missing')
+    fixture = make_operator_fixture()
+    fixture['is_tradable'] = [idx % 2 == 0 for idx in range(len(fixture))]
+    fixture['custom_scale'] = 2.0
+    fixture['universe_flag'] = [1 if idx % 3 else 0 for idx in range(len(fixture))]
+    reference = evaluate_formula_frame(formula_ir, fixture).rename(columns={'factor_value': 'operator_value'})
+    generated_operator = compute_operator(fixture.copy())
+    if 'operator_value' not in generated_operator.columns:
+        raise SystemExit('BLOCK_HYBRID_OPERATOR_PARITY_FAILED: operator output missing operator_value')
+    try:
+        compare_outputs(
+            reference.rename(columns={'operator_value': 'factor_value'}),
+            generated_operator.rename(columns={'operator_value': 'factor_value'}),
+        )
+    except AssertionError as exc:
+        raise SystemExit(f'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: {exc}') from exc
+    combined = compute_factor(daily_df=fixture.copy(), minute_df=None)
+    required = {'ts_code', 'trade_date', 'factor_value'}
+    if not hasattr(combined, 'columns'):
+        raise SystemExit('BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output is not DataFrame-like')
+    if len(combined) <= 0:
+        raise SystemExit('BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output row count must be positive')
+    missing = required - set(combined.columns)
+    if missing:
+        raise SystemExit(f'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output missing {sorted(missing)}')
+
+
+def build_hybrid_artifacts(report_id: str, prep: dict, spec: dict, identity: dict):
+    contract = _assert_hybrid_contract(spec, identity)
+    operator_subgraph = contract.get('operator_subgraph') or {}
+    formula_ir = operator_subgraph.get('formula_ir') or {}
+    operator_schema = infer_operator_schema(prep)
+    try:
+        resolved_ir = resolve_formula_fields_for_schema(formula_ir, operator_schema['columns'])
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+    for operator in resolved_ir.get('operator_set') or []:
+        meta = operator_meta(str(operator))
+        if meta.get('supports_pandas') is not True:
+            raise SystemExit(f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}')
+    custom_blocks = contract.get('custom_blocks') or []
+    for block in custom_blocks:
+        _scan_custom_block_source(block)
+    boundary = contract.get('boundary') or {}
+    _assert_no_operator_output_overwrite(custom_blocks, boundary)
+    if not boundary.get('operator_outputs') or not boundary.get('custom_inputs') or not boundary.get('custom_outputs'):
+        raise SystemExit('BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING')
+    if not set(boundary.get('operator_outputs') or []).issubset(set(boundary.get('custom_inputs') or [])):
+        raise SystemExit('BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: custom_inputs must include operator_outputs')
+    if 'factor_value' not in set(boundary.get('custom_outputs') or []):
+        raise SystemExit('BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: custom_outputs must include factor_value')
+    _validate_hybrid_hashes(contract, resolved_ir)
+    factor_id = spec.get('factor_id') or report_id
+    qlib_expression = to_qlib_expression(resolved_ir)
+    python_stub = generate_hybrid_code(
+        report_id=report_id,
+        factor_id=factor_id,
+        formula_ir=resolved_ir,
+        custom_block=custom_blocks[0],
+        boundary=boundary,
+        contract=contract,
     )
-
-
-def build_alpha002_artifacts(report_id: str, prep: dict, spec: dict):
-    factor_id = spec.get('factor_id', 'Alpha002')
-    signal_col = signal_column_name(factor_id)
-    sample = prep.get('sample_window', {})
-
+    _smoke_hybrid_code(python_stub, resolved_ir)
+    metadata = {
+        **operator_metadata(resolved_ir),
+        'implementation_mode': 'hybrid',
+        'implementation_source': 'hybrid_formula_ir_custom_block_codegen',
+        'operator_schema': operator_schema,
+        'formula_hash': contract.get('formula_hash'),
+        'custom_block_hash': contract.get('custom_block_hash'),
+        'hybrid_hash': contract.get('hybrid_hash'),
+        'boundary': boundary,
+        'custom_blocks': custom_blocks,
+        'qlib_expression': qlib_expression,
+    }
     implementation_plan = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'implementation_mode': 'direct_python',
-        'rationale': [
-            'Alpha002 is a canonical daily Alpha101 formula.',
-            'The formula is directly expressible from daily open/close/volume fields.',
-            'Step 3B emits a runnable implementation so Step 4 can immediately evaluate the requested window.'
-        ],
-        'inputs': {
-            'daily_dataset': 'tushare_daily_bars',
-            'sample_window': sample,
-            'required_fields': ['ts_code', 'trade_date', 'open', 'close', 'vol']
-        },
-        'proxy_rules': prep.get('proxy_rules', []),
-        'calculation_steps': [
-            'compute delta(log(volume), 2) per instrument',
-            'cross-sectionally rank delta(log(volume), 2) by trade_date',
-            'compute intraday return (close - open) / open',
-            'cross-sectionally rank intraday return by trade_date',
-            'compute rolling 6-day correlation per instrument',
-            'multiply by -1 to form Alpha002'
-        ],
-        'code_artifacts': {
-            'python_stub': f'factor_impl_stub__{report_id}.py',
-            'qlib_expression_draft': f'qlib_expression_draft__{report_id}.json',
-            'hybrid_execution_scaffold': f'hybrid_execution_scaffold__{report_id}.json'
-        },
+        'producer': 'step3b_hybrid_codegen',
+        'implementation_mode': 'hybrid',
+        'implementation_status': 'ready',
+        'hybrid_contract_version': HYBRID_CONTRACT_VERSION,
+        'operator_subgraph': {**operator_subgraph, 'formula_ir': resolved_ir},
+        'custom_blocks': custom_blocks,
+        'boundary': boundary,
+        'formula_hash': contract.get('formula_hash'),
+        'custom_block_hash': contract.get('custom_block_hash'),
+        'hybrid_hash': contract.get('hybrid_hash'),
+        'metadata': metadata,
+        'output_schema': custom_blocks[0].get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']},
         'step4_contract': {
-            'runner_entry': f'generated_code/{report_id}/factor_impl_stub__{report_id}.py',
-            'execution_mode': 'direct_python',
-            'expected_outputs': [
-                f'factorforge/runs/{report_id}/factor_values__{report_id}.parquet',
-                f'factorforge/runs/{report_id}/factor_values__{report_id}.csv',
-                f'factorforge/runs/{report_id}/run_metadata__{report_id}.json',
-                f'factorforge/objects/factor_run_master/factor_run_master__{report_id}.json'
-            ]
+            'execution_mode': 'hybrid',
+            'runner_entry': None,
+            'expected_outputs': ['factor_values'],
         },
-        'first_run_outputs': {
-            'status': 'pending',
-            'output_paths': [],
-            'run_metadata_path': None,
-            'producer': 'step3b'
-        }
+        'first_run_outputs': pending_first_run_outputs('no_local_snapshots_available'),
     }
-
-    python_stub = f'''"""\nAuto-generated Step 3B runnable implementation for {factor_id}.\nCanonical formula: -1 * correlation(rank(delta(log(volume), 2)), rank((close - open) / open), 6)\n"""\n\nfrom __future__ import annotations\n\nimport numpy as np\nimport pandas as pd\n\nREPORT_ID = {report_id!r}\nFACTOR_ID = {factor_id!r}\nSIGNAL_COLUMN = {signal_col!r}\n\n# CONTRACT:\n# - Step 4 calls compute_factor(minute_df, daily_df); Alpha002 is daily-only, so minute_df may be empty.\n# - Required daily columns: ['ts_code', 'trade_date', 'open', 'close', 'vol'].\n# - Output schema: ['ts_code', 'trade_date', SIGNAL_COLUMN].\n\n\ndef _cross_sectional_rank(df: pd.DataFrame, column: str) -> pd.Series:\n    return df.groupby('trade_date', sort=True)[column].rank(method='average', pct=True)\n\n\ndef _rolling_corr(group: pd.DataFrame) -> pd.Series:\n    return group['rank_delta_log_volume_2'].rolling(6, min_periods=6).corr(group['rank_intraday_return'])\n\n\ndef compute_factor(minute_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd.DataFrame:\n    required_daily = ['ts_code', 'trade_date', 'open', 'close', 'vol']\n    for column in required_daily:\n        if column not in daily_df.columns:\n            raise KeyError(f'missing daily column: {{column}}')\n\n    out = daily_df[required_daily].copy()\n    out['trade_date'] = out['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)\n    out = out.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)\n\n    for column in ['open', 'close', 'vol']:\n        out[column] = pd.to_numeric(out[column], errors='coerce')\n\n    safe_volume = out['vol'].where(out['vol'] > 0)\n    out['log_volume'] = np.log(safe_volume)\n    out['delta_log_volume_2'] = out.groupby('ts_code', sort=False)['log_volume'].diff(2)\n\n    safe_open = out['open'].replace(0, np.nan)\n    out['intraday_return'] = (out['close'] - out['open']) / safe_open\n\n    out['rank_delta_log_volume_2'] = _cross_sectional_rank(out, 'delta_log_volume_2')\n    out['rank_intraday_return'] = _cross_sectional_rank(out, 'intraday_return')\n    out[SIGNAL_COLUMN] = -out.groupby('ts_code', sort=False, group_keys=False).apply(_rolling_corr)\n\n    return out[['ts_code', 'trade_date', SIGNAL_COLUMN]].sort_values(['ts_code', 'trade_date']).reset_index(drop=True)\n\n\ndef main():\n    raise SystemExit('This module is imported by Factor Forge runners. Do not execute it directly.')\n\n\nif __name__ == '__main__':\n    main()\n'''
-
-    qlib_expression = {
+    qlib_payload = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'status': 'draft',
-        'mode': 'alpha101_daily_formula',
-        'formula_text': '-1 * correlation(rank(delta(log(volume), 2)), rank((close - open) / open), 6)',
-        'candidate_expression_parts': {
-            'volume': '$volume',
-            'open': '$open',
-            'close': '$close',
-            'delta_log_volume_2': 'Delta(Log($volume), 2)',
-            'intraday_return': '($close - $open) / $open',
-            'rolling_corr': 'Corr(Rank(delta_log_volume_2), Rank(intraday_return), 6)'
-        },
-        'non_qlib_parts': [
-            'Exact operator spelling depends on the active qlib expression dialect; direct Python is canonical for this run.'
-        ]
+        'implementation_mode': 'hybrid',
+        'implementation_source': 'hybrid_formula_ir_custom_block_codegen',
+        'formula_ir': resolved_ir,
+        'operator_subgraph': implementation_plan['operator_subgraph'],
+        'qlib_expression': qlib_expression,
+        'metadata': metadata,
     }
-
-    scaffold = {
+    hybrid_scaffold = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'execution_mode': 'direct_python',
-        'data_layer': 'Step 3A daily-only local input + optional qlib feature frame',
-        'compute_layer': {
-            'python_required': [
-                'per-instrument delta(log(volume), 2)',
-                'cross-sectional ranks by trade_date',
-                'per-instrument rolling 6-day correlation'
-            ],
-            'qlib_compatible': [
-                'daily open/close/volume field access',
-                'cross-sectional rank and rolling correlation expression draft'
-            ]
-        },
-        'ide_edit_expected': False
+        'implementation_mode': 'hybrid',
+        'implementation_source': 'hybrid_formula_ir_custom_block_codegen',
+        'operator_subgraph': implementation_plan['operator_subgraph'],
+        'custom_blocks': custom_blocks,
+        'boundary': boundary,
+        'formula_hash': contract.get('formula_hash'),
+        'custom_block_hash': contract.get('custom_block_hash'),
+        'hybrid_hash': contract.get('hybrid_hash'),
+        'metadata': metadata,
     }
+    return implementation_plan, python_stub, qlib_payload, hybrid_scaffold
 
-    return implementation_plan, python_stub, qlib_expression, scaffold
 
+def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity: dict):
+    contract = spec.get('implementation_contract') or {}
+    code_contract = contract.get('code_contract') or {}
+    source_code = str(
+        code_contract.get('source_code')
+        or contract.get('source_code')
+        or (spec.get('canonical_spec') or {}).get('source_code')
+        or ''
+    )
+    if not source_code.strip():
+        raise SystemExit(
+            'BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code Step3B requires explicit code_contract.source_code; '
+            'no fallback implementation is allowed.'
+        )
+    if 'def compute_factor' not in source_code:
+        raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code source_code must define compute_factor().')
 
-def build_shadow_artifacts(report_id: str, prep: dict, spec: dict):
-    factor_id = spec.get('factor_id', 'UBL')
-    signal_col = signal_column_name(factor_id)
-    sample = prep.get('sample_window', {})
-
+    factor_id = spec.get('factor_id') or report_id
+    code_contract_hash = identity.get('code_contract_hash') or stable_hash(code_contract)
+    output_schema = code_contract.get('output_schema') or contract.get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']}
+    metadata = {
+        'implementation_mode': 'direct_code',
+        'implementation_source': 'direct_code_contract_codegen',
+        'code_contract_version': code_contract.get('code_contract_version') or contract.get('code_contract_version'),
+        'code_contract_hash': code_contract_hash,
+        'output_schema': output_schema,
+        'forbidden_patterns': code_contract.get('forbidden_patterns') or contract.get('forbidden_patterns') or [],
+    }
     implementation_plan = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'implementation_mode': 'direct_python',
-        'rationale': [
-            'UBL is a daily-frequency shadow factor and does not require minute bars.',
-            'The main implementation work is daily bar feature engineering plus cross-sectional normalization.',
-            'Current best path is direct_python with optional qlib feature-frame reuse for Step 4.'
-        ],
-        'inputs': {
-            'daily_dataset': 'tushare_daily_bars',
-            'sample_window': sample,
-            'required_fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pct_chg']
-        },
-        'proxy_rules': prep.get('proxy_rules', []),
-        'calculation_steps': [
-            'compute normalized candlestick upper/lower shadows',
-            'compute Williams-style upper/lower shadow variants',
-            'aggregate 20-day mean/std shadow features',
-            'combine candle_up_std and william_down_mean into final UBL factor'
-        ],
-        'code_artifacts': {
-            'python_stub': f'factor_impl_stub__{report_id}.py',
-            'qlib_expression_draft': f'qlib_expression_draft__{report_id}.json',
-            'hybrid_execution_scaffold': f'hybrid_execution_scaffold__{report_id}.json'
-        },
+        'producer': 'step3b_direct_code_codegen',
+        'implementation_mode': 'direct_code',
+        'implementation_status': 'ready',
+        'code_contract': code_contract,
+        'code_contract_hash': code_contract_hash,
+        'metadata': metadata,
+        'output_schema': output_schema,
         'step4_contract': {
-            'runner_entry': f'generated_code/{report_id}/factor_impl_stub__{report_id}.py',
-            'execution_mode': 'direct_python',
-            'expected_outputs': [
-                f'factorforge/runs/{report_id}/factor_values__{report_id}.parquet',
-                f'factorforge/runs/{report_id}/factor_values__{report_id}.csv',
-                f'factorforge/runs/{report_id}/run_metadata__{report_id}.json',
-                f'factorforge/objects/factor_run_master/factor_run_master__{report_id}.json'
-            ]
+            'execution_mode': 'direct_code',
+            'runner_entry': None,
+            'expected_outputs': ['factor_values'],
         },
-        'first_run_outputs': {
-            'status': 'pending',
-            'output_paths': [],
-            'run_metadata_path': None,
-            'producer': 'step3b'
-        }
+        'first_run_outputs': pending_first_run_outputs('no_local_snapshots_available'),
     }
-
-    python_stub = f'''"""\nAuto-generated Step 3B factor implementation stub for {factor_id}.\nThis file is intended for IDE-side editing before Step 4 execution.\n"""\n\nfrom __future__ import annotations\n\nimport numpy as np\nimport pandas as pd\n\nREPORT_ID = {report_id!r}\nFACTOR_ID = {factor_id!r}\nSIGNAL_COLUMN = {signal_col!r}\n\n# CONTEXT:\n# - This module is generated by Step 3B and then edited in Cursor/Trae with human review.\n# - {factor_id} is a daily-frequency shadow factor reconstructed from OHLC inputs.\n\n# CONTRACT:\n# - Step 4 will call compute_factor(minute_df, daily_df); minute_df may be empty for daily-only factors.\n# - Required daily columns: ['ts_code', 'trade_date', 'open', 'high', 'low', 'close'].\n# - Output schema must be: ['ts_code', 'trade_date', SIGNAL_COLUMN].\n\n# RISK:\n# - This draft approximates the paper-level UBL logic and still needs your manual review.\n# - Any added neutralization or style controls should also be reflected in Step 2 specs.\n\n\ndef _zscore_by_date(df: pd.DataFrame, value_col: str) -> pd.Series:\n    grouped = df.groupby('trade_date')[value_col]\n    mean = grouped.transform('mean')\n    std = grouped.transform('std').mask(lambda s: s == 0)\n    return (df[value_col] - mean) / std\n\n\ndef compute_factor(minute_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd.DataFrame:\n    required_daily = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close']\n    for column in required_daily:\n        if column not in daily_df.columns:\n            raise KeyError(f'missing daily column: {{column}}')\n\n    out = daily_df[required_daily].copy()\n    out = out.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)\n\n    body_top = out[['open', 'close']].max(axis=1)\n    body_bottom = out[['open', 'close']].min(axis=1)\n    upper_shadow = out['high'] - body_top\n    lower_shadow = body_bottom - out['low']\n    price_range = (out['high'] - out['low']).replace(0, np.nan).astype(float)\n\n    out['candle_up_norm'] = upper_shadow / out.groupby('ts_code')['high'].transform(lambda s: s.rolling(5, min_periods=1).mean())\n    out['candle_down_norm'] = lower_shadow / out.groupby('ts_code')['low'].transform(lambda s: s.rolling(5, min_periods=1).mean())\n    out['williams_up'] = ((out['high'] - out['close']) / price_range).astype(float)\n    out['williams_down'] = ((out['close'] - out['low']) / price_range).astype(float)\n\n    grouped = out.groupby('ts_code', sort=False)\n    out['candle_up_std20'] = grouped['candle_up_norm'].transform(lambda s: s.rolling(20, min_periods=5).std())\n    out['williams_down_mean20'] = grouped['williams_down'].transform(lambda s: s.rolling(20, min_periods=5).mean())\n\n    out['candle_up_std20_z'] = _zscore_by_date(out, 'candle_up_std20').fillna(0.0)\n    out['williams_down_mean20_z'] = _zscore_by_date(out, 'williams_down_mean20').fillna(0.0)\n    out[SIGNAL_COLUMN] = -(out['candle_up_std20_z'] + out['williams_down_mean20_z']) / 2.0\n\n    return out[['ts_code', 'trade_date', SIGNAL_COLUMN]].sort_values(['ts_code', 'trade_date']).reset_index(drop=True)\n\n\ndef main():\n    raise SystemExit('This is a Step 3B generated stub. Edit in IDE, then invoke from Step 4 runner.')\n\n\nif __name__ == '__main__':\n    main()\n'''
-
-    qlib_expression = {
+    qlib_payload = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'status': 'draft',
-        'mode': 'daily_shadow_factor',
-        'reason': 'UBL is daily-frequency and can reuse qlib-style OHLC features, but the final rolling/combination logic remains clearer in Python.',
-        'candidate_expression_parts': {
-            'daily_open': '$open',
-            'daily_high': '$high',
-            'daily_low': '$low',
-            'daily_close': '$close'
-        },
-        'non_qlib_parts': [
-            '5-day shadow normalization',
-            '20-day rolling mean/std aggregation',
-            'UBL component combination'
-        ]
+        'implementation_mode': 'direct_code',
+        'implementation_source': 'direct_code_contract_codegen',
+        'code_contract': code_contract,
+        'metadata': metadata,
     }
-
-    scaffold = {
+    hybrid_scaffold = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'execution_mode': 'direct_python',
-        'data_layer': 'Step 3A daily-only local input + optional qlib feature frame',
-        'compute_layer': {
-            'python_required': [
-                'candlestick shadow construction',
-                'Williams-style shadow construction',
-                '20-day rolling aggregation'
-            ],
-            'qlib_compatible': [
-                'daily OHLC field access',
-                'cross-sectional feature framing'
-            ]
-        },
-        'ide_edit_expected': True
+        'implementation_mode': 'direct_code',
+        'implementation_source': 'direct_code_contract_codegen',
+        'hybrid_status': 'not_applicable_direct_code_only',
+        'code_contract': code_contract,
+        'metadata': metadata,
     }
+    return implementation_plan, source_code, qlib_payload, hybrid_scaffold
 
-    return implementation_plan, python_stub, qlib_expression, scaffold
 
-
-def is_cpv_like_spec(spec: dict) -> bool:
-    factor_id = str(spec.get('factor_id') or '')
-    if 'CPV' in factor_id.upper():
-        return True
-
-    canonical = spec.get('canonical_spec') or {}
-    required_inputs = [str(x).lower() for x in (canonical.get('required_inputs') or [])]
-    formula_text = str(canonical.get('formula_text') or '').lower()
-    cross_steps = ' '.join(str(x).lower() for x in (canonical.get('cross_sectional_steps') or []))
-
-    has_core_fields = {'close', 'vol', 'amount'}.issubset(set(required_inputs))
-    has_pv_semantics = any(token in f'{formula_text} {cross_steps}' for token in ['price-volume', '价量', 'corr', '相关'])
-    return has_core_fields and has_pv_semantics
+def dispatch_mode_codegen(report_id: str, prep: dict, spec: dict, identity: dict):
+    mode = identity.get('implementation_mode')
+    if has_family_plugin_declaration(spec):
+        try:
+            plugin = resolve_family_plugin(spec, mode)
+        except FamilyPluginContractError as exc:
+            raise SystemExit(str(exc)) from exc
+        return plugin.generate(report_id, prep, spec)
+    if mode == 'operator':
+        return build_operator_artifacts(report_id, prep, spec, identity)
+    if mode == 'direct_code':
+        return build_direct_code_artifacts(report_id, prep, spec, identity)
+    if mode == 'hybrid':
+        return build_hybrid_artifacts(report_id, prep, spec, identity)
+    raise SystemExit(f'BLOCK_UNSUPPORTED_IMPLEMENTATION_MODE: {mode}')
 
 
 def main():
@@ -688,46 +1072,208 @@ def main():
     args = ap.parse_args()
     enforce_direct_step_policy(args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
+    require_formal_manifest(_manifest)
     report_id = args.report_id or manifest_rid
     if not report_id:
         raise SystemExit('run_step3b.py requires --report-id or --manifest')
 
-    prep = load_json(OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json')
-    spec = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
+    spec_path = (
+        nested_path(_manifest, 'step_io', 'step2', 'factor_spec_master')
+        or nested_path(_manifest, 'step_io', 'step3', 'inputs', 'factor_spec_master')
+        or OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json'
+    )
+    prep_path = (
+        nested_path(_manifest, 'step_io', 'step3', 'outputs', 'data_prep_master')
+        or OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json'
+    )
+    prep = load_json(prep_path)
+    spec = load_json(spec_path)
+    spec_identity = assert_spec_identity_matches_manifest(spec, _manifest)
     step2_handoff = load_step2_handoff(report_id)
     step2_research_context = build_step2_research_context(report_id, spec, step2_handoff)
     factor_id = spec.get('factor_id', report_id)
+    mode_decision = build_mode_decision_start(spec_identity, spec)
 
     # Hard consistency rule: filename report_id and JSON internal report_id must agree.
     if spec.get('report_id') != report_id:
         raise SystemExit(f'factor_spec_master.report_id mismatch: expected {report_id}, got {spec.get("report_id")}')
 
-    if is_cpv_like_spec(spec):
-        implementation_plan, python_stub, qlib_expression, hybrid_scaffold = build_cpv_artifacts(report_id, prep, spec)
-    elif is_alpha002_spec(spec):
-        implementation_plan, python_stub, qlib_expression, hybrid_scaffold = build_alpha002_artifacts(report_id, prep, spec)
-    else:
-        implementation_plan, python_stub, qlib_expression, hybrid_scaffold = build_shadow_artifacts(report_id, prep, spec)
-
-    attach_step2_research_context(implementation_plan, qlib_expression, hybrid_scaffold, step2_research_context)
-    python_stub = annotate_python_stub_with_research_context(python_stub, step2_research_context)
-
-    code_dir = CODEGEN / report_id
-    impl_path = OBJ / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json'
+    code_dir = (
+        nested_path(_manifest, 'step_io', 'step3b', 'outputs', 'generated_code_dir')
+        or nested_path(_manifest, 'step_io', 'step3b', 'outputs', 'generated_code_output_dir')
+        or CODEGEN / report_id
+    )
+    impl_path = (
+        nested_path(_manifest, 'step_io', 'step3', 'outputs', 'implementation_plan_master')
+        or OBJ / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json'
+    )
     stub_path = code_dir / f'factor_impl_stub__{report_id}.py'
     qlib_path = code_dir / f'qlib_expression_draft__{report_id}.json'
     hybrid_path = code_dir / f'hybrid_execution_scaffold__{report_id}.json'
     handoff_path = OBJ / 'handoff' / f'handoff_to_step4__{report_id}.json'
 
-    prep = load_json(OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json')
+    prep = load_json(prep_path)
     step3a_ready = prep.get('feasibility') in {'ready', 'proxy_ready'}
     real_impl_rel = f'generated_code/{report_id}/factor_impl__{report_id}.py'
     real_impl_abs = FF / real_impl_rel
     stub_impl_rel = str(stub_path.relative_to(FF))
     executable_impl_rel = real_impl_rel if real_impl_abs.exists() else stub_impl_rel
     executable_impl_abs = FF / executable_impl_rel
+
+    try:
+        implementation_plan, python_stub, qlib_expression, hybrid_scaffold = dispatch_mode_codegen(report_id, prep, spec, spec_identity)
+        artifact_producer = implementation_plan.get('producer') or 'step3b'
+        family_fields = explicit_plugin_identity_fields(spec) if artifact_producer == FAMILY_PLUGIN_PRODUCER else {}
+        mode_decision = finalize_mode_decision_success(
+            mode_decision,
+            spec_identity.get('implementation_mode'),
+            'Step3B selected the mode declared by Step2 after dispatcher contract checks.',
+        )
+    except SystemExit as exc:
+        block_reason = str(exc)
+        mode_decision = finalize_mode_decision_blocked(mode_decision, spec_identity.get('implementation_mode'), block_reason)
+        blocked_stub = annotate_python_stub_with_research_context(
+            (
+                f'"""\n'
+                f'Blocked Step3B implementation placeholder for {factor_id}.\n'
+                f'Reason: {block_reason}\n'
+                f'No formal factor implementation or factor_values were produced.\n'
+                f'"""\n\n'
+                f'REPORT_ID = {report_id!r}\n'
+                f'FACTOR_ID = {factor_id!r}\n'
+                f'IMPLEMENTATION_BLOCKED = True\n'
+            ),
+            step2_research_context,
+        )
+        implementation_identity = derive_child_identity(spec_identity, artifact_role='implementation_plan_master', producer='step3b')
+        generated_code_identity = derive_child_identity(spec_identity, artifact_role='generated_code', producer='step3b')
+        handoff_identity = derive_child_identity(spec_identity, artifact_role='handoff_to_step4', producer='step3b')
+        blocked_plan = {
+            'report_id': report_id,
+            'factor_id': factor_id,
+            'implementation_mode': spec_identity.get('implementation_mode'),
+            'implementation_status': 'blocked',
+            'artifact_identity': implementation_identity,
+            'implementation_mode_decision': mode_decision,
+            'step2_research_context': step2_research_context,
+            'step4_contract': {
+                'execution_mode': spec_identity.get('implementation_mode'),
+                'runner_entry': None,
+                'expected_outputs': [],
+            },
+            'first_run_outputs': {
+                'status': 'blocked',
+                'output_paths': [],
+                'run_metadata_path': None,
+                'producer': 'step3b',
+                'reason': block_reason,
+            },
+        }
+        blocked_generated = {
+            'report_id': report_id,
+            'factor_id': factor_id,
+            'implementation_mode': spec_identity.get('implementation_mode'),
+            'implementation_status': 'blocked',
+            'artifact_identity': generated_code_identity,
+            'metadata': {
+                'artifact_identity': generated_code_identity,
+                'implementation_mode': spec_identity.get('implementation_mode'),
+                'implementation_mode_decision': mode_decision,
+                'implementation_status': 'blocked',
+            },
+            'implementation_mode_decision': mode_decision,
+            'step2_research_context': step2_research_context,
+        }
+        write_json(impl_path, blocked_plan)
+        write_text(stub_path, blocked_stub)
+        write_json(qlib_path, blocked_generated)
+        write_json(hybrid_path, blocked_generated)
+        existing_handoff = read_existing_json(handoff_path)
+        handoff_payload = merge_handoff(existing_handoff, {
+            'report_id': report_id,
+            'artifact_identity': handoff_identity,
+            'implementation_mode': spec_identity.get('implementation_mode'),
+            'implementation_status': 'blocked',
+            'implementation_mode_decision': mode_decision,
+            'source_type': spec_identity.get('source_type'),
+            'spec_hash': spec_identity.get('spec_hash'),
+            'branch_id': spec_identity.get('branch_id'),
+            'step3a_ready': step3a_ready,
+            'step3b_ready': False,
+            'data_prep_master_ref': existing_handoff.get('data_prep_master_ref') or f'data_prep_master__{report_id}.json',
+            'qlib_adapter_config_ref': existing_handoff.get('qlib_adapter_config_ref') or f'qlib_adapter_config__{report_id}.json',
+            'factor_spec_master_ref': existing_handoff.get('factor_spec_master_ref') or f'factor_spec_master__{report_id}.json',
+            'implementation_plan_master_ref': impl_path.name,
+            'factor_impl_ref': None,
+            'factor_impl_stub_ref': stub_impl_rel,
+            'qlib_expression_draft_ref': str(qlib_path.relative_to(FF)),
+            'hybrid_execution_scaffold_ref': str(hybrid_path.relative_to(FF)),
+            'execution_mode': spec_identity.get('implementation_mode'),
+            'local_input_paths': prep.get('local_input_paths', {}),
+            'step2_research_context': step2_research_context,
+            'first_run_outputs': blocked_plan['first_run_outputs'],
+        })
+        write_json(handoff_path, handoff_payload)
+        raise SystemExit(block_reason) from exc
+
+    attach_step2_research_context(implementation_plan, qlib_expression, hybrid_scaffold, step2_research_context)
+    implementation_plan['implementation_mode_decision'] = mode_decision
+    qlib_expression['implementation_mode_decision'] = mode_decision
+    hybrid_scaffold['implementation_mode_decision'] = mode_decision
+    python_stub = annotate_python_stub_with_research_context(python_stub, step2_research_context)
+
     if real_impl_abs.exists():
         implementation_plan['step4_contract']['runner_entry'] = real_impl_rel
+    code_hash = hashlib.sha256(python_stub.encode('utf-8')).hexdigest()
+    implementation_identity = derive_child_identity(
+        spec_identity,
+        artifact_role='implementation_plan_master',
+        producer=artifact_producer,
+        code_hash=code_hash,
+        family_fields=family_fields,
+    )
+    generated_code_identity = derive_child_identity(
+        spec_identity,
+        artifact_role='generated_code',
+        producer=artifact_producer,
+        code_hash=code_hash,
+        family_fields=family_fields,
+    )
+    handoff_identity = derive_child_identity(
+        spec_identity,
+        artifact_role='handoff_to_step4',
+        producer=artifact_producer,
+        code_hash=code_hash,
+        family_fields=family_fields,
+    )
+    implementation_plan['artifact_identity'] = implementation_identity
+    if family_fields:
+        implementation_plan.update(family_fields)
+    implementation_plan['implementation_mode'] = spec_identity.get('implementation_mode') or implementation_plan.get('implementation_mode')
+    implementation_plan.setdefault('step4_contract', {})
+    implementation_plan['step4_contract']['execution_mode'] = implementation_plan['implementation_mode']
+    qlib_expression['artifact_identity'] = generated_code_identity
+    if family_fields:
+        qlib_expression.update(family_fields)
+    qlib_expression['implementation_mode'] = spec_identity.get('implementation_mode')
+    qlib_expression['metadata'] = {
+        **(qlib_expression.get('metadata') or {}),
+        'artifact_identity': generated_code_identity,
+        'code_hash': code_hash,
+        'implementation_mode': spec_identity.get('implementation_mode'),
+        'implementation_mode_decision': mode_decision,
+    }
+    hybrid_scaffold['artifact_identity'] = generated_code_identity
+    if family_fields:
+        hybrid_scaffold.update(family_fields)
+    hybrid_scaffold['implementation_mode'] = spec_identity.get('implementation_mode')
+    hybrid_scaffold['metadata'] = {
+        **(hybrid_scaffold.get('metadata') or {}),
+        'artifact_identity': generated_code_identity,
+        'code_hash': code_hash,
+        'implementation_mode': spec_identity.get('implementation_mode'),
+        'implementation_mode_decision': mode_decision,
+    }
 
     write_json(impl_path, implementation_plan)
     write_text(stub_path, python_stub)
@@ -739,6 +1285,13 @@ def main():
     existing_handoff = read_existing_json(handoff_path)
     handoff_payload = merge_handoff(existing_handoff, {
         'report_id': report_id,
+        'artifact_identity': handoff_identity,
+        'producer': artifact_producer,
+        **family_fields,
+        'implementation_mode': spec_identity.get('implementation_mode'),
+        'source_type': spec_identity.get('source_type'),
+        'spec_hash': spec_identity.get('spec_hash'),
+        'branch_id': spec_identity.get('branch_id'),
         'step3a_ready': step3a_ready,
         'step3b_ready': True,
         'data_prep_master_ref': existing_handoff.get('data_prep_master_ref') or f'data_prep_master__{report_id}.json',
@@ -752,12 +1305,8 @@ def main():
         'execution_mode': implementation_plan['implementation_mode'],
         'local_input_paths': prep.get('local_input_paths', {}),
         'step2_research_context': step2_research_context,
-        'first_run_outputs': {
-            'status': 'pending',
-            'output_paths': [],
-            'run_metadata_path': None,
-            'producer': 'step3b'
-        }
+        'implementation_mode_decision': mode_decision,
+        'first_run_outputs': implementation_plan.get('first_run_outputs') or pending_first_run_outputs('no_local_snapshots_available')
     })
     write_json(handoff_path, handoff_payload)
 
@@ -776,6 +1325,8 @@ def main():
             implementation_path=executable_impl_abs,
             local_inputs=local_inputs,
             step2_research_context=step2_research_context,
+            mode_decision=mode_decision,
+            artifact_identity=spec_identity,
         )
         implementation_plan['first_run_outputs'] = first_run_outputs
         implementation_plan['step4_contract']['runner_entry'] = executable_impl_rel

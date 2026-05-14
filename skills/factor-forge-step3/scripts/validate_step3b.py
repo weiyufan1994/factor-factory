@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json
+import argparse, ast, hashlib, importlib.util, inspect, json, re
 import os
 import sys
 from pathlib import Path
@@ -13,7 +13,51 @@ OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
 RUNS = FF / 'runs'
 
+
+def _contract_excepthook(exc_type, exc, tb):
+    if issubclass(exc_type, AssertionError):
+        print(f'CONTRACT_FAILURE: {exc}', file=sys.stderr)
+        return
+    sys.__excepthook__(exc_type, exc, tb)
+
+
+sys.excepthook = _contract_excepthook
+
+from factor_factory.artifact_identity import assert_identity_matches_strict, stable_hash
+from factor_factory.factor_families.registry import validate_family_plugin_artifacts
+from factor_factory.formula.evaluator import evaluate_formula_frame
+from factor_factory.formula.parity import compare_outputs, make_operator_fixture, run_operator_parity
+from factor_factory.formula.registry import operator_meta
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+
+FORBIDDEN_DIRECT_CODE_PATTERNS = [
+    r"shift\s*\(\s*-\d+",
+    r"\bfuture_return\b",
+    r"\bnext_return\b",
+    r"\bforward_return\b",
+    r"\blabel\b",
+    r"\btarget\b",
+    r"\by_true\b",
+    r"\bfuture_",
+    r"\blead\s*\(",
+    r"\blookahead\b",
+]
+MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
+HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
+DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
+    'ts_code',
+    'trade_date',
+    'open',
+    'high',
+    'low',
+    'close',
+    'volume',
+    'vol',
+    'amount',
+    'pct_chg',
+    'returns',
+    'return',
+]
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -31,6 +75,730 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
 
 def load(p):
     return json.loads(Path(p).read_text(encoding='utf-8'))
+
+
+def resolve_path(raw: str | Path | None, *, code_dir: Path | None = None) -> Path | None:
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    candidates = []
+    if code_dir:
+        candidates.append(code_dir / path)
+    candidates.extend([FF / path, FF.parent / path, REPO_ROOT / path])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else path
+
+
+def nested_path(data: dict | None, *keys: str) -> Path | None:
+    current = data or {}
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return Path(current).expanduser() if current else None
+
+
+def _add_schema_value(columns: set[str], value) -> None:
+    if not value:
+        return
+    if isinstance(value, str):
+        columns.add(value)
+    elif isinstance(value, dict):
+        for key in ['name', 'column', 'field', 'actual_column']:
+            if value.get(key):
+                columns.add(str(value[key]))
+
+
+def explicit_step3a_schema_columns(prep: dict) -> list[str]:
+    columns: set[str] = set()
+    for key in ['available_columns', 'clean_data_columns', 'daily_columns', 'daily_df_columns', 'resolved_columns']:
+        value = prep.get(key)
+        if isinstance(value, list):
+            for item in value:
+                _add_schema_value(columns, item)
+    for key in ['daily_schema', 'schema', 'field_schema']:
+        value = prep.get(key)
+        if isinstance(value, dict):
+            columns.update(str(item) for item in value.keys() if item)
+        elif isinstance(value, list):
+            for item in value:
+                _add_schema_value(columns, item)
+    for key in ['field_mappings', 'resolved_fields']:
+        value = prep.get(key)
+        if isinstance(value, dict):
+            columns.update(str(item) for item in value.values() if item)
+    return sorted(columns)
+
+
+def read_snapshot_columns(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    if path.suffix.lower() == '.parquet':
+        try:
+            import pyarrow.parquet as pq
+            return list(pq.read_schema(path).names)
+        except Exception:
+            import pandas as pd
+            return list(pd.read_parquet(path).head(0).columns)
+    import pandas as pd
+    return list(pd.read_csv(path, nrows=0).columns)
+
+
+def local_snapshot_schema_columns(prep: dict) -> list[str]:
+    local_inputs = prep.get('local_input_paths') or {}
+    raw_paths = [
+        local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv'),
+        local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv'),
+    ]
+    columns: set[str] = set()
+    for raw in raw_paths:
+        path = resolve_path(raw)
+        if path and path.exists():
+            columns.update(read_snapshot_columns(path))
+    return sorted(columns)
+
+
+def infer_operator_schema(prep: dict) -> dict:
+    explicit_columns = explicit_step3a_schema_columns(prep)
+    if explicit_columns:
+        return {'columns': explicit_columns, 'source': 'step3a_schema', 'strict': True}
+    snapshot_columns = local_snapshot_schema_columns(prep)
+    if snapshot_columns:
+        return {'columns': snapshot_columns, 'source': 'local_snapshot_schema', 'strict': True}
+    return {'columns': list(DEFAULT_OPERATOR_SCHEMA_COLUMNS), 'source': 'default_plan_schema', 'strict': False}
+
+
+def assert_artifact_identity(label: str, data: dict, expected: dict | None = None, role: str | None = None) -> dict:
+    identity = data.get('artifact_identity') or ((data.get('metadata') or {}).get('artifact_identity'))
+    assert isinstance(identity, dict) and identity, f'{label}.artifact_identity is required'
+    for key in ['report_id', 'factor_id', 'source_type', 'implementation_mode', 'contract_version', 'producer', 'spec_hash', 'branch_id', 'artifact_role']:
+        assert identity.get(key), f'{label}.artifact_identity.{key} is required'
+    if role:
+        assert identity.get('artifact_role') == role, (
+            f'{label}.artifact_identity.artifact_role mismatch: expected {role}, got {identity.get("artifact_role")}'
+        )
+    if expected:
+        assert_identity_matches_strict(
+            expected,
+            identity,
+            expected_label='expected',
+            actual_label=label,
+            allowed_role_transitions={(expected.get('artifact_role'), role or identity.get('artifact_role'))},
+        )
+    return identity
+
+
+def declared_mode(label: str, data: dict) -> str | None:
+    return data.get('implementation_mode') or ((data.get('metadata') or {}).get('implementation_mode'))
+
+
+def mode_decision_from(label: str, data: dict) -> dict:
+    decision = data.get('implementation_mode_decision') or ((data.get('metadata') or {}).get('implementation_mode_decision'))
+    assert isinstance(decision, dict) and decision, f'{label}.implementation_mode_decision is required'
+    assert decision.get('decision_version') == MODE_DECISION_VERSION, (
+        f'{label}.implementation_mode_decision.decision_version must be {MODE_DECISION_VERSION}'
+    )
+    return decision
+
+
+def assert_mode_decision_chain(
+    spec_identity: dict,
+    plan: dict,
+    qlib_data: dict,
+    hybrid_data: dict,
+    handoff: dict,
+) -> dict:
+    decisions = {
+        'implementation_plan_master': mode_decision_from('implementation_plan_master', plan),
+        'qlib_expression_draft': mode_decision_from('qlib_expression_draft', qlib_data),
+        'qlib_expression_draft.metadata': mode_decision_from('qlib_expression_draft.metadata', {'metadata': qlib_data.get('metadata') or {}}),
+        'hybrid_execution_scaffold': mode_decision_from('hybrid_execution_scaffold', hybrid_data),
+        'hybrid_execution_scaffold.metadata': mode_decision_from('hybrid_execution_scaffold.metadata', {'metadata': hybrid_data.get('metadata') or {}}),
+        'handoff_to_step4': mode_decision_from('handoff_to_step4', handoff),
+    }
+    base = decisions['implementation_plan_master']
+    for label, decision in decisions.items():
+        assert decision.get('selected_mode') == base.get('selected_mode'), (
+            f'{label}.implementation_mode_decision.selected_mode mismatch: '
+            f'{decision.get("selected_mode")} != {base.get("selected_mode")}'
+        )
+        assert decision.get('final_decision_reason') == base.get('final_decision_reason'), (
+            f'{label}.implementation_mode_decision.final_decision_reason mismatch'
+        )
+
+    selected = base.get('selected_mode')
+    formal_mode = spec_identity.get('implementation_mode')
+    assert selected in {'operator', 'hybrid', 'direct_code', 'blocked'}, (
+        f'implementation_mode_decision.selected_mode unsupported: {selected}'
+    )
+    assert selected == formal_mode or selected == 'blocked', (
+        f'implementation_mode_decision.selected_mode must match artifact_identity.implementation_mode or blocked: '
+        f'{selected} vs {formal_mode}'
+    )
+    if selected != 'operator':
+        assert base.get('operator_attempted') or base.get('operator_failure_reason'), (
+            'implementation_mode_decision must record operator attempt or explicit not_applicable reason'
+        )
+    if selected == 'direct_code':
+        assert base.get('operator_failure_reason'), 'direct_code decision requires operator failure/not_applicable reason'
+        assert base.get('hybrid_failure_reason'), 'direct_code decision requires hybrid failure/not_applicable reason'
+    if selected == 'blocked':
+        for label, payload in [('implementation_plan_master', plan), ('handoff_to_step4', handoff)]:
+            first_run = payload.get('first_run_outputs') or {}
+            assert first_run.get('status') in {'blocked', 'pending', None}, (
+                f'{label}.first_run_outputs.status must not be ready/partial when implementation is blocked'
+            )
+            assert not first_run.get('output_paths'), (
+                f'{label}.first_run_outputs.output_paths must be empty when implementation is blocked'
+            )
+    return base
+
+
+def collect_declared_operator_code_hashes(plan: dict, qlib_data: dict, hybrid_data: dict, handoff: dict) -> list[tuple[str, str]]:
+    sources = [
+        ('implementation_plan_master.artifact_identity', plan.get('artifact_identity')),
+        ('implementation_plan_master.metadata.artifact_identity', (plan.get('metadata') or {}).get('artifact_identity')),
+        ('qlib_expression_draft.artifact_identity', qlib_data.get('artifact_identity')),
+        ('qlib_expression_draft.metadata.artifact_identity', (qlib_data.get('metadata') or {}).get('artifact_identity')),
+        ('hybrid_execution_scaffold.artifact_identity', hybrid_data.get('artifact_identity')),
+        ('hybrid_execution_scaffold.metadata.artifact_identity', (hybrid_data.get('metadata') or {}).get('artifact_identity')),
+        ('handoff_to_step4.artifact_identity', handoff.get('artifact_identity')),
+        ('handoff_to_step4.metadata.artifact_identity', (handoff.get('metadata') or {}).get('artifact_identity')),
+    ]
+    hashes = []
+    for label, identity in sources:
+        if isinstance(identity, dict) and identity.get('code_hash'):
+            hashes.append((label, str(identity.get('code_hash'))))
+    return hashes
+
+
+def candidate_operator_code_paths(*, manifest: dict | None, qlib_data: dict, handoff: dict, code_dir: Path, stub: Path, real_impl: Path) -> list[Path]:
+    raw_paths = [
+        nested_path(manifest, 'step_io', 'step3b', 'outputs', 'factor_impl'),
+        nested_path(manifest, 'step_io', 'step3b', 'outputs', 'factor_impl_path'),
+        ((qlib_data.get('metadata') or {}).get('implementation_path') if isinstance(qlib_data, dict) else None),
+        handoff.get('factor_impl_ref'),
+        handoff.get('factor_impl_stub_ref'),
+        handoff.get('implementation_path'),
+        real_impl,
+        stub,
+    ]
+    paths: list[Path] = []
+    for raw in raw_paths:
+        path = raw if isinstance(raw, Path) else resolve_path(raw, code_dir=code_dir)
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def validate_operator_mode(
+    spec: dict,
+    plan: dict,
+    qlib_data: dict,
+    hybrid_data: dict,
+    *,
+    manifest: dict | None,
+    handoff: dict,
+    code_dir: Path,
+    stub: Path,
+    real_impl: Path,
+    prep: dict,
+) -> None:
+    canonical = spec.get('canonical_spec') or {}
+    identity = spec.get('artifact_identity') or {}
+    formula_ir = qlib_data.get('formula_ir') if isinstance(qlib_data.get('formula_ir'), dict) else canonical.get('formula_ir')
+    assert isinstance(formula_ir, dict) and formula_ir, 'BLOCK_UNSUPPORTED_OPERATOR_PARITY: operator mode requires formula_ir before Step3B can PASS'
+    assert formula_ir.get('parse_status') == 'success', (
+        f"BLOCK_UNSUPPORTED_FORMULA_SYNTAX: {formula_ir.get('parse_errors') or 'formula_ir parse_status is not success'}"
+    )
+    assert identity.get('formula_hash'), 'operator mode requires formula_hash'
+    assert identity.get('formula_hash') == formula_ir.get('formula_hash'), 'operator formula_hash mismatch between identity and formula_ir'
+    operator_set = formula_ir.get('operator_set') or canonical.get('operator_set') or canonical.get('operators')
+    required_fields = formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs')
+    resolved_fields = formula_ir.get('resolved_fields') or canonical.get('resolved_fields')
+    assert operator_set, 'operator mode requires operator_set/operators'
+    assert required_fields, 'operator mode requires required_fields/required_inputs'
+    assert resolved_fields, 'operator mode requires resolved_fields'
+    operator_schema = infer_operator_schema(prep)
+    if operator_schema.get('strict'):
+        available = {str(col).lower() for col in operator_schema.get('columns') or []}
+        missing = [
+            {'field': field, 'resolved_field': resolved}
+            for field, resolved in resolved_fields.items()
+            if str(resolved).lower() not in available
+        ]
+        assert not missing, f'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in {operator_schema.get("source")}: {missing}'
+    for operator in operator_set:
+        meta = operator_meta(str(operator))
+        assert meta.get('supports_pandas') is True, f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}'
+    source = (qlib_data.get('metadata') or {}).get('implementation_source') or qlib_data.get('implementation_source')
+    assert source == 'formula_ir_pandas_codegen', 'operator generated metadata.implementation_source must be formula_ir_pandas_codegen'
+    metadata = qlib_data.get('metadata') or {}
+    assert metadata.get('formula_hash') == formula_ir.get('formula_hash'), 'operator generated metadata.formula_hash mismatch'
+    assert set(metadata.get('operator_set') or []) == set(operator_set), 'operator generated metadata.operator_set mismatch'
+    candidates = candidate_operator_code_paths(
+        manifest=manifest,
+        qlib_data=qlib_data,
+        handoff=handoff,
+        code_dir=code_dir,
+        stub=stub,
+        real_impl=real_impl,
+    )
+    implementation_path = next((path for path in candidates if path and path.exists() and path.suffix == '.py'), None)
+    assert implementation_path is not None, f'BLOCK_OPERATOR_ARTIFACT_MISSING: checked {[str(p) for p in candidates]}'
+    actual_code_hash = hashlib.sha256(implementation_path.read_bytes()).hexdigest()
+    declared_hashes = collect_declared_operator_code_hashes(plan, qlib_data, hybrid_data, handoff)
+    assert declared_hashes, 'BLOCK_OPERATOR_HASH_MISSING: operator generated artifacts require code_hash'
+    for label, declared_hash in declared_hashes:
+        assert declared_hash == actual_code_hash, (
+            f'BLOCK_OPERATOR_HASH_MISMATCH: {label}={declared_hash} '
+            f'actual_code_hash={actual_code_hash} path={implementation_path}'
+        )
+    parity = run_operator_parity(formula_ir, implementation_path)
+    assert parity.get('status') == 'PASS', f"BLOCK_OPERATOR_PARITY_FAILED: {parity}"
+
+
+def candidate_direct_code_paths(
+    *,
+    manifest: dict | None,
+    qlib_data: dict,
+    hybrid_data: dict,
+    handoff: dict,
+    code_dir: Path,
+    stub: Path,
+    real_impl: Path,
+) -> list[Path]:
+    raw_paths = [
+        nested_path(manifest, 'step_io', 'step3b', 'outputs', 'factor_impl'),
+        nested_path(manifest, 'step_io', 'step3b', 'outputs', 'factor_impl_path'),
+        nested_path(manifest, 'step_io', 'step3b', 'outputs', 'python_implementation'),
+        ((qlib_data.get('metadata') or {}).get('implementation_path') if isinstance(qlib_data, dict) else None),
+        ((hybrid_data.get('metadata') or {}).get('implementation_path') if isinstance(hybrid_data, dict) else None),
+        handoff.get('factor_impl_ref'),
+        handoff.get('factor_impl_stub_ref'),
+        handoff.get('implementation_path'),
+        real_impl,
+        stub,
+    ]
+    paths: list[Path] = []
+    for raw in raw_paths:
+        path = raw if isinstance(raw, Path) else resolve_path(raw, code_dir=code_dir)
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def scan_direct_code_text(text: str, extra_patterns: list[str]) -> None:
+    patterns = list(dict.fromkeys(FORBIDDEN_DIRECT_CODE_PATTERNS + [str(p) for p in extra_patterns if p]))
+    hits = []
+    for pattern in patterns:
+        try:
+            regex = re.compile(pattern, flags=re.IGNORECASE)
+        except re.error as exc:
+            raise AssertionError(
+                f'BLOCK_DIRECT_CODE_INVALID_FORBIDDEN_PATTERN: pattern={pattern!r}, error={exc}'
+            ) from exc
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if regex.search(line):
+                hits.append({'pattern': pattern, 'line': lineno, 'text': line.strip()[:180]})
+    if hits:
+        raise AssertionError(f'BLOCK_DIRECT_CODE_LEAKAGE_PATTERN: {hits}')
+
+
+def collect_declared_direct_code_hashes(
+    spec: dict,
+    plan: dict,
+    qlib_data: dict,
+    hybrid_data: dict,
+    handoff: dict,
+) -> list[tuple[str, str]]:
+    identity_sources = [
+        ('factor_spec_master.artifact_identity', spec.get('artifact_identity')),
+        ('factor_spec_master.metadata.artifact_identity', (spec.get('metadata') or {}).get('artifact_identity')),
+        ('implementation_plan_master.artifact_identity', plan.get('artifact_identity')),
+        ('implementation_plan_master.metadata.artifact_identity', (plan.get('metadata') or {}).get('artifact_identity')),
+        ('qlib_expression_draft.artifact_identity', qlib_data.get('artifact_identity')),
+        ('qlib_expression_draft.metadata.artifact_identity', (qlib_data.get('metadata') or {}).get('artifact_identity')),
+        ('hybrid_execution_scaffold.artifact_identity', hybrid_data.get('artifact_identity')),
+        ('hybrid_execution_scaffold.metadata.artifact_identity', (hybrid_data.get('metadata') or {}).get('artifact_identity')),
+        ('handoff_to_step4.artifact_identity', handoff.get('artifact_identity')),
+        ('handoff_to_step4.metadata.artifact_identity', (handoff.get('metadata') or {}).get('artifact_identity')),
+    ]
+    metadata_sources = [
+        ('factor_spec_master.code_hash', spec),
+        ('factor_spec_master.metadata.code_hash', spec.get('metadata') or {}),
+        ('implementation_plan_master.code_hash', plan),
+        ('implementation_plan_master.metadata.code_hash', plan.get('metadata') or {}),
+        ('qlib_expression_draft.code_hash', qlib_data),
+        ('qlib_expression_draft.metadata.code_hash', qlib_data.get('metadata') or {}),
+        ('hybrid_execution_scaffold.code_hash', hybrid_data),
+        ('hybrid_execution_scaffold.metadata.code_hash', hybrid_data.get('metadata') or {}),
+        ('handoff_to_step4.code_hash', handoff),
+        ('handoff_to_step4.metadata.code_hash', handoff.get('metadata') or {}),
+    ]
+    hashes: list[tuple[str, str]] = []
+    for label, identity in identity_sources:
+        if isinstance(identity, dict) and identity.get('code_hash'):
+            hashes.append((label, str(identity.get('code_hash'))))
+    for label, data in metadata_sources:
+        if isinstance(data, dict) and data.get('code_hash'):
+            hashes.append((label, str(data.get('code_hash'))))
+    return hashes
+
+
+def scan_direct_code_ast(text: str) -> None:
+    tree = ast.parse(text)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'shift':
+            if node.args:
+                arg = node.args[0]
+                if (
+                    isinstance(arg, ast.UnaryOp)
+                    and isinstance(arg.op, ast.USub)
+                    and isinstance(arg.operand, ast.Constant)
+                    and isinstance(arg.operand.value, int)
+                ):
+                    hits.append({'pattern': 'ast.shift_negative', 'line': getattr(node, 'lineno', None)})
+        if isinstance(node, ast.Subscript):
+            key = None
+            raw_slice = node.slice
+            if isinstance(raw_slice, ast.Constant) and isinstance(raw_slice.value, str):
+                key = raw_slice.value
+            if key and re.search(r'(future|next|label|target|y_true|lookahead)', key, flags=re.IGNORECASE):
+                hits.append({'pattern': 'ast.suspicious_column', 'line': getattr(node, 'lineno', None), 'column': key})
+    if hits:
+        raise AssertionError(f'BLOCK_DIRECT_CODE_LEAKAGE_PATTERN: {hits}')
+
+
+def import_module_from_path(path: Path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'cannot import generated direct_code artifact: {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
+    import pandas as pd
+
+    module = import_module_from_path(path)
+    compute = getattr(module, 'compute_factor', None)
+    if compute is None or not callable(compute):
+        raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor missing')
+    daily_df = pd.DataFrame({
+        'ts_code': ['000001.SZ', '000002.SZ'],
+        'trade_date': ['20260101', '20260101'],
+        'open': [10.0, 20.0],
+        'close': [11.0, 19.0],
+        'high': [11.5, 20.5],
+        'low': [9.8, 18.8],
+        'vol': [1000.0, 2000.0],
+        'pct_chg': [1.0, -1.0],
+    })
+    minute_df = pd.DataFrame(columns=['ts_code', 'trade_date', 'trade_time', 'close', 'vol'])
+    signature = inspect.signature(compute)
+    try:
+        if 'daily_df' in signature.parameters:
+            result = compute(daily_df=daily_df, minute_df=minute_df)
+        else:
+            result = compute(minute_df, daily_df)
+    except TypeError:
+        result = compute(daily_df, minute_df)
+    if not isinstance(result, pd.DataFrame):
+        raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor must return DataFrame')
+    if len(result) <= 0:
+        raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output row count must be positive')
+    required = {'ts_code', 'trade_date'}
+    missing = required - set(result.columns)
+    if missing:
+        raise AssertionError(f'BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing columns {sorted(missing)}')
+    declared = output_schema.get('columns') if isinstance(output_schema, dict) else None
+    signal_candidates = [col for col in (declared or []) if col not in {'ts_code', 'trade_date'}]
+    signal_candidates.extend(['factor_value', 'signal'])
+    if not any(col in result.columns for col in signal_candidates):
+        raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing factor_value or declared signal column')
+
+
+def validate_direct_code_mode(
+    spec: dict,
+    plan: dict,
+    qlib_data: dict,
+    hybrid_data: dict,
+    *,
+    manifest: dict | None,
+    handoff: dict,
+    code_dir: Path,
+    stub: Path,
+    real_impl: Path,
+) -> None:
+    contract = spec.get('implementation_contract') or {}
+    identity = spec.get('artifact_identity') or {}
+    assert contract.get('code_contract'), 'BLOCK_UNSUPPORTED_DIRECT_CODE_VALIDATION: direct_code requires code_contract'
+    assert identity.get('code_hash') or identity.get('code_contract_hash'), 'direct_code requires code_hash or code_contract_hash'
+    output_schema = plan.get('output_schema') or contract.get('output_schema') or {}
+    assert output_schema, 'direct_code requires declared output schema'
+    candidates = candidate_direct_code_paths(
+        manifest=manifest,
+        qlib_data=qlib_data,
+        hybrid_data=hybrid_data,
+        handoff=handoff,
+        code_dir=code_dir,
+        stub=stub,
+        real_impl=real_impl,
+    )
+    implementation_path = next((path for path in candidates if path and path.exists() and path.suffix == '.py'), None)
+    assert implementation_path is not None, f'BLOCK_DIRECT_CODE_ARTIFACT_MISSING: checked {[str(p) for p in candidates]}'
+    actual_code_hash = hashlib.sha256(implementation_path.read_bytes()).hexdigest()
+    declared_hashes = collect_declared_direct_code_hashes(spec, plan, qlib_data, hybrid_data, handoff)
+    if not declared_hashes:
+        raise AssertionError('BLOCK_DIRECT_CODE_HASH_MISSING: direct_code formal artifact requires code_hash')
+    for label, declared_hash in declared_hashes:
+        if declared_hash != actual_code_hash:
+            raise AssertionError(
+                f'BLOCK_DIRECT_CODE_HASH_MISMATCH: {label}={declared_hash} '
+                f'actual_code_hash={actual_code_hash} path={implementation_path}'
+            )
+
+    text = implementation_path.read_text(encoding='utf-8')
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    extra_patterns = list(code_contract.get('forbidden_patterns') or contract.get('forbidden_patterns') or [])
+    scan_direct_code_text(text, extra_patterns)
+    scan_direct_code_ast(text)
+    run_direct_code_fixture_smoke(implementation_path, output_schema)
+
+
+def custom_block_source(block: dict) -> str:
+    return str(block.get('source_code') or block.get('code') or block.get('custom_source') or '')
+
+
+def custom_block_hash(block: dict) -> str:
+    source = custom_block_source(block)
+    normalized = dict(block)
+    normalized['source_code'] = source
+    normalized.pop('custom_block_hash', None)
+    return stable_hash({'source_code': source, 'contract': normalized})
+
+
+def assert_hybrid_custom_source_safe(block: dict) -> None:
+    source = custom_block_source(block)
+    if not source.strip():
+        raise AssertionError('BLOCK_INVALID_HYBRID_CONTRACT: custom block source_code missing')
+    patterns = list(dict.fromkeys(FORBIDDEN_DIRECT_CODE_PATTERNS + [str(p) for p in (block.get('forbidden_patterns') or []) if p]))
+    hits = []
+    for pattern in patterns:
+        try:
+            regex = re.compile(pattern, flags=re.IGNORECASE)
+        except re.error as exc:
+            raise AssertionError(f'BLOCK_HYBRID_CUSTOM_BLOCK_INVALID_FORBIDDEN_PATTERN: pattern={pattern!r}, error={exc}') from exc
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if regex.search(line):
+                hits.append({'pattern': pattern, 'line': lineno, 'text': line.strip()[:180]})
+    if hits:
+        raise AssertionError(f'BLOCK_HYBRID_CUSTOM_BLOCK_LEAKAGE_PATTERN: {hits}')
+    try:
+        scan_direct_code_ast(source)
+    except AssertionError as exc:
+        raise AssertionError(f'BLOCK_HYBRID_CUSTOM_BLOCK_LEAKAGE_PATTERN: {exc}') from exc
+
+
+def assert_hybrid_boundary(boundary: dict, custom_blocks: list[dict]) -> None:
+    assert isinstance(boundary, dict) and boundary, 'BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING'
+    operator_outputs = set(boundary.get('operator_outputs') or [])
+    custom_inputs = set(boundary.get('custom_inputs') or [])
+    custom_outputs = set(boundary.get('custom_outputs') or [])
+    assert operator_outputs, 'BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: operator_outputs missing'
+    assert operator_outputs.issubset(custom_inputs), 'BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: custom_inputs must include operator_outputs'
+    assert 'factor_value' in custom_outputs, 'BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: custom_outputs must include factor_value'
+    if boundary.get('allow_operator_output_overwrite') is True:
+        return
+    protected = set(boundary.get('protected_operator_outputs') or operator_outputs)
+    for block in custom_blocks:
+        source = custom_block_source(block)
+        for name in protected:
+            patterns = [
+                rf'\[[^\\n\\]]*["\\\']{re.escape(name)}["\\\'][^\\n\\]]*\]\s*=',
+                rf'\.loc\[[^\\n]*["\\\']{re.escape(name)}["\\\'][^\\n]*\]\s*=',
+                rf'\.assign\([^\\n)]*{re.escape(name)}\s*=',
+            ]
+            if any(re.search(pattern, source) for pattern in patterns):
+                raise AssertionError(f'BLOCK_HYBRID_OPERATOR_OUTPUT_OVERWRITE: {name}')
+
+
+def candidate_hybrid_code_path(handoff: dict, code_dir: Path, stub: Path, real_impl: Path) -> Path | None:
+    for raw in [handoff.get('factor_impl_ref'), handoff.get('factor_impl_stub_ref'), real_impl, stub]:
+        path = raw if isinstance(raw, Path) else resolve_path(raw, code_dir=code_dir)
+        if path and path.exists() and path.suffix == '.py':
+            return path
+    return None
+
+
+def validate_hybrid_mode(
+    spec: dict,
+    plan: dict,
+    qlib_data: dict,
+    hybrid_data: dict,
+    *,
+    handoff: dict,
+    code_dir: Path,
+    stub: Path,
+    real_impl: Path,
+    prep: dict,
+) -> None:
+    identity = spec.get('artifact_identity') or {}
+    contract = spec.get('implementation_contract') or {}
+    assert contract.get('hybrid_contract_version') == HYBRID_CONTRACT_VERSION, (
+        f'BLOCK_INVALID_HYBRID_CONTRACT: hybrid_contract_version must be {HYBRID_CONTRACT_VERSION}'
+    )
+    operator_subgraph = contract.get('operator_subgraph') or {}
+    formula_ir = operator_subgraph.get('formula_ir') if isinstance(operator_subgraph.get('formula_ir'), dict) else {}
+    custom_blocks = contract.get('custom_blocks') or []
+    boundary = contract.get('boundary') or {}
+    assert formula_ir, 'BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph.formula_ir missing'
+    assert formula_ir.get('parse_status') == 'success', f"BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph formula_ir parse failed {formula_ir.get('parse_errors')}"
+    assert isinstance(custom_blocks, list) and custom_blocks, 'BLOCK_INVALID_HYBRID_CONTRACT: custom_blocks missing'
+    assert_hybrid_boundary(boundary, custom_blocks)
+    for key in ['formula_hash', 'custom_block_hash', 'hybrid_hash']:
+        assert identity.get(key) and contract.get(key), f'BLOCK_INVALID_HYBRID_CONTRACT: {key} missing'
+        assert identity.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: identity {key} mismatch'
+        assert plan.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: implementation_plan {key} mismatch'
+        assert hybrid_data.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: hybrid_scaffold {key} mismatch'
+
+    operator_schema = infer_operator_schema(prep)
+    resolved_fields = formula_ir.get('resolved_fields') or {}
+    if operator_schema.get('strict'):
+        available = {str(col).lower() for col in operator_schema.get('columns') or []}
+        missing = [
+            {'field': field, 'resolved_field': resolved}
+            for field, resolved in resolved_fields.items()
+            if str(resolved).lower() not in available
+        ]
+        assert not missing, f'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in {operator_schema.get("source")}: {missing}'
+    for operator in formula_ir.get('operator_set') or []:
+        meta = operator_meta(str(operator))
+        assert meta.get('supports_pandas') is True, f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}'
+    assert formula_ir.get('formula_hash') == contract.get('formula_hash'), 'BLOCK_HYBRID_HASH_MISMATCH: formula_hash mismatch'
+
+    block_hash_inputs = []
+    for block in custom_blocks:
+        assert_hybrid_custom_source_safe(block)
+        actual = custom_block_hash(block)
+        declared = block.get('custom_block_hash')
+        assert declared == actual, f'BLOCK_HYBRID_HASH_MISMATCH: custom block {block.get("name")} hash mismatch'
+        block_hash_inputs.append({'name': block.get('name'), 'custom_block_hash': declared})
+    actual_custom_hash = stable_hash(block_hash_inputs)
+    assert actual_custom_hash == contract.get('custom_block_hash'), 'BLOCK_HYBRID_HASH_MISMATCH: custom_block_hash mismatch'
+    actual_hybrid_hash = stable_hash({
+        'formula_hash': contract.get('formula_hash'),
+        'custom_block_hash': contract.get('custom_block_hash'),
+        'boundary': boundary,
+    })
+    assert actual_hybrid_hash == contract.get('hybrid_hash'), 'BLOCK_HYBRID_HASH_MISMATCH: hybrid_hash mismatch'
+
+    implementation_path = candidate_hybrid_code_path(handoff, code_dir, stub, real_impl)
+    assert implementation_path is not None, 'BLOCK_HYBRID_ARTIFACT_MISSING'
+    text = implementation_path.read_text(encoding='utf-8')
+    assert '<FACTORFORGE_OPERATOR_SUBGRAPH_BEGIN>' in text and '<FACTORFORGE_OPERATOR_SUBGRAPH_END>' in text, 'BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: operator section markers missing'
+    assert '<FACTORFORGE_CUSTOM_BLOCK_BEGIN>' in text and '<FACTORFORGE_CUSTOM_BLOCK_END>' in text, 'BLOCK_HYBRID_BOUNDARY_SCHEMA_MISSING: custom block markers missing'
+    actual_code_hash = hashlib.sha256(implementation_path.read_bytes()).hexdigest()
+    for label, identity_payload in [
+        ('implementation_plan_master', plan.get('artifact_identity') or {}),
+        ('qlib_expression_draft', qlib_data.get('artifact_identity') or {}),
+        ('hybrid_execution_scaffold', hybrid_data.get('artifact_identity') or {}),
+        ('handoff_to_step4', handoff.get('artifact_identity') or {}),
+    ]:
+        assert identity_payload.get('code_hash') == actual_code_hash, f'BLOCK_HYBRID_HASH_MISMATCH: {label}.code_hash mismatch'
+
+    module = import_module_from_path(implementation_path)
+    compute_operator = getattr(module, 'compute_operator_subgraph', None)
+    compute_factor = getattr(module, 'compute_factor', None)
+    assert callable(compute_operator), 'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: compute_operator_subgraph missing'
+    assert callable(compute_factor), 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: compute_factor missing'
+    fixture = make_operator_fixture()
+    fixture['is_tradable'] = [idx % 2 == 0 for idx in range(len(fixture))]
+    fixture['custom_scale'] = 2.0
+    fixture['universe_flag'] = [1 if idx % 3 else 0 for idx in range(len(fixture))]
+    reference = evaluate_formula_frame(formula_ir, fixture).rename(columns={'factor_value': 'operator_value'})
+    generated_operator = compute_operator(fixture.copy())
+    if 'operator_value' not in generated_operator.columns:
+        raise AssertionError('BLOCK_HYBRID_OPERATOR_PARITY_FAILED: operator output missing operator_value')
+    try:
+        parity = compare_outputs(
+            reference.rename(columns={'operator_value': 'factor_value'}),
+            generated_operator.rename(columns={'operator_value': 'factor_value'}),
+        )
+    except AssertionError as exc:
+        detail = str(exc).replace('BLOCK_OPERATOR_PARITY_FAILED:', '').strip()
+        raise AssertionError(f'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: {detail}') from exc
+    assert parity.get('status') == 'PASS', f'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: {parity}'
+    try:
+        combined = compute_factor(daily_df=fixture.copy(), minute_df=None)
+    except TypeError:
+        combined = compute_factor(fixture.copy(), None)
+    required = {'ts_code', 'trade_date', 'factor_value'}
+    assert hasattr(combined, 'columns'), 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output is not DataFrame-like'
+    assert len(combined) > 0, 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output row count must be positive'
+    assert required.issubset(set(combined.columns)), f'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output missing {sorted(required - set(combined.columns))}'
+
+
+def validate_mode_specific(
+    spec: dict,
+    plan: dict,
+    qlib_data: dict,
+    hybrid_data: dict,
+    *,
+    manifest: dict | None,
+    handoff: dict,
+    code_dir: Path,
+    stub: Path,
+    real_impl: Path,
+    prep: dict,
+) -> None:
+    mode = (spec.get('artifact_identity') or {}).get('implementation_mode')
+    if mode == 'operator':
+        validate_operator_mode(
+            spec,
+            plan,
+            qlib_data,
+            hybrid_data,
+            manifest=manifest,
+            handoff=handoff,
+            code_dir=code_dir,
+            stub=stub,
+            real_impl=real_impl,
+            prep=prep,
+        )
+    elif mode == 'direct_code':
+        validate_direct_code_mode(
+            spec,
+            plan,
+            qlib_data,
+            hybrid_data,
+            manifest=manifest,
+            handoff=handoff,
+            code_dir=code_dir,
+            stub=stub,
+            real_impl=real_impl,
+        )
+    elif mode == 'hybrid':
+        validate_hybrid_mode(
+            spec,
+            plan,
+            qlib_data,
+            hybrid_data,
+            handoff=handoff,
+            code_dir=code_dir,
+            stub=stub,
+            real_impl=real_impl,
+            prep=prep,
+        )
+    else:
+        raise AssertionError(f'BLOCK_UNSUPPORTED_IMPLEMENTATION_MODE: {mode}')
 
 
 def assert_step2_context(label: str, ctx: dict):
@@ -94,11 +862,6 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
             'Step3B generated_code directory contains Step4-only artifacts: '
             + ', '.join(str(path.name) for path in forbidden_files)
         )
-    for key in ['expected_failure_modes', 'reuse_instruction_for_future_agents']:
-        assert not any(str(item).startswith('missing_') for item in ctx.get(key, [])), (
-            f'{label}.step2_research_context.{key} still carries a missing_* sentinel; rerun Step2 first'
-        )
-
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
@@ -110,24 +873,96 @@ if __name__ == '__main__':
     if not rid:
         raise SystemExit('validate_step3b.py requires --report-id or --manifest')
 
-    impl = OBJ / 'implementation_plan_master' / f'implementation_plan_master__{rid}.json'
+    if os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1' and not _manifest:
+        raise SystemExit('BLOCKED_MISSING_RUNTIME_MANIFEST: formal Step3B validation requires manifest_identity.')
+
+    spec_path = (
+        nested_path(_manifest, 'step_io', 'step2', 'factor_spec_master')
+        or nested_path(_manifest, 'step_io', 'step3', 'inputs', 'factor_spec_master')
+        or OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
+    )
+    impl = (
+        nested_path(_manifest, 'step_io', 'step3', 'outputs', 'implementation_plan_master')
+        or OBJ / 'implementation_plan_master' / f'implementation_plan_master__{rid}.json'
+    )
     handoff = OBJ / 'handoff' / f'handoff_to_step4__{rid}.json'
     prep_path = OBJ / 'data_prep_master' / f'data_prep_master__{rid}.json'
-    stub = CODE / rid / f'factor_impl_stub__{rid}.py'
-    real_impl = CODE / rid / f'factor_impl__{rid}.py'
-    qlib = CODE / rid / f'qlib_expression_draft__{rid}.json'
-    hybrid = CODE / rid / f'hybrid_execution_scaffold__{rid}.json'
+    manifest_code_dir = (
+        (_manifest or {})
+        .get('step_io', {})
+        .get('step3b', {})
+        .get('outputs', {})
+        .get('generated_code_dir')
+    )
+    code_dir = Path(manifest_code_dir) if manifest_code_dir else CODE / rid
+    stub = code_dir / f'factor_impl_stub__{rid}.py'
+    real_impl = code_dir / f'factor_impl__{rid}.py'
+    qlib = code_dir / f'qlib_expression_draft__{rid}.json'
+    hybrid = code_dir / f'hybrid_execution_scaffold__{rid}.json'
 
+    spec_data = load(spec_path) if spec_path.exists() else {}
     data = load(impl)
     h = load(handoff)
     prep = load(prep_path)
     qlib_data = load(qlib)
     hybrid_data = load(hybrid)
+    spec_identity = assert_artifact_identity('factor_spec_master', spec_data, role='factor_spec_master')
+    manifest_identity = (_manifest or {}).get('manifest_identity') or None
+    if _manifest:
+        assert manifest_identity, 'runtime manifest must carry manifest_identity'
+        manifest_identity = {**manifest_identity, 'artifact_role': spec_identity.get('artifact_role'), 'producer': spec_identity.get('producer')}
+        assert_identity_matches_strict(
+            spec_identity,
+            manifest_identity,
+            expected_label='factor_spec_master',
+            actual_label='manifest',
+            allowed_role_transitions={(spec_identity.get('artifact_role'), spec_identity.get('artifact_role'))},
+        )
+    plan_identity = assert_artifact_identity('implementation_plan_master', data, expected=spec_identity, role='implementation_plan_master')
+    handoff_identity = assert_artifact_identity('handoff_to_step4', h, expected=spec_identity, role='handoff_to_step4')
+    qlib_identity = assert_artifact_identity('qlib_expression_draft', qlib_data, expected=spec_identity, role='generated_code')
+    hybrid_identity = assert_artifact_identity('hybrid_execution_scaffold', hybrid_data, expected=spec_identity, role='generated_code')
+    validate_family_plugin_artifacts(
+        spec_data,
+        [
+            ('implementation_plan_master', data),
+            ('qlib_expression_draft', qlib_data),
+            ('hybrid_execution_scaffold', hybrid_data),
+            ('handoff_to_step4', h),
+        ],
+    )
+    assert plan_identity.get('implementation_mode') == handoff_identity.get('implementation_mode') == qlib_identity.get('implementation_mode') == hybrid_identity.get('implementation_mode'), 'cross-mode artifact contamination detected'
+    top_modes = {
+        'factor_spec_master.implementation_mode': spec_data.get('implementation_mode'),
+        'implementation_plan_master.implementation_mode': data.get('implementation_mode'),
+        'handoff_to_step4.implementation_mode': h.get('implementation_mode'),
+        'qlib_expression_draft.implementation_mode': declared_mode('qlib_expression_draft', qlib_data),
+        'hybrid_execution_scaffold.implementation_mode': declared_mode('hybrid_execution_scaffold', hybrid_data),
+    }
+    assert set(top_modes.values()) == {spec_identity.get('implementation_mode')}, f'top-level implementation_mode mismatch: {top_modes}'
+    mode_decision = assert_mode_decision_chain(spec_identity, data, qlib_data, hybrid_data, h)
+    if mode_decision.get('selected_mode') == 'blocked':
+        assert h.get('step3b_ready') is False, 'blocked Step3B handoff must set step3b_ready=false'
+        raise AssertionError(
+            f'BLOCK_STEP3B_IMPLEMENTATION_BLOCKED: {mode_decision.get("final_decision_reason")}'
+        )
+    validate_mode_specific(
+        spec_data,
+        data,
+        qlib_data,
+        hybrid_data,
+        manifest=_manifest,
+        handoff=h,
+        code_dir=code_dir,
+        stub=stub,
+        real_impl=real_impl,
+        prep=prep,
+    )
     expected_step3a_ready = prep.get('feasibility') in {'ready', 'proxy_ready'}
     assert data.get('report_id') == rid, f'implementation_plan_master.report_id mismatch: expected {rid}, got {data.get("report_id")}'
     assert h.get('report_id') == rid, f'handoff_to_step4.report_id mismatch: expected {rid}, got {h.get("report_id")}'
     assert prep.get('report_id') == rid, f'data_prep_master.report_id mismatch: expected {rid}, got {prep.get("report_id")}'
-    assert data['implementation_mode'] in {'direct_python', 'qlib_operator', 'hybrid'}
+    assert data['implementation_mode'] in {'operator', 'direct_code', 'hybrid'}
     assert stub.exists()
     assert qlib.exists()
     assert hybrid.exists()
@@ -176,6 +1011,8 @@ if __name__ == '__main__':
         first_run_outputs = data.get('first_run_outputs') or h.get('first_run_outputs')
         assert isinstance(first_run_outputs, dict), 'Step 3B schema must expose first_run_outputs when local snapshots exist'
         assert first_run_outputs.get('status') in {'ready', 'partial', 'pending'}
+        if first_run_outputs.get('status') == 'pending':
+            assert first_run_outputs.get('no_first_run_reason'), 'pending first_run_outputs must carry no_first_run_reason'
         if first_run_outputs.get('status') == 'ready':
             assert first_run_outputs.get('output_paths'), 'ready first_run_outputs must carry output_paths'
             assert first_run_outputs.get('run_metadata_path'), 'ready first_run_outputs must carry run_metadata_path'
@@ -183,5 +1020,7 @@ if __name__ == '__main__':
     else:
         first_run_outputs = data.get('first_run_outputs') or h.get('first_run_outputs') or {}
         assert first_run_outputs.get('status') in {None, 'pending'}, 'Step 3B should stay pending when no executable local snapshots exist'
+        if first_run_outputs.get('status') == 'pending':
+            assert first_run_outputs.get('no_first_run_reason'), 'pending first_run_outputs must carry no_first_run_reason'
 
     print('RESULT: PASS')

@@ -248,6 +248,13 @@ factorforge/objects/research_iteration_master/research_iteration_master__<report
 
 The writeback must include transferable patterns, anti-patterns, failure regimes, revision insights, reuse instructions, and innovative idea seeds.
 
+Step5/6 writeback is provenance-gated:
+
+- No provenance, no archive.
+- No evidence identity, no promotion.
+- Similar case knowledge is not same-factor evidence unless artifact identity matches.
+- Iterate creates a child branch and never overwrites `main`.
+
 ### Required Research Memo
 
 Step6 should produce a substantive `research_memo` including:
@@ -411,4 +418,14 @@ python3 scripts/query_factorforge_retrieval_index.py --query "long-side monotoni
 6. `docs/operations/factorforge-math-research-discipline.zh-CN.md`
 7. `knowledge/因子工厂/Home.md`
 8. `knowledge/因子工厂/知识库/因子迭代方法论.md`
+## Correctness Over Completion
 
+FactorForge is a general-purpose factor research framework, not a UBL/CPV/Alpha101-specific calculator. Historical factors such as UBL, CPV, Alpha001/012/013, and Alpha101 formulas are examples, fixtures, regression tests, or explicit family plugins only; they are never generic fallbacks.
+
+Formal implementation follows `operator -> hybrid -> direct_code -> BLOCK`. Unsupported operators, unresolved field aliases, missing identity/hash lineage, skipped Step4 evidence, or unsafe direct code must block with a clear reason. Do not generate code for a different factor just to complete the workflow.
+
+Operator mode is Formula IR based: `formula_text -> formula_ir -> operator registry -> pandas reference evaluator -> qlib bridge -> generated pandas implementation -> parity validation`. Qlib support is explicit; unsupported qlib operators are recorded as unsupported and never silently approximated. Parser, alias, code hash, or parity failures must block before Step4.
+
+Hybrid mode is `operator_subgraph + custom_block` with a required boundary schema and `hybrid_hash`. The operator subgraph must pass Formula IR parity, the custom block must pass leakage/hash/smoke checks, and protected operator outputs cannot be overwritten silently.
+
+Family plugins require explicit Step2 declaration with `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and `factorforge_family_plugin_decision_v1` structured evidence. `factor_id` and free-text keywords may suggest human review, but they must not execute plugin code.

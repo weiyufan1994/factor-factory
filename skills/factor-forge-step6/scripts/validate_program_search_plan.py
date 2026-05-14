@@ -18,10 +18,39 @@ VALID_SEARCH_MODES = {
     'research_audit',
     'bayesian_search',
     'genetic_algorithm',
+    'mechanism_challenge',
     'reinforcement_learning_advisory',
     'multi_agent_parallel_exploration',
 }
-VALID_ROLES = {'audit', 'exploit', 'explore', 'portfolio', 'macro'}
+VALID_ROLES = {'audit', 'exploit', 'explore', 'macro'}
+REQUIRED_HARD_GUARDS = {
+    'no_portfolio_expression_repair',
+    'no_short_leg_adoption',
+    'no_decile_trading',
+    'no_shared_clean_data_mutation',
+}
+FORBIDDEN_SEARCH_TERMS = [
+    'portfolio expression',
+    'portfolio',
+    'rebalance',
+    'short leg',
+    'short-leg',
+    'short_side',
+    'short side',
+    'long-short',
+    'long short',
+    'decile trading',
+    'buy decile',
+    'sell decile',
+    'shared clean data',
+    'clean data mutation',
+    'mutate clean data',
+]
+SKIP_FORBIDDEN_SCAN_KEYS = {
+    'hard_guards',
+    'forbidden_search',
+    'search_policy_decision_source',
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -55,18 +84,41 @@ def nested(root: dict[str, Any], *keys: str) -> Any:
     return cur
 
 
+def collect_forbidden_text_hits(value: Any, path: str = 'branch') -> list[dict[str, str]]:
+    hits: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in SKIP_FORBIDDEN_SCAN_KEYS:
+                continue
+            hits.extend(collect_forbidden_text_hits(child, f'{path}.{key}'))
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            hits.extend(collect_forbidden_text_hits(child, f'{path}[{idx}]'))
+    elif isinstance(value, str):
+        lowered = value.lower()
+        for term in FORBIDDEN_SEARCH_TERMS:
+            if term in lowered:
+                hits.append({'path': path, 'pattern': term})
+    return hits
+
+
 def validate_branch(branch: dict[str, Any], index: int) -> list[dict[str, Any]]:
     prefix = f'branch_{index}_{branch.get("branch_id") or "unknown"}'
     market = branch.get('market_structure_hypothesis') or {}
     priors = branch.get('knowledge_priors') or {}
     budget = branch.get('budget') or {}
+    hard_guards = set(branch.get('hard_guards') or [])
+    forbidden_hits = collect_forbidden_text_hits(branch)
     return [
         check(f'{prefix}_branch_id_present', nonempty_str(branch.get('branch_id')), 'branch_id missing'),
         check(f'{prefix}_role_enum', branch.get('branch_role') in VALID_ROLES, f'invalid branch_role: {branch.get("branch_role")}'),
         check(f'{prefix}_search_mode_enum', branch.get('search_mode') in VALID_SEARCH_MODES, f'invalid search_mode: {branch.get("search_mode")}'),
+        check(f'{prefix}_status_proposed', branch.get('status') == 'proposed', 'branch status must be proposed'),
         check(f'{prefix}_approval_gate', branch.get('requires_human_approval_before_execution') is True, 'branch must require human approval before execution'),
+        check(f'{prefix}_execution_disabled', branch.get('execution_allowed_by_default') is False, 'branch execution_allowed_by_default must be false'),
         check(f'{prefix}_research_question_present', nonempty_str(branch.get('research_question')), 'research_question missing'),
         check(f'{prefix}_hypothesis_present', nonempty_str(branch.get('hypothesis')), 'hypothesis missing'),
+        check(f'{prefix}_mechanism_target_present', nonempty_str(branch.get('mechanism_target')), 'mechanism_target missing'),
         check(f'{prefix}_return_source_present', nonempty_str(branch.get('return_source_target')), 'return_source_target missing'),
         check(f'{prefix}_market_structure_hypothesis_present', nonempty_str(market.get('hypothesis')), 'market structure hypothesis missing'),
         check(f'{prefix}_knowledge_priors_present', isinstance(priors, dict) and bool(priors), 'knowledge_priors missing'),
@@ -81,6 +133,8 @@ def validate_branch(branch: dict[str, Any], index: int) -> list[dict[str, Any]]:
         check(f'{prefix}_success_criteria_present', nonempty_list(branch.get('success_criteria')), 'success_criteria missing'),
         check(f'{prefix}_falsification_tests_present', nonempty_list(branch.get('falsification_tests')), 'falsification_tests missing'),
         check(f'{prefix}_hard_guards_present', nonempty_list(branch.get('hard_guards')), 'hard_guards missing'),
+        check(f'{prefix}_required_hard_guards_present', REQUIRED_HARD_GUARDS.issubset(hard_guards), f'hard_guards must contain {sorted(REQUIRED_HARD_GUARDS)}'),
+        check(f'{prefix}_no_forbidden_search_terms', not forbidden_hits, f'branch contains forbidden search terms: {forbidden_hits}'),
         check(f'{prefix}_expected_outputs_present', nonempty_list(branch.get('expected_outputs')), 'expected_outputs missing'),
         check(
             f'{prefix}_research_first_guardrail_present',
@@ -111,18 +165,35 @@ def main() -> None:
         branches = plan.get('branches') or []
         checks.extend([
             check('report_id_match', plan.get('report_id') == rid, 'report_id mismatch'),
-            check('status_pending_approval', plan.get('status') == 'pending_human_approval', 'program search plan must start pending_human_approval'),
+            check('status_valid', plan.get('status') in {'pending_human_approval', 'no_search_recommended', 'blocked_missing_branch_templates'}, 'program search plan must start pending_human_approval, no_search_recommended, or blocked_missing_branch_templates'),
             check('purpose_research_first', 'Algorithms are helpers' in str(plan.get('purpose') or ''), 'purpose must state algorithms are helpers, not replacements'),
             check('research_context_present', isinstance(plan.get('research_context'), dict) and bool(plan.get('research_context')), 'research_context missing'),
             check('return_source_in_context', nonempty_str(nested(plan, 'research_context', 'return_source')), 'research_context.return_source missing'),
             check('market_structure_in_context', nonempty_str(nested(plan, 'research_context', 'market_structure', 'hypothesis')), 'research_context.market_structure.hypothesis missing'),
             check('branch_generation_rule_present', nonempty_list(plan.get('branch_generation_rule')), 'branch_generation_rule missing'),
-            check('branches_present', nonempty_list(branches), 'branches missing'),
+            check('branches_present_or_terminal_status', plan.get('status') in {'no_search_recommended', 'blocked_missing_branch_templates'} or nonempty_list(branches), 'branches missing'),
+            check('blocked_missing_templates_branches_empty', plan.get('status') != 'blocked_missing_branch_templates' or branches == [], 'blocked_missing_branch_templates must have branches=[]'),
+            check(
+                'blocked_missing_templates_blocker_present',
+                plan.get('status') != 'blocked_missing_branch_templates' or 'missing_search_policy_branch_templates' in set(plan.get('blockers') or []),
+                'blocked_missing_branch_templates must include missing_search_policy_branch_templates blocker',
+            ),
             check('selection_protocol_present', isinstance(plan.get('selection_protocol'), dict) and bool(plan.get('selection_protocol')), 'selection_protocol missing'),
-            check('selection_protocol_not_raw_metric_only', 'raw metric' in str(nested(plan, 'selection_protocol', 'primary_rule') or '').lower(), 'selection protocol must reject raw-metric-only selection'),
+            check(
+                'selection_protocol_not_raw_metric_only',
+                plan.get('status') in {'no_search_recommended', 'blocked_missing_branch_templates'} or 'raw metric' in str(nested(plan, 'selection_protocol', 'primary_rule') or '').lower(),
+                'selection protocol must reject raw-metric-only selection',
+            ),
+            check('search_policy_decision_present', isinstance(plan.get('search_policy_decision'), dict) and bool(plan.get('search_policy_decision')), 'search_policy_decision missing from program search plan'),
         ])
+        if plan.get('status') == 'blocked_missing_branch_templates':
+            checks.append(check(
+                'blocked_missing_templates_is_contract_failure',
+                False,
+                'blocked_missing_branch_templates: missing_search_policy_branch_templates',
+            ))
         roles = {branch.get('branch_role') for branch in branches if isinstance(branch, dict)}
-        checks.append(check('audit_or_explicit_research_guard_present', 'audit' in roles or bool(plan.get('branch_generation_rule')), 'plan should include audit branch or explicit research guard'))
+        checks.append(check('audit_or_explicit_research_guard_present', plan.get('status') in {'no_search_recommended', 'blocked_missing_branch_templates'} or 'audit' in roles or bool(plan.get('branch_generation_rule')), 'plan should include audit branch or explicit research guard'))
         for i, branch in enumerate(branches, start=1):
             if isinstance(branch, dict):
                 checks.extend(validate_branch(branch, i))
@@ -136,9 +207,12 @@ def main() -> None:
         ledger_ids = [b.get('branch_id') for b in ledger.get('branches') or [] if isinstance(b, dict)]
         checks.extend([
             check('ledger_report_id_match', ledger.get('report_id') == rid, 'ledger report_id mismatch'),
-            check('ledger_status_pending_approval', ledger.get('status') == 'pending_human_approval', 'ledger must start pending_human_approval'),
+            check('ledger_status_valid', ledger.get('status') in {'pending_human_approval', 'no_search_recommended', 'blocked_missing_branch_templates'}, 'ledger must start pending_human_approval, no_search_recommended, or blocked_missing_branch_templates'),
             check('ledger_branch_ids_match_plan', plan_ids == ledger_ids, 'ledger branch ids do not match plan branch ids'),
         ])
+        for i, branch in enumerate(ledger.get('branches') or [], start=1):
+            if isinstance(branch, dict):
+                checks.append(check(f'ledger_branch_{i}_execution_disabled', branch.get('execution_allowed_by_default') is False, 'ledger branch execution_allowed_by_default must be false'))
 
     has_block = any(item['status'] == 'BLOCK' for item in checks)
     has_warn = any(item['status'] == 'WARN' for item in checks)

@@ -265,6 +265,13 @@ factorforge/objects/research_knowledge_base/knowledge_record__<report_id>.json
 - reuse instructions；
 - innovative idea seeds。
 
+Step5/6 写回必须受 provenance gate 约束：
+
+- 没有 provenance，不归档。
+- 没有 evidence identity，不 promotion。
+- 相似案例知识不是同一因子证据，除非 artifact identity 匹配。
+- iterate 必须创建 child branch，不能覆盖 `main`。
+
 3. 研究迭代记录
 
 ```text
@@ -465,4 +472,14 @@ python3 scripts/query_factorforge_retrieval_index.py --query "long-side monotoni
 6. `docs/operations/factorforge-math-research-discipline.zh-CN.md`
 7. `knowledge/因子工厂/Home.md`
 8. `knowledge/因子工厂/知识库/因子迭代方法论.md`
+## 正确性优先于完成度
 
+FactorForge 是通用因子研究框架，不是 UBL/CPV/Alpha101 专用计算器。UBL、CPV、Alpha001/012/013、Alpha101 公式只能作为 examples、fixtures、regression tests 或显式 family plugin，绝不能作为 generic fallback。
+
+正式实现顺序是 `operator -> hybrid -> direct_code -> BLOCK`。unsupported operator、字段 alias 缺失、identity/hash lineage 不一致、Step4 evidence skipped、或 direct code 不安全，都必须明确 BLOCK。不能为了跑完流程而生成另一个因子的代码。
+
+Operator mode 基于 Formula IR：`formula_text -> formula_ir -> operator registry -> pandas reference evaluator -> qlib bridge -> generated pandas implementation -> parity validation`。qlib 支持必须显式声明；unsupported qlib operator 只能记录为 unsupported，不能静默近似。parser、alias、code hash 或 parity failure 必须在 Step4 前 BLOCK。
+
+Hybrid mode 是 `operator_subgraph + custom_block`，必须有 boundary schema 和 `hybrid_hash`。operator subgraph 必须通过 Formula IR parity，custom block 必须通过 leakage/hash/smoke 检查，受保护的 operator output 不能被静默覆盖。
+
+Family plugin 必须由 Step2 显式声明 `factor_family`、`family_plugin`、`family_plugin_allowed=true`，并写出 `factorforge_family_plugin_decision_v1` 结构化证据。`factor_id` 和 free-text 关键词最多只能建议人工复核，不能执行 plugin 代码。

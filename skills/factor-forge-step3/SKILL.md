@@ -22,7 +22,7 @@ It has two internal layers:
 - **Step 3B — Implementation Planning + Factor Code Generation + First Factor Value Run**
   - consumes Step 2 products directly: `factor_spec_master__{report_id}.json` plus optional `handoff_to_step3__{report_id}.json`
   - inherits Step 2 research context (`thesis`, `research_contract`, `math_discipline_review`, `learning_and_innovation`)
-  - chooses execution mode (`direct_python` / `qlib_operator` / `hybrid`)
+  - chooses execution mode (`direct_code` / `operator` / `hybrid`)
   - writes `implementation_plan_master`
   - emits editable first-version factor code artifacts for IDE-side refinement
   - embeds `step2_research_context` in implementation plan, code review comments, expression draft, scaffold, handoff, and first-run metadata
@@ -63,6 +63,7 @@ Optional:
 - `factorforge/generated_code/{report_id}/qlib_expression_draft__{report_id}.json`
 - `factorforge/generated_code/{report_id}/hybrid_execution_scaffold__{report_id}.json`
 - all Step 3B plan/code/scaffold/handoff artifacts must expose `step2_research_context`
+- all Step 3B plan/code/scaffold/handoff artifacts must expose `implementation_mode_decision`
 - first runnable factor values when Step 3A local snapshots are available:
   - `factorforge/runs/{report_id}/factor_values__{report_id}.parquet`
   - `factorforge/runs/{report_id}/factor_values__{report_id}.csv`
@@ -95,6 +96,7 @@ Optional:
 11. If a Step 3 or downstream Step 4 run depends on user choices not already fixed in artifacts — e.g. benchmark, topk, n_drop, holding horizon, deal price, account size, cost model, universe filter, or whether to run sample vs wider window — the skill must ask for confirmation before launching execution.
 12. Step 3B must not run Step4-style quantile NAV, IC analysis, portfolio charts, or evaluator loops. Step 3B's proof is first-run `factor_values` + metadata only; Step4 owns all metrics, quantile tables, NAV, and plots.
 13. Step 3B inputs and outputs must respect the shared data contract: `trade_date` may be read from `YYYYMMDD`, `YYYY-MM-DD`, or Timestamp sources, but outputs should be stable `YYYYMMDD`-compatible keys and Step4 must normalize via `factor_factory.data_access.normalize_trade_date_series`.
+14. Step 3B must write `implementation_mode_decision` with version `factorforge_implementation_mode_decision_v1` into implementation plan, generated-code metadata, handoff, first-run metadata when generated, and ultimate proof summary. The decision must record selected mode or `blocked`, mode attempts, failure/not-applicable reasons, correctness risk, and human-review status.
 
 ## Recommended execution chain
 
@@ -143,3 +145,34 @@ This skill is intended to be ClawHub-publishable after Step 3 references and con
 - Step 3A = data contract
 - Step 3B = code contract + editable first-version factor code
 - Step 4 = execute / backtest / diagnose
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Correctness Over Completion
+
+FactorForge is a general-purpose factor research framework, not a UBL/CPV/Alpha101-specific calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported operators, missing `formula_ir`, missing field aliases, unavailable parity, or unsafe direct code must BLOCK. UBL/CPV/shadow/candle/Williams builders are fixture/plugin-only and must never repair an unrelated spec.
+
+## Operator / Qlib Engine
+
+Operator mode is Formula-IR based. Step3B may select `operator` only when `formula_ir.parse_status=success`, every operator is registered, field aliases resolve against the Step3A data schema, and the generated pandas implementation passes reference parity. The generated metadata must state `implementation_source=formula_ir_pandas_codegen`, `formula_hash`, `operator_set`, `required_fields`, `resolved_fields`, and the qlib bridge result.
+
+The pandas reference evaluator is the correctness oracle for operator mode. Qlib expressions are a bridge artifact with explicit `supported` or `unsupported` status; unsupported qlib operators are not approximated or rewritten. If parser, registry, alias resolution, code hash, or parity validation fails, Step3B must BLOCK and write no formal factor values.
+
+Field alias resolution must prefer actual Step3A schema columns, then local snapshot header columns, and use the default schema only for plan-only/no-snapshot mode. If local snapshots are absent, pending first-run outputs must record `no_first_run_reason=no_local_snapshots_available`.
+
+## Hybrid Execution Engine
+
+Hybrid mode must execute as `operator_subgraph + custom_block`, not as unbounded Python. Step3B validates the operator subgraph through Formula IR/pandas parity, scans the custom block with the direct-code leakage rules, checks `formula_hash`, `custom_block_hash`, and `hybrid_hash`, and validates the boundary schema before writing ready artifacts.
+
+Generated hybrid code must expose `compute_operator_subgraph()`, `apply_custom_block()`, and `compute_factor()`, separated by `FACTORFORGE_OPERATOR_SUBGRAPH` and `FACTORFORGE_CUSTOM_BLOCK` markers. Custom blocks may not overwrite protected operator outputs unless the boundary explicitly allows it.
+
+## Family Plugin Boundary
+
+UBL, CPV, shadow candlestick, candle, and Williams implementations may run only through `factor_factory.factor_families` after Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with structured evidence. Do not trigger a family plugin from `factor_id`, keywords, formula prose, or thesis text. Free-text matches may create a suggestion for human review, not an executable plugin selection.

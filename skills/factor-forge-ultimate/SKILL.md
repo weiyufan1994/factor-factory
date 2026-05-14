@@ -146,6 +146,43 @@ Default behavior:
 
 Never treat `build_clean_daily_layer.py` as a mandatory per-factor step.
 
+## Mac / EC2 / S3 Knowledge Sync
+
+Use this split for operational knowledge sharing:
+
+- GitHub is the canonical source for code, skills, contracts, and SOP documents.
+- Mac is the primary authoring and review environment for Factor Forge knowledge.
+- S3 is the durable shared object store for Factor Forge structured knowledge bundles.
+- EC2 should pull the latest Mac-published knowledge bundle from S3 and keep a local cache for compute.
+- Tailscale may be used as a convenience path, but it must not be the only way EC2 can access knowledge; Mac power/network state must not block EC2 from pulling the last published bundle.
+
+Mac publishes the authoritative object bundle with:
+
+```bash
+python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
+  --runtime-root /Users/humphrey/projects/factor-factory \
+  --upload \
+  --update-latest \
+  --bucket yufan-data-lake \
+  --prefix factorforge-knowledge/mac-authoritative \
+  --source-role mac_authoritative
+```
+
+EC2 pulls the authoritative object bundle with:
+
+```bash
+/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python \
+  scripts/sync_factorforge_knowledge_bundle.py apply \
+  --runtime-root /home/ubuntu/.openclaw/workspace/factorforge \
+  --source s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json \
+  --apply \
+  --rebuild-index
+```
+
+The sync tool must verify the latest manifest sha256 before applying a bundle. Protected records such as official library, factor cases, handoffs, and validation evidence must not be overwritten by default.
+
+Full SOP: `docs/operations/factorforge-knowledge-sync-sop.zh-CN.md`.
+
 
 ## Mandatory Single Entry Wrapper
 

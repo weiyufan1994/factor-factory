@@ -14,8 +14,8 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
-REPORT_ALPHA013_LIKE = "STEP6_INTEL_ALPHA013_LIKE_ADVISORY_MECHANISM_CHALLENGE_BRANCH"
-REPORT_IDS = [REPORT_ALPHA013_LIKE]
+REPORT_MANUAL_DISPATCH = "STEP6_INTEL_LONG_SIDE_NEGATIVE_REVISION"
+REPORT_IDS = [REPORT_MANUAL_DISPATCH]
 POLLUTION_MARKERS = ["factorforge_agentic_council_manual_dispatch", "STEP6_INTEL"]
 
 
@@ -244,7 +244,7 @@ def write_expected(root: Path, assignment: dict[str, Any], payload: dict[str, An
 
 
 def case_manual_dispatch_happy(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     before_code = directory_digest(root / "generated_code" / rid)
     before_clean = directory_digest(root / "data" / "clean")
     proc, proof = run_ultimate_manual(root, rid)
@@ -286,7 +286,7 @@ def first_assignment_markdown(root: Path, rid: str) -> str:
 
 
 def case_runtime_policy(root: Path, runtime: str, expected_phrases: list[str], *, provider: str | None = None, model: str | None = None) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     proc, proof = run_ultimate_manual(root, rid, runtime=runtime, provider=provider, model=model)
     manual = load_json(manual_manifest_path(root, rid))
     dispatch = load_json(dispatch_manifest_path(root, rid))
@@ -309,7 +309,7 @@ def case_runtime_policy(root: Path, runtime: str, expected_phrases: list[str], *
 
 
 def mutate_runtime_policy_case(root: Path, case_name: str, mutate: Any, expected_token: str) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     path = manual_manifest_path(root, rid)
     original = load_json(path)
     try:
@@ -326,7 +326,7 @@ def mutate_runtime_policy_case(root: Path, case_name: str, mutate: Any, expected
 
 
 def mutate_manual_manifest_case(root: Path, case_name: str, mutate: Any, expected_token: str) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     path = manual_manifest_path(root, rid)
     manifest = load_json(path)
     originals: dict[str, str] = {}
@@ -374,7 +374,7 @@ def case_dropbox_outside_scope(root: Path) -> dict[str, Any]:
 
 
 def case_import_draft(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     clean_results(root, rid)
     proc = import_manual(root, rid)
     report = load_json(council_dir(root, rid) / "manual_dispatch" / f"manual_result_import__{rid}.json")
@@ -384,7 +384,7 @@ def case_import_draft(root: Path) -> dict[str, Any]:
 
 
 def case_import_one_valid(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     clean_results(root, rid)
     assignment = manifest_assignments(root, rid)[0]
     write_dropbox(root, assignment, fake_result(root, rid, assignment, suffix="_one"))
@@ -397,7 +397,7 @@ def case_import_one_valid(root: Path) -> dict[str, Any]:
 
 
 def case_import_invalid(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     clean_results(root, rid)
     assignment = manifest_assignments(root, rid)[0]
     write_dropbox(root, assignment, fake_result(root, rid, assignment, valid=False))
@@ -409,7 +409,7 @@ def case_import_invalid(root: Path) -> dict[str, Any]:
 
 
 def case_no_overwrite_existing_valid(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     clean_results(root, rid)
     assignment = manifest_assignments(root, rid)[0]
     existing = fake_result(root, rid, assignment, suffix="_existing")
@@ -425,7 +425,7 @@ def case_no_overwrite_existing_valid(root: Path) -> dict[str, Any]:
 
 
 def case_overwrite_invalid_allowed(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     clean_results(root, rid)
     assignment = manifest_assignments(root, rid)[0]
     write_expected(root, assignment, fake_result(root, rid, assignment, valid=False, suffix="_bad"))
@@ -438,7 +438,7 @@ def case_overwrite_invalid_allowed(root: Path) -> dict[str, Any]:
 
 
 def case_complete_manual_results_finalize(root: Path) -> dict[str, Any]:
-    rid = REPORT_ALPHA013_LIKE
+    rid = REPORT_MANUAL_DISPATCH
     clean_results(root, rid)
     before_code = directory_digest(root / "generated_code" / rid)
     before_clean = directory_digest(root / "data" / "clean")
@@ -522,7 +522,7 @@ def main() -> int:
                     ),
                 ]
             )
-            run_ultimate_manual(root, REPORT_ALPHA013_LIKE, runtime="manual_file")
+            run_ultimate_manual(root, REPORT_MANUAL_DISPATCH, runtime="manual_file")
             cases.extend(
                 [
                     mutate_runtime_policy_case(

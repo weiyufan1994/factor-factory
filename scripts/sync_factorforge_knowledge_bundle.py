@@ -156,13 +156,18 @@ def safe_extract(tar: tarfile.TarFile, target: Path) -> None:
     tar.extractall(target)
 
 
-def action_for_destination(rel: str, dst: Path, allow_official_overwrite: bool) -> str:
+def action_for_destination(
+    rel: str,
+    dst: Path,
+    allow_official_overwrite: bool,
+    overwrite_unprotected: bool = False,
+) -> str:
     if not dst.exists():
         return 'create'
     protected = rel.startswith(PROTECTED_OVERWRITE_PREFIXES)
     if protected:
         return 'overwrite' if allow_official_overwrite else 'overwrite-blocked'
-    return 'skip'
+    return 'overwrite' if overwrite_unprotected else 'skip'
 
 
 def serializable_args(args: argparse.Namespace) -> dict:
@@ -308,7 +313,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         for rel in manifest.get('files', []):
             src = stage / rel
             dst = base_root / rel
-            action = action_for_destination(rel, dst, args.allow_official_overwrite)
+            action = action_for_destination(
+                rel,
+                dst,
+                args.allow_official_overwrite,
+                args.overwrite_unprotected,
+            )
             item = {
                 'source': str(src),
                 'destination': str(dst),
@@ -367,6 +377,7 @@ def main() -> int:
     p_apply.add_argument('--source', required=True, help='Local bundle path, s3:// bundle URI, or latest manifest JSON path/s3:// URI')
     p_apply.add_argument('--apply', action='store_true', help='Actually write planned creates. Default is dry-run.')
     p_apply.add_argument('--allow-official-overwrite', action='store_true', help='Allow overwriting protected official/case/handoff/validation records when a future overwrite path is enabled.')
+    p_apply.add_argument('--overwrite-unprotected', action='store_true', help='Overwrite existing non-protected knowledge files such as human-readable vault, retrieval index, and ordinary library records.')
     p_apply.add_argument('--rebuild-index', action='store_true')
     p_apply.add_argument('--export-obsidian', action='store_true')
     p_apply.set_defaults(func=cmd_apply)

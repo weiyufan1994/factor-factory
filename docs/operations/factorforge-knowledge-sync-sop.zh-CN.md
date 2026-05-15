@@ -63,6 +63,7 @@ Mac 本地只认这一套路径：
   --runtime-root /home/ubuntu/.openclaw/workspace/factorforge \
   --source s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json \
   --apply \
+  --overwrite-unprotected \
   --rebuild-index
 ```
 
@@ -70,7 +71,8 @@ Mac 本地只认这一套路径：
 
 - 先读取 `latest.json`，下载对应 bundle。
 - 校验 sha256，不一致直接 BLOCK。
-- 默认只创建缺失文件。
+- 默认只创建缺失文件；如果需要让 EC2 普通知识层跟 Mac authoritative 对齐，使用 `--overwrite-unprotected`。
+- `--overwrite-unprotected` 只覆盖普通对象、Markdown vault、retrieval index 等非 protected 文件。
 - official library、case、handoff、validation 等 protected paths 默认不覆盖。
 - 写同步审计到 `objects/sync_audit/sync_audit__*.json`。
 

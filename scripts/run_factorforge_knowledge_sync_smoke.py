@@ -205,6 +205,45 @@ def main() -> int:
         )
     )
 
+    created.write_text('{"report_id":"STALE","status":"stale"}\n', encoding="utf-8")
+    vault_created.write_text("# stale vault\n", encoding="utf-8")
+    retrieval_created.write_text('{"id":"stale","text":"stale"}\n', encoding="utf-8")
+    overwrite_proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/sync_factorforge_knowledge_bundle.py",
+            "apply",
+            "--runtime-root",
+            str(dest),
+            "--source",
+            str(latest),
+            "--apply",
+            "--overwrite-unprotected",
+        ],
+        env_root=dest,
+    )
+    overwrite_audits = sorted((dest / "objects" / "sync_audit").glob("sync_audit__*.json"))
+    overwrite_audit = load_json(overwrite_audits[-1]) if overwrite_audits else {}
+    overwrites = [item for item in overwrite_audit.get("planned_changes", []) if item.get("action") == "overwrite"]
+    still_blocked = [item for item in overwrite_audit.get("planned_changes", []) if item.get("action") == "overwrite-blocked"]
+    cases.append(
+        result(
+            "overwrite_unprotected_pass",
+            overwrite_proc["rc"] == 0
+            and bool(overwrites)
+            and bool(still_blocked)
+            and load_json(created).get("report_id") == "FACTORFORGE_KNOWLEDGE_SYNC_SMOKE"
+            and "Human-readable vault note" in vault_created.read_text(encoding="utf-8")
+            and "retrieval smoke" in retrieval_created.read_text(encoding="utf-8"),
+            "overwrite-unprotected refreshes ordinary objects/vault/retrieval while protected official overwrite stays blocked",
+            {
+                "proc": overwrite_proc,
+                "overwrite_count": len(overwrites),
+                "protected_blocked_count": len(still_blocked),
+            },
+        )
+    )
+
     bad_latest = root / "bad_latest.json"
     bad_payload = dict(latest_payload)
     bad_payload["sha256"] = "0" * 64

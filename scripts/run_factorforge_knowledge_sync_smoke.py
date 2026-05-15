@@ -80,6 +80,12 @@ def build_source_fixture(root: Path) -> Path:
         source / "objects" / "factor_library_official" / "factor_record__FACTORFORGE_KNOWLEDGE_SYNC_SMOKE.json",
         {"report_id": "FACTORFORGE_KNOWLEDGE_SYNC_SMOKE", "status": "official"},
     )
+    vault_note = source / "knowledge" / "因子工厂" / "知识库" / "FACTORFORGE_KNOWLEDGE_SYNC_SMOKE.md"
+    vault_note.parent.mkdir(parents=True, exist_ok=True)
+    vault_note.write_text("# FACTORFORGE_KNOWLEDGE_SYNC_SMOKE\n\nHuman-readable vault note.\n", encoding="utf-8")
+    retrieval = source / "knowledge" / "retrieval" / "factorforge_retrieval_index.jsonl"
+    retrieval.parent.mkdir(parents=True, exist_ok=True)
+    retrieval.write_text('{"id":"smoke","text":"retrieval smoke"}\n', encoding="utf-8")
     return source
 
 
@@ -151,14 +157,26 @@ def main() -> int:
         env_root=dest,
     )
     created = dest / "objects" / "research_knowledge_base" / "knowledge_record__FACTORFORGE_KNOWLEDGE_SYNC_SMOKE.json"
+    vault_created = dest / "knowledge" / "因子工厂" / "知识库" / "FACTORFORGE_KNOWLEDGE_SYNC_SMOKE.md"
+    retrieval_created = dest / "knowledge" / "retrieval" / "factorforge_retrieval_index.jsonl"
     audit_files = sorted((dest / "objects" / "sync_audit").glob("sync_audit__*.json"))
     audit = load_json(audit_files[-1]) if audit_files else {}
     cases.append(
         result(
             "apply_latest_manifest_pass",
-            apply_proc["rc"] == 0 and created.exists() and audit.get("latest_manifest", {}).get("sha256") == latest_payload["sha256"],
-            "latest manifest resolves bundle, verifies sha256, writes audit",
-            {"proc": apply_proc, "created": str(created), "audit_count": len(audit_files)},
+            apply_proc["rc"] == 0
+            and created.exists()
+            and vault_created.exists()
+            and retrieval_created.exists()
+            and audit.get("latest_manifest", {}).get("sha256") == latest_payload["sha256"],
+            "latest manifest resolves bundle, verifies sha256, writes objects, vault, retrieval, and audit",
+            {
+                "proc": apply_proc,
+                "created": str(created),
+                "vault_created": str(vault_created),
+                "retrieval_created": str(retrieval_created),
+                "audit_count": len(audit_files),
+            },
         )
     )
 

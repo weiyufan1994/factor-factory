@@ -42,5 +42,3 @@ tags:
 - [[知识库/|知识库]]
 
 - [[研究迭代/|研究迭代]]
-
-- [[Agent/FactorForge 能力台账|FactorForge 能力台账]]

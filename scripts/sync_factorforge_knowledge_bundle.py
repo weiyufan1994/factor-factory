@@ -34,6 +34,10 @@ KNOWLEDGE_SPECS = {
     'factor_evaluation': ('objects/validation', 'factor_evaluation__*.json'),
     'handoff_to_step3b': ('objects/handoff', 'handoff_to_step3b__*.json'),
     'handoff_to_step6': ('objects/handoff', 'handoff_to_step6__*.json'),
+    # Human-readable vault exported from objects plus curated research archives.
+    # This is read/display material, not a replacement for canonical objects.
+    'knowledge_vault': ('knowledge/因子工厂', '**/*.md'),
+    'retrieval_index': ('knowledge/retrieval', 'factorforge_*'),
 }
 
 PROTECTED_OVERWRITE_PREFIXES = (
@@ -81,6 +85,12 @@ def iter_selected_files(objects_root: Path, include: Iterable[str]) -> list[tupl
 
 def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
+
+
+def run_with_factorforge_root(cmd: list[str], runtime_root: Path) -> None:
+    env = dict(os.environ)
+    env['FACTORFORGE_ROOT'] = str(runtime_root)
+    subprocess.run(cmd, check=True, env=env)
 
 
 def current_git_commit() -> str | None:
@@ -326,10 +336,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print(f'[AUDIT] {audit_path}')
 
     if args.rebuild_index:
-        run(['python3', str(REPO_ROOT / 'scripts' / 'build_factorforge_retrieval_index.py')])
+        run_with_factorforge_root(['python3', str(REPO_ROOT / 'scripts' / 'build_factorforge_retrieval_index.py')], base_root)
         print('[REBUILD] retrieval index')
     if args.export_obsidian:
-        run(['python3', str(REPO_ROOT / 'scripts' / 'export_factorforge_obsidian.py')])
+        run_with_factorforge_root(['python3', str(REPO_ROOT / 'scripts' / 'export_factorforge_obsidian.py')], base_root)
         print('[REBUILD] obsidian vault')
     return 0
 

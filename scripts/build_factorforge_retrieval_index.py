@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OBJECTS = REPO_ROOT / 'objects'
-DEFAULT_OUTPUT = REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'
-DEFAULT_MANIFEST = REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_manifest.json'
+RUNTIME_ROOT = Path(os.getenv('FACTORFORGE_ROOT', str(REPO_ROOT))).expanduser()
+OBJECTS = RUNTIME_ROOT / 'objects'
+DEFAULT_OUTPUT = RUNTIME_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'
+DEFAULT_MANIFEST = RUNTIME_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_manifest.json'
 
 
 def load_json(path: Path) -> dict[str, Any]:

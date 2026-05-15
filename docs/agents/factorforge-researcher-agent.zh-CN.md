@@ -17,11 +17,23 @@
 
 Canonical source：
 
+Mac 本地权威源：
+
+- `/Users/humphrey/projects/factor-factory/objects/factor_library_all/`
+- `/Users/humphrey/projects/factor-factory/objects/factor_library_official/`
+- `/Users/humphrey/projects/factor-factory/objects/research_knowledge_base/`
+- `/Users/humphrey/projects/factor-factory/objects/research_iteration_master/`
+- `/Users/humphrey/projects/factor-factory/objects/research_journal/`
+
+EC2 运行缓存：
+
 - `factorforge/objects/factor_library_all/`
 - `factorforge/objects/factor_library_official/`
 - `factorforge/objects/research_knowledge_base/`
 - `factorforge/objects/research_iteration_master/`
 - `factorforge/objects/research_journal/`
+
+不要在 Mac 上使用 repo-local `/Users/humphrey/projects/factor-factory/factorforge/objects/` 作为新知识入口；它只保留 legacy residue，正式同步走 Mac `objects/` 与 S3 bundle。
 
 Human workspace：
 

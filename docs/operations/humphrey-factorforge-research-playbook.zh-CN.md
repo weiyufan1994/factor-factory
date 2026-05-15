@@ -584,6 +584,27 @@ python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-st
 
 ## 因子库、知识库、Obsidian 分别是什么
 
+### Mac / S3 / EC2 的统一口径
+
+Mac 是知识库的人类可读源头；S3 是 durable bundle；EC2 是执行缓存和重计算环境。
+
+Mac canonical 路径：
+
+- 结构化对象 / 因子库：`/Users/humphrey/projects/factor-factory/objects/`
+- 人类可读知识库：`/Users/humphrey/projects/factor-factory/knowledge/因子工厂/`
+- 检索索引：`/Users/humphrey/projects/factor-factory/knowledge/retrieval/`
+
+EC2 runtime 路径：
+
+- 结构化对象 / 因子库：`/home/ubuntu/.openclaw/workspace/factorforge/objects/`
+- 人类可读知识库：`/home/ubuntu/.openclaw/workspace/factorforge/knowledge/因子工厂/`
+- 检索索引：`/home/ubuntu/.openclaw/workspace/factorforge/knowledge/retrieval/`
+
+不要再把下面这些当作新知识入口：
+
+- `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault/`
+- `/Users/humphrey/projects/factor-factory/factorforge/objects/`
+
 ### 全部因子库
 
 路径：
@@ -624,11 +645,11 @@ python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-st
 - research judgment
 - loop action
 
-### Obsidian vault
+### 人类可读知识库
 
 本地工作台路径：
 
-- `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault`
+- `/Users/humphrey/projects/factor-factory/knowledge/因子工厂`
 
 它适合人看、做研究笔记、形成基金经理式知识沉淀。
 
@@ -656,7 +677,7 @@ python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-st
 3. 回灌到 Mac
 4. 本地重建：
   - retrieval index
-  - Obsidian vault
+  - 人类可读知识库 `knowledge/因子工厂`
 
 这样两边吃的是同一套知识，而不是各记各的。
 

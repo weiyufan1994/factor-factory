@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OBJECTS = REPO_ROOT / 'objects'
-DEFAULT_OUTPUT = REPO_ROOT / 'knowledge' / '因子工厂'
+RUNTIME_ROOT = Path(os.getenv('FACTORFORGE_ROOT', str(REPO_ROOT))).expanduser()
+OBJECTS = RUNTIME_ROOT / 'objects'
+DEFAULT_OUTPUT = RUNTIME_ROOT / 'knowledge' / '因子工厂'
 
 DIR_DASHBOARDS = '仪表盘'
 DIR_FACTORS_ALL = '普通因子库'

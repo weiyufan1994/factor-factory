@@ -6,7 +6,7 @@
 
 - Mac：主编辑源，负责正式研究、review、知识库吸收与人工确认。
 - GitHub：代码、skill、文档、SOP 的 canonical source。
-- S3：Factor Forge 结构化知识对象的耐久共享层，提供 `latest.json` 指针。
+- S3：Factor Forge 知识包耐久共享层，提供 `latest.json` 指针。知识包同时包含结构化 `objects/`、人类可读 `knowledge/因子工厂/` vault、以及 retrieval index。
 - EC2：计算与缓存节点，从 GitHub 拉代码，从 S3 拉知识对象；产出结果后可上传到独立 `ec2-results` 前缀。
 - Tailscale：可作为快速通道，但不是知识库可用性的依赖。Mac 关机时，EC2 仍应能从 S3 取最近一次发布的知识包。
 
@@ -29,6 +29,29 @@ python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
 - 上传 immutable `.tgz` 到 `s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/`
 - 更新 `s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json`
 - `latest.json` 包含 bundle URI、sha256、文件数、来源角色、git commit。
+
+## Canonical Layout
+
+Mac 本地只认这一套路径：
+
+```text
+/Users/humphrey/projects/factor-factory/objects/
+/Users/humphrey/projects/factor-factory/knowledge/因子工厂/
+/Users/humphrey/projects/factor-factory/knowledge/retrieval/
+```
+
+含义：
+
+- `objects/`：唯一结构化写入源。Step5/6、factor library、knowledge base、iteration、case、handoff 都以这里为准。
+- `knowledge/因子工厂/`：唯一人类可读 Obsidian/Markdown vault；包括普通因子库、正式因子库、知识库、研究迭代、手工研究 archive。
+- `knowledge/retrieval/`：从 `objects/` 构建的检索索引。
+
+不要把以下路径当作新的知识库入口：
+
+- `knowledge/obsidian_vault/`：legacy 英文 vault，已废弃。
+- `factorforge/objects/`：legacy/runtime 残留，不是 Mac canonical root。
+
+因子研究员、Bernard、Codex 都应默认使用 `objects/` + `knowledge/因子工厂/` 这同一套地址。`ALPHA015_20160101_RESEARCH_ARCHIVE.md` 这类手工研究 archive 位于 `knowledge/因子工厂/知识库/`，并随 S3 knowledge bundle 同步。
 
 ## EC2 拉取 Mac 知识包
 

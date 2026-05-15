@@ -152,9 +152,22 @@ Use this split for operational knowledge sharing:
 
 - GitHub is the canonical source for code, skills, contracts, and SOP documents.
 - Mac is the primary authoring and review environment for Factor Forge knowledge.
-- S3 is the durable shared object store for Factor Forge structured knowledge bundles.
+- S3 is the durable shared store for Factor Forge knowledge bundles.
 - EC2 should pull the latest Mac-published knowledge bundle from S3 and keep a local cache for compute.
 - Tailscale may be used as a convenience path, but it must not be the only way EC2 can access knowledge; Mac power/network state must not block EC2 from pulling the last published bundle.
+
+Canonical Mac knowledge layout:
+
+- structured source of truth: `/Users/humphrey/projects/factor-factory/objects/`
+- human-readable vault: `/Users/humphrey/projects/factor-factory/knowledge/因子工厂/`
+- retrieval index: `/Users/humphrey/projects/factor-factory/knowledge/retrieval/`
+
+Do not use legacy duplicate roots as active knowledge stores:
+
+- `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault/`
+- `/Users/humphrey/projects/factor-factory/factorforge/objects/`
+
+The S3 bundle must carry the same active layout: `objects/`, `knowledge/因子工厂/`, and `knowledge/retrieval/`.
 
 Mac publishes the authoritative object bundle with:
 

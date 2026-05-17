@@ -65,6 +65,48 @@ def build_agent_section(path: Path) -> dict[str, Any]:
     laws = payload.get('candidate_revision_laws') or payload.get('revision_hypotheses') or []
     if not isinstance(laws, list):
         laws = []
+    derivation_steps = nonempty_list(public.get('derivation_steps'))
+    revision_hypotheses = nonempty_list(public.get('revision_hypotheses'))
+    derived_implications = nonempty_list(public.get('derived_implications'))
+    formula_claims = nonempty_list(public.get('formula_claims'))
+    if not formula_claims:
+        formula_claims = []
+        for step in derivation_steps:
+            if not isinstance(step, dict):
+                continue
+            statement = str(step.get('statement') or '').strip()
+            formula = str(step.get('formula') or '').strip()
+            if statement or formula:
+                formula_claims.append({
+                    'claim': statement or 'Derived qualitative relation',
+                    'formula_or_relation': formula or f'qualitative_relation:{statement}',
+                })
+        for implication in derived_implications:
+            if not isinstance(implication, dict):
+                continue
+            claim = str(implication.get('claim') or '').strip()
+            if claim:
+                formula_claims.append({
+                    'claim': claim,
+                    'formula_or_relation': f'metric_signature_relation:{claim}',
+                })
+    derivation_steps_summary = nonempty_list(public.get('derivation_steps_summary'))
+    if not derivation_steps_summary:
+        derivation_steps_summary = [
+            step.get('statement')
+            for step in derivation_steps
+            if isinstance(step, dict) and str(step.get('statement') or '').strip()
+        ]
+    falsification_tests = nonempty_list(public.get('falsification_tests') or payload.get('falsification_tests'))
+    if not falsification_tests:
+        for hypothesis in revision_hypotheses:
+            if isinstance(hypothesis, dict):
+                falsification_tests.extend(nonempty_list(hypothesis.get('falsification_tests')))
+    kill_criteria = nonempty_list(public.get('kill_criteria') or payload.get('kill_criteria'))
+    if not kill_criteria:
+        for hypothesis in revision_hypotheses:
+            if isinstance(hypothesis, dict):
+                kill_criteria.extend(nonempty_list(hypothesis.get('kill_criteria')))
     return {
         'source_path': str(path),
         'agent_role': payload.get('agent_role') or payload.get('role'),
@@ -76,11 +118,11 @@ def build_agent_section(path: Path) -> dict[str, Any]:
         'assumptions': nonempty_list(public.get('assumptions')),
         'mathematical_objects': nonempty_list(public.get('mathematical_objects')),
         'selected_tools': nonempty_list(public.get('selected_tools')),
-        'formula_claims': nonempty_list(public.get('formula_claims')),
-        'derivation_steps_summary': nonempty_list(public.get('derivation_steps_summary')),
+        'formula_claims': formula_claims,
+        'derivation_steps_summary': derivation_steps_summary,
         'limiting_cases': nonempty_list(public.get('limiting_cases')),
-        'falsification_tests': nonempty_list(public.get('falsification_tests') or payload.get('falsification_tests')),
-        'kill_criteria': nonempty_list(public.get('kill_criteria') or payload.get('kill_criteria')),
+        'falsification_tests': falsification_tests,
+        'kill_criteria': kill_criteria,
         'candidate_revision_laws': laws,
         'overclaim_guard': public.get('overclaim_guard') or payload.get('overclaim_guard'),
     }

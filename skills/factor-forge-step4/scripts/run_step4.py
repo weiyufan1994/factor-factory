@@ -40,6 +40,26 @@ from factor_factory.runtime_context import (
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
 
+STEP4_RUN_METADATA_OWNED_FIELDS = {
+    'report_id',
+    'factor_id',
+    'implementation_mode_decision',
+    'implementation_path',
+    'started_at_utc',
+    'finished_at_utc',
+    'row_count',
+    'date_count',
+    'ticker_count',
+    'signal_column',
+    'actual_window',
+    'target_window',
+    'effective_target_window',
+    'run_status_candidate',
+    'input_io_profile',
+    'step4_factor_csv_policy_observed',
+}
+FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+
 
 def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step4') -> dict[str, Any]:
     identity = dict(parent or {})
@@ -89,6 +109,59 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'[WRITE] {path}')
+
+
+def merge_run_metadata(existing_meta: dict[str, Any], step4_owned_fields: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(existing_meta or {})
+    for key, value in step4_owned_fields.items():
+        if key not in STEP4_RUN_METADATA_OWNED_FIELDS:
+            raise ValueError(f'Step4 attempted to overwrite non-owned run metadata field: {key}')
+        metadata[key] = value
+    return metadata
+
+
+def step4_factor_csv_policy_from_step3b(existing_meta: dict[str, Any]) -> dict[str, Any]:
+    csv_profile = ((existing_meta or {}).get('performance_profile') or {}).get('csv_output_profile') or {}
+    raw_policy = csv_profile.get('csv_output_policy')
+    if raw_policy is None:
+        policy = 'legacy_missing'
+        allowed = True
+        written = True
+        reason = None
+    else:
+        policy = str(raw_policy)
+        if policy not in FACTOR_CSV_POLICY_VALUES:
+            raise SystemExit(f'BLOCK_STEP4_INVALID_FACTOR_CSV_POLICY:{policy}')
+        allowed = policy == 'full_csv'
+        written = allowed
+        reason = None if allowed else f'step3b_{policy}_policy'
+    return {
+        'source': 'step3b_run_metadata',
+        'csv_output_policy': policy,
+        'factor_csv_write_allowed': bool(allowed),
+        'factor_csv_written_by_step4': bool(written),
+        'factor_csv_write_skipped_reason': reason,
+    }
+
+
+def output_paths_for_policy(parquet_path: Path, csv_path: Path, sample_csv_path: Path, meta_path: Path, policy_observed: dict[str, Any]) -> list[str]:
+    paths = [str(parquet_path)]
+    policy = policy_observed.get('csv_output_policy')
+    if policy_observed.get('factor_csv_write_allowed'):
+        paths.append(str(csv_path))
+    elif policy == 'sample_csv' and sample_csv_path.exists():
+        paths.append(str(sample_csv_path))
+    paths.append(str(meta_path))
+    return paths
+
+
+def file_sizes_for_paths(paths: list[str]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for raw_path in paths:
+        p = Path(raw_path)
+        if p.exists():
+            result[str(p)] = p.stat().st_size
+    return result
 
 
 def ensure_dir(path: Path) -> None:
@@ -660,6 +733,12 @@ def main() -> None:
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
+        input_io_profile = {
+            'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
+            'daily_selected_path': str(daily_file),
+            'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
+            'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
+        }
         result_df = compute_factor_with_contract(module, daily_df, minute_df)
 
         if result_df is None or len(result_df) == 0:
@@ -673,11 +752,15 @@ def main() -> None:
         ensure_dir(run_dir)
         parquet_path = run_dir / f'factor_values__{report_id}.parquet'
         csv_path = run_dir / f'factor_values__{report_id}.csv'
+        sample_csv_path = run_dir / f'factor_values_sample__{report_id}.csv'
         meta_path = run_dir / f'run_metadata__{report_id}.json'
+        existing_meta = load_json(meta_path) if meta_path.exists() else {}
+        factor_csv_policy_observed = step4_factor_csv_policy_from_step3b(existing_meta)
 
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
         result_df.to_parquet(parquet_path, index=False)
-        result_df.to_csv(csv_path, index=False)
+        if factor_csv_policy_observed.get('factor_csv_write_allowed'):
+            result_df.to_csv(csv_path, index=False)
 
         row_count = int(len(result_df))
         date_count = int(result_df['trade_date'].nunique()) if 'trade_date' in result_df.columns else 0
@@ -706,7 +789,7 @@ def main() -> None:
         backend_runs = build_backend_runs_stub(report_id, evaluation_plan, run_status)
         backend_runs = write_backend_payloads(report_id, backend_runs, manifest_path_arg=manifest_path_arg)
 
-        meta = {
+        step4_owned_meta = {
             'report_id': report_id,
             'factor_id': factor_id,
             'implementation_mode_decision': implementation_mode_decision,
@@ -720,9 +803,13 @@ def main() -> None:
             'actual_window': {'start': actual_start, 'end': actual_end},
             'target_window': target_window,
             'effective_target_window': {'start': effective_target_start, 'end': effective_target_end},
-            'run_status_candidate': run_status
+            'run_status_candidate': run_status,
+            'input_io_profile': input_io_profile,
+            'step4_factor_csv_policy_observed': factor_csv_policy_observed,
         }
+        meta = merge_run_metadata(existing_meta, step4_owned_meta)
         write_json(meta_path, meta)
+        step4_output_paths = output_paths_for_policy(parquet_path, csv_path, sample_csv_path, meta_path, factor_csv_policy_observed)
 
         run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
         diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
@@ -734,7 +821,7 @@ def main() -> None:
             'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
             'run_status': run_status,
             'implementation_path': str(impl_path),
-            'output_paths': [str(parquet_path), str(csv_path), str(meta_path)],
+            'output_paths': step4_output_paths,
             'sample_window': target_window,
             'runtime_notes': warnings,
             'diagnostic_summary': {'row_count': row_count, 'date_count': date_count, 'ticker_count': ticker_count},
@@ -746,6 +833,7 @@ def main() -> None:
             'started_at_utc': start_utc,
             'finished_at_utc': utc_now(),
             'input_paths': {k: str(v) for k, v in input_paths.items()},
+            'input_io_profile': input_io_profile,
             'window_coverage': {
                 'target_start': target_window.get('start'),
                 'target_end': target_window.get('end'),
@@ -784,6 +872,8 @@ def main() -> None:
             'implementation_mode_decision': implementation_mode_decision,
             'input_validation': {
                 'exists_check': {k: v.exists() for k, v in input_paths.items()},
+                'input_io_profile': input_io_profile,
+                'step4_factor_csv_policy_observed': factor_csv_policy_observed,
                 'schema_check': {'frozen_schema_execution': True},
                 'consistency_check': {
                     'report_id_consistent': True,
@@ -804,12 +894,8 @@ def main() -> None:
             },
             'output_validation': {
                 'output_exists': True,
-                'output_paths': [str(parquet_path), str(csv_path), str(meta_path)],
-                'file_sizes': {
-                    str(parquet_path): parquet_path.stat().st_size,
-                    str(csv_path): csv_path.stat().st_size,
-                    str(meta_path): meta_path.stat().st_size,
-                },
+                'output_paths': step4_output_paths,
+                'file_sizes': file_sizes_for_paths(step4_output_paths),
                 'row_count': row_count,
                 'date_count': date_count,
                 'ticker_count': ticker_count,
@@ -844,7 +930,7 @@ def main() -> None:
             'run_status': run_status,
             'factor_run_master_path': str(run_master_path),
             'diagnostics_path': str(diag_path),
-            'output_paths': [str(parquet_path), str(csv_path), str(meta_path)],
+            'output_paths': step4_output_paths,
             'sample_window_target': target_window,
             'sample_window_actual': {'start': actual_start, 'end': actual_end},
             'coverage_ratio': 1.0 if coverage_complete else None,

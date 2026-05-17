@@ -3,8 +3,11 @@ import argparse, hashlib, importlib.util, json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pandas as pd
 
 # Runtime root policy:
 # - prefer FACTORFORGE_ROOT when explicitly configured
@@ -36,7 +39,10 @@ from factor_factory.formula.parser import resolve_formula_fields_for_schema
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import operator_meta
 from factor_factory.formula.evaluator import evaluate_formula_frame
+from factor_factory.formula.kernels import default_kernel_profile, resolve_formula_kernel_engine
+from factor_factory.formula.operators import default_ts_rank_engine_profile, resolve_ts_rank_engine as resolve_formula_ts_rank_engine
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture
+from factor_factory.performance import PhaseTimer, safe_file_size
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
 MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
@@ -67,10 +73,29 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
     'returns',
     'return',
 ]
+CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+CSV_SAMPLE_MAX_ROWS = 10_000
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def resolve_csv_policy(explicit_policy: str | None = None) -> str:
+    policy = explicit_policy or os.getenv('FACTORFORGE_CSV_OUTPUT_POLICY') or 'full_csv'
+    if policy not in CSV_POLICY_VALUES:
+        raise SystemExit(f'BLOCK_FACTORFORGE_INVALID_CSV_OUTPUT_POLICY:{policy}')
+    return policy
+
+
+def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
+    if len(df) <= max_rows:
+        return df.copy()
+    head_n = max_rows // 2
+    tail_n = max_rows - head_n
+    import pandas as pd
+
+    return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -449,6 +474,212 @@ def read_df(path: Path):
     return pd.read_csv(path)
 
 
+def _default_formula_engine_profile() -> dict:
+    return {
+        'engine': 'pandas_formula_ir_reference_or_unknown',
+        'reference_engine': 'pandas_formula_ir_reference',
+        'memoization_enabled': False,
+        'cache_hits': None,
+        'cache_misses': None,
+        'input_presorted': None,
+        'output_presorted': None,
+        'ts_rank_engine': None,
+        'ts_rank_fast_path_enabled': False,
+        'ts_rank_fast_path_count': 0,
+        'ts_rank_fallback_count': 0,
+        'ts_rank_fallback_reasons': [],
+        'ts_rank_engine_profile': default_ts_rank_engine_profile(),
+        'kernel_profile': default_kernel_profile(),
+        'parity_checked': False,
+        'parity_sample_rows': 0,
+        'max_abs_diff': None,
+        'rank_corr': None,
+        'row_count_equal': None,
+        'key_order_equal': None,
+        'nan_mask_equal': None,
+        'polars_enabled': False,
+        'polars_used': False,
+        'polars_fallback_used': False,
+        'polars_fallback_reason': None,
+        'operator_profile': {
+            'version': 'factorforge_operator_profile_v1',
+            'enabled': False,
+            'total_profiled_seconds': 0.0,
+            'event_count': 0,
+            'by_operator': {},
+            'top_events': [],
+            'unprofiled_compute_seconds': None,
+        },
+        'parity_profile': {
+            'enabled': False,
+            'sample_rows': 0,
+            'reference_seconds': None,
+            'candidate_seconds': None,
+            'compare_seconds': None,
+            'max_abs_diff': None,
+            'rank_corr': None,
+        },
+        'compute_factor_seconds': None,
+        'normalize_sort_seconds': None,
+    }
+
+
+def _sample_formula_frame(frame, max_rows: int = 5000):
+    if len(frame) <= max_rows:
+        return frame.copy()
+    working = frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    step = max(1, len(working) // max_rows)
+    return working.iloc[::step].head(max_rows).reset_index(drop=True)
+
+
+def _rank_corr(reference, optimized) -> float | None:
+    import pandas as pd
+
+    merged = reference[['ts_code', 'trade_date', 'factor_value']].merge(
+        optimized[['ts_code', 'trade_date', 'factor_value']],
+        on=['ts_code', 'trade_date'],
+        how='inner',
+        suffixes=('_reference', '_optimized'),
+    )
+    ref = pd.to_numeric(merged['factor_value_reference'], errors='coerce')
+    opt = pd.to_numeric(merged['factor_value_optimized'], errors='coerce')
+    valid = ref.notna() & opt.notna()
+    if int(valid.sum()) < 2:
+        return None
+    corr = ref[valid].rank(method='average').corr(opt[valid].rank(method='average'), method='pearson')
+    return float(corr) if pd.notna(corr) else None
+
+
+def _formula_frame_parity_fields(reference, candidate) -> dict:
+    ref_values = pd.to_numeric(reference['factor_value'], errors='coerce')
+    cand_values = pd.to_numeric(candidate['factor_value'], errors='coerce')
+    return {
+        'row_count_equal': int(len(reference)) == int(len(candidate)),
+        'key_order_equal': bool(
+            reference[['ts_code', 'trade_date']].reset_index(drop=True).equals(
+                candidate[['ts_code', 'trade_date']].reset_index(drop=True)
+            )
+        ),
+        'nan_mask_equal': bool(ref_values.isna().reset_index(drop=True).equals(cand_values.isna().reset_index(drop=True))),
+    }
+
+
+def resolve_formula_engine(formula_engine: str | None = None) -> str:
+    raw = formula_engine or os.getenv('FACTORFORGE_FORMULA_ENGINE')
+    if raw is None and os.getenv('FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS') == '1':
+        raw = 'polars_experimental'
+    engine = str(raw or 'optimized').strip()
+    aliases = {
+        'pandas': 'optimized',
+        'pandas_optimized': 'optimized',
+        'pandas_formula_ir_optimized': 'optimized',
+        'polars': 'polars_experimental',
+    }
+    engine = aliases.get(engine, engine)
+    if engine not in {'optimized', 'polars_experimental'}:
+        raise SystemExit(f'BLOCK_UNSUPPORTED_FORMULA_ENGINE:{engine}')
+    return engine
+
+
+def resolve_operator_profile(operator_profile: bool | None = None) -> bool:
+    if operator_profile is not None:
+        return bool(operator_profile)
+    return os.getenv('FACTORFORGE_ENABLE_OPERATOR_PROFILE') == '1'
+
+
+def _run_formula_engine_with_profile(
+    module,
+    daily_df,
+    formula_engine: str = 'optimized',
+    operator_profile: bool = False,
+    ts_rank_engine_config: dict | None = None,
+    formula_kernel_config: dict | None = None,
+):
+    metadata = getattr(module, 'METADATA', {}) if module is not None else {}
+    formula_ir = getattr(module, 'FORMULA_IR', None)
+    if not isinstance(metadata, dict) or metadata.get('implementation_source') != 'formula_ir_pandas_codegen' or not isinstance(formula_ir, dict):
+        return None, _default_formula_engine_profile()
+
+    sample = _sample_formula_frame(daily_df)
+    reference_start = time.perf_counter()
+    reference_sample = evaluate_formula_frame(formula_ir, sample, engine='reference')
+    reference_seconds = time.perf_counter() - reference_start
+    candidate_start = time.perf_counter()
+    candidate_sample = evaluate_formula_frame(
+        formula_ir,
+        sample,
+        engine=formula_engine,
+        ts_rank_engine_config=ts_rank_engine_config,
+        formula_kernel_config=formula_kernel_config,
+    )
+    candidate_seconds = time.perf_counter() - candidate_start
+    compare_start = time.perf_counter()
+    try:
+        parity = compare_outputs(reference_sample, candidate_sample, tolerance=1e-12)
+    except AssertionError as exc:
+        if (formula_kernel_config or {}).get('experimental_enabled'):
+            raise AssertionError(f'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED:{exc}') from exc
+        if (ts_rank_engine_config or {}).get('selected_engine') != 'pandas_reference':
+            raise AssertionError(f'BLOCK_EXPERIMENTAL_TS_RANK_PARITY_FAILED:{exc}') from exc
+        raise
+    rank_corr = _rank_corr(reference_sample, candidate_sample)
+    parity_fields = _formula_frame_parity_fields(reference_sample, candidate_sample)
+    if (ts_rank_engine_config or {}).get('selected_engine') != 'pandas_reference':
+        if parity_fields.get('key_order_equal') is not True or parity_fields.get('nan_mask_equal') is not True:
+            raise AssertionError(f'BLOCK_EXPERIMENTAL_TS_RANK_PARITY_FAILED:{parity_fields}')
+    if (formula_kernel_config or {}).get('experimental_enabled'):
+        if parity_fields.get('key_order_equal') is not True or parity_fields.get('nan_mask_equal') is not True:
+            raise AssertionError(f'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED:{parity_fields}')
+    compare_seconds = time.perf_counter() - compare_start
+    profile_frame, formula_engine_profile = evaluate_formula_frame(
+        formula_ir,
+        daily_df,
+        engine=formula_engine,
+        return_profile=True,
+        operator_profile_enabled=operator_profile,
+        ts_rank_engine_config=ts_rank_engine_config,
+        formula_kernel_config=formula_kernel_config,
+    )
+    ts_rank_profile = formula_engine_profile.get('ts_rank_engine_profile') or default_ts_rank_engine_profile(ts_rank_engine_config)
+    ts_rank_profile.update({
+        'parity_checked': bool((ts_rank_engine_config or {}).get('selected_engine') != 'pandas_reference'),
+        'parity_sample_rows': int(parity.get('row_count') or len(sample)),
+        'parity_max_abs_diff': float(parity.get('max_abs_diff') or 0.0),
+        'parity_nan_mask_equal': parity_fields.get('nan_mask_equal'),
+        'parity_key_order_equal': parity_fields.get('key_order_equal'),
+    })
+    kernel_profile = formula_engine_profile.get('kernel_profile') or default_kernel_profile(formula_kernel_config)
+    kernel_profile.update({
+        'parity_checked': bool((formula_kernel_config or {}).get('experimental_enabled')),
+        'parity_sample_rows': int(parity.get('row_count') or len(sample)),
+        'parity_max_abs_diff': float(parity.get('max_abs_diff') or 0.0),
+        'parity_nan_mask_equal': parity_fields.get('nan_mask_equal'),
+        'parity_key_order_equal': parity_fields.get('key_order_equal'),
+        'safe_to_make_default': False,
+    })
+    formula_engine_profile = {
+        **_default_formula_engine_profile(),
+        **formula_engine_profile,
+        'parity_checked': True,
+        'parity_sample_rows': int(parity.get('row_count') or len(sample)),
+        'max_abs_diff': float(parity.get('max_abs_diff') or 0.0),
+        'rank_corr': rank_corr,
+        **parity_fields,
+        'ts_rank_engine_profile': ts_rank_profile,
+        'kernel_profile': kernel_profile,
+        'parity_profile': {
+            'enabled': True,
+            'sample_rows': int(parity.get('row_count') or len(sample)),
+            'reference_seconds': float(reference_seconds),
+            'candidate_seconds': float(candidate_seconds),
+            'compare_seconds': float(compare_seconds),
+            'max_abs_diff': float(parity.get('max_abs_diff') or 0.0),
+            'rank_corr': rank_corr,
+        },
+    }
+    return profile_frame, formula_engine_profile
+
+
 def generate_first_run_factor_values(
     report_id: str,
     factor_id: str,
@@ -457,6 +688,11 @@ def generate_first_run_factor_values(
     step2_research_context: dict,
     mode_decision: dict | None = None,
     artifact_identity: dict | None = None,
+    csv_output_policy: str | None = None,
+    formula_engine: str | None = None,
+    operator_profile: bool | None = None,
+    ts_rank_engine: str | None = None,
+    formula_kernel_engine: str | None = None,
 ) -> dict:
     """Run only the factor implementation and materialize factor_values.
 
@@ -464,11 +700,27 @@ def generate_first_run_factor_values(
     executability of the factor implementation, not IC/NAV/backtest evidence.
     """
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+    daily_parquet_rel = local_inputs.get('daily_df_parquet')
+    daily_csv_rel = local_inputs.get('daily_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     input_mode = str(local_inputs.get('input_mode') or '')
     minute_required = input_mode != 'daily_only'
     minute_path = resolve_local_input_path(minute_rel)
     daily_path = resolve_local_input_path(daily_rel)
+    daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
+    daily_csv_path = resolve_local_input_path(daily_csv_rel)
+    daily_selected_format = 'parquet' if daily_path and daily_path.suffix.lower() == '.parquet' else 'csv'
+    csv_policy = resolve_csv_policy(csv_output_policy)
+    selected_formula_engine = resolve_formula_engine(formula_engine)
+    operator_profile_enabled = resolve_operator_profile(operator_profile)
+    try:
+        ts_rank_engine_config = resolve_formula_ts_rank_engine(ts_rank_engine)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        formula_kernel_config = resolve_formula_kernel_engine(formula_kernel_engine)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     if daily_path is None or not daily_path.exists():
         raise SystemExit(f'Step3B first-run daily input missing: {daily_path}')
@@ -477,33 +729,131 @@ def generate_first_run_factor_values(
 
     import pandas as pd
 
+    timer = PhaseTimer()
+
     module = import_module_from_path(implementation_path)
     if not hasattr(module, 'compute_factor'):
         raise SystemExit(f'Step3B implementation missing compute_factor(): {implementation_path}')
 
-    minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
-    daily_df = read_df(daily_path)
-    try:
-        result_df = module.compute_factor(daily_df=daily_df, minute_df=minute_df)
-    except TypeError:
-        result_df = module.compute_factor(minute_df, daily_df)
+    with timer.phase('read_inputs'):
+        minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
+        daily_df = read_df(daily_path)
+
+    formula_engine_profile = _default_formula_engine_profile()
+    with timer.phase('compute_factor'):
+        try:
+            profiled_result, formula_engine_profile = _run_formula_engine_with_profile(
+                module,
+                daily_df,
+                formula_engine=selected_formula_engine,
+                operator_profile=operator_profile_enabled,
+                ts_rank_engine_config=ts_rank_engine_config,
+                formula_kernel_config=formula_kernel_config,
+            )
+            if profiled_result is not None:
+                result_df = profiled_result
+            else:
+                try:
+                    result_df = module.compute_factor(daily_df=daily_df, minute_df=minute_df)
+                except TypeError:
+                    result_df = module.compute_factor(minute_df, daily_df)
+        except ModuleNotFoundError as exc:
+            if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
+                raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
+            raise
+        except AssertionError as exc:
+            message = str(exc)
+            if 'BLOCK_POLARS_EXPERIMENTAL_PARITY_FAILED' in message:
+                raise SystemExit(message) from exc
+            if 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED' in message:
+                raise SystemExit(message) from exc
+            if 'BLOCK_EXPERIMENTAL_TS_RANK_PARITY_FAILED' in message:
+                raise SystemExit(message) from exc
+            raise SystemExit(f'BLOCK_FORMULA_ENGINE_PARITY_FAILED: {exc}') from exc
+        except RuntimeError as exc:
+            message = str(exc)
+            if 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_' in message:
+                raise SystemExit(message) from exc
+            if 'BLOCK_EXPERIMENTAL_TS_RANK_' in message:
+                raise SystemExit(message) from exc
+            raise
     if result_df is None or len(result_df) == 0:
         raise SystemExit('Step3B first-run implementation returned empty factor values')
     if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
         raise SystemExit('Step3B first-run output must include ts_code and trade_date')
 
-    signal_col = infer_signal_column(result_df, factor_id=factor_id)
-    result_df = result_df[['ts_code', 'trade_date', signal_col]].copy()
-    result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
-    result_df = result_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    with timer.phase('normalize_sort'):
+        signal_col = infer_signal_column(result_df, factor_id=factor_id)
+        result_df = result_df[['ts_code', 'trade_date', signal_col]]
+        result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
+        keys = result_df[['ts_code', 'trade_date']]
+        sorted_keys = keys.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+        already_sorted = bool(keys.reset_index(drop=True).equals(sorted_keys))
+        if already_sorted:
+            result_df = result_df.reset_index(drop=True)
+        else:
+            result_df = result_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+        formula_engine_profile['output_presorted'] = bool(already_sorted or formula_engine_profile.get('output_presorted') is True)
 
     run_dir = RUNS / report_id
     run_dir.mkdir(parents=True, exist_ok=True)
     factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
     factor_csv = run_dir / f'factor_values__{report_id}.csv'
+    factor_csv_sample = run_dir / f'factor_values_sample__{report_id}.csv'
     run_meta = run_dir / f'run_metadata__{report_id}.json'
-    result_df.to_parquet(factor_parquet, index=False)
-    result_df.to_csv(factor_csv, index=False)
+    for stale_csv in [factor_csv, factor_csv_sample]:
+        if stale_csv.exists() or stale_csv.is_symlink():
+            stale_csv.unlink()
+    with timer.phase('write_parquet'):
+        result_df.to_parquet(factor_parquet, index=False)
+    with timer.phase('write_csv'):
+        if csv_policy == 'full_csv':
+            result_df.to_csv(factor_csv, index=False)
+            csv_path = factor_csv
+            csv_sample_path = None
+            csv_rows_written = int(len(result_df))
+            csv_sample_strategy = 'full'
+            full_csv_available = True
+        elif csv_policy == 'sample_csv':
+            sample_df = deterministic_csv_sample(result_df)
+            sample_df.to_csv(factor_csv_sample, index=False)
+            csv_path = None
+            csv_sample_path = factor_csv_sample
+            csv_rows_written = int(len(sample_df))
+            csv_sample_strategy = 'head_tail'
+            full_csv_available = False
+        else:
+            csv_path = None
+            csv_sample_path = None
+            csv_rows_written = 0
+            csv_sample_strategy = 'none'
+            full_csv_available = False
+    phase_seconds = timer.finish()
+    formula_engine_profile['compute_factor_seconds'] = float(phase_seconds.get('compute_factor') or 0.0)
+    formula_engine_profile['normalize_sort_seconds'] = float(phase_seconds.get('normalize_sort') or 0.0)
+    operator_profile_payload = formula_engine_profile.get('operator_profile')
+    if isinstance(operator_profile_payload, dict):
+        operator_profile_payload['unprofiled_compute_seconds'] = max(
+            0.0,
+            float(phase_seconds.get('compute_factor') or 0.0) - float(operator_profile_payload.get('total_profiled_seconds') or 0.0),
+        )
+        formula_engine_profile['operator_profile'] = operator_profile_payload
+    csv_output_profile = {
+        'version': 'factorforge_step3b_csv_output_policy_v1',
+        'csv_output_policy': csv_policy,
+        'parquet_rows_written': int(len(result_df)),
+        'csv_rows_written': int(csv_rows_written),
+        'csv_sample_strategy': csv_sample_strategy,
+        'full_csv_available': bool(full_csv_available),
+        'csv_path': str(csv_path) if csv_path else None,
+        'csv_sample_path': str(csv_sample_path) if csv_sample_path else None,
+        'write_csv_seconds': float(phase_seconds.get('write_csv') or 0.0),
+    }
+    output_paths = [str(factor_parquet.relative_to(FF))]
+    if csv_path:
+        output_paths.append(str(csv_path.relative_to(FF)))
+    if csv_sample_path:
+        output_paths.append(str(csv_sample_path.relative_to(FF)))
 
     metadata = {
         'report_id': report_id,
@@ -527,12 +877,35 @@ def generate_first_run_factor_values(
         'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
         'boundary_note': 'Step3B first-run produced factor values only; Step4 owns IC/NAV/backtest evaluation.',
+        'performance_profile': {
+            'version': 'factorforge_step3b_performance_profile_v1',
+            'row_count': int(len(result_df)),
+            'phase_seconds': phase_seconds,
+            'input_io_profile': {
+                'daily_selected_format': daily_selected_format,
+                'daily_selected_path': str(daily_path) if daily_path else None,
+                'daily_parquet_path': str(daily_parquet_path) if daily_parquet_path else None,
+                'daily_csv_path': str(daily_csv_path) if daily_csv_path else None,
+            },
+            'normalize_sort': {
+                'already_sorted': bool(already_sorted),
+            },
+            'rows_per_second_compute': float(len(result_df) / phase_seconds['compute_factor']) if phase_seconds.get('compute_factor') else None,
+            'formula_engine_profile': formula_engine_profile,
+            'output_bytes': {
+                'parquet': safe_file_size(factor_parquet),
+                'csv': safe_file_size(factor_csv),
+                'csv_sample': safe_file_size(factor_csv_sample),
+            },
+            'csv_output_profile': csv_output_profile,
+        },
     }
     write_json(run_meta, metadata)
 
     return {
         'status': 'ready',
-        'output_paths': [str(factor_parquet.relative_to(FF)), str(factor_csv.relative_to(FF))],
+        'output_paths': output_paths,
+        'csv_output_profile': csv_output_profile,
         'run_metadata_path': str(run_meta.relative_to(FF)),
         'producer': 'step3b',
         'signal_column': signal_col,
@@ -1069,7 +1442,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--csv-output-policy', help='Step3B factor CSV output policy. Defaults to full_csv.')
+    ap.add_argument('--formula-engine', help='Formula-IR engine. Defaults to pandas optimized; polars_experimental is explicit opt-in.')
+    ap.add_argument('--operator-profile', action='store_true', help='Record Formula-IR operator-level timing metadata.')
+    ap.add_argument('--ts-rank-engine', help='Experimental ts_rank engine. Defaults to pandas_reference.')
+    ap.add_argument('--formula-kernel-engine', help='Formula-IR operator kernel engine. Experimental engines require explicit enable gate.')
     args = ap.parse_args()
+    csv_policy = resolve_csv_policy(args.csv_output_policy)
+    formula_engine = resolve_formula_engine(args.formula_engine)
+    operator_profile = resolve_operator_profile(args.operator_profile if args.operator_profile else None)
+    try:
+        ts_rank_engine_config = resolve_formula_ts_rank_engine(args.ts_rank_engine)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        _formula_kernel_config = resolve_formula_kernel_engine(args.formula_kernel_engine)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     enforce_direct_step_policy(args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     require_formal_manifest(_manifest)
@@ -1327,6 +1716,11 @@ def main():
             step2_research_context=step2_research_context,
             mode_decision=mode_decision,
             artifact_identity=spec_identity,
+            csv_output_policy=csv_policy,
+            formula_engine=formula_engine,
+            operator_profile=operator_profile,
+            ts_rank_engine=args.ts_rank_engine,
+            formula_kernel_engine=args.formula_kernel_engine,
         )
         implementation_plan['first_run_outputs'] = first_run_outputs
         implementation_plan['step4_contract']['runner_entry'] = executable_impl_rel

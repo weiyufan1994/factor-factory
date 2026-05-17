@@ -12,6 +12,7 @@ FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if 
 WORKSPACE = FF.parent
 OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
+CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
@@ -31,6 +32,87 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
 
 def load(p):
     return json.loads(Path(p).read_text(encoding='utf-8'))
+
+
+def parquet_schema_columns(parquet_path: Path) -> list[str]:
+    try:
+        import pyarrow.parquet as pq
+
+        return list(pq.read_schema(parquet_path).names)
+    except Exception:
+        import pandas as pd
+
+        return list(pd.read_parquet(parquet_path).head(0).columns)
+
+
+def validate_daily_io_contract(local_inputs: dict, *, require_full_parity: bool = False) -> None:
+    daily_parquet_rel = local_inputs.get('daily_df_parquet')
+    daily_csv_rel = local_inputs.get('daily_df_csv')
+    daily_csv_sample_rel = local_inputs.get('daily_df_csv_sample')
+    contract = local_inputs.get('daily_io_contract') or {}
+    preferred = local_inputs.get('preferred_daily_format')
+    audit_format = local_inputs.get('audit_daily_format')
+    policy = contract.get('csv_output_policy') or ('full_csv' if daily_csv_rel else None)
+
+    assert policy in CSV_POLICY_VALUES, f'STEP3_DAILY_CSV_POLICY_INVALID: {policy}'
+    assert contract.get('version') == 'factorforge_step3a_daily_io_contract_v1', 'STEP3_DAILY_IO_CONTRACT_MISSING: invalid or missing daily_io_contract.version'
+
+    if preferred == 'parquet' or daily_parquet_rel:
+        assert daily_parquet_rel, 'STEP3_DAILY_PARQUET_MISSING: preferred_daily_format=parquet but daily_df_parquet missing'
+        parquet_path = WORKSPACE / daily_parquet_rel
+        assert parquet_path.exists(), f'STEP3_DAILY_PARQUET_MISSING: {parquet_path}'
+        expected_audit_path = 'csv' if policy == 'full_csv' else ('csv_sample' if policy == 'sample_csv' else 'none')
+        assert contract.get('performance_path') == 'parquet' and contract.get('audit_path') == expected_audit_path, 'STEP3_DAILY_IO_CONTRACT_MISSING: daily_io_contract path roles invalid'
+
+        if policy == 'no_csv':
+            assert audit_format == 'none', 'STEP3_DAILY_CSV_POLICY_INVALID: no_csv requires audit_daily_format=none'
+            assert not daily_csv_rel and not daily_csv_sample_rel, 'STEP3_DAILY_NO_CSV_PATH_DECLARED: no_csv must not claim local_input_paths CSV audit paths'
+            assert not contract.get('csv_path') and not contract.get('csv_sample_path'), 'STEP3_DAILY_NO_CSV_PATH_DECLARED: no_csv must not claim daily_io_contract CSV paths'
+            assert contract.get('full_csv_available') is False, 'STEP3_DAILY_CSV_POLICY_INVALID: no_csv full_csv_available must be false'
+            assert int(contract.get('csv_rows_written') or 0) == 0, 'STEP3_DAILY_CSV_POLICY_INVALID: no_csv csv_rows_written must be 0'
+            return
+
+        if policy == 'full_csv':
+            assert audit_format == 'csv', 'STEP3_DAILY_CSV_POLICY_INVALID: full_csv requires audit_daily_format=csv'
+            assert daily_csv_rel, 'STEP3_DAILY_CSV_AUDIT_MISSING: local_input_paths.daily_df_csv is required for full_csv audit'
+            csv_path = WORKSPACE / daily_csv_rel
+            assert csv_path.exists(), f'STEP3_DAILY_CSV_AUDIT_MISSING: {csv_path}'
+            assert contract.get('full_csv_available') is not False, 'STEP3_DAILY_CSV_POLICY_INVALID: full_csv must mark full_csv_available'
+        else:
+            assert audit_format == 'csv_sample', 'STEP3_DAILY_CSV_POLICY_INVALID: sample_csv requires audit_daily_format=csv_sample'
+            assert not daily_csv_rel, 'STEP3_DAILY_CSV_POLICY_INVALID: sample_csv must not claim full daily_df_csv'
+            assert daily_csv_sample_rel, 'STEP3_DAILY_CSV_AUDIT_MISSING: local_input_paths.daily_df_csv_sample is required for sample_csv audit'
+            csv_path = WORKSPACE / daily_csv_sample_rel
+            assert csv_path.exists(), f'STEP3_DAILY_CSV_AUDIT_MISSING: {csv_path}'
+            assert contract.get('full_csv_available') is False, 'STEP3_DAILY_CSV_POLICY_INVALID: sample_csv full_csv_available must be false'
+
+        import pandas as pd
+
+        required_cols = {'ts_code', 'trade_date'}
+        parquet_cols = parquet_schema_columns(parquet_path)
+        csv_cols = list(pd.read_csv(csv_path, nrows=0).columns)
+        assert required_cols.issubset(set(parquet_cols)) and required_cols.issubset(set(csv_cols)), (
+            'STEP3_DAILY_PARQUET_CSV_SCHEMA_MISMATCH: key columns missing'
+        )
+        assert parquet_cols == csv_cols, (
+            f'STEP3_DAILY_PARQUET_CSV_SCHEMA_MISMATCH: column order/header mismatch parquet={parquet_cols} csv={csv_cols}'
+        )
+        if policy == 'sample_csv':
+            sample_rows = len(pd.read_csv(csv_path))
+            assert sample_rows == int(contract.get('csv_rows_written') or -1), (
+                f'STEP3_DAILY_CSV_AUDIT_MISSING: sample row count mismatch metadata={contract.get("csv_rows_written")} actual={sample_rows}'
+            )
+            return
+        small_enough = require_full_parity or (parquet_path.stat().st_size < 50_000_000 and csv_path.stat().st_size < 100_000_000)
+        if small_enough:
+            pq = pd.read_parquet(parquet_path)
+            cs = pd.read_csv(csv_path)
+            assert len(pq) == len(cs), (
+                f'STEP3_DAILY_PARQUET_CSV_SCHEMA_MISMATCH: row count mismatch parquet={len(pq)} csv={len(cs)}'
+            )
+            assert set(pq.columns) == set(cs.columns), (
+                f'STEP3_DAILY_PARQUET_CSV_SCHEMA_MISMATCH: column mismatch parquet={sorted(pq.columns)} csv={sorted(cs.columns)}'
+            )
 
 
 if __name__ == '__main__':
@@ -89,13 +171,14 @@ if __name__ == '__main__':
         assert handoff.get('execution_mode') == impl_mode
     assert isinstance(prep.get('local_input_paths'), dict)
     minute_rel = prep['local_input_paths'].get('minute_df_parquet') or prep['local_input_paths'].get('minute_df_csv')
-    daily_rel = prep['local_input_paths'].get('daily_df_csv') or prep['local_input_paths'].get('daily_df_parquet')
+    daily_rel = prep['local_input_paths'].get('daily_df_parquet') or prep['local_input_paths'].get('daily_df_csv')
     input_mode = str(prep['local_input_paths'].get('input_mode') or '')
     if prep['feasibility'] == 'blocked':
         assert prep.get('blocked_items'), 'blocked feasibility must carry explicit blocked_items'
         assert not (minute_rel and daily_rel), 'blocked feasibility must not claim executable local snapshots'
     else:
         assert daily_rel and (WORKSPACE / daily_rel).exists(), 'missing local input snapshot: daily_df_(csv/parquet)'
+        validate_daily_io_contract(prep['local_input_paths'])
         if input_mode == 'daily_only':
             assert not minute_rel, 'daily_only Step 3A output must not claim minute snapshot'
         else:

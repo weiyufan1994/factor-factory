@@ -25,6 +25,49 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def valid_economic_hypothesis(value) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    if value.get('macro_return_source') not in {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'mixed'}:
+        return False
+    second = value.get('second_layer')
+    return (
+        isinstance(second, dict)
+        and nonempty_str(second.get('subtype'))
+        and nonempty_str(second.get('expected_counterparty_or_payer'))
+        and nonempty_str(second.get('why_they_may_pay'))
+        and nonempty_str(value.get('counterparty_loss_hypothesis'))
+    )
+
+
+def valid_math_hypothesis_candidates(value) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    required = {
+        'hypothesis_id',
+        'linked_economic_hypothesis',
+        'model_family',
+        'math_tools',
+        'state_or_object',
+        'process_or_distribution_hypothesis',
+        'observable_estimator',
+        'target_functional',
+        'why_suitable',
+        'falsification_tests',
+    }
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        if any(key not in item for key in required):
+            return False
+        if not nonempty_list(item.get('math_tools')) or not nonempty_list(item.get('falsification_tests')):
+            return False
+        for key in required - {'math_tools', 'falsification_tests'}:
+            if not nonempty_str(item.get(key)):
+                return False
+    return True
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -47,6 +90,8 @@ def main() -> None:
             check('target_statistic_hint_present', nonempty_str(discipline.get('target_statistic_hint') or math_review.get('target_statistic')), 'target_statistic_hint missing'),
             check('information_set_hint_present', nonempty_str(discipline.get('information_set_hint') or math_review.get('information_set_legality')), 'information_set_hint missing'),
             check('initial_return_source_hypothesis_present', nonempty_str(discipline.get('initial_return_source_hypothesis')), 'initial_return_source_hypothesis missing'),
+            check('economic_hypothesis_present', valid_economic_hypothesis(discipline.get('economic_hypothesis')), 'research_discipline.economic_hypothesis missing or incomplete'),
+            check('math_hypothesis_candidates_present', valid_math_hypothesis_candidates(discipline.get('math_hypothesis_candidates')), 'research_discipline.math_hypothesis_candidates missing or incomplete'),
             check('similar_case_lessons_imported_present', nonempty_list(discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
             check('what_must_be_true_present', nonempty_list(discipline.get('what_must_be_true')), 'what_must_be_true missing'),
             check('what_would_break_it_present', nonempty_list(discipline.get('what_would_break_it')), 'what_would_break_it missing'),

@@ -23,7 +23,9 @@ from factor_factory.data_access import (
     load_daily_snapshot,
     load_factor_values_with_signal,
     normalize_trade_date_series,
+    resolve_daily_snapshot_path,
 )
+from factor_factory.performance import PhaseTimer
 
 import matplotlib
 matplotlib.use('Agg')
@@ -109,21 +111,20 @@ def _assign_quantile_labels(series: pd.Series, groups: int) -> pd.Series:
     return labels.reindex(series.index)
 
 
-def _build_quantile_nav(
-    merged: pd.DataFrame,
-    signal_col: str,
-    group_count: int = 10,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    working = merged[['trade_date', signal_col, 'future_return_1d']].copy()
+def _assign_quantile_groups_once(merged: pd.DataFrame, signal_col: str, group_count: int = 10) -> pd.DataFrame:
+    working = merged[['datetime', 'trade_date', 'code', signal_col, 'future_return_1d']].copy()
     working['group_id'] = working.groupby('trade_date', sort=True)[signal_col].transform(
         lambda s: _assign_quantile_labels(s, groups=group_count)
     )
-    grouped_source = (
+    return (
         working.dropna(subset=['group_id', 'future_return_1d'])
         .assign(group_id=lambda df: df['group_id'].astype(int))
     )
-    grouped = grouped_source.groupby(['trade_date', 'group_id'], sort=True)['future_return_1d'].mean().unstack('group_id').sort_index()
-    counts = grouped_source.groupby(['trade_date', 'group_id'], sort=True).size().unstack('group_id').sort_index()
+
+
+def _build_quantile_nav_from_assigned(assigned: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    grouped = assigned.groupby(['trade_date', 'group_id'], sort=True)['future_return_1d'].mean().unstack('group_id').sort_index()
+    counts = assigned.groupby(['trade_date', 'group_id'], sort=True).size().unstack('group_id').sort_index()
     grouped.index = normalize_trade_date_series(grouped.index.to_series())
     grouped.index.name = 'datetime'
     grouped = grouped.sort_index()
@@ -134,6 +135,15 @@ def _build_quantile_nav(
     counts.columns = [f'G{int(col):02d}' for col in counts.columns]
     nav = _normalize_nav_to_one((1.0 + grouped.fillna(0.0)).cumprod())
     return grouped, nav, counts
+
+
+def _build_quantile_nav(
+    merged: pd.DataFrame,
+    signal_col: str,
+    group_count: int = 10,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    assigned = _assign_quantile_groups_once(merged, signal_col=signal_col, group_count=group_count)
+    return _build_quantile_nav_from_assigned(assigned)
 
 
 def _build_long_short_series(quantile_returns: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -177,18 +187,13 @@ def _max_recovery_days(nav: pd.Series) -> int | None:
     return int(max_days)
 
 
-def _build_long_side_evidence(
-    merged: pd.DataFrame,
-    signal_col: str,
+def _build_long_side_evidence_from_assigned(
+    assigned: pd.DataFrame,
     eval_dir: Path,
     report_id: str,
-    group_count: int = 10,
 ) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]]]:
-    working = merged[['datetime', 'trade_date', 'code', signal_col, 'future_return_1d']].copy()
-    working['group_id'] = working.groupby('trade_date', sort=True)[signal_col].transform(
-        lambda s: _assign_quantile_labels(s, groups=group_count)
-    )
-    assigned = working.dropna(subset=['group_id', 'future_return_1d']).copy()
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    assigned = assigned.copy()
     if assigned.empty:
         empty_metrics = {
             'metric_period': 'daily',
@@ -302,6 +307,17 @@ def _build_long_side_evidence(
         p = Path(path_text)
         checks.append(_check(p.exists() and p.stat().st_size > 0, f'ARTIFACT_{key.upper()}_EXISTS', f'missing or empty long-side artifact: {key}', evidence={'path': str(p)}))
     return metrics, artifacts, checks
+
+
+def _build_long_side_evidence(
+    merged: pd.DataFrame,
+    signal_col: str,
+    eval_dir: Path,
+    report_id: str,
+    group_count: int = 10,
+) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]]]:
+    assigned = _assign_quantile_groups_once(merged, signal_col=signal_col, group_count=group_count)
+    return _build_long_side_evidence_from_assigned(assigned=assigned, eval_dir=eval_dir, report_id=report_id)
 
 
 def _build_quantile_summary_table(
@@ -440,45 +456,53 @@ def _build_quality_warnings(
 
 
 def run_self_quant_quick(report_id: str) -> dict[str, Any]:
-    factor_df, signal_col, _factor_id = load_factor_values_with_signal(report_id)
-    required_columns = ['ts_code', 'trade_date', signal_col]
-    factor_df = factor_df[required_columns].copy()
-    daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
+    timer = PhaseTimer()
+    with timer.phase('load_factor_values'):
+        factor_df, signal_col, _factor_id = load_factor_values_with_signal(report_id)
+        factor_values_selected_format = 'parquet'
+        required_columns = ['ts_code', 'trade_date', signal_col]
+        factor_df = factor_df[required_columns].copy()
+        factor_df = factor_df.rename(columns={'ts_code': 'code'}).copy()
+        factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
+    with timer.phase('load_daily_snapshot'):
+        daily_snapshot_path, daily_snapshot_format = resolve_daily_snapshot_path(report_id)
+        daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
+        daily_df = build_forward_return_frame(
+            daily_df.rename(columns={'ts_code': 'code'}),
+            instrument_col='code',
+            date_col='trade_date',
+            price_col='close',
+            horizon=1,
+        )
 
-    factor_df = factor_df.rename(columns={'ts_code': 'code'}).copy()
-    factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
-    daily_df = build_forward_return_frame(
-        daily_df.rename(columns={'ts_code': 'code'}),
-        instrument_col='code',
-        date_col='trade_date',
-        price_col='close',
-        horizon=1,
-    )
+    with timer.phase('merge_forward_returns'):
+        merged = factor_df[['datetime', 'trade_date', 'code', signal_col]].merge(
+            daily_df[['datetime', 'code', 'future_return_1d']],
+            on=['datetime', 'code'],
+            how='left',
+        )
+        merged = merged.dropna(subset=[signal_col, 'future_return_1d'])
 
-    merged = factor_df[['datetime', 'trade_date', 'code', signal_col]].merge(
-        daily_df[['datetime', 'code', 'future_return_1d']],
-        on=['datetime', 'code'],
-        how='left',
-    )
-    merged = merged.dropna(subset=[signal_col, 'future_return_1d'])
-
-    rank_ic = merged.groupby('datetime', sort=True).apply(
-        lambda df: df[signal_col].corr(df['future_return_1d'], method='spearman')
-    )
-    pearson_ic = merged.groupby('datetime', sort=True).apply(
-        lambda df: df[signal_col].corr(df['future_return_1d'], method='pearson')
-    )
+    with timer.phase('ic_calculation'):
+        rank_ic = merged.groupby('datetime', sort=True).apply(
+            lambda df: df[signal_col].corr(df['future_return_1d'], method='spearman')
+        )
+        pearson_ic = merged.groupby('datetime', sort=True).apply(
+            lambda df: df[signal_col].corr(df['future_return_1d'], method='pearson')
+        )
 
     rank_stats = _series_stats(rank_ic)
     pearson_stats = _series_stats(pearson_ic)
-    quantile_returns, quantile_nav, quantile_counts = _build_quantile_nav(merged, signal_col=signal_col, group_count=10)
-    long_side_metrics, long_side_artifacts, long_side_checks = _build_long_side_evidence(
-        merged=merged,
-        signal_col=signal_col,
-        eval_dir=FF / 'evaluations' / report_id / 'self_quant_analyzer',
-        report_id=report_id,
-        group_count=10,
-    )
+    with timer.phase('quantile_assignment'):
+        assigned = _assign_quantile_groups_once(merged, signal_col=signal_col, group_count=10)
+    with timer.phase('quantile_nav'):
+        quantile_returns, quantile_nav, quantile_counts = _build_quantile_nav_from_assigned(assigned)
+    with timer.phase('long_side_evidence'):
+        long_side_metrics, long_side_artifacts, long_side_checks = _build_long_side_evidence_from_assigned(
+            assigned=assigned,
+            eval_dir=FF / 'evaluations' / report_id / 'self_quant_analyzer',
+            report_id=report_id,
+        )
     top_group = quantile_returns.iloc[:, -1] if not quantile_returns.empty else pd.Series(dtype='float64')
     bottom_group = quantile_returns.iloc[:, 0] if not quantile_returns.empty else pd.Series(dtype='float64')
     long_short_spread = (top_group - bottom_group).dropna() if not quantile_returns.empty else pd.Series(dtype='float64')
@@ -506,18 +530,21 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
     long_short_nav_plot = eval_dir / 'long_short_nav_10groups.png'
     long_short_returns, long_short_nav = _build_long_short_series(quantile_returns)
     quantile_summary = _build_quantile_summary_table(quantile_returns, quantile_nav, quantile_counts)
-    _write_line_plot(rank_ic.dropna(), rank_plot_path, _plot_title(report_id, 'Rank IC'), 'rank_ic')
-    _write_line_plot(pearson_ic.dropna(), pearson_plot_path, _plot_title(report_id, 'Pearson IC'), 'pearson_ic')
-    _write_line_plot(coverage_by_day, coverage_plot_path, _plot_title(report_id, 'Coverage by Day'), 'cross_section_count')
-    quantile_returns.to_csv(quantile_returns_csv, index=True)
-    quantile_nav.to_csv(quantile_nav_csv, index=True)
-    quantile_counts.to_csv(quantile_counts_csv, index=True)
-    quantile_summary.to_csv(quantile_summary_csv, index=False)
-    long_short_returns.to_frame('long_short_return').to_csv(long_short_returns_csv, index=True)
-    long_short_nav.to_frame('long_short_nav').to_csv(long_short_nav_csv, index=True)
-    _write_group_plot(quantile_nav, quantile_nav_plot, _plot_title(report_id, 'Quantile NAV (10 groups)'), 'cumulative nav')
-    _write_group_plot(quantile_counts, quantile_counts_plot, _plot_title(report_id, 'Quantile Counts (10 groups)'), 'group count')
-    _write_line_plot(long_short_nav, long_short_nav_plot, _plot_title(report_id, 'Long-Short NAV (G10-G01)'), 'long_short_nav')
+    with timer.phase('write_tables'):
+        quantile_returns.to_csv(quantile_returns_csv, index=True)
+        quantile_nav.to_csv(quantile_nav_csv, index=True)
+        quantile_counts.to_csv(quantile_counts_csv, index=True)
+        quantile_summary.to_csv(quantile_summary_csv, index=False)
+        long_short_returns.to_frame('long_short_return').to_csv(long_short_returns_csv, index=True)
+        long_short_nav.to_frame('long_short_nav').to_csv(long_short_nav_csv, index=True)
+    with timer.phase('write_plots'):
+        _write_line_plot(rank_ic.dropna(), rank_plot_path, _plot_title(report_id, 'Rank IC'), 'rank_ic')
+        _write_line_plot(pearson_ic.dropna(), pearson_plot_path, _plot_title(report_id, 'Pearson IC'), 'pearson_ic')
+        _write_line_plot(coverage_by_day, coverage_plot_path, _plot_title(report_id, 'Coverage by Day'), 'cross_section_count')
+        _write_group_plot(quantile_nav, quantile_nav_plot, _plot_title(report_id, 'Quantile NAV (10 groups)'), 'cumulative nav')
+        _write_group_plot(quantile_counts, quantile_counts_plot, _plot_title(report_id, 'Quantile Counts (10 groups)'), 'group count')
+        _write_line_plot(long_short_nav, long_short_nav_plot, _plot_title(report_id, 'Long-Short NAV (G10-G01)'), 'long_short_nav')
+    phase_seconds = timer.finish()
 
     artifacts = {
         'rank_ic_timeseries_png': str(rank_plot_path),
@@ -560,6 +587,28 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
             'avoids_signal_analyzer_heavy_paths': True,
             'uses_long_table_pipeline': True,
             'parallelism': 1,
+        },
+        'performance_profile': {
+            'version': 'factorforge_self_quant_performance_profile_v1',
+            'merged_rows': int(len(merged)),
+            'phase_seconds': phase_seconds,
+            'rows_per_second_total': float(len(merged) / phase_seconds['total']) if phase_seconds.get('total') else None,
+            'parallelism': 1,
+            'input_io_profile': {
+                'daily_selected_format': daily_snapshot_format,
+                'daily_selected_path': str(daily_snapshot_path),
+                'factor_values_selected_format': factor_values_selected_format,
+            },
+        },
+        'signal_timing_contract': {
+            'version': 'factorforge_signal_timing_contract_v1',
+            'signal_timestamp_policy': 'close_after_market',
+            'label_policy': 'next_trading_day_return',
+            'ic_alignment': 'factor_value_t_vs_return_t_plus_1',
+            'forward_return_horizon': 1,
+            'forward_return_source': 'pct_chg.shift(-1)',
+            'merge_keys': ['datetime', 'code'],
+            'same_day_return_used_as_label': False,
         },
         'coverage': {
             'signal_rows': int(len(factor_df)),

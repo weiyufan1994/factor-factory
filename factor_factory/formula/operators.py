@@ -1,7 +1,108 @@
 from __future__ import annotations
 
+import os
+import time
+
 import numpy as np
 import pandas as pd
+
+from .fast_rolling import last_value_pct_rank_reference, ts_rank_fast_numpy, ts_rank_reference
+
+TS_RANK_ENGINE_VALUES = {'pandas_reference', 'numpy_sliding_window_experimental'}
+
+
+def resolve_ts_rank_engine(explicit_engine: str | None = None) -> dict:
+    env_engine = os.getenv('FACTORFORGE_TS_RANK_ENGINE')
+    legacy_fast_env_ignored = os.getenv('FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_FAST') == '1'
+    if explicit_engine is not None:
+        raw = explicit_engine
+        selection_source = 'cli'
+    elif env_engine is not None:
+        raw = env_engine
+        selection_source = 'env'
+    else:
+        raw = 'pandas_reference'
+        selection_source = 'default'
+    selected_engine = str(raw or 'pandas_reference').strip()
+    if selected_engine == 'numpy_sliding_window':
+        selected_engine = 'numpy_sliding_window_experimental'
+    explicit_experimental_gate = os.getenv('FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE') == '1'
+    experimental_enabled = bool(explicit_experimental_gate and selected_engine != 'pandas_reference')
+    if selected_engine not in TS_RANK_ENGINE_VALUES:
+        raise ValueError(f'BLOCK_EXPERIMENTAL_TS_RANK_ENGINE_INVALID:{selected_engine}')
+    if selected_engine != 'pandas_reference' and not experimental_enabled:
+        raise ValueError('BLOCK_EXPERIMENTAL_TS_RANK_ENGINE_NOT_ENABLED')
+    guard_raw = os.getenv('FACTORFORGE_EXPERIMENTAL_TS_RANK_MAX_SECONDS')
+    runtime_guard_seconds = float(guard_raw) if guard_raw else None
+    return {
+        'selected_engine': selected_engine,
+        'experimental_enabled': bool(experimental_enabled),
+        'selection_source': selection_source,
+        'blocked_reason': None,
+        'runtime_guard_seconds': runtime_guard_seconds,
+        'legacy_fast_env_ignored': bool(legacy_fast_env_ignored),
+        'legacy_fast_env_name': 'FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_FAST' if legacy_fast_env_ignored else None,
+    }
+
+
+def default_ts_rank_engine_profile(config: dict | None = None) -> dict:
+    cfg = config or {
+        'selected_engine': 'pandas_reference',
+        'experimental_enabled': False,
+        'selection_source': 'default',
+        'runtime_guard_seconds': None,
+        'blocked_reason': None,
+        'legacy_fast_env_ignored': False,
+        'legacy_fast_env_name': None,
+    }
+    return {
+        'version': 'factorforge_ts_rank_engine_profile_v1',
+        'selected_engine': cfg.get('selected_engine') or 'pandas_reference',
+        'experimental_enabled': bool(cfg.get('experimental_enabled')),
+        'selection_source': cfg.get('selection_source') or 'default',
+        'engine_call_count': 0,
+        'engine_total_seconds': 0.0,
+        'engine_max_seconds': 0.0,
+        'parity_checked': False,
+        'parity_sample_rows': 0,
+        'parity_max_abs_diff': None,
+        'parity_nan_mask_equal': None,
+        'parity_key_order_equal': None,
+        'runtime_guard_seconds': cfg.get('runtime_guard_seconds'),
+        'runtime_guard_passed': True,
+        'blocked_reason': cfg.get('blocked_reason'),
+        'legacy_fast_env_ignored': bool(cfg.get('legacy_fast_env_ignored')),
+        'legacy_fast_env_name': cfg.get('legacy_fast_env_name'),
+    }
+
+
+def _update_ts_rank_engine_profile(stats: dict | None, config: dict, seconds: float) -> None:
+    if stats is None:
+        return
+    profile = stats.setdefault('ts_rank_engine_profile', default_ts_rank_engine_profile(config))
+    profile['selected_engine'] = config.get('selected_engine') or profile.get('selected_engine')
+    profile['experimental_enabled'] = bool(config.get('experimental_enabled'))
+    profile['selection_source'] = config.get('selection_source') or profile.get('selection_source')
+    profile['engine_call_count'] = int(profile.get('engine_call_count') or 0) + 1
+    profile['engine_total_seconds'] = float(profile.get('engine_total_seconds') or 0.0) + float(seconds)
+    profile['engine_max_seconds'] = max(float(profile.get('engine_max_seconds') or 0.0), float(seconds))
+    profile['runtime_guard_seconds'] = config.get('runtime_guard_seconds')
+    profile['legacy_fast_env_ignored'] = bool(config.get('legacy_fast_env_ignored'))
+    profile['legacy_fast_env_name'] = config.get('legacy_fast_env_name')
+
+
+def _maybe_fault_inject_ts_rank(result: pd.Series) -> pd.Series:
+    if os.getenv('FACTORFORGE_TS_RANK_ENGINE_FAULT_INJECTION') != '1':
+        return result
+    root = os.getenv('FACTORFORGE_ROOT') or ''
+    if not (root.startswith('/tmp/') or root.startswith('/private/tmp/')):
+        return result
+    mutated = result.copy()
+    valid = mutated.notna()
+    if valid.any():
+        first_idx = valid[valid].index[0]
+        mutated.loc[first_idx] = float(mutated.loc[first_idx]) + 1.0
+    return mutated
 
 
 def cs_rank(series: pd.Series, frame: pd.DataFrame) -> pd.Series:
@@ -22,13 +123,54 @@ def ts_std(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
     return series.groupby(frame['ts_code'], sort=False).transform(lambda s: s.rolling(window, min_periods=window).std())
 
 
-def ts_rank(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
-    return series.groupby(frame['ts_code'], sort=False).transform(
-        lambda s: s.rolling(window, min_periods=window).apply(
-            lambda values: pd.Series(values).rank(method='average', pct=True).iloc[-1],
-            raw=False,
-        )
-    )
+def _last_value_pct_rank(values: np.ndarray) -> float:
+    return last_value_pct_rank_reference(values)
+
+
+def ts_rank(series: pd.Series, window: int, frame: pd.DataFrame, stats: dict | None = None, engine_config: dict | None = None) -> pd.Series:
+    try:
+        config = engine_config or resolve_ts_rank_engine()
+    except ValueError as exc:
+        if stats is not None:
+            stats['ts_rank_engine_profile'] = default_ts_rank_engine_profile({'blocked_reason': str(exc)})
+        raise
+    selected_engine = config.get('selected_engine') or 'pandas_reference'
+    if selected_engine == 'numpy_sliding_window_experimental':
+        start = time.perf_counter()
+        try:
+            result = ts_rank_fast_numpy(series, window, frame, stats=stats)
+            result = _maybe_fault_inject_ts_rank(result)
+        except Exception as exc:
+            if stats is not None:
+                profile = stats.setdefault('ts_rank_engine_profile', default_ts_rank_engine_profile(config))
+                profile['blocked_reason'] = f'BLOCK_EXPERIMENTAL_TS_RANK_ENGINE_FAILED:{type(exc).__name__}:{exc}'
+            raise RuntimeError(f'BLOCK_EXPERIMENTAL_TS_RANK_ENGINE_FAILED:{type(exc).__name__}:{exc}') from exc
+        seconds = time.perf_counter() - start
+        _update_ts_rank_engine_profile(stats, config, seconds)
+        if stats is not None:
+            stats['ts_rank_engine'] = 'numpy_sliding_window_experimental'
+            stats['ts_rank_fast_path_enabled'] = True
+        guard = config.get('runtime_guard_seconds')
+        if guard is not None and float(seconds) > float(guard):
+            if stats is not None:
+                profile = stats.setdefault('ts_rank_engine_profile', default_ts_rank_engine_profile(config))
+                profile['runtime_guard_passed'] = False
+                profile['blocked_reason'] = 'BLOCK_EXPERIMENTAL_TS_RANK_RUNTIME_GUARD'
+            raise RuntimeError(
+                f'BLOCK_EXPERIMENTAL_TS_RANK_RUNTIME_GUARD: seconds={seconds:.9f} limit={float(guard):.9f}'
+            )
+        return result
+    if stats is not None:
+        stats['ts_rank_engine'] = 'pandas_reference'
+        stats['ts_rank_fast_path_enabled'] = False
+        stats['ts_rank_fast_path_count'] = int(stats.get('ts_rank_fast_path_count', 0))
+        stats['ts_rank_fallback_count'] = int(stats.get('ts_rank_fallback_count', 0)) + 1
+        stats.setdefault('ts_rank_fallback_reasons', []).append('experimental_fast_path_disabled')
+        stats['ts_rank_window_max'] = max(int(stats.get('ts_rank_window_max', 0)), int(window))
+    start = time.perf_counter()
+    result = ts_rank_reference(series, window, frame)
+    _update_ts_rank_engine_profile(stats, config, time.perf_counter() - start)
+    return result
 
 
 def ts_min(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:

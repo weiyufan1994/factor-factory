@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .schema import (
@@ -39,8 +40,91 @@ def _text_contains_forbidden(value: Any) -> list[str]:
     return [term for term in FORBIDDEN_REPAIR_TERMS if term in text]
 
 
+def _contains_field_token(text: str, tokens: set[str]) -> bool:
+    for token in tokens:
+        if re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", text):
+            return True
+    return False
+
+
 def _input_set(contract: dict[str, Any]) -> set[str]:
     return {str(item).lower() for item in contract.get("observable_inputs") or []}
+
+
+def _classification_text(contract: dict[str, Any]) -> str:
+    evidence = contract.get("classification_evidence") if isinstance(contract.get("classification_evidence"), dict) else {}
+    parts = [
+        evidence.get("formula_text"),
+        contract.get("economic_mechanism"),
+        contract.get("state_or_object"),
+        contract.get("factor_as_estimator"),
+        contract.get("observable_estimator"),
+    ]
+    parts.extend(str(item) for item in contract.get("observable_inputs") or [])
+    return " ".join(str(item) for item in parts if item).lower()
+
+
+def _formula_text(contract: dict[str, Any]) -> str:
+    evidence = contract.get("classification_evidence") if isinstance(contract.get("classification_evidence"), dict) else {}
+    return str(evidence.get("formula_text") or "").lower()
+
+
+def _has_price_volume_dependence(contract: dict[str, Any]) -> bool:
+    text = _classification_text(contract)
+    inputs = _input_set(contract)
+    price_tokens = set(PRICE_FIELDS) | {"vwap"}
+    volume_tokens = set(VOLUME_FIELDS) | {"money", "traded_value"}
+    has_price = bool(inputs & price_tokens) or _contains_field_token(text, price_tokens)
+    has_volume = bool(inputs & volume_tokens) or _contains_field_token(text, volume_tokens)
+    has_dependence = any(
+        token in text
+        for token in [
+            "correlation",
+            "corr",
+            "covariance",
+            "rolling_cov",
+            "rolling_corr",
+            "rank-dependence",
+            "rank dependence",
+            "co-movement",
+            "comovement",
+        ]
+    ) or bool(re.search(r"\bcov\s*\(", text))
+    return has_price and has_volume and has_dependence
+
+
+def _has_true_projection_language(contract: dict[str, Any]) -> bool:
+    text = _classification_text(contract)
+    return any(
+        token in text
+        for token in [
+            "neutralize",
+            "neutralization",
+            "residualize",
+            "residualization",
+            "projection",
+            "pca",
+            "orthogonal",
+            "beta neutral",
+            "factor neutral",
+        ]
+    )
+
+
+def _has_true_projection_formula(contract: dict[str, Any]) -> bool:
+    text = _formula_text(contract)
+    return any(
+        token in text
+        for token in [
+            "neutralize",
+            "residualize",
+            "projection",
+            "pca",
+            "orthogonal",
+            "beta_neutral",
+            "factor_neutral",
+        ]
+    )
 
 
 def validate_mechanism_math_contract(contract: Any) -> list[dict[str, str]]:
@@ -82,7 +166,15 @@ def validate_mechanism_math_contract(contract: Any) -> list[dict[str, str]]:
 
     for field in REQUIRED_SPECIFIED_FIELDS:
         value = contract.get(field)
-        if field in {"math_toolkits", "observable_inputs", "necessary_conditions", "revision_operators", "falsification_tests", "kill_criteria"}:
+        if field in {
+            "math_toolkits",
+            "observable_inputs",
+            "necessary_conditions",
+            "revision_operators",
+            "falsification_tests",
+            "mechanism_falsification_tests",
+            "kill_criteria",
+        }:
             if not _nonempty_list(value):
                 _failures_add(failures, f"mechanism_math_{field}_missing", f"specified contract requires nonempty {field}")
         elif field in {"information_set", "expected_metric_signature"}:
@@ -129,6 +221,27 @@ def validate_mechanism_math_contract(contract: Any) -> list[dict[str, str]]:
                 "mechanism_math_model_family_observable_inputs_contradiction",
                 "valuation_identity cannot be silently accepted with only price/volume observables and no valuation/accounting explanation",
             )
+
+    if family == "linear_factor_projection":
+        if _has_price_volume_dependence(contract) and not _has_true_projection_formula(contract):
+            _failures_add(
+                failures,
+                "mechanism_math_price_volume_dependence_family_mismatch",
+                "price-volume covariance/correlation/rank-dependence formulas must not be classified as linear_factor_projection without explicit projection or residualization language",
+            )
+        elif not _has_true_projection_language(contract):
+            _failures_add(
+                failures,
+                "mechanism_math_linear_projection_evidence_missing",
+                "linear_factor_projection requires explicit projection, residualization, neutralization, PCA, orthogonalization, or beta-neutral language",
+            )
+
+    if family == "price_volume_microstructure" and _has_true_projection_formula(contract):
+        _failures_add(
+            failures,
+            "mechanism_math_price_volume_projection_family_mismatch",
+            "formula-level projection, residualization, or neutralization must be classified as linear_factor_projection or an explicit composite, not pure price_volume_microstructure",
+        )
 
     return failures
 

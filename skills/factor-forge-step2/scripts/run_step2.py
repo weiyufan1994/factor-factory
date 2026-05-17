@@ -472,9 +472,14 @@ def build_step2_research_contract(
     aim: Dict[str, Any],
     thesis: Dict[str, Any],
 ) -> Dict[str, Any]:
+    discipline = aim.get('research_discipline') or {}
+    economic_hypothesis = discipline.get('economic_hypothesis') or {}
+    math_hypothesis_candidates = discipline.get('math_hypothesis_candidates') or []
     return {
         'target_statistic': infer_target_statistic(primary, aim),
         'economic_mechanism': infer_economic_mechanism(primary, aim, thesis),
+        'economic_hypothesis': economic_hypothesis,
+        'math_hypothesis_candidates': math_hypothesis_candidates,
         'expected_failure_modes': infer_expected_failure_modes(primary, consistency, aim),
         'innovative_idea_seeds': infer_innovative_idea_seeds(primary, aim),
         'reuse_instruction_for_future_agents': build_reuse_instructions(primary, aim),
@@ -920,6 +925,9 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         or aim.get('mechanism_math_contract')
         or build_mechanism_math_contract(master)
     )
+    if isinstance(mechanism_math_contract, dict):
+        mechanism_math_contract.setdefault('source_economic_hypothesis', research_contract.get('economic_hypothesis') or {})
+        mechanism_math_contract.setdefault('source_math_hypothesis_candidates', research_contract.get('math_hypothesis_candidates') or [])
     master['mechanism_math_contract'] = mechanism_math_contract
     master['canonical_spec']['mechanism_math_contract'] = mechanism_math_contract
     master['math_discipline_review']['mechanism_math_contract_ref'] = {

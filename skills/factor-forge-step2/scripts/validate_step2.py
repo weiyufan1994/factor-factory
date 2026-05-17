@@ -56,6 +56,62 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def valid_economic_hypothesis(value) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    if value.get('macro_return_source') not in {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'mixed'}:
+        return False
+    second = value.get('second_layer')
+    return (
+        isinstance(second, dict)
+        and nonempty_str(second.get('subtype'))
+        and nonempty_str(second.get('expected_counterparty_or_payer'))
+        and nonempty_str(second.get('why_they_may_pay'))
+        and nonempty_str(value.get('counterparty_loss_hypothesis'))
+    )
+
+
+def valid_math_hypothesis_candidates(value) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    required = {
+        'hypothesis_id',
+        'linked_economic_hypothesis',
+        'model_family',
+        'math_tools',
+        'state_or_object',
+        'process_or_distribution_hypothesis',
+        'observable_estimator',
+        'target_functional',
+        'why_suitable',
+        'falsification_tests',
+    }
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        if any(key not in item for key in required):
+            return False
+        if not nonempty_list(item.get('math_tools')) or not nonempty_list(item.get('falsification_tests')):
+            return False
+        for key in required - {'math_tools', 'falsification_tests'}:
+            if not nonempty_str(item.get(key)):
+                return False
+    return True
+
+
+def mechanism_contract_carries_source_hypotheses(contract, expected_economic, expected_math) -> bool:
+    if not isinstance(contract, dict) or not contract:
+        return False
+    source_economic = contract.get('source_economic_hypothesis')
+    source_math = contract.get('source_math_hypothesis_candidates')
+    return (
+        valid_economic_hypothesis(source_economic)
+        and valid_math_hypothesis_candidates(source_math)
+        and source_economic == expected_economic
+        and source_math == expected_math
+    )
+
+
 def producer_has_forbidden_token(value) -> bool:
     text = str(value or '').lower()
     return any(token in text for token in FORBIDDEN_PRODUCER_TOKENS)
@@ -189,6 +245,8 @@ def main() -> None:
         math_review = master.get('math_discipline_review') or {}
         learning = master.get('learning_and_innovation') or {}
         research_contract = master.get('research_contract') or {}
+        expected_economic_hypothesis = research_contract.get('economic_hypothesis')
+        expected_math_hypotheses = research_contract.get('math_hypothesis_candidates')
         info_legality = str(math_review.get('information_set_legality') or '').lower()
         source_type = master.get('source_type')
         expected_producer = EXPECTED_PRODUCER_BY_SOURCE_TYPE.get(source_type)
@@ -203,7 +261,10 @@ def main() -> None:
         }
         implementation_mode = master.get('implementation_mode')
         formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
-        mechanism_math_contract = master.get('mechanism_math_contract') or canonical.get('mechanism_math_contract')
+        master_mechanism_math_contract = master.get('mechanism_math_contract')
+        canonical_mechanism_math_contract = canonical.get('mechanism_math_contract')
+        handoff_mechanism_math_contract = handoff.get('mechanism_math_contract') if isinstance(handoff, dict) else None
+        mechanism_math_contract = master_mechanism_math_contract or canonical_mechanism_math_contract
         mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
         checks.extend([
             check('report_id_match', master.get('report_id') == rid, 'report_id mismatch'),
@@ -237,9 +298,26 @@ def main() -> None:
             check('thesis_economic_mechanism_present', nonempty_str(thesis.get('economic_mechanism')), 'thesis.economic_mechanism missing'),
             check('target_statistic_present', nonempty_str(math_review.get('target_statistic') or research_contract.get('target_statistic')), 'target_statistic missing'),
             check('economic_mechanism_present', nonempty_str(research_contract.get('economic_mechanism')), 'economic_mechanism missing'),
+            check('economic_hypothesis_present', valid_economic_hypothesis(research_contract.get('economic_hypothesis')), 'research_contract.economic_hypothesis missing or incomplete'),
+            check('math_hypothesis_candidates_present', valid_math_hypothesis_candidates(research_contract.get('math_hypothesis_candidates')), 'research_contract.math_hypothesis_candidates missing or incomplete'),
             check('expected_failure_modes_present', nonempty_list(research_contract.get('expected_failure_modes') or math_review.get('expected_failure_modes')), 'expected_failure_modes missing'),
             check('mechanism_math_contract_present', isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract), 'mechanism_math_contract missing'),
             check('mechanism_math_contract_valid', not mechanism_math_failures, f'mechanism_math_contract invalid: {mechanism_math_failures}'),
+            check(
+                'mechanism_math_contract_source_economic_hypothesis_present',
+                mechanism_contract_carries_source_hypotheses(master_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
+                'mechanism_math_contract.source_economic_hypothesis/source_math_hypothesis_candidates missing or not equal to research_contract',
+            ),
+            check(
+                'canonical_mechanism_math_contract_source_hypotheses_present',
+                mechanism_contract_carries_source_hypotheses(canonical_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
+                'canonical_spec.mechanism_math_contract source hypotheses missing or not equal to research_contract',
+            ),
+            check(
+                'handoff_mechanism_math_contract_source_hypotheses_present',
+                not handoff or mechanism_contract_carries_source_hypotheses(handoff_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
+                'handoff mechanism_math_contract source hypotheses missing or not equal to research_contract',
+            ),
             check('handoff_mechanism_math_contract_match', not handoff or (handoff.get('mechanism_math_contract') or {}) == (mechanism_math_contract or {}), 'handoff mechanism_math_contract mismatch'),
             check('innovative_idea_seeds_present', nonempty_list(learning.get('innovative_idea_seeds') or research_contract.get('innovative_idea_seeds')), 'innovative_idea_seeds missing'),
             check('reuse_instruction_present', nonempty_list(learning.get('reuse_instruction_for_future_agents') or research_contract.get('reuse_instruction_for_future_agents')), 'reuse_instruction_for_future_agents missing'),

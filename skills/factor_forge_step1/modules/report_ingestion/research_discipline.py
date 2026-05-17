@@ -74,6 +74,165 @@ def infer_return_source_hypothesis(alpha_idea_master: Dict[str, Any], *context: 
     return "mixed"
 
 
+def normalize_macro_return_source(value: str) -> str:
+    if value == "constraint_driven_arbitrage":
+        return "market_structure_arbitrage"
+    if value in {"risk_premium", "information_advantage", "market_structure_arbitrage", "mixed"}:
+        return value
+    return "mixed"
+
+
+def infer_second_layer_mechanism(alpha_idea_master: Dict[str, Any], macro_source: str, *context: Any) -> Dict[str, Any]:
+    text = _text_blob(alpha_idea_master, *context)
+    if macro_source == "risk_premium":
+        if any(tok in text for tok in ["earnings", "profit", "roe", "roa", "盈利", "利润", "业绩"]):
+            subtype = "earnings_or_profitability_risk"
+        elif any(tok in text for tok in ["growth", "revenue", "sales", "成长", "营收"]):
+            subtype = "growth_risk"
+        elif any(tok in text for tok in ["duration", "interest", "rate", "久期", "利率"]):
+            subtype = "duration_or_discount_rate_risk"
+        else:
+            subtype = "priced_state_risk"
+        payer = "investors who require compensation for bearing the stated state risk"
+    elif macro_source == "information_advantage":
+        if any(tok in text for tok in ["smart money", "fund flow", "institution", "北向", "聪明钱", "资金流"]):
+            subtype = "smart_money_or_informed_flow_advantage"
+        elif any(tok in text for tok in ["attention", "overreaction", "underreaction", "bias", "行为", "注意力", "过度反应", "反应不足"]):
+            subtype = "behavioral_bias_or_slow_information_diffusion"
+        else:
+            subtype = "slow_information_diffusion"
+        payer = "slower or behaviorally biased counterparties who incorporate information later or at worse prices"
+    elif macro_source == "market_structure_arbitrage":
+        if any(tok in text for tok in ["order", "imbalance", "volume", "turnover", "liquidity", "成交量", "换手", "流动性"]):
+            subtype = "order_imbalance_or_liquidity_pressure"
+        elif any(tok in text for tok in ["index", "rebalance", "mandate", "北交所", "转板", "制度", "约束"]):
+            subtype = "mandate_rebalance_or_constraint_flow"
+        else:
+            subtype = "market_microstructure_constraint"
+        payer = "constrained liquidity demanders, forced rebalancers, or crowded-flow participants"
+    else:
+        subtype = "mixed_or_unresolved"
+        payer = "unidentified counterparties; Step2 and Council must separate risk, information, and structure channels"
+    return {
+        "subtype": subtype,
+        "expected_counterparty_or_payer": payer,
+        "why_they_may_pay": "The report thesis implies this group trades for risk transfer, delayed information processing, behavioral pressure, or market-structure constraints rather than because the factor is mechanically convenient.",
+    }
+
+
+def build_economic_hypothesis(alpha_idea_master: Dict[str, Any], return_source: str, *context: Any) -> Dict[str, Any]:
+    macro_source = normalize_macro_return_source(return_source)
+    second_layer = infer_second_layer_mechanism(alpha_idea_master, macro_source, *context)
+    return {
+        "hypothesis_version": "factorforge_step1_economic_hypothesis_v1",
+        "macro_return_source": macro_source,
+        "legacy_initial_return_source_hypothesis": return_source,
+        "second_layer": second_layer,
+        "counterparty_loss_hypothesis": second_layer["expected_counterparty_or_payer"],
+        "researcher_question": "Who is the likely counterparty paying this return, and why would that behavior or constraint persist after costs?",
+    }
+
+
+def build_math_hypothesis_candidates(
+    alpha_idea_master: Dict[str, Any],
+    economic_hypothesis: Dict[str, Any],
+    random_object: str,
+    target_hint: str,
+    *context: Any,
+) -> List[Dict[str, Any]]:
+    text = _text_blob(alpha_idea_master, *context)
+    macro_source = economic_hypothesis.get("macro_return_source")
+    subtype = (economic_hypothesis.get("second_layer") or {}).get("subtype")
+    candidates: List[Dict[str, Any]] = []
+
+    def add(hid: str, family: str, tools: List[str], state: str, process: str, estimator: str, target: str, why: str) -> None:
+        candidates.append(
+            {
+                "hypothesis_id": hid,
+                "linked_economic_hypothesis": f"{macro_source}:{subtype}",
+                "model_family": family,
+                "math_tools": tools,
+                "state_or_object": state,
+                "process_or_distribution_hypothesis": process,
+                "observable_estimator": estimator,
+                "target_functional": target,
+                "why_suitable": why,
+                "falsification_tests": [
+                    "Reject if Step4/5 evidence contradicts the declared relationship shape.",
+                    "Reject if apparent performance is driven by forbidden portfolio repair, short-leg adoption, or data mutation.",
+                ],
+            }
+        )
+
+    if macro_source == "risk_premium":
+        add(
+            "math_risk_premium_valuation_state",
+            "valuation_identity",
+            ["accounting_or_valuation_identity", "statistics", "real_analysis"],
+            "cash-flow, earnings, growth, or discount-rate state",
+            "Asset value is a discounted functional of future cash flows or risk compensation; returns arise when the market reprices that state.",
+            "lag-safe accounting, valuation, growth, or profitability estimator",
+            "E[r_{i,t+1:t+h} | F_t, priced_state_{i,t}]",
+            "Risk-premium hypotheses should explain which priced state is borne and why compensation is expected.",
+        )
+    if macro_source == "information_advantage":
+        add(
+            "math_information_advantage_belief_update",
+            "stochastic_process",
+            ["probability_theory", "statistics", "information_theory"],
+            "latent information or belief-updating state",
+            "Prices partially reveal information over time; returns depend on delayed belief updating or heterogeneous signal extraction.",
+            "observable proxy for informed flow, disclosure surprise, slow diffusion, or behavioral bias",
+            "E[r_{i,t+1:t+h} | F_t, information_state_{i,t}]",
+            "Information-advantage hypotheses should state why the signal is known earlier or interpreted better than by marginal counterparties.",
+        )
+        if any(tok in text for tok in ["cointegration", "pair", "spread", "均衡", "协整"]):
+            add(
+                "math_information_advantage_cointegration",
+                "stochastic_process",
+                ["probability_theory", "statistics", "time_series_and_filtering"],
+                "temporary deviation from a stable relation",
+                "A spread or relation mean-reverts when counterparties underreact to a known equilibrium.",
+                "cointegration residual, spread z-score, or deviation estimator",
+                "E[Δspread_{t+1:t+h} | F_t, deviation_t]",
+                "Cointegration is suitable only when the report thesis implies a stable relation and delayed correction.",
+            )
+    if macro_source == "market_structure_arbitrage":
+        add(
+            "math_market_structure_flow_pressure",
+            "price_volume_microstructure",
+            ["probability_theory", "statistics", "microstructure_model"],
+            "order-imbalance, liquidity-demand, or transient-impact state",
+            "Observed price and trading activity combine permanent information and transient pressure components.",
+            "price-volume dependence, flow, turnover, or liquidity-pressure estimator",
+            "E[r_{i,t+1:t+h} | F_t, flow_pressure_{i,t}]",
+            "Market-structure hypotheses should identify constrained or crowded participants whose trading pressure can be harvested.",
+        )
+    if any(tok in text for tok in ["wavelet", "fourier", "frequency", "周期", "频率", "小波"]):
+        add(
+            "math_frequency_domain_signal",
+            "functional_filter",
+            ["functional_analysis", "time_series_and_filtering", "statistics"],
+            "multi-scale latent signal state",
+            "Observed prices or fundamentals contain components at different horizons; returns depend on a selected scale or frequency band.",
+            "wavelet, Fourier, kernel, or multi-scale filtered estimator",
+            "E[r_{i,t+1:t+h} | F_t, scale_state_{i,t}]",
+            "Frequency-domain tools are suitable only when the report thesis identifies horizon separation or scale-specific behavior.",
+        )
+    if not candidates:
+        add(
+            "math_mixed_unresolved_research_prior",
+            "other",
+            ["probability_theory", "statistics"],
+            random_object,
+            "The report implies a return source, but the precise process/distribution hypothesis remains unresolved.",
+            "report-defined observable estimator",
+            f"E[target | F_t, factor_state_t], target_hint={target_hint}",
+            "This keeps the hypothesis explicit without forcing a fixed mathematical tool before Step2/Council review.",
+        )
+    return candidates[:4]
+
+
 def infer_information_set_hint(alpha_idea_master: Dict[str, Any], *context: Any) -> str:
     text = _text_blob(alpha_idea_master, *context)
     if any(tok in text for tok in ["future", "lead", "lookahead", "未来收益", "事后"]):
@@ -132,6 +291,8 @@ def build_step1_research_discipline(
     random_object = infer_step1_random_object(alpha_idea_master, *context)
     target_hint = infer_target_statistic_hint(alpha_idea_master, *context)
     return_source = infer_return_source_hypothesis(alpha_idea_master, *context)
+    economic_hypothesis = build_economic_hypothesis(alpha_idea_master, return_source, *context)
+    math_hypothesis_candidates = build_math_hypothesis_candidates(alpha_idea_master, economic_hypothesis, random_object, target_hint, *context)
     info_hint = infer_information_set_hint(alpha_idea_master, *context)
     similar_lessons = load_similar_case_lessons(repo, query_text)
     what_must_be_true = _as_list(final_factor.get("what_must_be_true")) or _as_list(final_factor.get("economic_logic"))[:1]
@@ -145,6 +306,8 @@ def build_step1_research_discipline(
         "target_statistic_hint": target_hint,
         "information_set_hint": info_hint,
         "initial_return_source_hypothesis": return_source,
+        "economic_hypothesis": economic_hypothesis,
+        "math_hypothesis_candidates": math_hypothesis_candidates,
         "what_must_be_true": [str(x) for x in what_must_be_true if str(x).strip()],
         "what_would_break_it": [str(x) for x in what_would_break_it if str(x).strip()],
         "similar_case_lessons_imported": similar_lessons,

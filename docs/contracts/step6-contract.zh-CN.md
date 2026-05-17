@@ -16,6 +16,17 @@ Step 6 是 **研究闭环控制层**。
 ## 机制数学合约
 Step6 在 `research_memo.mechanism_analysis` 下保留 `mechanism_math_contract`，用它约束 revision hypothesis 指向具体数学对象，并在每份 loop research brief 中写入 `mechanism_math_summary`。`math_model_status=invalid` 不允许 official promotion；`under_specified` 必须写明原因和下一步人工研究问题。数学层只用于解释和 revision discipline，不能绕过 evidence audit、case comparison、search policy、loop authorization、provenance 或 promotion gate。
 
+当 `math_model_status=specified` 时，机制数学合同必须写明可检验的
+`process_hypothesis`、`latent_state`、`observable_estimator`、
+`conditional_distribution_hypothesis`、`relationship_shape`、
+`metric_signature_match` 和 `mechanism_falsification_tests`。价量
+covariance/correlation/rank-dependence 公式必须归入
+`price_volume_microstructure`，除非公式本身显式包含 projection、
+residualization 或 neutralization 操作。Revision Council packet 必须读取
+`objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
+以及匹配的 `knowledge/因子工厂/知识库/*MECHANISM*` 机制补充材料，并继续传递到
+agentic taskbook。
+
 ## 目标
 
 Step 6 的存在意义，是让因子工厂具备“记忆”和“进化”能力，而不是每次都像新人一样重新研究。
@@ -688,3 +699,26 @@ functional analysis、dynamical systems、information theory、market microstruc
 deterministic local council 只是 scaffold/smoke/fallback mode。scaffold proposal
 必须标记 `producer=deterministic_scaffold` 和 `research_depth=low`，不得被包装成
 深度 agentic research 结论。
+
+## Phase M Ultimate Loop Orchestrator
+
+`scripts/run_factorforge_ultimate_loop.py` 是位于
+`scripts/run_factorforge_ultimate.py` 之上的薄循环编排层。它不替代 Step6、
+Revision Council 或任何既有 validator。每一轮正式 loop 都必须调用 official
+ultimate wrapper，然后基于 wrapper 输出做状态分类。
+
+Loop orchestrator 写入聚合 proof / brief：
+
+- `objects/runtime_context/ultimate_loop_report__{root_report_id}.json`
+- `objects/runtime_context/ultimate_loop_brief__{root_report_id}.md`
+
+合法停止结果包括 `promoted`、`rejected`、`exhausted`、
+`awaiting_agent_results`、`max_loops_reached`、`blocked`、`failed`。只有当父
+report 的 Step6 明确写出 approved Step3B handoff 时，才允许进入 child revision
+loop。Orchestrator 不得自行发明 child formula 或 branch；child report id 必须按
+`{parent_report_id}__LOOPNN__{revision_id}` 隔离。
+
+Orchestrator 不是 canonical research artifact writer。它不得写 Step3B handoff、
+generated code、official library、clean data 或 search-worker output。它只允许写
+loop proof / brief，并且如果 child loop 修改父 `generated_code/{report_id}` 或
+loop 期间 `data/clean` 发生变化，必须 BLOCK。

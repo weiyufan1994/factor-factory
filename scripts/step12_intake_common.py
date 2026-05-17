@@ -113,6 +113,141 @@ def common_research_discipline(
     }
 
 
+def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: List[str]) -> Dict[str, Any]:
+    text = formula.lower()
+    op_text = ' '.join(operators).lower()
+    uses_price = any(item in inputs for item in ['open', 'high', 'low', 'close', 'vwap', 'return'])
+    uses_liquidity = any(item in inputs for item in ['volume', 'amount', 'turnover'])
+    uses_rank = 'rank' in op_text
+    uses_delta = 'delta' in op_text
+    uses_ts_rank = 'ts_rank' in op_text
+    uses_volume_ratio = uses_liquidity and any(tok in text for tok in ['mean(volume', 'adv', 'divide(volume'])
+
+    if uses_price and uses_liquidity:
+        second_layer = {
+            'subtype': 'price_volume_crowding_and_short_horizon_reversal',
+            'expected_counterparty_or_payer': (
+                'late trend followers, attention-driven retail flow, and mandate-constrained liquidity demand '
+                'that chase visible price and volume states'
+            ),
+            'why_they_may_pay': (
+                'their demand is triggered by observable recent price/volume strength rather than stable '
+                'fundamental information, so temporary impact can decay over the next return window'
+            ),
+        }
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': second_layer,
+            'counterparty_loss_hypothesis': (
+                'the payer is the marginal investor who buys crowded recent strength or supplies liquidity '
+                'at the wrong time when short-horizon impact reverts'
+            ),
+            'risk_or_behavioral_compensation': (
+                'compensation may combine transient liquidity risk, behavioral overreaction, and market-structure '
+                'harvesting of delayed or constrained flow'
+            ),
+        }
+        model_family = 'ranked_price_volume_state_process'
+        state = 'cross-sectional security-day state built from price location, price acceleration, and relative volume intensity'
+        process = (
+            'observed price follows P_i,t = F_i,t + I_i,t + epsilon_i,t, where I_i,t is a transient impact state '
+            'driven by recent price motion and abnormal volume; the hypothesis requires partial mean reversion '
+            'E[I_i,t+1 - I_i,t | formula state] < 0 for crowded states'
+        )
+        estimator_parts = []
+        if uses_ts_rank:
+            estimator_parts.append('time-series rank of recent price level')
+        if uses_delta:
+            estimator_parts.append('second-order price difference / acceleration')
+        if uses_volume_ratio:
+            estimator_parts.append('time-series rank of volume relative to rolling average volume')
+        observable = '; '.join(estimator_parts) or 'canonical ranked formula score'
+        falsification = [
+            'long-side high-score decile fails to earn positive risk-adjusted return after costs',
+            'rank IC sign is unstable across 2016-2019, 2020-2024-09-23, and post-2024-09-24 regimes',
+            'decile ordering is driven only by catastrophic short-leg losses rather than a usable high-score long side',
+            'turnover costs consume the expected one-day transient-impact payoff',
+        ]
+    elif uses_price:
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': {
+                'subtype': 'short_horizon_price_state_reversal_or_continuation',
+                'expected_counterparty_or_payer': 'investors extrapolating recent price states or providing liquidity under pressure',
+                'why_they_may_pay': 'recent price states may contain temporary impact, stale information adjustment, or behavioral extrapolation',
+            },
+            'counterparty_loss_hypothesis': 'the payer is the marginal trader whose recent price-impact demand mean reverts or is repriced',
+            'risk_or_behavioral_compensation': 'compensation may come from short-horizon reversal, momentum continuation, or liquidity provision risk',
+        }
+        model_family = 'ranked_price_state_process'
+        state = 'cross-sectional security-day price state'
+        process = (
+            'price contains a latent short-horizon state whose conditional drift depends on ranked recent price '
+            'movement and its time-series position'
+        )
+        observable = 'canonical ranked price-state formula score'
+        falsification = [
+            'long-side high-score decile lacks positive risk-adjusted return',
+            'rank IC sign is unstable out of sample',
+            'drawdown and recovery imply the state is regime-specific rather than persistent',
+        ]
+    else:
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': {
+                'subtype': 'canonical_formula_state_premium',
+                'expected_counterparty_or_payer': 'market participants exposed to the state described by the canonical formula',
+                'why_they_may_pay': 'the formula may isolate a priced state, information delay, or behavioral imbalance',
+            },
+            'counterparty_loss_hypothesis': 'the payer is the investor taking the other side of the formula-defined state',
+            'risk_or_behavioral_compensation': 'compensation source remains under-specified until Step4/Step6 evidence is reviewed',
+        }
+        model_family = 'canonical_formula_state_process'
+        state = 'formula-defined security-day state'
+        process = 'future returns have a conditional distribution that changes with the canonical formula state'
+        observable = 'canonical formula score'
+        falsification = [
+            'formula score has no stable rank IC',
+            'high-score long side fails after costs',
+            'metric signature cannot be linked to the stated economic mechanism',
+        ]
+
+    math = [
+        {
+            'hypothesis_id': 'H1_formula_state_conditional_return',
+            'linked_economic_hypothesis': economic['second_layer']['subtype'],
+            'model_family': model_family,
+            'math_tools': [
+                'cross-sectional rank transform',
+                'rolling time-series state estimator',
+                'conditional expectation of forward return',
+            ],
+            'state_or_object': state,
+            'process_or_distribution_hypothesis': process,
+            'observable_estimator': observable,
+            'target_functional': (
+                'E[r_i,t+1 | formula_state_i,t] and the monotone relation between formula_state_i,t '
+                'and next-period cross-sectional return rank'
+            ),
+            'why_suitable': (
+                'the canonical Alpha101 formula is an explicit low-lag transformation of observable market states; '
+                'ranking reduces scale dependence and makes the hypothesis a cross-sectional conditional-return test'
+            ),
+            'falsification_tests': falsification,
+        }
+    ]
+    if uses_rank:
+        math[0]['math_tools'].append('copula/rank-order robustness check')
+    if uses_delta:
+        math[0]['math_tools'].append('finite-difference acceleration estimator')
+    if uses_liquidity:
+        math[0]['math_tools'].append('relative liquidity intensity estimator')
+    return {
+        'economic_hypothesis': economic,
+        'math_hypothesis_candidates': math,
+    }
+
+
 def write_step1_artifacts(report_id: str, aim: Dict[str, Any], primary: Dict[str, Any], challenger: Dict[str, Any], report_map: Dict[str, Any]) -> None:
     write_json(ALPHA_IDEA_MASTER / f'alpha_idea_master__{report_id}.json', aim)
     write_json(VALIDATION / f'report_map_validation__{report_id}__alpha_thesis.json', primary)
@@ -146,6 +281,8 @@ def build_canonical_formula_step1(
             'Liquidity or turnover costs consume the long-only return source.',
         ],
     )
+    hypotheses = canonical_formula_hypotheses(formula, inputs, operators)
+    research.update(hypotheses)
     aim = {
         'contract_version': 'factorforge.step1.alpha_idea_master.v2',
         'producer': 'step12_canonical_formula_intake',
@@ -162,6 +299,8 @@ def build_canonical_formula_step1(
         'candidate_variables': inputs,
         'expected_direction': 'formula_defined',
         'return_source_hypothesis': research['initial_return_source_hypothesis'],
+        'economic_hypothesis': research['economic_hypothesis'],
+        'math_hypothesis_candidates': research['math_hypothesis_candidates'],
         'information_set': research['information_set_hint'],
         'what_must_be_true': research['what_must_be_true'],
         'what_would_break_it': research['what_would_break_it'],

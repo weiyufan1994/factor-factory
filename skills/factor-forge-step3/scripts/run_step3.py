@@ -38,6 +38,8 @@ RUNS = FF / 'runs'
 REAL_CPV_BASE = WORKSPACE / 'tmp' / 'cpv_run_2016'
 LOCAL_TUSHARE = resolve_local_tushare_paths()
 CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
+CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+CSV_SAMPLE_MAX_ROWS = 10_000
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -105,6 +107,84 @@ def read_existing_json(p: Path) -> dict:
     if not p.exists():
         return {}
     return load_json(p)
+
+
+def resolve_csv_policy(explicit_policy: str | None = None) -> str:
+    policy = explicit_policy or os.getenv('FACTORFORGE_CSV_OUTPUT_POLICY') or 'full_csv'
+    if policy not in CSV_POLICY_VALUES:
+        raise SystemExit(f'BLOCK_FACTORFORGE_INVALID_CSV_OUTPUT_POLICY:{policy}')
+    return policy
+
+
+def deterministic_csv_sample(df: pd.DataFrame, *, max_rows: int = CSV_SAMPLE_MAX_ROWS) -> pd.DataFrame:
+    if len(df) <= max_rows:
+        return df.copy()
+    head_n = max_rows // 2
+    tail_n = max_rows - head_n
+    return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
+
+
+def materialize_daily_audit_csv(
+    daily_df: pd.DataFrame,
+    *,
+    report_id: str,
+    full_csv_path: Path,
+    sample_csv_path: Path,
+    policy: str,
+) -> dict:
+    for path in [full_csv_path, sample_csv_path]:
+        if path.exists() or path.is_symlink():
+            path.unlink()
+
+    contract = {
+        'version': 'factorforge_step3a_daily_io_contract_v1',
+        'performance_path': 'parquet',
+        'audit_path': 'csv' if policy == 'full_csv' else ('csv_sample' if policy == 'sample_csv' else 'none'),
+        'csv_output_policy': policy,
+        'csv_rows_written': 0,
+        'parquet_rows_written': int(len(daily_df)),
+        'csv_sample_strategy': 'none',
+        'full_csv_available': False,
+        'schema_parity_required': policy in {'full_csv', 'sample_csv'},
+        'value_parity_required': policy == 'full_csv',
+        'csv_required_for_audit': policy == 'full_csv',
+        'parquet_required_for_performance': True,
+    }
+    payload: dict = {
+        'audit_daily_format': 'none',
+        'daily_io_contract': contract,
+        'daily_df_csv': None,
+        'daily_df_csv_sample': None,
+    }
+    if policy == 'full_csv':
+        daily_df.to_csv(full_csv_path, index=False)
+        contract.update({
+            'csv_rows_written': int(len(daily_df)),
+            'csv_sample_strategy': 'full',
+            'full_csv_available': True,
+            'csv_path': str(full_csv_path.relative_to(WORKSPACE)),
+            'csv_sample_path': None,
+        })
+        payload.update({
+            'daily_df_csv': str(full_csv_path.relative_to(WORKSPACE)),
+            'audit_daily_format': 'csv',
+        })
+    elif policy == 'sample_csv':
+        sample_df = deterministic_csv_sample(daily_df)
+        sample_df.to_csv(sample_csv_path, index=False)
+        contract.update({
+            'csv_rows_written': int(len(sample_df)),
+            'csv_sample_strategy': 'head_tail',
+            'csv_path': None,
+            'csv_sample_path': str(sample_csv_path.relative_to(WORKSPACE)),
+        })
+        payload.update({
+            'daily_df_csv_sample': str(sample_csv_path.relative_to(WORKSPACE)),
+            'audit_daily_format': 'csv_sample',
+        })
+    else:
+        contract.update({'csv_path': None, 'csv_sample_path': None})
+    return payload
 
 
 def merge_handoff(existing: dict, updates: dict) -> dict:
@@ -269,7 +349,7 @@ def candidate_minute_roots() -> list[Path]:
     return deduped
 
 
-def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols: list[str] | None = None) -> dict:
+def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols: list[str] | None = None, csv_output_policy: str | None = None) -> dict:
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -283,10 +363,14 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
             'input_mode': 'daily_only',
         }
 
+    policy = resolve_csv_policy(csv_output_policy)
     daily_csv = local_dir / f'daily_input__{report_id}.csv'
+    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
+    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
     daily_meta = local_dir / f'daily_input_meta__{report_id}.json'
-    if daily_csv.exists() or daily_csv.is_symlink():
-        daily_csv.unlink()
+    for path in [daily_csv, daily_sample_csv, daily_parquet]:
+        if path.exists() or path.is_symlink():
+            path.unlink()
 
     daily_df, clean_meta = load_clean_daily_layer(
         start=sample_window.get('start'),
@@ -295,7 +379,14 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         layer_paths=CLEAN_DAILY_LAYER,
         return_metadata=True,
     )
-    daily_df.to_csv(daily_csv, index=False)
+    daily_df.to_parquet(daily_parquet, index=False)
+    audit_payload = materialize_daily_audit_csv(
+        daily_df,
+        report_id=report_id,
+        full_csv_path=daily_csv,
+        sample_csv_path=daily_sample_csv,
+        policy=policy,
+    )
     daily_meta.write_text(json.dumps(clean_meta, ensure_ascii=False, indent=2), encoding='utf-8')
 
     actual_window = {
@@ -304,8 +395,10 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         'calendar': sample_window.get('calendar'),
     }
     return {
-        'daily_df_csv': str(daily_csv.relative_to(WORKSPACE)),
+        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
         'daily_input_meta_json': str(daily_meta.relative_to(WORKSPACE)),
+        'preferred_daily_format': 'parquet',
+        **audit_payload,
         'sample_window_actual': actual_window,
         'snapshot_note': f'Daily input sliced from shared clean daily layer at {CLEAN_DAILY_LAYER.daily_parquet}.',
         'snapshot_source': 'shared_clean_daily_layer',
@@ -319,7 +412,7 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
     }
 
 
-def build_local_cpv_snapshots(report_id: str, sample_window: dict):
+def build_local_cpv_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
     # Step 3A output must be executable by Step 4:
     # produce local snapshot paths even when real historical data is unavailable.
     local_dir = RUNS / report_id / 'step3a_local_inputs'
@@ -431,10 +524,20 @@ def build_local_cpv_snapshots(report_id: str, sample_window: dict):
             })
     daily_df = pd.DataFrame(daily_rows)
 
+    policy = resolve_csv_policy(csv_output_policy)
     minute_csv = local_dir / f'minute_input__{report_id}.csv'
     daily_csv = local_dir / f'daily_input__{report_id}.csv'
+    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
+    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
     minute_df.to_csv(minute_csv, index=False)
-    daily_df.to_csv(daily_csv, index=False)
+    daily_df.to_parquet(daily_parquet, index=False)
+    audit_payload = materialize_daily_audit_csv(
+        daily_df,
+        report_id=report_id,
+        full_csv_path=daily_csv,
+        sample_csv_path=daily_sample_csv,
+        policy=policy,
+    )
 
     sample_actual = {
         'start': str(minute_df['trade_date'].min()),
@@ -442,19 +545,21 @@ def build_local_cpv_snapshots(report_id: str, sample_window: dict):
     }
     return {
         'minute_df_csv': str(minute_csv.relative_to(WORKSPACE)),
-        'daily_df_csv': str(daily_csv.relative_to(WORKSPACE)),
+        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
+        'preferred_daily_format': 'parquet',
+        **audit_payload,
         'sample_window_actual': sample_actual,
         'snapshot_note': 'Synthetic fallback snapshot; use only when real local data layer is unavailable.',
         'snapshot_source': 'synthetic_fallback',
     }
 
 
-def build_local_daily_snapshot(report_id: str, sample_window: dict):
+def build_local_daily_snapshot(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
     # Daily-only factors should read the shared clean layer and only materialize a report-scoped slice.
-    return materialize_shared_daily_slice(report_id, sample_window)
+    return materialize_shared_daily_slice(report_id, sample_window, csv_output_policy=csv_output_policy)
 
 
-def build_step3a(report_id: str):
+def build_step3a(report_id: str, csv_output_policy: str | None = None):
     fsm = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
     _aim = load_json(OBJ / 'alpha_idea_master' / f'alpha_idea_master__{report_id}.json')
     handoff_to_step3 = read_existing_json(OBJ / 'handoff' / f'handoff_to_step3__{report_id}.json')
@@ -566,7 +671,7 @@ def build_step3a(report_id: str):
                 'risk': 'high'
             }
         ])
-        local_input_paths = build_local_cpv_snapshots(report_id, sample_window)
+        local_input_paths = build_local_cpv_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
         notes.append('CPV 当前应优先使用 daily_basic_incremental 中的 total_mv / circ_mv / turnover_rate / pe / pb 等字段')
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
@@ -580,7 +685,7 @@ def build_step3a(report_id: str):
                 'detail': snapshot_note,
             })
     else:
-        local_input_paths = build_local_daily_snapshot(report_id, sample_window)
+        local_input_paths = build_local_daily_snapshot(report_id, sample_window, csv_output_policy=csv_output_policy)
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_note:
@@ -676,14 +781,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--csv-output-policy', help='Step3A daily CSV audit output policy. Defaults to full_csv.')
     args = ap.parse_args()
+    csv_policy = resolve_csv_policy(args.csv_output_policy)
     enforce_direct_step_policy(args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     report_id = args.report_id or manifest_rid
     if not report_id:
         raise SystemExit('run_step3.py requires --report-id or --manifest')
 
-    data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id)
+    data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id, csv_output_policy=csv_policy)
 
     out_path = OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json'
     qlib_path = OBJ / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'

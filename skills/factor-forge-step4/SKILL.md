@@ -67,6 +67,27 @@ Mandatory `self_quant_analyzer` artifacts:
 - `quantile_counts_10groups.png`
 - `long_short_nav_10groups.png`
 
+`self_quant_analyzer/evaluation_payload.json` should include
+`performance_profile.version=factorforge_self_quant_performance_profile_v1`
+with merged row count, phase timings for factor/daily load, forward-return
+merge, IC calculation, quantile assignment, long-side evidence, table writes,
+plot writes, total runtime, rows/sec, and parallelism. This is measurement
+metadata only; it must not change promotion gates or research semantics.
+
+The same payload should include
+`signal_timing_contract.version=factorforge_signal_timing_contract_v1`
+documenting that close-after-market factor values at t are evaluated against
+next-trading-day returns (`pct_chg.shift(-1)`), merged on `datetime` and `code`.
+Same-day returns must not be used as IC or NAV labels.
+
+When Step3B run metadata declares
+`performance_profile.csv_output_profile.csv_output_policy`, Step4 must respect
+it for factor CSV writeback. `full_csv` and legacy missing metadata may write or
+refresh the full factor CSV for compatibility. `sample_csv` and `no_csv` must
+not cause Step4 to generate or refresh `factor_values__{report_id}.csv`; Step4
+should continue to evaluate from parquet and record the observed policy in
+run metadata.
+
 ## factor_run_master schema
 
 ```json

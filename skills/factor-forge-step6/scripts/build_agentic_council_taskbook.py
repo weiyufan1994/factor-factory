@@ -195,6 +195,7 @@ def main() -> None:
             "mechanism_fit": mechanism.get("mechanism_fit") if isinstance(mechanism, dict) else None,
             "primary_failure_signature": revision.get("primary_failure_signature") if isinstance(revision, dict) else None,
             "mechanism_math_contract": packet.get("mechanism_math_contract") or {},
+            "supplemental_research_context": packet.get("supplemental_research_context") or {},
             "loop_research_brief_ref": brief_ref,
             "key_metrics": packet.get("metrics") or {},
             "chart_evidence": packet.get("chart_evidence") or {},

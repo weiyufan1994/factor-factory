@@ -190,12 +190,82 @@ def council_packet_and_proposals(root: Path, rid: str) -> tuple[dict[str, Any], 
     return packet, proposals
 
 
+def supplemental_context_packet_case(root: Path) -> dict[str, Any]:
+    rid = "ALPHA016_CANONICAL_FORMULA_20160101"
+    make_fixture(root, rid, signature="cost_too_high", mechanism_fit="contradicted")
+    supplemental_dir = root / "objects" / "research_iteration_master" / "revision_council" / rid / "supplemental_context"
+    supplemental_dir.mkdir(parents=True, exist_ok=True)
+    human_note = supplemental_dir / f"human_mechanism_context__{rid}.md"
+    human_note.write_text(
+        "\n".join(
+            [
+                "# Human mechanism context",
+                "Alpha016 is a price-volume rank-dependence bad-state detector.",
+                "Process hypothesis: P=F+I+epsilon and transient impact decays.",
+                "Target functional: E[r_{t+1} | F_t, C_t].",
+                "Evidence warning: G9 > G10 means low covariance is not proven best.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    kb_dir = root / "knowledge" / "因子工厂" / "知识库"
+    kb_dir.mkdir(parents=True, exist_ok=True)
+    kb_note = kb_dir / "ALPHA016_20160101_MECHANISM_CONTEXT.md"
+    kb_note.write_text(
+        "Alpha016 mechanism context: conditional distribution and observable estimator must be explicit.\n",
+        encoding="utf-8",
+    )
+    packet = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_revision_council_packet.py", "--report-id", rid])
+    taskbook = run_cmd(
+        root,
+        [
+            sys.executable,
+            "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py",
+            "--report-id",
+            rid,
+            "--executor",
+            "dispatch_manifest",
+            "--runtime-dispatch",
+            "manual_file",
+        ],
+    )
+    packet_payload = load_json(council_packet_path(root, rid)) if council_packet_path(root, rid).exists() else {}
+    taskbook_payload = load_json(agentic_taskbook_path(root, rid)) if agentic_taskbook_path(root, rid).exists() else {}
+    supplemental = packet_payload.get("supplemental_research_context") or {}
+    taskbook_supplemental = ((taskbook_payload.get("shared_context") or {}).get("supplemental_research_context") or {})
+    content = "\n".join(str(item.get("content") or "") for item in supplemental.get("items") or [])
+    ok = (
+        packet["rc"] == 0
+        and taskbook["rc"] == 0
+        and supplemental.get("item_count", 0) >= 2
+        and taskbook_supplemental.get("item_count") == supplemental.get("item_count")
+        and "bad-state detector" in content
+        and "conditional distribution" in content
+    )
+    return result(
+        "alpha016_supplemental_context_ingested_by_packet_and_taskbook",
+        ok,
+        {
+            "packet": packet,
+            "taskbook": taskbook,
+            "supplemental_item_count": supplemental.get("item_count"),
+            "taskbook_supplemental_item_count": taskbook_supplemental.get("item_count"),
+            "paths": [item.get("relative_path") for item in supplemental.get("items") or []],
+        },
+        "packet and taskbook ingest Alpha016 supplemental mechanism context",
+    )
+
+
 def council_summary_path(root: Path, rid: str) -> Path:
     return root / "objects" / "research_iteration_master" / "revision_council" / rid / f"revision_council_summary__{rid}.json"
 
 
 def council_packet_path(root: Path, rid: str) -> Path:
     return root / "objects" / "research_iteration_master" / "revision_council" / rid / f"revision_council_packet__{rid}.json"
+
+
+def agentic_taskbook_path(root: Path, rid: str) -> Path:
+    return root / "objects" / "research_iteration_master" / "revision_council" / rid / f"agentic_taskbook__{rid}.json"
 
 
 def merge_block_diagnostic_path(root: Path, rid: str) -> Path:
@@ -739,6 +809,7 @@ def main() -> None:
     ))
     missing = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_revision_council_packet.py", "--report-id", "REVISION_COUNCIL_MISSING"])
     cases.append(result("packet_missing_input_block", missing["rc"] != 0 and "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT" in (missing["stdout_tail"] + missing["stderr_tail"]), {"packet": missing}, "missing input BLOCK"))
+    cases.append(supplemental_context_packet_case(root))
     cases.append(positive_case(root, "price_volume_cost_contradiction", "REVISION_COUNCIL_PRICE_VOLUME", "cost_too_high", "mechanism_challenge"))
     cases.append(positive_case(root, "high_turnover_parameter_revision", "REVISION_COUNCIL_HIGH_TURNOVER", "cost_too_high", "bayesian_exploit"))
     cases.append(positive_case(root, "mechanism_unclear_symbolic_challenge", "REVISION_COUNCIL_MECH_UNCLEAR", "mechanism_unclear", "mechanism_challenge"))

@@ -1066,6 +1066,7 @@ def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any
     case = bundle.get('factor_case_master') or {}
     handoff = bundle.get('handoff_to_step6') or {}
     canonical = spec.get('canonical_spec') or {}
+    stale_failures: list[dict[str, str]] = []
     for candidate in [
         spec.get('mechanism_math_contract'),
         canonical.get('mechanism_math_contract'),
@@ -1073,8 +1074,19 @@ def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any
         handoff.get('mechanism_math_contract'),
     ]:
         if isinstance(candidate, dict) and candidate:
-            return candidate
-    return build_mechanism_math_contract(spec or canonical or bundle)
+            failures = validate_mechanism_math_contract(candidate)
+            if not failures:
+                return candidate
+            stale_failures.extend(failures)
+    rebuilt = build_mechanism_math_contract(spec or canonical or bundle)
+    if stale_failures:
+        evidence = rebuilt.get('classification_evidence')
+        if not isinstance(evidence, dict):
+            evidence = {}
+        evidence['rebuilt_from_stale_or_invalid_upstream_contract'] = True
+        evidence['upstream_contract_failure_codes'] = sorted({str(item.get('code')) for item in stale_failures if item.get('code')})
+        rebuilt['classification_evidence'] = evidence
+    return rebuilt
 
 
 def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
@@ -1087,8 +1099,15 @@ def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, 
         'state_or_object': contract.get('state_or_object') or 'under_specified',
         'factor_as_estimator': contract.get('factor_as_estimator') or 'under_specified',
         'target_functional': contract.get('target_functional') or 'under_specified',
+        'process_hypothesis': contract.get('process_hypothesis') or 'under_specified',
+        'latent_state': contract.get('latent_state') or contract.get('state_or_object') or 'under_specified',
+        'observable_estimator': contract.get('observable_estimator') or contract.get('factor_as_estimator') or 'under_specified',
+        'conditional_distribution_hypothesis': contract.get('conditional_distribution_hypothesis') or 'under_specified',
+        'relationship_shape': contract.get('relationship_shape') or 'under_specified',
         'monotonicity_claim': contract.get('monotonicity_claim') or 'under_specified',
         'expected_metric_signature': contract.get('expected_metric_signature') or {},
+        'metric_signature_match': contract.get('metric_signature_match') or 'under_specified',
+        'mechanism_falsification_tests': contract.get('mechanism_falsification_tests') or [],
         'revision_operator_summary': first_op,
         'under_specified_reason': contract.get('under_specified_reason'),
         'next_human_research_question': contract.get('next_human_research_question'),
@@ -1108,7 +1127,17 @@ def _classify_mechanism_family(text: str, canonical: dict[str, Any]) -> tuple[st
 
     has_price = bool(inputs & price_fields) or _contains_any(text, price_fields)
     has_volume = bool(inputs & volume_fields) or _contains_any(text, volume_fields)
-    has_corr = 'correlation' in operators or 'corr' in operators or 'correlation(' in text or 'rolling_corr' in text
+    has_corr = (
+        'correlation' in operators
+        or 'corr' in operators
+        or 'covariance' in operators
+        or 'cov' in operators
+        or 'correlation(' in text
+        or 'rolling_corr' in text
+        or 'covariance(' in text
+        or 'rolling_cov' in text
+        or re.search(r'\bcov\s*\(', text) is not None
+    )
     if has_corr and has_price and has_volume:
         evidence.extend(['correlation_operator', 'price_field', 'volume_or_liquidity_field'])
         return 'price_volume_correlation', evidence, 'low'

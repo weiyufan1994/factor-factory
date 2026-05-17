@@ -44,6 +44,15 @@ VALID_FACTOR_FAMILIES = {
     'event_constraint',
     'other',
 }
+KNOWN_MECHANISM_FAMILY_TERMS = {
+    'valuation_identity',
+    'stochastic_process',
+    'price_volume_microstructure',
+    'cross_sectional_statistics',
+    'linear_factor_projection',
+    'functional_filter',
+    'constraint_model',
+}
 VALID_MECHANISM_FITS = {'strong', 'partial', 'weak', 'contradicted'}
 VALID_CLASSIFICATION_UNCERTAINTY = {'low', 'medium', 'high'}
 VALID_PRIMARY_FAILURE_SIGNATURES = {
@@ -143,7 +152,14 @@ SPECIFIED_MECHANISM_MATH_SUMMARY_FIELDS = {
     'state_or_object',
     'factor_as_estimator',
     'target_functional',
+    'process_hypothesis',
+    'latent_state',
+    'observable_estimator',
+    'conditional_distribution_hypothesis',
+    'relationship_shape',
     'expected_metric_signature',
+    'metric_signature_match',
+    'mechanism_falsification_tests',
     'revision_operator_summary',
 }
 REVISION_MATH_OBJECTS = {
@@ -318,6 +334,39 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
     checks.append(check('loop_research_brief_factor_id_match', brief.get('factor_id') == iteration.get('factor_id'), 'loop brief factor_id mismatch'))
     checks.append(check('loop_research_brief_iteration_match', brief.get('iteration_no') == iteration.get('iteration_no'), 'loop brief iteration_no mismatch'))
 
+    research_memo = nested_dict(nested_dict(iteration, 'research_judgment'), 'research_memo')
+    mechanism_analysis = nested_dict(research_memo, 'mechanism_analysis')
+    current_factor_family = str(mechanism_analysis.get('factor_family') or '')
+    current_return_source = str(mechanism_analysis.get('return_source') or '')
+    current_mechanism_fit = str(mechanism_analysis.get('mechanism_fit') or '')
+    current_math_summary = mechanism_analysis.get('mechanism_math_summary') if isinstance(mechanism_analysis.get('mechanism_math_summary'), dict) else {}
+    current_contract = mechanism_analysis.get('mechanism_math_contract') if isinstance(mechanism_analysis.get('mechanism_math_contract'), dict) else {}
+    current_model_family = str(current_math_summary.get('model_family') or current_contract.get('model_family') or '')
+    brief_econ = nested_dict(brief, 'economic_interpretation')
+    brief_math_summary = brief.get('mechanism_math_summary') if isinstance(brief.get('mechanism_math_summary'), dict) else {}
+    mechanism_consistency_failures: list[str] = []
+    if current_factor_family and brief_econ.get('factor_family') != current_factor_family:
+        mechanism_consistency_failures.append(
+            f"factor_family current={current_factor_family} brief={brief_econ.get('factor_family')}"
+        )
+    if current_return_source and brief_econ.get('return_source') != current_return_source:
+        mechanism_consistency_failures.append(
+            f"return_source current={current_return_source} brief={brief_econ.get('return_source')}"
+        )
+    if current_mechanism_fit and brief_econ.get('mechanism_fit') != current_mechanism_fit:
+        mechanism_consistency_failures.append(
+            f"mechanism_fit current={current_mechanism_fit} brief={brief_econ.get('mechanism_fit')}"
+        )
+    if current_model_family and brief_math_summary.get('model_family') != current_model_family:
+        mechanism_consistency_failures.append(
+            f"mechanism_model_family current={current_model_family} brief={brief_math_summary.get('model_family')}"
+        )
+    checks.append(check(
+        'loop_research_brief_mechanism_consistency',
+        not mechanism_consistency_failures,
+        f'loop brief mechanism fields stale or inconsistent: {mechanism_consistency_failures}',
+    ))
+
     metrics = brief.get('metrics') if isinstance(brief.get('metrics'), dict) else {}
     missing_metrics = sorted(key for key in CORE_LOOP_BRIEF_METRICS if not present_metric(metrics.get(key)))
     checks.append(check('loop_research_brief_core_metrics_present', not missing_metrics, f'loop brief core metrics missing/empty: {missing_metrics}'))
@@ -406,6 +455,25 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
         required_headers = [f'## {idx}.' for idx in range(1, 9)]
         missing_headers = [header for header in required_headers if header not in markdown]
         checks.append(check('loop_research_brief_markdown_sections', not missing_headers, f'loop brief markdown missing sections: {missing_headers}'))
+        markdown_lower = markdown.lower()
+        current_tokens = {
+            token.lower()
+            for token in [current_factor_family, current_model_family]
+            if isinstance(token, str) and token.strip()
+        }
+        current_token_present = any(token in markdown_lower for token in current_tokens)
+        stale_terms = sorted(
+            term for term in KNOWN_MECHANISM_FAMILY_TERMS
+            if term.lower() not in current_tokens and term.lower() in markdown_lower
+        )
+        checks.append(check(
+            'loop_research_brief_mechanism_markdown_consistency',
+            bool(current_token_present) and not stale_terms,
+            (
+                'loop brief markdown mechanism text stale or inconsistent: '
+                f'current_tokens={sorted(current_tokens)}, stale_terms={stale_terms}'
+            ),
+        ))
         if (iteration.get('revision_council_ref') or {}).get('enabled') is True:
             checks.append(check(
                 'loop_research_brief_council_markdown_section_present_when_enabled',
@@ -940,16 +1008,22 @@ if __name__ == '__main__':
             decision != 'reject' or nonempty_str(revision_strategy.get('reject_reason_if_no_revision')),
             'reject requires revision_strategy.reject_reason_if_no_revision',
         ))
-        handoff_authorized = (
-            decision == 'iterate'
-            and revision_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
-            and revision_strategy.get('revision_quality') == 'actionable'
-            and case_comparison.get('case_comparison_verdict') != 'blocked'
-            and case_comparison.get('similar_success_condition_mismatch') is not True
-        )
+        final_strategy = research_memo.get('final_revision_strategy') or {}
+        if isinstance(final_strategy, dict) and final_strategy.get('source') == 'revision_council':
+            handoff_authorized = final_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
+        else:
+            handoff_authorized = (
+                decision == 'iterate'
+                and revision_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
+                and revision_strategy.get('revision_quality') == 'actionable'
+                and case_comparison.get('case_comparison_verdict') != 'blocked'
+                and case_comparison.get('similar_success_condition_mismatch') is not True
+            )
         checks.append(check(
             'step3b_handoff_authorization_consistency',
-            revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff' or handoff_authorized,
+            (isinstance(final_strategy, dict) and final_strategy.get('source') == 'revision_council')
+            or revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff'
+            or handoff_authorized,
             'approved Step3B handoff requires decision=iterate, actionable revision, usable case comparison, and no similar-success condition mismatch',
         ))
         checks.append(check(

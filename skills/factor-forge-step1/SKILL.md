@@ -23,7 +23,11 @@ Step 1 must not stop at report summary. It must identify:
 - the random object the paper/report is trying to predict,
 - the target statistic: expected return, rank, volatility, tail, regime, or other object,
 - the tradable information set and possible leakage risks,
-- the initial return-source hypothesis: `risk_premium`, `information_advantage`, `constraint_driven_arbitrage`, or `mixed`,
+- a two-layer economic hypothesis:
+  - layer 1: whether the factor is expected to earn `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`,
+  - layer 2: who plausibly pays the return and why: e.g. earnings/growth/discount-rate risk bearers, slower information processors, behavioral counterparties, liquidity demanders, forced rebalancers, or other constrained participants,
+- math hypothesis candidates that can plausibly model the author thesis. These are not fixed by asset class or input type; the reader must justify why tools such as DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, PDE/ODE, or dimensional/scaling analysis are appropriate for this specific report,
+- the initial return-source hypothesis: `risk_premium`, `information_advantage`, `constraint_driven_arbitrage`, or `mixed` for backward compatibility,
 - what must be true and what would break the thesis.
 
 These fields are later consumed by Step6; weak Step1 understanding makes later iteration look clever but shallow.
@@ -33,6 +37,8 @@ Step1 outputs must include:
 - `research_discipline.target_statistic_hint`
 - `research_discipline.information_set_hint`
 - `research_discipline.initial_return_source_hypothesis`
+- `research_discipline.economic_hypothesis`
+- `research_discipline.math_hypothesis_candidates`
 - `research_discipline.similar_case_lessons_imported`
 - `research_discipline.what_must_be_true`
 - `research_discipline.what_would_break_it`

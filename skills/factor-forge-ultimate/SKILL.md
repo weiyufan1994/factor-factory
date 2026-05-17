@@ -29,7 +29,7 @@ In short:
 There is no ordinary batch mode for real factor research.
 For every factor, the agent must behave like a researcher from the beginning:
 
-1. read the report/paper/source idea and understand the author's thesis,
+1. read the report/paper/source idea and understand the author's thesis, including a two-layer economic hypothesis and one or more justified math hypotheses,
 2. check that Step2 preserves the idea as a canonical factor spec,
 3. supervise Step3 data and implementation choices,
 4. interpret Step4 metrics, charts, and portfolio evidence,
@@ -41,19 +41,48 @@ For every factor, the agent must behave like a researcher from the beginning:
 
 Only use a mechanical/lightweight run if the user explicitly says this is a smoke test.
 
+## Production vs Experimental Performance Boundary
+
+This skill is production-ready for new factor research only on the default
+Factor Forge path. Production runs may use Parquet IO and `sample_csv` audit
+output, but they must not enable unfinished performance experiments.
+
+For production factor research, do not set these environment variables unless
+the user explicitly asks for a performance experiment or benchmark:
+
+```bash
+FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS=1
+FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE=1
+FACTORFORGE_TS_RANK_ENGINE=numpy_sliding_window_experimental
+FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL=1
+FACTORFORGE_FORMULA_KERNEL_ENGINE=<experimental_engine>
+```
+
+Experimental Polars, experimental `ts_rank`, and Phase N.5 operator-kernel work
+are not production defaults. They require explicit opt-in, pandas-reference
+parity, runtime guards, `/tmp` smoke evidence, reviewer acceptance, and separate
+user approval before any full Alpha017-style benchmark. They must not alter
+Step6, Council, promotion gates, clean data, search workers, or official
+library writeback.
+
+The current production/experimental split is documented in
+`docs/operations/factorforge-production-vs-experimental-performance.zh-CN.md`.
+
 ## The Full Workflow
 
 ### Step1
 - ingest source report / idea
 - identify canonical source and factor intent
 - produce `alpha_idea_master`
-- standardize and validate Step1 research fields: `step1_random_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, and `similar_case_lessons_imported`
+- standardize and validate Step1 research fields: `step1_random_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`
+- `economic_hypothesis` must first classify the broad source as `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`, then state the second-layer mechanism and the likely counterparty paying the return
+- `math_hypothesis_candidates` must map the economic mechanism to report-specific mathematical tools. Do not use fixed mappings like "price-volume means microstructure"; use DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, dimensional/scaling analysis, or other tools only when they explain the report-specific counterparty and asset-price logic
 - researcher records the author's thesis and what must be true for the idea to work
 
 ### Step2
 - convert idea into canonical machine-readable spec
 - produce `factor_spec_master`
-- validate that Step2 preserves `target_statistic`, `economic_mechanism`, `expected_failure_modes`, `innovative_idea_seeds`, and `reuse_instruction_for_future_agents`
+- validate that Step2 preserves `target_statistic`, `economic_mechanism`, `economic_hypothesis`, `math_hypothesis_candidates`, `expected_failure_modes`, `innovative_idea_seeds`, and `reuse_instruction_for_future_agents`
 - write `handoff_to_step3`
 - researcher verifies that the canonical spec still reflects the author's idea
 
@@ -419,7 +448,8 @@ The main agent owns Step1-5 and remains accountable for the final judgment. The
 council is a research method inside Step6:
 
 1. build a read-only council packet from Step1-5 evidence, mechanism math,
-   metrics, charts, prior knowledge, and the current loop brief;
+   metrics, charts, prior knowledge, human supplemental mechanism context,
+   and the current loop brief;
 2. define exploration directions and their dependency graph;
 3. explore independent directions in parallel when the runtime supports
    subagents, and explore dependent directions sequentially;
@@ -486,8 +516,10 @@ as a deep mathematical research conclusion.
 ### Ultimate Wrapper Council Mode
 
 `scripts/run_factorforge_ultimate.py` supports explicit Council integration with
-`--council-mode off|auto|scaffold|agentic`. The default is `off` to preserve the
-legacy official wrapper path. `scaffold` runs the deterministic Council chain
+`--council-mode off|auto|scaffold|agentic`. The default is `auto`: every formal
+Step6 pass should expose the case to Council logic when revision is needed and
+evidence/case comparison is not blocked. Use `off` only for isolated debugging
+or legacy reproducibility checks. `scaffold` runs the deterministic Council chain
 after successful Step6 core, attaches the Council summary back to the Step6
 iteration, and reruns `validate_step6.py`. `auto` runs that same chain only when
 Step6 indicates a revision is needed and evidence/case comparison is not
@@ -516,3 +548,34 @@ workers, write `handoff_to_step3b`, promote official records, modify
 before/after side-effect snapshots and must block with
 `BLOCK_REVISION_COUNCIL_WRAPPER_FORBIDDEN_SIDE_EFFECT` if the Council chain
 changes forbidden artifacts.
+
+### Default Loop Objective
+
+The default research objective is to run the formal Factor Forge path through
+Step6, let Council decide promote/reject/revise, and continue through guarded
+child-report revision loops until one of these stop conditions is reached:
+`promote_official`, Council finds no material improvement path, evidence/case
+comparison blocks further work, or 10 Council revision loops have been reached.
+At the 10-loop cap, if the factor is still not promotable but Council believes
+substantial upside remains, stop and report the state to the user instead of
+silently continuing.
+
+### Ultimate Loop Orchestrator
+
+`scripts/run_factorforge_ultimate_loop.py` is the thin Phase M orchestrator above
+the existing official wrapper. It must call `scripts/run_factorforge_ultimate.py`
+for every formal pass and must not call Step1-6 scripts directly.
+
+The loop runner writes:
+
+- `objects/runtime_context/ultimate_loop_report__{root_report_id}.json`
+- `objects/runtime_context/ultimate_loop_brief__{root_report_id}.md`
+
+It stops on promotion, rejection, blocked evidence/prewrite state, Council
+`awaiting_agent_results`, wrapper failure, missing approved child revision,
+forbidden side effects, or the 10-loop cap. It may continue to a child report
+only when a validated `handoff_to_step3b__{report_id}.json` explicitly authorizes
+`approved_for_step3b_handoff`; child report ids must be derived from the parent
+as `{parent}__LOOPNN__{revision_id}`. The orchestrator itself must not write
+Step3B handoffs, official records, generated code, clean data, or search-worker
+outputs.

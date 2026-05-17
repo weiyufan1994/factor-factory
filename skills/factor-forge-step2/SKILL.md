@@ -17,6 +17,14 @@ mechanism cannot be responsibly formalized, Step 2 records
 `math_model_status=under_specified` with a human research question rather than
 inventing a mechanism.
 
+Step 2 must preserve Step1's two-layer `economic_hypothesis` and
+`math_hypothesis_candidates`. These are upstream research hypotheses, not fixed
+rules. The deterministic mechanism math classifier is only a guardrail; it must
+not erase a report-specific LLM hypothesis such as DCF/FCF for earnings risk,
+cointegration/copula for a behavioral relation, jump/stochastic-process models,
+wavelet/Fourier scale separation, projection, dimensional analysis, or other
+mathematical tools when the report thesis justifies them.
+
 ## Research Discipline
 
 Step 2 is the canonical-spec guardrail. It must verify:
@@ -126,6 +134,8 @@ Both primary and challenger produce this schema:
   "research_contract": {
     "target_statistic": "string",
     "economic_mechanism": "string",
+    "economic_hypothesis": "object",
+    "math_hypothesis_candidates": ["object"],
     "expected_failure_modes": ["string"],
     "innovative_idea_seeds": ["string"],
     "reuse_instruction_for_future_agents": ["string"]

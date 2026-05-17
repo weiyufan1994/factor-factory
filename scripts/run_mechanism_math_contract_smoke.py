@@ -623,7 +623,9 @@ def invalid_promotion_brief_case(root: Path) -> dict[str, Any]:
     code = (
         "import json\n"
         "import importlib.util\n"
+        "import sys\n"
         "from pathlib import Path\n"
+        "sys.path.insert(0, str(Path('skills/factor-forge-step6/scripts').resolve()))\n"
         "spec=importlib.util.spec_from_file_location('validate_step6', Path('skills/factor-forge-step6/scripts/validate_step6.py'))\n"
         "module=importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(module)\n"
@@ -676,8 +678,23 @@ def main() -> None:
             "price_volume_microstructure",
         ),
         validate_case(
+            "alpha016_covariance_price_volume_microstructure_pass",
+            {"formula_text": "(-1 * rank(covariance(rank(high), rank(volume), 5)))", "required_inputs": ["high", "volume"], "operators": ["covariance", "rank"]},
+            "price_volume_microstructure",
+        ),
+        validate_case(
+            "price_volatility_covariance_not_price_volume_pass",
+            {"formula_text": "covariance(rank(close), rank(volatility), 5)", "required_inputs": ["close", "volatility"], "operators": ["covariance", "rank"]},
+            "stochastic_process",
+        ),
+        validate_case(
             "neutralization_linear_projection_pass",
             {"formula_text": "neutralize(raw_signal, industry)", "required_inputs": ["raw_signal", "industry"], "operators": ["neutralize"]},
+            "linear_factor_projection",
+        ),
+        validate_case(
+            "neutralized_price_volume_covariance_projection_pass",
+            {"formula_text": "neutralize(covariance(rank(high), rank(volume), 5), industry)", "required_inputs": ["high", "volume", "industry"], "operators": ["neutralize", "covariance", "rank"]},
             "linear_factor_projection",
         ),
         validate_case(
@@ -695,6 +712,15 @@ def main() -> None:
     missing_target = dict(base)
     missing_target.pop("target_functional", None)
     cases.append(negative_contract_case("specified_missing_target_block", missing_target, "mechanism_math_target_functional_missing"))
+    missing_process = dict(base)
+    missing_process.pop("process_hypothesis", None)
+    cases.append(negative_contract_case("specified_missing_process_hypothesis_block", missing_process, "mechanism_math_process_hypothesis_missing"))
+    missing_distribution = dict(base)
+    missing_distribution.pop("conditional_distribution_hypothesis", None)
+    cases.append(negative_contract_case("specified_missing_conditional_distribution_block", missing_distribution, "mechanism_math_conditional_distribution_hypothesis_missing"))
+    missing_mechanism_tests = dict(base)
+    missing_mechanism_tests.pop("mechanism_falsification_tests", None)
+    cases.append(negative_contract_case("specified_missing_mechanism_falsification_tests_block", missing_mechanism_tests, "mechanism_math_mechanism_falsification_tests_missing"))
     portfolio_repair = json.loads(json.dumps(base))
     portfolio_repair["revision_operators"][0]["math_change"] = "repair the portfolio expression by changing rebalance"
     cases.append(negative_contract_case("portfolio_repair_revision_block", portfolio_repair, "mechanism_math_revision_operator_0_portfolio_repair_forbidden"))
@@ -704,6 +730,16 @@ def main() -> None:
     contradiction["factor_as_estimator"] = "price-volume estimator"
     contradiction["state_or_object"] = "price-volume state"
     cases.append(negative_contract_case("valuation_family_price_volume_contradiction_block", contradiction, "mechanism_math_model_family_observable_inputs_contradiction"))
+    stale_alpha016_projection = build_mechanism_math_contract({"formula_text": "(-1 * rank(covariance(rank(high), rank(volume), 5)))", "required_inputs": ["high", "volume"], "operators": ["covariance", "rank"]})
+    stale_alpha016_projection["model_family"] = "linear_factor_projection"
+    stale_alpha016_projection["state_or_object"] = "orthogonalized residual signal state"
+    stale_alpha016_projection["factor_as_estimator"] = "the factor applies projection or residualization to estimate signal orthogonal to nuisance exposures"
+    cases.append(negative_contract_case("alpha016_stale_projection_family_mismatch_block", stale_alpha016_projection, "mechanism_math_price_volume_dependence_family_mismatch"))
+    pure_microstructure_with_projection = build_mechanism_math_contract({"formula_text": "neutralize(covariance(rank(high), rank(volume), 5), industry)", "required_inputs": ["high", "volume", "industry"], "operators": ["neutralize", "covariance", "rank"]})
+    pure_microstructure_with_projection["model_family"] = "price_volume_microstructure"
+    pure_microstructure_with_projection["state_or_object"] = "latent price-volume pressure or liquidity-shock state"
+    pure_microstructure_with_projection["factor_as_estimator"] = "rank covariance estimates price-volume dependence"
+    cases.append(negative_contract_case("neutralized_price_volume_as_pure_microstructure_block", pure_microstructure_with_projection, "mechanism_math_price_volume_projection_family_mismatch"))
     invalid = dict(base)
     invalid["math_model_status"] = "invalid"
     invalid["invalid_reason"] = "contradictory model"

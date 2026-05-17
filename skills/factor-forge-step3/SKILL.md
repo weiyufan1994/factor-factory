@@ -68,6 +68,57 @@ Optional:
   - `factorforge/runs/{report_id}/factor_values__{report_id}.parquet`
   - `factorforge/runs/{report_id}/factor_values__{report_id}.csv`
   - `factorforge/runs/{report_id}/run_metadata__{report_id}.json`
+  - `run_metadata.performance_profile` with contract version
+    `factorforge_step3b_performance_profile_v1`, row count, phase timings for
+    input read / factor compute / normalize-sort / parquet write / CSV write,
+    compute rows/sec, and output byte sizes.
+  - For Formula-IR operator implementations, `run_metadata.performance_profile`
+    should include `formula_engine_profile` showing the evaluator engine,
+    reference engine, memoization/cache stats, deterministic parity status,
+    sample size, max absolute diff, rank correlation, and sortedness flags.
+    The pandas reference evaluator remains the correctness oracle; optimized
+    execution must match it or block before formal factor values are written.
+    Operator-level profiling is observation-only and can be enabled with
+    `FACTORFORGE_ENABLE_OPERATOR_PROFILE=1` or `--operator-profile`; it records
+    `formula_engine_profile.operator_profile` and `parity_profile` without
+    changing formula semantics, the default pandas path, or parity enforcement.
+  - CSV audit writes are controlled by the explicit policy
+    `full_csv|sample_csv|no_csv` (`FACTORFORGE_CSV_OUTPUT_POLICY` or
+    `--csv-output-policy`). The default remains `full_csv`. `sample_csv` writes
+    deterministic head/tail sample CSV artifacts and `no_csv` writes no CSV;
+    both are opt-in performance modes while parquet remains the formal
+    high-performance read path.
+  - Formula-IR execution defaults to pandas optimized with pandas reference as
+    the correctness oracle. The experimental Polars backend is opt-in only
+    (`FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS=1` or
+    `--formula-engine polars_experimental`), must record parity metadata, and
+    must BLOCK on missing dependency or parity failure. Unsupported Polars
+    operators may fall back to pandas only when the metadata records an explicit
+    `polars_fallback_reason`.
+  - The experimental `ts_rank` engine is opt-in only
+    (`FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE=1` plus
+    `FACTORFORGE_TS_RANK_ENGINE=numpy_sliding_window_experimental`, or
+    `--ts-rank-engine numpy_sliding_window_experimental`). The default remains
+    `pandas_reference`; experimental runs must record
+    `formula_engine_profile.ts_rank_engine_profile`, pass pandas-reference
+    sample parity, and obey the runtime guard before writing factor values.
+    The legacy `FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_FAST` flag must not
+    enable or select an experimental engine; if present, metadata should record
+    it only as an ignored stale environment flag.
+  - Formula-IR operator kernels default to `pandas_optimized` with pandas
+    reference as the correctness oracle. Experimental kernels are opt-in only
+    (`FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL=1` plus
+    `FACTORFORGE_FORMULA_KERNEL_ENGINE=numpy_rolling_experimental`, or
+    `--formula-kernel-engine numpy_rolling_experimental`). Step3B must record
+    `formula_engine_profile.kernel_profile`, must not mark any kernel
+    `safe_to_make_default`, and must BLOCK on invalid engine, missing explicit
+    enable gate, parity failure, dependency failure, or runtime guard failure.
+  - Production Step3B runs must not enable experimental Polars, experimental
+    `ts_rank`, or future experimental Formula-IR kernel engines unless the user
+    explicitly asks for a performance experiment. The production path is pandas
+    Formula-IR with pandas reference parity, Parquet IO, and optional
+    `sample_csv` audit output. Phase N.5 operator-kernel rewrite work is an
+    experimental performance track, not a production default.
 
 ### Handoff
 - `factorforge/objects/handoff/handoff_to_step4__{report_id}.json`

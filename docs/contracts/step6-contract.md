@@ -10,6 +10,18 @@ It is not another execution backend. It consumes Step 4/5 evidence, decides whet
 ## Mechanism Math Contract
 Step6 preserves `mechanism_math_contract` under `research_memo.mechanism_analysis`, uses it to make revision hypotheses target specific mathematical objects, and includes `mechanism_math_summary` in each loop research brief. `math_model_status=invalid` blocks official promotion. `under_specified` requires an explicit reason and next human research question. The math layer is explanatory only and cannot bypass evidence audit, case comparison, search policy, loop authorization, provenance, or promotion gates.
 
+For `math_model_status=specified`, the mechanism math contract must include a
+testable `process_hypothesis`, `latent_state`, `observable_estimator`,
+`conditional_distribution_hypothesis`, `relationship_shape`,
+`metric_signature_match`, and `mechanism_falsification_tests`. Price-volume
+covariance/correlation/rank-dependence formulas must be classified as
+`price_volume_microstructure` unless the formula itself contains explicit
+projection, residualization, or neutralization operators. Revision Council
+packets must ingest human supplemental mechanism context from
+`objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
+and matching `knowledge/因子工厂/知识库/*MECHANISM*` notes, then propagate that
+context into agentic taskbooks.
+
 ## Purpose
 
 Step 6 exists to make the factor factory cumulative rather than forgetful.
@@ -531,3 +543,29 @@ it must not apply a fixed checklist mechanically.
 The deterministic local council is a scaffold/smoke/fallback mode. Scaffold
 proposals must be marked `producer=deterministic_scaffold` and
 `research_depth=low`; they must not be presented as deep agentic research.
+
+## Phase M Ultimate Loop Orchestrator
+
+`scripts/run_factorforge_ultimate_loop.py` is a thin bounded loop orchestrator
+above `scripts/run_factorforge_ultimate.py`. It does not replace Step6, Council,
+or any existing validator. Every formal loop pass must invoke the official
+ultimate wrapper and then classify the wrapper output.
+
+The orchestrator writes an aggregate proof and brief under
+`objects/runtime_context/`:
+
+- `ultimate_loop_report__{root_report_id}.json`
+- `ultimate_loop_brief__{root_report_id}.md`
+
+Valid stop outcomes are `promoted`, `rejected`, `exhausted`,
+`awaiting_agent_results`, `max_loops_reached`, `blocked`, and `failed`. A child
+revision loop is allowed only when the parent Step6 pass produced an explicit
+approved Step3B handoff. The orchestrator must not invent child formulas or
+branch ids, and must isolate child report ids as
+`{parent_report_id}__LOOPNN__{revision_id}`.
+
+The orchestrator is not a writer of canonical research artifacts. It must not
+write Step3B handoffs, generated code, official library records, clean data, or
+search-worker outputs. It may only record loop proof/brief artifacts and must
+block if a child loop mutates a parent `generated_code/{report_id}` directory or
+if `data/clean` changes during the loop.

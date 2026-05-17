@@ -455,6 +455,8 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
         '--skip-researcher-packets',
         '--factorforge-root',
         str(root),
+        '--council-mode',
+        'off',
         '--proof-output',
         str(proof),
     ]
@@ -1545,7 +1547,12 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
         write_json(json_path, mutated_brief)
         proc = validate_step6_report(root, source_report_id)
         output = proc.stdout + '\n' + proc.stderr
-        expected_token = 'loop_research_brief_core_metrics_present' if 'metric' in case_name or 'pearson' in case_name or 'volatility' in case_name or 'recovery' in case_name or 'group' in case_name or 'diagnostic' in case_name and 'long_short_not' not in case_name else 'loop_research_brief'
+        if 'mechanism_consistency' in case_name:
+            expected_token = 'loop_research_brief_mechanism_consistency'
+        elif 'metric' in case_name or 'pearson' in case_name or 'volatility' in case_name or 'recovery' in case_name or 'group' in case_name or 'diagnostic' in case_name and 'long_short_not' not in case_name:
+            expected_token = 'loop_research_brief_core_metrics_present'
+        else:
+            expected_token = 'loop_research_brief'
         cases[case_name] = {
             'case': case_name,
             'report_id': source_report_id,
@@ -1595,6 +1602,20 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
         value = charts.pop('long_short_nav_diagnostic_only', 'some_path.png')
         charts['long_short_nav'] = value
 
+    def stale_mechanism_without_brief_refresh(iteration_payload: dict[str, Any], brief_payload: dict[str, Any]) -> None:
+        del brief_payload
+        mechanism = (
+            iteration_payload
+            .setdefault('research_judgment', {})
+            .setdefault('research_memo', {})
+            .setdefault('mechanism_analysis', {})
+        )
+        mechanism['factor_family'] = 'fundamental_quality'
+        mechanism['return_source'] = 'information_advantage'
+        mechanism['mechanism_fit'] = 'partial'
+        mechanism.setdefault('mechanism_math_summary', {})['model_family'] = 'valuation_identity'
+        mechanism.setdefault('mechanism_math_contract', {})['model_family'] = 'valuation_identity'
+
     run_mutation('loop_research_brief_missing_block', missing_ref)
     run_mutation('loop_research_brief_missing_metric_block', missing_metric)
     run_mutation('loop_research_brief_missing_pearson_ic_block', missing_metric_keys('pearson_ic_mean', 'pearson_ic_ir'))
@@ -1606,6 +1627,7 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
     run_mutation('loop_research_brief_non_numeric_metric_block', non_numeric_metric_key('long_side_sharpe'))
     run_mutation('loop_research_brief_missing_chart_key_block', missing_chart_key)
     run_mutation('loop_research_brief_long_short_not_diagnostic_block', long_short_not_diagnostic)
+    run_mutation('loop_research_brief_mechanism_consistency_block', stale_mechanism_without_brief_refresh)
     restore()
     return {'cases': cases, 'ok': all(row.get('ok') for row in cases.values())}
 

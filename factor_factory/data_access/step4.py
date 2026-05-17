@@ -100,15 +100,26 @@ def load_factor_values_with_signal(
     return frame, signal_col, factor_id
 
 
+def resolve_daily_snapshot_path(report_id: str, runs_root: Path | None = None) -> tuple[Path, str]:
+    root = runs_root or RUNS
+    base = root / report_id / 'step3a_local_inputs'
+    parquet_path = base / f'daily_input__{report_id}.parquet'
+    csv_path = base / f'daily_input__{report_id}.csv'
+    if parquet_path.exists():
+        return parquet_path, 'parquet'
+    if csv_path.exists():
+        return csv_path, 'csv'
+    raise FileNotFoundError(f'missing daily input: {parquet_path} or {csv_path}')
+
+
 def load_daily_snapshot(
     report_id: str,
     columns: Iterable[str] | None = None,
     runs_root: Path | None = None,
 ) -> pd.DataFrame:
-    root = runs_root or RUNS
-    daily_path = root / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
-    if not daily_path.exists():
-        raise FileNotFoundError(f'missing daily input: {daily_path}')
+    daily_path, fmt = resolve_daily_snapshot_path(report_id, runs_root=runs_root)
+    if fmt == 'parquet':
+        return pd.read_parquet(daily_path, columns=list(columns) if columns else None)
     return pd.read_csv(daily_path, usecols=list(columns) if columns else None)
 
 

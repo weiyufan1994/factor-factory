@@ -162,6 +162,52 @@ def side_effect_changes(before: dict[str, dict[str, Any]], after: dict[str, dict
     return changes
 
 
+def disable_provisional_step3b_handoff_for_council(factorforge_root: Path, report_id: str) -> dict[str, Any]:
+    """Council-primary mode must not leave the deterministic Step6 handoff active.
+
+    Step6 core can still produce a legacy/deterministic handoff before Council runs.
+    Once Council is selected as the final revision authority, that handoff becomes
+    provisional evidence, not executable loop authorization. Archive it inside the
+    Council workspace before the Council packet baseline is captured.
+    """
+    handoff = factorforge_root / 'objects' / 'handoff' / f'handoff_to_step3b__{report_id}.json'
+    if not handoff.exists():
+        return {'disabled': False, 'reason': 'handoff_absent', 'original_path': str(handoff)}
+    council_dir = factorforge_root / 'objects' / 'research_iteration_master' / 'revision_council' / report_id
+    archive = council_dir / f'provisional_step3b_handoff_disabled_by_council__{report_id}.json'
+    meta = council_dir / f'provisional_step3b_handoff_disabled_by_council__{report_id}.meta.json'
+    council_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = path_snapshot(handoff)
+    archive.write_bytes(handoff.read_bytes())
+    meta.write_text(
+        json.dumps(
+            {
+                'report_id': report_id,
+                'disabled_at_utc': utc_now(),
+                'reason': 'Council-primary final revision authority requires advisory-only proposals until explicit approval.',
+                'original_path': str(handoff),
+                'archive_path': str(archive),
+                'original_snapshot': snapshot,
+                'canonical_write_permission': False,
+                'step3b_handoff_active_after_disable': False,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding='utf-8',
+    )
+    handoff.unlink()
+    return {
+        'disabled': True,
+        'reason': 'council_primary_advisory_authority',
+        'original_path': str(handoff),
+        'archive_path': str(archive),
+        'metadata_path': str(meta),
+        'original_snapshot': snapshot,
+    }
+
+
 def is_tmp_root(path: Path) -> bool:
     raw = str(path)
     resolved = str(path.resolve())
@@ -369,7 +415,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--skip-step3a', action='store_true', help='When starting at Step3, skip run_step3 and run only Step3B onward.')
     ap.add_argument('--skip-researcher-packets', action='store_true', help='Do not build Step6 researcher packet/dossier before Step6.')
     ap.add_argument('--apply-approved-revision', action='store_true', help='Apply a human-approved Step6 revision before running the requested step range.')
-    ap.add_argument('--council-mode', choices=['off', 'auto', 'scaffold', 'agentic'], default='off')
+    ap.add_argument('--council-mode', choices=['off', 'auto', 'scaffold', 'agentic'], default='auto')
+    ap.add_argument('--research-loop-policy', choices=['single_pass', 'council_until_promote_or_exhausted'], default='council_until_promote_or_exhausted')
+    ap.add_argument('--max-council-loops', type=int, default=10)
     ap.add_argument('--agentic-council-executor', choices=['none', 'local_mock', 'dispatch_manifest', 'real_agent'], default='none')
     ap.add_argument('--agentic-dispatch-adapter', choices=['none', 'manual_file', 'openclaw', 'codex', 'remote_api'], default='none')
     ap.add_argument('--runtime-dispatch', choices=['codex', 'openclaw', 'manual_file', 'unknown'], default=None)
@@ -476,6 +524,18 @@ def main() -> int:
         'expected_artifacts_after': {},
         'step3b_mode_decision': collect_step3b_mode_decision(manifest),
         'revision_council': {'requested_mode': args.council_mode, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'status': 'skipped', 'reason': 'disabled'} if args.council_mode == 'off' else {'requested_mode': args.council_mode, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'subagent_provider': args.subagent_provider, 'subagent_model': args.subagent_model, 'status': 'pending'},
+        'research_loop_policy': {
+            'policy': args.research_loop_policy,
+            'max_council_loops': args.max_council_loops,
+            'council_primary_default': args.council_mode != 'off',
+            'stop_conditions': [
+                'promote_official',
+                'council_final_no_material_improvement_path',
+                'max_council_loops_reached',
+                'evidence_or_case_prewrite_block',
+            ],
+            'note': 'Current wrapper runs one formal Step2-6 pass plus Council attachment/dispatch. Subsequent approved revision loops must be launched as child report ids through the guarded revision/search contracts.',
+        },
         'failure': None,
         'usage_rule': 'This proof report is the only acceptable evidence for a claimed factor-forge-ultimate run. Agents must not replace formal Step4/5/6 execution by ad-hoc metrics or post-hoc object writing.',
     }
@@ -593,6 +653,7 @@ def main() -> int:
                 }
                 write_json_atomic(proof_path, proof)
             else:
+                provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(ctx.factorforge_root, args.report_id)
                 side_effect_before = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
                 if args.council_mode == 'agentic':
                     if args.agentic_council_executor == 'dispatch_manifest':
@@ -641,6 +702,7 @@ def main() -> int:
                     'status': 'running',
                     'trigger_reason': trigger_reason,
                     'commands': [],
+                    'provisional_step3b_handoff_policy': provisional_handoff_policy,
                     'side_effect_baseline': side_effect_before,
                 }
                 write_json_atomic(proof_path, proof)

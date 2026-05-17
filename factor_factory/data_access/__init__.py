@@ -67,6 +67,7 @@ from .step4 import (
     load_factor_values,
     load_factor_values_with_signal,
     normalize_trade_date_series,
+    resolve_daily_snapshot_path,
     sanitize_factor_id,
 )
 from .topic_liquidity import (
@@ -134,6 +135,7 @@ __all__ = [
     'normalize_qlib_instrument',
     'normalize_trade_date_series',
     'resolve_clean_daily_layer_paths',
+    'resolve_daily_snapshot_path',
     'resolve_local_tushare_paths',
     'resolve_topic_liquidity_root',
     'sanitize_factor_id',

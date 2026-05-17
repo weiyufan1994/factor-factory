@@ -85,6 +85,28 @@ class StructuredIntake:
     "target_statistic_hint": "string",
     "information_set_hint": "explicit_lag_or_delay_documented|requires_researcher_confirmation_no_forward_leakage|possible_forward_reference_requires_human_review",
     "initial_return_source_hypothesis": "risk_premium|information_advantage|constraint_driven_arbitrage|mixed",
+    "economic_hypothesis": {
+      "macro_return_source": "risk_premium|information_advantage|market_structure_arbitrage|mixed",
+      "second_layer": {
+        "subtype": "string",
+        "expected_counterparty_or_payer": "string",
+        "why_they_may_pay": "string"
+      },
+      "counterparty_loss_hypothesis": "string",
+      "researcher_question": "string"
+    },
+    "math_hypothesis_candidates": [{
+      "hypothesis_id": "string",
+      "linked_economic_hypothesis": "string",
+      "model_family": "string",
+      "math_tools": ["string"],
+      "state_or_object": "string",
+      "process_or_distribution_hypothesis": "string",
+      "observable_estimator": "string",
+      "target_functional": "string",
+      "why_suitable": "string",
+      "falsification_tests": ["string"]
+    }],
     "what_must_be_true": ["string"],
     "what_would_break_it": ["string"],
     "similar_case_lessons_imported": ["string"]

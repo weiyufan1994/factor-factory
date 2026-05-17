@@ -16,6 +16,9 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+
 OBJ = FF / "objects"
 TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
 BASELINE_VERSION = "factorforge_revision_council_forbidden_writeback_baseline_v1"
@@ -130,6 +133,99 @@ def nested(data: dict[str, Any], *keys: str) -> dict[str, Any]:
     return cur if isinstance(cur, dict) else {}
 
 
+def mechanism_math_for_packet(spec: dict[str, Any], case: dict[str, Any], handoff: dict[str, Any], memo: dict[str, Any]) -> dict[str, Any]:
+    failures: list[dict[str, str]] = []
+    canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
+    for candidate in [
+        nested(memo, "mechanism_analysis").get("mechanism_math_contract"),
+        spec.get("mechanism_math_contract"),
+        canonical.get("mechanism_math_contract"),
+        case.get("mechanism_math_contract"),
+        handoff.get("mechanism_math_contract"),
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            current_failures = validate_mechanism_math_contract(candidate)
+            if not current_failures:
+                return candidate
+            failures.extend(current_failures)
+    rebuilt = build_mechanism_math_contract(spec or canonical or {})
+    if failures:
+        evidence = rebuilt.get("classification_evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+        evidence["rebuilt_from_stale_or_invalid_upstream_contract"] = True
+        evidence["upstream_contract_failure_codes"] = sorted({str(item.get("code")) for item in failures if item.get("code")})
+        rebuilt["classification_evidence"] = evidence
+    return rebuilt
+
+
+def factor_tokens(report_id: str, spec: dict[str, Any], iteration: dict[str, Any]) -> list[str]:
+    raw = [
+        report_id,
+        str(spec.get("factor_id") or ""),
+        str(iteration.get("factor_id") or ""),
+        str((spec.get("canonical_spec") or {}).get("factor_id") or "") if isinstance(spec.get("canonical_spec"), dict) else "",
+    ]
+    tokens: list[str] = []
+    for item in raw:
+        item = item.strip()
+        if not item:
+            continue
+        tokens.append(item)
+        prefix = item.split("_")[0]
+        if prefix and prefix != item:
+            tokens.append(prefix)
+    return list(dict.fromkeys(tokens))
+
+
+def read_text_limited(path: Path, limit: int = 50000) -> str:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n\n[TRUNCATED_BY_FACTOR_FORGE_SUPPLEMENTAL_CONTEXT_LIMIT]\n"
+
+
+def supplemental_research_context(report_id: str, spec: dict[str, Any], iteration: dict[str, Any]) -> dict[str, Any]:
+    tokens = factor_tokens(report_id, spec, iteration)
+    items: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+
+    def add_file(path: Path, source: str) -> None:
+        if not path.exists() or not path.is_file() or path in seen:
+            return
+        seen.add(path)
+        items.append(
+            {
+                "source": source,
+                "path": str(path),
+                "relative_path": relpath(path),
+                "sha256": sha256_file(path),
+                "content": read_text_limited(path),
+            }
+        )
+
+    supplemental_dir = OBJ / "research_iteration_master" / "revision_council" / report_id / "supplemental_context"
+    if supplemental_dir.exists():
+        for path in sorted(supplemental_dir.glob("*.md")):
+            add_file(path, "revision_council_supplemental_context")
+
+    kb_dir = FF / "knowledge" / "因子工厂" / "知识库"
+    if kb_dir.exists():
+        for path in sorted(kb_dir.glob("*.md")):
+            name = path.name.lower()
+            token_hit = any(token and token.lower() in name for token in tokens)
+            mechanism_hit = any(marker in name for marker in ["mechanism", "机制", "math", "数学"])
+            if token_hit and mechanism_hit:
+                add_file(path, "factorforge_knowledge_mechanism_context")
+
+    return {
+        "contract_version": "factorforge_revision_council_supplemental_context_v1",
+        "lookup_tokens": tokens,
+        "item_count": len(items),
+        "items": items,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report-id", required=True)
@@ -176,11 +272,7 @@ def main() -> None:
         "factor_formula": canonical.get("formula_text") or spec.get("formula_text") or nested(brief_json, "economic_interpretation").get("formula"),
         "implementation_mode": (iteration.get("artifact_identity") or {}).get("implementation_mode") or (run.get("artifact_identity") or {}).get("implementation_mode"),
         "mechanism_math_contract": (
-            spec.get("mechanism_math_contract")
-            or case.get("mechanism_math_contract")
-            or handoff.get("mechanism_math_contract")
-            or nested(memo, "mechanism_analysis").get("mechanism_math_contract")
-            or {}
+            mechanism_math_for_packet(spec, case, handoff, memo)
         ),
         "research_memo": {
             "evidence_audit": memo.get("evidence_audit") or {},
@@ -197,6 +289,7 @@ def main() -> None:
         "metrics": metrics,
         "chart_evidence": brief_json.get("chart_evidence") or {},
         "program_search_policy": memo.get("search_policy_decision") or memo.get("program_search_policy") or {},
+        "supplemental_research_context": supplemental_research_context(rid, spec, iteration),
         "source_paths": {key: str(value) for key, value in paths.items() if value.exists()},
         "forbidden_writeback_baseline": forbidden_writeback_baseline(rid),
     }

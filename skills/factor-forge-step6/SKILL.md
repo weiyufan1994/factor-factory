@@ -78,6 +78,17 @@ revision hypotheses, and the loop research brief. The math contract is an
 explanatory and revision-discipline layer only: it must not replace Step4/5
 evidence, bypass provenance gates, justify promotion on its own, or authorize
 canonical Step3B changes without the existing loop authorization.
+33. For `math_model_status=specified`, the contract must state a testable
+process hypothesis, latent state, observable estimator, conditional
+distribution hypothesis, relationship shape, metric-signature match, and
+mechanism falsification tests. Price-volume covariance/correlation/rank-
+dependence formulas must be treated as `price_volume_microstructure` unless
+the formula itself contains explicit projection/residualization/neutralization
+operators.
+34. If human mechanism context exists under
+`objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
+or `knowledge/因子工厂/知识库/*MECHANISM*`, the Revision Council packet must
+include it and propagate it into agentic taskbooks.
 
 ## Research Analyst Standard
 

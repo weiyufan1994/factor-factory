@@ -310,6 +310,8 @@ def load_stock_frame(bucket: str, day: str) -> tuple[pd.DataFrame, dict[str, Loa
         if col in money.columns:
             keep_cols.append(col)
     money = money[keep_cols].copy()
+    if "name" not in money.columns:
+        money["name"] = ""
     if "pct_change" in money.columns:
         money["pct_chg_moneyflow"] = clean_num(money["pct_change"])
         money = money.drop(columns=["pct_change"])
@@ -328,8 +330,14 @@ def load_stock_frame(bucket: str, day: str) -> tuple[pd.DataFrame, dict[str, Loa
         lim["last_time"] = lim.get("last_time", "")
         lim["open_times"] = clean_num(lim.get("open_times", pd.Series(index=lim.index))).fillna(0.0)
         lim["limit_times"] = clean_num(lim.get("limit_times", pd.Series(index=lim.index))).fillna(0.0)
-        lim = lim[["ts_code", "limit_flag", "first_time", "last_time", "open_times", "limit_times"]].dropna(subset=["ts_code"])
+        if "name" in lim.columns:
+            lim["limit_name"] = lim["name"].astype(str)
+        else:
+            lim["limit_name"] = ""
+        lim = lim[["ts_code", "limit_name", "limit_flag", "first_time", "last_time", "open_times", "limit_times"]].dropna(subset=["ts_code"])
         stock = stock.merge(lim.drop_duplicates("ts_code"), on="ts_code", how="left")
+        stock["name"] = stock["name"].where(stock["name"].astype(str).str.strip().astype(bool), stock["limit_name"].fillna(""))
+        stock = stock.drop(columns=["limit_name"])
     else:
         stock["limit_flag"] = ""
         stock["first_time"] = ""

@@ -634,9 +634,17 @@ Step6 core 成功后运行 deterministic Council packet/proposal/merge/attach，
 `BLOCK_REVISION_COUNCIL_REAL_AGENT_NOT_IMPLEMENTED` BLOCK；`local_mock` 运行
 Phase K.1 artifact contract 路径，生成 agentic taskbook、本地 mock agent results、
 校验 result、merge、attach，并重新执行 `validate_step6.py`。`dispatch_manifest`
-只生成 dispatch-ready task packets，并停在 `status=awaiting_agent_results`；
+只生成 dispatch-ready task packets，并返回 `status=awaiting_agent_results`；
 配合 `--agentic-dispatch-adapter manual_file` 时，还会生成人工分发用 assignment
 markdown 和 result dropbox template，但不 merge、不 attach。
+
+`awaiting_agent_results` 是脚本层 checkpoint，不是生产研究的终点。使用该
+skill 的主 agent 必须继续读取 task packets、分配或亲自执行 Council roles、写出
+final `producer=real_agent` result JSON、collect/validate collection、finalize
+Council，然后恢复 loop。`awaiting_main_agent_mechanism_memo` 同理：当前主
+agent 需要直接回答并校验 memo，然后继续。只有真实 validator BLOCK、当前 runtime
+无法生成合格 Council results、promotion、rejection、exhaustion 或 10-loop cap
+才应作为用户可见终点。
 
 Agentic Council dispatch 是 runtime-aware，但仍然 provider-agnostic。taskbook、
 dispatch manifest、task packet、manual manifest 和 assignment markdown 都必须写入
@@ -712,8 +720,10 @@ Loop orchestrator 写入聚合 proof / brief：
 - `objects/runtime_context/ultimate_loop_report__{root_report_id}.json`
 - `objects/runtime_context/ultimate_loop_brief__{root_report_id}.md`
 
-合法停止结果包括 `promoted`、`rejected`、`exhausted`、
-`awaiting_agent_results`、`max_loops_reached`、`blocked`、`failed`。只有当父
+脚本层合法停止结果包括 `promoted`、`rejected`、`exhausted`、
+`awaiting_agent_results`、`max_loops_reached`、`blocked`、`failed`。在 skill 层，
+`awaiting_agent_results` 必须由自动 Council continuation 消化，不应作为最终
+用户结论返回。只有当父
 report 的 Step6 明确写出 approved Step3B handoff 时，才允许进入 child revision
 loop。Orchestrator 不得自行发明 child formula 或 branch；child report id 必须按
 `{parent_report_id}__LOOPNN__{revision_id}` 隔离。

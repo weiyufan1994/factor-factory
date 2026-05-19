@@ -471,9 +471,19 @@ case-comparison gates are not blocked. `--council-mode agentic` requires
 Phase K.1 contract path that creates an agentic taskbook, local mock agent
 results, validates them, merges them, attaches the summary, and reruns
 `validate_step6.py`. `dispatch_manifest` writes dispatch-ready task packets and
-stops with `status=awaiting_agent_results`; with
+returns `status=awaiting_agent_results`; with
 `--agentic-dispatch-adapter manual_file`, it additionally writes manual
 assignment markdown and result dropbox templates without merge or attach.
+
+`awaiting_agent_results` is a script-level checkpoint, not a production
+research terminal state. A main agent using the skill must continue by reading
+the task packets, delegating or performing Council roles, writing final
+`producer=real_agent` result JSONs, collecting and validating the collection,
+finalizing Council, and resuming the loop. `awaiting_main_agent_mechanism_memo`
+is handled the same way: the current main agent writes and validates the memo,
+then resumes. Only true validation BLOCKs, runtime incapability to produce valid
+Council results, promotion, rejection, exhaustion, or the 10-loop cap should be
+returned to the user as terminal states.
 
 Agentic Council dispatch is runtime-aware but provider-agnostic. The taskbook,
 dispatch manifest, task packets, manual manifest, and assignment markdown must
@@ -557,8 +567,10 @@ The orchestrator writes an aggregate proof and brief under
 - `ultimate_loop_report__{root_report_id}.json`
 - `ultimate_loop_brief__{root_report_id}.md`
 
-Valid stop outcomes are `promoted`, `rejected`, `exhausted`,
-`awaiting_agent_results`, `max_loops_reached`, `blocked`, and `failed`. A child
+Valid script-level stop outcomes are `promoted`, `rejected`, `exhausted`,
+`awaiting_agent_results`, `max_loops_reached`, `blocked`, and `failed`. At the
+skill level, `awaiting_agent_results` must be consumed by autonomous Council
+continuation rather than reported as a final user-facing outcome. A child
 revision loop is allowed only when the parent Step6 pass produced an explicit
 approved Step3B handoff. The orchestrator must not invent child formulas or
 branch ids, and must isolate child report ids as

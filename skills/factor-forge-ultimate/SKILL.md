@@ -550,8 +550,12 @@ after successful Step6 core, attaches the Council summary back to the Step6
 iteration, and reruns `validate_step6.py`. `auto` must not silently treat that
 deterministic scaffold as formal agentic research. With the default
 `--auto-council-policy dispatch_manifest`, auto builds packet/taskbook/dispatch
-manifest artifacts and stops in `awaiting_agent_results` when Step6 indicates
-revision is needed and evidence/case comparison is not blocked. Use
+manifest artifacts and returns `awaiting_agent_results` when Step6 indicates
+revision is needed and evidence/case comparison is not blocked. That wrapper
+return is a machine checkpoint, not a user handoff. A main agent using this
+skill must immediately continue the Council workflow by producing valid agent
+result artifacts, collecting them, finalizing Council, and resuming the loop
+unless the user explicitly asks to pause. Use
 `--auto-council-policy scaffold` only for explicit smoke/fallback runs, and use
 `--auto-council-policy block_without_agentic` when formal runs should hard-block
 instead of awaiting agent results. `agentic` requires
@@ -562,7 +566,7 @@ With `local_mock`, it runs the Phase K.1 contract path: agentic taskbook, mock
 agent results, result validation, merge, attach, and `validate_step6.py`. The
 mock executor validates artifact contracts only; it is not real subagent
 research. With `dispatch_manifest`, the wrapper builds packet/taskbook/dispatch
-manifest artifacts and stops in `awaiting_agent_results`; with
+manifest artifacts and returns `awaiting_agent_results`; with
 `--agentic-dispatch-adapter manual_file`, it also writes manual assignment
 markdown and result dropbox templates without merging or attaching.
 
@@ -579,6 +583,42 @@ expose a final Step3B handoff or run Council. If the memo is invalid, the wrappe
 must block. Council packet/taskbook artifacts must reference the accepted memo
 and require subagents to critique its formula component map, payer derivation,
 evidence contradictions, and revision-or-kill implications.
+
+### Autonomous Council Continuation
+
+`awaiting_main_agent_mechanism_memo` and `awaiting_agent_results` are internal
+checkpoint states. They are not reasons to stop and ask the user for another
+command during normal production research.
+
+When the wrapper or loop returns `awaiting_main_agent_mechanism_memo`, the
+current runtime main agent must read the questionnaire, write the free-form
+main-agent mechanism memo JSON/MD, validate it, and resume the official loop.
+
+When the wrapper or loop returns `awaiting_agent_results`, the current runtime
+main agent must:
+
+1. read the dispatch manifest and all task packets;
+2. dispatch independent Council roles to available subagents when possible;
+3. if subagents are unavailable, perform the Council roles sequentially itself
+   as real research work, not as a deterministic scaffold;
+4. write one `status=final`, `producer=real_agent` result JSON per required
+   task to the exact `expected_result_path`;
+5. include public derivation records, formula-specific critique, payer
+   derivation critique, falsification tests, kill criteria, expected metric
+   signatures, and any required `prior_revision_outcome_review` /
+   `repeated_revision_guard`;
+6. run `collect_agentic_council_results.py`,
+   `validate_agentic_council_collection.py`, and
+   `finalize_agentic_council_dispatch.py`;
+7. resume `scripts/run_factorforge_ultimate_loop.py` until a terminal outcome
+   is reached: `promote_official`, `reject`, `exhausted`,
+   `max_loops_reached`, or a true BLOCK/failure requiring human judgment.
+
+The main agent must not fabricate Council output by using `local_mock`, copying
+old scaffold proposals, or writing generic result templates. It may only write
+Council results that it or its delegated subagents actually researched from the
+task packets. If valid Council results cannot be produced, BLOCK with a precise
+reason instead of asking the user to drive the next command.
 
 Runtime dispatch is policy, not provider binding. `--runtime-dispatch
 codex|openclaw|manual_file|unknown` records the runtime in taskbook, dispatch
@@ -618,10 +658,15 @@ The loop runner writes:
 - `objects/runtime_context/ultimate_loop_brief__{root_report_id}.md`
 
 It stops on promotion, rejection, blocked evidence/prewrite state, Council
-`awaiting_agent_results`, wrapper failure, missing approved child revision,
+script checkpoint `awaiting_agent_results`, wrapper failure, missing approved child revision,
 forbidden side effects, or the 10-loop cap. It may continue to a child report
 only when a validated `handoff_to_step3b__{report_id}.json` explicitly authorizes
 `approved_for_step3b_handoff`; child report ids must be derived from the parent
 as `{parent}__LOOPNN__{revision_id}`. The orchestrator itself must not write
 Step3B handoffs, official records, generated code, clean data, or search-worker
 outputs.
+
+At the skill level, `awaiting_agent_results` must be handled by autonomous
+Council continuation above. The agent should not present it as the final answer
+to the user unless it is technically unable to create valid Council results in
+the current runtime.

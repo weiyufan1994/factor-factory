@@ -392,7 +392,10 @@ legacy reproducibility checks. `scaffold` runs packet generation, deterministic
 proposal generation, merge, attach, and `validate_step6.py` after Step6 core.
 `auto` must not silently use that deterministic scaffold as formal agentic
 research. With `--auto-council-policy dispatch_manifest` (default), auto builds
-the agentic dispatch package and stops in `awaiting_agent_results`. Use
+the agentic dispatch package and returns `awaiting_agent_results` as a machine
+checkpoint. A main agent using this skill must continue by writing valid
+Council result artifacts, collecting/finalizing them, and resuming the loop
+unless the user explicitly requested a pause. Use
 `--auto-council-policy scaffold` only for explicit smoke/fallback runs; use
 `--auto-council-policy block_without_agentic` to hard-block when formal agentic
 research is required but not available. `agentic` requires
@@ -403,6 +406,16 @@ Phase K.1 artifact contract path without spawning real subagents.
 `dispatch_manifest` writes dispatch-ready task packets and, with
 `--agentic-dispatch-adapter manual_file`, a manual assignment bundle. It does
 not merge, attach, import results, or call real agent APIs.
+
+`awaiting_main_agent_mechanism_memo` and `awaiting_agent_results` are not normal
+user-handoff states. If the main-agent memo is missing, the runtime main agent
+must answer the questionnaire, validate the memo, and resume. If agentic
+Council results are missing, the runtime main agent must read the task packets,
+delegate independent roles to available subagents or perform them sequentially
+itself, write `status=final` / `producer=real_agent` result JSON files to the
+exact expected paths, run collection validation and finalize, then continue the
+official loop. Do not ask the user to manually advance the next command unless
+valid Council output cannot be produced in the current runtime.
 
 Agentic dispatch artifacts must include
 `runtime_dispatch_policy.policy_version=factorforge_runtime_dispatch_policy_v1`.

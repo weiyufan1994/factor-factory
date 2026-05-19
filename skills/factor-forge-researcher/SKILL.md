@@ -42,6 +42,25 @@ Source / Paper / Report
 -> if iterate: researcher revision brief -> Step3B -> Step4 -> Step5 -> Step6 ...
 ```
 
+## Autonomous Council Continuation
+
+During production research, do not stop at `awaiting_main_agent_mechanism_memo`
+or `awaiting_agent_results` and ask the user to issue the next command.
+
+- If the main-agent mechanism memo is missing, answer the Step6 questionnaire
+  yourself as the current runtime researcher, validate the memo, and resume the
+  official loop.
+- If Council dispatch is awaiting agent results, read the dispatch manifest and
+  task packets, delegate roles to available subagents when possible, or perform
+  the Council roles sequentially yourself when subagents are unavailable.
+- Write one final `producer=real_agent` result per task, collect and validate
+  the collection, finalize Council, then continue the loop until promotion,
+  rejection, exhaustion, the 10-loop cap, or a true BLOCK/failure.
+
+Do not use deterministic scaffold output or local mock results as production
+Council research. If you cannot produce valid Council result artifacts, BLOCK
+with the precise reason.
+
 ## Research Journal
 
 Maintain a durable research journal at:

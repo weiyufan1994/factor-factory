@@ -396,6 +396,166 @@ def approve_main_agent_synthesis_command(report_id: str, root: Path) -> list[str
     ]
 
 
+def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dict[str, Any]:
+    role = task.get("agent_role") or "unknown_agent"
+    task_id = task.get("task_id") or f"agent_{role}"
+    law_id = f"{task_id}_terminal_reject_law"
+    return {
+        "result_version": "factorforge_agentic_revision_council_result_v1",
+        "status": "final",
+        "report_id": report_id,
+        "task_id": task_id,
+        "agent_role": role,
+        "producer": "real_agent",
+        "agent_identifier": f"terminal_reject_smoke_{role}",
+        "research_depth": "high",
+        "proposal_generation_mode": "agentic",
+        "canonical_write_permission": False,
+        "execution_allowed_by_default": False,
+        "human_approval_required": True,
+        "prior_revision_outcome_review": {
+            "prior_revision_outcome": "falsified",
+            "review": "Prior child revision failed the net evidence and should not be repeated.",
+        },
+        "repeated_revision_guard": {
+            "guard_status": "active",
+            "guard_statement": "Do not repeat the falsified child formula hash or derivation rule.",
+        },
+        "revision_or_kill_recommendation": {
+            "recommendation": "reject",
+            "reason": "Council terminal consensus is to reject because the child revision failed net evidence and no executable successor law is selected.",
+        },
+        "public_derivation_record": {
+            "research_question": "Should this child branch continue after the prior executable revision failed?",
+            "assumptions": [
+                {
+                    "assumption": "The child revision evidence is the current decision boundary.",
+                    "status": "accepted_for_review",
+                    "why_needed": "Terminal decision must use executed child evidence, not a new unrun hypothesis.",
+                    "how_to_falsify": "A genuinely different executable law with positive net evidence would be required.",
+                }
+            ],
+            "mathematical_objects": [
+                {
+                    "name": "net_long_side_evidence",
+                    "meaning": "Cost-adjusted long-side evidence after the child revision.",
+                    "unit_or_dimension": "annualized return or ratio",
+                    "information_set": "post child Step4/5 evidence",
+                }
+            ],
+            "selected_tools": [
+                {
+                    "tool": "statistical_falsification",
+                    "why_selected": "The previous executable law has run and can be falsified by observed child metrics.",
+                    "what_it_can_answer": "Whether the current branch should stop.",
+                    "what_it_cannot_answer": "It does not authorize another formula without a separate synthesis.",
+                }
+            ],
+            "formula_claims": [
+                {
+                    "claim": "The child revision did not satisfy net evidence gates.",
+                    "formula_or_relation": "accepted_branch iff child_net_evidence > required_threshold and no kill criteria fire",
+                    "status": "falsified",
+                    "derivation_summary": "Terminal decision follows from failed net evidence and repeated-revision guard.",
+                }
+            ],
+            "derivation_steps_summary": [
+                {"step_no": 1, "statement": "Read child evidence and prior revision memory.", "depends_on": []},
+                {"step_no": 2, "statement": "Apply kill criteria to the executed child law.", "depends_on": [1]},
+            ],
+            "falsification_tests": [
+                "Reject continuation if net annual return remains negative.",
+                "Reject continuation if drawdown remains beyond the admission threshold.",
+            ],
+            "kill_criteria": [
+                "Prior child revision failed net evidence.",
+                "Any next law repeats the falsified derivation rule.",
+            ],
+            "overclaim_guard": "This result is terminal research advice only and does not authorize execution or writeback.",
+        },
+        "candidate_revision_laws": [
+            {
+                "law_id": law_id,
+                "revision_type": "reject_advisory",
+                "law_statement": "Reject the branch after the executed child revision failed the net evidence gates.",
+                "expression_change_direction": "No successor expression is selected.",
+                "expected_metric_change": [
+                    "No further automatic run is expected to rescue net evidence.",
+                    "Terminal rejection prevents repeating a failed derivation rule.",
+                ],
+                "falsification_tests": [
+                    "Reject this terminal view only if a distinct approved law has positive net evidence.",
+                    "Reject any continuation that repeats the failed child hash.",
+                ],
+                "kill_criteria": [
+                    "Net evidence remains negative.",
+                    "Drawdown remains beyond the admission threshold.",
+                ],
+                "why_not_portfolio_fix": "The recommendation concerns factor research termination, not wrapper repair.",
+            }
+        ],
+    }
+
+
+def write_terminal_agent_results_fixture(root: Path, report_id: str) -> list[str]:
+    manifest_path = root / "objects" / "research_iteration_master" / "revision_council" / report_id / f"dispatch_manifest__{report_id}.json"
+    manifest = read_json(manifest_path)
+    paths: list[str] = []
+    for task in manifest.get("agent_tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        result = terminal_reject_result_for_task(report_id, task)
+        raw_path = task.get("expected_result_path")
+        path = Path(str(raw_path))
+        if not path.is_absolute():
+            path = root / path
+        write_json(path, result)
+        paths.append(str(path))
+    return paths
+
+
+def prepare_terminal_council_fixture(root: Path, report_id: str) -> dict[str, Any]:
+    dispatch = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_factorforge_ultimate.py"),
+            "--report-id",
+            report_id,
+            "--start-step",
+            "6",
+            "--end-step",
+            "6",
+            "--council-mode",
+            "agentic",
+            "--agentic-council-executor",
+            "dispatch_manifest",
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    result_paths = write_terminal_agent_results_fixture(root, report_id)
+    collect = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "collect_agentic_council_results.py"),
+            "--report-id",
+            report_id,
+        ],
+        root=root,
+    )
+    merge = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "merge_revision_council.py"),
+            "--report-id",
+            report_id,
+        ],
+        root=root,
+    )
+    return {"dispatch": dispatch, "result_paths": result_paths, "collect": collect, "merge": merge}
+
+
 def run_council_synthesis_approval_bridge_case(root: Path) -> dict[str, Any]:
     report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
     child_formula = "rank(close)"
@@ -459,6 +619,111 @@ def run_council_synthesis_approval_bridge_case(root: Path) -> dict[str, Any]:
         "selected_child_formula": ((handoff.get("selected_revision") or {}).get("child_formula")),
         "stdout_tail": approval["stdout_tail"],
         "stderr_tail": approval["stderr_tail"],
+        "ok": ok,
+    }
+
+
+def run_terminal_council_reject_bridge_case(root: Path) -> dict[str, Any]:
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    setup = prepare_terminal_council_fixture(root, report_id)
+    proc = run(
+        loop_command(
+            root,
+            report_id,
+            start_step="6",
+            max_loops=2,
+            council_mode="agentic",
+            executor="dispatch_manifest",
+            adapter="none",
+        ),
+        root=root,
+    )
+    proof = load_proof(root, report_id)
+    iterations = proof.get("iterations") or []
+    first = iterations[0] if iterations else {}
+    iteration_path = root / "objects" / "research_iteration_master" / f"research_iteration_master__{report_id}.json"
+    iteration = read_json(iteration_path) if iteration_path.exists() else {}
+    final_strategy = (((iteration.get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
+    handoff_path = root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
+    ok = (
+        setup["dispatch"]["rc"] == 0
+        and setup["collect"]["rc"] == 0
+        and setup["merge"]["rc"] == 0
+        and proc["rc"] == 0
+        and proof.get("status") == "PASS"
+        and proof.get("final_outcome") == "rejected"
+        and first.get("terminal_reject_bridge_rc") == 0
+        and iteration.get("decision") == "reject"
+        and ((iteration.get("research_judgment") or {}).get("decision") == "reject")
+        and final_strategy.get("loop_authorization") == "advisory_only"
+        and not handoff_path.exists()
+    )
+    return {
+        "case": "loop_terminal_council_reject_bridge_stops",
+        "report_id": report_id,
+        "rc": proc["rc"],
+        "proof_status": proof.get("status"),
+        "final_outcome": proof.get("final_outcome"),
+        "terminal_reject_bridge_rc": first.get("terminal_reject_bridge_rc"),
+        "iteration_decision": iteration.get("decision"),
+        "research_judgment_decision": ((iteration.get("research_judgment") or {}).get("decision")),
+        "final_loop_authorization": final_strategy.get("loop_authorization"),
+        "handoff_absent": not handoff_path.exists(),
+        "setup": {k: v for k, v in setup.items() if k != "result_paths"},
+        "ok": ok,
+    }
+
+
+def run_existing_child_materialization_noop_case(root: Path) -> dict[str, Any]:
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    write_main_agent_council_synthesis_fixture(root, report_id, child_formula="rank(close)")
+    first = run(
+        loop_command(
+            root,
+            report_id,
+            start_step="6",
+            max_loops=2,
+            council_mode="agentic",
+            executor="local_mock",
+            adapter="none",
+        ),
+        root=root,
+    )
+    first_proof = load_proof(root, report_id)
+    first_iter = (first_proof.get("iterations") or [{}])[0]
+    second = run(
+        loop_command(
+            root,
+            report_id,
+            start_step="6",
+            max_loops=2,
+            council_mode="agentic",
+            executor="local_mock",
+            adapter="none",
+        ),
+        root=root,
+    )
+    second_proof = load_proof(root, report_id)
+    second_iter = (second_proof.get("iterations") or [{}])[0]
+    ok = (
+        first["rc"] == 0
+        and first_iter.get("materialization_rc") == 0
+        and second["rc"] == 0
+        and second_proof.get("stop_reason") != "BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED"
+        and second_iter.get("materialization_reused") is True
+    )
+    return {
+        "case": "loop_existing_child_materialization_noop",
+        "report_id": report_id,
+        "first_rc": first["rc"],
+        "first_materialization_rc": first_iter.get("materialization_rc"),
+        "second_rc": second["rc"],
+        "second_status": second_proof.get("status"),
+        "second_final_outcome": second_proof.get("final_outcome"),
+        "second_stop_reason": second_proof.get("stop_reason"),
+        "second_materialization_reused": second_iter.get("materialization_reused"),
         "ok": ok,
     }
 
@@ -1117,6 +1382,8 @@ def main() -> int:
         run_with_fresh_fixture(root, "loop_council_synthesis_approval_bridge_activates_handoff", run_council_synthesis_approval_bridge_case),
         run_with_fresh_fixture(root, "loop_council_synthesis_approval_validation_failure_rolls_back", run_council_synthesis_approval_validation_failure_rolls_back_case),
         run_with_fresh_fixture(root, "loop_consumes_completed_council_synthesis_and_materializes_child", run_loop_consumes_completed_council_synthesis_case),
+        run_with_fresh_fixture(root, "loop_terminal_council_reject_bridge_stops", run_terminal_council_reject_bridge_case),
+        run_with_fresh_fixture(root, "loop_existing_child_materialization_noop", run_existing_child_materialization_noop_case),
         run_with_fresh_fixture(root, "loop_child_report_id_isolation", run_child_isolation_case),
         run_with_fresh_fixture(root, "loop_child_materialization_target_exists_blocks", run_child_materialization_target_exists_case),
         run_with_fresh_fixture(root, "loop_child_revision_spec_missing_blocks_step3b", run_child_revision_spec_missing_case),

@@ -129,6 +129,17 @@ def synthesis_approval_command(report_id: str, factorforge_root: Path) -> list[s
     ]
 
 
+def terminal_rejection_command(report_id: str, factorforge_root: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "close_terminal_council_rejection.py"),
+        "--report-id",
+        report_id,
+        "--factorforge-root",
+        str(factorforge_root),
+    ]
+
+
 def materialization_report_path(factorforge_root: Path, parent_report_id: str, child_report_id: str) -> Path:
     return factorforge_root / "objects" / "runtime_context" / f"child_revision_materialization__{parent_report_id}__{child_report_id}.json"
 
@@ -139,6 +150,42 @@ def synthesis_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
         (council_dir / f"main_agent_council_synthesis__{report_id}.json").exists()
         and (council_dir / f"revision_council_summary__{report_id}.json").exists()
     )
+
+
+def terminal_rejection_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
+    council_dir = factorforge_root / "objects" / "research_iteration_master" / "revision_council" / report_id
+    return (
+        (council_dir / f"revision_council_summary__{report_id}.json").exists()
+        and (council_dir / f"agentic_result_collection__{report_id}.json").exists()
+    )
+
+
+def existing_materialization_report(factorforge_root: Path, parent_report_id: str, child_report_id: str) -> dict[str, Any]:
+    path = materialization_report_path(factorforge_root, parent_report_id, child_report_id)
+    report = load_json_if_exists(path)
+    if not isinstance(report, dict) or not report:
+        return {"ok": False, "report_path": str(path), "reason": "materialization_report_missing"}
+    if report.get("materialization_version") != "factorforge_step6_child_revision_materialization_v1":
+        return {"ok": False, "report_path": str(path), "reason": "materialization_version_mismatch"}
+    if report.get("parent_report_id") != parent_report_id or report.get("child_report_id") != child_report_id:
+        return {"ok": False, "report_path": str(path), "reason": "materialization_identity_mismatch"}
+    artifacts = report.get("materialized_artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        return {"ok": False, "report_path": str(path), "reason": "materialized_artifacts_missing"}
+    missing: list[str] = []
+    for key in ("alpha_idea_master", "factor_spec_master", "data_prep_master", "executable_revision_spec"):
+        raw = artifacts.get(key) or (report.get("executable_revision_spec_path") if key == "executable_revision_spec" else None)
+        if not isinstance(raw, str) or not raw:
+            missing.append(key)
+            continue
+        artifact_path = Path(raw)
+        if not artifact_path.is_absolute():
+            artifact_path = factorforge_root / artifact_path
+        if not artifact_path.exists():
+            missing.append(key)
+    if missing:
+        return {"ok": False, "report_path": str(path), "reason": "materialized_artifacts_missing_on_disk", "missing": missing}
+    return {"ok": True, "report_path": str(path), "report": report}
 
 
 def brief_ref(factorforge_root: Path, report_id: str) -> dict[str, Any]:
@@ -307,7 +354,7 @@ def main() -> int:
         write_json_atomic(proof_path, proof)
 
         if (
-            state.get("outcome") == "awaiting_agent_results"
+            state.get("outcome") in {"awaiting_agent_results", "exhausted"}
             and synthesis_bridge_ready(ctx.factorforge_root, current_report_id)
         ):
             approval_cmd = synthesis_approval_command(current_report_id, ctx.factorforge_root)
@@ -332,6 +379,35 @@ def main() -> int:
             iteration.update(state)
             proof["updated_at_utc"] = utc_now()
             append_note(proof, f"Approved main-agent Council synthesis for {current_report_id}")
+            write_json_atomic(proof_path, proof)
+
+        if (
+            state.get("outcome") in {"awaiting_agent_results", "exhausted"}
+            and not synthesis_bridge_ready(ctx.factorforge_root, current_report_id)
+            and terminal_rejection_bridge_ready(ctx.factorforge_root, current_report_id)
+        ):
+            terminal_cmd = terminal_rejection_command(current_report_id, ctx.factorforge_root)
+            terminal_result = run_command(terminal_cmd, env=env, dry_run=args.dry_run)
+            iteration["terminal_reject_bridge_command"] = terminal_result
+            iteration["terminal_reject_bridge_rc"] = terminal_result.get("rc")
+            if terminal_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_TERMINAL_COUNCIL_REJECTION_FAILED"
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_TERMINAL_COUNCIL_REJECTION_FAILED")
+                return 1
+            state = classify_loop_state(
+                ctx.factorforge_root,
+                current_report_id,
+                int(command_result.get("rc") or 0),
+                max_reached=loop_index >= args.max_loops,
+            )
+            iteration.update(state)
+            proof["updated_at_utc"] = utc_now()
+            append_note(proof, f"Closed terminal agentic Council rejection for {current_report_id}")
             write_json_atomic(proof_path, proof)
 
         if forbidden_changes:
@@ -367,22 +443,42 @@ def main() -> int:
         iteration["child_revision_source"] = "handoff_to_step3b"
         iteration["selected_revision_id"] = child.get("revision_id")
         iteration["child_report_id"] = child.get("child_report_id")
-        materialize_cmd = materialization_command(current_report_id, str(child["child_report_id"]), ctx.factorforge_root)
-        materialize_result = run_command(materialize_cmd, env=env, dry_run=args.dry_run)
         report_path = materialization_report_path(ctx.factorforge_root, current_report_id, str(child["child_report_id"]))
-        materialization_report = load_json_if_exists(report_path)
-        iteration["materialization_command"] = materialize_result
-        iteration["materialization_rc"] = materialize_result.get("rc")
-        iteration["materialization_report_path"] = str(report_path)
-        iteration["materialized_artifact_paths"] = materialization_report.get("materialized_artifacts") or {}
-        if materialize_result.get("rc") != 0:
-            proof["status"] = "FAIL"
-            proof["final_outcome"] = "blocked"
-            proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED"
-            write_json_atomic(proof_path, proof)
-            write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
-            print("BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED")
-            return 1
+        existing_materialization = existing_materialization_report(ctx.factorforge_root, current_report_id, str(child["child_report_id"]))
+        if existing_materialization.get("ok") is True:
+            materialization_report = existing_materialization.get("report") if isinstance(existing_materialization.get("report"), dict) else {}
+            iteration["materialization_command"] = {
+                "command": materialization_command(current_report_id, str(child["child_report_id"]), ctx.factorforge_root),
+                "cwd": str(REPO_ROOT),
+                "started_at_utc": utc_now(),
+                "finished_at_utc": utc_now(),
+                "rc": 0,
+                "stdout_tail": "SKIPPED_EXISTING_MATERIALIZATION",
+                "stderr_tail": "",
+                "status": "SKIPPED_EXISTING_MATERIALIZATION",
+            }
+            iteration["materialization_rc"] = 0
+            iteration["materialization_reused"] = True
+            iteration["materialization_report_path"] = str(report_path)
+            iteration["materialized_artifact_paths"] = materialization_report.get("materialized_artifacts") or {}
+            append_note(proof, f"Reused existing child materialization for {child.get('child_report_id')}")
+        else:
+            materialize_cmd = materialization_command(current_report_id, str(child["child_report_id"]), ctx.factorforge_root)
+            materialize_result = run_command(materialize_cmd, env=env, dry_run=args.dry_run)
+            materialization_report = load_json_if_exists(report_path)
+            iteration["materialization_command"] = materialize_result
+            iteration["materialization_rc"] = materialize_result.get("rc")
+            iteration["materialization_reused"] = False
+            iteration["materialization_report_path"] = str(report_path)
+            iteration["materialized_artifact_paths"] = materialization_report.get("materialized_artifacts") or {}
+            if materialize_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED"
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED")
+                return 1
         append_note(proof, f"Continuing to child loop report {child.get('child_report_id')}")
         write_json_atomic(proof_path, proof)
 

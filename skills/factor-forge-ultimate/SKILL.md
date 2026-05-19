@@ -158,6 +158,19 @@ before classifying the iteration as ready for child materialization. If the
 bridge validation fails, the loop must BLOCK and must not leave an active
 approved handoff behind.
 
+If a completed real-agent Council collection unanimously recommends terminal
+rejection and no main-agent synthesis selects a child formula, the loop may
+invoke the terminal Council rejection bridge instead of waiting forever for
+another handoff. This bridge must update Step6 to `decision=reject`, keep
+`loop_authorization=advisory_only`, leave `handoff_to_step3b` absent, and rerun
+`validate_step6.py`. A terminal Council rejection is a stop condition, not an
+executable revision.
+
+If a root loop is resumed after a child revision has already been materialized,
+the loop must reuse the existing child materialization only when the
+materialization report and core child artifacts still exist. It must not call
+the materializer again and fail on already-existing child targets.
+
 When the child reaches Step6, the next Council packet must carry the prior
 revision outcome as first-class negative or positive evidence. It must compare
 parent-vs-child metrics, record the executable derivation rule and formula

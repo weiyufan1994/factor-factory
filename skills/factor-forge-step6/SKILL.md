@@ -151,6 +151,17 @@ require `prior_revision_outcome_review` and `repeated_revision_guard`, and must
 forbid repeating the falsified executable revision rule or re-creating an
 ancestor formula hash. A Council that ignores the previous failed child run is
 not allowed to authorize another executable loop.
+41. If a completed real-agent Council collection unanimously recommends
+terminal rejection and no main-agent synthesis selects an executable child
+formula, Step6 may close the branch through
+`skills/factor-forge-step6/scripts/close_terminal_council_rejection.py`. That
+bridge must write
+`objects/research_iteration_master/revision_council/<report_id>/terminal_council_rejection__<report_id>.json`,
+set the research iteration decision to `reject`, keep
+`final_revision_strategy.loop_authorization=advisory_only`, keep active
+`handoff_to_step3b` absent, refresh the loop brief Council section, and rerun
+`validate_step6.py`. Terminal rejection is a stop condition, not permission to
+materialize another child.
 
 ## Research Analyst Standard
 

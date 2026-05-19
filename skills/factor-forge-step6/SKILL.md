@@ -110,19 +110,32 @@ template. If the memo is missing, Step6 must pause with
 handoff exposure. If the memo is present but generic, canonical-write-enabled,
 execution-enabled, formula-detached, or operator-contradictory,
 `validate_step6.py` must block it.
-37. Advisory Council revision law is not executable by itself. When the ultimate
-loop receives an approved Step3B handoff, Step6 child materialization must write
+37. Advisory Council revision law is not executable by itself. After Council
+finalization and before any child Step3B materialization, the current main agent
+must write an orchestration synthesis:
+`objects/research_iteration_master/revision_council/<report_id>/main_agent_council_synthesis__<report_id>.json`
+and `.md`, contract version `factorforge_main_agent_council_synthesis_v1`.
+This synthesis must select one executable revision law and include
+`selected_revision.law_id`, `selected_revision.child_formula`,
+`expected_metric_signature`, `falsification_tests`, and `kill_criteria`.
+Council templates, generic modification text, or a `handoff_to_step3b` without
+this synthesis are advisory-only and must not be materialized. The materializer
+must BLOCK with a precise token instead of inferring a fallback such as
+`negate(parent_formula)`.
+38. When the ultimate loop receives an approved Step3B handoff and a valid main
+agent Council synthesis, Step6 child materialization must write
 `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`
 before the child Step3B run. The spec must contain parent/child formulas,
-formula hashes, selected revision law ids when available, expected metric
-signature, falsification tests, kill criteria, and write/execute permissions.
-Non-audit child revisions must change the formula hash; otherwise the
-materializer or Step3B must BLOCK instead of rerunning the parent formula.
-38. Child materialization must copy report-local Step3A daily snapshots
+formula hashes, selected revision law ids, expected metric signature,
+falsification tests, kill criteria, the source synthesis path/hash, and
+write/execute permissions. Non-audit child revisions must change the formula
+hash; otherwise the materializer or Step3B must BLOCK instead of rerunning the
+parent formula.
+39. Child materialization must copy report-local Step3A daily snapshots
 (Parquet preferred, CSV audit when present) into the child run directory and
 rewrite child data-prep paths accordingly. A child `--start-step 3b` run must
 never depend on the parent report id's local snapshot path.
-39. When a child revision reaches Step6, the next Revision Council packet must
+40. When a child revision reaches Step6, the next Revision Council packet must
 include `prior_revision_memory`: parent report id, child report id,
 parent/child formula hashes, executable derivation rule, parent-vs-child metric
 deltas, and an outcome of `falsified`, `improved`, or `inconclusive`. If the

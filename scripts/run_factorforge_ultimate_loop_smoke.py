@@ -205,9 +205,188 @@ def run_child_missing_case(root: Path) -> dict[str, Any]:
     }
 
 
+def main_agent_council_synthesis_path(root: Path, report_id: str) -> Path:
+    return (
+        root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"main_agent_council_synthesis__{report_id}.json"
+    )
+
+
+def write_main_agent_council_synthesis_fixture(
+    root: Path,
+    report_id: str,
+    *,
+    child_formula: str = "rank(close)",
+    law_id: str = "smoke_explicit_smoothing_law_001",
+) -> Path:
+    path = main_agent_council_synthesis_path(root, report_id)
+    payload = {
+        "contract_version": "factorforge_main_agent_council_synthesis_v1",
+        "created_at_utc": utc_now(),
+        "report_id": report_id,
+        "producer": "ultimate_loop_smoke_current_main_agent_orchestrator",
+        "agent_authorship": {
+            "authoring_mode": "current_agent_freeform",
+            "answered_without_deterministic_template": True,
+        },
+        "council_result_refs": [
+            {
+                "agent_role": "formula_engineer",
+                "proposal_id": law_id,
+                "path": f"objects/research_iteration_master/revision_council/{report_id}/agent_results/{law_id}.json",
+            }
+        ],
+        "consensus_summary": "Council proposals converge on replacing the noisy parent estimator with a single explicit formula mutation.",
+        "disagreement_summary": "No conflicting executable law is selected for this smoke fixture.",
+        "rejected_revision_laws": [
+            {
+                "law_id": "generic_sign_challenge",
+                "reason": "A sign inversion is not selected by the orchestrator and must not be inferred by materializer fallback.",
+            }
+        ],
+        "selected_revision": {
+            "law_id": law_id,
+            "source_agent_roles": ["formula_engineer", "statistical_falsification_agent"],
+            "why_selected": "It is the only explicit executable law in this fixture and changes the formula rather than portfolio construction.",
+            "economic_mechanism_link": "Tests whether a cleaner current-price state preserves signal while reducing turnover and drawdown.",
+            "math_model_link": "Maps the selected state estimator into a cross-sectional rank target for next-period return.",
+            "child_formula": child_formula,
+            "formula_mutation_description": "Replace the parent expression with the explicitly selected child formula from main-agent synthesis.",
+            "expected_metric_signature": {
+                "rank_ic_mean": "should not collapse relative to parent",
+                "turnover_mean": "should not increase materially",
+                "cost_adjusted_annual_return": "should improve relative to parent",
+            },
+            "falsification_tests": [
+                "rank_ic_mean flips negative",
+                "cost_adjusted_annual_return remains non-positive after the formula mutation",
+            ],
+            "kill_criteria": [
+                "child formula hash equals parent formula hash",
+                "turnover rises without cost-adjusted improvement",
+            ],
+        },
+        "no_revision_reason": None,
+        "canonical_write_permission": False,
+        "execution_allowed_by_default": False,
+        "human_approval_required": True,
+    }
+    write_json(path, payload)
+    md_path = path.with_suffix(".md")
+    md_path.write_text(
+        "\n".join(
+            [
+                f"# Main Agent Council Synthesis: {report_id}",
+                "",
+                f"Selected law: `{law_id}`",
+                f"Child formula: `{child_formula}`",
+                "",
+                "The materializer must consume this explicit synthesis and must not infer a generic sign challenge.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def run_materialize_child_revision(root: Path, report_id: str, child_id: str) -> dict[str, Any]:
+    return run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "materialize_step6_child_revision.py"),
+            "--parent-report-id",
+            report_id,
+            "--child-report-id",
+            child_id,
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+        extra_env={"FACTORFORGE_ULTIMATE_RUN": "1"},
+    )
+
+
+def run_child_orchestrator_synthesis_missing_case(root: Path) -> dict[str, Any]:
+    from factor_factory.ultimate_loop.state import approved_child_revision_from_handoff
+
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    child = approved_child_revision_from_handoff(root, report_id, 1)
+    child_id = str(child.get("child_report_id") or f"{report_id}__LOOP01__MAIN_ITER_002")
+    proc = run_materialize_child_revision(root, report_id, child_id)
+    output = proc["stdout_tail"] + proc["stderr_tail"]
+    spec_path = root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child_id}.json"
+    ok = (
+        proc["rc"] == 1
+        and "BLOCK_FACTORFORGE_MAIN_AGENT_COUNCIL_SYNTHESIS_MISSING" in output
+        and not spec_path.exists()
+    )
+    return {
+        "case": "loop_child_orchestrator_synthesis_missing_blocks",
+        "report_id": report_id,
+        "child_report_id": child_id,
+        "rc": proc["rc"],
+        "token_present": "BLOCK_FACTORFORGE_MAIN_AGENT_COUNCIL_SYNTHESIS_MISSING" in output,
+        "executable_revision_spec_absent": not spec_path.exists(),
+        "stdout_tail": proc["stdout_tail"],
+        "stderr_tail": proc["stderr_tail"],
+        "ok": ok,
+    }
+
+
+def run_child_explicit_orchestrator_synthesis_materializes_case(root: Path) -> dict[str, Any]:
+    from factor_factory.ultimate_loop.state import approved_child_revision_from_handoff
+
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    child_formula = "rank(close)"
+    law_id = "smoke_explicit_smoothing_law_001"
+    write_step3_input_fixture(root, report_id)
+    synthesis = write_main_agent_council_synthesis_fixture(root, report_id, child_formula=child_formula, law_id=law_id)
+    child = approved_child_revision_from_handoff(root, report_id, 1)
+    child_id = str(child.get("child_report_id") or f"{report_id}__LOOP01__MAIN_ITER_002")
+    proc = run_materialize_child_revision(root, report_id, child_id)
+    spec_path = root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child_id}.json"
+    spec = read_json(spec_path) if spec_path.exists() else {}
+    ok = (
+        proc["rc"] == 0
+        and spec.get("source_orchestrator_synthesis_path") == str(synthesis)
+        and spec.get("child_formula") == child_formula
+        and spec.get("derivation_rule") == law_id
+        and spec.get("selected_revision_law_ids") == [law_id]
+        and bool(spec.get("expected_metric_signature"))
+        and bool(spec.get("falsification_tests"))
+        and bool(spec.get("kill_criteria"))
+        and spec.get("parent_formula_hash")
+        and spec.get("child_formula_hash")
+        and spec.get("parent_formula_hash") != spec.get("child_formula_hash")
+    )
+    return {
+        "case": "loop_child_explicit_orchestrator_synthesis_materializes",
+        "report_id": report_id,
+        "child_report_id": child_id,
+        "rc": proc["rc"],
+        "synthesis_path": str(synthesis),
+        "executable_revision_spec_path": str(spec_path),
+        "executable_revision_spec_exists": spec_path.exists(),
+        "child_formula": spec.get("child_formula"),
+        "derivation_rule": spec.get("derivation_rule"),
+        "selected_revision_law_ids": spec.get("selected_revision_law_ids"),
+        "expected_metric_signature_present": bool(spec.get("expected_metric_signature")),
+        "falsification_tests_present": bool(spec.get("falsification_tests")),
+        "kill_criteria_present": bool(spec.get("kill_criteria")),
+        "child_formula_changed": bool(spec.get("parent_formula_hash") and spec.get("child_formula_hash") and spec.get("parent_formula_hash") != spec.get("child_formula_hash")),
+        "ok": ok,
+    }
+
+
 def run_child_isolation_case(root: Path) -> dict[str, Any]:
     report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
     write_step3_input_fixture(root, report_id)
+    synthesis = write_main_agent_council_synthesis_fixture(root, report_id, child_formula="rank(close)")
     parent_code = root / "generated_code" / report_id
     parent_code.mkdir(parents=True, exist_ok=True)
     marker = parent_code / "parent_marker.py"
@@ -281,6 +460,7 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         and parent_formula_hash
         and child_formula_hash != parent_formula_hash
         and revision_spec.get("child_formula_hash") == child_formula_hash
+        and revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis)
     )
     return {
         "case": "loop_child_report_id_isolation",
@@ -297,6 +477,8 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         "parent_generated_code_unchanged": before == after,
         "parent_not_overwritten_by_child": parent_not_overwritten_by_child,
         "executable_revision_spec_exists": revision_spec_path.exists(),
+        "orchestrator_synthesis_path": str(synthesis),
+        "revision_spec_uses_orchestrator_synthesis": revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis),
         "child_daily_snapshot_exists": child_daily_csv.exists() and child_daily_parquet.exists(),
         "child_daily_csv_exists": child_daily_csv.exists(),
         "child_daily_parquet_exists": child_daily_parquet.exists(),
@@ -316,6 +498,7 @@ def run_child_revision_spec_missing_case(root: Path) -> dict[str, Any]:
 
     report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
     write_step3_input_fixture(root, report_id)
+    write_main_agent_council_synthesis_fixture(root, report_id, child_formula="rank(close)")
     child = approved_child_revision_from_handoff(root, report_id, 1)
     child_id = str(child.get("child_report_id") or f"{report_id}__LOOP01__MAIN_ITER_002")
     materialize = run(
@@ -715,6 +898,8 @@ def main() -> int:
             lambda r: run_loop_case(r, "loop_max_10_stops", "STEP6_INTEL_HIGH_TURNOVER_REVISION", "max_loops_reached", max_loops=1, council_mode="off"),
         ),
         run_with_fresh_fixture(root, "loop_wrapper_failure_blocks", run_wrapper_failure_case),
+        run_with_fresh_fixture(root, "loop_child_orchestrator_synthesis_missing_blocks", run_child_orchestrator_synthesis_missing_case),
+        run_with_fresh_fixture(root, "loop_child_explicit_orchestrator_synthesis_materializes", run_child_explicit_orchestrator_synthesis_materializes_case),
         run_with_fresh_fixture(root, "loop_child_report_id_isolation", run_child_isolation_case),
         run_with_fresh_fixture(root, "loop_child_materialization_target_exists_blocks", run_child_materialization_target_exists_case),
         run_with_fresh_fixture(root, "loop_child_revision_spec_missing_blocks_step3b", run_child_revision_spec_missing_case),

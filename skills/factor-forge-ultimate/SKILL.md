@@ -127,17 +127,25 @@ When Step6/Council approves a revision loop, the ultimate loop must not merely
 switch to a child report id and rerun Step3B. It must first materialize an
 auditable child revision package:
 
+- main-agent Council orchestration synthesis:
+  `objects/research_iteration_master/revision_council/<report_id>/main_agent_council_synthesis__<report_id>.json`
+  and `.md`, authored by the currently running main agent after reading the
+  Council results
 - child `alpha_idea_master`, `factor_spec_master`, `data_prep_master`, and
   optional handoffs/configs
 - report-local child daily snapshots copied from the parent Step3A slice
 - `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`
-  containing the executable child formula, parent/child formula hashes, selected
-  revision law ids when available, expected metric signature, falsification
-  tests, and kill criteria
+  containing the executable child formula from the synthesis, parent/child
+  formula hashes, selected revision law ids, expected metric signature,
+  falsification tests, kill criteria, and the synthesis path/hash
 
 Child Step3B must consume this executable revision spec and BLOCK if it is
 missing or if a non-audit revision leaves the formula hash unchanged. A loop that
 recomputes the same parent formula under a child report id is invalid.
+The materializer must not invent a fallback formula from generic handoff text.
+If Council results are only advisory templates and no main-agent synthesis with
+`selected_revision.child_formula` exists, the loop must BLOCK instead of
+materializing `negate(parent_formula)` or any other inferred default.
 
 When the child reaches Step6, the next Council packet must carry the prior
 revision outcome as first-class negative or positive evidence. It must compare

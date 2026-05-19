@@ -20,8 +20,16 @@ from factor_factory.formula.parser import parse_formula
 
 MATERIALIZATION_VERSION = "factorforge_step6_child_revision_materialization_v1"
 EXECUTABLE_REVISION_SPEC_VERSION = "factorforge_executable_revision_spec_v1"
+MAIN_AGENT_COUNCIL_SYNTHESIS_VERSION = "factorforge_main_agent_council_synthesis_v1"
 TARGET_EXISTS_BLOCK = "BLOCK_FACTORFORGE_CHILD_MATERIALIZATION_TARGET_EXISTS"
 DAILY_SNAPSHOT_MISSING_BLOCK = "BLOCK_FACTORFORGE_CHILD_DAILY_SNAPSHOT_MISSING"
+SYNTHESIS_MISSING_BLOCK = "BLOCK_FACTORFORGE_MAIN_AGENT_COUNCIL_SYNTHESIS_MISSING"
+CHILD_FORMULA_MISSING_BLOCK = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_CHILD_FORMULA_MISSING"
+SELECTED_LAW_MISSING_BLOCK = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_SELECTED_LAW_MISSING"
+METRIC_SIGNATURE_MISSING_BLOCK = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_METRIC_SIGNATURE_MISSING"
+FALSIFICATION_MISSING_BLOCK = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FALSIFICATION_MISSING"
+KILL_CRITERIA_MISSING_BLOCK = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_KILL_CRITERIA_MISSING"
+ORCHESTRATOR_MISMATCH_BLOCK = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_ORCHESTRATOR_MISMATCH"
 
 
 def utc_now() -> str:
@@ -137,6 +145,17 @@ def executable_revision_spec_path(root: Path, child: str) -> Path:
     return object_path(root, "executable_revision_spec", child)
 
 
+def default_orchestrator_synthesis_path(root: Path, parent: str) -> Path:
+    return (
+        root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / parent
+        / f"main_agent_council_synthesis__{parent}.json"
+    )
+
+
 def formula_hash(formula_text: str) -> str:
     parsed = parse_formula(formula_text)
     if parsed.get("parse_status") != "success":
@@ -144,29 +163,77 @@ def formula_hash(formula_text: str) -> str:
     return str(parsed.get("formula_hash") or "")
 
 
-def derive_child_formula(parent_formula: str, parent_spec: dict[str, Any], parent_handoff: dict[str, Any]) -> tuple[str, str]:
-    """Create a conservative executable formula from approved revision intent.
+def nonempty_str(value: Any) -> str:
+    return str(value).strip() if isinstance(value, str) and value.strip() else ""
 
-    The materializer does not run research. It only turns a known revision class
-    into an explicit child formula so Step3B cannot silently rerun the parent.
-    """
-    explicit = (
-        parent_handoff.get("child_formula")
-        or (parent_handoff.get("executable_revision_spec") or {}).get("child_formula")
-        or (parent_handoff.get("selected_revision") or {}).get("child_formula")
+
+def nonempty_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) and bool(value) else []
+
+
+def nonempty_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) and bool(value) else {}
+
+
+def resolve_synthesis_path(root: Path, parent: str, parent_handoff: dict[str, Any]) -> Path:
+    raw = (
+        parent_handoff.get("orchestrator_synthesis_path")
+        or parent_handoff.get("main_agent_council_synthesis_path")
+        or (parent_handoff.get("selected_revision") or {}).get("orchestrator_synthesis_path")
     )
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip(), "explicit_handoff_child_formula"
+    if isinstance(raw, str) and raw.strip():
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        return path
+    return default_orchestrator_synthesis_path(root, parent)
 
-    canonical = parent_spec.get("canonical_spec") if isinstance(parent_spec.get("canonical_spec"), dict) else {}
-    fields = {str(x).lower() for x in (canonical.get("required_inputs") or canonical.get("required_fields") or [])}
-    lower_formula = parent_formula.lower()
-    has_open_close = {"open", "close"}.issubset(fields) or ("open" in lower_formula and "close" in lower_formula)
-    has_volume = bool({"volume", "vol"}.intersection(fields)) or "volume" in lower_formula or "vol" in lower_formula
-    revision_text = json.dumps(parent_handoff, ensure_ascii=False).lower()
-    if has_open_close and not has_volume and any(token in revision_text for token in ["sign", "monotonic", "orientation", "state split", "positive long-side", "formula expression"]):
-        return "rank(minus(divide(close, open), 1))", "open_close_sign_orientation_challenge"
-    return f"negate({parent_formula})", "generic_sign_challenge"
+
+def load_orchestrator_synthesis(root: Path, parent: str, parent_handoff: dict[str, Any]) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    path = resolve_synthesis_path(root, parent, parent_handoff)
+    if not path.exists():
+        raise ValueError(
+            f"{SYNTHESIS_MISSING_BLOCK}: main-agent council synthesis is required before child materialization"
+        )
+    synthesis = load_json(path)
+    if synthesis.get("contract_version") != MAIN_AGENT_COUNCIL_SYNTHESIS_VERSION:
+        raise ValueError(
+            f"{ORCHESTRATOR_MISMATCH_BLOCK}: invalid synthesis contract_version={synthesis.get('contract_version')!r}"
+        )
+    if synthesis.get("report_id") != parent:
+        raise ValueError(
+            f"{ORCHESTRATOR_MISMATCH_BLOCK}: synthesis report_id does not match parent"
+        )
+    if synthesis.get("canonical_write_permission") is not False:
+        raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: synthesis must set canonical_write_permission=false")
+    if synthesis.get("execution_allowed_by_default") is not False:
+        raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: synthesis must set execution_allowed_by_default=false")
+    if synthesis.get("human_approval_required") is not True:
+        raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: synthesis must require human approval")
+
+    selected = synthesis.get("selected_revision")
+    if not isinstance(selected, dict):
+        raise ValueError(f"{CHILD_FORMULA_MISSING_BLOCK}: synthesis.selected_revision is required")
+    if not nonempty_str(selected.get("law_id")):
+        raise ValueError(f"{SELECTED_LAW_MISSING_BLOCK}: synthesis.selected_revision.law_id is required")
+    if not nonempty_str(selected.get("child_formula")):
+        raise ValueError(f"{CHILD_FORMULA_MISSING_BLOCK}: synthesis.selected_revision.child_formula is required")
+    if not nonempty_dict(selected.get("expected_metric_signature")):
+        raise ValueError(f"{METRIC_SIGNATURE_MISSING_BLOCK}: synthesis.selected_revision.expected_metric_signature is required")
+    if not nonempty_list(selected.get("falsification_tests")):
+        raise ValueError(f"{FALSIFICATION_MISSING_BLOCK}: synthesis.selected_revision.falsification_tests is required")
+    if not nonempty_list(selected.get("kill_criteria")):
+        raise ValueError(f"{KILL_CRITERIA_MISSING_BLOCK}: synthesis.selected_revision.kill_criteria is required")
+
+    law_id = nonempty_str(selected.get("law_id"))
+    prior = synthesis.get("prior_revision_memory") if isinstance(synthesis.get("prior_revision_memory"), dict) else {}
+    if not prior and isinstance(parent_handoff.get("prior_revision_memory"), dict):
+        prior = parent_handoff["prior_revision_memory"]
+    if prior.get("falsified_revision") or prior.get("prior_revision_outcome") == "falsified":
+        forbidden_rules = {str(item) for item in (prior.get("forbidden_repeat_revision_rules") or [])}
+        if law_id in forbidden_rules:
+            raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: selected law repeats a falsified prior revision rule")
+    return path, synthesis, selected
 
 
 def build_executable_revision_spec(
@@ -185,7 +252,9 @@ def build_executable_revision_spec(
     parent_formula = str(canonical.get("formula_text") or "").strip()
     if not parent_formula:
         raise ValueError("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_PARENT_FORMULA_MISSING")
-    child_formula, derivation_rule = derive_child_formula(parent_formula, parent_spec, parent_handoff)
+    synthesis_path, synthesis, selected_revision = load_orchestrator_synthesis(root, parent, parent_handoff)
+    child_formula = nonempty_str(selected_revision.get("child_formula"))
+    derivation_rule = nonempty_str(selected_revision.get("law_id"))
     parent_formula_hash = formula_hash(parent_formula)
     child_formula_ir = parse_formula(child_formula)
     if child_formula_ir.get("parse_status") != "success":
@@ -194,10 +263,14 @@ def build_executable_revision_spec(
     revision_type = str((parent_handoff.get("executable_revision_spec") or {}).get("revision_type") or parent_handoff.get("revision_type") or "formula_mutation")
     if revision_type != "audit_rerun" and child_formula_hash == parent_formula_hash:
         raise ValueError("BLOCK_FACTORFORGE_CHILD_REVISION_NO_EFFECT")
-    research_judgment = parent_handoff.get("research_judgment") if isinstance(parent_handoff.get("research_judgment"), dict) else {}
-    research_memo = research_judgment.get("research_memo") if isinstance(research_judgment.get("research_memo"), dict) else {}
-    final_revision = research_memo.get("final_revision_strategy") or research_memo.get("revision_strategy") or research_judgment.get("final_revision_strategy") or {}
-    selected_ids = final_revision.get("selected_council_proposal_ids") or []
+    prior = synthesis.get("prior_revision_memory") if isinstance(synthesis.get("prior_revision_memory"), dict) else {}
+    if not prior and isinstance(parent_handoff.get("prior_revision_memory"), dict):
+        prior = parent_handoff["prior_revision_memory"]
+    if prior.get("falsified_revision") or prior.get("prior_revision_outcome") == "falsified":
+        forbidden_hashes = {str(item) for item in (prior.get("forbidden_repeat_formula_hashes") or [])}
+        if child_formula_hash in forbidden_hashes:
+            raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: selected child formula recreates a forbidden prior formula hash")
+    selected_ids = [derivation_rule]
     return {
         "contract_version": EXECUTABLE_REVISION_SPEC_VERSION,
         "created_at_utc": utc_now(),
@@ -207,6 +280,8 @@ def build_executable_revision_spec(
         "source_handoff_path": str(parent_handoff_path),
         "source_handoff_sha256": source_handoff_sha256,
         "source_council_summary_path": str(root / "objects" / "research_iteration_master" / "revision_council" / parent / f"revision_council_summary__{parent}.json"),
+        "source_orchestrator_synthesis_path": str(synthesis_path),
+        "source_orchestrator_synthesis_sha256": sha256_file(synthesis_path),
         "selected_revision_law_ids": selected_ids,
         "revision_type": revision_type,
         "derivation_rule": derivation_rule,
@@ -215,10 +290,24 @@ def build_executable_revision_spec(
         "parent_formula_hash": parent_formula_hash,
         "child_formula_hash": child_formula_hash,
         "child_formula_ir": child_formula_ir,
-        "formula_mutation_description": f"Apply {derivation_rule} to create an executable child formula from the approved Step6/Council revision law.",
-        "expected_metric_signature": (final_revision.get("expected_metric_signature") if isinstance(final_revision, dict) else None) or {},
-        "falsification_tests": final_revision.get("falsification_tests") or final_revision.get("math_falsification_tests") or [],
-        "kill_criteria": final_revision.get("kill_criteria") or [],
+        "formula_mutation_description": selected_revision.get("formula_mutation_description")
+        or f"Apply {derivation_rule} from main-agent Council synthesis.",
+        "expected_metric_signature": selected_revision.get("expected_metric_signature") or {},
+        "falsification_tests": selected_revision.get("falsification_tests") or [],
+        "kill_criteria": selected_revision.get("kill_criteria") or [],
+        "orchestrator_synthesis": {
+            "contract_version": synthesis.get("contract_version"),
+            "producer": synthesis.get("producer"),
+            "consensus_summary": synthesis.get("consensus_summary"),
+            "disagreement_summary": synthesis.get("disagreement_summary"),
+            "selected_revision": {
+                "law_id": derivation_rule,
+                "source_agent_roles": selected_revision.get("source_agent_roles") or [],
+                "why_selected": selected_revision.get("why_selected"),
+                "economic_mechanism_link": selected_revision.get("economic_mechanism_link"),
+                "math_model_link": selected_revision.get("math_model_link"),
+            },
+        },
         "implementation_mode": "operator",
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,

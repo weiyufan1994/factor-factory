@@ -4099,7 +4099,39 @@ def main() -> None:
 
     research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
     mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+    legacy_mechanism_snapshot = {
+        key: mechanism_analysis.get(key)
+        for key in [
+            'return_source',
+            'factor_family',
+            'mechanism_hypothesis',
+            'mechanism_math_summary',
+            'mechanism_fit',
+        ]
+        if key in mechanism_analysis
+    }
     mechanism_analysis['formula_specific_derivation'] = formula_specific_derivation_from_main_agent_memo(main_agent_memo, factor_spec_master)
+    qa = main_agent_memo.get('mechanism_qa') if isinstance(main_agent_memo.get('mechanism_qa'), dict) else {}
+    math_hypothesis = main_agent_memo.get('math_hypothesis') if isinstance(main_agent_memo.get('math_hypothesis'), dict) else {}
+    if qa.get('economic_hypothesis_answer') or qa.get('math_model_answer'):
+        mechanism_analysis['mechanism_hypothesis'] = ' '.join(
+            str(part).strip()
+            for part in [qa.get('economic_hypothesis_answer'), qa.get('math_model_answer')]
+            if str(part or '').strip()
+        )
+    if isinstance(math_hypothesis.get('expected_metric_signature'), dict):
+        mechanism_analysis['expected_metric_signature'] = math_hypothesis['expected_metric_signature']
+    mechanism_analysis['main_agent_mechanism_memo_takeover'] = {
+        'enabled': True,
+        'memo_ref': main_agent_memo_ref,
+        'validation_scope': 'main_agent_formula_specific_derivation',
+        'legacy_deterministic_mechanism_retained_for_audit': legacy_mechanism_snapshot,
+    }
+    mechanism_analysis['mechanism_formula_consistency'] = validate_mechanism_formula_consistency(
+        factor_spec_master,
+        mechanism_analysis,
+        mechanism_analysis.get('formula_specific_derivation') or {},
+    )
     research_memo['mechanism_analysis'] = mechanism_analysis
 
     all_record = build_factor_record(iteration, bundle)

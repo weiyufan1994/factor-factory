@@ -1890,6 +1890,37 @@ def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
     alpha033_derivation = build_formula_specific_derivation(alpha033_like_spec, alpha033_like_mechanism, {})
     alpha033_failures = validate_formula_specific_derivation(alpha033_derivation, alpha033_like_spec, alpha033_like_mechanism)
     alpha033_text = json.dumps(alpha033_derivation, ensure_ascii=False).lower()
+    alpha033_stale_mechanism = {
+        'return_source': 'behavioral_microstructure',
+        'factor_family': 'liquidity_shock',
+        'mechanism_hypothesis': 'Legacy deterministic text says price-volume liquidity shock and volume participation.',
+        'mechanism_fit': 'weak',
+        'mechanism_math_contract': {
+            'observable_inputs': ['open', 'close', 'volume'],
+            'factor_as_estimator': 'stale price-volume dependence estimator text',
+        },
+    }
+    alpha033_stale_no_takeover = validate_mechanism_formula_consistency(
+        alpha033_like_spec,
+        alpha033_stale_mechanism,
+        alpha033_derivation,
+    )
+    alpha033_takeover_mechanism = dict(alpha033_stale_mechanism)
+    alpha033_takeover_mechanism['main_agent_mechanism_memo_takeover'] = {
+        'enabled': True,
+        'validation_scope': 'main_agent_formula_specific_derivation',
+        'legacy_deterministic_mechanism_retained_for_audit': {
+            'mechanism_hypothesis': 'Legacy audit snapshot still says price-volume liquidity shock.',
+            'mechanism_math_summary': {
+                'factor_as_estimator': 'stale volume participation estimator retained for audit only',
+            },
+        },
+    }
+    alpha033_stale_with_takeover = validate_mechanism_formula_consistency(
+        alpha033_like_spec,
+        alpha033_takeover_mechanism,
+        alpha033_derivation,
+    )
     hypothesis_specs = [
         (
             'valuation',
@@ -1967,6 +1998,15 @@ def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
             'failures': alpha033_failures,
             'profit_payer_derivation': alpha033_derivation.get('profit_payer_derivation'),
         },
+        'alpha033_main_agent_memo_takeover_ignores_stale_legacy_mechanism_text': {
+            'ok': (
+                alpha033_stale_no_takeover.get('status') == 'BLOCK'
+                and alpha033_stale_with_takeover.get('status') == 'PASS'
+                and not alpha033_stale_with_takeover.get('failures')
+            ),
+            'without_takeover': alpha033_stale_no_takeover,
+            'with_takeover': alpha033_stale_with_takeover,
+        },
         'model_specific_profit_payer_derivation_pass': {
             'ok': len(model_specific_pass) == 3,
             'cases': model_specific_pass,
@@ -1980,6 +2020,8 @@ def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
             and good_consistency.get('status') == 'PASS'
             and not good_derivation_failures
             and not alpha033_failures
+            and alpha033_stale_no_takeover.get('status') == 'BLOCK'
+            and alpha033_stale_with_takeover.get('status') == 'PASS'
             and 'BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING' in restated_codes
             and 'BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC' in generic_payer_codes
             and len(model_specific_pass) == 3

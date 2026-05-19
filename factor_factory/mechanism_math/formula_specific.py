@@ -677,8 +677,19 @@ def validate_mechanism_formula_consistency(
     mechanism_analysis: dict[str, Any],
     derivation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    features = formula_features(spec_like or {}, mechanism_analysis or {})
-    text = _text_blob(mechanism_analysis, derivation)
+    takeover = {}
+    if isinstance(mechanism_analysis, dict):
+        raw_takeover = mechanism_analysis.get("main_agent_mechanism_memo_takeover")
+        takeover = raw_takeover if isinstance(raw_takeover, dict) else {}
+    use_memo_takeover_scope = takeover.get("enabled") is True
+    feature_scope = {} if use_memo_takeover_scope else (mechanism_analysis or {})
+    takeover_scope = {
+        "enabled": True,
+        "validation_scope": takeover.get("validation_scope"),
+    }
+    text_scope = (derivation or {}, takeover_scope) if use_memo_takeover_scope else (mechanism_analysis, derivation)
+    features = formula_features(spec_like or {}, feature_scope)
+    text = _text_blob(*text_scope)
     failures: list[dict[str, str]] = []
     mechanism_inputs_not_in_formula = features.get("mechanism_inputs_not_in_formula") or []
     if not features["has_volume"]:

@@ -29,8 +29,9 @@ def utc_now() -> str:
 
 
 def infer_revision_direction(factor_id: str, modification_targets: list[str]) -> str:
+    del factor_id
     joined = ' | '.join(modification_targets).lower()
-    if factor_id.upper() == 'UBL' or 'shadow' in joined or 'monotonicity' in joined:
+    if 'shadow' in joined or 'monotonicity' in joined:
         return '保持原始因子经济语义，但直接修改因子表达式/Step3B 代码，使高因子值更线性、单调地对应更强 long-side 收益'
     if 'qlib' in joined or 'payload' in joined:
         return '先修复评估稳定性与执行一致性，再决定是否大改因子公式'
@@ -38,13 +39,14 @@ def infer_revision_direction(factor_id: str, modification_targets: list[str]) ->
 
 
 def infer_revision_logic(factor_id: str, modification_targets: list[str]) -> list[str]:
+    del factor_id
     steps = [
         '保留当前 Step3B 实现作为 base implementation，不直接覆盖原始实现',
         '新分支必须直接修改因子表达式或 Step3B 代码本身，不能通过 short、long-short、decile trading 或 portfolio expression 来补救',
         '优先检查高因子值是否真的代表更强的经济状态；如果不是，修订符号、输入比例、非线性压缩或窗口定义',
         '完成后重新跑 Step4/5/6，只用 long-side 收益、表达式单调性和稳健性判断是否继续',
     ]
-    if factor_id.upper() == 'UBL':
+    if any('shadow' in item.lower() for item in modification_targets):
         steps.insert(1, '针对影线类因子，先尝试平滑 + 截尾 + 重新标准化，而不是直接改影线定义')
     if any('monotonicity' in item.lower() for item in modification_targets):
         steps.append('重点观察分组单调性是否改善，而不只看单一 IC 指标')

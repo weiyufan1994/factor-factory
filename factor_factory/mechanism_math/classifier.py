@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from .schema import CONTRACT_VERSION
+from .formula_specific import build_formula_understanding, select_math_model_from_economic_hypothesis
 
 
 PRICE_INPUT_FIELDS = {"open", "high", "low", "close", "price", "return", "returns", "pct_chg", "vwap"}
@@ -121,13 +122,78 @@ def _has_true_projection_terms(text: str) -> bool:
     return _contains_any(text, projection_patterns)
 
 
+def _formula_supports_price_volume_model(formula_understanding: dict[str, Any]) -> bool:
+    if not isinstance(formula_understanding, dict):
+        return False
+    if formula_understanding.get("interaction_structure") == "price_volume_dependence":
+        return True
+    features = formula_understanding.get("formula_features") if isinstance(formula_understanding.get("formula_features"), dict) else {}
+    return features.get("has_volume") is True
+
+
+def normalize_selected_model_family(model_family: str, formula_understanding: dict[str, Any]) -> str:
+    raw = str(model_family or "").strip()
+    if raw in {
+        "stochastic_process",
+        "valuation_identity",
+        "linear_factor_projection",
+        "functional_filter",
+        "cross_sectional_statistics",
+        "constraint_model",
+    }:
+        return raw
+    if raw == "price_volume_microstructure":
+        if _formula_supports_price_volume_model(formula_understanding):
+            return "price_volume_microstructure"
+        return "other"
+    if raw in {"ranked_price_state_process", "canonical_formula_state_process"}:
+        return "stochastic_process"
+    if raw == "ranked_price_volume_state_process":
+        if _formula_supports_price_volume_model(formula_understanding):
+            return "price_volume_microstructure"
+        return "stochastic_process"
+    return "other"
+
+
 def infer_model_family(spec_like: dict[str, Any]) -> tuple[str, list[str], str]:
+    research_contract = spec_like.get("research_contract") if isinstance(spec_like.get("research_contract"), dict) else {}
+    formula_understanding = (
+        research_contract.get("formula_understanding")
+        or spec_like.get("formula_understanding")
+        or build_formula_understanding(spec_like)
+    )
     text = _text_blob(spec_like)
     formula_operator_text = _formula_operator_blob(spec_like)
-    inputs = {item.lower() for item in _observable_inputs(spec_like)}
-    has_price = bool(inputs & PRICE_INPUT_FIELDS) or _contains_field_token(text, PRICE_INPUT_FIELDS)
-    has_volume = bool(inputs & VOLUME_INPUT_FIELDS) or _contains_field_token(text, VOLUME_INPUT_FIELDS)
+    formula_features = (formula_understanding or {}).get("formula_features") if isinstance(formula_understanding, dict) else {}
+    formula_fields = {str(item).lower() for item in (formula_features or {}).get("fields", [])} if isinstance(formula_features, dict) else set()
+    if not formula_fields:
+        formula_fields = {item.lower() for item in _observable_inputs(spec_like)}
+    has_price = bool(formula_fields & PRICE_INPUT_FIELDS)
+    has_volume = bool(formula_fields & VOLUME_INPUT_FIELDS)
+    if _has_true_projection_terms(formula_operator_text):
+        evidence = ["projection_or_residualization_terms"]
+        if _has_price_volume_dependence(text, has_price, has_volume):
+            evidence.append("price_volume_dependence_inside_projection")
+        return "linear_factor_projection", evidence, "low"
+    selected = select_math_model_from_economic_hypothesis(
+        research_contract.get("economic_hypothesis") if isinstance(research_contract, dict) else {},
+        research_contract.get("math_hypothesis_candidates") if isinstance(research_contract, dict) else [],
+        formula_understanding if isinstance(formula_understanding, dict) else {},
+    )
+    normalized = normalize_selected_model_family(
+        str(selected.get("model_family") or selected.get("selected_baseline_model") or ""),
+        formula_understanding if isinstance(formula_understanding, dict) else {},
+    )
+    if normalized != "other":
+        interaction = (formula_understanding or {}).get("interaction_structure") if isinstance(formula_understanding, dict) else None
+        evidence = [f"step1_economic_to_math_modelling:{normalized}"]
+        if interaction:
+            evidence.append(f"formula_understanding:{interaction}")
+        return normalized, evidence, "low"
     evidence: list[str] = []
+    text_mentions_volume = _contains_field_token(text, VOLUME_INPUT_FIELDS)
+    if text_mentions_volume and not has_volume:
+        evidence.append("text_mentions_volume_but_formula_field_absent")
 
     if _has_true_projection_terms(formula_operator_text):
         evidence.append("projection_or_residualization_terms")
@@ -293,6 +359,12 @@ def _family_template(model_family: str) -> dict[str, Any]:
 
 def build_mechanism_math_contract(spec_like: dict[str, Any]) -> dict[str, Any]:
     canonical = spec_like.get("canonical_spec") if isinstance(spec_like.get("canonical_spec"), dict) else spec_like
+    research_contract = spec_like.get("research_contract") if isinstance(spec_like.get("research_contract"), dict) else {}
+    formula_understanding = (
+        research_contract.get("formula_understanding")
+        or spec_like.get("formula_understanding")
+        or build_formula_understanding(spec_like)
+    )
     model_family, evidence, uncertainty = infer_model_family(spec_like)
     inputs = _observable_inputs(spec_like)
     formula = str(canonical.get("formula_text") or canonical.get("raw_formula_text") or "").strip()
@@ -331,7 +403,29 @@ def build_mechanism_math_contract(spec_like: dict[str, Any]) -> dict[str, Any]:
             "classification_evidence": {"matched_rules": evidence, "classification_uncertainty": uncertainty, "formula_text": formula},
         }
 
-    template = _family_template(model_family)
+    template = dict(_family_template(model_family))
+    if model_family == "stochastic_process" and isinstance(formula_understanding, dict) and formula_understanding.get("interaction_structure") == "slow_state_x_short_horizon_threshold":
+        template.update({
+            "mechanism": "Formula estimates a slow winner or long-window trend state interacting with short-horizon reversal/dislocation and sign-threshold migration.",
+            "state": "slow winner state interacting with short-horizon reversal/dislocation threshold state",
+            "estimator": "the formula estimates a cross-sectional conditional state formed by long-window return rank and short-horizon sign-threshold price movement",
+            "target": "E[r_i,t+1 | F_t, slow_state_i,t, short_state_i,t, threshold_i,t]",
+            "process": (
+                "Returns follow a stochastic process with slow trend state M_i,t and short-horizon reversal/dislocation "
+                "component I_i,t; sign transform creates threshold migration around the state boundary."
+            ),
+            "latent": "latent slow winner/trend state multiplied by short-horizon pullback or temporary dislocation state",
+            "observable_estimator": "sum(returns,250), close-delay(close,7), delta(close,7), sign threshold, and cross-sectional rank",
+            "conditional_distribution": "r_i,t+1 | F_t, slow_state_i,t, short_state_i,t, threshold_i,t",
+            "relationship_shape": "threshold-like conditional payoff; long-window winner rank changes payoff sign and magnitude only through interaction with short-horizon state",
+            "metric_match": "rank IC, long-side return, turnover, and component ablations must support slow-state x short-state interaction after costs",
+            "mechanism_tests": [
+                "Ablate the long-window return state and verify the signal weakens if slow winner state is required.",
+                "Ablate or flip the short-horizon sign threshold and verify payoff direction is consistent with reversal/dislocation thesis.",
+                "Check turnover around threshold migration does not consume expected payoff.",
+            ],
+            "revision_target": "threshold_boundary",
+        })
     return {
         "contract_version": CONTRACT_VERSION,
         "math_model_status": "specified",
@@ -400,5 +494,11 @@ def build_mechanism_math_contract(spec_like: dict[str, Any]) -> dict[str, Any]:
             "Kill if the factor cannot state a testable state, estimator, and target functional.",
             "Kill if the high-score long side remains non-positive after expression-level revisions.",
         ],
+        "formula_understanding": formula_understanding,
+        "economic_to_math_model_selection": select_math_model_from_economic_hypothesis(
+            research_contract.get("economic_hypothesis") if isinstance(research_contract, dict) else {},
+            research_contract.get("math_hypothesis_candidates") if isinstance(research_contract, dict) else [],
+            formula_understanding if isinstance(formula_understanding, dict) else {},
+        ),
         "classification_evidence": {"matched_rules": evidence, "classification_uncertainty": uncertainty, "formula_text": formula},
     }

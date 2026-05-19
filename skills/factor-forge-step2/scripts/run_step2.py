@@ -275,7 +275,7 @@ def build_hybrid_contract(primary: Dict[str, Any], aim: Dict[str, Any]) -> Dict[
 def explicit_family_plugin_selection(aim: Dict[str, Any], primary: Dict[str, Any]) -> Dict[str, Any]:
     """Propagate only explicit structured family-plugin declarations.
 
-    Free-text mentions such as "shadow", "Williams", "candle", "CPV", or "UBL"
+    Free-text mentions such as "shadow", "Williams", "candle", or price-volume shorthand
     may become suggestions, but they must not become executable plugin selection.
     """
     contract = aim.get('implementation_contract') or {}
@@ -317,11 +317,11 @@ def explicit_family_plugin_selection(aim: Dict[str, Any], primary: Dict[str, Any
                 'human_review_required': True,
             }
         }
-    if 'cpv' in suggestion_text or 'price-volume' in suggestion_text or '价量' in suggestion_text:
+    if 'price-volume' in suggestion_text or '价量' in suggestion_text:
         return {
             'family_plugin_suggestion': {
-                'suggested_family': 'cpv',
-                'reason': 'source text mentions CPV or price-volume semantics',
+                'suggested_family': 'price_volume',
+                'reason': 'source text mentions price-volume semantics',
                 'formal_selection': False,
                 'human_review_required': True,
             }
@@ -475,10 +475,14 @@ def build_step2_research_contract(
     discipline = aim.get('research_discipline') or {}
     economic_hypothesis = discipline.get('economic_hypothesis') or {}
     math_hypothesis_candidates = discipline.get('math_hypothesis_candidates') or []
+    formula_understanding = discipline.get('formula_understanding') or aim.get('formula_understanding') or {}
+    economic_to_math_modelling = discipline.get('economic_to_math_modelling') or aim.get('economic_to_math_modelling') or {}
     return {
         'target_statistic': infer_target_statistic(primary, aim),
         'economic_mechanism': infer_economic_mechanism(primary, aim, thesis),
+        'formula_understanding': formula_understanding,
         'economic_hypothesis': economic_hypothesis,
+        'economic_to_math_modelling': economic_to_math_modelling,
         'math_hypothesis_candidates': math_hypothesis_candidates,
         'expected_failure_modes': infer_expected_failure_modes(primary, consistency, aim),
         'innovative_idea_seeds': infer_innovative_idea_seeds(primary, aim),
@@ -498,9 +502,6 @@ def build_step2_research_contract(
 
 
 def is_shadow_factor(final_factor: Dict[str, Any], thesis: Dict[str, Any]) -> bool:
-    name = str(final_factor.get('name', '')).upper()
-    if 'UBL' in name:
-        return True
     joined = ' '.join(str(x) for x in (thesis.get('signals', []) or []))
     return any(token in joined for token in ['candlestick_shadow_signal', 'williams_shadow_signal', 'shadow_composite_signal'])
 
@@ -509,7 +510,7 @@ def build_primary_spec(report_id: str, aim: Dict[str, Any], thesis: Dict[str, An
     final_factor = aim.get('final_factor', {})
     shadow_factor = is_shadow_factor(final_factor, thesis)
     return {
-        'factor_id': 'CPV' if 'CPV' in final_factor.get('name', '') else final_factor.get('name', report_id),
+        'factor_id': final_factor.get('name', report_id),
         'report_id': report_id,
         'route': 'primary',
         'raw_formula_text': ' ; '.join(final_factor.get('assembly_steps', []) or aim.get('assembly_path', [])),
@@ -558,7 +559,7 @@ def build_challenger_spec(report_id: str, aim: Dict[str, Any], challenger: Dict[
         '分钟频率与异常值处理路径可能改变复现结果'
     ]
     return {
-        'factor_id': 'CPV' if 'CPV' in final_factor.get('name', '') else final_factor.get('name', report_id),
+        'factor_id': final_factor.get('name', report_id),
         'report_id': report_id,
         'route': 'challenger',
         'raw_formula_text': '挑战视角重建：' + ' ; '.join(aim.get('assembly_path', [])),
@@ -583,15 +584,15 @@ def build_challenger_spec(report_id: str, aim: Dict[str, Any], challenger: Dict[
             [
                 '分别标准化蜡烛与威廉影线子因子',
                 '对综合因子做市值与常用风格中性化检查',
-                '验证不同参数M下UBL稳健性',
-                '最终组合为 UBL'
+                '验证不同参数M下综合影线因子稳健性',
+                '最终组合为综合影线因子'
             ]
             if shadow_factor else
             [
                 '分别中性化均值与波动项',
                 '对反转因子做残差剥离',
                 '对趋势项做多变量残差剥离',
-                '最终组合为 CPV'
+                '最终组合为价量相关结构因子'
             ]
         ),
         'preprocessing': [
@@ -668,7 +669,7 @@ def build_primary_spec_from_canonical_formula(report_id: str, aim: Dict[str, Any
         'operators': operators,
         'required_inputs': required_inputs,
         'time_series_steps': [
-            'Parse the canonical formula into its Alpha101-style operator tree.',
+            'Parse the canonical formula into its declared operator tree.',
             'Apply each rolling or lagged operator using only data available at the rebalance date.',
             'Preserve published window lengths and rank/correlation semantics unless Step3B records a reviewed deviation.',
         ],
@@ -682,7 +683,7 @@ def build_primary_spec_from_canonical_formula(report_id: str, aim: Dict[str, Any
         'neutralization': ['No neutralization is implied by the canonical formula unless Step3B/Step4 explicitly evaluates it as a variant.'],
         'rebalance_frequency': 'daily signal; portfolio rebalance cadence remains a Step4 evaluation setting',
         'implementation_assumptions': [
-            'Alpha101 operator semantics are treated as source-of-truth.',
+            'Declared formula operator semantics are treated as source-of-truth.',
             'Window alignment must avoid forward-looking data.',
         ],
         'explicit_items': [formula],

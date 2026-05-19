@@ -25,7 +25,7 @@ def main() -> None:
         raise FileNotFoundError(f'missing fixture intake: {fixture_intake}')
 
     adapter = HtmlReportAdapter(root / 'data' / 'report_ingestion' / 'raw' / 'html')
-    source = adapter.from_local_file(fixture_html, title='Sample Factor Report — CPV Mini Fixture')
+    source = adapter.from_local_file(fixture_html, title='Sample Factor Report - Price-Volume Mini Fixture')
     pipeline = build_step1_pipeline(root)
 
     response_text = fixture_intake.read_text(encoding='utf-8')

@@ -32,6 +32,17 @@ from factor_factory.provenance import (
     derive_identity as derive_provenance_identity,
 )
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
+from factor_factory.mechanism_math.formula_specific import (
+    build_formula_specific_derivation,
+    validate_formula_specific_derivation,
+    validate_mechanism_formula_consistency,
+)
+from factor_factory.mechanism_math.main_agent_memo import (
+    build_main_agent_mechanism_questionnaire,
+    formula_specific_derivation_from_main_agent_memo,
+    render_main_agent_mechanism_questionnaire_markdown,
+    validate_main_agent_mechanism_memo,
+)
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 
 OBJ = FF / 'objects'
@@ -1188,7 +1199,25 @@ def build_mechanism_analysis(
     mechanism_math_contract = mechanism_math_contract_from_bundle(bundle)
     mechanism_math_summary = mechanism_math_summary_from_contract(mechanism_math_contract)
     factor_family, classification_evidence_items, uncertainty = _classify_mechanism_family(text, canonical)
+    formula_understanding = mechanism_math_contract.get('formula_understanding') if isinstance(mechanism_math_contract, dict) else {}
+    interaction_structure = str((formula_understanding or {}).get('interaction_structure') or '')
+    state_text = ' '.join(
+        str(mechanism_math_contract.get(key) or '')
+        for key in ('state_or_object', 'factor_as_estimator', 'process_hypothesis', 'latent_state', 'observable_estimator')
+    ).lower() if isinstance(mechanism_math_contract, dict) else ''
+    if (
+        interaction_structure == 'slow_state_x_short_horizon_threshold'
+        or all(token in state_text for token in ('slow', 'short', 'threshold'))
+    ):
+        factor_family = 'reversal'
+        classification_evidence_items = [
+            'formula_understanding_slow_state_x_short_horizon_threshold',
+            'mechanism_math_contract_formula_specific',
+        ]
+        uncertainty = 'low'
     return_source = _return_source_for_family(factor_family, text, uncertainty)
+    if interaction_structure == 'slow_state_x_short_horizon_threshold':
+        return_source = 'mixed'
     metrics = evidence_audit.get('metric_consistency') or {}
     long_quality = evidence_audit.get('long_side_evidence_quality') or {}
     cost_risk = evidence_audit.get('cost_and_turnover_risk') or {}
@@ -1201,7 +1230,24 @@ def build_mechanism_analysis(
     ]
     similar_failure = [item for item in similar if str(item.get('decision')) in {'reject', 'iterate', 'needs_human_review'}]
 
-    if factor_family == 'price_volume_correlation':
+    if interaction_structure == 'slow_state_x_short_horizon_threshold':
+        hypothesis = (
+            'The formula models a slow winner or long-window trend state interacting with a short-horizon reversal, '
+            'temporary dislocation, or threshold-migration state. The economic claim is that delayed updaters, trend '
+            'extrapolators, or liquidity-demand accounts may overpay around the short-state boundary, and the formula '
+            'estimates that conditional state from its own long-window return and short-horizon price-threshold features.'
+        )
+        necessary = [
+            'the long-window winner state must change the payoff sign or magnitude of the short-horizon threshold state',
+            'the short-horizon sign boundary must map to next-period long-side expected return after costs',
+            'turnover around threshold migration must not consume the gross expected payoff',
+        ]
+        failures = [
+            'threshold migration is too noisy and turnover-heavy',
+            'the long-window trend state does not condition the short-horizon reversal payoff',
+            'observed performance comes from diagnostics rather than high-score long-side expected return',
+        ]
+    elif factor_family == 'price_volume_correlation':
         hypothesis = (
             'The formula tests whether recent price-position ranks and volume ranks co-move. '
             'The mechanism is behavioral microstructure: volume-confirmed price pressure, exhaustion, or liquidity shock must map monotonically to next-period long-side return, not merely to a long-short diagnostic.'
@@ -1554,21 +1600,48 @@ def build_revision_strategy(
     else:
         revision_quality = 'actionable'
         if failure_signature == 'cost_too_high':
+            interaction_structure = str(
+                ((mechanism_math_contract.get('formula_understanding') or {}) if isinstance(mechanism_math_contract, dict) else {}).get('interaction_structure') or ''
+            )
+            if interaction_structure == 'slow_state_x_short_horizon_threshold':
+                cost_hypothesis = (
+                    'Gross alpha is present but monetization fails because threshold migration between the slow winner state '
+                    'and the short-horizon reversal/dislocation state is too noisy or turnover-heavy.'
+                )
+                cost_mechanism_target = (
+                    'Make the slow-winner x short-horizon threshold state more persistent and economically separable, '
+                    'so high factor values represent a durable conditional payoff state rather than boundary noise.'
+                )
+                cost_expression_change = (
+                    'Revise the expression-level estimator by smoothing or confirming the short-horizon sign threshold, '
+                    'testing the long-window winner-state interaction, and keeping only branches that reduce threshold churn '
+                    'without weakening high-score long-side expected return.'
+                )
+                cost_falsification_tests = [
+                    'Reject if threshold smoothing or confirmation does not lower turnover after expression-level revision.',
+                    'Reject if ablations show the long-window winner state does not condition the short-horizon payoff.',
+                    'Reject if cost-adjusted Sharpe remains negative despite positive gross return.',
+                ]
+            else:
+                cost_hypothesis = 'Gross alpha is present but monetization fails because the expression is too short-lived and turnover-heavy.'
+                cost_mechanism_target = 'Make the price/volume pressure state more persistent so high factor values represent durable pressure instead of one-day liquidity noise.'
+                cost_expression_change = 'Replace the raw short-window signal with a persistence-confirmed expression: smooth the operator output, require multi-day agreement, or add a durable-signal confirmation term to lower turnover at the factor-expression level.'
+                cost_falsification_tests = [
+                    'Reject if turnover remains high after expression-level smoothing or persistence confirmation.',
+                    'Reject if cost-adjusted Sharpe remains negative despite positive gross return.',
+                ]
             hypotheses.append(_revision_hypothesis(
                 hypothesis_id='rev_cost_persistence_001',
-                hypothesis='Gross alpha is present but monetization fails because the expression is too short-lived and turnover-heavy.',
-                mechanism_target='Make the price/volume pressure state more persistent so high factor values represent durable pressure instead of one-day liquidity noise.',
-                expression_change='Replace the raw short-window signal with a persistence-confirmed expression: smooth the operator output, require multi-day agreement, or add a durable-signal confirmation term to lower turnover at the factor-expression level.',
+                hypothesis=cost_hypothesis,
+                mechanism_target=cost_mechanism_target,
+                expression_change=cost_expression_change,
                 mode='operator',
                 expected_metric_change=[
                     'lower long_side_turnover_mean_daily',
                     'positive cost_adjusted_annual_return',
                     'higher cost_adjusted_long_side_sharpe',
                 ],
-                falsification_tests=[
-                    'Reject if turnover remains high after expression-level smoothing or persistence confirmation.',
-                    'Reject if cost-adjusted Sharpe remains negative despite positive gross return.',
-                ],
+                falsification_tests=cost_falsification_tests,
                 overfit='medium',
                 kill_criteria=[
                     'Kill branch if cost-adjusted annual return remains negative.',
@@ -1937,14 +2010,14 @@ def should_write_step3b_handoff(
 def build_formula_understanding(bundle: dict[str, Any]) -> dict[str, Any]:
     spec = bundle.get('factor_spec_master') or {}
     canonical = spec.get('canonical_spec') or {}
-    factor_id = str(spec.get('factor_id') or bundle['factor_run_master'].get('factor_id') or '')
     formula_text = str(canonical.get('formula_text') or '')
     lower_formula = formula_text.lower()
+    is_volume_acceleration_pressure_formula = 'delta(log(volume)' in lower_formula and '(close - open)' in lower_formula
 
-    if factor_id.upper() == 'ALPHA002' or ('delta(log(volume)' in lower_formula and '(close - open)' in lower_formula):
+    if is_volume_acceleration_pressure_formula:
         return {
-            'factor_type': 'Alpha101 daily price-volume interaction factor',
-            'plain_language': 'Alpha002 measures whether recent acceleration in trading volume is correlated with intraday price pressure, then takes the negative of that rolling relationship.',
+            'factor_type': 'daily price-volume interaction factor',
+            'plain_language': 'The formula measures whether recent acceleration in trading volume is associated with intraday price pressure, then applies the declared sign convention to that rolling relationship.',
             'economic_story': [
                 'Volume acceleration can proxy attention, liquidity demand, or forced flow.',
                 'Intraday close-minus-open pressure can proxy same-day buying/selling imbalance.',
@@ -1957,7 +2030,7 @@ def build_formula_understanding(bundle: dict[str, Any]) -> dict[str, Any]:
             ],
             'what_would_break_it': [
                 'If volume shocks mostly reflect permanent information, reversal-style interpretation becomes wrong.',
-                'If liquidity improves or many participants trade the same Alpha101 formula, spread can compress.',
+                'If liquidity improves or many participants trade the same formula structure, spread can compress.',
                 'If the signal requires high turnover, native portfolio performance can lag raw IC evidence.',
             ],
         }
@@ -2022,7 +2095,7 @@ def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, An
         'Run monotonicity, long-side Sharpe, drawdown, recovery, and top-group return checks across years, regimes, industries, and market-cap buckets.',
         'Check yearly and regime-split stability, especially before and after major liquidity/regulatory regime changes.',
         'Check liquidity and market-cap buckets to see whether the edge is broad or concentrated in hard-to-trade names.',
-        'Compare against related Alpha101 price-volume factors to avoid promoting a redundant signal.',
+        'Compare against related formula-family price-volume factors to avoid promoting a redundant signal.',
     ]
 
     return {
@@ -3028,6 +3101,17 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     diversity_position = build_diversity_position(framework, retrieval_context, decision)
     evidence_audit = build_evidence_audit(bundle, payloads, metrics)
     mechanism_analysis = build_mechanism_analysis(bundle, payloads, metrics, evidence_audit, retrieval_context)
+    formula_specific_derivation = build_formula_specific_derivation(
+        bundle.get('factor_spec_master') or {},
+        mechanism_analysis,
+        metrics,
+    )
+    mechanism_analysis['formula_specific_derivation'] = formula_specific_derivation
+    mechanism_analysis['mechanism_formula_consistency'] = validate_mechanism_formula_consistency(
+        bundle.get('factor_spec_master') or {},
+        mechanism_analysis,
+        formula_specific_derivation,
+    )
     current_identity = (run_master.get('artifact_identity') or case.get('artifact_identity') or {})
     case_comparison = build_case_comparison(mechanism_analysis, retrieval_context, current_identity, {'evidence_audit': evidence_audit})
     if (
@@ -3372,6 +3456,8 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     mechanism = research_memo.get('mechanism_analysis') or {}
     mechanism_math_contract = mechanism.get('mechanism_math_contract') or mechanism_math_contract_from_bundle(bundle)
     mechanism_math_summary = mechanism.get('mechanism_math_summary') or mechanism_math_summary_from_contract(mechanism_math_contract)
+    formula_specific_derivation = mechanism.get('formula_specific_derivation') or {}
+    mechanism_formula_consistency = mechanism.get('mechanism_formula_consistency') or {}
     case_comparison = research_memo.get('case_comparison') or {}
     revision_strategy = research_memo.get('revision_strategy') or {}
     search_policy = research_memo.get('search_policy_decision') or {}
@@ -3500,6 +3586,8 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
             'anti_patterns': _brief_list(case_comparison.get('anti_pattern_cases')),
         },
         'mechanism_math_summary': mechanism_math_summary,
+        'formula_specific_derivation': formula_specific_derivation,
+        'mechanism_formula_consistency': mechanism_formula_consistency,
         'next_research_direction': {
             'primary_failure_signature': revision_strategy.get('primary_failure_signature') or 'none',
             'revision_hypothesis': first_hypothesis.get('hypothesis') or revision_strategy.get('reject_reason_if_no_revision') or 'No expression revision is currently approved.',
@@ -3538,6 +3626,8 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
     analysis = brief.get('metric_analysis') or {}
     knowledge = brief.get('knowledge_comparison') or {}
     math_summary = brief.get('mechanism_math_summary') or {}
+    formula_derivation = brief.get('formula_specific_derivation') or {}
+    consistency = brief.get('mechanism_formula_consistency') or {}
     next_dir = brief.get('next_research_direction') or {}
     conclusion = brief.get('final_loop_conclusion') or {}
 
@@ -3676,6 +3766,21 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 - Revision operator summary: {json.dumps(math_summary.get('revision_operator_summary') or {}, ensure_ascii=False)}
 - Under-specified reason: {math_summary.get('under_specified_reason') or 'not_applicable'}
 - Next human research question: {math_summary.get('next_human_research_question') or 'not_applicable'}
+
+## 10. Formula-Specific Derivation
+
+- Consistency status: {consistency.get('status')}
+- Consistency failures: {json.dumps(consistency.get('failures') or [], ensure_ascii=False)}
+- Selected model family: {formula_derivation.get('selected_model_family') or (formula_derivation.get('economic_to_math_model_selection') or {}).get('baseline_model_family')}
+- Why selected from economic hypothesis: {(formula_derivation.get('economic_to_math_model_selection') or {}).get('why_selected_from_economic_hypothesis')}
+- Why not generic template: {formula_derivation.get('why_this_model_not_generic_template') or (formula_derivation.get('economic_to_math_model_selection') or {}).get('why_not_generic_template')}
+- Profit payer: {(formula_derivation.get('profit_payer_derivation') or {}).get('payer_or_counterparty')}
+- Why they pay: {(formula_derivation.get('profit_payer_derivation') or {}).get('why_they_pay')}
+- Process or distribution: {formula_derivation.get('process_or_distribution')}
+- Formula components:
+{bullet_list(formula_derivation.get('formula_components'))}
+- Latent-state mapping:
+{bullet_list(formula_derivation.get('latent_state_mapping'))}
 """
 
 
@@ -3909,10 +4014,93 @@ def main() -> None:
     iteration['promotion_gate'] = promotion_gate(iteration, bundle)
 
     iteration_path = OBJ / 'research_iteration_master' / f'research_iteration_master__{report_id}.json'
+    main_agent_memo_json_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.json'
+    main_agent_memo_md_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.md'
+    main_agent_questionnaire_json_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_questionnaire__{report_id}.json'
+    main_agent_questionnaire_md_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_questionnaire__{report_id}.md'
+    main_agent_status_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo_status__{report_id}.json'
+    main_agent_memo_ref = {
+        'json_path': str(main_agent_memo_json_path),
+        'markdown_path': str(main_agent_memo_md_path),
+        'contract_version': 'factorforge_main_agent_mechanism_memo_v1',
+    }
+    main_agent_questionnaire_ref = {
+        'json_path': str(main_agent_questionnaire_json_path),
+        'markdown_path': str(main_agent_questionnaire_md_path),
+        'contract_version': 'factorforge_main_agent_mechanism_questionnaire_v1',
+    }
+    iteration['main_agent_mechanism_memo_ref'] = main_agent_memo_ref
+    iteration['main_agent_mechanism_questionnaire_ref'] = main_agent_questionnaire_ref
+    ((iteration.get('research_judgment') or {}).get('research_memo') or {})['main_agent_mechanism_memo_ref'] = main_agent_memo_ref
+    ((iteration.get('research_judgment') or {}).get('research_memo') or {})['main_agent_mechanism_questionnaire_ref'] = main_agent_questionnaire_ref
     all_library_path = OBJ / 'factor_library_all' / f'factor_record__{report_id}.json'
     official_library_path = OBJ / 'factor_library_official' / f'factor_record__{report_id}.json'
     knowledge_path = OBJ / 'research_knowledge_base' / f'knowledge_record__{report_id}.json'
     step3b_handoff_path = OBJ / 'handoff' / f'handoff_to_step3b__{report_id}.json'
+
+    questionnaire = build_main_agent_mechanism_questionnaire(
+        report_id=str(report_id),
+        factor_spec=bundle.get('factor_spec_master') or {},
+        factor_case=bundle.get('factor_case_master') or {},
+        evaluation_summary=bundle.get('factor_evaluation') or {},
+        step6_iteration=iteration,
+    )
+    write_json(main_agent_questionnaire_json_path, questionnaire)
+    main_agent_questionnaire_md_path.parent.mkdir(parents=True, exist_ok=True)
+    main_agent_questionnaire_md_path.write_text(render_main_agent_mechanism_questionnaire_markdown(questionnaire), encoding='utf-8')
+    print(f'[WRITE] {main_agent_questionnaire_json_path}')
+    print(f'[WRITE] {main_agent_questionnaire_md_path}')
+
+    if not main_agent_memo_json_path.exists():
+        status = {
+            'report_id': str(report_id),
+            'status': 'awaiting_main_agent_mechanism_memo',
+            'token': 'AWAITING_MAIN_AGENT_MECHANISM_MEMO',
+            'questionnaire_ref': main_agent_questionnaire_ref,
+            'expected_memo_ref': main_agent_memo_ref,
+            'next_action': 'The currently active main agent must answer the questionnaire and write the memo before Step6 can continue.',
+            'canonical_write_permission': False,
+            'execution_allowed_by_default': False,
+            'final_step6_write_allowed': False,
+        }
+        write_json(main_agent_status_path, status)
+        print('AWAITING_MAIN_AGENT_MECHANISM_MEMO')
+        raise SystemExit('AWAITING_MAIN_AGENT_MECHANISM_MEMO')
+
+    main_agent_memo = load_json(main_agent_memo_json_path)
+    factor_spec_master = bundle.get('factor_spec_master') or {}
+    main_agent_memo_failures = validate_main_agent_mechanism_memo(main_agent_memo, factor_spec_master)
+    if main_agent_memo_failures:
+        status = {
+            'report_id': str(report_id),
+            'status': 'blocked_invalid_main_agent_mechanism_memo',
+            'token': 'BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID',
+            'failures': main_agent_memo_failures,
+            'questionnaire_ref': main_agent_questionnaire_ref,
+            'memo_ref': main_agent_memo_ref,
+            'canonical_write_permission': False,
+            'execution_allowed_by_default': False,
+            'final_step6_write_allowed': False,
+        }
+        write_json(main_agent_status_path, status)
+        write_step6_prewrite_block(
+            report_id=str(report_id),
+            decision=iteration['research_judgment']['decision'],
+            reasons=['BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID:' + ','.join(main_agent_memo_failures)],
+            would_have_written=[
+                'research_iteration_master',
+                'factor_library_all',
+                'research_knowledge_base',
+                'factor_library_official',
+                'handoff_to_step3b',
+            ],
+        )
+        raise SystemExit('BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID: ' + ','.join(main_agent_memo_failures))
+
+    research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+    mechanism_analysis['formula_specific_derivation'] = formula_specific_derivation_from_main_agent_memo(main_agent_memo, factor_spec_master)
+    research_memo['mechanism_analysis'] = mechanism_analysis
 
     all_record = build_factor_record(iteration, bundle)
     all_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_all')
@@ -3949,6 +4137,22 @@ def main() -> None:
         official_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_official')
         official_record['promotion_gate'] = iteration['promotion_gate']
 
+    formula_derivation_failures = validate_formula_specific_derivation(
+        mechanism_analysis.get('formula_specific_derivation') or {},
+        factor_spec_master,
+        mechanism_analysis,
+    )
+    mechanism_formula_consistency = validate_mechanism_formula_consistency(
+        factor_spec_master,
+        mechanism_analysis,
+        mechanism_analysis.get('formula_specific_derivation') or {},
+    )
+    contract_failures: list[str] = []
+    if formula_derivation_failures:
+        contract_failures.append('formula_specific_derivation_invalid:' + json.dumps(formula_derivation_failures, ensure_ascii=False))
+    if mechanism_formula_consistency.get('failures'):
+        contract_failures.append('mechanism_formula_consistency_invalid:' + json.dumps(mechanism_formula_consistency.get('failures'), ensure_ascii=False))
+
     handoff_to_step3b = build_handoff_to_step3b(iteration) if iteration['loop_action']['should_modify_step3b'] else None
     would_have_written = [
         'research_iteration_master',
@@ -3967,6 +4171,7 @@ def main() -> None:
         handoff_to_step3b=handoff_to_step3b,
         bundle=bundle,
     )
+    prewrite_failures.extend(contract_failures)
     if prewrite_failures:
         write_step6_prewrite_block(
             report_id=str(report_id),

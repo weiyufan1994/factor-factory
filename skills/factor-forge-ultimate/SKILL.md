@@ -61,7 +61,7 @@ FACTORFORGE_FORMULA_KERNEL_ENGINE=<experimental_engine>
 Experimental Polars, experimental `ts_rank`, and Phase N.5 operator-kernel work
 are not production defaults. They require explicit opt-in, pandas-reference
 parity, runtime guards, `/tmp` smoke evidence, reviewer acceptance, and separate
-user approval before any full Alpha017-style benchmark. They must not alter
+user approval before any full canonical-factor benchmark. They must not alter
 Step6, Council, promotion gates, clean data, search workers, or official
 library writeback.
 
@@ -251,7 +251,7 @@ The wrapper is responsible for:
 
 A run is not considered complete unless the wrapper proof report exists and has `status: PASS`. Ad-hoc metric tables, hand-written handoffs, or post-hoc Step4/5/6 objects are not valid substitutes for wrapper proof.
 
-Legacy handoff or one-off Step3/4/5 drivers, including `scripts/run_pipeline_with_agent_handoff.sh`, `scripts/run_alpha012_step345.py`, and sample Step3/4/5 scripts, must hard block before writing canonical `objects/`, `runs/`, `generated_code/`, `evaluations/`, or `archive/` artifacts. They must not add environment bypasses or swallow `SystemExit` to present a successful formal run.
+Legacy handoff or one-off Step3/4/5 drivers, including sample or factor-specific scripts, must hard block before writing canonical `objects/`, `runs/`, `generated_code/`, `evaluations/`, or `archive/` artifacts. They must not add environment bypasses or swallow `SystemExit` to present a successful formal run.
 
 Single-step or partial-step execution is allowed only when the user explicitly asks for it, and it must still use the wrapper. Examples:
 
@@ -385,7 +385,7 @@ If Step6 decides `iterate`:
 
 Examples:
 - "Use factor-forge-ultimate to run this new report from Step1 to Step6."
-- "Use factor-forge-ultimate on alpha002 starting from Step3; if Step6 wants revision, stop and show me the proposal first."
+- "Use factor-forge-ultimate on this canonical formula starting from Step3; if Step6 wants revision, stop and show me the proposal first."
 - "Use factor-forge-ultimate to rerun Step4-6 for this factor and tell me whether it should be promoted."
 
 ## Required Pairing
@@ -419,7 +419,7 @@ When using this skill, also consult the relevant sub-skills:
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a UBL/CPV/Alpha101-specific calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. UBL/CPV/shadow/candle/Williams code is fixture/plugin-only and never a fallback.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
 
 ## Operator / Qlib Engine
 
@@ -521,9 +521,15 @@ Step6 pass should expose the case to Council logic when revision is needed and
 evidence/case comparison is not blocked. Use `off` only for isolated debugging
 or legacy reproducibility checks. `scaffold` runs the deterministic Council chain
 after successful Step6 core, attaches the Council summary back to the Step6
-iteration, and reruns `validate_step6.py`. `auto` runs that same chain only when
-Step6 indicates a revision is needed and evidence/case comparison is not
-blocked. `agentic` requires `--agentic-council-executor`. With `none`, the
+iteration, and reruns `validate_step6.py`. `auto` must not silently treat that
+deterministic scaffold as formal agentic research. With the default
+`--auto-council-policy dispatch_manifest`, auto builds packet/taskbook/dispatch
+manifest artifacts and stops in `awaiting_agent_results` when Step6 indicates
+revision is needed and evidence/case comparison is not blocked. Use
+`--auto-council-policy scaffold` only for explicit smoke/fallback runs, and use
+`--auto-council-policy block_without_agentic` when formal runs should hard-block
+instead of awaiting agent results. `agentic` requires
+`--agentic-council-executor`. With `none`, the
 wrapper must block with `BLOCK_REVISION_COUNCIL_AGENTIC_EXECUTOR_REQUIRED`. With
 `real_agent`, it must block with `BLOCK_REVISION_COUNCIL_REAL_AGENT_NOT_IMPLEMENTED`.
 With `local_mock`, it runs the Phase K.1 contract path: agentic taskbook, mock
@@ -533,6 +539,20 @@ research. With `dispatch_manifest`, the wrapper builds packet/taskbook/dispatch
 manifest artifacts and stops in `awaiting_agent_results`; with
 `--agentic-dispatch-adapter manual_file`, it also writes manual assignment
 markdown and result dropbox templates without merging or attaching.
+
+Step6 core must first write a main-agent mechanism questionnaire:
+`objects/research_iteration_master/main_agent_mechanism_questionnaire__<report_id>.json`
+and `.md`. The runtime main agent currently using this skill must answer it as
+`objects/research_iteration_master/main_agent_mechanism_memo__<report_id>.json`
+and `.md` before Council work starts. This is a free-form mechanism answer, not
+a multiple-choice classifier: it must connect formula state, economic
+hypothesis, baseline mathematical model, model mutation, payer, payoff,
+estimator mapping, metric signature, and falsification. If this memo is missing,
+the wrapper must pause as `awaiting_main_agent_mechanism_memo` and must not
+expose a final Step3B handoff or run Council. If the memo is invalid, the wrapper
+must block. Council packet/taskbook artifacts must reference the accepted memo
+and require subagents to critique its formula component map, payer derivation,
+evidence contradictions, and revision-or-kill implications.
 
 Runtime dispatch is policy, not provider binding. `--runtime-dispatch
 codex|openclaw|manual_file|unknown` records the runtime in taskbook, dispatch

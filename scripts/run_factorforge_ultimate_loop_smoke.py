@@ -556,6 +556,18 @@ def main() -> int:
         ),
         run_with_fresh_fixture(
             root,
+            "loop_awaiting_main_agent_mechanism_memo_pauses",
+            lambda r: run_loop_case(
+                r,
+                "loop_awaiting_main_agent_mechanism_memo_pauses",
+                "STEP6_INTEL_MAIN_AGENT_MEMO_MISSING_PAUSES_BEFORE_HANDOFF",
+                "awaiting_main_agent_mechanism_memo",
+                max_loops=10,
+                council_mode="off",
+            ),
+        ),
+        run_with_fresh_fixture(
+            root,
             "loop_max_10_stops",
             lambda r: run_loop_case(r, "loop_max_10_stops", "STEP6_INTEL_HIGH_TURNOVER_REVISION", "max_loops_reached", max_loops=1, council_mode="off"),
         ),

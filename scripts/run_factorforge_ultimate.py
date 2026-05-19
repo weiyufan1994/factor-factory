@@ -353,6 +353,26 @@ def summarize_council_dispatch(factorforge_root: Path, report_id: str, side_effe
     return payload
 
 
+def summarize_main_agent_memo_pause(factorforge_root: Path, report_id: str) -> dict[str, Any]:
+    rim = factorforge_root / 'objects' / 'research_iteration_master'
+    status_path = rim / f'main_agent_mechanism_memo_status__{report_id}.json'
+    questionnaire_path = rim / f'main_agent_mechanism_questionnaire__{report_id}.json'
+    questionnaire_md_path = rim / f'main_agent_mechanism_questionnaire__{report_id}.md'
+    memo_path = rim / f'main_agent_mechanism_memo__{report_id}.json'
+    status = load_json_if_exists(status_path)
+    return {
+        'status': status.get('status') or 'awaiting_main_agent_mechanism_memo',
+        'token': status.get('token') or 'AWAITING_MAIN_AGENT_MECHANISM_MEMO',
+        'status_path': str(status_path),
+        'questionnaire_path': str(questionnaire_path),
+        'questionnaire_markdown_path': str(questionnaire_md_path),
+        'expected_memo_path': str(memo_path),
+        'next_action': status.get('next_action') or 'Current main agent must answer the questionnaire and rerun Step6.',
+        'canonical_write_permission': False,
+        'execution_allowed_by_default': False,
+    }
+
+
 def object_status(path: Path) -> dict[str, Any]:
     return {
         'path': str(path),
@@ -416,6 +436,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--skip-researcher-packets', action='store_true', help='Do not build Step6 researcher packet/dossier before Step6.')
     ap.add_argument('--apply-approved-revision', action='store_true', help='Apply a human-approved Step6 revision before running the requested step range.')
     ap.add_argument('--council-mode', choices=['off', 'auto', 'scaffold', 'agentic'], default='auto')
+    ap.add_argument('--auto-council-policy', choices=['scaffold', 'dispatch_manifest', 'block_without_agentic'], default='dispatch_manifest')
     ap.add_argument('--research-loop-policy', choices=['single_pass', 'council_until_promote_or_exhausted'], default='council_until_promote_or_exhausted')
     ap.add_argument('--max-council-loops', type=int, default=10)
     ap.add_argument('--agentic-council-executor', choices=['none', 'local_mock', 'dispatch_manifest', 'real_agent'], default='none')
@@ -523,7 +544,7 @@ def main() -> int:
         'expected_artifacts_before': collect_expected_artifacts(manifest),
         'expected_artifacts_after': {},
         'step3b_mode_decision': collect_step3b_mode_decision(manifest),
-        'revision_council': {'requested_mode': args.council_mode, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'status': 'skipped', 'reason': 'disabled'} if args.council_mode == 'off' else {'requested_mode': args.council_mode, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'subagent_provider': args.subagent_provider, 'subagent_model': args.subagent_model, 'status': 'pending'},
+        'revision_council': {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'status': 'skipped', 'reason': 'disabled'} if args.council_mode == 'off' else {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'subagent_provider': args.subagent_provider, 'subagent_model': args.subagent_model, 'status': 'pending'},
         'research_loop_policy': {
             'policy': args.research_loop_policy,
             'max_council_loops': args.max_council_loops,
@@ -599,6 +620,21 @@ def main() -> int:
         proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
         proof['finished_at_utc'] = utc_now()
         if result.returncode != 0:
+            output = (result.stdout_tail or '') + '\n' + (result.stderr_tail or '')
+            if name == 'run_step6' and 'AWAITING_MAIN_AGENT_MECHANISM_MEMO' in output:
+                proof['status'] = 'PAUSED'
+                proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.factorforge_root, args.report_id)
+                proof['revision_council'] = {
+                    'requested_mode': args.council_mode,
+                    'status': 'not_reached',
+                    'reason': 'awaiting_main_agent_mechanism_memo',
+                }
+                proof['failure'] = None
+                proof['finished_at_utc'] = utc_now()
+                write_json_atomic(proof_path, proof)
+                print('AWAITING_MAIN_AGENT_MECHANISM_MEMO')
+                print(f'[PROOF] {proof_path}')
+                return 0
             proof['status'] = 'FAIL'
             proof['failure'] = {'command': name, 'returncode': result.returncode}
             write_json_atomic(proof_path, proof)
@@ -623,7 +659,33 @@ def main() -> int:
             effective_mode = None
             if args.council_mode == 'auto':
                 should_run, trigger_reason = council_auto_trigger(iteration)
-                effective_mode = 'scaffold' if should_run else None
+                if should_run:
+                    if args.auto_council_policy == 'dispatch_manifest':
+                        effective_mode = 'agentic_dispatch_manifest'
+                    elif args.auto_council_policy == 'scaffold':
+                        effective_mode = 'scaffold'
+                        trigger_reason = f'{trigger_reason}:auto_scaffold_policy'
+                    else:
+                        token = 'BLOCK_REVISION_COUNCIL_AGENTIC_REQUIRED'
+                        proof['revision_council'] = {
+                            'requested_mode': args.council_mode,
+                            'auto_council_policy': args.auto_council_policy,
+                            'effective_mode': 'none',
+                            'status': 'blocked',
+                            'formal_council_status': 'blocked',
+                            'block_reason': token,
+                            'trigger_reason': trigger_reason,
+                            'deterministic_scaffold_used': False,
+                            'deterministic_scaffold_formal': False,
+                            'agentic_required_for_formal_research': True,
+                        }
+                        proof['status'] = 'FAIL'
+                        proof['failure'] = {'command': 'revision_council_auto_policy', 'returncode': 1, 'token': token}
+                        proof['finished_at_utc'] = utc_now()
+                        write_json_atomic(proof_path, proof)
+                        print(token)
+                        print(f'[PROOF] {proof_path}')
+                        return 1
             elif args.council_mode == 'scaffold':
                 if council_blocked_by_evidence(iteration):
                     should_run = False
@@ -648,15 +710,21 @@ def main() -> int:
             if not should_run:
                 proof['revision_council'] = {
                     'requested_mode': args.council_mode,
+                    'auto_council_policy': args.auto_council_policy,
+                    'effective_mode': 'none',
                     'status': 'not_triggered',
+                    'formal_council_status': 'not_triggered',
                     'reason': trigger_reason,
+                    'deterministic_scaffold_used': False,
+                    'deterministic_scaffold_formal': False,
+                    'agentic_required_for_formal_research': args.council_mode == 'auto',
                 }
                 write_json_atomic(proof_path, proof)
             else:
                 provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(ctx.factorforge_root, args.report_id)
                 side_effect_before = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
-                if args.council_mode == 'agentic':
-                    if args.agentic_council_executor == 'dispatch_manifest':
+                if effective_mode in {'agentic_dispatch_manifest', 'agentic_contract_mock'}:
+                    if effective_mode == 'agentic_dispatch_manifest':
                         council_commands = [
                             ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
                             ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'dispatch_manifest', *taskbook_runtime_args]),
@@ -693,6 +761,7 @@ def main() -> int:
                     ]
                 proof['revision_council'] = {
                     'requested_mode': args.council_mode,
+                    'auto_council_policy': args.auto_council_policy,
                     'effective_mode': effective_mode or 'scaffold',
                     'executor': args.agentic_council_executor,
                     'dispatch_adapter': args.agentic_dispatch_adapter,
@@ -701,6 +770,10 @@ def main() -> int:
                     'subagent_model': args.subagent_model,
                     'status': 'running',
                     'trigger_reason': trigger_reason,
+                    'formal_council_status': 'running',
+                    'deterministic_scaffold_used': effective_mode == 'scaffold',
+                    'deterministic_scaffold_formal': False,
+                    'agentic_required_for_formal_research': args.council_mode == 'auto',
                     'commands': [],
                     'provisional_step3b_handoff_policy': provisional_handoff_policy,
                     'side_effect_baseline': side_effect_before,
@@ -744,12 +817,14 @@ def main() -> int:
                     print(token)
                     print(f'[PROOF] {proof_path}')
                     return 1
-                if args.council_mode == 'agentic' and args.agentic_council_executor == 'dispatch_manifest':
+                if effective_mode == 'agentic_dispatch_manifest':
                     proof['revision_council'].update(summarize_council_dispatch(ctx.factorforge_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'awaiting_agent_results'
+                    proof['revision_council']['formal_council_status'] = 'awaiting_agent_results'
                 else:
                     proof['revision_council'].update(summarize_council_attachment(ctx.factorforge_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'completed'
+                    proof['revision_council']['formal_council_status'] = 'agentic_completed' if effective_mode == 'agentic_contract_mock' else 'scaffold_only'
                     proof['revision_council']['attached'] = proof['revision_council'].get('attached') is True
                 write_json_atomic(proof_path, proof)
     elif args.council_mode != 'off':

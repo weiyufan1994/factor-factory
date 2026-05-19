@@ -87,6 +87,168 @@ def validate_case(name: str, spec: dict[str, Any], expected_family: str | None =
     )
 
 
+def alpha019_formula_specific_case() -> dict[str, Any]:
+    spec = {
+        "factor_id": "ALPHA019_LIKE",
+        "canonical_spec": {
+            "formula_text": (
+                "multiply("
+                "negate(sign(plus(minus(close, delay(close, 7)), delta(close, 7)))), "
+                "plus(1, rank(plus(1, sum(returns, 250))))"
+                ")"
+            ),
+            "required_inputs": ["close", "returns"],
+            "operators": ["multiply", "negate", "sign", "plus", "minus", "delay", "delta", "rank", "sum"],
+        },
+        "research_contract": {
+            "formula_understanding": {"interaction_structure": "slow_state_x_short_horizon_threshold"},
+            "economic_hypothesis": {
+                "macro_return_source": "mixed",
+                "second_layer": {
+                    "subtype": "slow_winner_state_short_horizon_reversal_or_threshold_migration",
+                    "expected_counterparty_or_payer": "trend extrapolators and delayed updaters around winner-state pullbacks",
+                    "why_they_may_pay": "they extrapolate slow winner state or react late around threshold crossings",
+                },
+            },
+            "math_hypothesis_candidates": [
+                {
+                    "model_family": "stochastic_process",
+                    "process_or_distribution_hypothesis": "return process with slow trend state and short-horizon reversal/dislocation component",
+                }
+            ],
+        },
+    }
+    contract = build_mechanism_math_contract(spec)
+    failures = validate_mechanism_math_contract(contract)
+    blob = json.dumps(contract, ensure_ascii=False).lower()
+    ok = (
+        not failures
+        and contract.get("model_family") == "stochastic_process"
+        and contract.get("math_model_status") == "specified"
+        and all(token in blob for token in ["slow", "short", "threshold", "rank", "sum(returns,250)"])
+        and "price_volume_microstructure" not in blob
+    )
+    return case_result(
+        "alpha019_slow_winner_short_reversal_stochastic_process_pass",
+        ok,
+        "Alpha019-like formula-specific stochastic_process contract, not price-volume template",
+        {
+            "model_family": contract.get("model_family"),
+            "math_model_status": contract.get("math_model_status"),
+            "failures": failures,
+            "state_or_object": contract.get("state_or_object"),
+            "factor_as_estimator": contract.get("factor_as_estimator"),
+            "process_hypothesis": contract.get("process_hypothesis"),
+            "conditional_distribution_hypothesis": contract.get("conditional_distribution_hypothesis"),
+            "formula_understanding": contract.get("formula_understanding"),
+        },
+    )
+
+
+def price_only_stale_price_volume_text_case() -> dict[str, Any]:
+    spec = {
+        "canonical_spec": {
+            "formula_text": "rank(delta(close, 20))",
+            "required_inputs": ["close"],
+            "operators": ["rank", "delta"],
+        },
+        "research_contract": {
+            "economic_mechanism": "published formula may capture behavioral, liquidity, or microstructure effects embedded in ranked price-volume transformations",
+            "economic_hypothesis": {
+                "macro_return_source": "mixed",
+                "second_layer": {
+                    "subtype": "short_horizon_price_state_reversal_or_continuation",
+                    "expected_counterparty_or_payer": "investors extrapolating recent price states",
+                    "why_they_may_pay": "recent price states may contain temporary impact or behavioral extrapolation",
+                },
+            },
+            "math_hypothesis_candidates": [
+                {
+                    "model_family": "ranked_price_state_process",
+                    "state_or_object": "cross-sectional security-day price state",
+                    "process_or_distribution_hypothesis": "conditional drift depends on ranked recent price movement",
+                    "observable_estimator": "rank(delta(close,20))",
+                    "target_functional": "E[r_i,t+1 | price_state_i,t]",
+                    "why_suitable": "formula uses only price-state fields",
+                }
+            ],
+        },
+    }
+    contract = build_mechanism_math_contract(spec)
+    failures = validate_mechanism_math_contract(contract)
+    features = ((contract.get("formula_understanding") or {}).get("formula_features") or {})
+    ok = (
+        not failures
+        and contract.get("model_family") == "stochastic_process"
+        and contract.get("model_family") != "price_volume_microstructure"
+        and features.get("has_volume") is False
+    )
+    return case_result(
+        "price_only_formula_stale_price_volume_text_not_microstructure",
+        ok,
+        "price-only formula with stale price-volume thesis text must not select price_volume_microstructure",
+        {
+            "model_family": contract.get("model_family"),
+            "math_model_status": contract.get("math_model_status"),
+            "failures": failures,
+            "has_volume": features.get("has_volume"),
+            "formula_fields": features.get("fields"),
+            "classification_evidence": contract.get("classification_evidence"),
+        },
+    )
+
+
+def price_only_bad_structured_price_volume_candidate_case() -> dict[str, Any]:
+    spec = {
+        "canonical_spec": {
+            "formula_text": "rank(delta(close, 20))",
+            "required_inputs": ["close"],
+            "operators": ["rank", "delta"],
+        },
+        "research_contract": {
+            "economic_hypothesis": {
+                "macro_return_source": "mixed",
+                "second_layer": {
+                    "subtype": "price_volume_pressure",
+                    "expected_counterparty_or_payer": "liquidity traders",
+                    "why_they_may_pay": "claimed volume pressure despite the formula using only price fields",
+                },
+            },
+            "math_hypothesis_candidates": [
+                {
+                    "model_family": "price_volume_microstructure",
+                    "state_or_object": "price-volume state",
+                    "process_or_distribution_hypothesis": "claimed price-volume impact",
+                    "observable_estimator": "rank(delta(close,20))",
+                    "target_functional": "E[r_i,t+1 | claimed_price_volume_state_i,t]",
+                    "why_suitable": "intentionally polluted structured candidate for smoke coverage",
+                }
+            ],
+        },
+    }
+    contract = build_mechanism_math_contract(spec)
+    failures = validate_mechanism_math_contract(contract)
+    features = ((contract.get("formula_understanding") or {}).get("formula_features") or {})
+    ok = (
+        not failures
+        and contract.get("model_family") != "price_volume_microstructure"
+        and features.get("has_volume") is False
+    )
+    return case_result(
+        "price_only_formula_bad_structured_price_volume_candidate_not_microstructure",
+        ok,
+        "price-only formula with bad structured price_volume candidate must not select price_volume_microstructure",
+        {
+            "model_family": contract.get("model_family"),
+            "math_model_status": contract.get("math_model_status"),
+            "failures": failures,
+            "has_volume": features.get("has_volume"),
+            "formula_fields": features.get("fields"),
+            "classification_evidence": contract.get("classification_evidence"),
+        },
+    )
+
+
 def negative_contract_case(name: str, contract: dict[str, Any], expected_code: str) -> dict[str, Any]:
     failures = validate_mechanism_math_contract(contract)
     codes = [item.get("code") for item in failures]
@@ -662,6 +824,9 @@ def main() -> None:
     before = file_snapshot()
 
     cases: list[dict[str, Any]] = [
+        alpha019_formula_specific_case(),
+        price_only_stale_price_volume_text_case(),
+        price_only_bad_structured_price_volume_candidate_case(),
         validate_case(
             "valuation_identity_pb_roe_pass",
             {"formula_text": "roe / pb", "required_inputs": ["roe", "pb"], "operators": ["divide"]},

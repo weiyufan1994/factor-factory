@@ -5,6 +5,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from factor_factory.mechanism_math.formula_specific import (
+    build_formula_understanding,
+    select_math_model_from_economic_hypothesis,
+)
+
 
 def _as_list(value: Any) -> List[Any]:
     if value is None:
@@ -121,6 +126,27 @@ def infer_second_layer_mechanism(alpha_idea_master: Dict[str, Any], macro_source
 
 
 def build_economic_hypothesis(alpha_idea_master: Dict[str, Any], return_source: str, *context: Any) -> Dict[str, Any]:
+    formula_understanding = build_formula_understanding_from_step1(alpha_idea_master, *context)
+    if formula_understanding.get("interaction_structure") == "slow_state_x_short_horizon_threshold":
+        second_layer = {
+            "subtype": "slow_winner_state_short_horizon_reversal_or_threshold_migration",
+            "expected_counterparty_or_payer": (
+                "trend extrapolators, delayed updaters, or short-horizon liquidity/dislocation traders "
+                "around winner-state pullbacks"
+            ),
+            "why_they_may_pay": (
+                "they extrapolate the slow winner state or react late to threshold crossings, creating "
+                "conditional next-period payoff when the short-horizon state reverses or migrates"
+            ),
+        }
+        return {
+            "hypothesis_version": "factorforge_step1_economic_hypothesis_v1",
+            "macro_return_source": "mixed",
+            "legacy_initial_return_source_hypothesis": return_source,
+            "second_layer": second_layer,
+            "counterparty_loss_hypothesis": second_layer["expected_counterparty_or_payer"],
+            "researcher_question": "Who pays me, why do they pay, and how does this slow-state x short-state formula estimate that condition?",
+        }
     macro_source = normalize_macro_return_source(return_source)
     second_layer = infer_second_layer_mechanism(alpha_idea_master, macro_source, *context)
     return {
@@ -133,6 +159,28 @@ def build_economic_hypothesis(alpha_idea_master: Dict[str, Any], return_source: 
     }
 
 
+def build_formula_understanding_from_step1(alpha_idea_master: Dict[str, Any], *context: Any) -> Dict[str, Any]:
+    final_factor = alpha_idea_master.get("final_factor") or {}
+    formula = (
+        alpha_idea_master.get("raw_formula")
+        or "; ".join(str(item) for item in _as_list(final_factor.get("assembly_steps")))
+        or "; ".join(str(item) for item in _as_list(alpha_idea_master.get("assembly_path")))
+    )
+    fields: list[str] = []
+    operators: list[str] = []
+    for source in [alpha_idea_master, final_factor, *context]:
+        if isinstance(source, dict):
+            fields.extend(str(item) for item in _as_list(source.get("candidate_variables") or source.get("key_variables") or source.get("variables")) if str(item).strip())
+            operators.extend(str(item) for item in _as_list(source.get("operators")) if str(item).strip())
+    return build_formula_understanding({
+        "canonical_spec": {
+            "formula_text": str(formula or ""),
+            "required_inputs": fields,
+            "operators": operators,
+        }
+    })
+
+
 def build_math_hypothesis_candidates(
     alpha_idea_master: Dict[str, Any],
     economic_hypothesis: Dict[str, Any],
@@ -140,6 +188,32 @@ def build_math_hypothesis_candidates(
     target_hint: str,
     *context: Any,
 ) -> List[Dict[str, Any]]:
+    formula_understanding = build_formula_understanding_from_step1(alpha_idea_master, *context)
+    if formula_understanding.get("interaction_structure") == "slow_state_x_short_horizon_threshold":
+        return [
+            {
+                "hypothesis_id": "math_slow_winner_short_reversal_process",
+                "linked_economic_hypothesis": "mixed:slow_winner_state_short_horizon_reversal_or_threshold_migration",
+                "model_family": "stochastic_process",
+                "math_tools": ["probability_theory", "stochastic_process_calculus", "time_series_and_filtering", "statistics"],
+                "state_or_object": "slow winner state interacting with short-horizon reversal/dislocation threshold state",
+                "process_or_distribution_hypothesis": (
+                    "return process with slow trend/winner state M_i,t and short-horizon reversal or temporary "
+                    "dislocation state I_i,t; sign transform induces threshold migration"
+                ),
+                "model_mutation": "add threshold boundary induced by sign transform to a slow-trend stochastic process",
+                "observable_estimator": "sum(returns,250), close-delay(close,7), delta(close,7), sign threshold, cross-sectional rank",
+                "target_functional": "E[r_i,t+1 | slow_state_i,t, short_state_i,t, threshold_i,t]",
+                "why_suitable": (
+                    "Alpha019-like structure is not price-volume; it estimates a conditional return state from "
+                    "long-window winner rank and short-horizon threshold movement"
+                ),
+                "falsification_tests": [
+                    "Reject if long-side payoff does not align with slow-state x short-state conditional sign after costs.",
+                    "Reject if ablation of long-window state or short-horizon threshold does not weaken the signal.",
+                ],
+            }
+        ]
     text = _text_blob(alpha_idea_master, *context)
     macro_source = economic_hypothesis.get("macro_return_source")
     subtype = (economic_hypothesis.get("second_layer") or {}).get("subtype")
@@ -293,6 +367,20 @@ def build_step1_research_discipline(
     return_source = infer_return_source_hypothesis(alpha_idea_master, *context)
     economic_hypothesis = build_economic_hypothesis(alpha_idea_master, return_source, *context)
     math_hypothesis_candidates = build_math_hypothesis_candidates(alpha_idea_master, economic_hypothesis, random_object, target_hint, *context)
+    formula_understanding = build_formula_understanding_from_step1(alpha_idea_master, *context)
+    economic_to_math = {
+        "economic_hypothesis": economic_hypothesis,
+        "selected_baseline_model": select_math_model_from_economic_hypothesis(economic_hypothesis, math_hypothesis_candidates, formula_understanding),
+        "model_mutations": [item.get("model_mutation") for item in math_hypothesis_candidates if isinstance(item, dict) and item.get("model_mutation")],
+        "expected_metric_signature": {
+            "rank_ic": "positive after sign convention",
+            "long_side": "positive after costs if the state is monetizable",
+        },
+        "metric_feedback_rules": [
+            "Unsupported metrics must mutate sign, horizon, state interaction, or kill the thesis.",
+            "Do not repair with portfolio expression, short leg, direct decile trading, or clean-data mutation.",
+        ],
+    }
     info_hint = infer_information_set_hint(alpha_idea_master, *context)
     similar_lessons = load_similar_case_lessons(repo, query_text)
     what_must_be_true = _as_list(final_factor.get("what_must_be_true")) or _as_list(final_factor.get("economic_logic"))[:1]
@@ -306,7 +394,9 @@ def build_step1_research_discipline(
         "target_statistic_hint": target_hint,
         "information_set_hint": info_hint,
         "initial_return_source_hypothesis": return_source,
+        "formula_understanding": formula_understanding,
         "economic_hypothesis": economic_hypothesis,
+        "economic_to_math_modelling": economic_to_math,
         "math_hypothesis_candidates": math_hypothesis_candidates,
         "what_must_be_true": [str(x) for x in what_must_be_true if str(x).strip()],
         "what_would_break_it": [str(x) for x in what_would_break_it if str(x).strip()],

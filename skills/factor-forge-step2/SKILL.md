@@ -359,7 +359,7 @@ Example: `RPT_pdf_fde3cba2_20200223-东吴证券-东吴证券_技术分析拥抱
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a UBL/CPV/Alpha101-specific calculator. Step2 must preserve the original formula/hypothesis, write auditable mode-decision context, and mark unsupported or ambiguous implementation as BLOCK/human-review instead of inventing a runnable substitute.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step2 must preserve the original formula/hypothesis, write auditable mode-decision context, and mark unsupported or ambiguous implementation as BLOCK/human-review instead of inventing a runnable substitute.
 
 ## Operator Formula Contract
 

@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--start-step", default="3")
     ap.add_argument("--max-loops", type=int, default=10)
     ap.add_argument("--council-mode", default="auto", choices=["off", "auto", "scaffold", "agentic"])
+    ap.add_argument("--auto-council-policy", default="dispatch_manifest", choices=["scaffold", "dispatch_manifest", "block_without_agentic"])
     ap.add_argument("--agentic-council-executor", default="none", choices=["none", "local_mock", "dispatch_manifest", "real_agent"])
     ap.add_argument("--agentic-dispatch-adapter", default="none", choices=["none", "manual_file", "openclaw", "codex", "remote_api"])
     ap.add_argument("--runtime-dispatch", default=None, choices=["codex", "openclaw", "manual_file", "unknown"])
@@ -82,6 +83,8 @@ def ultimate_command(args: argparse.Namespace, report_id: str, start_step: str, 
         "6",
         "--council-mode",
         args.council_mode,
+        "--auto-council-policy",
+        args.auto_council_policy,
         "--agentic-council-executor",
         args.agentic_council_executor,
         "--agentic-dispatch-adapter",

@@ -17,6 +17,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
+from factor_factory.mechanism_math.formula_specific import (
+    build_formula_specific_derivation,
+    validate_mechanism_formula_consistency,
+)
+from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 
 OBJ = FF / "objects"
@@ -239,6 +244,7 @@ def main() -> None:
         "factor_run_master": OBJ / "factor_run_master" / f"factor_run_master__{rid}.json",
         "handoff_to_step6": OBJ / "handoff" / f"handoff_to_step6__{rid}.json",
         "factor_spec_master": OBJ / "factor_spec_master" / f"factor_spec_master__{rid}.json",
+        "main_agent_mechanism_memo": OBJ / "research_iteration_master" / f"main_agent_mechanism_memo__{rid}.json",
     }
     required = ["research_iteration_master", "factor_case_master", "factor_evaluation", "factor_run_master"]
     missing = [str(paths[name]) for name in required if not paths[name].exists()]
@@ -252,6 +258,14 @@ def main() -> None:
     run = load_json(paths["factor_run_master"])
     handoff = load_json(paths["handoff_to_step6"]) if paths["handoff_to_step6"].exists() else {}
     spec = load_json(paths["factor_spec_master"]) if paths["factor_spec_master"].exists() else {}
+    if not paths["main_agent_mechanism_memo"].exists():
+        print("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MISSING: " + str(paths["main_agent_mechanism_memo"]), file=sys.stderr)
+        raise SystemExit(1)
+    main_agent_memo = load_json(paths["main_agent_mechanism_memo"])
+    memo_failures = validate_main_agent_mechanism_memo(main_agent_memo, spec)
+    if memo_failures:
+        print("BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID: " + json.dumps({"failures": memo_failures}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)
 
     memo = nested(iteration, "research_judgment", "research_memo")
     canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
@@ -264,6 +278,15 @@ def main() -> None:
     brief_json = {}
     if isinstance(brief_ref, dict) and brief_ref.get("json_path") and Path(brief_ref["json_path"]).exists():
         brief_json = load_json(Path(brief_ref["json_path"]))
+    mechanism_analysis = nested(memo, "mechanism_analysis")
+    formula_specific_derivation = mechanism_analysis.get("formula_specific_derivation") if isinstance(mechanism_analysis, dict) else None
+    if not isinstance(formula_specific_derivation, dict) or not formula_specific_derivation:
+        formula_specific_derivation = brief_json.get("formula_specific_derivation") if isinstance(brief_json.get("formula_specific_derivation"), dict) else {}
+    if not formula_specific_derivation:
+        formula_specific_derivation = build_formula_specific_derivation(spec or canonical or {}, mechanism_analysis if isinstance(mechanism_analysis, dict) else {}, metrics)
+    mechanism_formula_consistency = mechanism_analysis.get("mechanism_formula_consistency") if isinstance(mechanism_analysis, dict) else None
+    if not isinstance(mechanism_formula_consistency, dict) or not mechanism_formula_consistency:
+        mechanism_formula_consistency = validate_mechanism_formula_consistency(spec or canonical or {}, mechanism_analysis if isinstance(mechanism_analysis, dict) else {}, formula_specific_derivation)
 
     packet = {
         "contract_version": "factorforge_revision_council_packet_v1",
@@ -274,6 +297,19 @@ def main() -> None:
         "mechanism_math_contract": (
             mechanism_math_for_packet(spec, case, handoff, memo)
         ),
+        "formula_specific_derivation": formula_specific_derivation,
+        "mechanism_formula_consistency": mechanism_formula_consistency,
+        "main_agent_mechanism_memo_ref": relpath(paths["main_agent_mechanism_memo"]),
+        "main_agent_formula_component_map": main_agent_memo.get("formula_component_map") or [],
+        "main_agent_math_hypothesis": main_agent_memo.get("math_hypothesis") or {},
+        "main_agent_evidence_comparison": main_agent_memo.get("evidence_comparison") or {},
+        "council_required_critiques": [
+            "critique formula component mapping",
+            "critique selected mathematical model",
+            "critique payer derivation",
+            "critique evidence contradictions",
+            "propose revision or kill recommendation",
+        ],
         "research_memo": {
             "evidence_audit": memo.get("evidence_audit") or {},
             "mechanism_analysis": memo.get("mechanism_analysis") or {},

@@ -17,6 +17,11 @@ if str(FF) not in sys.path:
 
 from skills.factor_forge_step5.modules.io import load_json  # type: ignore
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.mechanism_math.formula_specific import (
+    validate_formula_specific_derivation,
+    validate_mechanism_formula_consistency,
+)
+from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 from factor_factory.revision_council.guards import FORBIDDEN_TEXT_TOKEN, FORBIDDEN_PATTERNS
 from factor_factory.revision_council.validator import validate_revision_council_proposal
@@ -456,15 +461,16 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
         missing_headers = [header for header in required_headers if header not in markdown]
         checks.append(check('loop_research_brief_markdown_sections', not missing_headers, f'loop brief markdown missing sections: {missing_headers}'))
         markdown_lower = markdown.lower()
+        mechanism_markdown_lower = markdown_lower.split('## revision council summary', 1)[0]
         current_tokens = {
             token.lower()
             for token in [current_factor_family, current_model_family]
             if isinstance(token, str) and token.strip()
         }
-        current_token_present = any(token in markdown_lower for token in current_tokens)
+        current_token_present = any(token in mechanism_markdown_lower for token in current_tokens)
         stale_terms = sorted(
             term for term in KNOWN_MECHANISM_FAMILY_TERMS
-            if term.lower() not in current_tokens and term.lower() in markdown_lower
+            if term.lower() not in current_tokens and term.lower() in mechanism_markdown_lower
         )
         checks.append(check(
             'loop_research_brief_mechanism_markdown_consistency',
@@ -797,6 +803,32 @@ if __name__ == '__main__':
             + (metric_interpretation.get('ambiguities') or [])
         )
         checks.extend(revision_council_attachment_checks(iteration, research_memo, step3b_handoff_path))
+        memo_ref = iteration.get('main_agent_mechanism_memo_ref') or research_memo.get('main_agent_mechanism_memo_ref') or {}
+        memo_path_value = memo_ref.get('json_path') if isinstance(memo_ref, dict) else None
+        memo_path = Path(memo_path_value) if memo_path_value else OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo__{rid}.json'
+        if not memo_path.is_absolute():
+            memo_path = FF / memo_path
+        checks.append(check(
+            'main_agent_mechanism_memo_ref_present',
+            isinstance(memo_ref, dict) and bool(memo_ref.get('json_path')),
+            'main_agent_mechanism_memo_ref missing',
+        ))
+        checks.append(check(
+            'main_agent_mechanism_memo_exists',
+            memo_path.exists(),
+            f'main agent mechanism memo missing: {memo_path}',
+        ))
+        if memo_path.exists():
+            try:
+                main_agent_memo = load_json(memo_path)
+                memo_failures = validate_main_agent_mechanism_memo(main_agent_memo, load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json') if (OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json').exists() else {})
+            except Exception as exc:
+                memo_failures = ['BLOCK_MAIN_AGENT_MECHANISM_MEMO_MISSING']
+                checks.append(check('main_agent_mechanism_memo_loadable', False, f'failed to load main agent mechanism memo: {exc}'))
+            for token in memo_failures:
+                checks.append(check(token, False, token))
+            if not memo_failures:
+                checks.append(check('main_agent_mechanism_memo_valid', True, None))
 
         checks.append(check('research_memo_present', isinstance(research_memo, dict) and bool(research_memo), 'research_memo missing or empty'))
         for field, value in [
@@ -864,6 +896,37 @@ if __name__ == '__main__':
             not mechanism_math_failures,
             f'mechanism_analysis.mechanism_math_contract invalid: {mechanism_math_failures}',
         ))
+        factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
+        factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}
+        formula_specific_derivation = mechanism_analysis.get('formula_specific_derivation') or {}
+        formula_derivation_failures = validate_formula_specific_derivation(
+            formula_specific_derivation,
+            factor_spec,
+            mechanism_analysis,
+        )
+        mechanism_formula_consistency = validate_mechanism_formula_consistency(
+            factor_spec,
+            mechanism_analysis,
+            formula_specific_derivation,
+        )
+        checks.append(check(
+            'formula_specific_derivation_valid',
+            not formula_derivation_failures,
+            f'formula_specific_derivation invalid: {formula_derivation_failures}',
+        ))
+        checks.append(check(
+            'mechanism_formula_consistency_valid',
+            not mechanism_formula_consistency.get('failures'),
+            f"mechanism_formula_consistency invalid: {mechanism_formula_consistency.get('failures')}",
+        ))
+        recorded_consistency = mechanism_analysis.get('mechanism_formula_consistency') or {}
+        if isinstance(recorded_consistency, dict) and recorded_consistency:
+            checks.append(check(
+                'mechanism_formula_consistency_recorded_current',
+                recorded_consistency.get('status') == mechanism_formula_consistency.get('status')
+                and recorded_consistency.get('failures') == mechanism_formula_consistency.get('failures'),
+                f"mechanism_formula_consistency stale: recorded={recorded_consistency} current={mechanism_formula_consistency}",
+            ))
         checks.append(check(
             'invalid_mechanism_math_cannot_promote',
             decision != 'promote_official' or mechanism_math_contract.get('math_model_status') != 'invalid',

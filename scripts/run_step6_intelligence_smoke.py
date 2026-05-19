@@ -16,6 +16,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.artifact_identity import build_artifact_identity, stable_hash
+from factor_factory.mechanism_math.formula_specific import (
+    build_formula_specific_derivation,
+    validate_formula_specific_derivation,
+    validate_mechanism_formula_consistency,
+)
+from factor_factory.mechanism_math.main_agent_memo import (
+    build_main_agent_mechanism_memo,
+    render_main_agent_mechanism_memo_markdown,
+)
 
 
 def utc_now() -> str:
@@ -251,6 +260,29 @@ def long_metrics(kind: str) -> dict[str, Any]:
             'cost_adjusted_annual_return': -1.40,
             'cost_adjusted_long_side_sharpe': -0.8,
         })
+    elif kind == 'open_close_intraday_position':
+        metrics.update({
+            'rank_ic_mean': 0.048,
+            'rank_ic_ir': 0.36,
+            'pearson_ic_mean': 0.032,
+            'pearson_ic_ir': 0.22,
+            'long_side_mean_return_daily': -0.0010,
+            'long_side_annual_return': -0.25,
+            'long_side_sharpe': -0.96,
+            'long_side_max_drawdown': -0.94,
+            'long_side_recovery_days': 3670,
+            'long_side_turnover_mean_daily': 0.86,
+            'turnover_mean': 0.86,
+            'trading_cogs_daily': 0.86 * 0.003,
+            'trading_cogs_annual': 0.86 * 0.003 * 252,
+            'cost_adjusted_return_daily': -0.0036,
+            'cost_adjusted_annual_return': -0.90,
+            'cost_adjusted_long_side_sharpe': -3.2,
+            'top_decile_mean_return': -0.0010,
+            'bottom_decile_mean_return': -0.0014,
+            'long_short_spread_mean': 0.0004,
+            'long_short_spread_ir': 0.20,
+        })
     elif kind == 'alpha013_cost_contradiction':
         metrics.update({
             'rank_ic_mean': 0.0358735,
@@ -393,6 +425,14 @@ def write_fixture(root: Path, report_id: str, *, kind: str, factor_id: str | Non
         formula_text = 'rank(custom_signal_z)'
         required_inputs = ['custom_signal_z']
         operators = ['rank']
+    elif kind == 'invalid_formula_specific_derivation':
+        formula_text = 'custom_signal_z'
+        required_inputs = ['custom_signal_z']
+        operators = []
+    elif kind == 'open_close_intraday_position':
+        formula_text = 'rank(negate(signedpower(minus(1, divide(open, close)), 1)))'
+        required_inputs = ['open', 'close']
+        operators = ['rank', 'negate', 'signedpower', 'minus', 'divide']
     elif kind in {'price_volume_correlation', 'strong_mechanism_support', 'alpha013_cost_contradiction'}:
         formula_text = '(-1 * sum(rank(correlation(rank(high), rank(volume), 3)), 3))'
         required_inputs = ['high', 'volume']
@@ -435,9 +475,108 @@ def write_fixture(root: Path, report_id: str, *, kind: str, factor_id: str | Non
     write_json(objects / 'research_iteration_master' / f'researcher_memo__{report_id}.json', researcher_memo)
 
 
-def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, factor_id: str | None = None) -> dict[str, Any]:
+def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 'codex_smoke') -> Path:
+    objects = root / 'objects'
+    spec = read_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
+    case = read_json(objects / 'factor_case_master' / f'factor_case_master__{report_id}.json')
+    evaluation = read_json(objects / 'validation' / f'factor_evaluation__{report_id}.json')
+    canonical = spec.get('canonical_spec') or {}
+    formula = str(canonical.get('formula_text') or '')
+    fields = ', '.join(str(item) for item in (canonical.get('required_inputs') or []))
+    operators = ', '.join(str(item) for item in (canonical.get('operators') or []))
+    memo = build_main_agent_mechanism_memo(
+        report_id=report_id,
+        factor_spec=spec,
+        factor_case=case,
+        evaluation_summary=evaluation,
+        step6_iteration={},
+    )
+    formula_terms = f"the formula uses fields {fields} and operators {operators}"
+    fields_l = fields.lower()
+    operators_l = operators.lower()
+    if 'volume' in fields_l and ('correlation' in operators_l or 'close' in fields_l or 'high' in fields_l):
+        selected_model_family = 'transient_impact'
+        process_text = 'r_i,t+1 follows a transient impact and liquidity-pressure process with imbalance decay, inventory transfer, or participation-driven state migration depending on the formula-defined state and evidence'
+    else:
+        selected_model_family = 'stochastic_process'
+        process_text = 'r_i,t+1 follows a conditional stochastic return process with drift, reversal, impact decay, or state migration depending on the formula-defined state and evidence'
+    memo['producer'] = 'current_main_agent'
+    memo['agent_authorship'] = {
+        'authoring_mode': 'current_agent_freeform',
+        'agent_role': 'main_agent',
+        'runtime': runtime,
+        'answered_without_deterministic_template': True,
+    }
+    memo['mechanism_qa'] = {
+        'formula_state_answer': (
+            f"The current main agent reads {formula_terms}. The formula state is the observable security-day state "
+            "defined by those actual inputs, not a reused factor-family label; this answer ties the state to the formula components."
+        ),
+        'economic_hypothesis_answer': (
+            "The economic hypothesis is that the formula-defined state can be monetized only if a counterparty faces delayed belief revision, "
+            "liquidity demand, risk-transfer pressure, or constrained rebalancing that creates a next-horizon conditional return."
+        ),
+        'math_model_answer': (
+            "The baseline model is a conditional stochastic return process indexed by the formula state; the mutation for this formula is to "
+            "let the observed component map define the latent state variable, payoff direction, and horizon instead of applying a generic template."
+        ),
+        'payer_answer': (
+            "The likely payer is the constrained or delayed counterparty on the other side of the formula-defined state: delayed updaters, "
+            "liquidity demanders, or risk-transfer accounts whose behavior creates drift, reversal, impact decay, or state migration."
+        ),
+        'payoff_answer': (
+            "The payoff argument is E[r_i,t+1 | F_t, formula_state_i,t]; the sign must be determined by the stated state direction and must survive "
+            "long-side, cost-adjusted evidence rather than relying on short-leg diagnostics."
+        ),
+        'estimator_mapping_answer': (
+            f"Estimator mapping follows {formula_terms}: each listed field/operator contributes an observable component to the latent state; rank terms "
+            "test cross-sectional ordering, arithmetic terms define state direction or scale, and the mapping remains within F_t."
+        ),
+        'metric_signature_answer': (
+            "The expected metric signature is aligned rank IC, positive high-score long-side return, positive cost-adjusted return, monotonic top groups, "
+            "and turnover low enough that the modeled payoff is not consumed by trading costs."
+        ),
+        'falsification_answer': (
+            "Falsify if the high-score long side is negative after costs; falsify if G9 beats G10 or the expected direction reverses; falsify if component "
+            "ablation shows the formula state is not the source of IC; kill if no concrete payer remains."
+        ),
+    }
+    memo['economic_hypothesis'] = {
+        'return_source_class': 'mixed',
+        'payer_or_counterparty': 'delayed updaters, liquidity demanders, or risk-transfer accounts tied to the formula-defined state',
+        'why_they_pay': 'they trade against the formula-defined state because belief adjustment, immediacy demand, or risk-transfer constraints can leave a next-horizon conditional payoff',
+        'necessary_market_structure': 'the formula-defined state must predict legal next-horizon returns strongly enough to survive turnover and implementation costs',
+    }
+    memo['math_hypothesis'] = {
+        'selected_model_family': selected_model_family,
+        'why_this_model': 'the open-ended memo treats the formula output as a state variable in a conditional return process, with payoff sign and horizon tested by evidence',
+        'why_not_generic_template': 'the model is accepted only because the current agent supplied freeform answers tying formula components to payer behavior, payoff, estimator mapping, and falsification',
+        'random_object': 'security-day forward return conditional on legal information set F_t and formula-defined state',
+        'latent_state': 'formula-defined conditional return state from the actual fields and operators',
+        'process_or_distribution': process_text,
+        'target_functional': 'E[r_i,t+1 | F_t, formula_state_i,t]',
+        'formula_as_estimator': memo['mechanism_qa']['estimator_mapping_answer'],
+        'expected_metric_signature': {
+            'rank_ic': 'rank IC sign must match the declared payoff direction',
+            'long_side': 'high-score long side must be positive if the state is monetizable',
+            'cost_adjusted': 'cost-adjusted return must remain positive after turnover and impact',
+            'monotonicity': 'quantile ordering must match the stated direction',
+            'turnover': 'turnover must not consume the expected payoff',
+        },
+    }
+    memo_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.json'
+    memo_md_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.md'
+    write_json(memo_path, memo)
+    memo_md_path.parent.mkdir(parents=True, exist_ok=True)
+    memo_md_path.write_text(render_main_agent_mechanism_memo_markdown(memo), encoding='utf-8')
+    return memo_path
+
+
+def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, factor_id: str | None = None, memo_mode: str = 'valid') -> dict[str, Any]:
     report_id = f'STEP6_INTEL_{case_name.upper()}'
     write_fixture(root, report_id, kind=kind, factor_id=factor_id)
+    if memo_mode == 'valid':
+        write_current_agent_memo_fixture(root, report_id)
     run_master_path = root / 'objects' / 'factor_run_master' / f'factor_run_master__{report_id}.json'
     run_master = read_json(run_master_path) if run_master_path.exists() else {}
     current_identity = run_master.get('artifact_identity') or {}
@@ -477,6 +616,7 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
     iteration_path = root / 'objects' / 'research_iteration_master' / f'research_iteration_master__{report_id}.json'
     official_path = root / 'objects' / 'factor_library_official' / f'factor_record__{report_id}.json'
     prewrite_block_path = root / 'objects' / 'validation' / f'step6_prewrite_block__{report_id}.json'
+    main_agent_status_path = root / 'objects' / 'research_iteration_master' / f'main_agent_mechanism_memo_status__{report_id}.json'
     forbidden_paths = forbidden_writeback_paths(root, report_id)
     forbidden_exists = {name: path.exists() for name, path in forbidden_paths.items()}
     forbidden_absent = not any(forbidden_exists.values())
@@ -506,6 +646,7 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
         or (expected == 'NO_PROMOTE' and proc.returncode == 0 and not official_path.exists() and token_present)
         or (expected == 'NO_OFFICIAL' and proc.returncode == 0 and not official_path.exists() and token_present)
         or (expected == 'PROMOTE' and proc.returncode == 0 and official_path.exists() and token_present)
+        or (expected == 'PAUSE' and proc.returncode == 0 and token_present and main_agent_status_path.exists() and forbidden_absent)
     )
     if forbidden_expression_terms:
         ok = False
@@ -698,6 +839,11 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
         'prewrite_diagnostic': {
             'path': str(prewrite_block_path),
             'exists': prewrite_block_path.exists(),
+        },
+        'main_agent_memo_status': {
+            'path': str(main_agent_status_path),
+            'exists': main_agent_status_path.exists(),
+            'payload': read_json(main_agent_status_path) if main_agent_status_path.exists() else {},
         },
         'forbidden_writebacks_absent': forbidden_absent,
         'forbidden_writebacks': {
@@ -1632,6 +1778,217 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
     return {'cases': cases, 'ok': all(row.get('ok') for row in cases.values())}
 
 
+def alpha019_like_spec() -> dict[str, Any]:
+    return {
+        'factor_id': 'ALPHA019_LIKE_NO_VOLUME',
+        'economic_hypothesis': 'winner pullback / temporary behavioral reversal after long-horizon trend state',
+        'canonical_spec': {
+            'formula_text': '-sign(close - delay(close, 7)) * rank(sum(returns, 250))',
+            'required_inputs': ['close', 'returns'],
+            'operators': ['sign', 'minus', 'delay', 'rank', 'sum'],
+            'formula_ir': {
+                'type': 'operator',
+                'operator': 'mul',
+                'args': [
+                    {
+                        'type': 'operator',
+                        'operator': 'neg',
+                        'args': [
+                            {
+                                'type': 'operator',
+                                'operator': 'sign',
+                                'args': [
+                                    {
+                                        'type': 'operator',
+                                        'operator': 'minus',
+                                        'args': [
+                                            {'type': 'field', 'field': 'close'},
+                                            {'type': 'operator', 'operator': 'delay', 'args': [{'type': 'field', 'field': 'close'}, {'type': 'constant', 'value': 7}]},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        'type': 'operator',
+                        'operator': 'rank',
+                        'args': [
+                            {
+                                'type': 'operator',
+                                'operator': 'sum',
+                                'args': [{'type': 'field', 'field': 'returns'}, {'type': 'constant', 'value': 250}],
+                            }
+                        ],
+                    },
+                ],
+            },
+        },
+    }
+
+
+def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
+    spec = alpha019_like_spec()
+    bad_mechanism = {
+        'return_source': 'behavioral_microstructure',
+        'factor_family': 'reversal',
+        'mechanism_hypothesis': 'Generic price-volume dependence and volume covariance explain liquidity shock.',
+        'mechanism_fit': 'weak',
+    }
+    polluted_mechanism = {
+        'return_source': 'behavioral_microstructure',
+        'factor_family': 'reversal',
+        'mechanism_hypothesis': 'Generic price-volume dependence and volume liquidity explain this signal.',
+        'mechanism_fit': 'weak',
+        'mechanism_math_contract': {
+            'observable_inputs': ['close', 'returns', 'volume'],
+        },
+        'mechanism_math_summary': {
+            'model_family': 'price_volume_microstructure',
+        },
+    }
+    good_mechanism = {
+        'return_source': 'behavioral_microstructure',
+        'factor_family': 'reversal',
+        'mechanism_hypothesis': (
+            'Slow winner state interacts with short-horizon pullback and temporary dislocation. '
+            'The sign transform creates a threshold state boundary, discontinuity, turnover, and bucket instability risk.'
+        ),
+        'mechanism_fit': 'partial',
+    }
+    bad_derivation = build_formula_specific_derivation(spec, bad_mechanism, {})
+    bad_consistency = validate_mechanism_formula_consistency(spec, bad_mechanism, bad_derivation)
+    polluted_derivation = build_formula_specific_derivation(spec, polluted_mechanism, {})
+    polluted_consistency = validate_mechanism_formula_consistency(spec, polluted_mechanism, polluted_derivation)
+    good_derivation = build_formula_specific_derivation(spec, good_mechanism, {})
+    good_consistency = validate_mechanism_formula_consistency(spec, good_mechanism, good_derivation)
+    good_derivation_failures = validate_formula_specific_derivation(good_derivation, spec, good_mechanism)
+    restated = dict(good_derivation)
+    restated['process_or_distribution'] = 'rank sum returns delay close sign formula'
+    restated_failures = validate_formula_specific_derivation(restated, spec, good_mechanism)
+    generic_payer = dict(good_derivation)
+    generic_payer['profit_payer_derivation'] = {
+        'payer_or_counterparty': 'the counterparty implied by the economic hypothesis',
+        'why_they_pay': 'they pay only if constrained behavior, delayed information diffusion, risk transfer, or liquidity demand creates a repeatable state',
+        'mechanism_generating_profit': 'expected payoff arises only if the formula estimates the state that causes that payer behavior or constraint',
+        'expected_payoff_expression_or_argument': 'E[r_{t+1:t+h} | F_t, estimated_state_t] must be monotone in the declared direction after costs.',
+    }
+    generic_payer_failures = validate_formula_specific_derivation(generic_payer, spec, good_mechanism)
+    alpha033_like_spec = {
+        'canonical_spec': {
+            'formula_text': 'rank(negate(signedpower(minus(1, divide(open, close)), 1)))',
+            'required_inputs': ['open', 'close'],
+            'operators': ['rank', 'negate', 'signedpower', 'minus', 'divide'],
+        }
+    }
+    alpha033_like_mechanism = {
+        'return_source': 'behavioral_microstructure',
+        'factor_family': 'liquidity_shock',
+        'mechanism_hypothesis': 'Open/close price-location state tests overnight-to-intraday pressure and close-location reversal after costs.',
+        'mechanism_fit': 'weak',
+    }
+    alpha033_derivation = build_formula_specific_derivation(alpha033_like_spec, alpha033_like_mechanism, {})
+    alpha033_failures = validate_formula_specific_derivation(alpha033_derivation, alpha033_like_spec, alpha033_like_mechanism)
+    alpha033_text = json.dumps(alpha033_derivation, ensure_ascii=False).lower()
+    hypothesis_specs = [
+        (
+            'valuation',
+            {'economic_hypothesis': 'earnings growth cash flow valuation risk premium', 'canonical_spec': {'formula_text': 'rank(earnings_growth)', 'required_inputs': ['earnings_growth'], 'operators': ['rank']}},
+            'valuation_identity',
+        ),
+        (
+            'information',
+            {'economic_hypothesis': 'information advantage delayed diffusion and attention constraint', 'canonical_spec': {'formula_text': 'rank(delta(close, 5))', 'required_inputs': ['close'], 'operators': ['rank', 'delta']}},
+            'state_space',
+        ),
+        (
+            'market_structure',
+            {'economic_hypothesis': 'liquidity impact order imbalance inventory constraint', 'canonical_spec': {'formula_text': 'rank(volume / close)', 'required_inputs': ['volume', 'close'], 'operators': ['rank', 'div']}},
+            'transient_impact',
+        ),
+    ]
+    model_cases = []
+    for name, case_spec, expected_family in hypothesis_specs:
+        derivation = build_formula_specific_derivation(case_spec, {'mechanism_hypothesis': case_spec['economic_hypothesis']}, {})
+        failures = validate_formula_specific_derivation(derivation, case_spec, {'mechanism_hypothesis': case_spec['economic_hypothesis']})
+        model_cases.append({
+            'case': name,
+            'expected_family': expected_family,
+            'actual_family': derivation.get('selected_model_family'),
+            'failures': failures,
+            'ok': derivation.get('selected_model_family') == expected_family and not failures,
+        })
+    bad_codes = {item.get('code') for item in bad_consistency.get('failures') or []}
+    polluted_codes = {item.get('code') for item in polluted_consistency.get('failures') or []}
+    restated_codes = {item.get('code') for item in restated_failures}
+    generic_payer_codes = {item.get('code') for item in generic_payer_failures}
+    model_specific_pass = [
+        row for row in model_cases
+        if row['case'] in {'valuation', 'information', 'market_structure'} and row['ok']
+    ]
+    return {
+        'alpha019_price_volume_contradiction_block': {
+            'ok': 'BLOCK_MECHANISM_FORMULA_FIELD_CONTRADICTION' in bad_codes,
+            'consistency': bad_consistency,
+        },
+        'alpha019_polluted_mechanism_observable_volume_still_blocks': {
+            'ok': (
+                'BLOCK_MECHANISM_FORMULA_FIELD_CONTRADICTION' in polluted_codes
+                and polluted_consistency.get('features', {}).get('has_volume') is False
+                and 'volume' in (polluted_consistency.get('mechanism_inputs_not_in_formula') or [])
+            ),
+            'consistency': polluted_consistency,
+        },
+        'alpha019_formula_specific_valid_pass': {
+            'ok': good_consistency.get('status') == 'PASS' and not good_derivation_failures,
+            'consistency': good_consistency,
+            'derivation_failures': good_derivation_failures,
+            'selected_model_family': good_derivation.get('selected_model_family'),
+            'profit_payer_derivation': good_derivation.get('profit_payer_derivation'),
+        },
+        'process_or_distribution_not_formula_restatement': {
+            'ok': 'BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING' in restated_codes,
+            'failures': restated_failures,
+        },
+        'generic_profit_payer_derivation_blocks': {
+            'ok': 'BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC' in generic_payer_codes,
+            'failures': generic_payer_failures,
+        },
+        'alpha033_open_close_formula_specific_valid_pass': {
+            'ok': (
+                not alpha033_failures
+                and alpha033_derivation.get('selected_model_family') == 'stochastic_process'
+                and 'open/close' in alpha033_text
+                and 'investors' not in alpha033_text
+                and 'volume participation gate' not in alpha033_text
+                and 'signed price state' not in alpha033_text
+            ),
+            'selected_model_family': alpha033_derivation.get('selected_model_family'),
+            'failures': alpha033_failures,
+            'profit_payer_derivation': alpha033_derivation.get('profit_payer_derivation'),
+        },
+        'model_specific_profit_payer_derivation_pass': {
+            'ok': len(model_specific_pass) == 3,
+            'cases': model_specific_pass,
+        },
+        'economic_hypothesis_model_selection_cases': model_cases,
+        'ok': (
+            'BLOCK_MECHANISM_FORMULA_FIELD_CONTRADICTION' in bad_codes
+            and 'BLOCK_MECHANISM_FORMULA_FIELD_CONTRADICTION' in polluted_codes
+            and polluted_consistency.get('features', {}).get('has_volume') is False
+            and 'volume' in (polluted_consistency.get('mechanism_inputs_not_in_formula') or [])
+            and good_consistency.get('status') == 'PASS'
+            and not good_derivation_failures
+            and not alpha033_failures
+            and 'BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING' in restated_codes
+            and 'BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC' in generic_payer_codes
+            and len(model_specific_pass) == 3
+            and all(item['ok'] for item in model_cases)
+            and len({item['actual_family'] for item in model_cases}) >= 3
+        ),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description='Synthetic Step6 research intelligence smoke; never uses clean data.')
     ap.add_argument('--root', default=None, help='Must be under /tmp. Default creates /tmp/factorforge_step6_intelligence_<timestamp>.')
@@ -1663,6 +2020,8 @@ def main() -> int:
         ('iterate_requires_expression_revision', 'high_turnover_cost', 'NO_PROMOTE', 'no_portfolio_expression_repair', 'SMOKE_PRICE_VOLUME'),
         ('unknown_mechanism_cannot_promote', 'unknown_mechanism', 'BLOCK', 'mechanism_return_source_known', 'SMOKE_UNKNOWN'),
         ('mechanism_unclear_revision', 'unknown_mechanism_iterate', 'NO_OFFICIAL', 'rev_mechanism_challenge_001', 'SMOKE_UNKNOWN'),
+        ('main_agent_memo_missing_pauses_before_handoff', 'open_close_intraday_position', 'PAUSE', 'AWAITING_MAIN_AGENT_MECHANISM_MEMO', 'SMOKE_OPEN_CLOSE_POSITION', 'missing'),
+        ('open_close_intraday_position_revision', 'open_close_intraday_position', 'NO_PROMOTE', 'open_close_position_state', 'SMOKE_OPEN_CLOSE_POSITION'),
         ('similar_failure_imported', 'short_side_dominance', 'NO_PROMOTE', 'Retrieved failure lesson', 'SMOKE_PRICE_VOLUME'),
         ('similar_success_rejected_condition_mismatch', 'high_turnover_cost', 'NO_PROMOTE', 'turnover/cost', 'SMOKE_PRICE_VOLUME'),
         ('alpha013_like_advisory_mechanism_challenge_branch', 'alpha013_cost_contradiction', 'NO_PROMOTE', 'challenge_mechanism_cost_contradiction', 'ALPHA013_LIKE_ADVISORY'),
@@ -1670,7 +2029,7 @@ def main() -> int:
         ('same_factor_cross_identity_negative', 'price_volume_correlation', 'BLOCK', 'same_factor_identity_mismatch', 'SMOKE_PRICE_VOLUME'),
         ('valid_promote_no_revision_needed', 'strong_mechanism_support', 'PROMOTE', 'strong_mechanism_support', 'SMOKE_PROMOTE'),
     ]
-    results = [run_case(root, name, kind, expected, token, factor_id) for name, kind, expected, token, factor_id in cases]
+    results = [run_case(root, *case) for case in cases]
     program_search_plan_smoke = run_program_search_plan_smoke(root, 'STEP6_INTEL_HIGH_TURNOVER_REVISION')
     program_search_missing_templates_smoke = run_program_search_missing_templates_smoke(root, 'STEP6_INTEL_HIGH_TURNOVER_REVISION')
     program_search_forbidden_text_smoke = run_program_search_forbidden_text_smoke(root, 'STEP6_INTEL_HIGH_TURNOVER_REVISION')
@@ -1678,6 +2037,7 @@ def main() -> int:
     phase_f_branch_execution_smoke = run_phase_f_branch_execution_smoke(root, phase_f_report_id)
     phase_f_negative_smoke = run_phase_f_negative_smoke(root, phase_f_report_id)
     loop_research_brief_smoke = run_loop_research_brief_mutation_smoke(root, 'STEP6_INTEL_LOOP_RESEARCH_BRIEF_GENERATED_PASS')
+    formula_specific_mechanism_smoke = run_formula_specific_mechanism_smoke()
     pollution = canonical_pollution(before)
     verdict = 'ACCEPT' if (
         all(item['ok'] for item in results)
@@ -1691,6 +2051,7 @@ def main() -> int:
         and phase_f_branch_execution_smoke['merge_advisory_only_pass']['ok']
         and phase_f_negative_smoke['ok']
         and loop_research_brief_smoke['ok']
+        and formula_specific_mechanism_smoke['ok']
         and not pollution['polluted']
     ) else 'BLOCK'
     summary = {
@@ -1706,6 +2067,7 @@ def main() -> int:
         'phase_f_branch_execution_smoke': phase_f_branch_execution_smoke,
         'phase_f_negative_smoke': phase_f_negative_smoke,
         'loop_research_brief_smoke': loop_research_brief_smoke,
+        'formula_specific_mechanism_smoke': formula_specific_mechanism_smoke,
         'canonical_pollution': pollution,
         'verdict': verdict,
         'notes': [

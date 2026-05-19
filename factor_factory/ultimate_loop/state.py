@@ -144,6 +144,23 @@ def classify_loop_state(
             prewrite_block_exists=prewrite_blocked,
         ).to_dict()
 
+    wrapper_proof = load_json_if_exists(_wrapper_proof_path(root, report_id))
+    main_agent_memo = wrapper_proof.get("main_agent_mechanism_memo") if isinstance(wrapper_proof.get("main_agent_mechanism_memo"), dict) else {}
+    if wrapper_proof.get("status") == "PAUSED" and main_agent_memo.get("status") == "awaiting_main_agent_mechanism_memo":
+        return LoopState(
+            outcome="awaiting_main_agent_mechanism_memo",
+            proof_status="PAUSED",
+            can_continue=False,
+            stop_reason="awaiting_main_agent_mechanism_memo",
+            decision=decision,
+            loop_authorization=loop_authorization,
+            revision_needed=revision_needed if isinstance(revision_needed, bool) else None,
+            council_status=council_status,
+            official_record_exists=official_exists,
+            handoff_to_step3b_exists=handoff_exists,
+            prewrite_block_exists=prewrite_blocked,
+        ).to_dict()
+
     if prewrite_blocked or _evidence_blocked(iteration):
         return LoopState(
             outcome="blocked",

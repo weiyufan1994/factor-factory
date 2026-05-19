@@ -165,10 +165,10 @@ def build_intake_payload(report_id: str, title: str, text_blocks: list[str], rou
     signals = detect_signals(joined)
     formula_clues = detect_formula_lines(lines)
 
-    if 'ubl' in joined.lower() or shadow_context:
-        factor_name = 'UBL'
-    elif 'cpv' in joined.lower() or 'price_volume_correlation' in signals or '价量' in joined:
-        factor_name = 'CPV'
+    if shadow_context:
+        factor_name = 'SHADOW_CANDLESTICK_FACTOR'
+    elif 'price_volume_correlation' in signals or '价量' in joined:
+        factor_name = 'PRICE_VOLUME_FACTOR'
     else:
         factor_name = 'AUTO_FACTOR'
 
@@ -197,7 +197,7 @@ def build_intake_payload(report_id: str, title: str, text_blocks: list[str], rou
             'compute normalized candlestick upper/lower shadows from open/high/low/close',
             'compute Williams-style upper/lower shadow variants',
             'aggregate 20-day mean/std shadow features cross-sectionally',
-            'combine candle_up_std and william_down_mean into composite UBL signal',
+            'combine candle_up_std and william_down_mean into composite shadow signal',
             'apply cross-sectional normalization',
         ]
     else:

@@ -89,6 +89,27 @@ operators.
 `objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
 or `knowledge/因子工厂/知识库/*MECHANISM*`, the Revision Council packet must
 include it and propagate it into agentic taskbooks.
+35. Step6 mechanism analysis must include a formula-specific public derivation:
+economic hypothesis -> payer/constraint -> selected baseline mathematical model
+-> formula-specific model mutation -> observable estimator mapping -> expected
+metric signature and falsification. Generic mechanism text that contradicts
+formula fields or operators is invalid; for example, a formula with no volume
+input must not claim price-volume dependence unless a structured justification
+is present and validated.
+36. Before any Revision Council packet or agentic dispatch is built, Step6 must
+write a current-agent mechanism questionnaire:
+`objects/research_iteration_master/main_agent_mechanism_questionnaire__<report_id>.json`
+and `.md`. The agent currently invoking the skill (Codex, Bernard, Humphrey, or
+another runtime main agent) must then answer the questionnaire as a free-form
+main-agent mechanism memo:
+`objects/research_iteration_master/main_agent_mechanism_memo__<report_id>.json`
+and `.md`. The Python layer may extract formula facts and validate the answer,
+but it must not silently replace the main agent with a deterministic mechanism
+template. If the memo is missing, Step6 must pause with
+`AWAITING_MAIN_AGENT_MECHANISM_MEMO` before final Step6 writeback or Step3B
+handoff exposure. If the memo is present but generic, canonical-write-enabled,
+execution-enabled, formula-detached, or operator-contradictory,
+`validate_step6.py` must block it.
 
 ## Research Analyst Standard
 
@@ -211,7 +232,7 @@ python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <re
 Optional manual retrieval check:
 
 ```bash
-python3 scripts/query_factorforge_retrieval_index.py --query "UBL monotonicity partial validation" --top-k 5
+python3 scripts/query_factorforge_retrieval_index.py --query "factor monotonicity partial validation" --top-k 5
 ```
 
 ## References
@@ -344,11 +365,16 @@ Council proposals must never write or modify:
 ### Wrapper Attachment Mode
 
 The official wrapper may explicitly request Council-primary revision attachment
-with `--council-mode off|auto|scaffold|agentic`. `off` is the default and leaves
-Step6 behavior unchanged. `scaffold` runs packet generation, deterministic
+with `--council-mode off|auto|scaffold|agentic`. `auto` is the wrapper default
+for formal runs; `off` leaves Step6 behavior unchanged for explicit debug or
+legacy reproducibility checks. `scaffold` runs packet generation, deterministic
 proposal generation, merge, attach, and `validate_step6.py` after Step6 core.
-`auto` runs that chain only when Step6 already shows a revision need and the
-evidence/case gates are not blocked. `agentic` requires
+`auto` must not silently use that deterministic scaffold as formal agentic
+research. With `--auto-council-policy dispatch_manifest` (default), auto builds
+the agentic dispatch package and stops in `awaiting_agent_results`. Use
+`--auto-council-policy scaffold` only for explicit smoke/fallback runs; use
+`--auto-council-policy block_without_agentic` to hard-block when formal agentic
+research is required but not available. `agentic` requires
 `--agentic-council-executor`. `none` blocks with
 `BLOCK_REVISION_COUNCIL_AGENTIC_EXECUTOR_REQUIRED`; `real_agent` blocks with
 `BLOCK_REVISION_COUNCIL_REAL_AGENT_NOT_IMPLEMENTED`; `local_mock` runs the

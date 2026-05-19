@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from factor_factory.mechanism_math.formula_specific import (
+    build_formula_specific_headline,
+    build_formula_understanding,
+    select_math_model_from_economic_hypothesis,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
@@ -114,6 +120,15 @@ def common_research_discipline(
 
 
 def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: List[str]) -> Dict[str, Any]:
+    formula_spec = {
+        "canonical_spec": {
+            "formula_text": formula,
+            "required_inputs": inputs,
+            "operators": operators,
+        }
+    }
+    formula_understanding = build_formula_understanding(formula_spec)
+    interaction = formula_understanding.get("interaction_structure")
     text = formula.lower()
     op_text = ' '.join(operators).lower()
     uses_price = any(item in inputs for item in ['open', 'high', 'low', 'close', 'vwap', 'return'])
@@ -123,7 +138,42 @@ def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: Lis
     uses_ts_rank = 'ts_rank' in op_text
     uses_volume_ratio = uses_liquidity and any(tok in text for tok in ['mean(volume', 'adv', 'divide(volume'])
 
-    if uses_price and uses_liquidity:
+    if interaction == "slow_state_x_short_horizon_threshold":
+        second_layer = {
+            'subtype': 'slow_winner_state_short_horizon_reversal_or_threshold_migration',
+            'expected_counterparty_or_payer': (
+                'trend extrapolators, delayed updaters, or short-horizon liquidity/dislocation traders '
+                'around winner-state pullbacks'
+            ),
+            'why_they_may_pay': (
+                'they extrapolate the slow winner state or react late to threshold crossings, creating '
+                'conditional next-period payoff when the short-horizon state reverses or migrates'
+            ),
+        }
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': second_layer,
+            'counterparty_loss_hypothesis': second_layer['expected_counterparty_or_payer'],
+            'risk_or_behavioral_compensation': (
+                'payoff may come from slow trend state interacting with short-horizon pullback, temporary '
+                'dislocation, and threshold migration rather than a generic formula template'
+            ),
+        }
+        model_family = 'stochastic_process'
+        state = 'slow winner state interacting with short-horizon reversal/dislocation threshold state'
+        process = (
+            'P_i,t = F_i,t + M_i,t + I_i,t + epsilon_i,t, where M_i,t is a slow trend/winner state and '
+            'I_i,t is a short-horizon temporary dislocation or pullback state; the sign transform creates '
+            'a threshold boundary for state migration.'
+        )
+        observable = 'sum(returns,250), close-delay(close,7), delta(close,7), sign threshold, and cross-sectional rank state'
+        falsification = [
+            'long-side payoff must align with the slow-state x short-state conditional sign after costs',
+            'rank IC and group ordering must not be explained by short-side losses alone',
+            'state interaction should fail if either long-window trend state or short-horizon threshold state is ablated',
+            'turnover around sign-threshold migration must not consume the expected payoff',
+        ]
+    elif uses_price and uses_liquidity:
         second_layer = {
             'subtype': 'price_volume_crowding_and_short_horizon_reversal',
             'expected_counterparty_or_payer': (
@@ -236,6 +286,9 @@ def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: Lis
             'falsification_tests': falsification,
         }
     ]
+    if interaction == "slow_state_x_short_horizon_threshold":
+        math[0]['model_mutation'] = 'add threshold boundary induced by sign transform and interact slow winner state with short-horizon dislocation state'
+        math[0]['target_functional'] = 'E[r_i,t+1 | slow_state_i,t, short_state_i,t, threshold_i,t]'
     if uses_rank:
         math[0]['math_tools'].append('copula/rank-order robustness check')
     if uses_delta:
@@ -243,8 +296,23 @@ def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: Lis
     if uses_liquidity:
         math[0]['math_tools'].append('relative liquidity intensity estimator')
     return {
+        'formula_understanding': formula_understanding,
         'economic_hypothesis': economic,
         'math_hypothesis_candidates': math,
+        'economic_to_math_modelling': {
+            'economic_hypothesis': economic,
+            'selected_baseline_model': select_math_model_from_economic_hypothesis(economic, math, formula_understanding),
+            'model_mutations': [math[0].get('model_mutation')] if math[0].get('model_mutation') else [],
+            'expected_metric_signature': {
+                'rank_ic': 'positive after declared sign convention',
+                'long_side': 'positive if conditional state is monetizable',
+                'ablation': 'slow-state or short-state ablation should weaken the signal',
+            },
+            'metric_feedback_rules': [
+                'If metrics do not support the state interaction, mutate sign/horizon/state interaction or kill.',
+                'Do not repair via portfolio expression, short leg, or decile trading.',
+            ],
+        },
     }
 
 
@@ -270,7 +338,7 @@ def build_canonical_formula_step1(
         source_type='paper_canonical_formula',
         random_object='cross-sectional equity panel observed through price, volume, and other formula inputs',
         target_statistic='canonical formula score used to rank future cross-sectional returns',
-        return_source='published formula may capture behavioral, liquidity, or microstructure effects embedded in ranked price-volume transformations',
+        return_source='published formula may capture a formula-defined conditional return state that must be modelled from its own observable inputs',
         information_set='uses only contemporaneous and lagged market fields required by the formula',
         what_must_be_true=[
             'The canonical expression is implemented with no future-looking window alignment.',
@@ -283,6 +351,11 @@ def build_canonical_formula_step1(
     )
     hypotheses = canonical_formula_hypotheses(formula, inputs, operators)
     research.update(hypotheses)
+    formula_headline = build_formula_specific_headline(
+        research.get('economic_hypothesis') or {},
+        (research.get('economic_to_math_modelling') or {}).get('selected_baseline_model') or {},
+        research.get('formula_understanding') or {},
+    )
     aim = {
         'contract_version': 'factorforge.step1.alpha_idea_master.v2',
         'producer': 'step12_canonical_formula_intake',
@@ -295,10 +368,12 @@ def build_canonical_formula_step1(
         'window_start': window_start,
         'window_end': window_end,
         'created_at': now_iso(),
-        'factor_intuition': research['initial_return_source_hypothesis'],
+        'factor_intuition': formula_headline,
+        'formula_understanding': research.get('formula_understanding'),
+        'economic_to_math_modelling': research.get('economic_to_math_modelling'),
         'candidate_variables': inputs,
         'expected_direction': 'formula_defined',
-        'return_source_hypothesis': research['initial_return_source_hypothesis'],
+        'return_source_hypothesis': formula_headline,
         'economic_hypothesis': research['economic_hypothesis'],
         'math_hypothesis_candidates': research['math_hypothesis_candidates'],
         'information_set': research['information_set_hint'],
@@ -311,7 +386,7 @@ def build_canonical_formula_step1(
             'name': factor_id,
             'direction': 'formula_defined',
             'assembly_steps': [formula],
-            'economic_logic': research['initial_return_source_hypothesis'],
+            'economic_logic': formula_headline,
         },
         'math_discipline_review': {
             'step1_random_object': research['step1_random_object'],
@@ -330,7 +405,7 @@ def build_canonical_formula_step1(
         'operators': operators,
         'signals': [formula],
         'raw_formula_text': formula,
-        'economic_logic': research['initial_return_source_hypothesis'],
+        'economic_logic': formula_headline,
         'target_prediction': research['target_statistic_hint'],
     }
     challenger = {

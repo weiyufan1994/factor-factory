@@ -122,7 +122,7 @@ def final_strategy(root: Path, report_id: str) -> dict[str, Any]:
     return (((iteration(root, report_id).get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
 
 
-def run_ultimate(root: Path, report_id: str, mode: str, extra_env: dict[str, str] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+def run_ultimate(root: Path, report_id: str, mode: str, extra_env: dict[str, str] | None = None, extra_args: list[str] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     cmd = [
         sys.executable,
         "scripts/run_factorforge_ultimate.py",
@@ -138,6 +138,8 @@ def run_ultimate(root: Path, report_id: str, mode: str, extra_env: dict[str, str
         "--council-mode",
         mode,
     ]
+    if extra_args:
+        cmd.extend(extra_args)
     result = run_cmd(root, cmd, extra_env=extra_env)
     return result, load_json(proof_path(root, report_id))
 
@@ -185,11 +187,29 @@ def case_scaffold(root: Path) -> dict[str, Any]:
 
 def case_auto_revision_needed(root: Path) -> dict[str, Any]:
     rid = REPORT_HIGH_TURNOVER
-    proc, proof = run_ultimate(root, rid, "auto")
+    proc, proof = run_ultimate(root, rid, "auto", extra_args=["--auto-council-policy", "scaffold"])
     rc = proof.get("revision_council") or {}
     strategy = final_strategy(root, rid)
     ok = proc["rc"] == 0 and rc.get("status") == "completed" and strategy.get("source") == "revision_council"
-    return result("council_mode_auto_revision_needed", ok, {"run": proc, "revision_council": rc, "final_strategy": strategy}, "auto triggers when revision needed")
+    return result("council_mode_auto_revision_needed_scaffold_policy", ok, {"run": proc, "revision_council": rc, "final_strategy": strategy}, "auto may run scaffold only with explicit scaffold policy")
+
+
+def case_auto_revision_needed_dispatch_default(root: Path) -> dict[str, Any]:
+    rid = REPORT_MECHANISM_UNCLEAR
+    proc, proof = run_ultimate(root, rid, "auto")
+    rc = proof.get("revision_council") or {}
+    strategy = final_strategy(root, rid)
+    ok = (
+        proc["rc"] == 0
+        and proof.get("status") == "PASS"
+        and rc.get("status") == "awaiting_agent_results"
+        and rc.get("effective_mode") == "agentic_dispatch_manifest"
+        and rc.get("formal_council_status") == "awaiting_agent_results"
+        and rc.get("deterministic_scaffold_used") is False
+        and rc.get("deterministic_scaffold_formal") is False
+        and strategy.get("source") != "revision_council"
+    )
+    return result("council_mode_auto_revision_needed_dispatch_default", ok, {"run": proc, "revision_council": rc, "final_strategy": strategy}, "auto defaults to dispatch manifest and awaits agent results")
 
 
 def case_auto_no_revision(root: Path) -> dict[str, Any]:
@@ -251,6 +271,7 @@ def main() -> int:
                 case_off(root),
                 case_scaffold(root),
                 case_auto_revision_needed(root),
+                case_auto_revision_needed_dispatch_default(root),
                 case_auto_no_revision(root),
                 case_agentic_block(root),
                 case_command_failure(root),

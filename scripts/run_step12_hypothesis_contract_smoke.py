@@ -17,9 +17,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.artifact_identity import build_spec_hash
+from scripts.step12_intake_common import build_canonical_formula_step1
 
 CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
 RID = "STEP12_HYPOTHESIS_SMOKE"
+ALPHA019_RID = "STEP12_ALPHA019_FORMULA_MODELLING_SMOKE"
 
 
 def is_tmp(path: Path) -> bool:
@@ -111,6 +113,29 @@ def build_fixture(root: Path) -> None:
     write_json(objects / "report_maps" / f"report_map__{RID}__primary.json", {"variables": ["high", "volume"], "operators": ["rank", "correlation"], "raw_formula": "rank(correlation(high, volume, 5))"})
 
 
+def build_alpha019_formula_fixture(root: Path) -> None:
+    formula = (
+        "multiply("
+        "negate(sign(plus(minus(close, delay(close, 7)), delta(close, 7)))), "
+        "plus(1, rank(plus(1, sum(returns, 250))))"
+        ")"
+    )
+    bundle = build_canonical_formula_step1(
+        report_id=ALPHA019_RID,
+        factor_id="ALPHA019_LIKE",
+        source_name="Alpha019 synthetic formula modelling smoke",
+        source_url="synthetic://alpha019-like",
+        formula=formula,
+        window_start="2016-01-01",
+        window_end="2024-12-31",
+    )
+    objects = root / "objects"
+    write_json(objects / "alpha_idea_master" / f"alpha_idea_master__{ALPHA019_RID}.json", bundle["aim"])
+    write_json(objects / "validation" / f"report_map_validation__{ALPHA019_RID}__alpha_thesis.json", bundle["primary"])
+    write_json(objects / "validation" / f"report_map_validation__{ALPHA019_RID}__challenger_alpha_thesis.json", bundle["challenger"])
+    write_json(objects / "report_maps" / f"report_map__{ALPHA019_RID}__primary.json", bundle["report_map"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fresh", action="store_true")
@@ -125,11 +150,15 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     before = file_snapshot()
     build_fixture(root)
+    build_alpha019_formula_fixture(root)
 
     commands = {
         "standardize_step1": run([sys.executable, "skills/factor-forge-step1/scripts/standardize_step1_research_fields.py", "--report-id", RID], root),
         "validate_step1": run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", RID], root),
         "run_step2_wrapper": run([sys.executable, "scripts/run_factorforge_ultimate.py", "--report-id", RID, "--start-step", "2", "--end-step", "2", "--council-mode", "off"], root),
+        "alpha019_standardize_step1": run([sys.executable, "skills/factor-forge-step1/scripts/standardize_step1_research_fields.py", "--report-id", ALPHA019_RID], root),
+        "alpha019_validate_step1": run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", ALPHA019_RID], root),
+        "alpha019_run_step2_wrapper": run([sys.executable, "scripts/run_factorforge_ultimate.py", "--report-id", ALPHA019_RID, "--start-step", "2", "--end-step", "2", "--council-mode", "off"], root),
     }
     aim = json.loads((root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{RID}.json").read_text(encoding="utf-8"))
     master_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{RID}.json"
@@ -138,6 +167,23 @@ def main() -> int:
     handoff = json.loads(handoff_path.read_text(encoding="utf-8")) if handoff_path.exists() else {}
     proof_path = root / "objects" / "runtime_context" / f"ultimate_run_report__{RID}.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8")) if proof_path.exists() else {}
+    alpha019_aim_path = root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{ALPHA019_RID}.json"
+    alpha019_master_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{ALPHA019_RID}.json"
+    alpha019_aim = json.loads(alpha019_aim_path.read_text(encoding="utf-8")) if alpha019_aim_path.exists() else {}
+    alpha019_master = json.loads(alpha019_master_path.read_text(encoding="utf-8")) if alpha019_master_path.exists() else {}
+    alpha019_primary_path = root / "objects" / "validation" / f"report_map_validation__{ALPHA019_RID}__alpha_thesis.json"
+    alpha019_primary = json.loads(alpha019_primary_path.read_text(encoding="utf-8")) if alpha019_primary_path.exists() else {}
+    alpha019_discipline = alpha019_aim.get("research_discipline") or {}
+    alpha019_understanding = alpha019_discipline.get("formula_understanding") or alpha019_aim.get("formula_understanding") or {}
+    alpha019_econ = alpha019_discipline.get("economic_hypothesis") or {}
+    alpha019_math = alpha019_discipline.get("math_hypothesis_candidates") or []
+    alpha019_contract = alpha019_master.get("mechanism_math_contract") or {}
+    alpha019_headline_blob = json.dumps({
+        "factor_intuition": alpha019_aim.get("factor_intuition"),
+        "return_source_hypothesis": alpha019_aim.get("return_source_hypothesis"),
+        "final_factor_economic_logic": (alpha019_aim.get("final_factor") or {}).get("economic_logic"),
+        "report_map_validation_economic_logic": alpha019_primary.get("economic_logic"),
+    }, ensure_ascii=False).lower()
     discipline = aim.get("research_discipline") or {}
     research_contract = master.get("research_contract") or {}
     mechanism_contract = master.get("mechanism_math_contract") or {}
@@ -150,6 +196,28 @@ def main() -> int:
         "step2_preserves_math_hypotheses": research_contract.get("math_hypothesis_candidates") == discipline.get("math_hypothesis_candidates"),
         "mechanism_contract_carries_sources": bool(mechanism_contract.get("source_economic_hypothesis")) and bool(mechanism_contract.get("source_math_hypothesis_candidates")),
         "wrapper_pass": proof.get("status") == "PASS",
+        "alpha019_like_formula_specific_modelling_pass": (
+            (((alpha019_econ.get("second_layer") or {}).get("subtype") or "").find("slow_winner") >= 0)
+            and any("short" in item.lower() or "threshold" in item.lower() or "reversal" in item.lower() for item in [
+                (alpha019_econ.get("second_layer") or {}).get("subtype", ""),
+                (alpha019_econ.get("second_layer") or {}).get("why_they_may_pay", ""),
+            ])
+            and bool(alpha019_math)
+            and alpha019_math[0].get("model_family") == "stochastic_process"
+            and alpha019_contract.get("model_family") == "stochastic_process"
+            and alpha019_understanding.get("interaction_structure") == "slow_state_x_short_horizon_threshold"
+            and all(
+                token in json.dumps(alpha019_contract, ensure_ascii=False).lower()
+                for token in ["slow", "short", "threshold", "rank", "sum(returns,250)"]
+            )
+            and alpha019_contract.get("source_economic_hypothesis") == (alpha019_master.get("research_contract") or {}).get("economic_hypothesis")
+            and alpha019_contract.get("source_math_hypothesis_candidates") == (alpha019_master.get("research_contract") or {}).get("math_hypothesis_candidates")
+        ),
+        "alpha019_headline_formula_specific_no_generic_price_volume": (
+            "slow" in alpha019_headline_blob
+            and ("threshold" in alpha019_headline_blob or "short-horizon" in alpha019_headline_blob)
+            and "price-volume" not in alpha019_headline_blob
+        ),
     }
     mutation_cases: dict[str, Any] = {}
     aim_path = root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{RID}.json"
@@ -204,6 +272,17 @@ def main() -> int:
         "economic_hypothesis": discipline.get("economic_hypothesis"),
         "math_candidate_count": len(discipline.get("math_hypothesis_candidates") or []),
         "mechanism_model_family": mechanism_contract.get("model_family"),
+        "alpha019_formula_specific_modelling": {
+            "headline_blob": alpha019_headline_blob,
+            "step1_economic_hypothesis": alpha019_econ,
+            "formula_understanding": alpha019_understanding,
+            "math_hypothesis_candidates": alpha019_math,
+            "mechanism_model_family": alpha019_contract.get("model_family"),
+            "mechanism_state_or_object": alpha019_contract.get("state_or_object"),
+            "mechanism_factor_as_estimator": alpha019_contract.get("factor_as_estimator"),
+            "mechanism_process_hypothesis": alpha019_contract.get("process_hypothesis"),
+            "mechanism_conditional_distribution_hypothesis": alpha019_contract.get("conditional_distribution_hypothesis"),
+        },
         "canonical_pollution": {"polluted": bool(pollution), "new_files": pollution},
     }
     write_json(root / "step12_hypothesis_contract_smoke_summary.json", summary)

@@ -569,3 +569,11 @@ write Step3B handoffs, generated code, official library records, clean data, or
 search-worker outputs. It may only record loop proof/brief artifacts and must
 block if a child loop mutates a parent `generated_code/{report_id}` directory or
 if `data/clean` changes during the loop.
+
+When a child revision returns to Step6, the next Council packet must include
+`prior_revision_memory`: parent and child report ids, parent/child formula
+hashes, the executable derivation rule, parent-vs-child metric deltas, and a
+prior revision outcome of `falsified`, `improved`, or `inconclusive`. If the
+child worsened key evidence, agentic task packets must require
+`prior_revision_outcome_review` and `repeated_revision_guard`, and must forbid
+repeating the falsified derivation rule or re-creating ancestor formula hashes.

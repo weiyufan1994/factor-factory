@@ -122,6 +122,15 @@ materializer or Step3B must BLOCK instead of rerunning the parent formula.
 (Parquet preferred, CSV audit when present) into the child run directory and
 rewrite child data-prep paths accordingly. A child `--start-step 3b` run must
 never depend on the parent report id's local snapshot path.
+39. When a child revision reaches Step6, the next Revision Council packet must
+include `prior_revision_memory`: parent report id, child report id,
+parent/child formula hashes, executable derivation rule, parent-vs-child metric
+deltas, and an outcome of `falsified`, `improved`, or `inconclusive`. If the
+prior executable revision worsened key evidence, agentic task packets must
+require `prior_revision_outcome_review` and `repeated_revision_guard`, and must
+forbid repeating the falsified executable revision rule or re-creating an
+ancestor formula hash. A Council that ignores the previous failed child run is
+not allowed to authorize another executable loop.
 
 ## Research Analyst Standard
 

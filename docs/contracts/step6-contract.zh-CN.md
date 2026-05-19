@@ -722,3 +722,11 @@ Orchestrator 不是 canonical research artifact writer。它不得写 Step3B han
 generated code、official library、clean data 或 search-worker output。它只允许写
 loop proof / brief，并且如果 child loop 修改父 `generated_code/{report_id}` 或
 loop 期间 `data/clean` 发生变化，必须 BLOCK。
+
+当 child revision 再次进入 Step6 时，下一轮 Council packet 必须写入
+`prior_revision_memory`：parent/child report id、parent/child formula hash、
+executable derivation rule、parent-vs-child metric delta，以及上一轮 revision
+outcome（`falsified` / `improved` / `inconclusive`）。如果 child 让关键证据变差，
+agentic task packet 必须要求 `prior_revision_outcome_review` 和
+`repeated_revision_guard`，并禁止重复已证伪 derivation rule 或重建祖先 formula
+hash。

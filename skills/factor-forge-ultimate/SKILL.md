@@ -139,6 +139,14 @@ Child Step3B must consume this executable revision spec and BLOCK if it is
 missing or if a non-audit revision leaves the formula hash unchanged. A loop that
 recomputes the same parent formula under a child report id is invalid.
 
+When the child reaches Step6, the next Council packet must carry the prior
+revision outcome as first-class negative or positive evidence. It must compare
+parent-vs-child metrics, record the executable derivation rule and formula
+hashes, and label the prior revision as `falsified`, `improved`, or
+`inconclusive`. If the child worsened key evidence, subsequent agentic Council
+tasks must explicitly review that failed revision and must not repeat the same
+derivation rule or re-create an ancestor formula hash.
+
 ## Important Clarification
 
 ### Is review and revision part of Step6?

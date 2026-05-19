@@ -323,6 +323,142 @@ def build_dispatch(root: Path, rid: str, runtime: str = "unknown") -> list[dict[
     ]
 
 
+def formula_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def with_backend_metrics(payload: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    clone = copy.deepcopy(payload)
+    clone["backend_summary"] = [{"backend": "self_quant_analyzer", "status": "success", "key_metrics": metrics}]
+    clone["key_metrics"] = metrics
+    return clone
+
+
+def copy_report_artifact(root: Path, parent: str, child: str, rel_dir: str, stem: str) -> dict[str, Any]:
+    src = root / "objects" / rel_dir / f"{stem}__{parent}.json"
+    dst = root / "objects" / rel_dir / f"{stem}__{child}.json"
+    payload = load_json(src)
+    payload = json.loads(json.dumps(payload, ensure_ascii=False).replace(parent, child))
+    write_json(dst, payload)
+    return payload
+
+
+def prepare_prior_revision_child_fixture(root: Path) -> str:
+    parent = REPORT_COLD_START
+    child = f"{parent}__LOOP01__REVISION_MEMORY_SMOKE"
+    parent_formula = "rank(negate(signedpower(minus(1, divide(open, close)), 1)))"
+    child_formula = "rank(minus(divide(close, open), 1))"
+    parent_metrics = {
+        "rank_ic_mean": 0.05,
+        "rank_ic_ir": 0.30,
+        "pearson_ic_mean": 0.03,
+        "long_side_annual_return": -0.20,
+        "cost_adjusted_annual_return": -0.90,
+        "long_side_sharpe": -0.40,
+        "turnover": 0.80,
+    }
+    child_metrics = {
+        "rank_ic_mean": -0.05,
+        "rank_ic_ir": -0.30,
+        "pearson_ic_mean": -0.03,
+        "long_side_annual_return": -0.80,
+        "cost_adjusted_annual_return": -1.40,
+        "long_side_sharpe": -1.20,
+        "turnover": 0.85,
+    }
+    parent_eval_path = root / "objects" / "validation" / f"factor_evaluation__{parent}.json"
+    write_json(parent_eval_path, with_backend_metrics(load_json(parent_eval_path), parent_metrics))
+    child_eval = copy_report_artifact(root, parent, child, "validation", "factor_evaluation")
+    write_json(root / "objects" / "validation" / f"factor_evaluation__{child}.json", with_backend_metrics(child_eval, child_metrics))
+    copy_report_artifact(root, parent, child, "research_iteration_master", "research_iteration_master")
+    copy_report_artifact(root, parent, child, "factor_case_master", "factor_case_master")
+    copy_report_artifact(root, parent, child, "factor_run_master", "factor_run_master")
+    copy_report_artifact(root, parent, child, "research_iteration_master", "main_agent_mechanism_memo")
+    spec = copy_report_artifact(root, parent, child, "factor_spec_master", "factor_spec_master")
+    parent_hash = formula_hash(parent_formula)
+    child_hash = formula_hash(child_formula)
+    revision_spec_rel = f"objects/research_iteration_master/executable_revision_spec__{child}.json"
+    revision_spec = {
+        "contract_version": "factorforge_executable_revision_spec_v1",
+        "parent_report_id": parent,
+        "child_report_id": child,
+        "revision_type": "formula_mutation",
+        "derivation_rule": "open_close_sign_orientation_challenge",
+        "parent_formula": parent_formula,
+        "child_formula": child_formula,
+        "parent_formula_hash": parent_hash,
+        "child_formula_hash": child_hash,
+        "selected_revision_law_ids": ["agent_symbolic_law_discovery_real_law_001"],
+    }
+    write_json(root / revision_spec_rel, revision_spec)
+    spec.setdefault("canonical_spec", {})
+    spec["canonical_spec"]["formula_text"] = child_formula
+    spec["canonical_spec"]["formula_hash"] = child_hash
+    spec["parent_report_id"] = parent
+    spec["executable_revision_spec_ref"] = revision_spec_rel
+    spec["revision_identity"] = {
+        "contract_version": "factorforge_child_revision_identity_v1",
+        "parent_report_id": parent,
+        "child_report_id": child,
+        "revision_spec_path": revision_spec_rel,
+        "parent_formula_hash": parent_hash,
+        "child_formula_hash": child_hash,
+        "revision_noop": False,
+        "revision_identity_status": "changed",
+    }
+    write_json(root / "objects" / "factor_spec_master" / f"factor_spec_master__{child}.json", spec)
+    return child
+
+
+def case_prior_revision_memory_dispatch_contract(root: Path) -> dict[str, Any]:
+    rid = prepare_prior_revision_child_fixture(root)
+    runs = build_dispatch(root, rid)
+    packet = load_json(council_dir(root, rid) / f"revision_council_packet__{rid}.json")
+    taskbook = load_json(council_dir(root, rid) / f"agentic_taskbook__{rid}.json")
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    task_path = root / (manifest.get("agent_tasks") or [{}])[0].get("task_packet_path")
+    task_packet = load_json(task_path)
+    prior = packet.get("prior_revision_memory") or {}
+    task_prior = ((task_packet.get("shared_context") or {}).get("prior_revision_memory") or {})
+    required_outputs = set(task_packet.get("required_outputs") or [])
+    forbidden_changes = set(task_packet.get("forbidden_changes") or [])
+    original_task = copy.deepcopy(task_packet)
+    mutated = copy.deepcopy(task_packet)
+    mutated["required_outputs"] = [item for item in mutated.get("required_outputs") or [] if item not in {"prior_revision_outcome_review", "repeated_revision_guard"}]
+    write_json(task_path, mutated)
+    negative = validate_dispatch(root, rid)
+    write_json(task_path, original_task)
+    token = "BLOCK_AGENTIC_COUNCIL_DISPATCH_PRIOR_REVISION_REQUIRED_OUTPUTS_MISSING"
+    ok = (
+        all(item["rc"] == 0 for item in runs)
+        and prior.get("is_child_revision") is True
+        and prior.get("required_for_next_council") is True
+        and prior.get("prior_revision_outcome") == "falsified"
+        and prior.get("falsified_revision") is True
+        and "open_close_sign_orientation_challenge" in (prior.get("forbidden_repeat_revision_rules") or [])
+        and (prior.get("metric_delta") or {}).get("rank_ic_mean", {}).get("delta", 0) < 0
+        and (taskbook.get("shared_context") or {}).get("prior_revision_memory") == prior
+        and task_prior == prior
+        and {"prior_revision_outcome_review", "repeated_revision_guard"}.issubset(required_outputs)
+        and "repeat a falsified executable revision rule" in forbidden_changes
+        and negative["rc"] == 1
+        and token in (negative["stdout_tail"] + negative["stderr_tail"])
+    )
+    return result(
+        "prior_revision_memory_dispatch_contract",
+        ok,
+        "child Council dispatch carries prior failed revision memory and blocks task packets that omit the review outputs",
+        {
+            "setup_runs": runs,
+            "prior_revision_memory": prior,
+            "task_prior_revision_memory": task_prior,
+            "required_outputs": sorted(required_outputs),
+            "forbidden_changes": sorted(forbidden_changes),
+            "negative_validate": negative,
+        },
+    )
+
+
 def case_finalize_missing_result(root: Path) -> dict[str, Any]:
     rid = REPORT_MECHANISM_UNCLEAR
     runs = build_dispatch(root, rid)
@@ -478,6 +614,7 @@ def main() -> int:
         cases.append(case_fake_real_agent_result(root, include_identifier=False))
         cases.append(case_finalize_missing_result(root))
         cases.append(case_finalize_all_real_agent_results(root))
+        cases.append(case_prior_revision_memory_dispatch_contract(root))
     after = file_snapshot()
     polluted = pollution_matches(after - before)
     summary = {

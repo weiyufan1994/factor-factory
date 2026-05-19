@@ -231,6 +231,115 @@ def supplemental_research_context(report_id: str, spec: dict[str, Any], iteratio
     }
 
 
+def collect_key_metrics(evaluation: dict[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    if isinstance(evaluation.get("key_metrics"), dict):
+        metrics.update(evaluation["key_metrics"])
+    for item in evaluation.get("backend_summary") or []:
+        if isinstance(item, dict) and isinstance(item.get("key_metrics"), dict):
+            metrics.update(item["key_metrics"])
+    return metrics
+
+
+def numeric_metric(metrics: dict[str, Any], key: str) -> float | None:
+    value = metrics.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def metric_delta(parent_metrics: dict[str, Any], child_metrics: dict[str, Any], key: str) -> dict[str, Any]:
+    parent_value = numeric_metric(parent_metrics, key)
+    child_value = numeric_metric(child_metrics, key)
+    delta = None if parent_value is None or child_value is None else child_value - parent_value
+    return {"parent": parent_value, "child": child_value, "delta": delta}
+
+
+def load_optional_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return load_json(path)
+    except Exception:
+        return {}
+
+
+def prior_revision_memory(report_id: str, spec: dict[str, Any], current_metrics: dict[str, Any]) -> dict[str, Any]:
+    revision_identity = spec.get("revision_identity") if isinstance(spec.get("revision_identity"), dict) else {}
+    parent_report_id = spec.get("parent_report_id") or revision_identity.get("parent_report_id")
+    revision_spec_ref = spec.get("executable_revision_spec_ref") or revision_identity.get("revision_spec_path")
+    revision_spec_path = Path(str(revision_spec_ref)) if revision_spec_ref else Path("")
+    if revision_spec_ref and not revision_spec_path.is_absolute():
+        revision_spec_path = FF / revision_spec_path
+    revision_spec = load_optional_json(revision_spec_path) if revision_spec_ref else {}
+    if not parent_report_id:
+        parent_report_id = revision_spec.get("parent_report_id")
+    if not parent_report_id:
+        return {
+            "contract_version": "factorforge_prior_revision_memory_v1",
+            "is_child_revision": False,
+            "required_for_next_council": False,
+        }
+
+    parent_eval = load_optional_json(OBJ / "validation" / f"factor_evaluation__{parent_report_id}.json")
+    parent_metrics = collect_key_metrics(parent_eval)
+    deltas = {
+        key: metric_delta(parent_metrics, current_metrics, key)
+        for key in [
+            "rank_ic_mean",
+            "rank_ic_ir",
+            "pearson_ic_mean",
+            "long_side_annual_return",
+            "cost_adjusted_annual_return",
+            "long_side_sharpe",
+            "turnover",
+        ]
+    }
+    rank_ic_delta = deltas["rank_ic_mean"].get("delta")
+    cost_delta = deltas["cost_adjusted_annual_return"].get("delta")
+    long_delta = deltas["long_side_annual_return"].get("delta")
+    worsened = any(
+        value is not None and value < 0
+        for value in [rank_ic_delta, cost_delta, long_delta]
+    )
+    improved = any(
+        value is not None and value > 0
+        for value in [rank_ic_delta, cost_delta, long_delta]
+    ) and not worsened
+    outcome = "falsified" if worsened else ("improved" if improved else "inconclusive")
+    derivation_rule = revision_spec.get("derivation_rule")
+    parent_formula_hash = revision_spec.get("parent_formula_hash") or revision_identity.get("parent_formula_hash")
+    child_formula_hash = revision_spec.get("child_formula_hash") or revision_identity.get("child_formula_hash")
+    return {
+        "contract_version": "factorforge_prior_revision_memory_v1",
+        "is_child_revision": True,
+        "required_for_next_council": True,
+        "parent_report_id": parent_report_id,
+        "child_report_id": report_id,
+        "source_executable_revision_spec_path": str(revision_spec_path) if revision_spec_ref else None,
+        "derivation_rule": derivation_rule,
+        "parent_formula": revision_spec.get("parent_formula"),
+        "child_formula": revision_spec.get("child_formula"),
+        "parent_formula_hash": parent_formula_hash,
+        "child_formula_hash": child_formula_hash,
+        "metric_delta": deltas,
+        "prior_revision_outcome": outcome,
+        "falsified_revision": outcome == "falsified",
+        "forbidden_repeat_revision_rules": [derivation_rule] if derivation_rule and outcome == "falsified" else [],
+        "forbidden_repeat_formula_hashes": [
+            item for item in [parent_formula_hash, child_formula_hash] if isinstance(item, str) and item
+        ],
+        "council_requirements": [
+            "Explicitly state whether the previous executable revision was falsified, improved, or inconclusive.",
+            "Do not repeat a falsified derivation rule or re-create an ancestor formula hash.",
+            "Use parent-vs-child metric deltas as negative evidence before proposing the next executable law.",
+        ],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report-id", required=True)
@@ -269,10 +378,8 @@ def main() -> None:
 
     memo = nested(iteration, "research_judgment", "research_memo")
     canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
-    metrics: dict[str, Any] = {}
-    for item in evaluation.get("backend_summary") or []:
-        if isinstance(item, dict) and isinstance(item.get("key_metrics"), dict):
-            metrics.update(item["key_metrics"])
+    metrics = collect_key_metrics(evaluation)
+    revision_memory = prior_revision_memory(rid, spec, metrics)
 
     brief_ref = iteration.get("loop_research_brief") or {}
     brief_json = {}
@@ -299,6 +406,7 @@ def main() -> None:
         ),
         "formula_specific_derivation": formula_specific_derivation,
         "mechanism_formula_consistency": mechanism_formula_consistency,
+        "prior_revision_memory": revision_memory,
         "main_agent_mechanism_memo_ref": relpath(paths["main_agent_mechanism_memo"]),
         "main_agent_formula_component_map": main_agent_memo.get("formula_component_map") or [],
         "main_agent_math_hypothesis": main_agent_memo.get("math_hypothesis") or {},
@@ -308,6 +416,7 @@ def main() -> None:
             "critique selected mathematical model",
             "critique payer derivation",
             "critique evidence contradictions",
+            "critique prior executable revision outcome and do not repeat falsified revision laws",
             "propose revision or kill recommendation",
         ],
         "research_memo": {

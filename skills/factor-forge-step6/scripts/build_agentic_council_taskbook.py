@@ -55,7 +55,7 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
     return {
         "agent_role": role,
         "task_id": f"agent_{role}",
-        "research_question": question + " Critique the main agent mechanism memo. Do not reconstruct from a generic family label.",
+        "research_question": question + " Critique the main agent mechanism memo and any prior executable revision outcome. Do not reconstruct from a generic family label or repeat a falsified revision rule.",
         "main_agent_mechanism_memo_ref": f"objects/research_iteration_master/main_agent_mechanism_memo__{report_id}.json",
         "required_outputs": [
             "public_derivation_record",
@@ -65,6 +65,8 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
             "component_mapping_critique",
             "payer_derivation_critique",
             "evidence_contradiction_review",
+            "prior_revision_outcome_review",
+            "repeated_revision_guard",
             "revision_or_kill_recommendation",
             "profit_payer_derivation",
             "model_mutation_proposal",
@@ -82,6 +84,7 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
             "long-short adoption",
             "decile trading",
             "shared clean data mutation",
+            "repeat a falsified executable revision rule",
         ],
         "write_scope": f"objects/research_iteration_master/revision_council/{report_id}/agent_results/",
     }
@@ -213,6 +216,7 @@ def main() -> None:
             "main_agent_formula_component_map": packet.get("main_agent_formula_component_map") or [],
             "main_agent_math_hypothesis": packet.get("main_agent_math_hypothesis") or {},
             "main_agent_evidence_comparison": packet.get("main_agent_evidence_comparison") or {},
+            "prior_revision_memory": packet.get("prior_revision_memory") or {},
             "council_required_critiques": packet.get("council_required_critiques") or [],
             "supplemental_research_context": packet.get("supplemental_research_context") or {},
             "loop_research_brief_ref": brief_ref,

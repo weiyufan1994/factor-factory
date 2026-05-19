@@ -26,6 +26,11 @@ REQUIRED_OUTPUTS = {
     "kill_criteria",
     "overclaim_guard",
 }
+PRIOR_REVISION_REQUIRED_OUTPUTS = {
+    "prior_revision_outcome_review",
+    "repeated_revision_guard",
+}
+PRIOR_REVISION_FORBIDDEN_CHANGE = "repeat a falsified executable revision rule"
 REQUIRED_FORBIDDEN_TARGET_SUFFIXES = {
     "objects/handoff/handoff_to_step3b__{report_id}.json",
     "generated_code/{report_id}/",
@@ -162,6 +167,19 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
     required_outputs = set(packet.get("required_outputs") or [])
     if not REQUIRED_OUTPUTS.issubset(required_outputs):
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_REQUIRED_OUTPUTS_MISSING")
+    shared_context = packet.get("shared_context") if isinstance(packet.get("shared_context"), dict) else {}
+    prior_revision = shared_context.get("prior_revision_memory") if isinstance(shared_context.get("prior_revision_memory"), dict) else {}
+    if prior_revision.get("required_for_next_council") is True:
+        if prior_revision.get("prior_revision_outcome") not in {"falsified", "improved", "inconclusive"}:
+            reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_PRIOR_REVISION_MEMORY_MISSING")
+        if not PRIOR_REVISION_REQUIRED_OUTPUTS.issubset(required_outputs):
+            reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_PRIOR_REVISION_REQUIRED_OUTPUTS_MISSING")
+        forbidden_changes = set(packet.get("forbidden_changes") or [])
+        if prior_revision.get("falsified_revision") is True:
+            if not nonempty_list(prior_revision.get("forbidden_repeat_revision_rules")):
+                reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_PRIOR_REVISION_REPEAT_GUARD_MISSING")
+            if PRIOR_REVISION_FORBIDDEN_CHANGE not in forbidden_changes:
+                reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_PRIOR_REVISION_REPEAT_GUARD_MISSING")
     if not nonempty_list(packet.get("allowed_tools")) or not all(nonempty_str(item) for item in packet.get("allowed_tools") or []):
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_ALLOWED_TOOLS_MISSING")
     if not nonempty_list(packet.get("forbidden_changes")) or not all(nonempty_str(item) for item in packet.get("forbidden_changes") or []):

@@ -224,8 +224,10 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
     child_code = root / "generated_code" / str(child_id)
     child_spec_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{child_id}.json"
     parent_spec_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{report_id}.json"
+    child_prep_path = root / "objects" / "data_prep_master" / f"data_prep_master__{child_id}.json"
     revision_spec_path = root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child_id}.json"
     child_daily_csv = root / "runs" / str(child_id) / "step3a_local_inputs" / f"daily_input__{child_id}.csv"
+    child_daily_parquet = root / "runs" / str(child_id) / "step3a_local_inputs" / f"daily_input__{child_id}.parquet"
     child_wrapper_rc = ((child_iter.get("wrapper_command") or {}).get("rc"))
     child_wrapper_proof = Path(str(child_iter.get("wrapper_proof_path") or ""))
     materialization_rc = first.get("materialization_rc")
@@ -242,6 +244,18 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         or ((parent_spec.get("canonical_spec") or {}).get("formula_ir") or {}).get("formula_hash")
     )
     revision_spec = read_json(revision_spec_path) if revision_spec_path.exists() else {}
+    child_prep = read_json(child_prep_path) if child_prep_path.exists() else {}
+    child_local_inputs = child_prep.get("local_input_paths") if isinstance(child_prep.get("local_input_paths"), dict) else {}
+    child_daily_paths = [
+        str(child_local_inputs.get("daily_df_parquet") or ""),
+        str(child_local_inputs.get("daily_df_csv") or ""),
+        str(child_local_inputs.get("daily_input_meta_json") or ""),
+        str((child_local_inputs.get("daily_io_contract") or {}).get("csv_path") or "") if isinstance(child_local_inputs.get("daily_io_contract"), dict) else "",
+    ]
+    child_paths_reference_child_files = all(
+        (not raw) or f"daily_input" in raw and str(child_id) in Path(raw).name
+        for raw in child_daily_paths
+    )
     parent_not_overwritten_by_child = (
         (not parent_handoff.exists() or parent_handoff_payload.get("report_id") == report_id)
         and not parent_official.exists()
@@ -261,6 +275,8 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         and parent_not_overwritten_by_child
         and revision_spec_path.exists()
         and child_daily_csv.exists()
+        and child_daily_parquet.exists()
+        and child_paths_reference_child_files
         and child_formula_hash
         and parent_formula_hash
         and child_formula_hash != parent_formula_hash
@@ -281,7 +297,11 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         "parent_generated_code_unchanged": before == after,
         "parent_not_overwritten_by_child": parent_not_overwritten_by_child,
         "executable_revision_spec_exists": revision_spec_path.exists(),
-        "child_daily_snapshot_exists": child_daily_csv.exists(),
+        "child_daily_snapshot_exists": child_daily_csv.exists() and child_daily_parquet.exists(),
+        "child_daily_csv_exists": child_daily_csv.exists(),
+        "child_daily_parquet_exists": child_daily_parquet.exists(),
+        "child_paths_reference_child_files": child_paths_reference_child_files,
+        "child_daily_paths": child_daily_paths,
         "parent_formula_hash": parent_formula_hash,
         "child_formula_hash": child_formula_hash,
         "child_formula_changed": bool(child_formula_hash and parent_formula_hash and child_formula_hash != parent_formula_hash),
@@ -457,6 +477,8 @@ def write_step3_input_fixture(root: Path, report_id: str) -> None:
         write_json(spec_path, spec)
 
     daily = root / "runs" / report_id / "step3a_local_inputs" / f"daily_input__{report_id}.csv"
+    daily_parquet = root / "runs" / report_id / "step3a_local_inputs" / f"daily_input__{report_id}.parquet"
+    daily_meta = root / "runs" / report_id / "step3a_local_inputs" / f"daily_input_meta__{report_id}.json"
     daily.parent.mkdir(parents=True, exist_ok=True)
     dates = [
         "2020-01-02",
@@ -509,6 +531,25 @@ def write_step3_input_fixture(root: Path, report_id: str) -> None:
                         "returns": returns,
                     }
                 )
+    try:
+        import pandas as pd
+
+        pd.read_csv(daily).to_parquet(daily_parquet, index=False)
+    except Exception:
+        # Parquet support is available in normal Factor Forge environments; if
+        # not, the CSV path still keeps older loop smoke coverage meaningful.
+        pass
+    write_json(
+        daily_meta,
+        {
+            "report_id": report_id,
+            "row_count": len(dates) * len(tickers),
+            "format": "csv_and_parquet_smoke_fixture",
+        },
+    )
+    daily_csv_ref = str(Path(root.name) / "runs" / report_id / "step3a_local_inputs" / daily.name)
+    daily_parquet_ref = str(Path(root.name) / "runs" / report_id / "step3a_local_inputs" / daily_parquet.name)
+    daily_meta_ref = str(Path(root.name) / "runs" / report_id / "step3a_local_inputs" / daily_meta.name)
     prep = {
         "report_id": report_id,
         "factor_id": "SMOKE_PRICE_VOLUME",
@@ -537,7 +578,21 @@ def write_step3_input_fixture(root: Path, report_id: str) -> None:
         },
         "local_input_paths": {
             "input_mode": "daily_only",
-            "daily_df_csv": str(daily),
+            "daily_df_csv": daily_csv_ref,
+            "daily_df_parquet": daily_parquet_ref if daily_parquet.exists() else None,
+            "daily_input_meta_json": daily_meta_ref,
+            "preferred_daily_format": "parquet" if daily_parquet.exists() else "csv",
+            "audit_daily_format": "csv",
+            "daily_io_contract": {
+                "version": "factorforge_step3a_daily_io_contract_v1",
+                "performance_path": "parquet" if daily_parquet.exists() else "csv",
+                "audit_path": "csv",
+                "csv_output_policy": "full_csv",
+                "csv_path": daily_csv_ref,
+                "csv_sample_path": None,
+                "parquet_required_for_performance": bool(daily_parquet.exists()),
+                "csv_required_for_audit": True,
+            },
         },
         "sample_window": {"start": "2020-01-02", "end": "2020-01-13"},
         "data_sources": ["synthetic_ultimate_loop_fixture"],

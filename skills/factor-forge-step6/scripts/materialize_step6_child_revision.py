@@ -21,6 +21,7 @@ from factor_factory.formula.parser import parse_formula
 MATERIALIZATION_VERSION = "factorforge_step6_child_revision_materialization_v1"
 EXECUTABLE_REVISION_SPEC_VERSION = "factorforge_executable_revision_spec_v1"
 TARGET_EXISTS_BLOCK = "BLOCK_FACTORFORGE_CHILD_MATERIALIZATION_TARGET_EXISTS"
+DAILY_SNAPSHOT_MISSING_BLOCK = "BLOCK_FACTORFORGE_CHILD_DAILY_SNAPSHOT_MISSING"
 
 
 def utc_now() -> str:
@@ -69,13 +70,26 @@ def child_daily_input_path(root: Path, child: str, suffix: str) -> Path:
     return root / "runs" / child / "step3a_local_inputs" / f"daily_input__{child}.{suffix}"
 
 
+def child_daily_meta_path(root: Path, child: str) -> Path:
+    return root / "runs" / child / "step3a_local_inputs" / f"daily_input_meta__{child}.json"
+
+
 def resolved_path(root: Path, raw: Any) -> Path | None:
     if not raw:
         return None
     path = Path(str(raw)).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    return path
+    if path.is_absolute():
+        return path
+    candidates = [root / path]
+    parts = path.parts
+    if parts and parts[0] == root.name:
+        candidates.append(root.parent / path)
+        candidates.append(root / Path(*parts[1:]))
+    candidates.append(root.parent / path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def resolved_daily_sources(root: Path, data_prep: dict[str, Any]) -> dict[str, Path]:
@@ -90,6 +104,13 @@ def resolved_daily_sources(root: Path, data_prep: dict[str, Any]) -> dict[str, P
     return sources
 
 
+def declared_daily_source_keys(data_prep: dict[str, Any]) -> list[str]:
+    local_inputs = data_prep.get("local_input_paths")
+    if not isinstance(local_inputs, dict):
+        return []
+    return [key for key in ("daily_df_parquet", "daily_df_csv") if local_inputs.get(key)]
+
+
 def planned_target_paths(root: Path, parent: str, child: str, parent_data_prep: dict[str, Any]) -> dict[str, Path]:
     targets = {
         "alpha_idea_master": object_path(root, "alpha_idea_master", child),
@@ -101,6 +122,11 @@ def planned_target_paths(root: Path, parent: str, child: str, parent_data_prep: 
     for suffix, source in resolved_daily_sources(root, parent_data_prep).items():
         if source.exists():
             targets[f"child_daily_input_{suffix}"] = child_daily_input_path(root, child, suffix)
+    local_inputs = parent_data_prep.get("local_input_paths")
+    if isinstance(local_inputs, dict):
+        meta_source = resolved_path(root, local_inputs.get("daily_input_meta_json"))
+        if meta_source and meta_source.exists():
+            targets["child_daily_input_meta_json"] = child_daily_meta_path(root, child)
     for kind in ("qlib_adapter_config", "handoff_to_step3", "handoff_to_step4"):
         if object_path(root, kind, parent).exists():
             targets[kind] = object_path(root, kind, child)
@@ -301,6 +327,29 @@ def main() -> int:
         print(json.dumps({"missing_parent_artifacts": missing}, ensure_ascii=False, indent=2))
         return 1
     parent_data_prep = load_json(required_parent_paths["data_prep_master"])
+    declared_daily_keys = declared_daily_source_keys(parent_data_prep)
+    resolved_daily = resolved_daily_sources(root, parent_data_prep)
+    missing_daily = sorted(
+        key for key in declared_daily_keys
+        if key.removeprefix("daily_df_") not in resolved_daily
+    )
+    if missing_daily:
+        local_inputs = parent_data_prep.get("local_input_paths") if isinstance(parent_data_prep.get("local_input_paths"), dict) else {}
+        print(DAILY_SNAPSHOT_MISSING_BLOCK)
+        print(
+            json.dumps(
+                {
+                    "parent_report_id": parent,
+                    "child_report_id": child,
+                    "missing_daily_source_keys": missing_daily,
+                    "declared_paths": {key: local_inputs.get(key) for key in missing_daily},
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1
     targets = planned_target_paths(root, parent, child, parent_data_prep)
     existing_targets = existing_target_paths(targets)
     report_path = materialization_report_path(root, parent, child)
@@ -393,16 +442,35 @@ def main() -> int:
         if kind == "data_prep_master":
             local_inputs = payload.setdefault("local_input_paths", {})
             if isinstance(local_inputs, dict):
-                for suffix, daily_source in resolved_daily_sources(root, parent_data_prep).items():
+                copied_daily: dict[str, str] = {}
+                for suffix, daily_source in resolved_daily.items():
                     child_daily = targets[f"child_daily_input_{suffix}"]
                     child_daily.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(daily_source, child_daily)
+                    copied_daily[suffix] = str(child_daily)
                     local_inputs[f"daily_df_{suffix}"] = str(child_daily)
                     materialized[f"child_daily_input_{suffix}"] = str(child_daily)
+                meta_source = resolved_path(root, (parent_data_prep.get("local_input_paths") or {}).get("daily_input_meta_json"))
+                if meta_source and meta_source.exists() and "child_daily_input_meta_json" in targets:
+                    child_meta = targets["child_daily_input_meta_json"]
+                    child_meta.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(meta_source, child_meta)
+                    local_inputs["daily_input_meta_json"] = str(child_meta)
+                    materialized["child_daily_input_meta_json"] = str(child_meta)
                 if local_inputs.get("daily_df_parquet"):
                     local_inputs["preferred_daily_format"] = "parquet"
                 if local_inputs.get("daily_df_csv"):
                     local_inputs["audit_daily_format"] = "csv"
+                daily_io = local_inputs.get("daily_io_contract")
+                if isinstance(daily_io, dict):
+                    if "parquet" in copied_daily:
+                        daily_io["performance_path"] = "parquet"
+                    if "csv" in copied_daily:
+                        daily_io["audit_path"] = "csv"
+                        daily_io["csv_path"] = copied_daily["csv"]
+                    if "csv" not in copied_daily:
+                        daily_io["csv_path"] = None
+                    daily_io["csv_sample_path"] = None
                 local_inputs["input_mode"] = local_inputs.get("input_mode") or "daily_only"
         target = object_path(root, kind, child)
         write_json(target, payload)

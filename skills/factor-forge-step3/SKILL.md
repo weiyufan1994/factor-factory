@@ -119,6 +119,12 @@ Optional:
     Formula-IR with pandas reference parity, Parquet IO, and optional
     `sample_csv` audit output. Phase N.5 operator-kernel rewrite work is an
     experimental performance track, not a production default.
+  - Child revision runs created by the ultimate loop must consume
+    `objects/research_iteration_master/executable_revision_spec__{child_report_id}.json`
+    before generating code or factor values. A child report id must not silently
+    rerun the parent formula: missing specs must BLOCK, non-audit no-op formula
+    hashes must BLOCK, and Step3B metadata/handoff must expose the applied
+    executable revision spec and child formula hash.
 
 ### Handoff
 - `factorforge/objects/handoff/handoff_to_step4__{report_id}.json`
@@ -148,6 +154,11 @@ Optional:
 12. Step 3B must not run Step4-style quantile NAV, IC analysis, portfolio charts, or evaluator loops. Step 3B's proof is first-run `factor_values` + metadata only; Step4 owns all metrics, quantile tables, NAV, and plots.
 13. Step 3B inputs and outputs must respect the shared data contract: `trade_date` may be read from `YYYYMMDD`, `YYYY-MM-DD`, or Timestamp sources, but outputs should be stable `YYYYMMDD`-compatible keys and Step4 must normalize via `factor_factory.data_access.normalize_trade_date_series`.
 14. Step 3B must write `implementation_mode_decision` with version `factorforge_implementation_mode_decision_v1` into implementation plan, generated-code metadata, handoff, first-run metadata when generated, and ultimate proof summary. The decision must record selected mode or `blocked`, mode attempts, failure/not-applicable reasons, correctness risk, and human-review status.
+15. Child loop execution must be revision-aware. If a report id is a loop child,
+Step3B must require an executable revision spec, apply its child formula before
+identity validation/code generation, and reject missing or no-effect specs with
+hard BLOCK tokens. Reusing the parent formula in a child loop is research-chain
+pollution, not a valid iteration.
 
 ## Recommended execution chain
 

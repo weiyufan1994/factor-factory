@@ -35,7 +35,7 @@ from factor_factory.factor_families.registry import (
     resolve_family_plugin,
 )
 from factor_factory.formula.pandas_codegen import generate_pandas_formula_code, operator_metadata
-from factor_factory.formula.parser import resolve_formula_fields_for_schema
+from factor_factory.formula.parser import parse_formula, resolve_formula_fields_for_schema
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import operator_meta
 from factor_factory.formula.evaluator import evaluate_formula_frame
@@ -75,6 +75,7 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
 ]
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
+EXECUTABLE_REVISION_SPEC_VERSION = 'factorforge_executable_revision_spec_v1'
 
 
 def utc_now() -> str:
@@ -96,6 +97,78 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     import pandas as pd
 
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
+
+
+def executable_revision_spec_path(report_id: str) -> Path:
+    return OBJ / 'research_iteration_master' / f'executable_revision_spec__{report_id}.json'
+
+
+def is_child_revision_report(report_id: str, spec: dict) -> bool:
+    if not isinstance(spec, dict):
+        return False
+    if report_id and '__LOOP' in report_id:
+        return True
+    return bool(spec.get('parent_report_id') and spec.get('parent_report_id') != report_id)
+
+
+def apply_executable_revision_spec(report_id: str, spec: dict, spec_path: Path) -> tuple[dict, dict | None]:
+    if not is_child_revision_report(report_id, spec):
+        return spec, None
+    path = executable_revision_spec_path(report_id)
+    if not path.exists():
+        raise SystemExit(f'BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_MISSING: {path}')
+    revision_spec = load_json(path)
+    if revision_spec.get('contract_version') != EXECUTABLE_REVISION_SPEC_VERSION:
+        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: contract_version')
+    if revision_spec.get('child_report_id') != report_id:
+        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_report_id')
+    child_formula = str(revision_spec.get('child_formula') or '').strip()
+    if not child_formula:
+        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_formula')
+    parsed = parse_formula(child_formula)
+    if parsed.get('parse_status') != 'success':
+        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: formula_parse_failed')
+    parent_hash = str(revision_spec.get('parent_formula_hash') or '')
+    child_hash = str(revision_spec.get('child_formula_hash') or parsed.get('formula_hash') or '')
+    if revision_spec.get('revision_type') != 'audit_rerun' and parent_hash and parent_hash == child_hash:
+        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_NO_EFFECT')
+    if child_hash != parsed.get('formula_hash'):
+        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_formula_hash')
+
+    updated = json.loads(json.dumps(spec))
+    canonical = updated.setdefault('canonical_spec', {})
+    canonical['formula_text'] = child_formula
+    canonical['formula_ir'] = parsed
+    canonical['formula_hash'] = parsed.get('formula_hash')
+    canonical['operator_set'] = parsed.get('operator_set') or []
+    canonical['operators'] = parsed.get('operator_set') or []
+    canonical['required_inputs'] = parsed.get('required_fields') or []
+    canonical['required_fields'] = parsed.get('required_fields') or []
+    updated['formula_hash'] = parsed.get('formula_hash')
+    updated['executable_revision_spec_ref'] = str(path)
+    updated['revision_identity'] = {
+        'contract_version': 'factorforge_child_revision_identity_v1',
+        'parent_report_id': revision_spec.get('parent_report_id'),
+        'child_report_id': report_id,
+        'revision_spec_path': str(path),
+        'parent_formula_hash': parent_hash,
+        'child_formula_hash': child_hash,
+        'revision_noop': parent_hash == child_hash,
+        'revision_identity_status': 'audit_rerun' if revision_spec.get('revision_type') == 'audit_rerun' else 'changed',
+    }
+    updated.setdefault('implementation_contract', {})
+    if isinstance(updated['implementation_contract'], dict):
+        updated['implementation_contract']['mode'] = 'operator'
+        updated['implementation_contract']['formula_ir'] = parsed
+        updated['implementation_contract']['formula_hash'] = parsed.get('formula_hash')
+        updated['implementation_contract']['operator_set'] = parsed.get('operator_set') or []
+        updated['implementation_contract']['required_fields'] = parsed.get('required_fields') or []
+    if isinstance(updated.get('artifact_identity'), dict):
+        updated['artifact_identity']['formula_hash'] = parsed.get('formula_hash')
+        updated['artifact_identity']['implementation_mode'] = 'operator'
+    if updated != spec:
+        write_json(spec_path, updated)
+    return updated, revision_spec
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -1477,6 +1550,7 @@ def main():
     )
     prep = load_json(prep_path)
     spec = load_json(spec_path)
+    spec, executable_revision_spec = apply_executable_revision_spec(report_id or manifest_rid or '', spec, spec_path)
     spec_identity = assert_spec_identity_matches_manifest(spec, _manifest)
     step2_handoff = load_step2_handoff(report_id)
     step2_research_context = build_step2_research_context(report_id, spec, step2_handoff)
@@ -1636,6 +1710,15 @@ def main():
         family_fields=family_fields,
     )
     implementation_plan['artifact_identity'] = implementation_identity
+    if executable_revision_spec:
+        implementation_plan['executable_revision_spec'] = {
+            'path': str(executable_revision_spec_path(report_id)),
+            'parent_report_id': executable_revision_spec.get('parent_report_id'),
+            'child_report_id': executable_revision_spec.get('child_report_id'),
+            'parent_formula_hash': executable_revision_spec.get('parent_formula_hash'),
+            'child_formula_hash': executable_revision_spec.get('child_formula_hash'),
+            'revision_identity_status': 'audit_rerun' if executable_revision_spec.get('revision_type') == 'audit_rerun' else 'changed',
+        }
     if family_fields:
         implementation_plan.update(family_fields)
     implementation_plan['implementation_mode'] = spec_identity.get('implementation_mode') or implementation_plan.get('implementation_mode')
@@ -1695,6 +1778,7 @@ def main():
         'local_input_paths': prep.get('local_input_paths', {}),
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,
+        'executable_revision_spec': implementation_plan.get('executable_revision_spec'),
         'first_run_outputs': implementation_plan.get('first_run_outputs') or pending_first_run_outputs('no_local_snapshots_available')
     })
     write_json(handoff_path, handoff_payload)

@@ -222,11 +222,26 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
     child_iter = iterations[1] if len(iterations) > 1 else {}
     child_id = first.get("child_report_id")
     child_code = root / "generated_code" / str(child_id)
+    child_spec_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{child_id}.json"
+    parent_spec_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{report_id}.json"
+    revision_spec_path = root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child_id}.json"
+    child_daily_csv = root / "runs" / str(child_id) / "step3a_local_inputs" / f"daily_input__{child_id}.csv"
     child_wrapper_rc = ((child_iter.get("wrapper_command") or {}).get("rc"))
     child_wrapper_proof = Path(str(child_iter.get("wrapper_proof_path") or ""))
     materialization_rc = first.get("materialization_rc")
     after = marker.read_text(encoding="utf-8") if marker.exists() else ""
     parent_handoff_payload = read_json(parent_handoff) if parent_handoff.exists() else {}
+    child_spec = read_json(child_spec_path) if child_spec_path.exists() else {}
+    parent_spec = read_json(parent_spec_path) if parent_spec_path.exists() else {}
+    child_formula_hash = (
+        child_spec.get("formula_hash")
+        or ((child_spec.get("canonical_spec") or {}).get("formula_ir") or {}).get("formula_hash")
+    )
+    parent_formula_hash = (
+        parent_spec.get("formula_hash")
+        or ((parent_spec.get("canonical_spec") or {}).get("formula_ir") or {}).get("formula_hash")
+    )
+    revision_spec = read_json(revision_spec_path) if revision_spec_path.exists() else {}
     parent_not_overwritten_by_child = (
         (not parent_handoff.exists() or parent_handoff_payload.get("report_id") == report_id)
         and not parent_official.exists()
@@ -244,6 +259,12 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         and child_code.exists()
         and before == after
         and parent_not_overwritten_by_child
+        and revision_spec_path.exists()
+        and child_daily_csv.exists()
+        and child_formula_hash
+        and parent_formula_hash
+        and child_formula_hash != parent_formula_hash
+        and revision_spec.get("child_formula_hash") == child_formula_hash
     )
     return {
         "case": "loop_child_report_id_isolation",
@@ -259,7 +280,74 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         "child_generated_code_exists": child_code.exists(),
         "parent_generated_code_unchanged": before == after,
         "parent_not_overwritten_by_child": parent_not_overwritten_by_child,
+        "executable_revision_spec_exists": revision_spec_path.exists(),
+        "child_daily_snapshot_exists": child_daily_csv.exists(),
+        "parent_formula_hash": parent_formula_hash,
+        "child_formula_hash": child_formula_hash,
+        "child_formula_changed": bool(child_formula_hash and parent_formula_hash and child_formula_hash != parent_formula_hash),
+        "revision_spec_hash_matches_child": revision_spec.get("child_formula_hash") == child_formula_hash,
         "final_outcome": proof.get("final_outcome"),
+        "ok": ok,
+    }
+
+
+def run_child_revision_spec_missing_case(root: Path) -> dict[str, Any]:
+    from factor_factory.ultimate_loop.state import approved_child_revision_from_handoff
+
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    child = approved_child_revision_from_handoff(root, report_id, 1)
+    child_id = str(child.get("child_report_id") or f"{report_id}__LOOP01__MAIN_ITER_002")
+    materialize = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "materialize_step6_child_revision.py"),
+            "--parent-report-id",
+            report_id,
+            "--child-report-id",
+            child_id,
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+        extra_env={"FACTORFORGE_ULTIMATE_RUN": "1"},
+    )
+    spec_path = root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child_id}.json"
+    if spec_path.exists():
+        spec_path.unlink()
+    proc = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_factorforge_ultimate.py"),
+            "--report-id",
+            child_id,
+            "--start-step",
+            "3b",
+            "--end-step",
+            "3b",
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    proof = root / "objects" / "runtime_context" / f"ultimate_run_report__{child_id}.json"
+    proof_payload = read_json(proof) if proof.exists() else {}
+    command_tails = "\n".join(
+        str(cmd.get("stdout_tail", "")) + "\n" + str(cmd.get("stderr_tail", ""))
+        for cmd in (proof_payload.get("commands") or [])
+        if isinstance(cmd, dict)
+    )
+    output = proc["stdout_tail"] + proc["stderr_tail"] + command_tails
+    ok = materialize["rc"] == 0 and proc["rc"] != 0 and "BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_MISSING" in output
+    return {
+        "case": "loop_child_revision_spec_missing_blocks_step3b",
+        "report_id": report_id,
+        "child_report_id": child_id,
+        "materialization_rc": materialize["rc"],
+        "rc": proc["rc"],
+        "token_present": "BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_MISSING" in output,
+        "proof_path": str(proof),
+        "proof_exists": proof.exists(),
         "ok": ok,
     }
 
@@ -574,6 +662,7 @@ def main() -> int:
         run_with_fresh_fixture(root, "loop_wrapper_failure_blocks", run_wrapper_failure_case),
         run_with_fresh_fixture(root, "loop_child_report_id_isolation", run_child_isolation_case),
         run_with_fresh_fixture(root, "loop_child_materialization_target_exists_blocks", run_child_materialization_target_exists_case),
+        run_with_fresh_fixture(root, "loop_child_revision_spec_missing_blocks_step3b", run_child_revision_spec_missing_case),
         run_with_fresh_fixture(root, "loop_child_revision_missing_blocks", run_child_missing_case),
     ]
     cases.append(run_aggregate_brief_case(case_root(root, "loop_promote_stops")))

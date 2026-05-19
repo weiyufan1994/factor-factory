@@ -121,6 +121,24 @@ The current production/experimental split is documented in
   - research iteration record
 - if iterate: generate `revision_proposal` and optionally send control back to Step3B
 
+### Loop Child Revisions
+
+When Step6/Council approves a revision loop, the ultimate loop must not merely
+switch to a child report id and rerun Step3B. It must first materialize an
+auditable child revision package:
+
+- child `alpha_idea_master`, `factor_spec_master`, `data_prep_master`, and
+  optional handoffs/configs
+- report-local child daily snapshots copied from the parent Step3A slice
+- `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`
+  containing the executable child formula, parent/child formula hashes, selected
+  revision law ids when available, expected metric signature, falsification
+  tests, and kill criteria
+
+Child Step3B must consume this executable revision spec and BLOCK if it is
+missing or if a non-audit revision leaves the formula hash unchanged. A loop that
+recomputes the same parent formula under a child report id is invalid.
+
 ## Important Clarification
 
 ### Is review and revision part of Step6?

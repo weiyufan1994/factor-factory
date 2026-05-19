@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from .formula_specific import build_formula_understanding
+from .formula_specific import BASELINE_MODEL_FAMILIES, build_formula_understanding
 
 
 CONTRACT_VERSION = "factorforge_main_agent_mechanism_memo_v1"
@@ -21,6 +21,26 @@ REQUIRED_QA_FIELDS = [
     "metric_signature_answer",
     "falsification_answer",
 ]
+
+MODEL_FAMILY_ALIASES = {
+    "price_volume_microstructure": "transient_impact",
+    "price_volume_correlation": "copula_rank_dependence",
+    "ranked_price_volume_state_process": "transient_impact",
+    "behavioral_microstructure": "transient_impact",
+    "liquidity_shock": "transient_impact",
+    "linear_factor_projection": "projection_residualization",
+    "projection": "projection_residualization",
+    "residualization": "projection_residualization",
+}
+
+
+def normalize_derivation_model_family(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    if raw in BASELINE_MODEL_FAMILIES:
+        return raw
+    return MODEL_FAMILY_ALIASES.get(raw)
 
 
 def utc_now() -> str:
@@ -588,7 +608,8 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
     economic = memo.get("economic_hypothesis") if isinstance(memo.get("economic_hypothesis"), dict) else {}
     components = memo.get("formula_component_map") if isinstance(memo.get("formula_component_map"), list) else []
-    model_family = str(math.get("selected_model_family") or math.get("model_family") or "other")
+    raw_model_family = str(math.get("selected_model_family") or math.get("model_family") or "other")
+    model_family = normalize_derivation_model_family(raw_model_family) or raw_model_family
     payer = str(economic.get("payer_or_counterparty") or qa.get("payer_answer") or "")
     why = str(economic.get("why_they_pay") or qa.get("payer_answer") or "")
     payoff = str(math.get("target_functional") or qa.get("payoff_answer") or "")
@@ -805,6 +826,9 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     if any(term in text for term in ["deterministic_scaffold_draft", "deterministic_memo_draft_builder"]):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_DETERMINISTIC_TEMPLATE")
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
+    selected_model_family = math.get("selected_model_family") or math.get("model_family")
+    if normalize_derivation_model_family(selected_model_family) is None:
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID")
     process = str(math.get("process_or_distribution") or "").lower()
     if not process or not any(term in process for term in ["=", "process", "distribution", "decay", "state", "follows", "conditional"]):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_GENERIC")

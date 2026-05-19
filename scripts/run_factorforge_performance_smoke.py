@@ -29,6 +29,7 @@ from factor_factory.formula.pandas_codegen import generate_pandas_formula_code
 from factor_factory.formula.polars_evaluator import assert_polars_result_parity, polars_dependency_available
 from factor_factory.formula.ts_rank_candidates import available_candidates, compare_candidate_to_reference, prepare_ts_rank_frame
 from factor_factory.formula.kernels import resolve_formula_kernel_engine
+from factor_factory.factor_families.price_volume import PLUGIN as PRICE_VOLUME_PLUGIN
 
 CANONICAL_DIRS = ['objects', 'runs', 'evaluations', 'generated_code', 'archive', 'factorforge', 'data/clean']
 
@@ -714,6 +715,46 @@ def run_step3a_daily_no_csv_contract_stale_path_block_case(root: Path) -> dict[s
         'stdout_tail': tail(proc.stdout),
         'stderr_tail': tail(proc.stderr),
         'ok': bool(proc.returncode == 1 and token_present),
+    }
+
+
+def run_price_volume_plugin_uses_volume_case() -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_PRICE_VOLUME_PLUGIN'
+    plan, _stub, qlib, scaffold = PRICE_VOLUME_PLUGIN.generate(
+        report_id,
+        prep={'sample_window': {'start': '20200101', 'end': '20200101'}},
+        spec={'factor_id': 'PRICE_VOLUME_SMOKE'},
+    )
+    namespace: dict[str, Any] = {}
+    exec(_stub, namespace)
+    compute_factor = namespace['compute_factor']
+    daily = pd.DataFrame([
+        {'ts_code': 'A', 'trade_date': '20200101', 'open': 10.0, 'close': 11.0, 'vol': 100.0},
+        {'ts_code': 'B', 'trade_date': '20200101', 'open': 10.0, 'close': 11.0, 'vol': 200.0},
+    ])
+    out = compute_factor(daily)
+    signal_col = str(plan['output_schema']['columns'][-1])
+    missing_vol_blocked = False
+    try:
+        compute_factor(daily.drop(columns=['vol']))
+    except KeyError as exc:
+        missing_vol_blocked = 'vol' in str(exc)
+    values = out.sort_values('ts_code')[signal_col].to_numpy(dtype=float)
+    ok = (
+        signal_col in out.columns
+        and missing_vol_blocked
+        and len(values) == 2
+        and values[1] > values[0]
+        and plan.get('factor_family') == 'price_volume'
+        and qlib.get('mode') == 'price_volume_family'
+        and scaffold.get('producer') == 'factor_family_plugin'
+    )
+    return {
+        'case': 'price_volume_plugin_uses_volume',
+        'signal_col': signal_col,
+        'values': values.tolist(),
+        'missing_vol_blocked': missing_vol_blocked,
+        'ok': bool(ok),
     }
 
 
@@ -2716,6 +2757,7 @@ def main() -> int:
         run_step3a_daily_no_csv_policy_case(root),
         run_step3a_daily_sample_schema_mismatch_block_case(root),
         run_step3a_daily_no_csv_contract_stale_path_block_case(root),
+        run_price_volume_plugin_uses_volume_case(),
         run_step3b_profile_case(root),
         run_step3b_factor_sample_csv_policy_case(root),
         run_step3b_factor_no_csv_policy_case(root),

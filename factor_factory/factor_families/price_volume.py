@@ -66,13 +66,17 @@ NOT_GENERIC_FALLBACK = True
 
 
 def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:
-    required = ['ts_code', 'trade_date', 'open', 'close']
+    required = ['ts_code', 'trade_date', 'open', 'close', 'vol']
     for column in required:
         if column not in daily_df.columns:
             raise KeyError(f'missing daily column: {{column}}')
     out = daily_df[['ts_code', 'trade_date']].copy()
     safe_open = daily_df['open'].replace(0, pd.NA)
-    out[SIGNAL_COLUMN] = (daily_df['close'] - daily_df['open']) / safe_open
+    intraday_return = (daily_df['close'] - daily_df['open']) / safe_open
+    volume = pd.to_numeric(daily_df['vol'], errors='coerce')
+    date_median_volume = volume.groupby(daily_df['trade_date']).transform('median').replace(0, pd.NA)
+    relative_participation = volume / date_median_volume
+    out[SIGNAL_COLUMN] = intraday_return * relative_participation
     return out
 '''
         qlib = {

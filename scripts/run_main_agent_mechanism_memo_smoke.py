@@ -14,7 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.mechanism_math.main_agent_memo import build_main_agent_mechanism_memo, render_main_agent_mechanism_memo_markdown
+from factor_factory.mechanism_math.main_agent_memo import (
+    build_main_agent_mechanism_memo,
+    formula_specific_derivation_from_main_agent_memo,
+    render_main_agent_mechanism_memo_markdown,
+)
 
 CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
 RID = "MAIN_AGENT_MEMO_SIGN_VOLUME_SAMPLE_SMOKE"
@@ -357,6 +361,31 @@ def main() -> None:
         "command": open_close_validate,
     })
 
+    paths = fixture(root)
+    model_alias_memo = load_json(paths["memo"])
+    model_alias_memo.setdefault("math_hypothesis", {})["selected_model_family"] = "price_volume_microstructure"
+    write_json(paths["memo"], model_alias_memo)
+    model_alias_validate = run_cmd([sys.executable, "skills/factor-forge-step6/scripts/validate_main_agent_mechanism_memo.py", "--report-id", RID], root)
+    model_alias_derivation = formula_specific_derivation_from_main_agent_memo(model_alias_memo)
+    cases.append({
+        "case": "common_mechanism_family_normalized_for_derivation",
+        "ok": model_alias_validate["rc"] == 0
+        and (model_alias_derivation.get("economic_to_math_model_selection") or {}).get("baseline_model_family") == "transient_impact"
+        and model_alias_derivation.get("selected_model_family") == "transient_impact",
+        "command": model_alias_validate,
+        "baseline_model_family": (model_alias_derivation.get("economic_to_math_model_selection") or {}).get("baseline_model_family"),
+    })
+
+    fixture(root)
+    cases.append(mutate_and_validate(
+        root,
+        paths,
+        "invalid_derivation_model_family_blocks_early",
+        lambda m: m.setdefault("math_hypothesis", {}).update({"selected_model_family": "unsupported_template_family"}),
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID",
+    ))
+
+    paths = fixture(root)
     cases.append(mutate_and_validate(root, paths, "generic_memo_blocks", lambda m: m.setdefault("math_hypothesis", {}).update({"process_or_distribution": "rank delta sign sum divide close volume"})))
     fixture(root)
     cases.append(mutate_and_validate(root, paths, "correlation_claim_without_operator_blocks", lambda m: m.setdefault("operator_claim_consistency", {}).update({"claims_correlation_or_covariance": True, "formula_has_correlation_or_covariance_operator": False, "explicit_dependence_justification": None})))

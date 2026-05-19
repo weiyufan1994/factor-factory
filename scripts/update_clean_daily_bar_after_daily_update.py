@@ -130,7 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--backup", action="store_true")
     parser.add_argument("--skip-core-sync", action="store_true", help="Do not sync daily.csv/adj_factor/core CSVs from S3 before refreshing.")
-    parser.add_argument("--skip-publish", action="store_true", help="Refresh local clean layer only; do not upload parquet/meta or upsert catalog.")
+    parser.add_argument("--publish", action="store_true", help="Explicitly upload parquet/meta and upsert the catalog after refresh.")
+    parser.add_argument("--skip-publish", action="store_true", help="Compatibility no-op; publish is skipped unless --publish is provided.")
     return parser
 
 
@@ -142,6 +143,8 @@ def main() -> int:
     args.catalog = args.catalog.expanduser()
     args.run_root = args.run_root.expanduser()
     args.run_root.mkdir(parents=True, exist_ok=True)
+    if args.publish and args.skip_publish:
+        raise SystemExit("BLOCK_CLEAN_DAILY_PUBLISH_CONFLICT: use either --publish or --skip-publish, not both")
 
     raw_state = latest_common_raw_date(args)
     effective_end_date = raw_state["effective_end_date"]
@@ -210,8 +213,8 @@ def main() -> int:
         "clean_size_mb": round(clean_parquet.stat().st_size / 1024**2, 1) if clean_parquet.exists() else None,
     }
 
-    if args.skip_publish:
-        summary["publish"] = {"skipped": True}
+    if not args.publish:
+        summary["publish"] = {"skipped": True, "reason": "publish_requires_explicit_flag"}
     else:
         proc = run(
             [

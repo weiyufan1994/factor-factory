@@ -76,9 +76,9 @@ def validate_explicit_declaration(spec: dict[str, Any], contract: FamilyPluginCo
             f'BLOCK_FAMILY_PLUGIN_SOURCE_TYPE_NOT_ALLOWED: source_type={spec.get("source_type")!r}'
         )
 
-    factor_id = str(spec.get('factor_id') or '')
     allowed_ids = {item.upper() for item in contract.allowed_factor_ids}
-    if factor_id.upper() not in allowed_ids and not declaration['allow_unlisted_factor_id_with_human_review']:
+    factor_id = str(spec.get('factor_id') or '')
+    if allowed_ids and factor_id.upper() not in allowed_ids and not declaration['allow_unlisted_factor_id_with_human_review']:
         raise FamilyPluginContractError(
             f'BLOCK_FAMILY_PLUGIN_FACTOR_ID_NOT_ALLOWED: factor_id={factor_id!r} plugin={contract.plugin_id!r}'
         )

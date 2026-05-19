@@ -11,12 +11,12 @@ class ShadowCandlestickPlugin:
         plugin_id='shadow_candlestick_v1',
         plugin_version='v1',
         implementation_mode='hybrid',
-        allowed_factor_ids=('UBL',),
+        allowed_factor_ids=(),
         allowed_source_types=('pdf_report', 'natural_language_hypothesis'),
     )
 
     def generate(self, report_id: str, prep: dict[str, Any], spec: dict[str, Any]) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]:
-        factor_id = spec.get('factor_id', 'UBL')
+        factor_id = spec.get('factor_id') or f'{report_id}_shadow_candlestick'
         signal_col = signal_column_name(factor_id)
         sample = prep.get('sample_window', {})
         plugin_fields = plugin_identity_fields(self.contract)

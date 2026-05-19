@@ -208,7 +208,7 @@ This skill is intended to be ClawHub-publishable after Step 3 references and con
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a UBL/CPV/Alpha101-specific calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported operators, missing `formula_ir`, missing field aliases, unavailable parity, or unsafe direct code must BLOCK. UBL/CPV/shadow/candle/Williams builders are fixture/plugin-only and must never repair an unrelated spec.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported operators, missing `formula_ir`, missing field aliases, unavailable parity, or unsafe direct code must BLOCK. Family-plugin builders are explicit-contract-only and must never repair an unrelated spec.
 
 ## Operator / Qlib Engine
 
@@ -226,4 +226,4 @@ Generated hybrid code must expose `compute_operator_subgraph()`, `apply_custom_b
 
 ## Family Plugin Boundary
 
-UBL, CPV, shadow candlestick, candle, and Williams implementations may run only through `factor_factory.factor_families` after Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with structured evidence. Do not trigger a family plugin from `factor_id`, keywords, formula prose, or thesis text. Free-text matches may create a suggestion for human review, not an executable plugin selection.
+Family-specific implementations may run only through `factor_factory.factor_families` after Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with structured evidence. Do not trigger a family plugin from `factor_id`, keywords, formula prose, or thesis text. Free-text matches may create a suggestion for human review, not an executable plugin selection.

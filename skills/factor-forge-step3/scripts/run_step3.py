@@ -35,7 +35,7 @@ FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if 
 WORKSPACE = FF.parent
 OBJ = FF / 'objects'
 RUNS = FF / 'runs'
-REAL_CPV_BASE = WORKSPACE / 'tmp' / 'cpv_run_2016'
+REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
 LOCAL_TUSHARE = resolve_local_tushare_paths()
 CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
@@ -44,7 +44,7 @@ CSV_SAMPLE_MAX_ROWS = 10_000
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
     """Apply the orchestrator-owned runtime manifest before any Step3 path writes."""
-    global FF, WORKSPACE, OBJ, RUNS, REAL_CPV_BASE, CLEAN_DAILY_LAYER
+    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, CLEAN_DAILY_LAYER
     if not manifest_path:
         return None, None
     manifest = load_runtime_manifest(manifest_path)
@@ -52,7 +52,7 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
     RUNS = FF / 'runs'
-    REAL_CPV_BASE = WORKSPACE / 'tmp' / 'cpv_run_2016'
+    REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
     os.environ['FACTORFORGE_ROOT'] = str(FF)
     clean_root = Path(manifest.get('clean_data_root') or (FF / 'data' / 'clean'))
     CLEAN_DAILY_LAYER = CleanDailyLayerPaths(
@@ -64,7 +64,7 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
-    global FF, WORKSPACE, OBJ, RUNS, REAL_CPV_BASE, CLEAN_DAILY_LAYER
+    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, CLEAN_DAILY_LAYER
     if os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1':
         return
     if os.getenv('FACTORFORGE_ALLOW_DIRECT_STEP') != '1':
@@ -89,7 +89,7 @@ def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
     RUNS = FF / 'runs'
-    REAL_CPV_BASE = WORKSPACE / 'tmp' / 'cpv_run_2016'
+    REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
     os.environ['FACTORFORGE_ROOT'] = str(debug_root)
 
 
@@ -232,7 +232,8 @@ def merge_implementation_plan(existing: dict, updates: dict) -> dict:
 
 
 def infer_sample_window(factor_id: str, required_text: str):
-    if 'CPV' in factor_id.upper() or re.search(r'minute|分钟|高频', required_text, re.I):
+    del factor_id
+    if re.search(r'minute|分钟|高频', required_text, re.I):
         return {'start': '20160104', 'end': '20160329', 'calendar': 'A-share trading days'}
     return {'start': '20100104', 'end': 'current', 'calendar': 'A-share trading days'}
 
@@ -288,10 +289,7 @@ def synthetic_fallback_allowed(report_id: str) -> bool:
     return report_id.startswith('STEP') or report_id.endswith('_DEMO')
 
 
-def is_cpv_like_factor(factor_id: str, canonical: dict) -> bool:
-    if 'CPV' in str(factor_id).upper():
-        return True
-
+def is_price_volume_minute_formula(canonical: dict) -> bool:
     required_inputs = [str(x).lower() for x in (canonical.get('required_inputs') or [])]
     formula_text = str(canonical.get('formula_text') or '').lower()
     cross_steps = ' '.join(str(x).lower() for x in (canonical.get('cross_sectional_steps') or []))
@@ -334,7 +332,7 @@ def candidate_minute_roots() -> list[Path]:
     candidates.extend([
         # Preferred local raw cache layout for S3-synced minute partitions.
         Path.home() / '.qlib' / 'raw_tushare' / '分钟数据' / 'raw' / 'stk_mins_1min',
-        WORKSPACE / 'tmp' / 'cpv_run_2016' / 'stk_mins_1min',
+        REAL_PRICE_VOLUME_BASE / 'stk_mins_1min',
         WORKSPACE / 'qlib_test' / 'qlib_1min_src',
         Path.home() / 'projects' / 'qlib_test' / 'qlib_1min_src',
     ])
@@ -412,14 +410,14 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
     }
 
 
-def build_local_cpv_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
+def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
     # Step 3A output must be executable by Step 4:
     # produce local snapshot paths even when real historical data is unavailable.
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
 
     minute_meta = next((meta for meta in (inspect_minute_root(p) for p in candidate_minute_roots()) if meta), None)
-    real_minute_root = minute_meta['path'] if minute_meta else REAL_CPV_BASE / 'stk_mins_1min'
+    real_minute_root = minute_meta['path'] if minute_meta else REAL_PRICE_VOLUME_BASE / 'stk_mins_1min'
     if minute_meta and not clean_daily_layer_ready(CLEAN_DAILY_LAYER) and not synthetic_fallback_allowed(report_id):
         return {
             'snapshot_note': (
@@ -460,7 +458,7 @@ def build_local_cpv_snapshots(report_id: str, sample_window: dict, csv_output_po
             'snapshot_note': (
                 f'Real local minute source found at {real_minute_root}, but only '
                 f'{minute_meta.get("trade_date_count", 0)} trading day(s) are available; '
-                'insufficient for CPV rolling-window reconstruction.'
+                'insufficient for formula-declared price-volume rolling-window reconstruction.'
             ),
             'snapshot_source': 'real_local_insufficient',
         }
@@ -566,12 +564,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
 
     factor_id = fsm.get('factor_id', report_id)
     canonical = fsm.get('canonical_spec', {})
-    cpv_like = is_cpv_like_factor(factor_id, canonical)
+    price_volume_minute = is_price_volume_minute_formula(canonical)
     required = canonical.get('required_inputs', [])
     required_text = ' '.join(required)
-    need_minute = bool(re.search(r'minute|分钟|高频', required_text, re.I)) or cpv_like
+    need_minute = bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute
     need_daily = True
-    need_daily_basic = cpv_like or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
+    need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
 
     sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
     data_sources = []
@@ -660,8 +658,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         })
 
     local_input_paths = {}
-    if cpv_like:
-        # CPV should prefer daily_basic for valuation / scale / turnover features.
+    if price_volume_minute:
+        # Formula-declared price-volume minute factors may need daily_basic for scale / turnover features.
         # Only keep risks that are truly unresolved in the current data contract.
         proxy_rules.extend([
             {
@@ -671,8 +669,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                 'risk': 'high'
             }
         ])
-        local_input_paths = build_local_cpv_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
-        notes.append('CPV 当前应优先使用 daily_basic_incremental 中的 total_mv / circ_mv / turnover_rate / pe / pb 等字段')
+        local_input_paths = build_local_price_volume_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
+        notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_source in {'shared_clean_daily_layer', 'synthetic_fallback'}:
@@ -764,8 +762,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     implementation_plan_stub = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'preferred_execution_mode': 'hybrid' if cpv_like else 'direct_code',
-        'implementation_mode': 'hybrid' if cpv_like else 'direct_code',
+        'preferred_execution_mode': 'hybrid' if price_volume_minute else 'direct_code',
+        'implementation_mode': 'hybrid' if price_volume_minute else 'direct_code',
         'candidate_paths': ['operator', 'hybrid', 'direct_code'],
         'current_decision': 'defer_to_step3b',
         'notes': [

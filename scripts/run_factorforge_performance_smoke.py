@@ -292,7 +292,7 @@ def run_step3b_profile_case(root: Path) -> dict[str, Any]:
 def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_CONTRACT'
     module = import_run_step3(root)
-    local_inputs = module.build_local_cpv_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
+    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     csv_path = root.parent / local_inputs.get('daily_df_csv', '')
     contract = local_inputs.get('daily_io_contract') or {}
@@ -329,7 +329,7 @@ def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
 def run_step3a_daily_sample_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SAMPLE_POLICY'
     module = import_run_step3(root)
-    local_inputs = module.build_local_cpv_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
+    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     full_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
     sample_csv_path = root.parent / local_inputs.get('daily_df_csv_sample', '')
@@ -370,7 +370,7 @@ def run_step3a_daily_sample_csv_policy_case(root: Path) -> dict[str, Any]:
 def run_step3a_daily_no_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_NO_CSV_POLICY'
     module = import_run_step3(root)
-    local_inputs = module.build_local_cpv_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
+    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     full_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
     sample_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input_sample__{report_id}.csv'
@@ -533,7 +533,7 @@ def run_step3_daily_large_schema_mismatch_block_case(root: Path) -> dict[str, An
 def run_step3a_daily_sample_schema_mismatch_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SAMPLE_SCHEMA_MISMATCH'
     module = import_run_step3(root)
-    local_inputs = module.build_local_cpv_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
+    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
     sample_csv_path = root.parent / local_inputs.get('daily_df_csv_sample', '')
     if sample_csv_path.exists():
         lines = sample_csv_path.read_text(encoding='utf-8').splitlines()
@@ -693,7 +693,7 @@ def run_csv_policy_invalid_cli_blocks_case(root: Path) -> dict[str, Any]:
 def run_step3a_daily_no_csv_contract_stale_path_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_NO_CSV_STALE_PATH'
     module = import_run_step3(root)
-    local_inputs = module.build_local_cpv_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
+    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
     contract = local_inputs.get('daily_io_contract') or {}
     contract['csv_path'] = f'runs/{report_id}/step3a_local_inputs/stale_full.csv'
     contract['csv_sample_path'] = f'runs/{report_id}/step3a_local_inputs/stale_sample.csv'

@@ -35,7 +35,7 @@ def main() -> None:
     row_count = int(len(df))
     date_count = int(df['trade_date'].nunique()) if 'trade_date' in df.columns else None
     ticker_count = int(df['ts_code'].nunique()) if 'ts_code' in df.columns else None
-    factor_col = 'cpv_factor' if 'cpv_factor' in df.columns else (df.columns[-1] if len(df.columns) else None)
+    factor_col = df.columns[-1] if len(df.columns) else None
 
     payload = {
         'backend': 'my_custom_backtest',

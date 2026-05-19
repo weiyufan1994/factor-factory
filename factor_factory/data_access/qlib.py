@@ -82,7 +82,7 @@ def to_qlib_frame(
 
 def to_qlib_signal_frame(
     frame: pd.DataFrame,
-    signal_col: str = 'cpv_factor',
+    signal_col: str = 'factor_value',
     instrument_col: str = 'ts_code',
     date_col: str = 'trade_date',
     instrument_style: str = 'legacy_qlib',

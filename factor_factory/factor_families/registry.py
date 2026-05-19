@@ -11,12 +11,12 @@ from .base import (
     plugin_identity_fields,
     validate_explicit_declaration,
 )
-from .cpv import PLUGIN as CPV_PLUGIN
+from .price_volume import PLUGIN as PRICE_VOLUME_PLUGIN
 from .shadow_candlestick import PLUGIN as SHADOW_CANDLESTICK_PLUGIN
 
 PLUGINS: dict[str, FamilyPlugin] = {
     SHADOW_CANDLESTICK_PLUGIN.contract.plugin_id: SHADOW_CANDLESTICK_PLUGIN,
-    CPV_PLUGIN.contract.plugin_id: CPV_PLUGIN,
+    PRICE_VOLUME_PLUGIN.contract.plugin_id: PRICE_VOLUME_PLUGIN,
 }
 
 

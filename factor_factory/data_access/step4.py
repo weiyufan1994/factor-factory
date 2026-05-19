@@ -84,8 +84,6 @@ def infer_signal_column(frame: pd.DataFrame, factor_id: str | None = None) -> st
         return preferred
     if len(candidates) == 1:
         return candidates[0]
-    if 'cpv_factor' in candidates:
-        return 'cpv_factor'
     return candidates[-1]
 
 

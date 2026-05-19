@@ -5,18 +5,18 @@ from typing import Any
 from .base import FAMILY_PLUGIN_PRODUCER, FamilyPluginContract, plugin_identity_fields, signal_column_name
 
 
-class CPVPlugin:
+class PriceVolumePlugin:
     contract = FamilyPluginContract(
-        family_id='cpv',
-        plugin_id='cpv_v1',
+        family_id='price_volume',
+        plugin_id='price_volume_v1',
         plugin_version='v1',
         implementation_mode='direct_code',
-        allowed_factor_ids=('CPV',),
+        allowed_factor_ids=(),
         allowed_source_types=('pdf_report', 'natural_language_hypothesis'),
     )
 
     def generate(self, report_id: str, prep: dict[str, Any], spec: dict[str, Any]) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]:
-        factor_id = spec.get('factor_id', 'CPV')
+        factor_id = spec.get('factor_id') or f'{report_id}_price_volume'
         signal_col = signal_column_name(factor_id)
         plugin_fields = plugin_identity_fields(self.contract)
         plan = {
@@ -26,8 +26,8 @@ class CPVPlugin:
             'producer': FAMILY_PLUGIN_PRODUCER,
             **plugin_fields,
             'rationale': [
-                'Explicit cpv_v1 family plugin selected by Step2 contract.',
-                'This path is not a generic fallback and cannot be triggered by CPV text tokens alone.',
+                'Explicit price_volume_v1 family plugin selected by Step2 contract.',
+                'This path is not a generic fallback and cannot be triggered by free-text price-volume tokens alone.',
             ],
             'inputs': {
                 'minute_dataset': 'tushare_minute_bars',
@@ -49,9 +49,9 @@ class CPVPlugin:
             },
         }
         stub = f'''"""
-Explicit cpv_v1 family plugin scaffold for {factor_id}.
+Explicit price_volume_v1 family plugin scaffold for {factor_id}.
 This file is not a generic fallback. It is valid only when Step2 declares
-factor_family=cpv and family_plugin_allowed=true.
+factor_family=price_volume and family_plugin_allowed=true.
 """
 
 from __future__ import annotations
@@ -81,8 +81,8 @@ def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:
             'producer': FAMILY_PLUGIN_PRODUCER,
             **plugin_fields,
             'status': 'family_plugin_scaffold',
-            'mode': 'cpv_family',
-            'non_qlib_parts': ['audited CPV-specific price-volume decomposition belongs to explicit plugin logic'],
+            'mode': 'price_volume_family',
+            'non_qlib_parts': ['audited price-volume decomposition belongs to explicit plugin logic'],
         }
         scaffold = {
             'report_id': report_id,
@@ -96,4 +96,4 @@ def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:
         return plan, stub, qlib, scaffold
 
 
-PLUGIN = CPVPlugin()
+PLUGIN = PriceVolumePlugin()

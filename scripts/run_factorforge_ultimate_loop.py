@@ -116,8 +116,29 @@ def materialization_command(parent_report_id: str, child_report_id: str, factorf
     ]
 
 
+def synthesis_approval_command(report_id: str, factorforge_root: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "approve_main_agent_council_synthesis.py"),
+        "--report-id",
+        report_id,
+        "--factorforge-root",
+        str(factorforge_root),
+        "--approval-source",
+        "ultimate_loop_auto_bridge",
+    ]
+
+
 def materialization_report_path(factorforge_root: Path, parent_report_id: str, child_report_id: str) -> Path:
     return factorforge_root / "objects" / "runtime_context" / f"child_revision_materialization__{parent_report_id}__{child_report_id}.json"
+
+
+def synthesis_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
+    council_dir = factorforge_root / "objects" / "research_iteration_master" / "revision_council" / report_id
+    return (
+        (council_dir / f"main_agent_council_synthesis__{report_id}.json").exists()
+        and (council_dir / f"revision_council_summary__{report_id}.json").exists()
+    )
 
 
 def brief_ref(factorforge_root: Path, report_id: str) -> dict[str, Any]:
@@ -284,6 +305,34 @@ def main() -> int:
         proof.setdefault("iterations", []).append(iteration)
         proof["updated_at_utc"] = utc_now()
         write_json_atomic(proof_path, proof)
+
+        if (
+            state.get("outcome") == "awaiting_agent_results"
+            and synthesis_bridge_ready(ctx.factorforge_root, current_report_id)
+        ):
+            approval_cmd = synthesis_approval_command(current_report_id, ctx.factorforge_root)
+            approval_result = run_command(approval_cmd, env=env, dry_run=args.dry_run)
+            iteration["approval_bridge_command"] = approval_result
+            iteration["approval_bridge_rc"] = approval_result.get("rc")
+            if approval_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_COUNCIL_SYNTHESIS_APPROVAL_FAILED"
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_COUNCIL_SYNTHESIS_APPROVAL_FAILED")
+                return 1
+            state = classify_loop_state(
+                ctx.factorforge_root,
+                current_report_id,
+                int(command_result.get("rc") or 0),
+                max_reached=loop_index >= args.max_loops,
+            )
+            iteration.update(state)
+            proof["updated_at_utc"] = utc_now()
+            append_note(proof, f"Approved main-agent Council synthesis for {current_report_id}")
+            write_json_atomic(proof_path, proof)
 
         if forbidden_changes:
             proof["status"] = "FAIL"

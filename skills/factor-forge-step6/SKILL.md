@@ -122,6 +122,13 @@ Council templates, generic modification text, or a `handoff_to_step3b` without
 this synthesis are advisory-only and must not be materialized. The materializer
 must BLOCK with a precise token instead of inferring a fallback such as
 `negate(parent_formula)`.
+After the synthesis is written and approved, run
+`skills/factor-forge-step6/scripts/approve_main_agent_council_synthesis.py`.
+That bridge validates the synthesis, records the approval artifact, updates
+`final_revision_strategy.loop_authorization=approved_for_step3b_handoff`, writes
+the active `handoff_to_step3b`, refreshes the loop brief Council section, and
+runs `validate_step6.py`. Without this approval bridge, a completed Council plus
+synthesis remains advisory and the ultimate loop must not materialize a child.
 38. When the ultimate loop receives an approved Step3B handoff and a valid main
 agent Council synthesis, Step6 child materialization must write
 `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`

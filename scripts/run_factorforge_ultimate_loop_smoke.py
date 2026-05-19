@@ -383,6 +383,220 @@ def run_child_explicit_orchestrator_synthesis_materializes_case(root: Path) -> d
     }
 
 
+def approve_main_agent_synthesis_command(report_id: str, root: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "approve_main_agent_council_synthesis.py"),
+        "--report-id",
+        report_id,
+        "--factorforge-root",
+        str(root),
+        "--approval-source",
+        "ultimate_loop_smoke_default_approval",
+    ]
+
+
+def run_council_synthesis_approval_bridge_case(root: Path) -> dict[str, Any]:
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    child_formula = "rank(close)"
+    law_id = "smoke_explicit_smoothing_law_001"
+    write_step3_input_fixture(root, report_id)
+    council = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_factorforge_ultimate.py"),
+            "--report-id",
+            report_id,
+            "--start-step",
+            "6",
+            "--end-step",
+            "6",
+            "--council-mode",
+            "agentic",
+            "--agentic-council-executor",
+            "local_mock",
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    synthesis = write_main_agent_council_synthesis_fixture(root, report_id, child_formula=child_formula, law_id=law_id)
+    approval = run(approve_main_agent_synthesis_command(report_id, root), root=root)
+    iteration_path = root / "objects" / "research_iteration_master" / f"research_iteration_master__{report_id}.json"
+    handoff_path = root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
+    iteration = read_json(iteration_path) if iteration_path.exists() else {}
+    handoff = read_json(handoff_path) if handoff_path.exists() else {}
+    final_strategy = (((iteration.get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
+    validate = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "validate_step6.py"),
+            "--report-id",
+            report_id,
+        ],
+        root=root,
+    )
+    ok = (
+        council["rc"] == 0
+        and approval["rc"] == 0
+        and validate["rc"] == 0
+        and handoff_path.exists()
+        and final_strategy.get("loop_authorization") == "approved_for_step3b_handoff"
+        and handoff.get("loop_authorization") == "approved_for_step3b_handoff"
+        and handoff.get("orchestrator_synthesis_path") == str(synthesis)
+        and ((handoff.get("selected_revision") or {}).get("child_formula") == child_formula)
+    )
+    return {
+        "case": "loop_council_synthesis_approval_bridge_activates_handoff",
+        "report_id": report_id,
+        "council_rc": council["rc"],
+        "approval_rc": approval["rc"],
+        "validate_step6_rc": validate["rc"],
+        "handoff_exists": handoff_path.exists(),
+        "final_loop_authorization": final_strategy.get("loop_authorization"),
+        "handoff_loop_authorization": handoff.get("loop_authorization"),
+        "handoff_synthesis_path": handoff.get("orchestrator_synthesis_path"),
+        "selected_child_formula": ((handoff.get("selected_revision") or {}).get("child_formula")),
+        "stdout_tail": approval["stdout_tail"],
+        "stderr_tail": approval["stderr_tail"],
+        "ok": ok,
+    }
+
+
+def run_council_synthesis_approval_validation_failure_rolls_back_case(root: Path) -> dict[str, Any]:
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    council = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_factorforge_ultimate.py"),
+            "--report-id",
+            report_id,
+            "--start-step",
+            "6",
+            "--end-step",
+            "6",
+            "--council-mode",
+            "agentic",
+            "--agentic-council-executor",
+            "local_mock",
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    write_main_agent_council_synthesis_fixture(root, report_id, child_formula="rank(close)")
+    iteration_path = root / "objects" / "research_iteration_master" / f"research_iteration_master__{report_id}.json"
+    iteration_before = iteration_path.read_text(encoding="utf-8") if iteration_path.exists() else None
+    iteration = read_json(iteration_path) if iteration_path.exists() else {}
+    brief_ref = iteration.get("loop_research_brief") if isinstance(iteration.get("loop_research_brief"), dict) else {}
+    md_path = Path(str(brief_ref.get("markdown_path") or ""))
+    if not md_path.is_absolute():
+        md_path = root / md_path
+    if md_path.exists():
+        md_path.unlink()
+    handoff_path = root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
+    approval = run(approve_main_agent_synthesis_command(report_id, root), root=root)
+    iteration_after = iteration_path.read_text(encoding="utf-8") if iteration_path.exists() else None
+    approval_artifact = (
+        root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"main_agent_council_synthesis_approval__{report_id}.json"
+    )
+    approval_payload = read_json(approval_artifact) if approval_artifact.exists() else {}
+    ok = (
+        council["rc"] == 0
+        and approval["rc"] != 0
+        and not handoff_path.exists()
+        and iteration_after == iteration_before
+        and approval_artifact.exists()
+        and approval_payload.get("rolled_back_active_writes") is True
+    )
+    return {
+        "case": "loop_council_synthesis_approval_validation_failure_rolls_back",
+        "report_id": report_id,
+        "council_rc": council["rc"],
+        "approval_rc": approval["rc"],
+        "handoff_absent_after_failure": not handoff_path.exists(),
+        "iteration_restored": iteration_after == iteration_before,
+        "approval_artifact_exists": approval_artifact.exists(),
+        "rollback_recorded": approval_payload.get("rolled_back_active_writes") is True,
+        "stdout_tail": approval["stdout_tail"],
+        "stderr_tail": approval["stderr_tail"],
+        "ok": ok,
+    }
+
+
+def run_loop_consumes_completed_council_synthesis_case(root: Path) -> dict[str, Any]:
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    council = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_factorforge_ultimate.py"),
+            "--report-id",
+            report_id,
+            "--start-step",
+            "6",
+            "--end-step",
+            "6",
+            "--council-mode",
+            "agentic",
+            "--agentic-council-executor",
+            "local_mock",
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    synthesis = write_main_agent_council_synthesis_fixture(root, report_id, child_formula="rank(close)")
+    proc = run(
+        loop_command(
+            root,
+            report_id,
+            start_step="6",
+            max_loops=2,
+            council_mode="agentic",
+            executor="dispatch_manifest",
+            adapter="none",
+        ),
+        root=root,
+    )
+    proof = load_proof(root, report_id)
+    iterations = proof.get("iterations") or []
+    first = iterations[0] if iterations else {}
+    child_id = first.get("child_report_id")
+    revision_spec_path = root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child_id}.json"
+    revision_spec = read_json(revision_spec_path) if revision_spec_path.exists() else {}
+    ok = (
+        council["rc"] == 0
+        and proc["rc"] == 0
+        and first.get("approval_bridge_rc") == 0
+        and first.get("materialization_rc") == 0
+        and revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis)
+        and revision_spec.get("child_formula") == "rank(close)"
+        and proof.get("status") in {"PASS", "PAUSED"}
+    )
+    return {
+        "case": "loop_consumes_completed_council_synthesis_and_materializes_child",
+        "report_id": report_id,
+        "rc": proc["rc"],
+        "council_rc": council["rc"],
+        "proof_status": proof.get("status"),
+        "final_outcome": proof.get("final_outcome"),
+        "approval_bridge_rc": first.get("approval_bridge_rc"),
+        "materialization_rc": first.get("materialization_rc"),
+        "child_report_id": child_id,
+        "revision_spec_exists": revision_spec_path.exists(),
+        "revision_spec_uses_synthesis": revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis),
+        "child_formula": revision_spec.get("child_formula"),
+        "ok": ok,
+    }
+
+
 def run_child_isolation_case(root: Path) -> dict[str, Any]:
     report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
     write_step3_input_fixture(root, report_id)
@@ -900,6 +1114,9 @@ def main() -> int:
         run_with_fresh_fixture(root, "loop_wrapper_failure_blocks", run_wrapper_failure_case),
         run_with_fresh_fixture(root, "loop_child_orchestrator_synthesis_missing_blocks", run_child_orchestrator_synthesis_missing_case),
         run_with_fresh_fixture(root, "loop_child_explicit_orchestrator_synthesis_materializes", run_child_explicit_orchestrator_synthesis_materializes_case),
+        run_with_fresh_fixture(root, "loop_council_synthesis_approval_bridge_activates_handoff", run_council_synthesis_approval_bridge_case),
+        run_with_fresh_fixture(root, "loop_council_synthesis_approval_validation_failure_rolls_back", run_council_synthesis_approval_validation_failure_rolls_back_case),
+        run_with_fresh_fixture(root, "loop_consumes_completed_council_synthesis_and_materializes_child", run_loop_consumes_completed_council_synthesis_case),
         run_with_fresh_fixture(root, "loop_child_report_id_isolation", run_child_isolation_case),
         run_with_fresh_fixture(root, "loop_child_materialization_target_exists_blocks", run_child_materialization_target_exists_case),
         run_with_fresh_fixture(root, "loop_child_revision_spec_missing_blocks_step3b", run_child_revision_spec_missing_case),

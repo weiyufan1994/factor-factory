@@ -131,6 +131,12 @@ auditable child revision package:
   `objects/research_iteration_master/revision_council/<report_id>/main_agent_council_synthesis__<report_id>.json`
   and `.md`, authored by the currently running main agent after reading the
   Council results
+- main-agent synthesis approval bridge:
+  `skills/factor-forge-step6/scripts/approve_main_agent_council_synthesis.py`
+  must validate the synthesis, record the approval artifact, activate
+  `final_revision_strategy.loop_authorization=approved_for_step3b_handoff`,
+  write the active `handoff_to_step3b`, refresh the loop brief Council section,
+  and rerun `validate_step6.py`
 - child `alpha_idea_master`, `factor_spec_master`, `data_prep_master`, and
   optional handoffs/configs
 - report-local child daily snapshots copied from the parent Step3A slice
@@ -146,6 +152,11 @@ The materializer must not invent a fallback formula from generic handoff text.
 If Council results are only advisory templates and no main-agent synthesis with
 `selected_revision.child_formula` exists, the loop must BLOCK instead of
 materializing `negate(parent_formula)` or any other inferred default.
+If a completed Council summary and a valid main-agent synthesis already exist,
+`run_factorforge_ultimate_loop.py` may invoke the approval bridge automatically
+before classifying the iteration as ready for child materialization. If the
+bridge validation fails, the loop must BLOCK and must not leave an active
+approved handoff behind.
 
 When the child reaches Step6, the next Council packet must carry the prior
 revision outcome as first-class negative or positive evidence. It must compare

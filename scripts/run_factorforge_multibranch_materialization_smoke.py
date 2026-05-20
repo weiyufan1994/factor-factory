@@ -302,6 +302,7 @@ def case_happy(root: Path) -> dict[str, Any]:
     report = load_json(aggregate_path(root))
     children = report.get("children") if isinstance(report.get("children"), list) else []
     specs = [load_json(Path(child["executable_revision_spec_path"])) for child in children]
+    materialization_reports = [load_json(Path(child["materialization_report_path"])) for child in children]
     hashes = [spec.get("child_formula_hash") for spec in specs]
     child_snapshots_ok = all(
         (daily_dir(root, child["child_report_id"]) / f"daily_input__{child['child_report_id']}.parquet").exists()
@@ -314,15 +315,24 @@ def case_happy(root: Path) -> dict[str, Any]:
         and spec.get("branch_role") in {"exploit", "exploration"}
         for spec in specs
     )
+    materialization_branch_context_ok = all(
+        materialization.get("branch_id") == spec.get("branch_id")
+        and materialization.get("source_branch_id") == "multibranch_seed"
+        and materialization.get("branch_group_id") == spec.get("branch_group_id")
+        and materialization.get("source_multibranch_synthesis_sha256") == spec.get("source_multibranch_synthesis_sha256")
+        and materialization.get("branch_context", {}).get("law_id") == spec.get("branch_context", {}).get("law_id")
+        for materialization, spec in zip(materialization_reports, specs)
+    )
     return {
         "case": "multibranch_materializes_exploit_and_exploration_children",
-        "ok": approval["rc"] == 0 and mat["rc"] == 0 and report.get("status") == "PASS" and len(children) == 2 and len(set(hashes)) == 2 and child_snapshots_ok and branch_context_ok,
+        "ok": approval["rc"] == 0 and mat["rc"] == 0 and report.get("status") == "PASS" and len(children) == 2 and len(set(hashes)) == 2 and child_snapshots_ok and branch_context_ok and materialization_branch_context_ok,
         "approval": approval,
         "materialize": mat,
         "child_count": len(children),
         "child_formula_hashes": hashes,
         "child_snapshots_ok": child_snapshots_ok,
         "branch_context_ok": branch_context_ok,
+        "materialization_branch_context_ok": materialization_branch_context_ok,
         "aggregate_report": str(aggregate_path(root)),
     }
 

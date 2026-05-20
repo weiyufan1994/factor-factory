@@ -658,6 +658,7 @@ def main() -> int:
         write_json(target, payload)
         materialized[kind] = str(target)
 
+    report_branch_id = executable_revision_spec.get("branch_id") or branch_id
     report = {
         "materialization_version": MATERIALIZATION_VERSION,
         "created_at_utc": utc_now(),
@@ -665,7 +666,8 @@ def main() -> int:
         "child_report_id": child,
         "parent_handoff_path": str(parent_handoff_path),
         "source_handoff_sha256": source_handoff_sha256,
-        "branch_id": branch_id,
+        "branch_id": report_branch_id,
+        "source_branch_id": branch_id,
         "parent_run_id": parent_run_id,
         "materialized_artifacts": materialized,
         "executable_revision_spec_path": str(executable_revision_spec_path(root, child)),
@@ -676,6 +678,18 @@ def main() -> int:
         "clean_data_touched": False,
         "official_promotion_written": False,
     }
+    if branch_context:
+        report.update(
+            {
+                "branch_role": branch_context["branch_role"],
+                "branch_index": branch_context["branch_index"],
+                "branch_group_id": branch_context["branch_group_id"],
+                "source_multibranch_synthesis_path": branch_context["source_multibranch_synthesis_path"],
+                "source_multibranch_synthesis_sha256": branch_context["source_multibranch_synthesis_sha256"],
+                "sibling_branch_count": branch_context["sibling_branch_count"],
+                "branch_context": branch_context,
+            }
+        )
     write_json(report_path, report)
     print(json.dumps({"status": "materialized", "report_path": str(report_path), **report}, ensure_ascii=False, indent=2))
     return 0

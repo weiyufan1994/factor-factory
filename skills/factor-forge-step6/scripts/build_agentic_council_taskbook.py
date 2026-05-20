@@ -58,6 +58,9 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
         "research_question": question + " Critique the main agent mechanism memo and any prior executable revision outcome. Do not reconstruct from a generic family label or repeat a falsified revision rule.",
         "main_agent_mechanism_memo_ref": f"objects/research_iteration_master/main_agent_mechanism_memo__{report_id}.json",
         "required_outputs": [
+            "economic_hypothesis_review",
+            "math_mechanism_derivation",
+            "model_to_formula_translation",
             "public_derivation_record",
             "candidate_revision_laws",
             "main_agent_memo_agreement",
@@ -75,6 +78,7 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
             "expected_metric_signature",
             "falsification_tests",
             "kill_criteria",
+            "terminal_scope_and_stop_authority_if_recommending_stop",
             "overclaim_guard",
         ],
         "allowed_tools": tools,

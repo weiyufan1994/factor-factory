@@ -121,8 +121,14 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
                 },
             ],
             "limiting_cases": [
-                "If turnover cost dominates gross evidence, a short-lived state is insufficient.",
-                "If gross evidence also disappears, the mechanism challenge should reject the direction.",
+                {
+                    "polarity": "positive",
+                    "case": "If the estimator state is valid, cost-adjusted long-side evidence improves without materially higher turnover.",
+                },
+                {
+                    "polarity": "negative",
+                    "case": "If turnover cost dominates or gross evidence disappears, the mechanism challenge should reject the direction.",
+                },
             ],
             "falsification_tests": [
                 "Cost-adjusted long-side Sharpe remains negative after the expression-level hypothesis is tested.",

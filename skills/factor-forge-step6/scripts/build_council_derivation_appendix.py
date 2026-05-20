@@ -40,6 +40,28 @@ def nonempty_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def nonempty_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def limiting_cases_ok(value: Any) -> bool:
+    cases = nonempty_list(value)
+    if len(cases) < 2:
+        return False
+    polarities: set[str] = set()
+    for item in cases:
+        if isinstance(item, dict):
+            text = item.get('case') or item.get('statement') or item.get('description')
+            if not nonempty_text(text):
+                return False
+            polarity = str(item.get('polarity') or item.get('case_type') or '').strip().lower()
+            if polarity in {'positive', 'negative'}:
+                polarities.add(polarity)
+        elif not nonempty_text(item):
+            return False
+    return not polarities or {'positive', 'negative'}.issubset(polarities)
+
+
 def resolve_source_paths(summary: dict[str, Any], council_dir: Path) -> list[Path]:
     paths: list[Path] = []
     if summary.get('selection_source') == 'agentic_results':
@@ -139,6 +161,10 @@ def validate_appendix(appendix: dict[str, Any]) -> list[str]:
         reasons.append('agent_derivations_missing')
     for idx, section in enumerate(sections):
         prefix = f'agent_derivations[{idx}]'
+        if not nonempty_text(section.get('research_question')):
+            reasons.append(f'{prefix}.research_question_missing')
+        if not limiting_cases_ok(section.get('limiting_cases')):
+            reasons.append(f'{prefix}.limiting_cases_missing')
         for key in ['assumptions', 'mathematical_objects', 'selected_tools', 'formula_claims', 'derivation_steps_summary', 'falsification_tests', 'kill_criteria']:
             if not nonempty_list(section.get(key)):
                 reasons.append(f'{prefix}.{key}_missing')

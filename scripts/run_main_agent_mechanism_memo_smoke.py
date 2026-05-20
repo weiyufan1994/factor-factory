@@ -243,6 +243,34 @@ def fixture(
             'turnover': 'turnover must not consume the expected payoff',
         },
     }
+    memo['math_model_selection'] = {
+        'model_family': selected_model_family,
+        'baseline_model': process_text,
+        'model_mutation': memo['math_hypothesis']['why_this_model'],
+    }
+    memo['payer'] = {
+        'payer_or_counterparty': memo['economic_hypothesis']['payer_or_counterparty'],
+        'why_they_pay': memo['economic_hypothesis']['why_they_pay'],
+        'necessary_market_structure': memo['economic_hypothesis']['necessary_market_structure'],
+    }
+    memo['formula_state_estimator'] = {
+        'latent_state': memo['math_hypothesis']['latent_state'],
+        'observable_mapping': memo['math_hypothesis']['formula_as_estimator'],
+        'component_links': [
+            {
+                'component_id': item.get('component_id'),
+                'observable_estimator': item.get('observable_estimator'),
+                'latent_state_claim': item.get('economic_state'),
+            }
+            for item in memo.get('formula_component_map') or []
+            if isinstance(item, dict)
+        ],
+    }
+    memo['expected_metric_signature'] = memo['math_hypothesis']['expected_metric_signature']
+    memo['falsification_tests'] = [
+        'long-side cost-adjusted return remains negative',
+        'top quantile ordering contradicts the declared payoff direction',
+    ]
     write_json(paths["memo"], memo)
     paths["memo_md"].parent.mkdir(parents=True, exist_ok=True)
     paths["memo_md"].write_text(render_main_agent_mechanism_memo_markdown(memo), encoding="utf-8")
@@ -289,6 +317,29 @@ def main() -> None:
         and memo.get("evidence_comparison", {}).get("mechanism_supported") in {"no", "partial"},
         "command": validate,
     })
+    top_level_required = [
+        "math_model_selection",
+        "payer",
+        "formula_state_estimator",
+        "expected_metric_signature",
+        "falsification_tests",
+    ]
+    cases.append({
+        "case": "main_agent_memo_top_level_structured_fields_present",
+        "ok": validate["rc"] == 0
+        and all(isinstance(memo.get(key), (dict, list)) and bool(memo.get(key)) for key in top_level_required),
+        "required_fields": top_level_required,
+        "field_types": {key: type(memo.get(key)).__name__ for key in top_level_required},
+    })
+
+    paths = fixture(root)
+    cases.append(mutate_and_validate(
+        root,
+        paths,
+        "main_agent_memo_top_level_null_blocks",
+        lambda m: m.update({"math_model_selection": None}),
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING",
+    ))
 
     paths = fixture(root, stale_dependence_contract=True)
     stale_validate = run_cmd([sys.executable, "skills/factor-forge-step6/scripts/validate_main_agent_mechanism_memo.py", "--report-id", RID], root)

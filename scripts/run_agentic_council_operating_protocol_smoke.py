@@ -54,7 +54,7 @@ def run_cmd(root: Path, cmd: list[str]) -> dict[str, Any]:
     env = dict(os.environ)
     env["FACTORFORGE_ROOT"] = str(root)
     proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, text=True, capture_output=True)
-    return {"command": cmd, "rc": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
+    return {"command": cmd, "rc": proc.returncode, "stdout_tail": proc.stdout[-16000:], "stderr_tail": proc.stderr[-16000:]}
 
 
 def result(case: str, ok: bool, expected: str, actual: dict[str, Any]) -> dict[str, Any]:
@@ -143,6 +143,31 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "economic_hypothesis_review": {
+            "preserve_broad_direction": True,
+            "refined_second_layer_mechanism": "The packet mechanism is reviewed as a testable estimator-state hypothesis.",
+            "payer_or_counterparty_update": "Potential counterparties are inferred only from packet evidence and must be falsified by metrics.",
+            "what_step4_metrics_changed_in_the_hypothesis": "Net evidence and turnover decide whether the estimator state deserves revision.",
+        },
+        "math_mechanism_derivation": {
+            "selected_tool": "statistical_inference",
+            "selected_tool_rationale": "It links public estimator claims to metric signatures without approving writeback.",
+            "rejected_tools": [{"tool": "expression_wrapper_repair", "reason": "The task is expression-level research only."}],
+            "baseline_model": "E[next evidence | estimator state]",
+            "model_mutation": "challenge persistence and falsification requirements at expression level",
+            "mathematical_objects": ["agent_state", "next_evidence"],
+            "derivation_steps": ["Read packet evidence.", "Map evidence to a public estimator-state claim."],
+            "derived_state_variables": ["agent_state"],
+            "observable_estimators": ["factor score", "net long-side evidence"],
+            "expected_metric_signature": ["Net evidence should improve if the state is valid.", "Turnover should not worsen materially."],
+            "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
+        },
+        "model_to_formula_translation": {
+            "candidate_formula": "rank(close)",
+            "operator_support_status": "parseable",
+            "mapping_from_model_terms_to_formula_components": ["agent_state -> rank(close) smoke placeholder"],
+            "information_set_legality": "legal",
+        },
         "public_derivation_record": {
             "research_question": packet.get("research_question"),
             "assumptions": [{"assumption": "Step6 packet evidence is fixed.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Block if packet provenance is invalid."}],
@@ -150,7 +175,10 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
             "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links claims to metric signatures.", "what_it_can_answer": "Whether the hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical writes."}],
             "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | agent_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for operating protocol smoke."}],
             "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a public estimator-state claim.", "depends_on": []}],
-            "limiting_cases": ["If net evidence remains negative, reject.", "If gross evidence disappears, reject."],
+            "limiting_cases": [
+                {"polarity": "positive", "case": "If the estimator state is valid, net long-side evidence improves without materially higher turnover."},
+                {"polarity": "negative", "case": "If net evidence remains negative or gross evidence disappears, the estimator-state claim is falsified."},
+            ],
             "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
             "kill_criteria": ["High-score long side remains non-positive.", "Only diagnostic spread metrics improve."],
             "overclaim_guard": "This result is advisory-only and cannot authorize code writes.",
@@ -158,6 +186,7 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
         "candidate_revision_laws": [
             {
                 "law_id": f"{task_id}_real_law_001",
+                "revision_kind": "estimator_repair",
                 "revision_type": "mechanism_challenge",
                 "law_statement": "Test the estimator-state mechanism before any revision approval.",
                 "expression_change_direction": "Challenge persistence, scale, and falsification requirements at expression level.",
@@ -194,8 +223,19 @@ def case_print_assignment(root: Path) -> dict[str, Any]:
     task_id = manifest_tasks(root, rid)[0]["task_id"]
     proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/print_agentic_council_assignment.py", "--report-id", rid, "--task-id", task_id])
     text = proc["stdout_tail"] + proc["stderr_tail"]
-    ok = proc["rc"] == 0 and "Task packet path" in text and "Expected result path" in text and "Canonical write prohibition" in text and "public derivation record" in text.lower()
-    return result("print_assignment", ok, "assignment text contains paths, write prohibition, and public derivation requirement", {"run": proc})
+    required_fragments = [
+        "Task packet path",
+        "Expected result path",
+        "Canonical write prohibition",
+        "public derivation record",
+        "economic_hypothesis_review",
+        "math_mechanism_derivation",
+        "model_to_formula_translation",
+        "terminal_scope_and_stop_authority_if_recommending_stop",
+    ]
+    missing = [item for item in required_fragments if item.lower() not in text.lower()]
+    ok = proc["rc"] == 0 and not missing
+    return result("print_assignment", ok, "assignment text contains paths, write prohibition, public derivation requirement, and derivation-engine fields", {"run": proc, "missing": missing})
 
 
 def case_write_draft_template(root: Path) -> dict[str, Any]:

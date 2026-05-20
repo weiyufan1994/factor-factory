@@ -28,6 +28,7 @@ TOKEN_NOT_UNANIMOUS = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_NOT_UNANIMOUS"
 TOKEN_ITERATION_MISSING = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_ITERATION_MISSING"
 TOKEN_VALIDATION_FAILED = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_VALIDATION_FAILED"
 TOKEN_HANDOFF_EXISTS = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_APPROVED_HANDOFF_EXISTS"
+TOKEN_PREMATURE_TERMINAL_REJECT = "BLOCK_PREMATURE_TERMINAL_REJECT_BEFORE_MAX_LOOPS"
 
 TERMINAL_RECOMMENDATION_TERMS = {
     "reject",
@@ -51,6 +52,12 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"[WRITE] {path}")
+
+
+def write_text(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
     print(f"[WRITE] {path}")
 
 
@@ -102,6 +109,18 @@ def handoff_path(root: Path, report_id: str) -> Path:
 
 def terminal_rejection_path(root: Path, report_id: str) -> Path:
     return council_dir(root, report_id) / f"terminal_council_rejection__{report_id}.json"
+
+
+def branch_falsification_path(root: Path, report_id: str) -> Path:
+    return council_dir(root, report_id) / f"branch_falsification__{report_id}.json"
+
+
+def next_derivation_questionnaire_paths(root: Path, report_id: str) -> tuple[Path, Path]:
+    cdir = council_dir(root, report_id)
+    return (
+        cdir / f"next_derivation_questionnaire__{report_id}.json",
+        cdir / f"next_derivation_questionnaire__{report_id}.md",
+    )
 
 
 def resolve_under_root(root: Path, raw: Any) -> Path:
@@ -182,6 +201,194 @@ def selected_ids(results: list[dict[str, Any]]) -> list[str]:
         if isinstance(task_id, str) and task_id and task_id not in ids:
             ids.append(task_id)
     return ids
+
+
+def terminal_control(result: dict[str, Any]) -> dict[str, Any]:
+    rec = result.get("revision_or_kill_recommendation")
+    control = result.get("terminal_control")
+    merged: dict[str, Any] = {}
+    if isinstance(rec, dict):
+        for key in (
+            "terminal_scope",
+            "stop_authority",
+            "validated_no_derived_revision",
+            "human_override",
+            "evidence_block",
+            "terminal_proof",
+        ):
+            if key in rec:
+                merged[key] = rec[key]
+    if isinstance(control, dict):
+        merged.update(control)
+    return merged
+
+
+def result_has_terminal_authority(result: dict[str, Any]) -> bool:
+    control = terminal_control(result)
+    authority = str(control.get("stop_authority") or "").strip()
+    scope = str(control.get("terminal_scope") or "").strip()
+    proof = control.get("terminal_proof") or control.get("proof") or control.get("reason")
+    has_proof = isinstance(proof, str) and bool(proof.strip()) or isinstance(proof, dict) and bool(proof)
+    if scope not in {"factor_instance", "mechanism_family"}:
+        return False
+    if control.get("human_override") is True or authority == "human_override":
+        return has_proof
+    if control.get("evidence_block") is True or authority == "evidence_block":
+        return has_proof
+    if control.get("validated_no_derived_revision") is True or authority in {"block_with_proof", "validated_no_derived_revision"}:
+        return scope in {"factor_instance", "mechanism_family"} and has_proof
+    if authority == "max_loop_cap":
+        return has_proof
+    return False
+
+
+def terminal_reject_authorized(results: list[dict[str, Any]], *, loop_index: int, max_loops: int) -> bool:
+    if loop_index >= max_loops:
+        return True
+    return bool(results) and all(result_has_terminal_authority(item["payload"]) for item in results)
+
+
+def render_next_derivation_questionnaire(payload: dict[str, Any]) -> str:
+    answers = payload.get("required_main_agent_answers") if isinstance(payload.get("required_main_agent_answers"), list) else []
+    laws = payload.get("falsified_revision_laws") if isinstance(payload.get("falsified_revision_laws"), list) else []
+    hashes = payload.get("falsified_formula_hashes") if isinstance(payload.get("falsified_formula_hashes"), list) else []
+    lines = [
+        f"# Next Derivation Questionnaire: {payload['report_id']}",
+        "",
+        f"Status: `{payload['status']}`",
+        f"Prior terminal scope: `{payload['prior_terminal_scope']}`",
+        "",
+        "The previous Council can falsify only the executed revision branch. The main agent must answer this questionnaire before any new executable synthesis.",
+        "",
+        "## Required Answers",
+    ]
+    lines.extend(f"- `{item}`" for item in answers)
+    lines.extend(["", "## Falsified Revision Laws"])
+    if laws:
+        for law in laws:
+            if isinstance(law, dict):
+                lines.append(f"- `{law.get('law_id')}` {law.get('law_statement') or ''}".rstrip())
+            else:
+                lines.append(f"- {law}")
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Forbidden Formula Hashes"])
+    lines.extend(f"- `{item}`" for item in hashes) if hashes else lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "## Write Boundary",
+            "- canonical_write_permission: false",
+            "- execution_allowed_by_default: false",
+            "- human_approval_required: true",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def write_next_derivation_questionnaire(
+    *,
+    root: Path,
+    report_id: str,
+    branch_payload: dict[str, Any],
+) -> tuple[Path, Path]:
+    json_path, md_path = next_derivation_questionnaire_paths(root, report_id)
+    payload = {
+        "contract_version": "factorforge_next_derivation_questionnaire_v1",
+        "created_at_utc": utc_now(),
+        "report_id": report_id,
+        "status": "awaiting_main_agent_next_derivation",
+        "source_branch_falsification_path": str(branch_falsification_path(root, report_id)),
+        "prior_terminal_scope": branch_payload.get("terminal_scope"),
+        "prior_stop_authority": branch_payload.get("stop_authority"),
+        "selected_agent_result_ids": branch_payload.get("selected_agent_result_ids") or [],
+        "falsified_revision_laws": branch_payload.get("falsified_revision_laws") or [],
+        "falsified_formula_hashes": branch_payload.get("falsified_formula_hashes") or [],
+        "preserve_or_reject_economic_hypothesis_questions": [
+            "Which part of the original economic hypothesis is still alive after this branch falsification?",
+            "Which payoff, counterparty, horizon, or state-estimator assumption was specifically falsified?",
+            "Does the next derivation preserve the broad economic source, mutate the mathematical model, or request terminal authority?",
+        ],
+        "required_main_agent_answers": [
+            "falsified_model_components",
+            "preserve_broad_economic_hypothesis",
+            "next_distinct_math_mechanism",
+            "model_mutation_from_prior_branch",
+            "new_observable_estimator_mapping",
+            "expected_metric_signature",
+            "falsification_tests",
+            "forbidden_repetition_acknowledgement",
+            "terminal_authority_request_if_no_revision",
+        ],
+        "canonical_write_permission": False,
+        "execution_allowed_by_default": False,
+        "human_approval_required": True,
+    }
+    write_json(json_path, payload)
+    write_text(md_path, render_next_derivation_questionnaire(payload))
+    return json_path, md_path
+
+
+def write_branch_falsification_artifact(
+    *,
+    root: Path,
+    report_id: str,
+    summary_path: Path,
+    collection_path: Path,
+    results: list[dict[str, Any]],
+    loop_index: int,
+    max_loops: int,
+) -> Path:
+    path = branch_falsification_path(root, report_id)
+    laws: list[dict[str, Any]] = []
+    formula_hashes: list[str] = []
+    for item in results:
+        payload = item["payload"]
+        for law in payload.get("candidate_revision_laws") or []:
+            if isinstance(law, dict):
+                laws.append({
+                    "task_id": payload.get("task_id"),
+                    "law_id": law.get("law_id"),
+                    "revision_type": law.get("revision_type"),
+                    "law_statement": law.get("law_statement"),
+                })
+                for key in ("formula_hash", "child_formula_hash", "falsified_formula_hash"):
+                    if isinstance(law.get(key), str) and law[key] not in formula_hashes:
+                        formula_hashes.append(law[key])
+        guard = payload.get("repeated_revision_guard")
+        if isinstance(guard, dict):
+            for key in ("forbidden_formula_hashes", "forbidden_repeat_formula_hashes"):
+                values = guard.get(key)
+                if isinstance(values, list):
+                    for value in values:
+                        if isinstance(value, str) and value not in formula_hashes:
+                            formula_hashes.append(value)
+    artifact = {
+        "branch_falsification_version": "factorforge_revision_branch_falsification_v1",
+        "created_at_utc": utc_now(),
+        "report_id": report_id,
+        "summary_path": str(summary_path),
+        "summary_sha256": sha256_file(summary_path),
+        "collection_path": str(collection_path),
+        "collection_sha256": sha256_file(collection_path),
+        "loop_index": loop_index,
+        "max_loops": max_loops,
+        "terminal_scope": "revision_branch_only",
+        "stop_authority": "advisory_only",
+        "falsified_revision_laws": laws,
+        "falsified_formula_hashes": formula_hashes,
+        "selected_agent_result_ids": selected_ids(results),
+        "next_required_action": "derive_distinct_math_mechanism",
+        "canonical_write_permission": False,
+        "execution_allowed_by_default": False,
+        "human_approval_required": True,
+    }
+    questionnaire_json, questionnaire_md = write_next_derivation_questionnaire(root=root, report_id=report_id, branch_payload=artifact)
+    artifact["next_derivation_questionnaire_json_path"] = str(questionnaire_json)
+    artifact["next_derivation_questionnaire_markdown_path"] = str(questionnaire_md)
+    write_json(path, artifact)
+    return path
 
 
 def build_revision_council_ref(root: Path, report_id: str, summary: dict[str, Any]) -> dict[str, Any]:
@@ -332,6 +539,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Close a completed terminal agentic Council as a Step6 reject decision.")
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--factorforge-root", default=None)
+    parser.add_argument("--loop-index", type=int, default=None)
+    parser.add_argument("--max-loops", type=int, default=10)
     parser.add_argument("--skip-validate-step6", action="store_true")
     args = parser.parse_args()
 
@@ -366,6 +575,28 @@ def main() -> int:
         block(TOKEN_NOT_UNANIMOUS, {"non_terminal_results": non_terminal, "terminal_count": len(results)})
 
     iteration = load_json(iter_path)
+    loop_index = int(args.loop_index or iteration.get("loop_index") or iteration.get("iteration_no") or 1)
+    max_loops = int(args.max_loops or 10)
+    if not terminal_reject_authorized(results, loop_index=loop_index, max_loops=max_loops):
+        branch_path = write_branch_falsification_artifact(
+            root=root,
+            report_id=rid,
+            summary_path=summary_path,
+            collection_path=collection_path,
+            results=results,
+            loop_index=loop_index,
+            max_loops=max_loops,
+        )
+        block(
+            TOKEN_PREMATURE_TERMINAL_REJECT,
+            {
+                "report_id": rid,
+                "loop_index": loop_index,
+                "max_loops": max_loops,
+                "branch_falsification_path": str(branch_path),
+                "required_next_action": "derive_distinct_math_mechanism",
+            },
+        )
     brief_json_path, brief_md_path = loop_brief_paths(root, iteration)
     rollback = {
         "iteration": read_text_if_exists(iter_path),

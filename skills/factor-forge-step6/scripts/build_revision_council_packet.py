@@ -251,9 +251,27 @@ def numeric_metric(metrics: dict[str, Any], key: str) -> float | None:
         return None
 
 
+METRIC_ALIASES: dict[str, list[str]] = {
+    "turnover": ["turnover", "turnover_mean", "long_side_turnover_mean_daily", "daily_turnover", "turnover_mean_daily"],
+    "turnover_mean": ["turnover_mean", "turnover", "long_side_turnover_mean_daily", "daily_turnover", "turnover_mean_daily"],
+    "long_side_turnover_mean_daily": ["long_side_turnover_mean_daily", "turnover_mean", "turnover", "daily_turnover", "turnover_mean_daily"],
+    "trading_cogs_annual": ["trading_cogs_annual", "annual_cogs", "cogs_annual", "cost_annual", "annual_trading_cogs"],
+    "long_side_max_drawdown": ["long_side_max_drawdown", "max_drawdown", "long_side_mdd", "mdd"],
+    "long_side_recovery_days": ["long_side_recovery_days", "recovery_days", "long_side_recovery_time_days"],
+}
+
+
+def numeric_metric_any(metrics: dict[str, Any], key: str) -> float | None:
+    for candidate in METRIC_ALIASES.get(key, [key]):
+        value = numeric_metric(metrics, candidate)
+        if value is not None:
+            return value
+    return None
+
+
 def metric_delta(parent_metrics: dict[str, Any], child_metrics: dict[str, Any], key: str) -> dict[str, Any]:
-    parent_value = numeric_metric(parent_metrics, key)
-    child_value = numeric_metric(child_metrics, key)
+    parent_value = numeric_metric_any(parent_metrics, key)
+    child_value = numeric_metric_any(child_metrics, key)
     delta = None if parent_value is None or child_value is None else child_value - parent_value
     return {"parent": parent_value, "child": child_value, "delta": delta}
 
@@ -269,14 +287,16 @@ def load_optional_json(path: Path) -> dict[str, Any]:
 
 def prior_revision_memory(report_id: str, spec: dict[str, Any], current_metrics: dict[str, Any]) -> dict[str, Any]:
     revision_identity = spec.get("revision_identity") if isinstance(spec.get("revision_identity"), dict) else {}
-    parent_report_id = spec.get("parent_report_id") or revision_identity.get("parent_report_id")
     revision_spec_ref = spec.get("executable_revision_spec_ref") or revision_identity.get("revision_spec_path")
     revision_spec_path = Path(str(revision_spec_ref)) if revision_spec_ref else Path("")
     if revision_spec_ref and not revision_spec_path.is_absolute():
         revision_spec_path = FF / revision_spec_path
     revision_spec = load_optional_json(revision_spec_path) if revision_spec_ref else {}
-    if not parent_report_id:
-        parent_report_id = revision_spec.get("parent_report_id")
+    parent_report_id = (
+        revision_spec.get("parent_report_id")
+        or revision_identity.get("parent_report_id")
+        or spec.get("parent_report_id")
+    )
     if not parent_report_id:
         return {
             "contract_version": "factorforge_prior_revision_memory_v1",
@@ -296,6 +316,11 @@ def prior_revision_memory(report_id: str, spec: dict[str, Any], current_metrics:
             "cost_adjusted_annual_return",
             "long_side_sharpe",
             "turnover",
+            "turnover_mean",
+            "long_side_turnover_mean_daily",
+            "trading_cogs_annual",
+            "long_side_max_drawdown",
+            "long_side_recovery_days",
         ]
     }
     rank_ic_delta = deltas["rank_ic_mean"].get("delta")

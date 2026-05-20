@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -34,7 +35,18 @@ def _safe_token(value: Any) -> str:
 
 def next_child_report_id(parent_report_id: str, child_ordinal: int, revision_id: str | None = None) -> str:
     suffix = _safe_token(revision_id or "revision")
-    return f"{parent_report_id}__LOOP{child_ordinal:02d}__{suffix.upper()}"
+    child_suffix = f"__LOOP{child_ordinal:02d}__{suffix.upper()}"
+    max_report_id_len = 120
+    if len(parent_report_id) + len(child_suffix) <= max_report_id_len:
+        return f"{parent_report_id}{child_suffix}"
+    parent_digest = hashlib.sha256(parent_report_id.encode("utf-8")).hexdigest()[:10]
+    parent_budget = max_report_id_len - len(child_suffix) - len(parent_digest) - 2
+    if parent_budget < 24:
+        suffix = suffix[:32]
+        child_suffix = f"__LOOP{child_ordinal:02d}__{suffix.upper()}"
+        parent_budget = max_report_id_len - len(child_suffix) - len(parent_digest) - 2
+    short_parent = parent_report_id[: max(24, parent_budget)].rstrip("_")
+    return f"{short_parent}__{parent_digest}{child_suffix}"
 
 
 def _iteration_path(root: Path, report_id: str) -> Path:
@@ -61,7 +73,15 @@ def _prewrite_block_exists(root: Path, report_id: str) -> bool:
         f"*prewrite*{report_id}*.json",
         f"*block*{report_id}*.json",
     ]
-    return any(next(validation.glob(pattern), None) is not None for pattern in patterns)
+    matches = []
+    for pattern in patterns:
+        matches.extend(validation.glob(pattern))
+    if not matches:
+        return False
+    wrapper_proof = load_json_if_exists(_wrapper_proof_path(root, report_id))
+    if wrapper_proof.get("status") == "PASS":
+        return False
+    return True
 
 
 def _research_memo(iteration: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +196,21 @@ def classify_loop_state(
             prewrite_block_exists=prewrite_blocked,
         ).to_dict()
 
+    if decision == "iterate" and loop_authorization == "approved_for_step3b_handoff" and handoff_exists:
+        return LoopState(
+            outcome="iterate",
+            proof_status="RUNNING",
+            can_continue=True,
+            stop_reason="approved_step3b_handoff_available",
+            decision=decision,
+            loop_authorization=loop_authorization,
+            revision_needed=revision_needed if isinstance(revision_needed, bool) else None,
+            council_status=council_status,
+            official_record_exists=official_exists,
+            handoff_to_step3b_exists=True,
+            prewrite_block_exists=prewrite_blocked,
+        ).to_dict()
+
     if council_status == "awaiting_agent_results":
         return LoopState(
             outcome="awaiting_agent_results",
@@ -252,20 +287,6 @@ def classify_loop_state(
         ).to_dict()
 
     if decision == "iterate":
-        if loop_authorization == "approved_for_step3b_handoff" and handoff_exists:
-            return LoopState(
-                outcome="iterate",
-                proof_status="RUNNING",
-                can_continue=True,
-                stop_reason="approved_step3b_handoff_available",
-                decision=decision,
-                loop_authorization=loop_authorization,
-                revision_needed=revision_needed if isinstance(revision_needed, bool) else None,
-                council_status=council_status,
-                official_record_exists=official_exists,
-                handoff_to_step3b_exists=True,
-                prewrite_block_exists=prewrite_blocked,
-            ).to_dict()
         if loop_authorization == "approved_for_step3b_handoff" and not handoff_exists:
             return LoopState(
                 outcome="blocked",

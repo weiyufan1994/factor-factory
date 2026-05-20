@@ -20,6 +20,9 @@ TASK_PACKET_VERSION = "factorforge_agentic_council_task_packet_v1"
 RUNTIME_POLICY_VERSION = "factorforge_runtime_dispatch_policy_v1"
 RUNTIME_VALUES = {"codex", "openclaw", "manual_file", "unknown"}
 REQUIRED_OUTPUTS = {
+    "economic_hypothesis_review",
+    "math_mechanism_derivation",
+    "model_to_formula_translation",
     "public_derivation_record",
     "candidate_revision_laws",
     "falsification_tests",

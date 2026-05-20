@@ -71,7 +71,11 @@ def object_path(root: Path, kind: str, report_id: str) -> Path:
 
 
 def materialization_report_path(root: Path, parent: str, child: str) -> Path:
-    return root / "objects" / "runtime_context" / f"child_revision_materialization__{parent}__{child}.json"
+    digest = hashlib.sha256(f"{parent}\0{child}".encode("utf-8")).hexdigest()[:16]
+    short_parent = parent[:40].rstrip("_")
+    short_child = child[:40].rstrip("_")
+    filename = f"child_revision_materialization__{short_parent}__{short_child}__{digest}.json"
+    return root / "objects" / "runtime_context" / filename
 
 
 def child_daily_input_path(root: Path, child: str, suffix: str) -> Path:

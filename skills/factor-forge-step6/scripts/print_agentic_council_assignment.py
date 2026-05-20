@@ -98,8 +98,12 @@ Result schema summary:
 - canonical_write_permission: false
 - execution_allowed_by_default: false
 - human_approval_required: true
+- economic_hypothesis_review: preserve_broad_direction, refined_second_layer_mechanism, payer_or_counterparty_update, what_step4_metrics_changed_in_the_hypothesis
+- math_mechanism_derivation: selected_tool plus rationale, rejected_tools, baseline_model, model_mutation, mathematical_objects, derivation_steps, derived_state_variables, observable_estimators, expected_metric_signature, falsification_tests
+- model_to_formula_translation: candidate_formula or research_hold/operator_block/no_derived_revision_with_proof disposition, operator_support_status, mapping_from_model_terms_to_formula_components, information_set_legality
 - public_derivation_record: assumptions, mathematical_objects, selected_tools with why_selected, formula_claims, derivation_steps_summary, limiting_cases, falsification_tests, kill_criteria, overclaim_guard
-- candidate_revision_laws: expected_metric_change, falsification_tests, kill_criteria, why_not_portfolio_fix
+- candidate_revision_laws: revision_kind, expected_metric_change, falsification_tests, kill_criteria, why_not_portfolio_fix
+- terminal_control: required if recommending terminal stop; before max loops use revision_branch_only unless validated no-derived-revision, human override, or evidence BLOCK proof exists
 
 Canonical write prohibition:
 This task is advisory-only. The agent result cannot authorize Step3B, generated_code, official library, or clean-data writes.

@@ -413,6 +413,37 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "economic_hypothesis_review": {
+            "preserve_broad_direction": True,
+            "refined_second_layer_mechanism": "The executed branch is falsified, but this only proves the tested revision law failed.",
+            "payer_or_counterparty_update": "The counterparty hypothesis remains unresolved because no distinct model term has been tested.",
+            "what_step4_metrics_changed_in_the_hypothesis": "Negative net evidence falsifies the branch payoff, not the full mechanism family.",
+        },
+        "math_mechanism_derivation": {
+            "selected_tool": "statistical_falsification",
+            "selected_tool_rationale": "Executed child evidence can reject a branch while preserving the need for a distinct derivation.",
+            "rejected_tools": [{"tool": "terminal_factor_reject", "reason": "One branch failure is insufficient before max loop cap."}],
+            "baseline_model": "branch payoff succeeds only if its estimator improves net evidence without repeating known failures",
+            "model_mutation": "mark the branch as falsified and require a distinct mathematical mechanism before further execution",
+            "mathematical_objects": ["branch_net_evidence", "revision_law_identity", "forbidden_repeat_hash"],
+            "derivation_steps": ["Compare child net evidence to parent.", "Classify the failed law as branch-level falsification."],
+            "derived_state_variables": ["falsified_revision_branch_state"],
+            "observable_estimators": ["child cost-adjusted return", "child drawdown", "child formula hash"],
+            "expected_metric_signature": ["No repeated hash or law should be run.", "A distinct law must specify expected net improvement."],
+            "falsification_tests": ["Reject branch if net annual return remains negative.", "Reject branch if drawdown remains beyond threshold."],
+        },
+        "model_to_formula_translation": {
+            "candidate_formula": "",
+            "disposition": "research_hold",
+            "operator_support_status": "parseable",
+            "mapping_from_model_terms_to_formula_components": ["No new executable formula is selected by this terminal advisory result."],
+            "information_set_legality": "legal",
+        },
+        "terminal_control": {
+            "terminal_scope": "revision_branch_only",
+            "stop_authority": "advisory_only",
+            "terminal_proof": "This result can falsify the branch but cannot close the factor before max loops.",
+        },
         "prior_revision_outcome_review": {
             "prior_revision_outcome": "falsified",
             "review": "Prior child revision failed the net evidence and should not be repeated.",
@@ -463,6 +494,10 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
                 {"step_no": 1, "statement": "Read child evidence and prior revision memory.", "depends_on": []},
                 {"step_no": 2, "statement": "Apply kill criteria to the executed child law.", "depends_on": [1]},
             ],
+            "limiting_cases": [
+                {"polarity": "positive", "case": "If a distinct executable law later produces positive net evidence, this branch-level reject is superseded."},
+                {"polarity": "negative", "case": "If the next proposal repeats the same formula hash or derivation rule, continuation is blocked."},
+            ],
             "falsification_tests": [
                 "Reject continuation if net annual return remains negative.",
                 "Reject continuation if drawdown remains beyond the admission threshold.",
@@ -477,6 +512,7 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
             {
                 "law_id": law_id,
                 "revision_type": "reject_advisory",
+                "revision_kind": "parameter_repair",
                 "law_statement": "Reject the branch after the executed child revision failed the net evidence gates.",
                 "expression_change_direction": "No successor expression is selected.",
                 "expected_metric_change": [
@@ -646,26 +682,47 @@ def run_terminal_council_reject_bridge_case(root: Path) -> dict[str, Any]:
     iteration = read_json(iteration_path) if iteration_path.exists() else {}
     final_strategy = (((iteration.get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
     handoff_path = root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
+    branch_path = root / "objects" / "research_iteration_master" / "revision_council" / report_id / f"branch_falsification__{report_id}.json"
+    questionnaire_json_path = root / "objects" / "research_iteration_master" / "revision_council" / report_id / f"next_derivation_questionnaire__{report_id}.json"
+    questionnaire_md_path = root / "objects" / "research_iteration_master" / "revision_council" / report_id / f"next_derivation_questionnaire__{report_id}.md"
+    branch = read_json(branch_path) if branch_path.exists() else {}
+    questionnaire = read_json(questionnaire_json_path) if questionnaire_json_path.exists() else {}
     ok = (
         setup["dispatch"]["rc"] == 0
         and setup["collect"]["rc"] == 0
         and setup["merge"]["rc"] == 0
         and proc["rc"] == 0
-        and proof.get("status") == "PASS"
-        and proof.get("final_outcome") == "rejected"
-        and first.get("terminal_reject_bridge_rc") == 0
-        and iteration.get("decision") == "reject"
-        and ((iteration.get("research_judgment") or {}).get("decision") == "reject")
-        and final_strategy.get("loop_authorization") == "advisory_only"
+        and proof.get("status") == "PAUSED"
+        and proof.get("final_outcome") == "awaiting_next_derivation"
+        and first.get("terminal_reject_bridge_rc") == 1
+        and first.get("branch_falsification_path") == str(branch_path)
+        and branch.get("terminal_scope") == "revision_branch_only"
+        and branch.get("next_required_action") == "derive_distinct_math_mechanism"
+        and first.get("next_derivation_questionnaire_path") == str(questionnaire_json_path)
+        and branch.get("next_derivation_questionnaire_json_path") == str(questionnaire_json_path)
+        and questionnaire_json_path.exists()
+        and questionnaire_md_path.exists()
+        and questionnaire.get("contract_version") == "factorforge_next_derivation_questionnaire_v1"
+        and questionnaire.get("prior_terminal_scope") == "revision_branch_only"
+        and "falsified_model_components" in (questionnaire.get("required_main_agent_answers") or [])
+        and iteration.get("decision") != "reject"
+        and ((iteration.get("research_judgment") or {}).get("decision") != "reject")
         and not handoff_path.exists()
     )
     return {
-        "case": "loop_terminal_council_reject_bridge_stops",
+        "case": "loop_terminal_council_reject_before_max_loops_pauses_for_derivation",
         "report_id": report_id,
         "rc": proc["rc"],
         "proof_status": proof.get("status"),
         "final_outcome": proof.get("final_outcome"),
         "terminal_reject_bridge_rc": first.get("terminal_reject_bridge_rc"),
+        "branch_falsification_path": str(branch_path),
+        "branch_falsification_exists": branch_path.exists(),
+        "next_derivation_questionnaire_path": str(questionnaire_json_path),
+        "next_derivation_questionnaire_exists": questionnaire_json_path.exists(),
+        "next_derivation_questionnaire_md_exists": questionnaire_md_path.exists(),
+        "branch_terminal_scope": branch.get("terminal_scope"),
+        "branch_next_required_action": branch.get("next_required_action"),
         "iteration_decision": iteration.get("decision"),
         "research_judgment_decision": ((iteration.get("research_judgment") or {}).get("decision")),
         "final_loop_authorization": final_strategy.get("loop_authorization"),

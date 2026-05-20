@@ -203,6 +203,31 @@ def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "economic_hypothesis_review": {
+            "preserve_broad_direction": True,
+            "refined_second_layer_mechanism": "The manual result reviews the packet mechanism as a testable estimator-state hypothesis.",
+            "payer_or_counterparty_update": "Potential counterparties are inferred from packet evidence and remain metric-falsifiable.",
+            "what_step4_metrics_changed_in_the_hypothesis": "Net evidence and turnover determine whether the estimator state warrants revision.",
+        },
+        "math_mechanism_derivation": {
+            "selected_tool": "statistical_inference",
+            "selected_tool_rationale": "It links public claims to metric signatures without approving canonical writes.",
+            "rejected_tools": [{"tool": "expression_wrapper_repair", "reason": "The manual assignment is expression-level research only."}],
+            "baseline_model": "E[next evidence | manual agent state]",
+            "model_mutation": "challenge persistence and falsification requirements at expression level",
+            "mathematical_objects": ["manual_agent_state", "next_evidence"],
+            "derivation_steps": ["Read manual assignment evidence.", "Map evidence to a public estimator-state claim."],
+            "derived_state_variables": ["manual_agent_state"],
+            "observable_estimators": ["factor score", "net long-side evidence"],
+            "expected_metric_signature": ["Net evidence should improve if the state is valid.", "Turnover should not worsen materially."],
+            "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
+        },
+        "model_to_formula_translation": {
+            "candidate_formula": "rank(close)",
+            "operator_support_status": "parseable",
+            "mapping_from_model_terms_to_formula_components": ["manual_agent_state -> rank(close) smoke placeholder"],
+            "information_set_legality": "legal",
+        },
         "public_derivation_record": {
             "research_question": "Manual dispatch smoke public research question.",
             "assumptions": [{"assumption": "Step6 packet evidence is fixed.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Block if packet provenance is invalid."}],
@@ -210,7 +235,10 @@ def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool
             "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links claims to metric signatures.", "what_it_can_answer": "Whether the hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical writes."}],
             "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | manual_agent_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for manual dispatch smoke."}],
             "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a public estimator-state claim.", "depends_on": []}],
-            "limiting_cases": ["If net evidence remains negative, reject.", "If gross evidence disappears, reject."],
+            "limiting_cases": [
+                {"polarity": "positive", "case": "If the estimator state is valid, net long-side evidence improves without materially higher turnover."},
+                {"polarity": "negative", "case": "If net evidence remains negative or gross evidence disappears, the estimator-state claim is falsified."},
+            ],
             "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
             "kill_criteria": ["High-score long side remains non-positive.", "Only diagnostic spread metrics improve."],
             "overclaim_guard": "This result is advisory-only and cannot authorize code writes.",
@@ -218,6 +246,7 @@ def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool
         "candidate_revision_laws": [
             {
                 "law_id": f"{task_id}_manual_law_001{suffix}",
+                "revision_kind": "estimator_repair",
                 "revision_type": "mechanism_challenge",
                 "law_statement": "Test the estimator-state mechanism before any revision approval.",
                 "expression_change_direction": "Challenge persistence, scale, and falsification requirements at expression level.",

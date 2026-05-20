@@ -179,6 +179,15 @@ hashes, and label the prior revision as `falsified`, `improved`, or
 tasks must explicitly review that failed revision and must not repeat the same
 derivation rule or re-create an ancestor formula hash.
 
+Multi-branch Council synthesis is currently a validated orchestration contract,
+not a default execution mode. A main agent may write
+`main_agent_multibranch_synthesis__<report_id>.json/md` to preserve one exploit
+branch plus up to two exploration branches from Council results. The artifact
+must pass `validate_main_agent_multibranch_synthesis.py` before any future
+multi-child materialization work. Until the branch-comparison execution layer is
+implemented, the production loop remains single-child by default and must not
+silently materialize multiple children from a multi-branch artifact.
+
 ## Important Clarification
 
 ### Is review and revision part of Step6?
@@ -635,10 +644,11 @@ main agent must:
    as real research work, not as a deterministic scaffold;
 4. write one `status=final`, `producer=real_agent` result JSON per required
    task to the exact `expected_result_path`;
-5. include public derivation records, formula-specific critique, payer
-   derivation critique, falsification tests, kill criteria, expected metric
-   signatures, and any required `prior_revision_outcome_review` /
-   `repeated_revision_guard`;
+5. include public derivation records, `economic_hypothesis_review`,
+   `math_mechanism_derivation`, `model_to_formula_translation`,
+   formula-specific critique, payer derivation critique, falsification tests,
+   kill criteria, expected metric signatures, and any required
+   `prior_revision_outcome_review` / `repeated_revision_guard`;
 6. run `collect_agentic_council_results.py`,
    `validate_agentic_council_collection.py`, and
    `finalize_agentic_council_dispatch.py`;
@@ -672,8 +682,9 @@ changes forbidden artifacts.
 The default research objective is to run the formal Factor Forge path through
 Step6, let Council decide promote/reject/revise, and continue through guarded
 child-report revision loops until one of these stop conditions is reached:
-`promote_official`, Council finds no material improvement path, evidence/case
-comparison blocks further work, or 10 Council revision loops have been reached.
+`promote_official`, validated no-derived-revision proof blocks further work,
+evidence/case comparison blocks further work, or 10 Council revision loops have
+been reached.
 At the 10-loop cap, if the factor is still not promotable but Council believes
 substantial upside remains, stop and report the state to the user instead of
 silently continuing.
@@ -689,12 +700,15 @@ The loop runner writes:
 - `objects/runtime_context/ultimate_loop_report__{root_report_id}.json`
 - `objects/runtime_context/ultimate_loop_brief__{root_report_id}.md`
 
-It stops on promotion, rejection, blocked evidence/prewrite state, Council
-script checkpoint `awaiting_agent_results`, wrapper failure, missing approved child revision,
-forbidden side effects, or the 10-loop cap. It may continue to a child report
-only when a validated `handoff_to_step3b__{report_id}.json` explicitly authorizes
+It stops on promotion, true factor rejection, blocked evidence/prewrite state,
+Council script checkpoint `awaiting_agent_results`, `awaiting_next_derivation`,
+wrapper failure, missing approved child revision, forbidden side effects, or the
+10-loop cap. It may continue to a child report only when a validated
+`handoff_to_step3b__{report_id}.json` explicitly authorizes
 `approved_for_step3b_handoff`; child report ids must be derived from the parent
-as `{parent}__LOOPNN__{revision_id}`. The orchestrator itself must not write
+as `{parent}__LOOPNN__{revision_id}`. A failed child branch before max loops is
+`revision_branch_only` falsification, not factor-level rejection, unless Council
+provides validated terminal authority. The orchestrator itself must not write
 Step3B handoffs, official records, generated code, clean data, or search-worker
 outputs.
 

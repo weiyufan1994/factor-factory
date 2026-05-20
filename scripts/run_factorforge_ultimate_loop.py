@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
@@ -129,7 +130,7 @@ def synthesis_approval_command(report_id: str, factorforge_root: Path) -> list[s
     ]
 
 
-def terminal_rejection_command(report_id: str, factorforge_root: Path) -> list[str]:
+def terminal_rejection_command(report_id: str, factorforge_root: Path, loop_index: int, max_loops: int) -> list[str]:
     return [
         sys.executable,
         str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "close_terminal_council_rejection.py"),
@@ -137,11 +138,46 @@ def terminal_rejection_command(report_id: str, factorforge_root: Path) -> list[s
         report_id,
         "--factorforge-root",
         str(factorforge_root),
+        "--loop-index",
+        str(loop_index),
+        "--max-loops",
+        str(max_loops),
     ]
 
 
 def materialization_report_path(factorforge_root: Path, parent_report_id: str, child_report_id: str) -> Path:
-    return factorforge_root / "objects" / "runtime_context" / f"child_revision_materialization__{parent_report_id}__{child_report_id}.json"
+    digest = hashlib.sha256(f"{parent_report_id}\0{child_report_id}".encode("utf-8")).hexdigest()[:16]
+    short_parent = parent_report_id[:40].rstrip("_")
+    short_child = child_report_id[:40].rstrip("_")
+    filename = f"child_revision_materialization__{short_parent}__{short_child}__{digest}.json"
+    return factorforge_root / "objects" / "runtime_context" / filename
+
+
+def branch_falsification_path(factorforge_root: Path, report_id: str) -> Path:
+    return (
+        factorforge_root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"branch_falsification__{report_id}.json"
+    )
+
+
+def next_derivation_questionnaire_path(factorforge_root: Path, report_id: str) -> Path:
+    return (
+        factorforge_root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"next_derivation_questionnaire__{report_id}.json"
+    )
+
+
+def terminal_reject_blocked_as_branch_falsification(command_result: dict[str, Any], factorforge_root: Path, report_id: str) -> bool:
+    text = f"{command_result.get('stdout_tail') or ''}\n{command_result.get('stderr_tail') or ''}"
+    return "BLOCK_PREMATURE_TERMINAL_REJECT_BEFORE_MAX_LOOPS" in text and branch_falsification_path(factorforge_root, report_id).exists()
 
 
 def synthesis_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
@@ -386,11 +422,29 @@ def main() -> int:
             and not synthesis_bridge_ready(ctx.factorforge_root, current_report_id)
             and terminal_rejection_bridge_ready(ctx.factorforge_root, current_report_id)
         ):
-            terminal_cmd = terminal_rejection_command(current_report_id, ctx.factorforge_root)
+            terminal_cmd = terminal_rejection_command(current_report_id, ctx.factorforge_root, loop_index, args.max_loops)
             terminal_result = run_command(terminal_cmd, env=env, dry_run=args.dry_run)
             iteration["terminal_reject_bridge_command"] = terminal_result
             iteration["terminal_reject_bridge_rc"] = terminal_result.get("rc")
             if terminal_result.get("rc") != 0:
+                if terminal_reject_blocked_as_branch_falsification(terminal_result, ctx.factorforge_root, current_report_id):
+                    branch_path = branch_falsification_path(ctx.factorforge_root, current_report_id)
+                    questionnaire_path = next_derivation_questionnaire_path(ctx.factorforge_root, current_report_id)
+                    iteration["branch_falsification_path"] = str(branch_path)
+                    iteration["next_derivation_questionnaire_path"] = str(questionnaire_path)
+                    iteration["outcome"] = "awaiting_next_derivation"
+                    iteration["stop_reason"] = "revision_branch_falsified_next_derivation_required"
+                    iteration["proof_status"] = "PAUSED"
+                    proof["status"] = "PAUSED"
+                    proof["final_outcome"] = "awaiting_next_derivation"
+                    proof["stop_reason"] = "revision_branch_falsified_next_derivation_required"
+                    proof["next_derivation_questionnaire_path"] = str(questionnaire_path)
+                    proof["updated_at_utc"] = utc_now()
+                    append_note(proof, f"Recorded branch falsification for {current_report_id}; next math-mechanism derivation required")
+                    write_json_atomic(proof_path, proof)
+                    write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                    print("awaiting_next_derivation")
+                    return 0
                 proof["status"] = "FAIL"
                 proof["final_outcome"] = "blocked"
                 proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_TERMINAL_COUNCIL_REJECTION_FAILED"
@@ -428,6 +482,18 @@ def main() -> int:
             write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
             print(proof["final_outcome"])
             return 0 if proof["status"] in {"PASS", "PAUSED"} else 1
+
+        if loop_index >= args.max_loops:
+            proof["status"] = "PASS"
+            proof["final_outcome"] = "max_loops_reached"
+            proof["stop_reason"] = "max_loops_reached"
+            iteration["outcome"] = "max_loops_reached"
+            iteration["stop_reason"] = "max_loops_reached"
+            iteration["proof_status"] = "PASS"
+            write_json_atomic(proof_path, proof)
+            write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+            print("max_loops_reached")
+            return 0
 
         child = approved_child_revision_from_handoff(ctx.factorforge_root, current_report_id, loop_index)
         if not child.get("ok"):

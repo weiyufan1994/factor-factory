@@ -162,6 +162,18 @@ set the research iteration decision to `reject`, keep
 `handoff_to_step3b` absent, refresh the loop brief Council section, and rerun
 `validate_step6.py`. Terminal rejection is a stop condition, not permission to
 materialize another child.
+42. Council synthesis may optionally be prepared in multi-branch form before any
+multi-child execution is attempted. The artifact is
+`objects/research_iteration_master/revision_council/<report_id>/main_agent_multibranch_synthesis__<report_id>.json`
+and `.md`, contract version `factorforge_main_agent_multibranch_synthesis_v1`.
+It is an orchestration contract only: it must not alter the default single-child
+loop, must not materialize children by itself, and must not write clean data,
+official records, or generated code. Validate it with
+`skills/factor-forge-step6/scripts/validate_main_agent_multibranch_synthesis.py`.
+The validator requires exactly one exploit branch, at most two exploration
+branches, non-duplicate child formula hashes, no parent/forbidden formula
+repeats, no repeated falsified revision law, and a real mechanism difference for
+each exploration branch.
 
 ## Research Analyst Standard
 
@@ -490,6 +502,37 @@ A valid `derivation_record` must include:
 No explicit derivation record means no valid council proposal. No valid council
 proposal means no branch template. No accepted derivation means no Step3B
 revision brief.
+
+### Council As Math-Mechanism Derivation Engine
+
+Revision Council is a derivation engine, not a verdict engine. A Council result
+may reject a branch, formula, tool, or derivation rule, but before the configured
+loop cap it must not terminally reject the whole factor instance unless it
+provides validated proof that no legal, executable, formula-mappable
+mathematical revision remains, or the user explicitly approves early stop.
+
+Every `producer=real_agent` Council result must include:
+
+- `economic_hypothesis_review`: broad-direction preservation, refined second
+  layer mechanism, updated payer/counterparty, and what Step4/5 evidence changed
+  in the hypothesis
+- `math_mechanism_derivation`: selected tool with rationale, rejected tools,
+  baseline model, model mutation, mathematical objects, derivation steps,
+  derived state variables, observable estimators, expected metric signature, and
+  falsification tests
+- `model_to_formula_translation`: candidate formula or explicit
+  `research_hold` / `operator_block` / `no_derived_revision_with_proof`
+  disposition, operator support status, model-term to formula-component mapping,
+  and information-set legality
+- `candidate_revision_laws[].revision_kind`: one of parameter repair, estimator
+  repair, model-term repair, model-family shift, or economic-hypothesis
+  refinement
+
+If a child revision fails, record it as `revision_branch_only` falsification by
+default. The next Council must diagnose which model component failed and derive a
+distinct mathematical mechanism or return `BLOCK_NO_DERIVED_REVISION_WITH_PROOF`.
+Do not convert one failed child branch into factor-level rejection before max
+loops unless terminal proof authority is explicit and validated.
 
 After Council merge, the agent must build a user-facing derivation appendix:
 

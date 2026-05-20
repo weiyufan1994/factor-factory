@@ -262,6 +262,31 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "economic_hypothesis_review": {
+            "preserve_broad_direction": True,
+            "refined_second_layer_mechanism": "The packet mechanism is reviewed as a testable estimator-state hypothesis.",
+            "payer_or_counterparty_update": "Potential counterparties are only hypothesized through the public packet evidence.",
+            "what_step4_metrics_changed_in_the_hypothesis": "Net evidence and turnover decide whether the estimator state is worth revising.",
+        },
+        "math_mechanism_derivation": {
+            "selected_tool": "statistical_inference",
+            "selected_tool_rationale": "The smoke result maps packet evidence into a falsifiable estimator-state claim.",
+            "rejected_tools": [{"tool": "expression_wrapper_repair", "reason": "The Council task is expression-level research only."}],
+            "baseline_model": "E[next evidence | estimator state]",
+            "model_mutation": "challenge persistence, scale, and falsification requirements before any formula approval",
+            "mathematical_objects": ["agentic_state", "next_evidence"],
+            "derivation_steps": ["Read packet evidence.", "Map it to a public estimator-state claim."],
+            "derived_state_variables": ["agentic_state"],
+            "observable_estimators": ["factor score", "net long-side evidence"],
+            "expected_metric_signature": ["Net evidence should improve if the state is valid.", "Turnover should not worsen materially."],
+            "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
+        },
+        "model_to_formula_translation": {
+            "candidate_formula": "rank(close)",
+            "operator_support_status": "parseable",
+            "mapping_from_model_terms_to_formula_components": ["agentic_state -> rank(close) smoke placeholder"],
+            "information_set_legality": "legal",
+        },
         "public_derivation_record": {
             "research_question": task_packet.get("research_question"),
             "assumptions": [{"assumption": "Step6 packet evidence is the input.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Invalidate if packet provenance is blocked."}],
@@ -269,7 +294,10 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
             "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links public claims to metric signatures.", "what_it_can_answer": "Whether a hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical code changes."}],
             "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | agentic_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for dispatch smoke."}],
             "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a testable estimator-state claim.", "depends_on": []}],
-            "limiting_cases": ["If net evidence remains negative, reject.", "If gross evidence disappears, reject."],
+            "limiting_cases": [
+                {"polarity": "positive", "case": "If the estimator state is valid, net long-side evidence improves without materially higher turnover."},
+                {"polarity": "negative", "case": "If net evidence remains negative or gross evidence disappears, the estimator-state claim is falsified."},
+            ],
             "falsification_tests": ["Net long-side Sharpe remains negative.", "Gross signal disappears under expression discipline."],
             "kill_criteria": ["High-score long side remains non-positive.", "Improvement exists only in diagnostic spread metrics."],
             "overclaim_guard": "This real-agent-shaped result is advisory-only and cannot authorize code writes.",
@@ -277,6 +305,7 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
         "candidate_revision_laws": [
             {
                 "law_id": f"{task_id}_real_law_001",
+                "revision_kind": "estimator_repair",
                 "revision_type": "mechanism_challenge",
                 "law_statement": "Test the estimator-state mechanism before any revision approval.",
                 "expression_change_direction": "Challenge persistence, scale, and falsification requirements at expression level.",
@@ -314,6 +343,63 @@ def case_fake_real_agent_result(root: Path, include_identifier: bool) -> dict[st
     return result(name, ok, expected, {"validate": proc, "result_path": str(mutation_path)})
 
 
+def case_fake_real_agent_missing_math_derivation(root: Path) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    task = (manifest.get("agent_tasks") or [])[0]
+    payload = fake_real_agent_result(root, rid, task, include_identifier=True)
+    payload.pop("math_mechanism_derivation", None)
+    mutation_path = root / "mutations" / "fake_real_agent_missing_math_derivation.json"
+    write_json(mutation_path, payload)
+    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_result.py", "--report-id", rid, "--result-path", str(mutation_path)])
+    token = "BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION"
+    ok = proc["rc"] == 1 and token in (proc["stdout_tail"] + proc["stderr_tail"])
+    return result("fake_real_agent_missing_math_derivation_block", ok, token, {"validate": proc, "result_path": str(mutation_path)})
+
+
+def case_fake_real_agent_missing_public_question_or_limiting_cases(root: Path) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    task = (manifest.get("agent_tasks") or [])[0]
+    payload = fake_real_agent_result(root, rid, task, include_identifier=True)
+    public = payload.setdefault("public_derivation_record", {})
+    public.pop("research_question", None)
+    public["limiting_cases"] = []
+    mutation_path = root / "mutations" / "fake_real_agent_missing_public_question_limiting_cases.json"
+    write_json(mutation_path, payload)
+    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_result.py", "--report-id", rid, "--result-path", str(mutation_path)])
+    token_question = "BLOCK_REVISION_COUNCIL_AGENTIC_RESEARCH_QUESTION_MISSING"
+    token_limiting = "BLOCK_REVISION_COUNCIL_AGENTIC_LIMITING_CASES_MISSING"
+    output = proc["stdout_tail"] + proc["stderr_tail"]
+    ok = proc["rc"] == 1 and token_question in output and token_limiting in output
+    return result(
+        "fake_real_agent_missing_public_question_or_limiting_cases_block",
+        ok,
+        f"{token_question}+{token_limiting}",
+        {"validate": proc, "result_path": str(mutation_path), "question_token": token_question in output, "limiting_token": token_limiting in output},
+    )
+
+
+def case_fake_real_agent_terminal_factor_scope_missing_authority(root: Path) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    manifest = load_json(dispatch_manifest_path(root, rid))
+    task = (manifest.get("agent_tasks") or [])[0]
+    payload = fake_real_agent_result(root, rid, task, include_identifier=True)
+    payload["revision_or_kill_recommendation"] = {
+        "recommendation": "reject",
+        "terminal_scope": "factor_instance",
+        "reason": "This fake result tries to close the factor without authority.",
+    }
+    payload.pop("terminal_control", None)
+    mutation_path = root / "mutations" / "fake_real_agent_terminal_factor_scope_missing_authority.json"
+    write_json(mutation_path, payload)
+    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_result.py", "--report-id", rid, "--result-path", str(mutation_path)])
+    token = "BLOCK_COUNCIL_TERMINAL_AUTHORITY_MISSING"
+    output = proc["stdout_tail"] + proc["stderr_tail"]
+    ok = proc["rc"] == 1 and token in output
+    return result("fake_real_agent_terminal_factor_scope_missing_authority_block", ok, token, {"validate": proc, "result_path": str(mutation_path), "token_present": token in output})
+
+
 def build_dispatch(root: Path, rid: str, runtime: str = "unknown") -> list[dict[str, Any]]:
     return [
         run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_revision_council_packet.py", "--report-id", rid]),
@@ -344,10 +430,23 @@ def copy_report_artifact(root: Path, parent: str, child: str, rel_dir: str, stem
 
 
 def prepare_prior_revision_child_fixture(root: Path) -> str:
-    parent = REPORT_COLD_START
-    child = f"{parent}__LOOP01__REVISION_MEMORY_SMOKE"
+    stale_root_parent = REPORT_COLD_START
+    parent = f"{stale_root_parent}__LOOP00__IMMEDIATE_PARENT"
+    child = f"{stale_root_parent}__LOOP01__REVISION_MEMORY_SMOKE"
     parent_formula = "rank(negate(signedpower(minus(1, divide(open, close)), 1)))"
     child_formula = "rank(minus(divide(close, open), 1))"
+    stale_root_metrics = {
+        "rank_ic_mean": 0.99,
+        "rank_ic_ir": 0.99,
+        "pearson_ic_mean": 0.99,
+        "long_side_annual_return": 0.99,
+        "cost_adjusted_annual_return": 0.99,
+        "long_side_sharpe": 0.99,
+        "turnover": 0.99,
+        "trading_cogs_annual": 0.99,
+        "long_side_max_drawdown": -0.01,
+        "long_side_recovery_days": 1,
+    }
     parent_metrics = {
         "rank_ic_mean": 0.05,
         "rank_ic_ir": 0.30,
@@ -355,7 +454,10 @@ def prepare_prior_revision_child_fixture(root: Path) -> str:
         "long_side_annual_return": -0.20,
         "cost_adjusted_annual_return": -0.90,
         "long_side_sharpe": -0.40,
-        "turnover": 0.80,
+        "turnover_mean": 0.80,
+        "trading_cogs_annual": 0.24,
+        "long_side_max_drawdown": -0.50,
+        "long_side_recovery_days": 520,
     }
     child_metrics = {
         "rank_ic_mean": -0.05,
@@ -364,17 +466,27 @@ def prepare_prior_revision_child_fixture(root: Path) -> str:
         "long_side_annual_return": -0.80,
         "cost_adjusted_annual_return": -1.40,
         "long_side_sharpe": -1.20,
-        "turnover": 0.85,
+        "long_side_turnover_mean_daily": 0.85,
+        "annual_cogs": 0.255,
+        "max_drawdown": -0.70,
+        "recovery_days": 820,
     }
-    parent_eval_path = root / "objects" / "validation" / f"factor_evaluation__{parent}.json"
-    write_json(parent_eval_path, with_backend_metrics(load_json(parent_eval_path), parent_metrics))
-    child_eval = copy_report_artifact(root, parent, child, "validation", "factor_evaluation")
+    stale_eval_path = root / "objects" / "validation" / f"factor_evaluation__{stale_root_parent}.json"
+    write_json(stale_eval_path, with_backend_metrics(load_json(stale_eval_path), stale_root_metrics))
+    parent_eval = copy_report_artifact(root, stale_root_parent, parent, "validation", "factor_evaluation")
+    write_json(root / "objects" / "validation" / f"factor_evaluation__{parent}.json", with_backend_metrics(parent_eval, parent_metrics))
+    child_eval = copy_report_artifact(root, stale_root_parent, child, "validation", "factor_evaluation")
     write_json(root / "objects" / "validation" / f"factor_evaluation__{child}.json", with_backend_metrics(child_eval, child_metrics))
-    copy_report_artifact(root, parent, child, "research_iteration_master", "research_iteration_master")
-    copy_report_artifact(root, parent, child, "factor_case_master", "factor_case_master")
-    copy_report_artifact(root, parent, child, "factor_run_master", "factor_run_master")
-    copy_report_artifact(root, parent, child, "research_iteration_master", "main_agent_mechanism_memo")
-    spec = copy_report_artifact(root, parent, child, "factor_spec_master", "factor_spec_master")
+    copy_report_artifact(root, stale_root_parent, parent, "research_iteration_master", "research_iteration_master")
+    copy_report_artifact(root, stale_root_parent, parent, "factor_case_master", "factor_case_master")
+    copy_report_artifact(root, stale_root_parent, parent, "factor_run_master", "factor_run_master")
+    copy_report_artifact(root, stale_root_parent, parent, "research_iteration_master", "main_agent_mechanism_memo")
+    copy_report_artifact(root, stale_root_parent, parent, "factor_spec_master", "factor_spec_master")
+    copy_report_artifact(root, stale_root_parent, child, "research_iteration_master", "research_iteration_master")
+    copy_report_artifact(root, stale_root_parent, child, "factor_case_master", "factor_case_master")
+    copy_report_artifact(root, stale_root_parent, child, "factor_run_master", "factor_run_master")
+    copy_report_artifact(root, stale_root_parent, child, "research_iteration_master", "main_agent_mechanism_memo")
+    spec = copy_report_artifact(root, stale_root_parent, child, "factor_spec_master", "factor_spec_master")
     parent_hash = formula_hash(parent_formula)
     child_hash = formula_hash(child_formula)
     revision_spec_rel = f"objects/research_iteration_master/executable_revision_spec__{child}.json"
@@ -394,7 +506,9 @@ def prepare_prior_revision_child_fixture(root: Path) -> str:
     spec.setdefault("canonical_spec", {})
     spec["canonical_spec"]["formula_text"] = child_formula
     spec["canonical_spec"]["formula_hash"] = child_hash
-    spec["parent_report_id"] = parent
+    # Regression guard: some real child specs kept a stale root parent here.
+    # Prior revision memory must still use the executable spec's immediate parent.
+    spec["parent_report_id"] = stale_root_parent
     spec["executable_revision_spec_ref"] = revision_spec_rel
     spec["revision_identity"] = {
         "contract_version": "factorforge_child_revision_identity_v1",
@@ -433,10 +547,19 @@ def case_prior_revision_memory_dispatch_contract(root: Path) -> dict[str, Any]:
         all(item["rc"] == 0 for item in runs)
         and prior.get("is_child_revision") is True
         and prior.get("required_for_next_council") is True
+        and prior.get("parent_report_id") == f"{REPORT_COLD_START}__LOOP00__IMMEDIATE_PARENT"
         and prior.get("prior_revision_outcome") == "falsified"
         and prior.get("falsified_revision") is True
         and "open_close_sign_orientation_challenge" in (prior.get("forbidden_repeat_revision_rules") or [])
         and (prior.get("metric_delta") or {}).get("rank_ic_mean", {}).get("delta", 0) < 0
+        and (prior.get("metric_delta") or {}).get("turnover", {}).get("parent") == 0.80
+        and (prior.get("metric_delta") or {}).get("turnover", {}).get("child") == 0.85
+        and (prior.get("metric_delta") or {}).get("trading_cogs_annual", {}).get("parent") == 0.24
+        and (prior.get("metric_delta") or {}).get("trading_cogs_annual", {}).get("child") == 0.255
+        and (prior.get("metric_delta") or {}).get("long_side_max_drawdown", {}).get("parent") == -0.50
+        and (prior.get("metric_delta") or {}).get("long_side_max_drawdown", {}).get("child") == -0.70
+        and (prior.get("metric_delta") or {}).get("long_side_recovery_days", {}).get("parent") == 520.0
+        and (prior.get("metric_delta") or {}).get("long_side_recovery_days", {}).get("child") == 820.0
         and (taskbook.get("shared_context") or {}).get("prior_revision_memory") == prior
         and task_prior == prior
         and {"prior_revision_outcome_review", "repeated_revision_guard"}.issubset(required_outputs)
@@ -612,6 +735,9 @@ def main() -> int:
         )
         cases.append(case_fake_real_agent_result(root, include_identifier=True))
         cases.append(case_fake_real_agent_result(root, include_identifier=False))
+        cases.append(case_fake_real_agent_missing_math_derivation(root))
+        cases.append(case_fake_real_agent_missing_public_question_or_limiting_cases(root))
+        cases.append(case_fake_real_agent_terminal_factor_scope_missing_authority(root))
         cases.append(case_finalize_missing_result(root))
         cases.append(case_finalize_all_real_agent_results(root))
         cases.append(case_prior_revision_memory_dispatch_contract(root))

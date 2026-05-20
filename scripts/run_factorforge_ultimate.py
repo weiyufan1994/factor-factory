@@ -173,6 +173,31 @@ def disable_provisional_step3b_handoff_for_council(factorforge_root: Path, repor
     handoff = factorforge_root / 'objects' / 'handoff' / f'handoff_to_step3b__{report_id}.json'
     if not handoff.exists():
         return {'disabled': False, 'reason': 'handoff_absent', 'original_path': str(handoff)}
+    try:
+        handoff_payload = json.loads(handoff.read_text(encoding='utf-8'))
+    except Exception:
+        handoff_payload = {}
+    approval_markers = {
+        handoff_payload.get('loop_authorization'),
+        handoff_payload.get('authorization'),
+        handoff_payload.get('status'),
+    }
+    if (
+        'approved_for_step3b_handoff' in approval_markers
+        and (
+            handoff_payload.get('main_agent_council_synthesis_path')
+            or handoff_payload.get('orchestrator_synthesis_path')
+            or handoff_payload.get('approval_source') in {'ultimate_loop_auto_bridge', 'current_main_agent_orchestration_synthesis'}
+        )
+    ):
+        return {
+            'disabled': False,
+            'reason': 'approved_main_agent_council_synthesis_handoff_preserved',
+            'original_path': str(handoff),
+            'original_snapshot': path_snapshot(handoff),
+            'canonical_write_permission': False,
+            'step3b_handoff_active_after_disable': True,
+        }
     council_dir = factorforge_root / 'objects' / 'research_iteration_master' / 'revision_council' / report_id
     archive = council_dir / f'provisional_step3b_handoff_disabled_by_council__{report_id}.json'
     meta = council_dir / f'provisional_step3b_handoff_disabled_by_council__{report_id}.meta.json'

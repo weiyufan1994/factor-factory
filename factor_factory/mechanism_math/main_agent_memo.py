@@ -57,6 +57,10 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _nonempty_str_list(value: Any, min_count: int = 2) -> bool:
+    return isinstance(value, list) and len([item for item in value if isinstance(item, str) and item.strip()]) >= min_count
+
+
 def _canonical(factor_spec: dict[str, Any]) -> dict[str, Any]:
     return factor_spec.get("canonical_spec") if isinstance(factor_spec.get("canonical_spec"), dict) else factor_spec
 
@@ -481,6 +485,54 @@ def _default_economic_hypothesis(*, profile: dict[str, bool], mechanism: dict[st
     }
 
 
+def _structured_top_level_fields(economic: dict[str, Any], math: dict[str, Any], components: list[dict[str, Any]], qa: dict[str, Any] | None = None) -> dict[str, Any]:
+    qa = qa if isinstance(qa, dict) else {}
+    component_links = [
+        {
+            "component_id": str(item.get("component_id") or ""),
+            "observable_estimator": str(item.get("observable_estimator") or ""),
+            "latent_state_claim": str(item.get("economic_state") or ""),
+        }
+        for item in components
+        if isinstance(item, dict) and (item.get("component_id") or item.get("observable_estimator") or item.get("economic_state"))
+    ]
+    signature = math.get("expected_metric_signature")
+    if not isinstance(signature, dict) or not signature:
+        signature = {
+            "rank_ic": "rank IC must align with the declared payoff direction",
+            "long_side": "high-score long side must be positive if the state is monetizable",
+            "cost_adjusted": "cost-adjusted return must survive turnover and implementation costs",
+            "monotonicity": "quantile ordering must match the stated direction",
+            "turnover": "turnover must be consistent with the stated horizon",
+        }
+    falsification_text = str(qa.get("falsification_answer") or "")
+    falsification_tests = [item.strip() for item in re.split(r"[;\n]", falsification_text) if item.strip()]
+    if not falsification_tests:
+        falsification_tests = [
+            "Fail if high-score long-side evidence contradicts the declared payoff direction.",
+            "Fail if cost-adjusted evidence remains negative after the formula-level mechanism repair.",
+        ]
+    return {
+        "math_model_selection": {
+            "model_family": str(math.get("selected_model_family") or math.get("model_family") or ""),
+            "baseline_model": str(math.get("process_or_distribution") or ""),
+            "model_mutation": str(math.get("why_this_model") or math.get("why_not_generic_template") or qa.get("math_model_answer") or ""),
+        },
+        "payer": {
+            "payer_or_counterparty": str(economic.get("payer_or_counterparty") or ""),
+            "why_they_pay": str(economic.get("why_they_pay") or ""),
+            "necessary_market_structure": str(economic.get("necessary_market_structure") or ""),
+        },
+        "formula_state_estimator": {
+            "latent_state": str(math.get("latent_state") or qa.get("formula_state_answer") or ""),
+            "observable_mapping": str(math.get("formula_as_estimator") or qa.get("estimator_mapping_answer") or ""),
+            "component_links": component_links,
+        },
+        "expected_metric_signature": signature,
+        "falsification_tests": falsification_tests,
+    }
+
+
 def build_main_agent_mechanism_memo(
     *,
     report_id: str,
@@ -544,6 +596,7 @@ def build_main_agent_mechanism_memo(
             for term in ["commensurability", "scale", "raw relative volume ratio"]
         ),
     }
+    top_level = _structured_top_level_fields(economic, math_hypothesis, component_map, {})
     return {
         "contract_version": CONTRACT_VERSION,
         "report_id": report_id,
@@ -569,6 +622,7 @@ def build_main_agent_mechanism_memo(
         "mechanism_qa": {},
         "economic_hypothesis": economic,
         "math_hypothesis": math_hypothesis,
+        **top_level,
         "evidence_comparison": evidence,
         "operator_claim_consistency": op_consistency,
         "council_questions": [
@@ -826,6 +880,23 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     if any(term in text for term in ["deterministic_scaffold_draft", "deterministic_memo_draft_builder"]):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_DETERMINISTIC_TEMPLATE")
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
+    top_level_contract = {
+        "math_model_selection": ("model_family", "baseline_model", "model_mutation"),
+        "payer": ("payer_or_counterparty", "why_they_pay", "necessary_market_structure"),
+        "formula_state_estimator": ("latent_state", "observable_mapping"),
+    }
+    for field, required_keys in top_level_contract.items():
+        payload = memo.get(field)
+        if not isinstance(payload, dict) or not payload:
+            failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:{field}")
+            continue
+        for key in required_keys:
+            if not str(payload.get(key) or "").strip():
+                failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:{field}.{key}")
+    if not isinstance(memo.get("expected_metric_signature"), dict) or not memo.get("expected_metric_signature"):
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:expected_metric_signature")
+    if not _nonempty_str_list(memo.get("falsification_tests"), min_count=2):
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:falsification_tests")
     selected_model_family = math.get("selected_model_family") or math.get("model_family")
     if normalize_derivation_model_family(selected_model_family) is None:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID")

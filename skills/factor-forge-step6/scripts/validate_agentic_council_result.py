@@ -64,6 +64,128 @@ def nonempty_object_list(value: Any, min_count: int = 1) -> bool:
     return isinstance(value, list) and len(value) >= min_count and all(isinstance(item, dict) for item in value)
 
 
+def nonempty_dict(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value)
+
+
+def nonempty_limiting_cases(value: Any, min_count: int = 2) -> bool:
+    if not isinstance(value, list) or len(value) < min_count:
+        return False
+    polarities: set[str] = set()
+    valid_count = 0
+    for item in value:
+        if isinstance(item, dict):
+            text = item.get("case") or item.get("statement") or item.get("description")
+            polarity = str(item.get("polarity") or item.get("case_type") or "").strip().lower()
+            if not nonempty_str(text):
+                return False
+            if polarity in {"positive", "negative"}:
+                polarities.add(polarity)
+            valid_count += 1
+        elif isinstance(item, str) and item.strip():
+            valid_count += 1
+        else:
+            return False
+    if polarities:
+        return valid_count >= min_count and {"positive", "negative"}.issubset(polarities)
+    return valid_count >= min_count
+
+
+def terminal_recommendation_requested(result: dict[str, Any]) -> bool:
+    rec = result.get("revision_or_kill_recommendation")
+    pieces: list[str] = []
+    if isinstance(rec, dict):
+        for key in ("recommendation", "reason", "decision", "summary"):
+            if isinstance(rec.get(key), str):
+                pieces.append(rec[key].lower())
+    return any(term in " ".join(pieces) for term in ("reject", "kill", "stop", "terminal", "no_revision"))
+
+
+def terminal_control_fields(result: dict[str, Any]) -> dict[str, Any]:
+    rec = result.get("revision_or_kill_recommendation")
+    control = result.get("terminal_control")
+    merged: dict[str, Any] = {}
+    if isinstance(rec, dict):
+        for key in ("terminal_scope", "stop_authority", "terminal_proof", "proof", "reason"):
+            if key in rec:
+                merged[key] = rec[key]
+    if isinstance(control, dict):
+        merged.update(control)
+    return merged
+
+
+def terminal_proof_present(control: dict[str, Any]) -> bool:
+    proof = control.get("terminal_proof") or control.get("proof")
+    return isinstance(proof, str) and bool(proof.strip()) or isinstance(proof, dict) and bool(proof)
+
+
+def validate_real_agent_derivation_contract(result: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    econ = result.get("economic_hypothesis_review")
+    math = result.get("math_mechanism_derivation")
+    translation = result.get("model_to_formula_translation")
+    if not nonempty_dict(econ) or not nonempty_dict(math):
+        reasons.append("BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION")
+        return reasons
+    for field in ("refined_second_layer_mechanism", "payer_or_counterparty_update", "what_step4_metrics_changed_in_the_hypothesis"):
+        if not nonempty_str(econ.get(field)):
+            reasons.append(f"BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION:{field}")
+    if not isinstance(econ.get("preserve_broad_direction"), bool):
+        reasons.append("BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION:preserve_broad_direction")
+
+    selected_tool = math.get("selected_tool")
+    selected_tool_rationale = math.get("selected_tool_rationale") or math.get("why_selected")
+    if not nonempty_str(selected_tool) or not nonempty_str(selected_tool_rationale):
+        reasons.append("BLOCK_COUNCIL_NO_TOOL_SELECTION_RATIONALE")
+    for field in ("baseline_model", "model_mutation"):
+        if not nonempty_str(math.get(field)):
+            reasons.append(f"BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION:{field}")
+    for field in ("mathematical_objects", "derivation_steps", "derived_state_variables", "observable_estimators", "expected_metric_signature", "falsification_tests"):
+        if not nonempty_list(math.get(field)):
+            reasons.append(f"BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION:{field}")
+
+    if not nonempty_dict(translation):
+        reasons.append("BLOCK_COUNCIL_NO_MODEL_TO_FORMULA_MAPPING")
+    else:
+        candidate = translation.get("candidate_formula")
+        disposition = translation.get("disposition") or translation.get("terminal_disposition")
+        if not nonempty_str(candidate) and disposition not in {"research_hold", "operator_block", "no_derived_revision_with_proof"}:
+            reasons.append("BLOCK_COUNCIL_NO_MODEL_TO_FORMULA_MAPPING")
+        for field in ("operator_support_status", "information_set_legality"):
+            if not nonempty_str(translation.get(field)):
+                reasons.append(f"BLOCK_COUNCIL_NO_MODEL_TO_FORMULA_MAPPING:{field}")
+        if not nonempty_list(translation.get("mapping_from_model_terms_to_formula_components")):
+            reasons.append("BLOCK_COUNCIL_NO_MODEL_TO_FORMULA_MAPPING:mapping_from_model_terms_to_formula_components")
+
+    prior = result.get("prior_revision_outcome_review")
+    prior_text = json.dumps(prior, ensure_ascii=False).lower() if isinstance(prior, dict) else ""
+    prior_parameter_failed = "parameter_repair" in prior_text and ("falsified" in prior_text or "failed" in prior_text)
+    if prior_parameter_failed:
+        for law in result.get("candidate_revision_laws") or []:
+            if not isinstance(law, dict):
+                continue
+            if law.get("revision_kind") == "parameter_repair":
+                diagnosis = law.get("prior_revision_model_diagnosis") or result.get("prior_revision_model_diagnosis")
+                if not nonempty_dict(diagnosis):
+                    reasons.append("BLOCK_COUNCIL_PARAMETER_REPAIR_AFTER_PARAMETER_FAILURE_WITHOUT_MODEL_DIAGNOSIS")
+    if terminal_recommendation_requested(result):
+        control = terminal_control_fields(result)
+        rec = result.get("revision_or_kill_recommendation") if isinstance(result.get("revision_or_kill_recommendation"), dict) else {}
+        scope = control.get("terminal_scope") or rec.get("terminal_scope")
+        if scope not in {"revision_branch_only", "factor_instance", "mechanism_family"}:
+            reasons.append("BLOCK_COUNCIL_VERDICT_WITHOUT_DERIVATION:terminal_scope")
+        authority = str(control.get("stop_authority") or "").strip()
+        has_proof = terminal_proof_present(control)
+        if scope == "revision_branch_only":
+            if authority and authority not in {"advisory_only", "branch_falsification_only"}:
+                reasons.append("BLOCK_COUNCIL_TERMINAL_AUTHORITY_INVALID")
+        elif scope in {"factor_instance", "mechanism_family"}:
+            allowed = {"human_override", "evidence_block", "block_with_proof", "validated_no_derived_revision", "max_loop_cap"}
+            if authority not in allowed or not has_proof:
+                reasons.append("BLOCK_COUNCIL_TERMINAL_AUTHORITY_MISSING")
+    return reasons
+
+
 def norm(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
@@ -118,6 +240,7 @@ def validate_agentic_result(result: dict[str, Any]) -> list[str]:
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_REAL_AGENT_DEPTH_INVALID")
         if mode != "agentic":
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_REAL_AGENT_MODE_INVALID")
+        reasons.extend(validate_real_agent_derivation_contract(result))
     else:
         reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_PRODUCER_INVALID")
 
@@ -125,6 +248,10 @@ def validate_agentic_result(result: dict[str, Any]) -> list[str]:
     if not isinstance(record, dict) or not record:
         reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_DERIVATION_MISSING")
     else:
+        if not nonempty_str(record.get("research_question")):
+            reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_RESEARCH_QUESTION_MISSING")
+        if not nonempty_limiting_cases(record.get("limiting_cases"), min_count=2):
+            reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_LIMITING_CASES_MISSING")
         if not nonempty_object_list(record.get("assumptions")):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_ASSUMPTIONS_MISSING")
         if not nonempty_object_list(record.get("mathematical_objects")):

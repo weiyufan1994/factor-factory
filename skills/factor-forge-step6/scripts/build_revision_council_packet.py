@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import sys
@@ -26,6 +27,7 @@ from factor_factory.mechanism_math.validator import validate_mechanism_math_cont
 
 OBJ = FF / "objects"
 TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
+TOKEN_BRANCH_COMPARISON_MISSING = "BLOCK_FACTORFORGE_BRANCH_COMPARISON_MISSING"
 BASELINE_VERSION = "factorforge_revision_council_forbidden_writeback_baseline_v1"
 
 
@@ -365,6 +367,119 @@ def prior_revision_memory(report_id: str, spec: dict[str, Any], current_metrics:
     }
 
 
+def executable_revision_spec_for_packet(spec: dict[str, Any]) -> tuple[Path | None, dict[str, Any]]:
+    revision_identity = spec.get("revision_identity") if isinstance(spec.get("revision_identity"), dict) else {}
+    revision_spec_ref = spec.get("executable_revision_spec_ref") or revision_identity.get("revision_spec_path")
+    if not revision_spec_ref:
+        return None, {}
+    revision_spec_path = Path(str(revision_spec_ref)).expanduser()
+    if not revision_spec_path.is_absolute():
+        revision_spec_path = FF / revision_spec_path
+    return revision_spec_path, load_optional_json(revision_spec_path)
+
+
+def import_branch_comparison_validator():
+    validator_path = REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "validate_branch_comparison.py"
+    spec = importlib.util.spec_from_file_location("validate_branch_comparison", validator_path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: cannot load branch comparison validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sibling_branch_memory(report_id: str, executable_spec: dict[str, Any]) -> dict[str, Any]:
+    branch_group_id = str(executable_spec.get("branch_group_id") or nested(executable_spec, "branch_context").get("branch_group_id") or "")
+    if not branch_group_id:
+        return {
+            "contract_version": "factorforge_sibling_branch_memory_v1",
+            "required": False,
+            "reason": "not_multibranch_child",
+        }
+    try:
+        sibling_count = int(executable_spec.get("sibling_branch_count") or nested(executable_spec, "branch_context").get("sibling_branch_count") or 0)
+    except (TypeError, ValueError):
+        sibling_count = 0
+    if sibling_count <= 1:
+        return {
+            "contract_version": "factorforge_sibling_branch_memory_v1",
+            "required": False,
+            "reason": "single_child_branch_group",
+            "branch_group_id": branch_group_id,
+        }
+    parent_report_id = str(executable_spec.get("parent_report_id") or nested(executable_spec, "branch_context").get("parent_report_id") or "")
+    if not parent_report_id:
+        raise ValueError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: parent_report_id missing for {report_id}")
+
+    validator = import_branch_comparison_validator()
+    comparison_dir = OBJ / "research_iteration_master"
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(comparison_dir.glob(f"branch_comparison__{parent_report_id}__loop*.json")):
+        payload = load_optional_json(path)
+        if payload.get("branch_group_id") != branch_group_id:
+            continue
+        failures = validator.validate_payload(payload)
+        if failures:
+            raise ValueError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: invalid comparison {path}: {failures}")
+        matches.append((path, payload))
+    if not matches:
+        raise ValueError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: branch_group_id={branch_group_id}")
+    comparison_path, comparison = matches[-1]
+    selected = comparison.get("main_agent_selection") if isinstance(comparison.get("main_agent_selection"), dict) else {}
+    children = comparison.get("children") if isinstance(comparison.get("children"), list) else []
+    siblings: list[dict[str, Any]] = []
+    current_branch: dict[str, Any] = {}
+    forbidden_hashes: list[str] = []
+    forbidden_rules: list[str] = []
+    for raw in children:
+        child = raw if isinstance(raw, dict) else {}
+        child_id = str(child.get("child_report_id") or "")
+        formula_hash = str(child.get("formula_hash") or "")
+        law_id = str(child.get("law_id") or "")
+        if child_id == report_id:
+            current_branch = child
+        else:
+            siblings.append(
+                {
+                    "child_report_id": child_id,
+                    "branch_role": child.get("branch_role"),
+                    "law_id": law_id,
+                    "formula_hash": formula_hash,
+                    "branch_outcome": child.get("branch_outcome"),
+                    "metric_delta_vs_parent": child.get("metric_delta_vs_parent") or {},
+                }
+            )
+        if child.get("branch_outcome") == "falsified":
+            if formula_hash:
+                forbidden_hashes.append(formula_hash)
+            if law_id:
+                forbidden_rules.append(law_id)
+    return {
+        "contract_version": "factorforge_sibling_branch_memory_v1",
+        "required": True,
+        "branch_group_id": branch_group_id,
+        "source_branch_comparison_path": str(comparison_path),
+        "selected_current_child_report_id": report_id,
+        "selected_next_parent_child_report_id": selected.get("selected_next_parent_child_report_id"),
+        "current_branch": {
+            "child_report_id": current_branch.get("child_report_id"),
+            "branch_role": current_branch.get("branch_role"),
+            "law_id": current_branch.get("law_id"),
+            "formula_hash": current_branch.get("formula_hash"),
+            "branch_outcome": current_branch.get("branch_outcome"),
+            "metric_delta_vs_parent": current_branch.get("metric_delta_vs_parent") or {},
+        },
+        "siblings": siblings,
+        "forbidden_repeat_sibling_formula_hashes": sorted(set(forbidden_hashes)),
+        "forbidden_repeat_sibling_revision_rules": sorted(set(forbidden_rules)),
+        "council_requirements": [
+            "Compare the current selected branch against sibling branch outcomes before proposing another revision.",
+            "Do not re-create a sibling formula hash or rejected sibling derivation law unless explicitly justified by new evidence.",
+            "Preserve exploration learnings even when the next parent follows the exploit branch.",
+        ],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report-id", required=True)
@@ -405,6 +520,12 @@ def main() -> None:
     canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
     metrics = collect_key_metrics(evaluation)
     revision_memory = prior_revision_memory(rid, spec, metrics)
+    _revision_spec_path, executable_spec = executable_revision_spec_for_packet(spec)
+    try:
+        sibling_memory = sibling_branch_memory(rid, executable_spec)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)
 
     brief_ref = iteration.get("loop_research_brief") or {}
     brief_json = {}
@@ -432,6 +553,7 @@ def main() -> None:
         "formula_specific_derivation": formula_specific_derivation,
         "mechanism_formula_consistency": mechanism_formula_consistency,
         "prior_revision_memory": revision_memory,
+        "sibling_branch_memory": sibling_memory,
         "main_agent_mechanism_memo_ref": relpath(paths["main_agent_mechanism_memo"]),
         "main_agent_formula_component_map": main_agent_memo.get("formula_component_map") or [],
         "main_agent_math_hypothesis": main_agent_memo.get("math_hypothesis") or {},

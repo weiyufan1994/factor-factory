@@ -179,7 +179,10 @@ def nonempty_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) and bool(value) else {}
 
 
-def resolve_synthesis_path(root: Path, parent: str, parent_handoff: dict[str, Any]) -> Path:
+def resolve_synthesis_path(root: Path, parent: str, parent_handoff: dict[str, Any], explicit_synthesis_path: str | None = None) -> Path:
+    if explicit_synthesis_path:
+        path = Path(explicit_synthesis_path).expanduser()
+        return path if path.is_absolute() else root / path
     raw = (
         parent_handoff.get("orchestrator_synthesis_path")
         or parent_handoff.get("main_agent_council_synthesis_path")
@@ -193,8 +196,13 @@ def resolve_synthesis_path(root: Path, parent: str, parent_handoff: dict[str, An
     return default_orchestrator_synthesis_path(root, parent)
 
 
-def load_orchestrator_synthesis(root: Path, parent: str, parent_handoff: dict[str, Any]) -> tuple[Path, dict[str, Any], dict[str, Any]]:
-    path = resolve_synthesis_path(root, parent, parent_handoff)
+def load_orchestrator_synthesis(
+    root: Path,
+    parent: str,
+    parent_handoff: dict[str, Any],
+    explicit_synthesis_path: str | None = None,
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    path = resolve_synthesis_path(root, parent, parent_handoff, explicit_synthesis_path)
     if not path.exists():
         raise ValueError(
             f"{SYNTHESIS_MISSING_BLOCK}: main-agent council synthesis is required before child materialization"
@@ -251,12 +259,19 @@ def build_executable_revision_spec(
     parent_iteration: dict[str, Any],
     parent_handoff_path: Path,
     source_handoff_sha256: str,
+    explicit_synthesis_path: str | None = None,
+    branch_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     canonical = parent_spec.get("canonical_spec") if isinstance(parent_spec.get("canonical_spec"), dict) else {}
     parent_formula = str(canonical.get("formula_text") or "").strip()
     if not parent_formula:
         raise ValueError("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_PARENT_FORMULA_MISSING")
-    synthesis_path, synthesis, selected_revision = load_orchestrator_synthesis(root, parent, parent_handoff)
+    synthesis_path, synthesis, selected_revision = load_orchestrator_synthesis(
+        root,
+        parent,
+        parent_handoff,
+        explicit_synthesis_path,
+    )
     child_formula = nonempty_str(selected_revision.get("child_formula"))
     derivation_rule = nonempty_str(selected_revision.get("law_id"))
     parent_formula_hash = formula_hash(parent_formula)
@@ -275,7 +290,7 @@ def build_executable_revision_spec(
         if child_formula_hash in forbidden_hashes:
             raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: selected child formula recreates a forbidden prior formula hash")
     selected_ids = [derivation_rule]
-    return {
+    spec = {
         "contract_version": EXECUTABLE_REVISION_SPEC_VERSION,
         "created_at_utc": utc_now(),
         "parent_report_id": parent,
@@ -322,6 +337,15 @@ def build_executable_revision_spec(
         },
         "parent_iteration_path": str(object_path(root, "research_iteration_master", parent)),
     }
+    if branch_context:
+        spec["branch_role"] = branch_context["branch_role"]
+        spec["branch_index"] = branch_context["branch_index"]
+        spec["branch_group_id"] = branch_context["branch_group_id"]
+        spec["source_multibranch_synthesis_path"] = branch_context["source_multibranch_synthesis_path"]
+        spec["source_multibranch_synthesis_sha256"] = branch_context["source_multibranch_synthesis_sha256"]
+        spec["sibling_branch_count"] = branch_context["sibling_branch_count"]
+        spec["branch_context"] = branch_context
+    return spec
 
 
 def existing_target_paths(targets: dict[str, Path]) -> dict[str, str]:
@@ -374,9 +398,16 @@ def main() -> int:
     ap.add_argument("--parent-report-id", required=True)
     ap.add_argument("--child-report-id", required=True)
     ap.add_argument("--factorforge-root", default=None)
+    ap.add_argument("--synthesis-path", default=None)
+    ap.add_argument("--branch-group-id", default=None)
+    ap.add_argument("--branch-index", type=int, default=None)
+    ap.add_argument("--branch-role", default=None)
+    ap.add_argument("--source-multibranch-synthesis-path", default=None)
+    ap.add_argument("--source-multibranch-synthesis-sha256", default=None)
+    ap.add_argument("--sibling-branch-count", type=int, default=None)
     args = ap.parse_args()
 
-    if os.getenv("FACTORFORGE_ULTIMATE_RUN") != "1":
+    if os.getenv("FACTORFORGE_ULTIMATE_RUN") != "1" and os.getenv("FACTORFORGE_ULTIMATE_LOOP_MATERIALIZE") != "1":
         print("BLOCKED_DIRECT_MATERIALIZE: child revision materialization must be invoked by the ultimate loop orchestrator.")
         return 1
 
@@ -473,6 +504,33 @@ def main() -> int:
     producer = "ultimate_loop_child_materializer"
     parent_spec = load_json(required_parent_paths["factor_spec_master"])
     try:
+        branch_context = None
+        branch_args = {
+            "branch_group_id": args.branch_group_id,
+            "branch_index": args.branch_index,
+            "branch_role": args.branch_role,
+            "source_multibranch_synthesis_path": args.source_multibranch_synthesis_path,
+            "source_multibranch_synthesis_sha256": args.source_multibranch_synthesis_sha256,
+            "sibling_branch_count": args.sibling_branch_count,
+        }
+        if any(value is not None for value in branch_args.values()):
+            missing_branch_args = sorted(key for key, value in branch_args.items() if value is None or value == "")
+            if missing_branch_args:
+                print(f"{ORCHESTRATOR_MISMATCH_BLOCK}: incomplete branch context: {','.join(missing_branch_args)}")
+                return 1
+            if args.branch_role not in {"exploit", "exploration"}:
+                print(f"{ORCHESTRATOR_MISMATCH_BLOCK}: invalid branch_role={args.branch_role!r}")
+                return 1
+            branch_context = {
+                "parent_report_id": parent,
+                "child_report_id": child,
+                "branch_group_id": str(args.branch_group_id),
+                "branch_index": int(args.branch_index),
+                "branch_role": str(args.branch_role),
+                "source_multibranch_synthesis_path": str(args.source_multibranch_synthesis_path),
+                "source_multibranch_synthesis_sha256": str(args.source_multibranch_synthesis_sha256),
+                "sibling_branch_count": int(args.sibling_branch_count),
+            }
         executable_revision_spec = build_executable_revision_spec(
             root=root,
             parent=parent,
@@ -483,6 +541,8 @@ def main() -> int:
             parent_iteration=parent_iteration,
             parent_handoff_path=parent_handoff_path,
             source_handoff_sha256=source_handoff_sha256,
+            explicit_synthesis_path=args.synthesis_path,
+            branch_context=branch_context,
         )
     except ValueError as exc:
         print(str(exc))

@@ -345,6 +345,26 @@ def case_comparison_source_hash_mutation_blocks(root: Path) -> dict[str, Any]:
     }
 
 
+def case_comparison_metric_delta_mutation_blocks(root: Path) -> dict[str, Any]:
+    setup = setup_materialized_multibranch(root)
+    child_a = setup["children"][0]["child_report_id"]
+    build = build_comparison(root, child_a)
+    payload = load_json(comparison_path(root))
+    payload["children"][1]["metric_delta_vs_parent"]["rank_ic_mean"]["delta"] = -999.0
+    write_json(comparison_path(root), payload)
+    validation = validate_comparison(root)
+    packet = build_packet(root, child_a)
+    text = validation["stdout_tail"] + validation["stderr_tail"] + packet["stdout_tail"] + packet["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_BRANCH_COMPARISON_SOURCE_ARTIFACT_MISMATCH"
+    return {
+        "case": "branch_comparison_metric_delta_mutation_blocks",
+        "ok": build["rc"] == 0 and validation["rc"] == 1 and packet["rc"] == 1 and token in text,
+        "token_present": token in text,
+        "validation": validation,
+        "packet": packet,
+    }
+
+
 def case_selected_child_invalid_blocks(root: Path) -> dict[str, Any]:
     setup = setup_materialized_multibranch(root)
     child_a = setup["children"][0]["child_report_id"]
@@ -429,6 +449,7 @@ def main() -> int:
         run_case(root, "sibling_memory", case_sibling_memory_propagates),
         run_case(root, "unselected_sibling_packet", case_unselected_sibling_packet_blocks),
         run_case(root, "source_hash_mutation", case_comparison_source_hash_mutation_blocks),
+        run_case(root, "metric_delta_mutation", case_comparison_metric_delta_mutation_blocks),
         run_case(root, "selected_child_invalid", case_selected_child_invalid_blocks),
         run_case(root, "duplicate_formula", case_duplicate_formula_blocks),
         run_case(root, "missing_metrics", case_missing_metrics_blocks),

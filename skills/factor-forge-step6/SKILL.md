@@ -162,29 +162,26 @@ set the research iteration decision to `reject`, keep
 `handoff_to_step3b` absent, refresh the loop brief Council section, and rerun
 `validate_step6.py`. Terminal rejection is a stop condition, not permission to
 materialize another child.
-42. Council synthesis may optionally be prepared in multi-branch form before any
-multi-child execution is attempted. The artifact is
+42. Council synthesis may be prepared in multi-branch form before multi-child
+execution is attempted. The artifact is
 `objects/research_iteration_master/revision_council/<report_id>/main_agent_multibranch_synthesis__<report_id>.json`
 and `.md`, contract version `factorforge_main_agent_multibranch_synthesis_v1`.
-It is an orchestration contract only: it must not alter the default single-child
-loop, must not materialize children by itself, and must not write clean data,
-official records, or generated code. Validate it with
+It is an orchestration contract: it must not materialize children by itself, and
+must not write clean data, official records, or generated code. Validate it with
 `skills/factor-forge-step6/scripts/validate_main_agent_multibranch_synthesis.py`.
 The validator requires exactly one exploit branch, at most two exploration
 branches, non-duplicate child formula hashes, no parent/forbidden formula
 repeats, no repeated falsified revision law, and a real mechanism difference for
 each exploration branch.
-43. Phase P2 can materialize an approved multi-branch synthesis into independent
-child reports through a guarded bridge:
+43. The ultimate loop may consume a validated multi-branch synthesis through the
+guarded production bridge. First,
 `approve_main_agent_multibranch_synthesis.py` writes the approval artifact and
 per-branch single-synthesis adapters, then
 `materialize_step6_multibranch_children.py` invokes the existing child
 materializer once per selected branch. This P2 bridge must preserve safe
 permissions, verify the source synthesis hash, preserve child-local Step3A
 snapshots, and write branch context into each child executable revision spec.
-44. Phase P3 requires branch comparison before any selected multi-branch child
-enters its next Revision Council. After P2 materializes more than one child, the
-main agent must build
+44. After more than one child has run, the ultimate loop must build
 `objects/research_iteration_master/branch_comparison__<parent_report_id>__loopNN.json`
 and `.md` with `build_branch_comparison.py`, then validate it with
 `validate_branch_comparison.py`. The comparison must cover every sibling child,
@@ -194,9 +191,9 @@ but no valid comparison exists, `build_revision_council_packet.py` must BLOCK
 with `BLOCK_FACTORFORGE_BRANCH_COMPARISON_MISSING`. When the comparison exists,
 the next Council packet must include `sibling_branch_memory` so the selected
 exploit path retains exploration evidence and cannot repeat falsified sibling
-laws or formula hashes without explicit new evidence. This P3 contract does not
-write clean data, generated code, official records, or default-enable
-multi-branch autonomous production loops by itself.
+laws or formula hashes without explicit new evidence. This path does not write
+clean data or official records, and generated code writes are limited to the
+child reports that are explicitly materialized and executed.
 
 ## Research Analyst Standard
 

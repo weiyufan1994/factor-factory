@@ -25,6 +25,15 @@ from factor_factory.ultimate_loop.proof import (
 )
 from factor_factory.ultimate_loop.state import approved_child_revision_from_handoff, classify_loop_state
 
+METRIC_ALIASES: dict[str, list[str]] = {
+    "rank_ic_mean": ["rank_ic_mean", "rank_ic"],
+    "long_side_annual_return": ["long_side_annual_return", "annual_return", "long_annual_return"],
+    "cost_adjusted_annual_return": ["cost_adjusted_annual_return", "cost_adjusted_return", "net_annual_return"],
+    "turnover": ["turnover", "turnover_mean", "long_side_turnover_mean_daily", "daily_turnover", "turnover_mean_daily"],
+    "long_side_max_drawdown": ["long_side_max_drawdown", "max_drawdown", "long_side_mdd", "mdd"],
+    "long_side_recovery_days": ["long_side_recovery_days", "recovery_days", "long_side_recovery_time_days"],
+}
+
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Run Factor Forge Ultimate in a bounded revision loop.")
@@ -130,6 +139,61 @@ def synthesis_approval_command(report_id: str, factorforge_root: Path) -> list[s
     ]
 
 
+def multibranch_synthesis_approval_command(report_id: str, factorforge_root: Path, loop_index: int) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "approve_main_agent_multibranch_synthesis.py"),
+        "--report-id",
+        report_id,
+        "--factorforge-root",
+        str(factorforge_root),
+        "--loop-index",
+        str(loop_index),
+        "--approval-source",
+        "ultimate_loop_auto_multibranch_bridge",
+    ]
+
+
+def multibranch_materialization_command(report_id: str, factorforge_root: Path, loop_index: int) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "materialize_step6_multibranch_children.py"),
+        "--report-id",
+        report_id,
+        "--factorforge-root",
+        str(factorforge_root),
+        "--loop-index",
+        str(loop_index),
+    ]
+
+
+def branch_comparison_command(
+    parent_report_id: str,
+    selected_child_report_id: str,
+    factorforge_root: Path,
+    loop_index: int,
+    *,
+    why: str,
+    learned: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "build_branch_comparison.py"),
+        "--parent-report-id",
+        parent_report_id,
+        "--loop-index",
+        str(loop_index),
+        "--selected-next-parent-child-report-id",
+        selected_child_report_id,
+        "--factorforge-root",
+        str(factorforge_root),
+        "--why",
+        why,
+        "--what-learned-from-exploration",
+        learned,
+    ]
+
+
 def terminal_rejection_command(report_id: str, factorforge_root: Path, loop_index: int, max_loops: int) -> list[str]:
     return [
         sys.executable,
@@ -164,6 +228,14 @@ def branch_falsification_path(factorforge_root: Path, report_id: str) -> Path:
     )
 
 
+def multibranch_materialization_report_path(factorforge_root: Path, report_id: str, loop_index: int) -> Path:
+    return factorforge_root / "objects" / "runtime_context" / f"multibranch_child_materialization__{report_id}__loop{loop_index:02d}.json"
+
+
+def branch_comparison_path(factorforge_root: Path, report_id: str, loop_index: int) -> Path:
+    return factorforge_root / "objects" / "research_iteration_master" / f"branch_comparison__{report_id}__loop{loop_index:02d}.json"
+
+
 def next_derivation_questionnaire_path(factorforge_root: Path, report_id: str) -> Path:
     return (
         factorforge_root
@@ -184,6 +256,14 @@ def synthesis_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
     council_dir = factorforge_root / "objects" / "research_iteration_master" / "revision_council" / report_id
     return (
         (council_dir / f"main_agent_council_synthesis__{report_id}.json").exists()
+        and (council_dir / f"revision_council_summary__{report_id}.json").exists()
+    )
+
+
+def multibranch_synthesis_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
+    council_dir = factorforge_root / "objects" / "research_iteration_master" / "revision_council" / report_id
+    return (
+        (council_dir / f"main_agent_multibranch_synthesis__{report_id}.json").exists()
         and (council_dir / f"revision_council_summary__{report_id}.json").exists()
     )
 
@@ -222,6 +302,77 @@ def existing_materialization_report(factorforge_root: Path, parent_report_id: st
     if missing:
         return {"ok": False, "report_path": str(path), "reason": "materialized_artifacts_missing_on_disk", "missing": missing}
     return {"ok": True, "report_path": str(path), "report": report}
+
+
+def collect_key_metrics(evaluation: dict[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    if isinstance(evaluation.get("key_metrics"), dict):
+        metrics.update(evaluation["key_metrics"])
+    for item in evaluation.get("backend_summary") or []:
+        if isinstance(item, dict) and isinstance(item.get("key_metrics"), dict):
+            metrics.update(item["key_metrics"])
+    if isinstance(evaluation.get("metrics"), dict):
+        metrics.update(evaluation["metrics"])
+    return metrics
+
+
+def numeric_metric(metrics: dict[str, Any], key: str) -> float | None:
+    for candidate in METRIC_ALIASES.get(key, [key]):
+        value = metrics.get(candidate)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def factor_evaluation_metrics(factorforge_root: Path, report_id: str) -> dict[str, float]:
+    evaluation = load_json_if_exists(factorforge_root / "objects" / "validation" / f"factor_evaluation__{report_id}.json")
+    raw = collect_key_metrics(evaluation if isinstance(evaluation, dict) else {})
+    metrics: dict[str, float] = {}
+    for key in METRIC_ALIASES:
+        value = numeric_metric(raw, key)
+        if value is not None:
+            metrics[key] = value
+    return metrics
+
+
+def select_multibranch_child(factorforge_root: Path, children: list[dict[str, Any]]) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    for child in children:
+        child_id = str(child.get("child_report_id") or "")
+        metrics = factor_evaluation_metrics(factorforge_root, child_id)
+        score = (
+            metrics.get("cost_adjusted_annual_return", float("-inf")),
+            metrics.get("rank_ic_mean", float("-inf")),
+            metrics.get("long_side_annual_return", float("-inf")),
+            -metrics.get("turnover", float("inf")),
+            metrics.get("long_side_max_drawdown", float("-inf")),
+            -metrics.get("long_side_recovery_days", float("inf")),
+            -float(child.get("branch_index") or 0),
+        )
+        candidates.append({"child_report_id": child_id, "score": score, "metrics": metrics, "branch": child})
+    if not candidates:
+        return {"ok": False, "block_reason": "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_NO_CHILDREN"}
+    selected = max(candidates, key=lambda item: item["score"])
+    if not selected.get("child_report_id"):
+        return {"ok": False, "block_reason": "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_NO_SELECTED_CHILD"}
+    return {
+        "ok": True,
+        "selected_child_report_id": selected["child_report_id"],
+        "selection_metric_order": [
+            "cost_adjusted_annual_return",
+            "rank_ic_mean",
+            "long_side_annual_return",
+            "lower_turnover",
+            "less_negative_max_drawdown",
+            "lower_recovery_days",
+        ],
+        "selected_metrics": selected["metrics"],
+        "candidate_scores": candidates,
+    }
 
 
 def brief_ref(factorforge_root: Path, report_id: str) -> dict[str, Any]:
@@ -388,6 +539,151 @@ def main() -> int:
         proof.setdefault("iterations", []).append(iteration)
         proof["updated_at_utc"] = utc_now()
         write_json_atomic(proof_path, proof)
+
+        if (
+            state.get("outcome") in {"awaiting_agent_results", "exhausted"}
+            and multibranch_synthesis_bridge_ready(ctx.factorforge_root, current_report_id)
+        ):
+            if loop_index >= args.max_loops:
+                proof["status"] = "PASS"
+                proof["final_outcome"] = "max_loops_reached"
+                proof["stop_reason"] = "max_loops_reached"
+                iteration["outcome"] = "max_loops_reached"
+                iteration["stop_reason"] = "max_loops_reached"
+                iteration["proof_status"] = "PASS"
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("max_loops_reached")
+                return 0
+
+            approval_cmd = multibranch_synthesis_approval_command(current_report_id, ctx.factorforge_root, loop_index)
+            approval_result = run_command(approval_cmd, env=env, dry_run=args.dry_run)
+            iteration["multibranch_approval_command"] = approval_result
+            iteration["multibranch_approval_rc"] = approval_result.get("rc")
+            if approval_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_SYNTHESIS_APPROVAL_FAILED"
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_SYNTHESIS_APPROVAL_FAILED")
+                return 1
+
+            materialize_env = env.copy()
+            materialize_env["FACTORFORGE_ULTIMATE_LOOP_MATERIALIZE"] = "1"
+            materialize_cmd = multibranch_materialization_command(current_report_id, ctx.factorforge_root, loop_index)
+            materialize_result = run_command(materialize_cmd, env=materialize_env, dry_run=args.dry_run)
+            materialization_path = multibranch_materialization_report_path(ctx.factorforge_root, current_report_id, loop_index)
+            materialization = load_json_if_exists(materialization_path)
+            children = materialization.get("children") if isinstance(materialization.get("children"), list) else []
+            iteration["multibranch_materialization_command"] = materialize_result
+            iteration["multibranch_materialization_rc"] = materialize_result.get("rc")
+            iteration["multibranch_materialization_report_path"] = str(materialization_path)
+            iteration["multibranch_child_count"] = len(children)
+            if materialize_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_CHILD_MATERIALIZATION_FAILED"
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_CHILD_MATERIALIZATION_FAILED")
+                return 1
+
+            protected_ancestors = list(dict.fromkeys([*ancestor_report_ids, current_report_id]))
+            multibranch_ancestor_before = ancestor_generated_code_snapshots(ctx.factorforge_root, protected_ancestors)
+            child_runs: list[dict[str, Any]] = []
+            for child in children:
+                child_report_id = str(child.get("child_report_id") or "")
+                child_command = ultimate_command(args, child_report_id, "3b", ctx.factorforge_root)
+                child_result = run_command(child_command, env=env, dry_run=args.dry_run)
+                child_runs.append(
+                    {
+                        "child_report_id": child_report_id,
+                        "branch_role": child.get("branch_role"),
+                        "branch_index": child.get("branch_index"),
+                        "law_id": child.get("law_id"),
+                        "wrapper_command": child_result,
+                        "wrapper_proof_path": str(ctx.runtime_context_root / f"ultimate_run_report__{child_report_id}.json"),
+                    }
+                )
+                if child_result.get("rc") != 0:
+                    iteration["multibranch_child_wrapper_runs"] = child_runs
+                    proof["status"] = "FAIL"
+                    proof["final_outcome"] = "blocked"
+                    proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_CHILD_WRAPPER_FAILED"
+                    proof["updated_at_utc"] = utc_now()
+                    write_json_atomic(proof_path, proof)
+                    write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                    print("BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_CHILD_WRAPPER_FAILED")
+                    return 1
+            iteration["multibranch_child_wrapper_runs"] = child_runs
+
+            multibranch_forbidden_changes = []
+            multibranch_ancestor_changes = changed_ancestor_snapshots(ctx.factorforge_root, multibranch_ancestor_before)
+            if multibranch_ancestor_changes:
+                multibranch_forbidden_changes.append({"kind": "parent_generated_code_mutation", "changes": multibranch_ancestor_changes})
+            data_clean_after_multibranch = path_snapshot(ctx.clean_data_root)
+            if snapshots_differ(data_clean_before, data_clean_after_multibranch):
+                multibranch_forbidden_changes.append({"kind": "data_clean_mutation", "before": data_clean_before, "after": data_clean_after_multibranch})
+            if multibranch_forbidden_changes:
+                iteration.setdefault("forbidden_side_effects", []).extend(multibranch_forbidden_changes)
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_FORBIDDEN_SIDE_EFFECT"
+                proof.setdefault("canonical_side_effects", []).extend(multibranch_forbidden_changes)
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_FORBIDDEN_SIDE_EFFECT")
+                return 1
+
+            selection = select_multibranch_child(ctx.factorforge_root, children)
+            iteration["multibranch_selection"] = selection
+            if selection.get("ok") is not True:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = selection.get("block_reason")
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print(selection.get("block_reason"))
+                return 1
+
+            selected_child_report_id = str(selection["selected_child_report_id"])
+            comparison_cmd = branch_comparison_command(
+                current_report_id,
+                selected_child_report_id,
+                ctx.factorforge_root,
+                loop_index,
+                why="Selected by the production loop branch comparison from executed child evidence.",
+                learned="Sibling branch metrics are retained as sibling_branch_memory for the selected child Council packet.",
+            )
+            comparison_result = run_command(comparison_cmd, env=env, dry_run=args.dry_run)
+            comparison_path = branch_comparison_path(ctx.factorforge_root, current_report_id, loop_index)
+            iteration["branch_comparison_command"] = comparison_result
+            iteration["branch_comparison_rc"] = comparison_result.get("rc")
+            iteration["branch_comparison_path"] = str(comparison_path)
+            iteration["selected_next_parent_child_report_id"] = selected_child_report_id
+            if comparison_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_BRANCH_COMPARISON_FAILED"
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_BRANCH_COMPARISON_FAILED")
+                return 1
+
+            append_note(proof, f"Executed multibranch children for {current_report_id}; selected {selected_child_report_id}")
+            write_json_atomic(proof_path, proof)
+
+            ancestor_report_ids.append(current_report_id)
+            current_parent_report_id = current_report_id
+            current_report_id = selected_child_report_id
+            current_start_step = "6"
+            continue
 
         if (
             state.get("outcome") in {"awaiting_agent_results", "exhausted"}

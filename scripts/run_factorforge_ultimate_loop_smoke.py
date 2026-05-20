@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import os
 import shutil
@@ -13,6 +14,19 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_multibranch_materialization_smoke_module():
+    path = REPO_ROOT / "scripts" / "run_factorforge_multibranch_materialization_smoke.py"
+    spec = importlib.util.spec_from_file_location("run_factorforge_multibranch_materialization_smoke", path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+MULTIBRANCH_SMOKE = load_multibranch_materialization_smoke_module()
 
 
 def utc_now() -> str:
@@ -919,6 +933,109 @@ def run_loop_consumes_completed_council_synthesis_case(root: Path) -> dict[str, 
     }
 
 
+def run_loop_consumes_completed_council_multibranch_synthesis_case(root: Path) -> dict[str, Any]:
+    report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
+    write_step3_input_fixture(root, report_id)
+    council = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_factorforge_ultimate.py"),
+            "--report-id",
+            report_id,
+            "--start-step",
+            "6",
+            "--end-step",
+            "6",
+            "--council-mode",
+            "agentic",
+            "--agentic-council-executor",
+            "local_mock",
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    synthesis = MULTIBRANCH_SMOKE.valid_synthesis(report_id)
+    synthesis["selected_branches"][0]["law_id"] = "exploit_close_state"
+    synthesis["selected_branches"][0]["child_formula"] = "rank(close)"
+    synthesis["selected_branches"][0]["why_selected"] = "Tests a cleaner close-price state that should retain the synthetic fixture payoff."
+    synthesis["selected_branches"][1]["law_id"] = "explore_volume_state"
+    synthesis["selected_branches"][1]["child_formula"] = "rank(volume)"
+    MULTIBRANCH_SMOKE.write_synthesis(root, synthesis, report_id)
+    proc = run(
+        loop_command(
+            root,
+            report_id,
+            start_step="6",
+            max_loops=2,
+            council_mode="agentic",
+            executor="dispatch_manifest",
+            adapter="none",
+        ),
+        root=root,
+    )
+    proof = load_proof(root, report_id)
+    iterations = proof.get("iterations") or []
+    first = iterations[0] if iterations else {}
+    second = iterations[1] if len(iterations) > 1 else {}
+    child_runs = first.get("multibranch_child_wrapper_runs") if isinstance(first.get("multibranch_child_wrapper_runs"), list) else []
+    selected_child = first.get("selected_next_parent_child_report_id")
+    comparison_raw = str(first.get("branch_comparison_path") or "")
+    comparison_path = Path(comparison_raw) if comparison_raw else Path("/nonexistent/factorforge_branch_comparison_missing.json")
+    comparison = read_json(comparison_path) if comparison_path.exists() and comparison_path.is_file() else {}
+    selected_packet = (
+        root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / str(selected_child)
+        / f"revision_council_packet__{selected_child}.json"
+    )
+    packet = read_json(selected_packet) if selected_packet.exists() else {}
+    sibling_memory = packet.get("sibling_branch_memory")
+    ok = (
+        council["rc"] == 0
+        and proc["rc"] == 0
+        and first.get("multibranch_approval_rc") == 0
+        and first.get("multibranch_materialization_rc") == 0
+        and len(child_runs) >= 2
+        and all((run_item.get("wrapper_command") or {}).get("rc") == 0 for run_item in child_runs if isinstance(run_item, dict))
+        and first.get("branch_comparison_rc") == 0
+        and comparison_path.exists()
+        and selected_child
+        and comparison.get("main_agent_selection", {}).get("selected_next_parent_child_report_id") == selected_child
+        and second.get("report_id") == selected_child
+        and second.get("start_step") == "6"
+    )
+    return {
+        "case": "loop_consumes_completed_council_multibranch_synthesis_executes_children_and_compares",
+        "report_id": report_id,
+        "rc": proc["rc"],
+        "council_rc": council["rc"],
+        "proof_status": proof.get("status"),
+        "final_outcome": proof.get("final_outcome"),
+        "multibranch_approval_rc": first.get("multibranch_approval_rc"),
+        "multibranch_materialization_rc": first.get("multibranch_materialization_rc"),
+        "multibranch_child_wrapper_count": len(child_runs),
+        "multibranch_child_wrapper_rcs": [
+            (run_item.get("wrapper_command") or {}).get("rc")
+            for run_item in child_runs
+            if isinstance(run_item, dict)
+        ],
+        "branch_comparison_rc": first.get("branch_comparison_rc"),
+        "branch_comparison_path": str(comparison_path),
+        "branch_comparison_exists": comparison_path.exists(),
+        "selected_next_parent_child_report_id": selected_child,
+        "second_iteration_report_id": second.get("report_id"),
+        "second_iteration_start_step": second.get("start_step"),
+        "selected_child_packet_path": str(selected_packet),
+        "selected_child_packet_exists": selected_packet.exists(),
+        "sibling_branch_memory_present": isinstance(sibling_memory, dict),
+        "sibling_branch_memory_source": sibling_memory.get("source_branch_comparison_path") if isinstance(sibling_memory, dict) else None,
+        "ok": ok,
+    }
+
+
 def run_child_isolation_case(root: Path) -> dict[str, Any]:
     report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
     write_step3_input_fixture(root, report_id)
@@ -1439,6 +1556,7 @@ def main() -> int:
         run_with_fresh_fixture(root, "loop_council_synthesis_approval_bridge_activates_handoff", run_council_synthesis_approval_bridge_case),
         run_with_fresh_fixture(root, "loop_council_synthesis_approval_validation_failure_rolls_back", run_council_synthesis_approval_validation_failure_rolls_back_case),
         run_with_fresh_fixture(root, "loop_consumes_completed_council_synthesis_and_materializes_child", run_loop_consumes_completed_council_synthesis_case),
+        run_with_fresh_fixture(root, "loop_consumes_completed_council_multibranch_synthesis_executes_children_and_compares", run_loop_consumes_completed_council_multibranch_synthesis_case),
         run_with_fresh_fixture(root, "loop_terminal_council_reject_bridge_stops", run_terminal_council_reject_bridge_case),
         run_with_fresh_fixture(root, "loop_existing_child_materialization_noop", run_existing_child_materialization_noop_case),
         run_with_fresh_fixture(root, "loop_child_report_id_isolation", run_child_isolation_case),

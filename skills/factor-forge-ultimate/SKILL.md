@@ -179,34 +179,38 @@ hashes, and label the prior revision as `falsified`, `improved`, or
 tasks must explicitly review that failed revision and must not repeat the same
 derivation rule or re-create an ancestor formula hash.
 
-Multi-branch Council synthesis is currently a validated orchestration contract,
-not a default production loop mode. A main agent may write
-`main_agent_multibranch_synthesis__<report_id>.json/md` to preserve one exploit
-branch plus up to two exploration branches from Council results. The artifact
-must pass `validate_main_agent_multibranch_synthesis.py` before any multi-child
-materialization work.
+Multi-branch Council synthesis is a guarded production-loop path when, and only
+when, a completed Council has a valid
+`main_agent_multibranch_synthesis__<report_id>.json/md`. The main agent may use
+that artifact to preserve one exploit branch plus up to two exploration branches
+from Council results. The artifact must pass
+`validate_main_agent_multibranch_synthesis.py` before any multi-child
+materialization work. If no valid multi-branch synthesis exists, the ultimate
+loop stays on the single-child synthesis path.
 
-Phase P2 provides a guarded materialization bridge for approved multi-branch
-synthesis: `approve_main_agent_multibranch_synthesis.py` records the approval
-and per-branch single-synthesis adapters, and
-`materialize_step6_multibranch_children.py` invokes the existing child
-materializer once per branch. Each child receives a distinct report id,
-child-local Step3A snapshot paths, a unique formula hash, and branch context in
-`executable_revision_spec__<child_report_id>.json`.
+The production loop may consume the validated multi-branch synthesis
+automatically:
 
-Phase P3 adds the required branch comparison gate before a selected multi-branch
-child can enter its next Council. After multiple children have run, the main
-agent must write and validate
-`objects/research_iteration_master/branch_comparison__<parent_report_id>__loopNN.json`
-and `.md`. If a child executable spec has `branch_group_id` and
-`sibling_branch_count>1`, `build_revision_council_packet.py` must refuse to
+1. approve the synthesis with `approve_main_agent_multibranch_synthesis.py`;
+2. materialize all approved children with
+   `materialize_step6_multibranch_children.py`;
+3. run each child through the normal wrapper from Step3B through Step6;
+4. build and validate
+   `objects/research_iteration_master/branch_comparison__<parent_report_id>__loopNN.json`
+   and `.md`;
+5. continue only from the selected next-parent child.
+
+Each child receives a distinct report id, child-local Step3A snapshot paths, a
+unique formula hash, and branch context in
+`executable_revision_spec__<child_report_id>.json`. The branch comparison must
+cover every sibling child, parent-vs-child metric deltas, branch outcome, and
+the selected next-parent child. If a child executable spec has `branch_group_id`
+and `sibling_branch_count>1`, `build_revision_council_packet.py` must refuse to
 build the next Council packet until a valid comparison exists. Once present, the
 packet carries `sibling_branch_memory`, including unselected sibling outcomes,
 metric deltas, and forbidden repeat formula/law evidence. This prevents the
 loop from silently choosing a next parent from multiple children while dropping
-exploration evidence. It still does not make multi-branch execution the default
-autonomous production loop; that requires a separate production-loop integration
-decision after comparison and memory contracts are reviewed.
+exploration evidence.
 
 ## Important Clarification
 

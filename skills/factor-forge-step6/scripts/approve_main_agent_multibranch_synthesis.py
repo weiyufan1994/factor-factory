@@ -80,6 +80,14 @@ def adapter_synthesis_path(root: Path, report_id: str, branch_index: int, law_id
     return adapter_dir(root, report_id) / f"main_agent_council_synthesis__{report_id}__branch{branch_index:02d}__{safe_token(law_id)}.json"
 
 
+def research_iteration_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "research_iteration_master" / f"research_iteration_master__{report_id}.json"
+
+
+def handoff_to_step3b_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
+
+
 def formula_hash(formula: str) -> str:
     parsed = parse_formula(formula)
     if parsed.get("parse_status") != "success":
@@ -151,6 +159,69 @@ def write_adapter_synthesis(
         "selected_revision": selected_revision_from_branch(branch),
     }
     write_json(path, payload)
+
+
+def activate_multibranch_materialization_handoff(root: Path, report_id: str, approval_payload: dict[str, Any]) -> dict[str, Any]:
+    iteration_path = research_iteration_path(root, report_id)
+    iteration = load_json(iteration_path)
+    if not iteration:
+        raise ValueError(f"{TOKEN_APPROVAL_INVALID}: research_iteration_master missing")
+    judgment = iteration.setdefault("research_judgment", {})
+    if not isinstance(judgment, dict):
+        raise ValueError(f"{TOKEN_APPROVAL_INVALID}: research_judgment invalid")
+    memo = judgment.setdefault("research_memo", {})
+    if not isinstance(memo, dict):
+        raise ValueError(f"{TOKEN_APPROVAL_INVALID}: research_memo invalid")
+    revision_strategy = memo.setdefault("revision_strategy", {})
+    if not isinstance(revision_strategy, dict):
+        raise ValueError(f"{TOKEN_APPROVAL_INVALID}: revision_strategy invalid")
+    final_revision_strategy = memo.setdefault("final_revision_strategy", {})
+    if not isinstance(final_revision_strategy, dict):
+        raise ValueError(f"{TOKEN_APPROVAL_INVALID}: final_revision_strategy invalid")
+    for target in (revision_strategy, final_revision_strategy):
+        target["revision_needed"] = True
+        target["loop_authorization"] = "approved_for_step3b_handoff"
+        target["authorization_source"] = "main_agent_multibranch_synthesis_approval"
+        target["branch_group_id"] = approval_payload.get("branch_group_id")
+    write_json(iteration_path, iteration)
+
+    branch_group_id = str(approval_payload.get("branch_group_id") or f"{report_id}__MULTIBRANCH")
+    path = handoff_to_step3b_path(root, report_id)
+    if path.exists():
+        return {
+            "research_iteration_path": str(iteration_path),
+            "handoff_to_step3b_path": str(path),
+            "reused_existing_handoff": True,
+        }
+
+    handoff = {
+        "report_id": report_id,
+        "status": "approved_for_step3b_handoff",
+        "loop_authorization": "approved_for_step3b_handoff",
+        "revision_id": branch_group_id,
+        "new_branch_id": branch_group_id,
+        "parent_identity": {"report_id": report_id, "run_id": f"{report_id}__multibranch_parent"},
+        "parent_run_id": f"{report_id}__multibranch_parent",
+        "approval_mode": "main_agent_multibranch_synthesis",
+        "main_agent_multibranch_synthesis_approval_path": str(approval_path(root, report_id)),
+        "branch_group_id": branch_group_id,
+        "selected_branch_count": approval_payload.get("selected_branch_count"),
+        "selected_branches": [
+            {
+                "branch_index": branch.get("branch_index"),
+                "branch_role": branch.get("branch_role"),
+                "law_id": branch.get("law_id"),
+                "child_report_id": branch.get("child_report_id"),
+                "child_formula_hash": branch.get("child_formula_hash"),
+                "adapter_synthesis_path": branch.get("adapter_synthesis_path"),
+                "adapter_synthesis_sha256": branch.get("adapter_synthesis_sha256"),
+            }
+            for branch in approval_payload.get("selected_branches") or []
+            if isinstance(branch, dict)
+        ],
+    }
+    write_json(path, handoff)
+    return {"research_iteration_path": str(iteration_path), "handoff_to_step3b_path": str(path), "reused_existing_handoff": False}
 
 
 def approve(root: Path, report_id: str, *, loop_index: int, approval_source: str) -> dict[str, Any]:
@@ -239,6 +310,9 @@ def approve(root: Path, report_id: str, *, loop_index: int, approval_source: str
         "selected_branches": approved_branches,
         "validation": validation,
     }
+    write_json(approval, payload)
+    activated = activate_multibranch_materialization_handoff(root, report_id, payload)
+    payload["activated_materialization_handoff"] = activated
     write_json(approval, payload)
     return {"ok": True, "approval_path": str(approval), "approval": payload}
 

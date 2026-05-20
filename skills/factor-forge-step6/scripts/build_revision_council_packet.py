@@ -28,6 +28,7 @@ from factor_factory.mechanism_math.validator import validate_mechanism_math_cont
 OBJ = FF / "objects"
 TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
 TOKEN_BRANCH_COMPARISON_MISSING = "BLOCK_FACTORFORGE_BRANCH_COMPARISON_MISSING"
+TOKEN_BRANCH_COMPARISON_SELECTED = "BLOCK_FACTORFORGE_BRANCH_COMPARISON_SELECTED_CHILD_INVALID"
 BASELINE_VERSION = "factorforge_revision_council_forbidden_writeback_baseline_v1"
 
 
@@ -418,14 +419,19 @@ def sibling_branch_memory(report_id: str, executable_spec: dict[str, Any]) -> di
         payload = load_optional_json(path)
         if payload.get("branch_group_id") != branch_group_id:
             continue
-        failures = validator.validate_payload(payload)
-        if failures:
-            raise ValueError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: invalid comparison {path}: {failures}")
+        validation = validator.validate(FF, parent_report_id, 0, path)
+        if validation.get("result") != "PASS":
+            raise ValueError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: invalid comparison {path}: {validation.get('failures')}")
         matches.append((path, payload))
     if not matches:
         raise ValueError(f"{TOKEN_BRANCH_COMPARISON_MISSING}: branch_group_id={branch_group_id}")
     comparison_path, comparison = matches[-1]
     selected = comparison.get("main_agent_selection") if isinstance(comparison.get("main_agent_selection"), dict) else {}
+    selected_child = str(selected.get("selected_next_parent_child_report_id") or "")
+    if selected_child != report_id:
+        raise ValueError(
+            f"{TOKEN_BRANCH_COMPARISON_SELECTED}: selected_next_parent_child_report_id={selected_child} report_id={report_id}"
+        )
     children = comparison.get("children") if isinstance(comparison.get("children"), list) else []
     siblings: list[dict[str, Any]] = []
     current_branch: dict[str, Any] = {}
@@ -460,7 +466,7 @@ def sibling_branch_memory(report_id: str, executable_spec: dict[str, Any]) -> di
         "branch_group_id": branch_group_id,
         "source_branch_comparison_path": str(comparison_path),
         "selected_current_child_report_id": report_id,
-        "selected_next_parent_child_report_id": selected.get("selected_next_parent_child_report_id"),
+        "selected_next_parent_child_report_id": selected_child,
         "current_branch": {
             "child_report_id": current_branch.get("child_report_id"),
             "branch_role": current_branch.get("branch_role"),

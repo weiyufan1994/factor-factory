@@ -209,6 +209,7 @@ def approve(root: Path, report_id: str, *, loop_index: int, approval_source: str
             branch=branch,
             branch_context=branch_context,
         )
+        adapter_sha = sha256_file(adapter_path)
         approved_branches.append(
             {
                 "branch_index": idx,
@@ -218,6 +219,7 @@ def approve(root: Path, report_id: str, *, loop_index: int, approval_source: str
                 "child_formula": child_formula,
                 "child_formula_hash": child_hash,
                 "adapter_synthesis_path": str(adapter_path),
+                "adapter_synthesis_sha256": adapter_sha,
                 "branch_context": branch_context,
             }
         )

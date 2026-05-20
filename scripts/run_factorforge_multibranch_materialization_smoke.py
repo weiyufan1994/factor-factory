@@ -350,6 +350,22 @@ def case_source_mutation(root: Path) -> dict[str, Any]:
     return {"case": "multibranch_source_mutation_blocks", "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text, "token_present": token in text, "materialize": mat}
 
 
+def case_adapter_synthesis_mutation(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    payload = load_json(approval_path(root))
+    adapter_path = Path(payload["selected_branches"][0]["adapter_synthesis_path"])
+    adapter = load_json(adapter_path)
+    adapter["selected_revision"]["child_formula"] = "rank(high)"
+    adapter["selected_revision"]["law_id"] = "mutated_adapter_law"
+    write_json(adapter_path, adapter)
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_ADAPTER_SYNTHESIS_CHANGED"
+    return {"case": "multibranch_adapter_synthesis_mutation_blocks", "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text, "token_present": token in text, "materialize": mat}
+
+
 def case_duplicate_approval_hash(root: Path) -> dict[str, Any]:
     setup_parent(root)
     write_synthesis(root, valid_synthesis())
@@ -415,6 +431,7 @@ def main() -> int:
     cases = [
         run_case(root, "happy_path", case_happy),
         run_case(root, "source_mutation", case_source_mutation),
+        run_case(root, "adapter_synthesis_mutation", case_adapter_synthesis_mutation),
         run_case(root, "duplicate_approval_hash", case_duplicate_approval_hash),
         run_case(root, "missing_approval", case_missing_approval),
         case_non_tmp_root_blocks(),

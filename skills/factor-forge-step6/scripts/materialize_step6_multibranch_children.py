@@ -23,6 +23,7 @@ TOKEN_NOT_ENABLED = "BLOCK_FACTORFORGE_MULTIBRANCH_MATERIALIZATION_NOT_ENABLED"
 TOKEN_APPROVAL_MISSING = "BLOCK_FACTORFORGE_MULTIBRANCH_APPROVAL_MISSING"
 TOKEN_APPROVAL_INVALID = "BLOCK_FACTORFORGE_MULTIBRANCH_APPROVAL_INVALID"
 TOKEN_SOURCE_CHANGED = "BLOCK_FACTORFORGE_MULTIBRANCH_SOURCE_SYNTHESIS_CHANGED"
+TOKEN_ADAPTER_CHANGED = "BLOCK_FACTORFORGE_MULTIBRANCH_ADAPTER_SYNTHESIS_CHANGED"
 TOKEN_FAILED = "BLOCK_FACTORFORGE_MULTIBRANCH_MATERIALIZATION_FAILED"
 TOKEN_CHILD_COLLISION = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_ID_COLLISION"
 TOKEN_DUP_HASH = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_FORMULA_DUPLICATE"
@@ -109,12 +110,37 @@ def validate_approval(root: Path, report_id: str, approval: dict[str, Any]) -> N
         branch = raw if isinstance(raw, dict) else {}
         child = str(branch.get("child_report_id") or "")
         child_hash = str(branch.get("child_formula_hash") or "")
+        law_id = str(branch.get("law_id") or "")
+        branch_role = str(branch.get("branch_role") or "")
         if not child or not child_hash:
             raise ValueError(f"{TOKEN_APPROVAL_INVALID}: branch[{idx}] child identity missing")
         if child == report_id or child in child_ids:
             raise ValueError(f"{TOKEN_CHILD_COLLISION}: branch[{idx}]")
         if child_hash in child_hashes:
             raise ValueError(f"{TOKEN_DUP_HASH}: branch[{idx}]")
+        adapter_path_raw = branch.get("adapter_synthesis_path")
+        adapter_sha = str(branch.get("adapter_synthesis_sha256") or "")
+        if not isinstance(adapter_path_raw, str) or not adapter_path_raw or not adapter_sha:
+            raise ValueError(f"{TOKEN_APPROVAL_INVALID}: branch[{idx}] adapter synthesis identity missing")
+        adapter_path = Path(adapter_path_raw).expanduser()
+        if not adapter_path.is_absolute():
+            adapter_path = root / adapter_path
+        if not adapter_path.exists():
+            raise ValueError(f"{TOKEN_APPROVAL_INVALID}: branch[{idx}] adapter synthesis missing")
+        if sha256_file(adapter_path) != adapter_sha:
+            raise ValueError(f"{TOKEN_ADAPTER_CHANGED}: branch[{idx}] adapter synthesis changed after approval")
+        adapter = load_json(adapter_path)
+        selected = adapter.get("selected_revision") if isinstance(adapter.get("selected_revision"), dict) else {}
+        branch_context = adapter.get("branch_context") if isinstance(adapter.get("branch_context"), dict) else {}
+        if (
+            str(selected.get("child_formula") or "") != str(branch.get("child_formula") or "")
+            or str(selected.get("law_id") or "") != law_id
+            or str(branch_context.get("child_report_id") or "") != child
+            or str(branch_context.get("law_id") or "") != law_id
+            or str(branch_context.get("branch_role") or "") != branch_role
+            or str(adapter.get("source_multibranch_synthesis_sha256") or "") != str(approval.get("source_multibranch_synthesis_sha256") or "")
+        ):
+            raise ValueError(f"{TOKEN_ADAPTER_CHANGED}: branch[{idx}] adapter synthesis content mismatch")
         child_ids.add(child)
         child_hashes.add(child_hash)
 

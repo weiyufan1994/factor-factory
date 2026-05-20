@@ -182,8 +182,21 @@ per-branch single-synthesis adapters, then
 materializer once per selected branch. This P2 bridge must preserve safe
 permissions, verify the source synthesis hash, preserve child-local Step3A
 snapshots, and write branch context into each child executable revision spec.
-It is not a default production loop mode until Phase P3 branch comparison and
-sibling memory are implemented.
+44. Phase P3 requires branch comparison before any selected multi-branch child
+enters its next Revision Council. After P2 materializes more than one child, the
+main agent must build
+`objects/research_iteration_master/branch_comparison__<parent_report_id>__loopNN.json`
+and `.md` with `build_branch_comparison.py`, then validate it with
+`validate_branch_comparison.py`. The comparison must cover every sibling child,
+parent-vs-child metric deltas, branch outcome, and the selected next-parent
+child. If a multi-branch child has `branch_group_id` / `sibling_branch_count>1`
+but no valid comparison exists, `build_revision_council_packet.py` must BLOCK
+with `BLOCK_FACTORFORGE_BRANCH_COMPARISON_MISSING`. When the comparison exists,
+the next Council packet must include `sibling_branch_memory` so the selected
+exploit path retains exploration evidence and cannot repeat falsified sibling
+laws or formula hashes without explicit new evidence. This P3 contract does not
+write clean data, generated code, official records, or default-enable
+multi-branch autonomous production loops by itself.
 
 ## Research Analyst Standard
 

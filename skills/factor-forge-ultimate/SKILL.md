@@ -192,10 +192,21 @@ and per-branch single-synthesis adapters, and
 `materialize_step6_multibranch_children.py` invokes the existing child
 materializer once per branch. Each child receives a distinct report id,
 child-local Step3A snapshot paths, a unique formula hash, and branch context in
-`executable_revision_spec__<child_report_id>.json`. This is still not the
-default autonomous production loop because P3 branch comparison and sibling
-branch memory are not yet implemented. The loop must not silently choose a next
-parent from multiple children without a validated branch comparison artifact.
+`executable_revision_spec__<child_report_id>.json`.
+
+Phase P3 adds the required branch comparison gate before a selected multi-branch
+child can enter its next Council. After multiple children have run, the main
+agent must write and validate
+`objects/research_iteration_master/branch_comparison__<parent_report_id>__loopNN.json`
+and `.md`. If a child executable spec has `branch_group_id` and
+`sibling_branch_count>1`, `build_revision_council_packet.py` must refuse to
+build the next Council packet until a valid comparison exists. Once present, the
+packet carries `sibling_branch_memory`, including unselected sibling outcomes,
+metric deltas, and forbidden repeat formula/law evidence. This prevents the
+loop from silently choosing a next parent from multiple children while dropping
+exploration evidence. It still does not make multi-branch execution the default
+autonomous production loop; that requires a separate production-loop integration
+decision after comparison and memory contracts are reviewed.
 
 ## Important Clarification
 

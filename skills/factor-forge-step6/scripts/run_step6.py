@@ -1103,10 +1103,31 @@ def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any
 def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
     revision_ops = contract.get('revision_operators') if isinstance(contract.get('revision_operators'), list) else []
     first_op = revision_ops[0] if revision_ops and isinstance(revision_ops[0], dict) else {}
+    model_family = contract.get('model_family') or 'other'
+    math_toolkits = contract.get('math_toolkits') or []
+    toolkit_family = next(
+        (
+            str(item)
+            for item in math_toolkits
+            if str(item) in {
+                'stochastic_process',
+                'state_space',
+                'valuation_identity',
+                'cross_sectional_statistics',
+                'linear_factor_projection',
+                'functional_filter',
+                'constraint_model',
+            }
+        ),
+        None,
+    )
     return {
         'math_model_status': contract.get('math_model_status') or 'under_specified',
-        'model_family': contract.get('model_family') or 'other',
-        'math_toolkits': contract.get('math_toolkits') or [],
+        'model_family': model_family,
+        'economic_mechanism_family': contract.get('economic_mechanism_family') or model_family,
+        'math_tool_family': contract.get('math_tool_family') or toolkit_family or model_family,
+        'model_equation_family': contract.get('model_equation_family') or 'under_specified',
+        'math_toolkits': math_toolkits,
         'state_or_object': contract.get('state_or_object') or 'under_specified',
         'factor_as_estimator': contract.get('factor_as_estimator') or 'under_specified',
         'target_functional': contract.get('target_functional') or 'under_specified',
@@ -3455,7 +3476,11 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     metrics = (iteration.get('evidence_summary') or {}).get('headline_metrics') or {}
     mechanism = research_memo.get('mechanism_analysis') or {}
     mechanism_math_contract = mechanism.get('mechanism_math_contract') or mechanism_math_contract_from_bundle(bundle)
-    mechanism_math_summary = mechanism.get('mechanism_math_summary') or mechanism_math_summary_from_contract(mechanism_math_contract)
+    mechanism_math_summary = dict(mechanism.get('mechanism_math_summary') or mechanism_math_summary_from_contract(mechanism_math_contract))
+    mechanism_math_summary.setdefault('economic_mechanism_family', mechanism_math_summary.get('model_family') or mechanism_math_contract.get('model_family') or 'other')
+    mechanism_math_summary.setdefault('math_tool_family', mechanism_math_contract.get('math_tool_family') or mechanism_math_summary.get('model_family') or 'other')
+    mechanism_math_summary.setdefault('model_equation_family', mechanism_math_contract.get('model_equation_family') or 'under_specified')
+    mechanism['mechanism_math_summary'] = mechanism_math_summary
     formula_specific_derivation = mechanism.get('formula_specific_derivation') or {}
     mechanism_formula_consistency = mechanism.get('mechanism_formula_consistency') or {}
     case_comparison = research_memo.get('case_comparison') or {}
@@ -3756,6 +3781,9 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 
 - Math model status: {math_summary.get('math_model_status')}
 - Model family: {math_summary.get('model_family')}
+- Economic mechanism family: {math_summary.get('economic_mechanism_family') or 'not_specified'}
+- Math tool family: {math_summary.get('math_tool_family') or 'not_specified'}
+- Model equation family: {math_summary.get('model_equation_family') or 'not_specified'}
 - Math toolkits:
 {bullet_list(math_summary.get('math_toolkits'))}
 - State or object: {math_summary.get('state_or_object')}

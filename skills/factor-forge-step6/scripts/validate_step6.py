@@ -347,6 +347,15 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
     current_math_summary = mechanism_analysis.get('mechanism_math_summary') if isinstance(mechanism_analysis.get('mechanism_math_summary'), dict) else {}
     current_contract = mechanism_analysis.get('mechanism_math_contract') if isinstance(mechanism_analysis.get('mechanism_math_contract'), dict) else {}
     current_model_family = str(current_math_summary.get('model_family') or current_contract.get('model_family') or '')
+    current_formula_derivation = mechanism_analysis.get('formula_specific_derivation') if isinstance(mechanism_analysis.get('formula_specific_derivation'), dict) else {}
+    current_derivation_family = str(
+        current_formula_derivation.get('selected_model_family')
+        or (current_formula_derivation.get('economic_to_math_model_selection') or {}).get('baseline_model_family')
+        or ''
+    )
+    current_economic_mechanism_family = str(current_math_summary.get('economic_mechanism_family') or current_contract.get('economic_mechanism_family') or current_model_family or '')
+    current_math_tool_family = str(current_math_summary.get('math_tool_family') or current_contract.get('math_tool_family') or current_derivation_family or '')
+    current_model_equation_family = str(current_math_summary.get('model_equation_family') or current_contract.get('model_equation_family') or '')
     brief_econ = nested_dict(brief, 'economic_interpretation')
     brief_math_summary = brief.get('mechanism_math_summary') if isinstance(brief.get('mechanism_math_summary'), dict) else {}
     mechanism_consistency_failures: list[str] = []
@@ -366,6 +375,16 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
         mechanism_consistency_failures.append(
             f"mechanism_model_family current={current_model_family} brief={brief_math_summary.get('model_family')}"
         )
+    taxonomy_fields = {
+        'economic_mechanism_family': current_economic_mechanism_family,
+        'math_tool_family': current_math_tool_family,
+        'model_equation_family': current_model_equation_family,
+    }
+    for field, current_value in taxonomy_fields.items():
+        if current_value and field in brief_math_summary and brief_math_summary.get(field) != current_value:
+            mechanism_consistency_failures.append(
+                f"{field} current={current_value} brief={brief_math_summary.get(field)}"
+            )
     checks.append(check(
         'loop_research_brief_mechanism_consistency',
         not mechanism_consistency_failures,
@@ -464,7 +483,14 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
         mechanism_markdown_lower = markdown_lower.split('## revision council summary', 1)[0]
         current_tokens = {
             token.lower()
-            for token in [current_factor_family, current_model_family]
+            for token in [
+                current_factor_family,
+                current_model_family,
+                current_economic_mechanism_family,
+                current_math_tool_family,
+                current_model_equation_family,
+                current_derivation_family,
+            ]
             if isinstance(token, str) and token.strip()
         }
         current_token_present = any(token in mechanism_markdown_lower for token in current_tokens)

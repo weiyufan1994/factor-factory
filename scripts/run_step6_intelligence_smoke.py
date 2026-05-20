@@ -1774,6 +1774,56 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
     run_mutation('loop_research_brief_missing_chart_key_block', missing_chart_key)
     run_mutation('loop_research_brief_long_short_not_diagnostic_block', long_short_not_diagnostic)
     run_mutation('loop_research_brief_mechanism_consistency_block', stale_mechanism_without_brief_refresh)
+
+    restore()
+    taxonomy_iteration = read_json(iteration_path)
+    taxonomy_brief = read_json(json_path)
+    mechanism = (
+        taxonomy_iteration
+        .setdefault('research_judgment', {})
+        .setdefault('research_memo', {})
+        .setdefault('mechanism_analysis', {})
+    )
+    mechanism['factor_family'] = 'price_volume_correlation'
+    mechanism['return_source'] = 'behavioral_microstructure'
+    mechanism['mechanism_fit'] = 'partial'
+    mechanism_math_summary = mechanism.setdefault('mechanism_math_summary', {})
+    mechanism_math_summary['model_family'] = 'price_volume_microstructure'
+    mechanism_math_summary['economic_mechanism_family'] = 'transient_impact'
+    mechanism_math_summary['math_tool_family'] = 'stochastic_process'
+    mechanism_math_summary['model_equation_family'] = 'conditional_diffusion_with_flow_impact'
+    mechanism_math_contract = mechanism.setdefault('mechanism_math_contract', {})
+    mechanism_math_contract['model_family'] = 'price_volume_microstructure'
+    mechanism_math_contract['economic_mechanism_family'] = 'transient_impact'
+    mechanism_math_contract['math_tool_family'] = 'stochastic_process'
+    mechanism_math_contract['model_equation_family'] = 'conditional_diffusion_with_flow_impact'
+    mechanism.setdefault('formula_specific_derivation', {})['selected_model_family'] = 'stochastic_process'
+    taxonomy_brief.setdefault('economic_interpretation', {})['factor_family'] = 'price_volume_correlation'
+    taxonomy_brief['economic_interpretation']['return_source'] = 'behavioral_microstructure'
+    taxonomy_brief['economic_interpretation']['mechanism_fit'] = 'partial'
+    taxonomy_brief['mechanism_math_summary'] = dict(mechanism_math_summary)
+    taxonomy_brief.setdefault('formula_specific_derivation', {})['selected_model_family'] = 'stochastic_process'
+    write_json(iteration_path, taxonomy_iteration)
+    write_json(json_path, taxonomy_brief)
+    md_path.write_text(
+        original_md
+        + "\n\nPhase Q taxonomy: price_volume_microstructure uses stochastic_process math_tool_family and conditional_diffusion_with_flow_impact equations.\n",
+        encoding='utf-8',
+    )
+    taxonomy_proc = validate_step6_report(root, source_report_id)
+    taxonomy_output = taxonomy_proc.stdout + '\n' + taxonomy_proc.stderr
+    cases['loop_research_brief_allows_math_tool_family_token'] = {
+        'case': 'loop_research_brief_allows_math_tool_family_token',
+        'report_id': source_report_id,
+        'rc': taxonomy_proc.returncode,
+        'stdout_tail': tail(taxonomy_proc.stdout),
+        'stderr_tail': tail(taxonomy_proc.stderr),
+        'blocked_by_markdown_consistency': (
+            taxonomy_proc.returncode != 0
+            and 'loop_research_brief_mechanism_markdown_consistency' in taxonomy_output
+        ),
+        'ok': taxonomy_proc.returncode == 0,
+    }
     restore()
     return {'cases': cases, 'ok': all(row.get('ok') for row in cases.values())}
 

@@ -174,6 +174,16 @@ The validator requires exactly one exploit branch, at most two exploration
 branches, non-duplicate child formula hashes, no parent/forbidden formula
 repeats, no repeated falsified revision law, and a real mechanism difference for
 each exploration branch.
+43. Phase P2 can materialize an approved multi-branch synthesis into independent
+child reports through a guarded bridge:
+`approve_main_agent_multibranch_synthesis.py` writes the approval artifact and
+per-branch single-synthesis adapters, then
+`materialize_step6_multibranch_children.py` invokes the existing child
+materializer once per selected branch. This P2 bridge must preserve safe
+permissions, verify the source synthesis hash, preserve child-local Step3A
+snapshots, and write branch context into each child executable revision spec.
+It is not a default production loop mode until Phase P3 branch comparison and
+sibling memory are implemented.
 
 ## Research Analyst Standard
 

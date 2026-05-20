@@ -180,13 +180,22 @@ tasks must explicitly review that failed revision and must not repeat the same
 derivation rule or re-create an ancestor formula hash.
 
 Multi-branch Council synthesis is currently a validated orchestration contract,
-not a default execution mode. A main agent may write
+not a default production loop mode. A main agent may write
 `main_agent_multibranch_synthesis__<report_id>.json/md` to preserve one exploit
 branch plus up to two exploration branches from Council results. The artifact
-must pass `validate_main_agent_multibranch_synthesis.py` before any future
-multi-child materialization work. Until the branch-comparison execution layer is
-implemented, the production loop remains single-child by default and must not
-silently materialize multiple children from a multi-branch artifact.
+must pass `validate_main_agent_multibranch_synthesis.py` before any multi-child
+materialization work.
+
+Phase P2 provides a guarded materialization bridge for approved multi-branch
+synthesis: `approve_main_agent_multibranch_synthesis.py` records the approval
+and per-branch single-synthesis adapters, and
+`materialize_step6_multibranch_children.py` invokes the existing child
+materializer once per branch. Each child receives a distinct report id,
+child-local Step3A snapshot paths, a unique formula hash, and branch context in
+`executable_revision_spec__<child_report_id>.json`. This is still not the
+default autonomous production loop because P3 branch comparison and sibling
+branch memory are not yet implemented. The loop must not silently choose a next
+parent from multiple children without a validated branch comparison artifact.
 
 ## Important Clarification
 

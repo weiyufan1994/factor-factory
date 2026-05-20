@@ -464,6 +464,63 @@ def changed_ancestor_snapshots(factorforge_root: Path, before: dict[str, dict[st
     return changes
 
 
+def child_control_artifact_paths(factorforge_root: Path, report_id: str) -> dict[str, Path]:
+    return {
+        "handoff_to_step3b": factorforge_root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json",
+        "official_record": factorforge_root / "objects" / "factor_library_official" / f"factor_record__{report_id}.json",
+    }
+
+
+def child_control_artifact_snapshots(factorforge_root: Path, child_report_ids: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
+    snapshots: dict[str, dict[str, dict[str, Any]]] = {}
+    for report_id in child_report_ids:
+        if not report_id:
+            continue
+        snapshots[report_id] = {
+            name: path_snapshot(path)
+            for name, path in child_control_artifact_paths(factorforge_root, report_id).items()
+        }
+    return snapshots
+
+
+def changed_child_control_artifacts(
+    factorforge_root: Path,
+    before: dict[str, dict[str, dict[str, Any]]],
+    selected_child_report_id: str,
+) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for report_id, old_items in before.items():
+        paths = child_control_artifact_paths(factorforge_root, report_id)
+        new_handoff = path_snapshot(paths["handoff_to_step3b"])
+        old_handoff = old_items.get("handoff_to_step3b") or {}
+        if report_id != selected_child_report_id and new_handoff.get("exists") is True:
+            changes.append(
+                {
+                    "kind": "non_selected_child_handoff_active",
+                    "report_id": report_id,
+                    "artifact": "handoff_to_step3b",
+                    "path": str(paths["handoff_to_step3b"]),
+                    "before": old_handoff,
+                    "after": new_handoff,
+                }
+            )
+
+        new_official = path_snapshot(paths["official_record"])
+        old_official = old_items.get("official_record") or {}
+        if new_official.get("exists") is True or snapshots_differ(old_official, new_official):
+            changes.append(
+                {
+                    "kind": "child_official_record_written",
+                    "report_id": report_id,
+                    "artifact": "official_record",
+                    "path": str(paths["official_record"]),
+                    "before": old_official,
+                    "after": new_official,
+                }
+            )
+    return changes
+
+
 def main() -> int:
     args = parse_args()
     if not (1 <= args.max_loops <= 10):
@@ -593,6 +650,9 @@ def main() -> int:
 
             protected_ancestors = list(dict.fromkeys([*ancestor_report_ids, current_report_id]))
             multibranch_ancestor_before = ancestor_generated_code_snapshots(ctx.factorforge_root, protected_ancestors)
+            child_report_ids = [str(child.get("child_report_id") or "") for child in children if isinstance(child, dict)]
+            child_control_before = child_control_artifact_snapshots(ctx.factorforge_root, child_report_ids)
+            iteration["multibranch_child_control_artifact_before"] = child_control_before
             child_runs: list[dict[str, Any]] = []
             for child in children:
                 child_report_id = str(child.get("child_report_id") or "")
@@ -652,6 +712,20 @@ def main() -> int:
                 return 1
 
             selected_child_report_id = str(selection["selected_child_report_id"])
+            child_control_changes = changed_child_control_artifacts(ctx.factorforge_root, child_control_before, selected_child_report_id)
+            iteration["multibranch_child_control_artifact_changes"] = child_control_changes
+            if child_control_changes:
+                iteration.setdefault("forbidden_side_effects", []).extend(child_control_changes)
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_CHILD_CONTROL_ARTIFACT"
+                proof.setdefault("canonical_side_effects", []).extend(child_control_changes)
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                print("BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_CHILD_CONTROL_ARTIFACT")
+                return 1
+
             comparison_cmd = branch_comparison_command(
                 current_report_id,
                 selected_child_report_id,

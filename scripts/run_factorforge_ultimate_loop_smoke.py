@@ -26,7 +26,18 @@ def load_multibranch_materialization_smoke_module():
     return module
 
 
+def load_ultimate_loop_module():
+    path = REPO_ROOT / "scripts" / "run_factorforge_ultimate_loop.py"
+    spec = importlib.util.spec_from_file_location("run_factorforge_ultimate_loop", path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 MULTIBRANCH_SMOKE = load_multibranch_materialization_smoke_module()
+ULTIMATE_LOOP = load_ultimate_loop_module()
 
 
 def utc_now() -> str:
@@ -993,6 +1004,26 @@ def run_loop_consumes_completed_council_multibranch_synthesis_case(root: Path) -
     )
     packet = read_json(selected_packet) if selected_packet.exists() else {}
     sibling_memory = packet.get("sibling_branch_memory")
+    child_ids = [
+        str(run_item.get("child_report_id") or "")
+        for run_item in child_runs
+        if isinstance(run_item, dict) and run_item.get("child_report_id")
+    ]
+    non_selected_child_handoffs_absent = all(
+        not (root / "objects" / "handoff" / f"handoff_to_step3b__{child_id}.json").exists()
+        for child_id in child_ids
+        if child_id != selected_child
+    )
+    child_official_records_absent = all(
+        not (root / "objects" / "factor_library_official" / f"factor_record__{child_id}.json").exists()
+        for child_id in child_ids
+    )
+    if selected_packet.exists():
+        selected_child_packet_memory_status = "present"
+    elif second.get("outcome") == "awaiting_main_agent_mechanism_memo":
+        selected_child_packet_memory_status = "not_reached_awaiting_main_agent_mechanism_memo"
+    else:
+        selected_child_packet_memory_status = "missing_unexpected"
     ok = (
         council["rc"] == 0
         and proc["rc"] == 0
@@ -1006,6 +1037,9 @@ def run_loop_consumes_completed_council_multibranch_synthesis_case(root: Path) -
         and comparison.get("main_agent_selection", {}).get("selected_next_parent_child_report_id") == selected_child
         and second.get("report_id") == selected_child
         and second.get("start_step") == "6"
+        and non_selected_child_handoffs_absent
+        and child_official_records_absent
+        and selected_child_packet_memory_status != "missing_unexpected"
     )
     return {
         "case": "loop_consumes_completed_council_multibranch_synthesis_executes_children_and_compares",
@@ -1032,6 +1066,37 @@ def run_loop_consumes_completed_council_multibranch_synthesis_case(root: Path) -
         "selected_child_packet_exists": selected_packet.exists(),
         "sibling_branch_memory_present": isinstance(sibling_memory, dict),
         "sibling_branch_memory_source": sibling_memory.get("source_branch_comparison_path") if isinstance(sibling_memory, dict) else None,
+        "selected_child_packet_memory_status": selected_child_packet_memory_status,
+        "non_selected_child_handoffs_absent": non_selected_child_handoffs_absent,
+        "child_official_records_absent": child_official_records_absent,
+        "ok": ok,
+    }
+
+
+def run_multibranch_child_control_artifact_guard_case(root: Path) -> dict[str, Any]:
+    selected_child = "MULTIBRANCH_CONTROL_GUARD__LOOP01__EXPLOIT"
+    non_selected_child = "MULTIBRANCH_CONTROL_GUARD__LOOP01__EXPLORATION"
+    children = [selected_child, non_selected_child]
+    before = ULTIMATE_LOOP.child_control_artifact_snapshots(root, children)
+    handoff_path = root / "objects" / "handoff" / f"handoff_to_step3b__{non_selected_child}.json"
+    official_path = root / "objects" / "factor_library_official" / f"factor_record__{selected_child}.json"
+    write_json(handoff_path, {"report_id": non_selected_child, "status": "approved_for_step3b_handoff"})
+    write_json(official_path, {"report_id": selected_child, "promotion_status": "official"})
+    changes = ULTIMATE_LOOP.changed_child_control_artifacts(root, before, selected_child)
+    kinds = {item.get("kind") for item in changes}
+    reports = {item.get("report_id") for item in changes}
+    ok = (
+        "non_selected_child_handoff_active" in kinds
+        and "child_official_record_written" in kinds
+        and selected_child in reports
+        and non_selected_child in reports
+    )
+    return {
+        "case": "multibranch_child_control_artifact_guard_detects_non_selected_handoff_and_official",
+        "selected_child_report_id": selected_child,
+        "non_selected_child_report_id": non_selected_child,
+        "change_kinds": sorted(kinds),
+        "change_reports": sorted(reports),
         "ok": ok,
     }
 
@@ -1487,6 +1552,15 @@ def run_with_fresh_fixture(base: Path, name: str, runner) -> dict[str, Any]:
     return result
 
 
+def run_without_fixture(base: Path, name: str, runner) -> dict[str, Any]:
+    root = case_root(base, name)
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
+    result = runner(root)
+    result["case_root"] = str(root)
+    return result
+
+
 def referenced_artifacts_exist(cases: list[dict[str, Any]]) -> dict[str, Any]:
     missing: list[str] = []
     for case in cases:
@@ -1557,6 +1631,7 @@ def main() -> int:
         run_with_fresh_fixture(root, "loop_council_synthesis_approval_validation_failure_rolls_back", run_council_synthesis_approval_validation_failure_rolls_back_case),
         run_with_fresh_fixture(root, "loop_consumes_completed_council_synthesis_and_materializes_child", run_loop_consumes_completed_council_synthesis_case),
         run_with_fresh_fixture(root, "loop_consumes_completed_council_multibranch_synthesis_executes_children_and_compares", run_loop_consumes_completed_council_multibranch_synthesis_case),
+        run_without_fixture(root, "multibranch_child_control_artifact_guard_detects_non_selected_handoff_and_official", run_multibranch_child_control_artifact_guard_case),
         run_with_fresh_fixture(root, "loop_terminal_council_reject_bridge_stops", run_terminal_council_reject_bridge_case),
         run_with_fresh_fixture(root, "loop_existing_child_materialization_noop", run_existing_child_materialization_noop_case),
         run_with_fresh_fixture(root, "loop_child_report_id_isolation", run_child_isolation_case),

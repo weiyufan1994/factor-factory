@@ -24,6 +24,8 @@ TOKEN_APPROVAL_MISSING = "BLOCK_FACTORFORGE_MULTIBRANCH_APPROVAL_MISSING"
 TOKEN_APPROVAL_INVALID = "BLOCK_FACTORFORGE_MULTIBRANCH_APPROVAL_INVALID"
 TOKEN_SOURCE_CHANGED = "BLOCK_FACTORFORGE_MULTIBRANCH_SOURCE_SYNTHESIS_CHANGED"
 TOKEN_FAILED = "BLOCK_FACTORFORGE_MULTIBRANCH_MATERIALIZATION_FAILED"
+TOKEN_CHILD_COLLISION = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_ID_COLLISION"
+TOKEN_DUP_HASH = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_FORMULA_DUPLICATE"
 
 
 def utc_now() -> str:
@@ -110,9 +112,9 @@ def validate_approval(root: Path, report_id: str, approval: dict[str, Any]) -> N
         if not child or not child_hash:
             raise ValueError(f"{TOKEN_APPROVAL_INVALID}: branch[{idx}] child identity missing")
         if child == report_id or child in child_ids:
-            raise ValueError(f"{TOKEN_APPROVAL_INVALID}: branch[{idx}] child_report_id collision")
+            raise ValueError(f"{TOKEN_CHILD_COLLISION}: branch[{idx}]")
         if child_hash in child_hashes:
-            raise ValueError(f"{TOKEN_APPROVAL_INVALID}: branch[{idx}] child_formula_hash duplicate")
+            raise ValueError(f"{TOKEN_DUP_HASH}: branch[{idx}]")
         child_ids.add(child)
         child_hashes.add(child_hash)
 

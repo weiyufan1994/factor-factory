@@ -137,6 +137,8 @@ def run_child_materializer(root: Path, parent: str, branch: dict[str, Any], appr
         str(branch["branch_index"]),
         "--branch-role",
         str(branch["branch_role"]),
+        "--branch-law-id",
+        str(branch.get("law_id") or branch_context.get("law_id")),
         "--source-multibranch-synthesis-path",
         str(approval["source_multibranch_synthesis_path"]),
         "--source-multibranch-synthesis-sha256",

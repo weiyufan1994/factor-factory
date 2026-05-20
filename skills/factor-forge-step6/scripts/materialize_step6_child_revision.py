@@ -290,12 +290,13 @@ def build_executable_revision_spec(
         if child_formula_hash in forbidden_hashes:
             raise ValueError(f"{ORCHESTRATOR_MISMATCH_BLOCK}: selected child formula recreates a forbidden prior formula hash")
     selected_ids = [derivation_rule]
+    spec_branch_id = nonempty_str(branch_context.get("law_id")) if branch_context else branch_id
     spec = {
         "contract_version": EXECUTABLE_REVISION_SPEC_VERSION,
         "created_at_utc": utc_now(),
         "parent_report_id": parent,
         "child_report_id": child,
-        "branch_id": branch_id,
+        "branch_id": spec_branch_id or branch_id,
         "source_handoff_path": str(parent_handoff_path),
         "source_handoff_sha256": source_handoff_sha256,
         "source_council_summary_path": str(root / "objects" / "research_iteration_master" / "revision_council" / parent / f"revision_council_summary__{parent}.json"),
@@ -402,6 +403,7 @@ def main() -> int:
     ap.add_argument("--branch-group-id", default=None)
     ap.add_argument("--branch-index", type=int, default=None)
     ap.add_argument("--branch-role", default=None)
+    ap.add_argument("--branch-law-id", default=None)
     ap.add_argument("--source-multibranch-synthesis-path", default=None)
     ap.add_argument("--source-multibranch-synthesis-sha256", default=None)
     ap.add_argument("--sibling-branch-count", type=int, default=None)
@@ -509,6 +511,7 @@ def main() -> int:
             "branch_group_id": args.branch_group_id,
             "branch_index": args.branch_index,
             "branch_role": args.branch_role,
+            "law_id": args.branch_law_id,
             "source_multibranch_synthesis_path": args.source_multibranch_synthesis_path,
             "source_multibranch_synthesis_sha256": args.source_multibranch_synthesis_sha256,
             "sibling_branch_count": args.sibling_branch_count,
@@ -527,6 +530,7 @@ def main() -> int:
                 "branch_group_id": str(args.branch_group_id),
                 "branch_index": int(args.branch_index),
                 "branch_role": str(args.branch_role),
+                "law_id": str(args.branch_law_id),
                 "source_multibranch_synthesis_path": str(args.source_multibranch_synthesis_path),
                 "source_multibranch_synthesis_sha256": str(args.source_multibranch_synthesis_sha256),
                 "sibling_branch_count": int(args.sibling_branch_count),

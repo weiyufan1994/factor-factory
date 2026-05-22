@@ -10,6 +10,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,7 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'input_io_profile',
     'step4_factor_io_profile',
     'step4_factor_csv_policy_observed',
+    'backend_timing_profile',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 
@@ -327,6 +329,9 @@ def run_backend_script(
     if isinstance(raw_env, dict):
         for k, v in raw_env.items():
             env[str(k)] = str(v)
+    provider_uri = backend_cfg.get('provider_uri') or backend_cfg.get('qlib_provider_uri')
+    if provider_uri and 'QLIB_PROVIDER_URI' not in env:
+        env['QLIB_PROVIDER_URI'] = str(provider_uri)
 
     result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
     if result.stdout:
@@ -336,9 +341,97 @@ def run_backend_script(
     return result.returncode, f'cmd={" ".join(cmd)}'
 
 
-def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], manifest_path_arg: Path | None = None) -> list[dict[str, Any]]:
+def _backend_timing_key(backend: str | None) -> str:
+    if backend == 'qlib_backtest':
+        return 'qlib_native'
+    return str(backend or 'unknown_backend')
+
+
+def _provider_uri_from_backend_config(backend_cfg: dict[str, Any]) -> str | None:
+    direct = backend_cfg.get('provider_uri') or backend_cfg.get('qlib_provider_uri')
+    if direct:
+        return str(direct)
+    raw_env = backend_cfg.get('env')
+    if isinstance(raw_env, dict) and raw_env.get('QLIB_PROVIDER_URI'):
+        return str(raw_env.get('QLIB_PROVIDER_URI'))
+    if os.getenv('QLIB_PROVIDER_URI'):
+        return str(os.getenv('QLIB_PROVIDER_URI'))
+    return None
+
+
+def _resolve_provider_path(raw: str) -> Path:
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return (FACTORFORGE / path).resolve()
+
+
+def _default_qlib_provider_candidates(report_id: str) -> list[Path]:
+    return [
+        Path('/home/ubuntu/.qlib/qlib_data/cn_data'),
+        Path.home() / '.qlib' / 'qlib_data' / 'cn_data',
+        RUNS / report_id / 'qlib_provider',
+    ]
+
+
+def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+    explicit_provider = _provider_uri_from_backend_config(backend_cfg)
+    if explicit_provider:
+        candidate_paths = [_resolve_provider_path(explicit_provider)]
+    else:
+        candidate_paths = _default_qlib_provider_candidates(report_id)
+
+    provider_path = next((path for path in candidate_paths if path.exists()), None)
+    provider_present = provider_path is not None
+    qlib_import_checked = True
+    qlib_import_ok: bool | None = None
+    qlib_import_reason: str | None = None
+    status = 'ready'
+    reason = None
+
+    try:
+        import qlib  # noqa: F401
+        qlib_import_ok = True
+    except Exception as exc:  # pragma: no cover - environment-specific dependency guard
+        qlib_import_ok = False
+        qlib_import_reason = f'qlib import/config unavailable for native backend: {type(exc).__name__}: {exc}'
+
+    if not provider_present:
+        status = 'skipped_native_missing_provider'
+        reason = 'no usable qlib provider uri exists for native qlib backend'
+        if qlib_import_reason:
+            reason = f'{reason}; {qlib_import_reason}'
+    elif not qlib_import_ok:
+        status = 'skipped_native_import_unavailable'
+        reason = qlib_import_reason
+    else:
+        status = 'ready'
+        reason = None
+
+    elapsed = time.perf_counter() - started
+    return {
+        'version': 'factorforge_qlib_preflight_v1',
+        'provider_uri_checked': True,
+        'provider_uri_candidates': [str(path) for path in candidate_paths],
+        'provider_uri': str(provider_path) if provider_path is not None else (str(candidate_paths[0]) if candidate_paths else None),
+        'provider_present': bool(provider_present),
+        'qlib_import_checked': qlib_import_checked,
+        'qlib_import_ok': qlib_import_ok,
+        'native_attempted': False,
+        'status': status,
+        'preflight_seconds': elapsed,
+        'reason': reason,
+    }
+
+
+def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], manifest_path_arg: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     # Builtin adapters and custom adapters share one payload contract.
     updated: list[dict[str, Any]] = []
+    timing_profile: dict[str, Any] = {
+        'version': 'factorforge_step4_backend_timing_profile_v1',
+        'backends': {},
+    }
     for item in backend_runs:
         payload_path = item.get('payload_path')
         if not payload_path:
@@ -351,7 +444,38 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
         if backend in {'self_quant_analyzer', 'qlib_backtest'}:
             script_name = 'self_quant_adapter.py' if backend == 'self_quant_analyzer' else 'qlib_backtest_adapter.py'
             adapter = REPO_ROOT / 'skills' / 'factor-forge-step4' / 'scripts' / script_name
+            preflight: dict[str, Any] | None = None
+            if backend == 'qlib_backtest':
+                preflight = preflight_qlib_native(report_id, backend_cfg)
+                if preflight.get('status') != 'ready':
+                    payload = {
+                        'backend': backend,
+                        'report_id': report_id,
+                        'status': 'skipped',
+                        'mode': backend_cfg.get('mode', 'native'),
+                        'summary': {'reason': preflight.get('reason')},
+                        'qlib_preflight': preflight,
+                        'producer': 'step4-qlib-preflight',
+                    }
+                    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+                    new_item = dict(item)
+                    new_item['status'] = 'skipped'
+                    new_item['summary'] = payload['summary']
+                    new_item['artifact_paths'] = [str(p)]
+                    new_item['payload_path'] = str(p)
+                    timing_profile['backends']['qlib_native'] = {
+                        'attempted': False,
+                        'status': preflight.get('status'),
+                        'preflight_seconds': preflight.get('preflight_seconds'),
+                        'wall_seconds': 0.0,
+                        'reason': preflight.get('reason'),
+                    }
+                    updated.append(new_item)
+                    continue
+
+            started = time.perf_counter()
             result, exec_note = run_backend_script(report_id, backend, adapter, p, backend_cfg, manifest_path_arg=manifest_path_arg)
+            wall_seconds = time.perf_counter() - started
             new_item = dict(item)
             new_item['status'] = 'success' if result == 0 else 'failed'
             if not p.exists():
@@ -376,6 +500,17 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
                     new_item['summary'] = payload.get('ic_summary', payload)
                 else:
                     new_item['summary'] = payload.get('native_backtest_metrics') or payload.get('stub_backtest_metrics', payload)
+                    if preflight is not None:
+                        payload.setdefault('qlib_preflight', {**preflight, 'native_attempted': True})
+                        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+            timing_entry = {
+                'attempted': True,
+                'status': new_item.get('status'),
+                'wall_seconds': wall_seconds,
+            }
+            if preflight is not None:
+                timing_entry['preflight_seconds'] = preflight.get('preflight_seconds')
+            timing_profile['backends'][_backend_timing_key(backend)] = timing_entry
             updated.append(new_item)
             continue
 
@@ -385,7 +520,9 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
         if custom_script is not None:
             # Non-builtin backends are first-class: execute script and trust payload contract.
             new_item = dict(item)
+            started = time.perf_counter()
             rc, exec_note = run_backend_script(report_id, backend, custom_script, p, backend_cfg, manifest_path_arg=manifest_path_arg)
+            wall_seconds = time.perf_counter() - started
             new_item['status'] = 'success' if rc == 0 else 'failed'
             if not p.exists():
                 # Guardrail: never leave missing payload for downstream Step5 readers.
@@ -399,6 +536,11 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
                 p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
             payload = json.loads(p.read_text(encoding='utf-8'))
             new_item['summary'] = payload.get('summary') or payload.get('metrics') or payload
+            timing_profile['backends'][_backend_timing_key(backend)] = {
+                'attempted': True,
+                'status': new_item.get('status'),
+                'wall_seconds': wall_seconds,
+            }
             updated.append(new_item)
             continue
 
@@ -410,8 +552,13 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
             'extensible_metrics': True
         }
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        timing_profile['backends'][_backend_timing_key(backend)] = {
+            'attempted': False,
+            'status': item.get('status'),
+            'wall_seconds': 0.0,
+        }
         updated.append(item)
-    return updated
+    return updated, timing_profile
 
 
 def resolve_input_paths(report_id: str, manifest: dict[str, Any] | None = None) -> dict[str, Path]:
@@ -847,7 +994,7 @@ def main() -> None:
         failure_reason = None
         evaluation_plan = build_evaluation_plan(handoff)
         backend_runs = build_backend_runs_stub(report_id, evaluation_plan, run_status)
-        backend_runs = write_backend_payloads(report_id, backend_runs, manifest_path_arg=manifest_path_arg)
+        backend_runs, backend_timing_profile = write_backend_payloads(report_id, backend_runs, manifest_path_arg=manifest_path_arg)
 
         step4_owned_meta = {
             'report_id': report_id,
@@ -867,6 +1014,7 @@ def main() -> None:
             'input_io_profile': input_io_profile,
             'step4_factor_io_profile': step4_factor_io_profile,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
+            'backend_timing_profile': backend_timing_profile,
         }
         meta = merge_run_metadata(existing_meta, step4_owned_meta)
         write_json(meta_path, meta)
@@ -889,6 +1037,7 @@ def main() -> None:
             'signal_column': signal_col,
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
+            'backend_timing_profile': backend_timing_profile,
             'implementation_mode_decision': implementation_mode_decision,
             'failure_reason': failure_reason,
             'started_at_utc': start_utc,
@@ -936,6 +1085,7 @@ def main() -> None:
                 'input_io_profile': input_io_profile,
                 'step4_factor_io_profile': step4_factor_io_profile,
                 'step4_factor_csv_policy_observed': factor_csv_policy_observed,
+                'backend_timing_profile': backend_timing_profile,
                 'schema_check': {'frozen_schema_execution': True},
                 'consistency_check': {
                     'report_id_consistent': True,
@@ -1002,6 +1152,7 @@ def main() -> None:
             'signal_column': signal_col,
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
+            'backend_timing_profile': backend_timing_profile,
             'implementation_mode_decision': implementation_mode_decision,
             'key_warnings': warnings,
             'failure_reason': None,

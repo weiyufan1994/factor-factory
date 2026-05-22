@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -40,6 +41,7 @@ LOCAL_TUSHARE = resolve_local_tushare_paths()
 CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
+SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -124,6 +126,41 @@ def deterministic_csv_sample(df: pd.DataFrame, *, max_rows: int = CSV_SAMPLE_MAX
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
+def key_order_hash(df: pd.DataFrame) -> str:
+    key_frame = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    return hashlib.sha256(key_frame.to_csv(index=False).encode('utf-8')).hexdigest()
+
+
+def sample_sortedness_check(df: pd.DataFrame, *, max_points: int = 2048) -> bool:
+    if df.empty:
+        return True
+    if len(df) <= max_points:
+        sample = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    else:
+        step = max(1, len(df) // max_points)
+        indices = sorted(set([0, len(df) - 1, *range(0, len(df), step)]))
+        sample = df.iloc[indices][['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    expected = sample.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    return bool(sample.equals(expected))
+
+
+def build_sort_contract(daily_df: pd.DataFrame) -> dict:
+    return {
+        'version': SORT_CONTRACT_VERSION,
+        'sorted_by': ['ts_code', 'trade_date'],
+        'row_count': int(len(daily_df)),
+        'key_dtype': {
+            'ts_code': str(daily_df['ts_code'].dtype),
+            'trade_date': str(daily_df['trade_date'].dtype),
+        },
+        'source': 'step3a_local_input',
+        'data_hash': key_order_hash(daily_df),
+        'schema': list(daily_df.columns),
+        'duplicate_key_check': not bool(daily_df[['ts_code', 'trade_date']].duplicated().any()),
+        'sample_sortedness_check': sample_sortedness_check(daily_df),
+    }
+
+
 def materialize_daily_audit_csv(
     daily_df: pd.DataFrame,
     *,
@@ -138,6 +175,7 @@ def materialize_daily_audit_csv(
 
     contract = {
         'version': 'factorforge_step3a_daily_io_contract_v1',
+        'formal_evidence_format': 'parquet',
         'performance_path': 'parquet',
         'audit_path': 'csv' if policy == 'full_csv' else ('csv_sample' if policy == 'sample_csv' else 'none'),
         'csv_output_policy': policy,
@@ -149,10 +187,15 @@ def materialize_daily_audit_csv(
         'value_parity_required': policy == 'full_csv',
         'csv_required_for_audit': policy == 'full_csv',
         'parquet_required_for_performance': True,
+        'sample_schema_parity': None,
+        'full_csv_absent_validated': policy in {'sample_csv', 'no_csv'},
+        'full_csv_absence_reason': f'step3a_{policy}_policy' if policy in {'sample_csv', 'no_csv'} else None,
+        'sort_contract': build_sort_contract(daily_df),
     }
     payload: dict = {
         'audit_daily_format': 'none',
         'daily_io_contract': contract,
+        'sort_contract': contract['sort_contract'],
         'daily_df_csv': None,
         'daily_df_csv_sample': None,
     }
@@ -162,6 +205,9 @@ def materialize_daily_audit_csv(
             'csv_rows_written': int(len(daily_df)),
             'csv_sample_strategy': 'full',
             'full_csv_available': True,
+            'sample_schema_parity': True,
+            'full_csv_absent_validated': False,
+            'full_csv_absence_reason': None,
             'csv_path': str(full_csv_path.relative_to(WORKSPACE)),
             'csv_sample_path': None,
         })
@@ -175,6 +221,7 @@ def materialize_daily_audit_csv(
         contract.update({
             'csv_rows_written': int(len(sample_df)),
             'csv_sample_strategy': 'head_tail',
+            'sample_schema_parity': list(sample_df.columns) == list(daily_df.columns),
             'csv_path': None,
             'csv_sample_path': str(sample_csv_path.relative_to(WORKSPACE)),
         })
@@ -377,6 +424,7 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         layer_paths=CLEAN_DAILY_LAYER,
         return_metadata=True,
     )
+    daily_df = daily_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
     daily_df.to_parquet(daily_parquet, index=False)
     audit_payload = materialize_daily_audit_csv(
         daily_df,
@@ -520,7 +568,7 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
                 'vol': 100000 + ticker_i * 1000,
                 'amount': close * (100000 + ticker_i * 1000),
             })
-    daily_df = pd.DataFrame(daily_rows)
+    daily_df = pd.DataFrame(daily_rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
 
     policy = resolve_csv_policy(csv_output_policy)
     minute_csv = local_dir / f'minute_input__{report_id}.csv'

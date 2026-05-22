@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -152,6 +153,7 @@ def run_py_compile() -> dict[str, Any]:
         'skills/factor-forge-step4/scripts/self_quant_adapter.py',
         'skills/factor-forge-step4/scripts/validate_step4.py',
         'scripts/run_factorforge_performance_profile.py',
+        'scripts/run_factorforge_throughput_profile.py',
         'scripts/run_ts_rank_candidate_benchmark.py',
         'scripts/run_factorforge_performance_smoke.py',
     ]
@@ -253,6 +255,284 @@ def create_step3b_fixture(root: Path, report_id: str) -> tuple[Path, dict[str, s
             'csv_required_for_audit': True,
             'parquet_required_for_performance': True,
         },
+    }
+
+
+def sort_contract_key_hash(df: pd.DataFrame) -> str:
+    key_frame = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    payload = key_frame.to_csv(index=False).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+
+def attach_sort_contract(local_inputs: dict[str, Any], df: pd.DataFrame, *, mutate: str | None = None) -> dict[str, Any]:
+    contract = {
+        'version': 'factorforge_sort_contract_v1',
+        'sorted_by': ['ts_code', 'trade_date'],
+        'row_count': int(len(df)),
+        'key_dtype': {
+            'ts_code': str(df['ts_code'].dtype),
+            'trade_date': str(df['trade_date'].dtype),
+        },
+        'source': 'step3a_local_input',
+        'data_hash': sort_contract_key_hash(df),
+        'duplicate_key_check': not bool(df[['ts_code', 'trade_date']].duplicated().any()),
+        'sample_sortedness_check': True,
+    }
+    if mutate == 'row_count_mismatch':
+        contract['row_count'] = int(len(df) + 1)
+    if mutate == 'duplicate_key_detected':
+        contract['duplicate_key_check'] = False
+    out = dict(local_inputs)
+    daily_contract = dict(out.get('daily_io_contract') or {})
+    daily_contract['sort_contract'] = contract
+    out['daily_io_contract'] = daily_contract
+    out['sort_contract'] = contract
+    return out
+
+
+def create_step3b_sort_contract_fixture(
+    root: Path,
+    report_id: str,
+    *,
+    duplicate: bool = False,
+    unsampled_inversion: bool = False,
+    mutate_contract: str | None = None,
+) -> tuple[Path, dict[str, Any], pd.DataFrame]:
+    if unsampled_inversion:
+        run_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+        run_dir.mkdir(parents=True, exist_ok=True)
+        dates = pd.bdate_range(start='2020-01-02', periods=210)
+        rows = []
+        for code_idx in range(1, 31):
+            for day, date in enumerate(dates, start=1):
+                rows.append({
+                    'ts_code': f'S{code_idx:04d}',
+                    'trade_date': date.strftime('%Y%m%d'),
+                    'close': 10.0 + code_idx + day * 0.001,
+                    'pct_chg': float(code_idx * 0.0001 + day * 0.00001),
+                })
+        daily = pd.DataFrame(rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+        # Swap two adjacent rows that the previous sparse sample missed when len ~= 6300.
+        daily.iloc[[3001, 3002]] = daily.iloc[[3002, 3001]].to_numpy()
+        daily_csv_path = run_dir / f'daily_input__{report_id}.csv'
+        daily_parquet_path = run_dir / f'daily_input__{report_id}.parquet'
+        daily.to_parquet(daily_parquet_path, index=False)
+        daily.to_csv(daily_csv_path, index=False)
+        impl_dir = root / 'generated_code' / report_id
+        impl_dir.mkdir(parents=True, exist_ok=True)
+        impl = impl_dir / 'factor_impl.py'
+        impl.write_text(
+            "def compute_factor(daily_df, minute_df=None):\n"
+            "    out = daily_df[['ts_code', 'trade_date', 'close']].copy()\n"
+            "    out['smoke_factor'] = out['close'].rank(pct=True)\n"
+            "    return out[['ts_code', 'trade_date', 'smoke_factor']]\n",
+            encoding='utf-8',
+        )
+        local_inputs = {
+            'input_mode': 'daily_only',
+            'daily_df_parquet': str(daily_parquet_path),
+            'daily_df_csv': str(daily_csv_path),
+            'preferred_daily_format': 'parquet',
+            'audit_daily_format': 'csv',
+            'daily_io_contract': {
+                'version': 'factorforge_step3a_daily_io_contract_v1',
+                'performance_path': 'parquet',
+                'audit_path': 'csv',
+                'csv_output_policy': 'full_csv',
+                'csv_rows_written': int(len(daily)),
+                'parquet_rows_written': int(len(daily)),
+                'csv_sample_strategy': 'full',
+                'full_csv_available': True,
+                'schema_parity_required': True,
+                'value_parity_required': True,
+                'csv_required_for_audit': True,
+                'parquet_required_for_performance': True,
+            },
+        }
+    else:
+        impl, local_inputs = create_step3b_fixture(root, report_id)
+        daily = pd.read_parquet(Path(local_inputs['daily_df_parquet']))
+    daily_path = Path(local_inputs['daily_df_parquet'])
+    if duplicate:
+        daily = pd.concat([daily.iloc[[0]], daily], ignore_index=True)
+        daily.to_parquet(daily_path, index=False)
+        daily.to_csv(Path(local_inputs['daily_df_csv']), index=False)
+    local_inputs = attach_sort_contract(local_inputs, daily, mutate=mutate_contract)
+    return impl, local_inputs, daily
+
+
+def run_step3b_sort_contract_case(
+    root: Path,
+    report_id: str,
+    *,
+    trust: bool,
+    duplicate: bool = False,
+    unsampled_inversion: bool = False,
+    mutate_contract: str | None = None,
+) -> dict[str, Any]:
+    impl, local_inputs, daily = create_step3b_sort_contract_fixture(
+        root,
+        report_id,
+        duplicate=duplicate,
+        unsampled_inversion=unsampled_inversion,
+        mutate_contract=mutate_contract,
+    )
+    module = import_run_step3b(root)
+    env = {'FACTORFORGE_TRUST_STEP3A_SORT_CONTRACT': '1' if trust else None}
+    with temporary_envs(env):
+        try:
+            kwargs = {
+                'report_id': report_id,
+                'factor_id': 'SMOKE',
+                'implementation_path': impl,
+                'local_inputs': local_inputs,
+                'step2_research_context': {'smoke': True},
+                'mode_decision': {'implementation_mode': 'direct_code'},
+                'artifact_identity': {},
+            }
+            if 'trust_step3a_sort_contract' in module.generate_first_run_factor_values.__code__.co_varnames:
+                kwargs['trust_step3a_sort_contract'] = trust
+            outputs = module.generate_first_run_factor_values(**kwargs)
+            metadata = read_json(root / outputs['run_metadata_path'])
+            values = pd.read_parquet(root / outputs['output_paths'][0])
+            return {'rc': 0, 'metadata': metadata, 'values': values, 'daily': daily, 'error': None}
+        except SystemExit as exc:
+            return {'rc': 1, 'metadata': {}, 'values': pd.DataFrame(), 'daily': daily, 'error': str(exc)}
+
+
+def run_sort_contract_written_by_step3a_case(root: Path) -> dict[str, Any]:
+    report_id = 'STEP_PERF_SORT_CONTRACT'
+    module = import_run_step3(root)
+    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
+    contract = (local_inputs.get('daily_io_contract') or {}).get('sort_contract') or local_inputs.get('sort_contract') or {}
+    ok = (
+        contract.get('version') == 'factorforge_sort_contract_v1'
+        and contract.get('sorted_by') == ['ts_code', 'trade_date']
+        and int(contract.get('row_count') or 0) > 0
+        and isinstance(contract.get('data_hash'), str)
+        and len(contract.get('data_hash') or '') >= 32
+        and contract.get('duplicate_key_check') is True
+        and contract.get('sample_sortedness_check') is True
+    )
+    return {'case': 'sort_contract_written_by_step3a', 'report_id': report_id, 'sort_contract': contract, 'ok': bool(ok)}
+
+
+def run_step3b_trusted_sort_contract_skips_full_sort_opt_in_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_sort_contract_case(root, 'PERF_SMOKE_SORT_CONTRACT_TRUSTED', trust=True)
+    profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    ok = (
+        result.get('rc') == 0
+        and profile.get('version') == 'factorforge_normalize_sort_profile_v1'
+        and profile.get('sort_contract_present') is True
+        and profile.get('sort_contract_trusted') is True
+        and profile.get('full_sort_skipped') is True
+        and profile.get('full_sort_skipped_reason') == 'trusted_step3a_sort_contract'
+    )
+    return {'case': 'step3b_trusted_sort_contract_skips_full_sort_opt_in', 'normalize_sort_profile': profile, 'ok': bool(ok)}
+
+
+def run_step3b_sort_contract_default_path_unchanged_without_opt_in_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_sort_contract_case(root, 'PERF_SMOKE_SORT_CONTRACT_DEFAULT', trust=False)
+    profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    ok = (
+        result.get('rc') == 0
+        and profile.get('sort_contract_present') is True
+        and profile.get('sort_contract_trusted') is False
+        and profile.get('full_sort_skipped') is False
+        and profile.get('fallback_reason') == 'opt_in_disabled'
+    )
+    return {'case': 'step3b_sort_contract_default_path_unchanged_without_opt_in', 'normalize_sort_profile': profile, 'ok': bool(ok)}
+
+
+def run_step3b_sort_contract_fallback_on_row_count_mismatch_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_sort_contract_case(root, 'PERF_SMOKE_SORT_CONTRACT_ROW_MISMATCH', trust=True, mutate_contract='row_count_mismatch')
+    profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    ok = (
+        result.get('rc') == 0
+        and profile.get('sort_contract_trusted') is False
+        and profile.get('full_sort_skipped') is False
+        and profile.get('fallback_reason') == 'row_count_mismatch'
+    )
+    return {'case': 'step3b_sort_contract_fallback_on_row_count_mismatch', 'normalize_sort_profile': profile, 'ok': bool(ok)}
+
+
+def run_step3b_sort_contract_fallback_on_duplicate_key_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_sort_contract_case(root, 'PERF_SMOKE_SORT_CONTRACT_DUPLICATE', trust=True, duplicate=True, mutate_contract='duplicate_key_detected')
+    profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    ok = (
+        result.get('rc') == 0
+        and profile.get('sort_contract_trusted') is False
+        and profile.get('full_sort_skipped') is False
+        and profile.get('fallback_reason') == 'duplicate_key_detected'
+    )
+    return {'case': 'step3b_sort_contract_fallback_on_duplicate_key', 'normalize_sort_profile': profile, 'ok': bool(ok)}
+
+
+def run_step3b_sort_contract_fallback_on_unsorted_unsampled_inversion_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_sort_contract_case(
+        root,
+        'PERF_SMOKE_SORT_CONTRACT_UNSAMPLED_INVERSION',
+        trust=True,
+        unsampled_inversion=True,
+    )
+    profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    ok = (
+        result.get('rc') == 0
+        and profile.get('sort_contract_trusted') is False
+        and profile.get('full_sort_skipped') is False
+        and profile.get('fallback_reason') in {'global_sortedness_failed', 'per_group_sortedness_failed'}
+    )
+    return {
+        'case': 'step3b_sort_contract_fallback_on_unsorted_unsampled_inversion',
+        'normalize_sort_profile': profile,
+        'ok': bool(ok),
+    }
+
+
+def run_step3b_sort_contract_output_parity_with_full_sort_case(root: Path) -> dict[str, Any]:
+    trusted = run_step3b_sort_contract_case(root, 'PERF_SMOKE_SORT_CONTRACT_PARITY_TRUSTED', trust=True)
+    reference = run_step3b_sort_contract_case(root, 'PERF_SMOKE_SORT_CONTRACT_PARITY_REFERENCE', trust=False)
+    fallback = run_step3b_sort_contract_case(
+        root,
+        'PERF_SMOKE_SORT_CONTRACT_PARITY_UNSORTED_FALLBACK',
+        trust=True,
+        unsampled_inversion=True,
+    )
+    trusted_values = trusted.get('values', pd.DataFrame())
+    reference_values = reference.get('values', pd.DataFrame())
+    fallback_values = fallback.get('values', pd.DataFrame())
+    equal = (
+        trusted.get('rc') == 0
+        and reference.get('rc') == 0
+        and list(trusted_values.columns) == list(reference_values.columns)
+        and trusted_values.reset_index(drop=True).equals(reference_values.reset_index(drop=True))
+    )
+    profile = (((trusted.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    fallback_profile = (((fallback.get('metadata') or {}).get('performance_profile') or {}).get('normalize_sort_profile') or {})
+    fallback_reference = fallback.get('daily', pd.DataFrame())
+    fallback_sorted = fallback_values[['ts_code', 'trade_date']].astype(str).reset_index(drop=True).equals(
+        fallback_reference[['ts_code', 'trade_date']]
+        .assign(trade_date=lambda x: x['trade_date'].astype(str))
+        .sort_values(['ts_code', 'trade_date'])
+        .reset_index(drop=True)
+        .astype(str)
+    )
+    return {
+        'case': 'step3b_sort_contract_output_parity_with_full_sort',
+        'trusted_rc': trusted.get('rc'),
+        'reference_rc': reference.get('rc'),
+        'fallback_rc': fallback.get('rc'),
+        'row_count_equal': len(trusted_values) == len(reference_values),
+        'output_equal': bool(equal),
+        'unsorted_fallback_output_sorted': bool(fallback_sorted),
+        'trusted_normalize_sort_profile': profile,
+        'fallback_normalize_sort_profile': fallback_profile,
+        'ok': bool(
+            equal
+            and profile.get('full_sort_skipped') is True
+            and fallback_profile.get('full_sort_skipped') is False
+            and fallback_sorted
+        ),
     }
 
 
@@ -636,6 +916,121 @@ def run_step3b_factor_no_csv_policy_case(root: Path) -> dict[str, Any]:
         'factor_csv_exists': factor_csv.exists(),
         'factor_sample_exists': factor_sample.exists(),
         'ok': bool(ok),
+    }
+
+
+def _read_step3b_csv_profile(root: Path, report_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    meta_path = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+    metadata = read_json(meta_path) if meta_path.exists() else {}
+    profile = metadata.get('performance_profile') or {}
+    return metadata, profile.get('csv_output_profile') or {}
+
+
+def run_csv_policy_sample_csv_parquet_formal_evidence_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP3B_SAMPLE_CSV'
+    metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
+    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
+    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    ok = (
+        bool(metadata)
+        and factor_parquet.exists()
+        and not factor_csv.exists()
+        and factor_sample.exists()
+        and csv_profile.get('version') == 'factorforge_csv_output_profile_v1'
+        and csv_profile.get('formal_evidence_format') == 'parquet'
+        and csv_profile.get('csv_output_policy') == 'sample_csv'
+        and csv_profile.get('factor_parquet_path') == str(factor_parquet)
+        and csv_profile.get('factor_csv_path') is None
+        and csv_profile.get('factor_sample_csv_path') == str(factor_sample)
+        and csv_profile.get('sample_schema_parity') is True
+        and csv_profile.get('full_csv_absent_validated') is True
+    )
+    return {
+        'case': 'csv_policy_sample_csv_parquet_formal_evidence',
+        'report_id': report_id,
+        'csv_output_profile': csv_profile,
+        'factor_parquet_exists': factor_parquet.exists(),
+        'factor_csv_exists': factor_csv.exists(),
+        'factor_sample_exists': factor_sample.exists(),
+        'ok': bool(ok),
+    }
+
+
+def run_csv_policy_no_csv_parquet_formal_evidence_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP3B_NO_CSV'
+    metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
+    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
+    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    ok = (
+        bool(metadata)
+        and factor_parquet.exists()
+        and not factor_csv.exists()
+        and not factor_sample.exists()
+        and csv_profile.get('version') == 'factorforge_csv_output_profile_v1'
+        and csv_profile.get('formal_evidence_format') == 'parquet'
+        and csv_profile.get('csv_output_policy') == 'no_csv'
+        and csv_profile.get('factor_parquet_path') == str(factor_parquet)
+        and csv_profile.get('factor_csv_path') is None
+        and csv_profile.get('factor_sample_csv_path') is None
+        and csv_profile.get('sample_schema_parity') is None
+        and csv_profile.get('full_csv_absent_validated') is True
+    )
+    return {
+        'case': 'csv_policy_no_csv_parquet_formal_evidence',
+        'report_id': report_id,
+        'csv_output_profile': csv_profile,
+        'factor_parquet_exists': factor_parquet.exists(),
+        'factor_csv_exists': factor_csv.exists(),
+        'factor_sample_exists': factor_sample.exists(),
+        'ok': bool(ok),
+    }
+
+
+def run_csv_policy_full_csv_legacy_compat_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP3B'
+    metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
+    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
+    ok = (
+        bool(metadata)
+        and factor_parquet.exists()
+        and factor_csv.exists()
+        and csv_profile.get('version') == 'factorforge_csv_output_profile_v1'
+        and csv_profile.get('formal_evidence_format') == 'parquet'
+        and csv_profile.get('csv_output_policy') == 'full_csv'
+        and csv_profile.get('factor_parquet_path') == str(factor_parquet)
+        and csv_profile.get('factor_csv_path') == str(factor_csv)
+        and csv_profile.get('full_csv_available') is True
+        and csv_profile.get('full_csv_absent_validated') is False
+    )
+    return {
+        'case': 'csv_policy_full_csv_legacy_compat',
+        'report_id': report_id,
+        'csv_output_profile': csv_profile,
+        'factor_parquet_exists': factor_parquet.exists(),
+        'factor_csv_exists': factor_csv.exists(),
+        'ok': bool(ok),
+    }
+
+
+def run_validate_step3_accepts_no_csv_with_parquet_case(root: Path) -> dict[str, Any]:
+    report_id = 'STEP_PERF_IO_NO_CSV_POLICY'
+    proc = run_cmd([
+        sys.executable,
+        'skills/factor-forge-step3/scripts/validate_step3.py',
+        '--report-id',
+        report_id,
+    ], root=root)
+    output = proc.stdout + proc.stderr
+    return {
+        'case': 'validate_step3_accepts_no_csv_with_parquet',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(proc.returncode == 0 and 'RESULT: PASS' in output),
     }
 
 
@@ -2300,6 +2695,236 @@ def run_profile_script_readonly_case(root: Path) -> dict[str, Any]:
     return {'case': 'performance_profile_script_readonly', 'rc': proc.returncode, 'wrote_report': after_exists, 'ok': bool(ok)}
 
 
+def create_throughput_profile_fixture(root: Path, report_id: str, *, large_csv: bool = False, recompute_fallback: bool = False, qlib_missing_provider: bool = False) -> dict[str, Path]:
+    run_dir = root / 'runs' / report_id
+    eval_dir = root / 'evaluations' / report_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
+    factor_csv = run_dir / f'factor_values__{report_id}.csv'
+    pd.DataFrame({
+        'ts_code': ['S001', 'S002', 'S001', 'S002'],
+        'trade_date': ['20200101', '20200101', '20200102', '20200102'],
+        'smoke_factor': [0.1, 0.2, 0.3, 0.4],
+    }).to_parquet(factor_parquet, index=False)
+    if large_csv:
+        with factor_csv.open('wb') as handle:
+            handle.truncate(101 * 1024 * 1024)
+    else:
+        factor_csv.write_text('ts_code,trade_date,smoke_factor\nS001,20200101,0.1\n', encoding='utf-8')
+    meta = {
+        'report_id': report_id,
+        'row_count': 4,
+        'performance_profile': {
+            'version': 'factorforge_step3b_performance_profile_v1',
+            'phase_seconds': {
+                'read_inputs': 0.5,
+                'compute_factor': 10.0,
+                'normalize_sort': 9.0,
+                'write_parquet': 0.4,
+                'write_csv': 3.0,
+                'write_metadata': 0.1,
+                'total': 23.0,
+            },
+            'csv_output_profile': {'csv_output_policy': 'full_csv'},
+        },
+        'step4_factor_io_profile': {
+            'version': 'factorforge_step4_factor_io_profile_v1',
+            'source': 'step4_recompute_fallback' if recompute_fallback else 'step3b_factor_parquet',
+            'selected_factor_format': 'computed' if recompute_fallback else 'parquet',
+            'selected_factor_path': str(factor_parquet),
+            'recomputed_factor': bool(recompute_fallback),
+        },
+        'input_io_profile': {
+            'factor_values_selected_format': 'parquet',
+            'daily_selected_format': 'parquet',
+        },
+    }
+    run_meta = run_dir / f'run_metadata__{report_id}.json'
+    write_json(run_meta, meta)
+    self_quant_path = eval_dir / 'self_quant_analyzer' / 'evaluation_payload.json'
+    write_json(self_quant_path, {
+        'backend': 'self_quant_analyzer',
+        'status': 'success',
+        'performance_profile': {
+            'phase_seconds': {'total': 4.2, 'load_factor_values': 0.2, 'load_daily_snapshot': 0.3},
+            'input_io_profile': {'daily_selected_format': 'parquet', 'factor_values_selected_format': 'parquet'},
+        },
+    })
+    qlib_path = eval_dir / 'qlib_backtest' / 'evaluation_payload.json'
+    if qlib_missing_provider:
+        write_json(qlib_path, {
+            'backend': 'qlib_backtest',
+            'status': 'failed',
+            'mode': 'native',
+            'summary': {'error': 'No usable qlib provider found'},
+            'diagnostics': {'provider_missing': True, 'native_attempted': True},
+        })
+    return {
+        'run_metadata': run_meta,
+        'factor_parquet': factor_parquet,
+        'factor_csv': factor_csv,
+        'self_quant': self_quant_path,
+        'qlib': qlib_path,
+    }
+
+
+def run_throughput_profile_reads_step3b_step4_metadata_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_THROUGHPUT_PROFILE'
+    create_throughput_profile_fixture(root, report_id, qlib_missing_provider=True)
+    output = root / 'throughput_profile_read.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_throughput_profile.py',
+        '--root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--output',
+        str(output),
+    ])
+    payload = read_json(output) if output.exists() else {}
+    codes = {item.get('code') for item in payload.get('diagnostics', [])}
+    ok = (
+        proc.returncode == 0
+        and payload.get('contract_version') == 'factorforge_throughput_profile_v1'
+        and payload.get('artifacts_found', {}).get('step3b_run_metadata') is True
+        and payload.get('artifacts_found', {}).get('step4_run_metadata') is True
+        and payload.get('step3b', {}).get('compute_factor_seconds') == 10.0
+        and payload.get('step4', {}).get('self_quant_seconds') == 4.2
+        and 'NORMALIZE_SORT_DOMINANT' in codes
+        and 'PARQUET_FORMAL_EVIDENCE_OK' in codes
+        and 'QLIB_PROVIDER_MISSING_NATIVE_ATTEMPTED' in codes
+    )
+    return {'case': 'throughput_profile_reads_step3b_step4_metadata', 'rc': proc.returncode, 'output_exists': output.exists(), 'diagnostic_codes': sorted(codes), 'ok': bool(ok)}
+
+
+def run_throughput_profile_flags_large_full_csv_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_THROUGHPUT_LARGE_CSV'
+    create_throughput_profile_fixture(root, report_id, large_csv=True)
+    output = root / 'throughput_profile_large_csv.json'
+    proc = run_cmd([sys.executable, 'scripts/run_factorforge_throughput_profile.py', '--root', str(root), '--report-id', report_id, '--output', str(output)])
+    payload = read_json(output) if output.exists() else {}
+    codes = {item.get('code') for item in payload.get('diagnostics', [])}
+    return {'case': 'throughput_profile_flags_large_full_csv', 'rc': proc.returncode, 'factor_csv_bytes': payload.get('step3b', {}).get('factor_csv_bytes'), 'token_present': 'FULL_CSV_LARGE' in codes, 'ok': bool(proc.returncode == 0 and 'FULL_CSV_LARGE' in codes)}
+
+
+def run_throughput_profile_flags_step4_recompute_fallback_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_THROUGHPUT_RECOMPUTE'
+    create_throughput_profile_fixture(root, report_id, recompute_fallback=True)
+    output = root / 'throughput_profile_recompute.json'
+    proc = run_cmd([sys.executable, 'scripts/run_factorforge_throughput_profile.py', '--root', str(root), '--report-id', report_id, '--output', str(output)])
+    payload = read_json(output) if output.exists() else {}
+    codes = {item.get('code') for item in payload.get('diagnostics', [])}
+    return {'case': 'throughput_profile_flags_step4_recompute_fallback', 'rc': proc.returncode, 'token_present': 'STEP4_RECOMPUTE_FALLBACK' in codes, 'ok': bool(proc.returncode == 0 and 'STEP4_RECOMPUTE_FALLBACK' in codes)}
+
+
+def run_throughput_profile_handles_missing_artifacts_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_THROUGHPUT_MISSING'
+    output = root / 'throughput_profile_missing.json'
+    proc = run_cmd([sys.executable, 'scripts/run_factorforge_throughput_profile.py', '--root', str(root), '--report-id', report_id, '--output', str(output)])
+    payload = read_json(output) if output.exists() else {}
+    codes = [item.get('code') for item in payload.get('diagnostics', [])]
+    ok = proc.returncode == 0 and output.exists() and 'ARTIFACT_MISSING' in codes
+    return {'case': 'throughput_profile_handles_missing_artifacts_without_crash', 'rc': proc.returncode, 'diagnostic_codes': codes, 'ok': bool(ok)}
+
+
+def run_throughput_profile_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_THROUGHPUT_NON_TMP_OUTPUT'
+    create_throughput_profile_fixture(root, report_id)
+    output = REPO_ROOT / 'objects' / 'validation' / 'throughput_profile_non_tmp_block.json'
+    if output.exists():
+        output.unlink()
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_throughput_profile.py',
+        '--root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--output',
+        str(output),
+    ])
+    token_present = 'BLOCK_THROUGHPUT_PROFILE_NON_TMP_OUTPUT' in (proc.stdout + proc.stderr)
+    return {'case': 'throughput_profile_blocks_non_tmp_output_unless_explicit', 'rc': proc.returncode, 'token_present': token_present, 'output_exists': output.exists(), 'ok': bool(proc.returncode == 1 and token_present and not output.exists())}
+
+
+def run_throughput_profile_reports_csv_policy_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP3B_SAMPLE_CSV'
+    output = root / 'throughput_profile_csv_policy.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_throughput_profile.py',
+        '--root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--output',
+        str(output),
+    ])
+    payload = read_json(output) if output.exists() else {}
+    step3b = payload.get('step3b') or {}
+    codes = {item.get('code') for item in payload.get('diagnostics', [])}
+    ok = (
+        proc.returncode == 0
+        and step3b.get('csv_output_policy') == 'sample_csv'
+        and step3b.get('formal_evidence_format') == 'parquet'
+        and step3b.get('parquet_formal_evidence_ok') is True
+        and step3b.get('full_csv_absent_by_policy') is True
+        and step3b.get('factor_csv_sample_bytes') is not None
+        and 'PARQUET_FORMAL_EVIDENCE_OK' in codes
+        and 'FULL_CSV_ABSENT_BY_POLICY' in codes
+        and 'SAMPLE_CSV_PRESENT' in codes
+    )
+    return {
+        'case': 'throughput_profile_reports_csv_policy',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'step3b_csv_policy': {key: step3b.get(key) for key in [
+            'csv_output_policy',
+            'formal_evidence_format',
+            'parquet_formal_evidence_ok',
+            'full_csv_absent_by_policy',
+            'factor_csv_sample_bytes',
+        ]},
+        'diagnostic_codes': sorted(codes),
+        'ok': bool(ok),
+    }
+
+
+def run_throughput_profile_reports_sort_contract_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_SORT_CONTRACT_TRUSTED'
+    output = root / 'throughput_profile_sort_contract.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_throughput_profile.py',
+        '--root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--output',
+        str(output),
+    ])
+    payload = read_json(output) if output.exists() else {}
+    step3b = payload.get('step3b') or {}
+    profile = step3b.get('normalize_sort_profile') or {}
+    codes = {item.get('code') for item in payload.get('diagnostics', [])}
+    ok = (
+        proc.returncode == 0
+        and profile.get('sort_contract_trusted') is True
+        and profile.get('full_sort_skipped') is True
+        and 'SORT_CONTRACT_TRUSTED' in codes
+        and 'FULL_SORT_SKIPPED_BY_CONTRACT' in codes
+    )
+    return {
+        'case': 'throughput_profile_reports_sort_contract',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'normalize_sort_profile': profile,
+        'diagnostic_codes': sorted(codes),
+        'ok': bool(ok),
+    }
+
+
 def create_step4_metadata_merge_fixture(root: Path, report_id: str) -> Path:
     run_dir = root / 'runs' / report_id
     input_dir = run_dir / 'step3a_local_inputs'
@@ -2487,9 +3112,30 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
         'audit_daily_format': 'csv',
         'sample_window_actual': {'start': '20200101', 'end': '20200107'},
     }
+    artifact_identity = {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'source_type': 'synthetic_tmp_fixture',
+        'implementation_mode': 'direct_code',
+        'contract_version': 'factorforge_artifact_identity_v1',
+        'producer': 'step3b',
+        'upstream_producer': 'performance_smoke',
+        'formula_hash': None,
+        'code_hash': None,
+        'code_contract_hash': 'smoke_code_contract_hash',
+        'custom_block_hash': None,
+        'hybrid_hash': None,
+        'spec_hash': 'smoke_spec_hash',
+        'branch_id': 'performance_smoke',
+        'run_id': f'{report_id}__run',
+        'parent_run_id': None,
+        'created_at_utc': utc_now(),
+        'artifact_role': 'handoff_to_step4',
+    }
     write_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
+        'artifact_identity': artifact_identity,
         'canonical_spec': {'implementation_path': str(impl_path)},
         'implementation_mode_decision': {'implementation_mode': 'direct_code'},
     })
@@ -2504,6 +3150,7 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
     write_json(objects / 'handoff' / f'handoff_to_step4__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
+        'artifact_identity': artifact_identity,
         'factor_impl_ref': str(impl_path),
         'implementation_mode_decision': {'implementation_mode': 'direct_code'},
         'local_input_paths': local_inputs,
@@ -2521,12 +3168,19 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
     }
     if policy is not None:
         meta['performance_profile']['csv_output_profile'] = {
-            'version': 'factorforge_step3b_csv_output_policy_v1',
+            'version': 'factorforge_csv_output_profile_v1',
+            'formal_evidence_format': 'parquet',
             'csv_output_policy': policy,
             'parquet_rows_written': len(daily),
             'csv_rows_written': 0,
             'csv_sample_strategy': 'none',
             'full_csv_available': False,
+            'factor_parquet_path': str(factor_parquet),
+            'factor_csv_path': None,
+            'factor_sample_csv_path': None,
+            'sample_schema_parity': None,
+            'full_csv_absent_validated': policy in {'sample_csv', 'no_csv'},
+            'full_csv_absence_reason': f'step3b_{policy}_policy' if policy in {'sample_csv', 'no_csv'} else None,
             'csv_path': None,
             'csv_sample_path': None,
         }
@@ -2535,6 +3189,8 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
         meta['performance_profile']['csv_output_profile'].update({
             'csv_rows_written': 1,
             'csv_sample_strategy': 'head_tail',
+            'factor_sample_csv_path': str(factor_sample),
+            'sample_schema_parity': True,
             'csv_sample_path': str(factor_sample),
         })
     write_json(run_meta, meta)
@@ -2768,6 +3424,265 @@ def run_step4_invalid_factor_csv_policy_blocks_case(root: Path) -> dict[str, Any
     }
 
 
+def ensure_step4_no_csv_parquet_fixture(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_NO_CSV_PARQUET_FORMAL'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'no_csv')
+    input_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+    rows = []
+    for code_idx in range(1, 25):
+        for day in range(1, 8):
+            rows.append({
+                'ts_code': f'S{code_idx:03d}',
+                'trade_date': f'202001{day:02d}',
+                'close': 10.0 + code_idx + day * 0.1,
+                'pct_chg': float(code_idx * 0.001 + day * 0.0005),
+            })
+    daily = pd.DataFrame(rows)
+    daily.to_csv(input_dir / f'daily_input__{report_id}.csv', index=False)
+    daily.to_parquet(input_dir / f'daily_input__{report_id}.parquet', index=False)
+    handoff_path = root / 'objects' / 'handoff' / f'handoff_to_step4__{report_id}.json'
+    handoff = read_json(handoff_path)
+    handoff['evaluation_plan'] = {
+        'backends': [{'name': 'self_quant_analyzer', 'mode': 'quick'}],
+        'metric_policy': 'extensible',
+    }
+    write_json(handoff_path, handoff)
+    proc = run_step4_direct(root, report_id)
+    meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    payload_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload.json'
+    payload = read_json(payload_path) if payload_path.exists() else {}
+    return {
+        'report_id': report_id,
+        'paths': paths,
+        'proc': proc,
+        'run_metadata': meta,
+        'self_quant_payload': payload,
+    }
+
+
+def run_step4_uses_parquet_when_full_csv_absent_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_no_csv_parquet_fixture(root)
+    paths = ctx['paths']
+    payload = ctx['self_quant_payload']
+    input_io = ((payload.get('performance_profile') or {}).get('input_io_profile') or {})
+    observed = ctx['run_metadata'].get('step4_factor_csv_policy_observed') or {}
+    ok = (
+        ctx['proc'].returncode == 0
+        and paths['factor_parquet'].exists()
+        and not paths['factor_csv'].exists()
+        and not paths['factor_sample'].exists()
+        and input_io.get('factor_values_selected_format') == 'parquet'
+        and observed.get('csv_output_policy') == 'no_csv'
+        and observed.get('factor_csv_written_by_step4') is False
+    )
+    return {
+        'case': 'step4_uses_parquet_when_full_csv_absent',
+        'report_id': ctx['report_id'],
+        'rc': ctx['proc'].returncode,
+        'factor_parquet_exists': paths['factor_parquet'].exists(),
+        'factor_csv_exists': paths['factor_csv'].exists(),
+        'factor_sample_exists': paths['factor_sample'].exists(),
+        'self_quant_input_io_profile': input_io,
+        'step4_factor_csv_policy_observed': observed,
+        'stdout_tail': tail(ctx['proc'].stdout),
+        'stderr_tail': tail(ctx['proc'].stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_validate_step4_accepts_no_csv_with_parquet_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_no_csv_parquet_fixture(root)
+    proc = run_cmd([
+        sys.executable,
+        'skills/factor-forge-step4/scripts/validate_step4.py',
+        '--report-id',
+        ctx['report_id'],
+    ], root=root)
+    output = proc.stdout + proc.stderr
+    return {
+        'case': 'validate_step4_accepts_no_csv_with_parquet',
+        'report_id': ctx['report_id'],
+        'step4_rc': ctx['proc'].returncode,
+        'validate_rc': proc.returncode,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ctx['proc'].returncode == 0 and proc.returncode == 0 and 'RESULT: PASS' in output),
+    }
+
+
+def ensure_step4_qlib_preflight_fixture(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_QLIB_PREFLIGHT'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    input_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+    rows = []
+    for code_idx in range(1, 25):
+        for day in range(1, 8):
+            rows.append({
+                'ts_code': f'S{code_idx:03d}',
+                'trade_date': f'202001{day:02d}',
+                'close': 10.0 + code_idx + day * 0.1,
+                'pct_chg': float(code_idx * 0.001 + day * 0.0005),
+            })
+    daily = pd.DataFrame(rows)
+    daily.to_csv(input_dir / f'daily_input__{report_id}.csv', index=False)
+    daily.to_parquet(input_dir / f'daily_input__{report_id}.parquet', index=False)
+    handoff_path = root / 'objects' / 'handoff' / f'handoff_to_step4__{report_id}.json'
+    handoff = read_json(handoff_path)
+    handoff['evaluation_plan'] = {
+        'backends': [
+            {'name': 'self_quant_analyzer', 'mode': 'quick'},
+            {
+                'name': 'qlib_backtest',
+                'mode': 'native',
+                'provider_uri': str(root / 'missing_qlib_provider'),
+            },
+        ],
+        'metric_policy': 'extensible',
+    }
+    write_json(handoff_path, handoff)
+    meta_path = paths['run_meta']
+    if not (meta_path.exists() and (read_json(meta_path).get('backend_timing_profile') or {}).get('version') == 'factorforge_step4_backend_timing_profile_v1'):
+        proc = run_step4_direct(root, report_id)
+    else:
+        proc = subprocess.CompletedProcess(args=[], returncode=0, stdout='', stderr='')
+    factor_run_master_path = root / 'objects' / 'factor_run_master' / f'factor_run_master__{report_id}.json'
+    qlib_payload_path = root / 'evaluations' / report_id / 'qlib_backtest' / 'evaluation_payload.json'
+    self_quant_payload_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload.json'
+    return {
+        'report_id': report_id,
+        'paths': paths,
+        'proc': proc,
+        'run_metadata': read_json(meta_path) if meta_path.exists() else {},
+        'factor_run_master': read_json(factor_run_master_path) if factor_run_master_path.exists() else {},
+        'qlib_payload': read_json(qlib_payload_path) if qlib_payload_path.exists() else {},
+        'self_quant_payload': read_json(self_quant_payload_path) if self_quant_payload_path.exists() else {},
+        'qlib_payload_path': qlib_payload_path,
+        'self_quant_payload_path': self_quant_payload_path,
+    }
+
+
+def run_step4_qlib_preflight_skips_missing_provider_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_qlib_preflight_fixture(root)
+    proc = ctx['proc']
+    qlib_payload = ctx['qlib_payload']
+    preflight = qlib_payload.get('qlib_preflight') or {}
+    ok = (
+        proc.returncode == 0
+        and qlib_payload.get('status') == 'skipped'
+        and preflight.get('provider_uri_checked') is True
+        and preflight.get('provider_present') is False
+        and preflight.get('native_attempted') is False
+        and preflight.get('status') == 'skipped_native_missing_provider'
+    )
+    return {
+        'case': 'step4_qlib_preflight_skips_missing_provider',
+        'report_id': ctx['report_id'],
+        'rc': proc.returncode,
+        'qlib_status': qlib_payload.get('status'),
+        'qlib_preflight': preflight,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_step4_backend_timing_profile_records_self_quant_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_qlib_preflight_fixture(root)
+    timing = ctx['run_metadata'].get('backend_timing_profile') or {}
+    self_quant = ((timing.get('backends') or {}).get('self_quant_analyzer') or {})
+    ok = (
+        ctx['proc'].returncode == 0
+        and timing.get('version') == 'factorforge_step4_backend_timing_profile_v1'
+        and self_quant.get('attempted') is True
+        and self_quant.get('status') in {'success', 'partial'}
+        and isinstance(self_quant.get('wall_seconds'), (int, float))
+    )
+    return {
+        'case': 'step4_backend_timing_profile_records_self_quant',
+        'report_id': ctx['report_id'],
+        'rc': ctx['proc'].returncode,
+        'self_quant_timing': self_quant,
+        'ok': bool(ok),
+    }
+
+
+def run_step4_backend_timing_profile_records_qlib_skipped_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_qlib_preflight_fixture(root)
+    timing = ctx['run_metadata'].get('backend_timing_profile') or {}
+    qlib = ((timing.get('backends') or {}).get('qlib_native') or {})
+    ok = (
+        ctx['proc'].returncode == 0
+        and timing.get('version') == 'factorforge_step4_backend_timing_profile_v1'
+        and qlib.get('attempted') is False
+        and qlib.get('status') == 'skipped_native_missing_provider'
+        and isinstance(qlib.get('preflight_seconds'), (int, float))
+    )
+    return {
+        'case': 'step4_backend_timing_profile_records_qlib_skipped',
+        'report_id': ctx['report_id'],
+        'rc': ctx['proc'].returncode,
+        'qlib_timing': qlib,
+        'ok': bool(ok),
+    }
+
+
+def run_step4_missing_qlib_provider_not_marked_success_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_qlib_preflight_fixture(root)
+    qlib_payload = ctx['qlib_payload']
+    backend_runs = (((ctx['factor_run_master'].get('evaluation_results') or {}).get('backend_runs')) or [])
+    qlib_run = next((item for item in backend_runs if item.get('backend') == 'qlib_backtest'), {})
+    ok = (
+        ctx['proc'].returncode == 0
+        and qlib_payload.get('status') == 'skipped'
+        and qlib_run.get('status') == 'skipped'
+        and qlib_payload.get('status') != 'success'
+        and qlib_run.get('status') != 'success'
+    )
+    return {
+        'case': 'step4_missing_qlib_provider_not_marked_success',
+        'report_id': ctx['report_id'],
+        'rc': ctx['proc'].returncode,
+        'payload_status': qlib_payload.get('status'),
+        'backend_run_status': qlib_run.get('status'),
+        'ok': bool(ok),
+    }
+
+
+def run_throughput_profile_reads_backend_timing_profile_case(root: Path) -> dict[str, Any]:
+    ctx = ensure_step4_qlib_preflight_fixture(root)
+    output = root / 'throughput_profile_backend_timing.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_throughput_profile.py',
+        '--root',
+        str(root),
+        '--report-id',
+        ctx['report_id'],
+        '--output',
+        str(output),
+    ])
+    payload = read_json(output) if output.exists() else {}
+    timing = ((payload.get('step4') or {}).get('backend_timing_profile') or {})
+    qlib = ((timing.get('backends') or {}).get('qlib_native') or {})
+    self_quant = ((timing.get('backends') or {}).get('self_quant_analyzer') or {})
+    ok = (
+        proc.returncode == 0
+        and timing.get('version') == 'factorforge_step4_backend_timing_profile_v1'
+        and self_quant.get('attempted') is True
+        and qlib.get('attempted') is False
+        and qlib.get('status') == 'skipped_native_missing_provider'
+        and (payload.get('step4') or {}).get('qlib_native_attempted') is False
+    )
+    return {
+        'case': 'throughput_profile_reads_backend_timing_profile',
+        'report_id': ctx['report_id'],
+        'rc': proc.returncode,
+        'output_exists': output.exists(),
+        'backend_timing_profile': timing,
+        'ok': bool(ok),
+    }
+
+
 def run_non_tmp_selftest() -> dict[str, Any]:
     if os.getenv('FACTORFORGE_PERF_SMOKE_SKIP_NON_TMP_SELFTEST') == '1':
         return {'case': 'non_tmp_root_blocks', 'skipped': True, 'ok': True}
@@ -2815,6 +3730,13 @@ def main() -> int:
         run_formula_evaluator_parity_case(),
         run_formula_evaluator_cache_case(),
         run_formula_evaluator_unsorted_case(),
+        run_sort_contract_written_by_step3a_case(root),
+        run_step3b_trusted_sort_contract_skips_full_sort_opt_in_case(root),
+        run_step3b_sort_contract_default_path_unchanged_without_opt_in_case(root),
+        run_step3b_sort_contract_fallback_on_row_count_mismatch_case(root),
+        run_step3b_sort_contract_fallback_on_duplicate_key_case(root),
+        run_step3b_sort_contract_fallback_on_unsorted_unsampled_inversion_case(root),
+        run_step3b_sort_contract_output_parity_with_full_sort_case(root),
         run_operator_profile_basic_present_case(),
         run_operator_profile_alpha017_like_breakdown_case(),
         run_operator_profile_cache_hit_recorded_case(),
@@ -2861,6 +3783,10 @@ def main() -> int:
         run_step3b_profile_case(root),
         run_step3b_factor_sample_csv_policy_case(root),
         run_step3b_factor_no_csv_policy_case(root),
+        run_csv_policy_sample_csv_parquet_formal_evidence_case(root),
+        run_csv_policy_no_csv_parquet_formal_evidence_case(root),
+        run_csv_policy_full_csv_legacy_compat_case(root),
+        run_validate_step3_accepts_no_csv_with_parquet_case(root),
         run_csv_policy_invalid_blocks_case(root),
         run_csv_policy_invalid_cli_blocks_case(root),
         run_step3b_prefers_daily_parquet_case(root),
@@ -2878,7 +3804,21 @@ def main() -> int:
         run_step4_respects_step3b_no_csv_policy_case(root),
         run_step4_legacy_missing_csv_policy_full_csv_compat_case(root),
         run_step4_invalid_factor_csv_policy_blocks_case(root),
+        run_step4_uses_parquet_when_full_csv_absent_case(root),
+        run_validate_step4_accepts_no_csv_with_parquet_case(root),
+        run_step4_qlib_preflight_skips_missing_provider_case(root),
+        run_step4_backend_timing_profile_records_self_quant_case(root),
+        run_step4_backend_timing_profile_records_qlib_skipped_case(root),
+        run_step4_missing_qlib_provider_not_marked_success_case(root),
         run_profile_script_readonly_case(root),
+        run_throughput_profile_reads_step3b_step4_metadata_case(root),
+        run_throughput_profile_flags_large_full_csv_case(root),
+        run_throughput_profile_flags_step4_recompute_fallback_case(root),
+        run_throughput_profile_handles_missing_artifacts_case(root),
+        run_throughput_profile_blocks_non_tmp_output_case(root),
+        run_throughput_profile_reports_csv_policy_case(root),
+        run_throughput_profile_reports_sort_contract_case(root),
+        run_throughput_profile_reads_backend_timing_profile_case(root),
         run_step4_metadata_merge_case(root),
         run_non_tmp_selftest(),
     ]

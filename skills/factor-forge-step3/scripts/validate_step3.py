@@ -13,6 +13,21 @@ WORKSPACE = FF.parent
 OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
+
+
+def validate_sort_contract(contract: dict) -> None:
+    if not contract:
+        return
+    assert contract.get('version') == SORT_CONTRACT_VERSION, 'STEP3_DAILY_SORT_CONTRACT_INVALID: invalid sort_contract.version'
+    assert contract.get('sorted_by') == ['ts_code', 'trade_date'], 'STEP3_DAILY_SORT_CONTRACT_INVALID: sorted_by must be ts_code/trade_date'
+    assert isinstance(contract.get('row_count'), int) and contract.get('row_count') >= 0, 'STEP3_DAILY_SORT_CONTRACT_INVALID: row_count'
+    key_dtype = contract.get('key_dtype')
+    assert isinstance(key_dtype, dict) and key_dtype.get('ts_code') and key_dtype.get('trade_date'), 'STEP3_DAILY_SORT_CONTRACT_INVALID: key_dtype'
+    assert contract.get('source') == 'step3a_local_input', 'STEP3_DAILY_SORT_CONTRACT_INVALID: source'
+    assert isinstance(contract.get('data_hash'), str) and len(contract.get('data_hash')) >= 32, 'STEP3_DAILY_SORT_CONTRACT_INVALID: data_hash'
+    assert isinstance(contract.get('duplicate_key_check'), bool), 'STEP3_DAILY_SORT_CONTRACT_INVALID: duplicate_key_check'
+    assert isinstance(contract.get('sample_sortedness_check'), bool), 'STEP3_DAILY_SORT_CONTRACT_INVALID: sample_sortedness_check'
 
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
@@ -61,6 +76,9 @@ def validate_daily_io_contract(local_inputs: dict, *, require_full_parity: bool 
         assert daily_parquet_rel, 'STEP3_DAILY_PARQUET_MISSING: preferred_daily_format=parquet but daily_df_parquet missing'
         parquet_path = WORKSPACE / daily_parquet_rel
         assert parquet_path.exists(), f'STEP3_DAILY_PARQUET_MISSING: {parquet_path}'
+        assert contract.get('formal_evidence_format', 'parquet') == 'parquet', 'STEP3_DAILY_IO_CONTRACT_MISSING: daily_io_contract formal_evidence_format must be parquet'
+        assert contract.get('parquet_required_for_performance', True) is not False, 'STEP3_DAILY_IO_CONTRACT_MISSING: parquet formal evidence must be required for performance'
+        validate_sort_contract(contract.get('sort_contract') or local_inputs.get('sort_contract') or {})
         expected_audit_path = 'csv' if policy == 'full_csv' else ('csv_sample' if policy == 'sample_csv' else 'none')
         assert contract.get('performance_path') == 'parquet' and contract.get('audit_path') == expected_audit_path, 'STEP3_DAILY_IO_CONTRACT_MISSING: daily_io_contract path roles invalid'
 
@@ -69,6 +87,7 @@ def validate_daily_io_contract(local_inputs: dict, *, require_full_parity: bool 
             assert not daily_csv_rel and not daily_csv_sample_rel, 'STEP3_DAILY_NO_CSV_PATH_DECLARED: no_csv must not claim local_input_paths CSV audit paths'
             assert not contract.get('csv_path') and not contract.get('csv_sample_path'), 'STEP3_DAILY_NO_CSV_PATH_DECLARED: no_csv must not claim daily_io_contract CSV paths'
             assert contract.get('full_csv_available') is False, 'STEP3_DAILY_CSV_POLICY_INVALID: no_csv full_csv_available must be false'
+            assert contract.get('full_csv_absent_validated', True) is not False, 'STEP3_DAILY_CSV_POLICY_INVALID: no_csv must validate full CSV absence'
             assert int(contract.get('csv_rows_written') or 0) == 0, 'STEP3_DAILY_CSV_POLICY_INVALID: no_csv csv_rows_written must be 0'
             return
 

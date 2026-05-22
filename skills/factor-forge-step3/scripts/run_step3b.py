@@ -76,6 +76,7 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
 EXECUTABLE_REVISION_SPEC_VERSION = 'factorforge_executable_revision_spec_v1'
+SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 
 
 def utc_now() -> str:
@@ -89,6 +90,12 @@ def resolve_csv_policy(explicit_policy: str | None = None) -> str:
     return policy
 
 
+def resolve_trust_step3a_sort_contract(explicit: bool | None = None) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    return str(os.getenv('FACTORFORGE_TRUST_STEP3A_SORT_CONTRACT') or '').strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
 def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     if len(df) <= max_rows:
         return df.copy()
@@ -97,6 +104,126 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     import pandas as pd
 
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
+
+
+def sort_contract_key_hash(df: pd.DataFrame) -> str:
+    key_frame = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    return hashlib.sha256(key_frame.to_csv(index=False).encode('utf-8')).hexdigest()
+
+
+def sample_keys_sorted(df: pd.DataFrame, *, max_points: int = 2048) -> bool:
+    if df.empty:
+        return True
+    if len(df) <= max_points:
+        sample = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    else:
+        step = max(1, len(df) // max_points)
+        indices = sorted(set([0, len(df) - 1, *range(0, len(df), step)]))
+        sample = df.iloc[indices][['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
+    expected = sample.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    return bool(sample.equals(expected))
+
+
+def global_keys_sorted(df: pd.DataFrame) -> bool:
+    if len(df) <= 1:
+        return True
+    keys = df[['ts_code', 'trade_date']].copy()
+    ts_code = keys['ts_code'].astype(str).reset_index(drop=True)
+    trade_date = normalize_trade_date_series(keys['trade_date']).dt.strftime('%Y%m%d').astype(str).reset_index(drop=True)
+    prev_ts = ts_code.iloc[:-1].reset_index(drop=True)
+    next_ts = ts_code.iloc[1:].reset_index(drop=True)
+    prev_dt = trade_date.iloc[:-1].reset_index(drop=True)
+    next_dt = trade_date.iloc[1:].reset_index(drop=True)
+    ordered = (prev_ts < next_ts) | ((prev_ts == next_ts) & (prev_dt <= next_dt))
+    return bool(ordered.all())
+
+
+def default_normalize_sort_profile(*, contract_present: bool, opt_in_enabled: bool) -> dict:
+    return {
+        'version': 'factorforge_normalize_sort_profile_v1',
+        'sort_contract_present': bool(contract_present),
+        'sort_contract_trusted': False,
+        'opt_in_enabled': bool(opt_in_enabled),
+        'full_sort_skipped': False,
+        'full_sort_skipped_reason': None,
+        'fallback_reason': 'contract_missing' if not contract_present else ('opt_in_disabled' if not opt_in_enabled else None),
+        'sample_sortedness_check': False,
+        'global_sortedness_check': False,
+        'duplicate_key_check': False,
+        'row_count_validated': False,
+        'key_dtype_validated': False,
+        'data_hash_validated': False,
+        'schema_validated': False,
+        'output_key_order_validated': False,
+    }
+
+
+def extract_sort_contract(local_inputs: dict) -> dict:
+    contract = local_inputs.get('sort_contract')
+    if isinstance(contract, dict) and contract:
+        return contract
+    daily_contract = local_inputs.get('daily_io_contract') if isinstance(local_inputs.get('daily_io_contract'), dict) else {}
+    contract = daily_contract.get('sort_contract')
+    return contract if isinstance(contract, dict) else {}
+
+
+def validate_sort_contract_for_skip(
+    *,
+    contract: dict,
+    daily_df: pd.DataFrame,
+    result_df: pd.DataFrame,
+    opt_in_enabled: bool,
+) -> dict:
+    profile = default_normalize_sort_profile(contract_present=bool(contract), opt_in_enabled=opt_in_enabled)
+    if not contract:
+        return profile
+    if not opt_in_enabled:
+        return profile
+    if contract.get('version') != SORT_CONTRACT_VERSION or contract.get('sorted_by') != ['ts_code', 'trade_date']:
+        profile['fallback_reason'] = 'invalid_contract'
+        return profile
+    if int(contract.get('row_count') or -1) != len(daily_df) or len(result_df) != len(daily_df):
+        profile['fallback_reason'] = 'row_count_mismatch'
+        return profile
+    profile['row_count_validated'] = True
+    key_dtype = contract.get('key_dtype') if isinstance(contract.get('key_dtype'), dict) else {}
+    if key_dtype.get('ts_code') != str(daily_df['ts_code'].dtype) or key_dtype.get('trade_date') != str(daily_df['trade_date'].dtype):
+        profile['fallback_reason'] = 'key_dtype_mismatch'
+        return profile
+    profile['key_dtype_validated'] = True
+    schema = contract.get('schema')
+    if isinstance(schema, list) and not {'ts_code', 'trade_date'}.issubset(set(schema)):
+        profile['fallback_reason'] = 'schema_mismatch'
+        return profile
+    profile['schema_validated'] = True
+    if contract.get('data_hash') != sort_contract_key_hash(daily_df):
+        profile['fallback_reason'] = 'data_hash_mismatch'
+        return profile
+    profile['data_hash_validated'] = True
+    daily_duplicate = bool(daily_df[['ts_code', 'trade_date']].duplicated().any())
+    result_duplicate = bool(result_df[['ts_code', 'trade_date']].duplicated().any())
+    if contract.get('duplicate_key_check') is not True or daily_duplicate or result_duplicate:
+        profile['fallback_reason'] = 'duplicate_key_detected'
+        return profile
+    profile['duplicate_key_check'] = True
+    if not global_keys_sorted(daily_df) or not global_keys_sorted(result_df):
+        profile['fallback_reason'] = 'global_sortedness_failed'
+        return profile
+    profile['sample_sortedness_check'] = contract.get('sample_sortedness_check') is True
+    profile['global_sortedness_check'] = True
+    daily_keys = daily_df[['ts_code', 'trade_date']].copy()
+    daily_keys['trade_date'] = normalize_trade_date_series(daily_keys['trade_date']).dt.strftime('%Y%m%d')
+    result_keys = result_df[['ts_code', 'trade_date']].copy()
+    result_keys['trade_date'] = normalize_trade_date_series(result_keys['trade_date']).dt.strftime('%Y%m%d')
+    if not result_keys.astype(str).reset_index(drop=True).equals(daily_keys.astype(str).reset_index(drop=True)):
+        profile['fallback_reason'] = 'output_key_order_mismatch'
+        return profile
+    profile['output_key_order_validated'] = True
+    profile['sort_contract_trusted'] = True
+    profile['full_sort_skipped'] = True
+    profile['full_sort_skipped_reason'] = 'trusted_step3a_sort_contract'
+    profile['fallback_reason'] = None
+    return profile
 
 
 def executable_revision_spec_path(report_id: str) -> Path:
@@ -766,6 +893,7 @@ def generate_first_run_factor_values(
     operator_profile: bool | None = None,
     ts_rank_engine: str | None = None,
     formula_kernel_engine: str | None = None,
+    trust_step3a_sort_contract: bool | None = None,
 ) -> dict:
     """Run only the factor implementation and materialize factor_values.
 
@@ -784,6 +912,7 @@ def generate_first_run_factor_values(
     daily_csv_path = resolve_local_input_path(daily_csv_rel)
     daily_selected_format = 'parquet' if daily_path and daily_path.suffix.lower() == '.parquet' else 'csv'
     csv_policy = resolve_csv_policy(csv_output_policy)
+    trust_sort_contract = resolve_trust_step3a_sort_contract(trust_step3a_sort_contract)
     selected_formula_engine = resolve_formula_engine(formula_engine)
     operator_profile_enabled = resolve_operator_profile(operator_profile)
     try:
@@ -859,13 +988,24 @@ def generate_first_run_factor_values(
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
         result_df = result_df[['ts_code', 'trade_date', signal_col]]
         result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
-        keys = result_df[['ts_code', 'trade_date']]
-        sorted_keys = keys.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-        already_sorted = bool(keys.reset_index(drop=True).equals(sorted_keys))
-        if already_sorted:
+        sort_contract = extract_sort_contract(local_inputs)
+        normalize_sort_profile = validate_sort_contract_for_skip(
+            contract=sort_contract,
+            daily_df=daily_df,
+            result_df=result_df,
+            opt_in_enabled=trust_sort_contract,
+        )
+        if normalize_sort_profile.get('full_sort_skipped') is True:
+            already_sorted = True
             result_df = result_df.reset_index(drop=True)
         else:
-            result_df = result_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+            keys = result_df[['ts_code', 'trade_date']]
+            sorted_keys = keys.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+            already_sorted = bool(keys.reset_index(drop=True).equals(sorted_keys))
+            if already_sorted:
+                result_df = result_df.reset_index(drop=True)
+            else:
+                result_df = result_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
         formula_engine_profile['output_presorted'] = bool(already_sorted or formula_engine_profile.get('output_presorted') is True)
 
     run_dir = RUNS / report_id
@@ -911,13 +1051,28 @@ def generate_first_run_factor_values(
             float(phase_seconds.get('compute_factor') or 0.0) - float(operator_profile_payload.get('total_profiled_seconds') or 0.0),
         )
         formula_engine_profile['operator_profile'] = operator_profile_payload
+    result_columns = list(result_df.columns)
+    sample_schema_parity = None
+    if csv_sample_path:
+        sample_schema_parity = list(pd.read_csv(csv_sample_path, nrows=0).columns) == result_columns
+    elif csv_path:
+        sample_schema_parity = list(pd.read_csv(csv_path, nrows=0).columns) == result_columns
+    full_csv_absent_validated = csv_policy in {'sample_csv', 'no_csv'} and not factor_csv.exists()
     csv_output_profile = {
-        'version': 'factorforge_step3b_csv_output_policy_v1',
+        'version': 'factorforge_csv_output_profile_v1',
+        'formal_evidence_format': 'parquet',
         'csv_output_policy': csv_policy,
+        'factor_parquet_path': str(factor_parquet),
+        'factor_csv_path': str(csv_path) if csv_path else None,
+        'factor_sample_csv_path': str(csv_sample_path) if csv_sample_path else None,
+        'sample_schema_parity': sample_schema_parity,
+        'full_csv_absent_validated': bool(full_csv_absent_validated),
+        'full_csv_absence_reason': f'step3b_{csv_policy}_policy' if csv_policy in {'sample_csv', 'no_csv'} else None,
         'parquet_rows_written': int(len(result_df)),
         'csv_rows_written': int(csv_rows_written),
         'csv_sample_strategy': csv_sample_strategy,
         'full_csv_available': bool(full_csv_available),
+        # Legacy aliases retained for existing Step4/profiler consumers.
         'csv_path': str(csv_path) if csv_path else None,
         'csv_sample_path': str(csv_sample_path) if csv_sample_path else None,
         'write_csv_seconds': float(phase_seconds.get('write_csv') or 0.0),
@@ -962,7 +1117,10 @@ def generate_first_run_factor_values(
             },
             'normalize_sort': {
                 'already_sorted': bool(already_sorted),
+                'full_sort_skipped': bool(normalize_sort_profile.get('full_sort_skipped')),
+                'fallback_reason': normalize_sort_profile.get('fallback_reason'),
             },
+            'normalize_sort_profile': normalize_sort_profile,
             'rows_per_second_compute': float(len(result_df) / phase_seconds['compute_factor']) if phase_seconds.get('compute_factor') else None,
             'formula_engine_profile': formula_engine_profile,
             'output_bytes': {
@@ -1520,6 +1678,7 @@ def main():
     ap.add_argument('--operator-profile', action='store_true', help='Record Formula-IR operator-level timing metadata.')
     ap.add_argument('--ts-rank-engine', help='Experimental ts_rank engine. Defaults to pandas_reference.')
     ap.add_argument('--formula-kernel-engine', help='Formula-IR operator kernel engine. Experimental engines require explicit enable gate.')
+    ap.add_argument('--trust-step3a-sort-contract', action='store_true', help='Experimental opt-in: trust validated Step3A sort contract to skip full normalize_sort sorting.')
     args = ap.parse_args()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
     formula_engine = resolve_formula_engine(args.formula_engine)
@@ -1805,6 +1964,7 @@ def main():
             operator_profile=operator_profile,
             ts_rank_engine=args.ts_rank_engine,
             formula_kernel_engine=args.formula_kernel_engine,
+            trust_step3a_sort_contract=args.trust_step3a_sort_contract if args.trust_step3a_sort_contract else None,
         )
         implementation_plan['first_run_outputs'] = first_run_outputs
         implementation_plan['step4_contract']['runner_entry'] = executable_impl_rel

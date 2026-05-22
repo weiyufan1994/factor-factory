@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,144 @@ import pandas as pd
 
 TRADING_COST_RATE = 0.003
 ANNUALIZATION_DAYS = 252
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    h = hashlib.sha256()
+    with path.open('rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def _shared_context_env_path() -> Path | None:
+    raw = os.getenv('FACTORFORGE_SHARED_EVALUATION_CONTEXT_PATH')
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def _validate_shared_context_identity(report_id: str, context: dict[str, Any]) -> tuple[bool, str | None]:
+    if context.get('version') != 'factorforge_shared_evaluation_context_v1':
+        return False, 'version_mismatch'
+    if context.get('report_id') != report_id:
+        return False, 'report_id_mismatch'
+    fsm_path = FF / 'objects' / 'factor_spec_master' / f'factor_spec_master__{report_id}.json'
+    if fsm_path.exists():
+        factor_id = (_read_json(fsm_path) or {}).get('factor_id')
+        if factor_id is not None and context.get('factor_id') != factor_id:
+            return False, 'factor_id_mismatch'
+    paths = context.get('paths') if isinstance(context.get('paths'), dict) else {}
+    factor_path = FF / 'runs' / report_id / f'factor_values__{report_id}.parquet'
+    daily_path_raw = context.get('daily_input_path')
+    daily_path = Path(daily_path_raw).expanduser() if daily_path_raw else None
+    if not daily_path or not daily_path.exists():
+        return False, 'daily_input_path_missing'
+    if not factor_path.exists():
+        return False, 'factor_values_path_missing'
+    if context.get('factor_values_hash') != _sha256_file(factor_path):
+        return False, 'factor_values_hash_mismatch'
+    if context.get('daily_input_hash') != _sha256_file(daily_path):
+        return False, 'daily_input_hash_mismatch'
+    label_policy = context.get('label_policy') if isinstance(context.get('label_policy'), dict) else {}
+    if label_policy != {'horizon': 'T+1', 'return_type': 'simple', 'price_field': 'close'}:
+        return False, 'label_policy_mismatch'
+    artifacts = context.get('artifacts') if isinstance(context.get('artifacts'), dict) else {}
+    required_artifacts = {
+        'factor_signal': 'factor_signal_parquet',
+        'daily_forward_returns': 'daily_forward_returns_parquet',
+        'merged_signal_return': 'merged_signal_return_parquet',
+    }
+    loaded_artifacts: dict[str, pd.DataFrame] = {}
+    for artifact_name, path_key in required_artifacts.items():
+        raw = paths.get(path_key)
+        if not raw:
+            return False, f'{path_key}_missing'
+        artifact_path = Path(raw).expanduser()
+        if not artifact_path.exists():
+            return False, f'{path_key}_missing'
+        declared = artifacts.get(artifact_name) if isinstance(artifacts.get(artifact_name), dict) else None
+        if not declared:
+            return False, f'{artifact_name}_artifact_contract_missing'
+        if str(artifact_path) != str(Path(str(declared.get('path') or '')).expanduser()):
+            return False, f'{artifact_name}_artifact_path_mismatch'
+        if declared.get('sha256') != _sha256_file(artifact_path):
+            return False, f'{artifact_name}_artifact_hash_mismatch'
+        try:
+            df = pd.read_parquet(artifact_path)
+        except Exception as exc:
+            return False, f'{artifact_name}_artifact_unreadable:{type(exc).__name__}'
+        loaded_artifacts[artifact_name] = df
+        if int(declared.get('row_count') or -1) != int(len(df)):
+            return False, f'{artifact_name}_artifact_row_count_mismatch'
+        if list(declared.get('schema') or []) != [str(col) for col in df.columns]:
+            return False, f'{artifact_name}_artifact_schema_mismatch'
+    signal_col = context.get('signal_column')
+    if not signal_col:
+        return False, 'signal_column_missing'
+    factor_signal_columns = set(loaded_artifacts['factor_signal'].columns)
+    merged_columns = set(loaded_artifacts['merged_signal_return'].columns)
+    daily_forward_columns = set(loaded_artifacts['daily_forward_returns'].columns)
+    required_factor_signal = {'code', 'trade_date', 'datetime', str(signal_col)}
+    required_merged = {'code', 'trade_date', 'datetime', str(signal_col), 'future_return_1d'}
+    required_daily_forward = {'code', 'trade_date', 'datetime', 'future_return_1d'}
+    if not required_factor_signal.issubset(factor_signal_columns):
+        return False, 'factor_signal_schema_mismatch'
+    if not required_merged.issubset(merged_columns):
+        return False, 'merged_signal_return_schema_mismatch'
+    if not required_daily_forward.issubset(daily_forward_columns):
+        return False, 'daily_forward_returns_schema_mismatch'
+    return True, None
+
+
+def _try_load_shared_context(report_id: str, timer: PhaseTimer) -> tuple[pd.DataFrame | None, pd.DataFrame | None, str | None, dict[str, Any]]:
+    context_path = _shared_context_env_path()
+    profile = {
+        'available': bool(context_path),
+        'used': False,
+        'source': None,
+        'identity_validated': False,
+        'fallback_reason': None,
+        'context_path': str(context_path) if context_path else None,
+    }
+    if context_path is None:
+        profile['fallback_reason'] = 'not_configured'
+        return None, None, None, profile
+    if not context_path.exists():
+        profile['fallback_reason'] = 'context_json_missing'
+        return None, None, None, profile
+    try:
+        context = _read_json(context_path)
+        ok, reason = _validate_shared_context_identity(report_id, context)
+        if not ok:
+            profile['fallback_reason'] = reason
+            return None, None, None, profile
+        signal_col = str(context.get('signal_column') or '')
+        paths = context.get('paths') or {}
+        with timer.phase('load_factor_values'):
+            factor_df = pd.read_parquet(paths['factor_signal_parquet'])
+        with timer.phase('load_daily_snapshot'):
+            # Daily input was already transformed into the shared merged table.
+            pass
+        with timer.phase('merge_forward_returns'):
+            merged = pd.read_parquet(paths['merged_signal_return_parquet'])
+        profile.update({
+            'used': True,
+            'source': 'merged_signal_return_parquet',
+            'identity_validated': True,
+            'fallback_reason': None,
+            'daily_forward_returns_path': paths.get('daily_forward_returns_parquet'),
+        })
+        return factor_df, merged, signal_col, profile
+    except Exception as exc:
+        profile['fallback_reason'] = f'{type(exc).__name__}: {exc}'
+        return None, None, None, profile
 
 
 def _load_snapshot_note(report_id: str) -> str | None:
@@ -457,31 +596,40 @@ def _build_quality_warnings(
 
 def run_self_quant_quick(report_id: str) -> dict[str, Any]:
     timer = PhaseTimer()
-    with timer.phase('load_factor_values'):
-        factor_df, signal_col, _factor_id = load_factor_values_with_signal(report_id)
-        factor_values_selected_format = 'parquet'
-        required_columns = ['ts_code', 'trade_date', signal_col]
-        factor_df = factor_df[required_columns].copy()
-        factor_df = factor_df.rename(columns={'ts_code': 'code'}).copy()
-        factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
-    with timer.phase('load_daily_snapshot'):
-        daily_snapshot_path, daily_snapshot_format = resolve_daily_snapshot_path(report_id)
-        daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
-        daily_df = build_forward_return_frame(
-            daily_df.rename(columns={'ts_code': 'code'}),
-            instrument_col='code',
-            date_col='trade_date',
-            price_col='close',
-            horizon=1,
-        )
+    shared_factor_df, shared_merged, shared_signal_col, shared_context_profile = _try_load_shared_context(report_id, timer)
+    if shared_context_profile.get('used') is True and shared_factor_df is not None and shared_merged is not None and shared_signal_col:
+        factor_df = shared_factor_df
+        merged = shared_merged
+        signal_col = shared_signal_col
+        factor_values_selected_format = 'shared_context_factor_signal_parquet'
+        daily_snapshot_path = Path(str(shared_context_profile.get('daily_forward_returns_path')))
+        daily_snapshot_format = 'shared_context_daily_forward_returns_parquet'
+    else:
+        with timer.phase('load_factor_values'):
+            factor_df, signal_col, _factor_id = load_factor_values_with_signal(report_id)
+            factor_values_selected_format = 'parquet'
+            required_columns = ['ts_code', 'trade_date', signal_col]
+            factor_df = factor_df[required_columns].copy()
+            factor_df = factor_df.rename(columns={'ts_code': 'code'}).copy()
+            factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
+        with timer.phase('load_daily_snapshot'):
+            daily_snapshot_path, daily_snapshot_format = resolve_daily_snapshot_path(report_id)
+            daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
+            daily_df = build_forward_return_frame(
+                daily_df.rename(columns={'ts_code': 'code'}),
+                instrument_col='code',
+                date_col='trade_date',
+                price_col='close',
+                horizon=1,
+            )
 
-    with timer.phase('merge_forward_returns'):
-        merged = factor_df[['datetime', 'trade_date', 'code', signal_col]].merge(
-            daily_df[['datetime', 'code', 'future_return_1d']],
-            on=['datetime', 'code'],
-            how='left',
-        )
-        merged = merged.dropna(subset=[signal_col, 'future_return_1d'])
+        with timer.phase('merge_forward_returns'):
+            merged = factor_df[['datetime', 'trade_date', 'code', signal_col]].merge(
+                daily_df[['datetime', 'code', 'future_return_1d']],
+                on=['datetime', 'code'],
+                how='left',
+            )
+            merged = merged.dropna(subset=[signal_col, 'future_return_1d'])
 
     with timer.phase('ic_calculation'):
         rank_ic = merged.groupby('datetime', sort=True).apply(
@@ -599,6 +747,7 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
                 'daily_selected_path': str(daily_snapshot_path),
                 'factor_values_selected_format': factor_values_selected_format,
             },
+            'shared_evaluation_context': shared_context_profile,
         },
         'signal_timing_contract': {
             'version': 'factorforge_signal_timing_contract_v1',

@@ -153,6 +153,9 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
     step4_input_io = run_meta.get('input_io_profile') if isinstance(run_meta.get('input_io_profile'), dict) else {}
     backend_timing_profile = collect_backend_timing_profile(run_meta, factor_run_master)
     backend_timing = collect_backend_timing(factor_run_master, qlib_payload, self_quant_payload)
+    shared_context_meta = run_meta.get('shared_evaluation_context') if isinstance(run_meta.get('shared_evaluation_context'), dict) else {}
+    shared_context_timing = backend_timing_profile.get('shared_evaluation_context') if isinstance(backend_timing_profile.get('shared_evaluation_context'), dict) else {}
+    self_quant_shared_context = ((self_quant_payload.get('performance_profile') or {}).get('shared_evaluation_context') or {})
 
     compute_seconds = as_float(phase.get('compute_factor'))
     normalize_seconds = as_float(phase.get('normalize_sort'))
@@ -280,6 +283,28 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
             'No factor CSV audit file is present as allowed by explicit no_csv policy.',
             {'csv_output_policy': csv_output_policy, 'reason': full_csv_absence_reason},
         ))
+    if shared_context_meta.get('enabled') is True and shared_context_meta.get('built') is True:
+        diagnostics.append(diagnostic(
+            'info',
+            'SHARED_EVALUATION_CONTEXT_BUILT',
+            'Step4 built the opt-in shared evaluation context.',
+            shared_context_meta,
+        ))
+    if self_quant_shared_context.get('used') is True:
+        diagnostics.append(diagnostic(
+            'info',
+            'SHARED_EVALUATION_CONTEXT_USED_SELF_QUANT',
+            'self_quant consumed the shared merged signal-return context.',
+            self_quant_shared_context,
+        ))
+    if shared_context_meta.get('enabled') is True and self_quant_shared_context.get('used') is not True:
+        reason = self_quant_shared_context.get('fallback_reason') or shared_context_meta.get('invalidated_reason')
+        diagnostics.append(diagnostic(
+            'warning' if reason and reason != 'not_configured' else 'info',
+            'SHARED_EVALUATION_CONTEXT_REJECTED' if reason and reason not in {'not_configured', None} else 'SHARED_EVALUATION_CONTEXT_AVAILABLE_UNUSED',
+            'Shared evaluation context was available but not used by self_quant.',
+            {'reason': reason, 'step4': shared_context_meta, 'self_quant': self_quant_shared_context},
+        ))
 
     recommendations: list[str] = []
     codes = {item['code'] for item in diagnostics}
@@ -331,6 +356,11 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
             'input_io_profile': step4_input_io,
             'backend_timing': backend_timing,
             'backend_timing_profile': backend_timing_profile,
+            'shared_evaluation_context': {
+                'step4': shared_context_meta,
+                'backend_timing': shared_context_timing,
+                'self_quant': self_quant_shared_context,
+            },
             'self_quant_seconds': self_quant_seconds,
             'qlib_status': qlib_payload.get('status') or qlib_native_timing.get('status'),
             'qlib_native_attempted': qlib_native_attempted,

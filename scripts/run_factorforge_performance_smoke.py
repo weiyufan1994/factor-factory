@@ -3203,13 +3203,15 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
     }
 
 
-def run_step4_direct(root: Path, report_id: str) -> subprocess.CompletedProcess[str]:
+def run_step4_direct(root: Path, report_id: str, *, extra_args: list[str] | None = None, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop('FACTORFORGE_ROOT', None)
     env['FACTORFORGE_ALLOW_DIRECT_STEP'] = '1'
     env['FACTORFORGE_DEBUG_ROOT'] = str(root)
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
     return subprocess.run(
-        [sys.executable, 'skills/factor-forge-step4/scripts/run_step4.py', '--report-id', report_id],
+        [sys.executable, 'skills/factor-forge-step4/scripts/run_step4.py', '--report-id', report_id, *(extra_args or [])],
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -3648,6 +3650,307 @@ def run_step4_missing_qlib_provider_not_marked_success_case(root: Path) -> dict[
     }
 
 
+def run_step4_shared_evaluation_context_default_path_unchanged_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_SHARED_CONTEXT_DEFAULT'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    proc = run_step4_direct(root, report_id)
+    meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    payload_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload.json'
+    payload = read_json(payload_path) if payload_path.exists() else {}
+    shared_meta = meta.get('shared_evaluation_context') or {}
+    shared_sq = ((payload.get('performance_profile') or {}).get('shared_evaluation_context') or {})
+    context_path = paths['run_dir'] / f'shared_evaluation_context__{report_id}.json'
+    ok = (
+        proc.returncode == 0
+        and context_path.exists() is False
+        and shared_meta.get('enabled') is False
+        and shared_sq.get('used') is not True
+    )
+    return {
+        'case': 'step4_shared_evaluation_context_default_path_unchanged',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'context_exists': context_path.exists(),
+        'shared_context_metadata': shared_meta,
+        'self_quant_shared_context': shared_sq,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_step4_builds_shared_evaluation_context_opt_in_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_SHARED_CONTEXT_BUILD'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    proc = run_step4_direct(root, report_id, extra_args=['--enable-shared-evaluation-context'])
+    meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    shared_meta = meta.get('shared_evaluation_context') or {}
+    context_path = paths['run_dir'] / f'shared_evaluation_context__{report_id}.json'
+    context = read_json(context_path) if context_path.exists() else {}
+    context_paths = context.get('paths') or {}
+    row_counts = context.get('row_counts') or {}
+    required_paths_exist = all(
+        Path(str(context_paths.get(key) or '')).exists()
+        for key in ['factor_signal_parquet', 'daily_forward_returns_parquet', 'merged_signal_return_parquet']
+    )
+    ok = (
+        proc.returncode == 0
+        and context.get('version') == 'factorforge_shared_evaluation_context_v1'
+        and shared_meta.get('enabled') is True
+        and shared_meta.get('built') is True
+        and required_paths_exist
+        and int(row_counts.get('factor_signal') or 0) > 0
+        and int(row_counts.get('daily_forward_returns') or 0) > 0
+        and int(row_counts.get('merged_signal_return') or 0) > 0
+        and bool(context.get('factor_values_hash'))
+        and bool(context.get('daily_input_hash'))
+    )
+    return {
+        'case': 'step4_builds_shared_evaluation_context_opt_in',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'context_path': str(context_path),
+        'context_paths_exist': required_paths_exist,
+        'row_counts': row_counts,
+        'shared_context_metadata': shared_meta,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_self_quant_uses_shared_evaluation_context_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_SELF_QUANT_SHARED_CONTEXT_USED'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    proc = run_step4_direct(root, report_id, extra_args=['--enable-shared-evaluation-context'])
+    payload_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload.json'
+    payload = read_json(payload_path) if payload_path.exists() else {}
+    shared_sq = ((payload.get('performance_profile') or {}).get('shared_evaluation_context') or {})
+    timing = (read_json(paths['run_meta']).get('backend_timing_profile') or {}) if paths['run_meta'].exists() else {}
+    ok = (
+        proc.returncode == 0
+        and shared_sq.get('available') is True
+        and shared_sq.get('used') is True
+        and shared_sq.get('identity_validated') is True
+        and shared_sq.get('source') == 'merged_signal_return_parquet'
+        and ((timing.get('shared_evaluation_context') or {}).get('built') is True)
+    )
+    return {
+        'case': 'self_quant_uses_shared_evaluation_context',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'self_quant_shared_context': shared_sq,
+        'backend_timing_profile': timing,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def _metric_close(a: Any, b: Any, tol: float = 1e-12) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    try:
+        return abs(float(a) - float(b)) <= tol
+    except (TypeError, ValueError):
+        return a == b
+
+
+def run_self_quant_shared_context_parity_with_legacy_path_case(root: Path) -> dict[str, Any]:
+    legacy_id = 'PERF_SMOKE_SELF_QUANT_SHARED_PARITY_LEGACY'
+    shared_id = 'PERF_SMOKE_SELF_QUANT_SHARED_PARITY_SHARED'
+    create_step4_factor_csv_policy_fixture(root, legacy_id, 'sample_csv')
+    create_step4_factor_csv_policy_fixture(root, shared_id, 'sample_csv')
+    legacy_proc = run_step4_direct(root, legacy_id)
+    shared_proc = run_step4_direct(root, shared_id, extra_args=['--enable-shared-evaluation-context'])
+    legacy_payload = read_json(root / 'evaluations' / legacy_id / 'self_quant_analyzer' / 'evaluation_payload.json')
+    shared_payload = read_json(root / 'evaluations' / shared_id / 'self_quant_analyzer' / 'evaluation_payload.json')
+    parity_fields = {
+        'rank_ic_mean': _metric_close((legacy_payload.get('ic_summary') or {}).get('rank_ic_mean'), (shared_payload.get('ic_summary') or {}).get('rank_ic_mean')),
+        'pearson_ic_mean': _metric_close((legacy_payload.get('ic_summary') or {}).get('pearson_ic_mean'), (shared_payload.get('ic_summary') or {}).get('pearson_ic_mean')),
+        'long_side_sharpe': _metric_close((legacy_payload.get('long_side_performance') or {}).get('long_side_sharpe'), (shared_payload.get('long_side_performance') or {}).get('long_side_sharpe')),
+        'merged_rows': (legacy_payload.get('coverage') or {}).get('merged_rows') == (shared_payload.get('coverage') or {}).get('merged_rows'),
+        'date_count': (legacy_payload.get('coverage') or {}).get('date_count') == (shared_payload.get('coverage') or {}).get('date_count'),
+        'ticker_count': (legacy_payload.get('coverage') or {}).get('ticker_count') == (shared_payload.get('coverage') or {}).get('ticker_count'),
+    }
+    shared_sq = ((shared_payload.get('performance_profile') or {}).get('shared_evaluation_context') or {})
+    ok = legacy_proc.returncode == 0 and shared_proc.returncode == 0 and shared_sq.get('used') is True and all(parity_fields.values())
+    return {
+        'case': 'self_quant_shared_context_parity_with_legacy_path',
+        'legacy_report_id': legacy_id,
+        'shared_report_id': shared_id,
+        'legacy_rc': legacy_proc.returncode,
+        'shared_rc': shared_proc.returncode,
+        'parity_fields': parity_fields,
+        'self_quant_shared_context': shared_sq,
+        'ok': bool(ok),
+    }
+
+
+def run_shared_evaluation_context_rejected_on_identity_mismatch_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_SHARED_CONTEXT_IDENTITY_MISMATCH'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    proc = run_step4_direct(root, report_id, extra_args=['--enable-shared-evaluation-context'])
+    context_path = paths['run_dir'] / f'shared_evaluation_context__{report_id}.json'
+    context = read_json(context_path) if context_path.exists() else {}
+    context['factor_values_hash'] = 'bad_hash_for_smoke'
+    write_json(context_path, context)
+    output_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload_identity_mismatch.json'
+    env = os.environ.copy()
+    env['FACTORFORGE_ROOT'] = str(root)
+    env['FACTORFORGE_SHARED_EVALUATION_CONTEXT_PATH'] = str(context_path)
+    sq_proc = subprocess.run(
+        [sys.executable, 'skills/factor-forge-step4/scripts/self_quant_adapter.py', '--report-id', report_id, '--output', str(output_path)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    payload = read_json(output_path) if output_path.exists() else {}
+    shared_sq = ((payload.get('performance_profile') or {}).get('shared_evaluation_context') or {})
+    ok = (
+        proc.returncode == 0
+        and sq_proc.returncode == 0
+        and shared_sq.get('available') is True
+        and shared_sq.get('used') is False
+        and shared_sq.get('fallback_reason') == 'factor_values_hash_mismatch'
+    )
+    return {
+        'case': 'shared_evaluation_context_rejected_on_identity_mismatch',
+        'report_id': report_id,
+        'step4_rc': proc.returncode,
+        'self_quant_rc': sq_proc.returncode,
+        'self_quant_shared_context': shared_sq,
+        'stdout_tail': tail(sq_proc.stdout),
+        'stderr_tail': tail(sq_proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_shared_evaluation_context_rejects_tampered_merged_artifact_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_SHARED_CONTEXT_TAMPERED_MERGED'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    proc = run_step4_direct(root, report_id, extra_args=['--enable-shared-evaluation-context'])
+    context_path = paths['run_dir'] / f'shared_evaluation_context__{report_id}.json'
+    context = read_json(context_path) if context_path.exists() else {}
+    merged_original = Path((context.get('paths') or {}).get('merged_signal_return_parquet') or '')
+    tampered_path = paths['run_dir'] / f'merged_signal_return_tampered__{report_id}.parquet'
+    if merged_original.exists():
+        tampered = pd.read_parquet(merged_original)
+        if 'future_return_1d' in tampered.columns:
+            tampered['future_return_1d'] = 999.0
+        tampered.to_parquet(tampered_path, index=False)
+    context.setdefault('paths', {})['merged_signal_return_parquet'] = str(tampered_path)
+    write_json(context_path, context)
+    output_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload_tampered_merged.json'
+    env = os.environ.copy()
+    env['FACTORFORGE_ROOT'] = str(root)
+    env['FACTORFORGE_SHARED_EVALUATION_CONTEXT_PATH'] = str(context_path)
+    sq_proc = subprocess.run(
+        [sys.executable, 'skills/factor-forge-step4/scripts/self_quant_adapter.py', '--report-id', report_id, '--output', str(output_path)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    payload = read_json(output_path) if output_path.exists() else {}
+    shared_sq = ((payload.get('performance_profile') or {}).get('shared_evaluation_context') or {})
+    ok = (
+        proc.returncode == 0
+        and sq_proc.returncode == 0
+        and shared_sq.get('available') is True
+        and shared_sq.get('used') is False
+        and shared_sq.get('fallback_reason') in {
+            'merged_signal_return_artifact_path_mismatch',
+            'merged_signal_return_artifact_hash_mismatch',
+        }
+    )
+    return {
+        'case': 'shared_evaluation_context_rejects_tampered_merged_artifact',
+        'report_id': report_id,
+        'step4_rc': proc.returncode,
+        'self_quant_rc': sq_proc.returncode,
+        'tampered_path': str(tampered_path),
+        'self_quant_shared_context': shared_sq,
+        'stdout_tail': tail(sq_proc.stdout),
+        'stderr_tail': tail(sq_proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_qlib_preflight_still_skips_missing_provider_with_shared_context_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_QLIB_SHARED_CONTEXT_PREFLIGHT'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    handoff_path = root / 'objects' / 'handoff' / f'handoff_to_step4__{report_id}.json'
+    handoff = read_json(handoff_path)
+    handoff['evaluation_plan'] = {
+        'backends': [
+            {'name': 'self_quant_analyzer', 'mode': 'quick'},
+            {'name': 'qlib_backtest', 'mode': 'native', 'provider_uri': str(root / 'missing_qlib_provider')},
+        ],
+        'metric_policy': 'extensible',
+    }
+    write_json(handoff_path, handoff)
+    proc = run_step4_direct(root, report_id, extra_args=['--enable-shared-evaluation-context'])
+    qlib_payload = read_json(root / 'evaluations' / report_id / 'qlib_backtest' / 'evaluation_payload.json')
+    preflight = qlib_payload.get('qlib_preflight') or {}
+    shared = qlib_payload.get('shared_evaluation_context') or {}
+    ok = (
+        proc.returncode == 0
+        and qlib_payload.get('status') == 'skipped'
+        and preflight.get('native_attempted') is False
+        and preflight.get('status') == 'skipped_native_missing_provider'
+        and shared.get('available') is True
+        and shared.get('used') is False
+    )
+    return {
+        'case': 'qlib_preflight_still_skips_missing_provider_with_shared_context',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'qlib_preflight': preflight,
+        'qlib_shared_context': shared,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_throughput_profile_reports_shared_evaluation_context_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_THROUGHPUT_SHARED_CONTEXT'
+    create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    step4_proc = run_step4_direct(root, report_id, extra_args=['--enable-shared-evaluation-context'])
+    output = root / 'throughput_profile_shared_context.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_throughput_profile.py',
+        '--root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--output',
+        str(output),
+    ])
+    payload = read_json(output) if output.exists() else {}
+    codes = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    shared = ((payload.get('step4') or {}).get('shared_evaluation_context') or {})
+    ok = (
+        step4_proc.returncode == 0
+        and proc.returncode == 0
+        and 'SHARED_EVALUATION_CONTEXT_BUILT' in codes
+        and 'SHARED_EVALUATION_CONTEXT_USED_SELF_QUANT' in codes
+        and ((shared.get('self_quant') or {}).get('used') is True)
+    )
+    return {
+        'case': 'throughput_profile_reports_shared_evaluation_context',
+        'report_id': report_id,
+        'step4_rc': step4_proc.returncode,
+        'profile_rc': proc.returncode,
+        'diagnostic_codes': sorted(codes),
+        'shared_evaluation_context': shared,
+        'ok': bool(ok),
+    }
+
+
 def run_throughput_profile_reads_backend_timing_profile_case(root: Path) -> dict[str, Any]:
     ctx = ensure_step4_qlib_preflight_fixture(root)
     output = root / 'throughput_profile_backend_timing.json'
@@ -3810,6 +4113,13 @@ def main() -> int:
         run_step4_backend_timing_profile_records_self_quant_case(root),
         run_step4_backend_timing_profile_records_qlib_skipped_case(root),
         run_step4_missing_qlib_provider_not_marked_success_case(root),
+        run_step4_shared_evaluation_context_default_path_unchanged_case(root),
+        run_step4_builds_shared_evaluation_context_opt_in_case(root),
+        run_self_quant_uses_shared_evaluation_context_case(root),
+        run_self_quant_shared_context_parity_with_legacy_path_case(root),
+        run_shared_evaluation_context_rejected_on_identity_mismatch_case(root),
+        run_shared_evaluation_context_rejects_tampered_merged_artifact_case(root),
+        run_qlib_preflight_still_skips_missing_provider_with_shared_context_case(root),
         run_profile_script_readonly_case(root),
         run_throughput_profile_reads_step3b_step4_metadata_case(root),
         run_throughput_profile_flags_large_full_csv_case(root),
@@ -3819,6 +4129,7 @@ def main() -> int:
         run_throughput_profile_reports_csv_policy_case(root),
         run_throughput_profile_reports_sort_contract_case(root),
         run_throughput_profile_reads_backend_timing_profile_case(root),
+        run_throughput_profile_reports_shared_evaluation_context_case(root),
         run_step4_metadata_merge_case(root),
         run_non_tmp_selftest(),
     ]

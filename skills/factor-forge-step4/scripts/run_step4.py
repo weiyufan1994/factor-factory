@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import importlib.util
 import json
@@ -31,7 +32,7 @@ WORKSPACE = FACTORFORGE.parent
 OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
-from factor_factory.data_access import infer_signal_column
+from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -59,6 +60,7 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'input_io_profile',
     'step4_factor_io_profile',
     'step4_factor_csv_policy_observed',
+    'shared_evaluation_context',
     'backend_timing_profile',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
@@ -194,6 +196,30 @@ def file_sizes_for_paths(paths: list[str]) -> dict[str, int]:
         if p.exists():
             result[str(p)] = p.stat().st_size
     return result
+
+
+def sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    h = hashlib.sha256()
+    with path.open('rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def shared_evaluation_context_enabled(cli_enabled: bool) -> bool:
+    raw = os.getenv('FACTORFORGE_ENABLE_SHARED_EVALUATION_CONTEXT', '').strip().lower()
+    return bool(cli_enabled or raw in {'1', 'true', 'yes', 'on'})
+
+
+def artifact_contract(path: Path, df: Any) -> dict[str, Any]:
+    return {
+        'path': str(path),
+        'sha256': sha256_file(path),
+        'row_count': int(len(df)),
+        'schema': [str(col) for col in df.columns],
+    }
 
 
 def ensure_dir(path: Path) -> None:
@@ -425,7 +451,12 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
     }
 
 
-def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], manifest_path_arg: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def write_backend_payloads(
+    report_id: str,
+    backend_runs: list[dict[str, Any]],
+    manifest_path_arg: Path | None = None,
+    shared_context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     # Builtin adapters and custom adapters share one payload contract.
     updated: list[dict[str, Any]] = []
     timing_profile: dict[str, Any] = {
@@ -440,7 +471,12 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
         p = Path(payload_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         backend = item.get('backend')
-        backend_cfg = item.get('backend_config') if isinstance(item.get('backend_config'), dict) else {}
+        backend_cfg = dict(item.get('backend_config')) if isinstance(item.get('backend_config'), dict) else {}
+        shared_context_path = ((shared_context or {}).get('paths') or {}).get('context_json')
+        if shared_context_path:
+            raw_env = dict(backend_cfg.get('env')) if isinstance(backend_cfg.get('env'), dict) else {}
+            raw_env['FACTORFORGE_SHARED_EVALUATION_CONTEXT_PATH'] = str(shared_context_path)
+            backend_cfg['env'] = raw_env
         if backend in {'self_quant_analyzer', 'qlib_backtest'}:
             script_name = 'self_quant_adapter.py' if backend == 'self_quant_analyzer' else 'qlib_backtest_adapter.py'
             adapter = REPO_ROOT / 'skills' / 'factor-forge-step4' / 'scripts' / script_name
@@ -455,6 +491,13 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
                         'mode': backend_cfg.get('mode', 'native'),
                         'summary': {'reason': preflight.get('reason')},
                         'qlib_preflight': preflight,
+                        'shared_evaluation_context': {
+                            'available': bool(shared_context_path),
+                            'used': False,
+                            'source': shared_context_path,
+                            'identity_validated': False,
+                            'fallback_reason': 'qlib_native_skipped_missing_provider',
+                        },
                         'producer': 'step4-qlib-preflight',
                     }
                     p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -559,6 +602,106 @@ def write_backend_payloads(report_id: str, backend_runs: list[dict[str, Any]], m
         }
         updated.append(item)
     return updated, timing_profile
+
+
+def build_shared_evaluation_context(
+    *,
+    report_id: str,
+    factor_id: str | None,
+    implementation_mode_decision: dict[str, Any],
+    base_identity: dict[str, Any],
+    run_dir: Path,
+    factor_df: Any,
+    daily_df: Any,
+    signal_col: str,
+    factor_parquet_path: Path,
+    daily_input_path: Path,
+    target_window: dict[str, Any],
+    effective_target_window: dict[str, Any],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    factor_signal_path = run_dir / f'factor_signal__{report_id}.parquet'
+    daily_forward_returns_path = run_dir / f'daily_forward_returns__{report_id}.parquet'
+    merged_path = run_dir / f'merged_signal_return__{report_id}.parquet'
+    context_path = run_dir / f'shared_evaluation_context__{report_id}.json'
+
+    required_factor_cols = ['ts_code', 'trade_date', signal_col]
+    factor_signal = factor_df[required_factor_cols].copy()
+    factor_signal = factor_signal.rename(columns={'ts_code': 'code'}).copy()
+    factor_signal['datetime'] = normalize_trade_date_series(factor_signal['trade_date'])
+
+    required_daily_cols = ['ts_code', 'trade_date', 'close']
+    missing_daily_cols = [col for col in required_daily_cols if col not in daily_df.columns]
+    if missing_daily_cols:
+        raise ValueError(f'shared evaluation context requires daily columns: {missing_daily_cols}')
+    daily_forward = build_forward_return_frame(
+        daily_df[[col for col in ['ts_code', 'trade_date', 'close', 'pct_chg'] if col in daily_df.columns]].rename(columns={'ts_code': 'code'}),
+        instrument_col='code',
+        date_col='trade_date',
+        price_col='close',
+        horizon=1,
+    )
+    merged = factor_signal[['datetime', 'trade_date', 'code', signal_col]].merge(
+        daily_forward[['datetime', 'code', 'future_return_1d']],
+        on=['datetime', 'code'],
+        how='left',
+    ).dropna(subset=[signal_col, 'future_return_1d'])
+
+    factor_signal.to_parquet(factor_signal_path, index=False)
+    daily_forward.to_parquet(daily_forward_returns_path, index=False)
+    merged.to_parquet(merged_path, index=False)
+
+    identity = {
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'signal_column': signal_col,
+        'factor_values_hash': sha256_file(factor_parquet_path),
+        'daily_input_hash': sha256_file(daily_input_path),
+        'daily_input_path': str(daily_input_path),
+        'label_policy': {
+            'horizon': 'T+1',
+            'return_type': 'simple',
+            'price_field': 'close',
+        },
+        'target_window': target_window,
+        'effective_target_window': effective_target_window,
+    }
+    context = {
+        'version': 'factorforge_shared_evaluation_context_v1',
+        'enabled': True,
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'implementation_mode': (
+            implementation_mode_decision.get('implementation_mode')
+            or implementation_mode_decision.get('mode')
+            or 'unknown'
+        ),
+        'spec_hash': base_identity.get('spec_hash'),
+        'code_hash': base_identity.get('code_hash') or base_identity.get('code_contract_hash'),
+        **identity,
+        'paths': {
+            'context_json': str(context_path),
+            'factor_signal_parquet': str(factor_signal_path),
+            'daily_forward_returns_parquet': str(daily_forward_returns_path),
+            'merged_signal_return_parquet': str(merged_path),
+            'quantile_assignment_parquet': None,
+        },
+        'artifacts': {
+            'factor_signal': artifact_contract(factor_signal_path, factor_signal),
+            'daily_forward_returns': artifact_contract(daily_forward_returns_path, daily_forward),
+            'merged_signal_return': artifact_contract(merged_path, merged),
+        },
+        'row_counts': {
+            'factor_signal': int(len(factor_signal)),
+            'daily_forward_returns': int(len(daily_forward)),
+            'merged_signal_return': int(len(merged)),
+        },
+        'cache_hit': False,
+        'invalidated_reason': None,
+        'build_seconds': time.perf_counter() - started,
+    }
+    write_json(context_path, context)
+    return context
 
 
 def resolve_input_paths(report_id: str, manifest: dict[str, Any] | None = None) -> dict[str, Path]:
@@ -781,6 +924,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--enable-shared-evaluation-context', action='store_true')
     args = ap.parse_args()
     enforce_direct_step_policy(args.manifest)
     manifest: dict[str, Any] | None = load_runtime_manifest(args.manifest) if args.manifest else None
@@ -992,9 +1136,55 @@ def main() -> None:
         coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
         run_status = 'success' if coverage_complete else 'partial'
         failure_reason = None
+        shared_context: dict[str, Any] | None = None
+        shared_context_profile: dict[str, Any] = {
+            'version': 'factorforge_shared_evaluation_context_v1',
+            'enabled': False,
+            'built': False,
+            'used_by_step4': False,
+            'context_path': None,
+            'build_seconds': 0.0,
+            'invalidated_reason': 'not_enabled',
+        }
+        if shared_evaluation_context_enabled(args.enable_shared_evaluation_context):
+            shared_context = build_shared_evaluation_context(
+                report_id=report_id,
+                factor_id=factor_id,
+                implementation_mode_decision=implementation_mode_decision,
+                base_identity=base_identity,
+                run_dir=run_dir,
+                factor_df=result_df,
+                daily_df=daily_df,
+                signal_col=signal_col,
+                factor_parquet_path=parquet_path,
+                daily_input_path=daily_file,
+                target_window=target_window,
+                effective_target_window={'start': effective_target_start, 'end': effective_target_end},
+            )
+            shared_context_profile = {
+                'version': 'factorforge_shared_evaluation_context_v1',
+                'enabled': True,
+                'built': True,
+                'used_by_step4': False,
+                'context_path': ((shared_context.get('paths') or {}).get('context_json')),
+                'build_seconds': shared_context.get('build_seconds'),
+                'invalidated_reason': None,
+                'row_counts': shared_context.get('row_counts'),
+            }
         evaluation_plan = build_evaluation_plan(handoff)
         backend_runs = build_backend_runs_stub(report_id, evaluation_plan, run_status)
-        backend_runs, backend_timing_profile = write_backend_payloads(report_id, backend_runs, manifest_path_arg=manifest_path_arg)
+        backend_runs, backend_timing_profile = write_backend_payloads(
+            report_id,
+            backend_runs,
+            manifest_path_arg=manifest_path_arg,
+            shared_context=shared_context,
+        )
+        backend_timing_profile['shared_evaluation_context'] = {
+            'enabled': bool(shared_context),
+            'built': bool(shared_context),
+            'build_seconds': shared_context_profile.get('build_seconds') if shared_context else 0.0,
+            'context_path': shared_context_profile.get('context_path') if shared_context else None,
+        }
 
         step4_owned_meta = {
             'report_id': report_id,
@@ -1014,6 +1204,7 @@ def main() -> None:
             'input_io_profile': input_io_profile,
             'step4_factor_io_profile': step4_factor_io_profile,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
+            'shared_evaluation_context': shared_context_profile,
             'backend_timing_profile': backend_timing_profile,
         }
         meta = merge_run_metadata(existing_meta, step4_owned_meta)
@@ -1038,6 +1229,7 @@ def main() -> None:
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
             'backend_timing_profile': backend_timing_profile,
+            'shared_evaluation_context': shared_context_profile,
             'implementation_mode_decision': implementation_mode_decision,
             'failure_reason': failure_reason,
             'started_at_utc': start_utc,
@@ -1086,6 +1278,7 @@ def main() -> None:
                 'step4_factor_io_profile': step4_factor_io_profile,
                 'step4_factor_csv_policy_observed': factor_csv_policy_observed,
                 'backend_timing_profile': backend_timing_profile,
+                'shared_evaluation_context': shared_context_profile,
                 'schema_check': {'frozen_schema_execution': True},
                 'consistency_check': {
                     'report_id_consistent': True,
@@ -1153,6 +1346,7 @@ def main() -> None:
             'evaluation_plan': evaluation_plan,
             'evaluation_results': {'backend_runs': backend_runs},
             'backend_timing_profile': backend_timing_profile,
+            'shared_evaluation_context': shared_context_profile,
             'implementation_mode_decision': implementation_mode_decision,
             'key_warnings': warnings,
             'failure_reason': None,

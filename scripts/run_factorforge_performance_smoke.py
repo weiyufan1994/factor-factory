@@ -2600,6 +2600,106 @@ def run_step4_respects_step3b_sample_csv_policy_case(root: Path) -> dict[str, An
     }
 
 
+def run_step4_reuses_step3b_factor_parquet_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_REUSES_STEP3B_FACTOR_PARQUET'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    factor_df = pd.DataFrame([
+        {'ts_code': 'S001', 'trade_date': '20200101', 'smoke_factor': 0.2},
+        {'ts_code': 'S002', 'trade_date': '20200101', 'smoke_factor': 0.8},
+        {'ts_code': 'S001', 'trade_date': '20200102', 'smoke_factor': 0.4},
+        {'ts_code': 'S002', 'trade_date': '20200102', 'smoke_factor': 0.6},
+        {'ts_code': 'S001', 'trade_date': '20200103', 'smoke_factor': 0.3},
+        {'ts_code': 'S002', 'trade_date': '20200103', 'smoke_factor': 0.7},
+    ])
+    factor_df.to_parquet(paths['factor_parquet'], index=False)
+    impl_path = root / 'generated_code' / report_id / 'factor_impl.py'
+    impl_path.write_text(
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    raise RuntimeError('BLOCK_STEP4_RECOMPUTED_FACTOR')\n",
+        encoding='utf-8',
+    )
+    before_parquet_mtime = paths['factor_parquet'].stat().st_mtime_ns
+    proc = run_step4_direct(root, report_id)
+    after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    factor_io_profile = after_meta.get('step4_factor_io_profile') or {}
+    payload_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload.json'
+    payload = read_json(payload_path) if payload_path.exists() else {}
+    input_io_profile = ((payload.get('performance_profile') or {}).get('input_io_profile') or {})
+    ok = (
+        proc.returncode == 0
+        and paths['factor_parquet'].exists()
+        and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime
+        and factor_io_profile.get('source') == 'step3b_factor_parquet'
+        and factor_io_profile.get('recomputed_factor') is False
+        and after_meta.get('row_count') == len(factor_df)
+        and input_io_profile.get('factor_values_selected_format') == 'parquet'
+    )
+    return {
+        'case': 'step4_reuses_step3b_factor_parquet_without_recompute',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'factor_parquet_mtime_unchanged': paths['factor_parquet'].exists() and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime,
+        'step4_factor_io_profile': factor_io_profile,
+        'row_count': after_meta.get('row_count'),
+        'self_quant_input_io_profile': input_io_profile,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_step4_preserves_prior_step4_parquet_provenance_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_PRIOR_STEP4_PARQUET_PROVENANCE'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, None)
+    factor_df = pd.DataFrame([
+        {'ts_code': 'S001', 'trade_date': '20200101', 'smoke_factor': 0.25},
+        {'ts_code': 'S002', 'trade_date': '20200101', 'smoke_factor': 0.75},
+        {'ts_code': 'S001', 'trade_date': '20200102', 'smoke_factor': 0.35},
+        {'ts_code': 'S002', 'trade_date': '20200102', 'smoke_factor': 0.65},
+    ])
+    factor_df.to_parquet(paths['factor_parquet'], index=False)
+    write_json(paths['run_meta'], {
+        'report_id': report_id,
+        'producer': 'step4',
+        'step4_factor_io_profile': {
+            'version': 'factorforge_step4_factor_io_profile_v1',
+            'source': 'step4_recompute_fallback',
+            'recomputed_factor': True,
+            'parquet_written_by_step4': True,
+        },
+    })
+    impl_path = root / 'generated_code' / report_id / 'factor_impl.py'
+    impl_path.write_text(
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    raise RuntimeError('BLOCK_STEP4_RECOMPUTED_FACTOR')\n",
+        encoding='utf-8',
+    )
+    before_parquet_mtime = paths['factor_parquet'].stat().st_mtime_ns
+    proc = run_step4_direct(root, report_id)
+    after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    factor_io_profile = after_meta.get('step4_factor_io_profile') or {}
+    ok = (
+        proc.returncode == 0
+        and paths['factor_parquet'].exists()
+        and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime
+        and factor_io_profile.get('source') == 'prior_step4_parquet'
+        and factor_io_profile.get('recomputed_factor') is False
+        and factor_io_profile.get('upstream_recomputed_factor') is True
+        and after_meta.get('row_count') == len(factor_df)
+    )
+    return {
+        'case': 'step4_preserves_prior_step4_parquet_provenance',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'factor_parquet_mtime_unchanged': paths['factor_parquet'].exists() and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime,
+        'step4_factor_io_profile': factor_io_profile,
+        'row_count': after_meta.get('row_count'),
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
 def run_step4_respects_step3b_no_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP4_NO_CSV_POLICY'
     paths = create_step4_factor_csv_policy_fixture(root, report_id, 'no_csv')
@@ -2772,6 +2872,8 @@ def main() -> int:
         run_self_quant_profile_case(root),
         run_step4_self_quant_prefers_daily_parquet_case(root),
         run_step4_daily_csv_fallback_case(root),
+        run_step4_reuses_step3b_factor_parquet_case(root),
+        run_step4_preserves_prior_step4_parquet_provenance_case(root),
         run_step4_respects_step3b_sample_csv_policy_case(root),
         run_step4_respects_step3b_no_csv_policy_case(root),
         run_step4_legacy_missing_csv_policy_full_csv_compat_case(root),

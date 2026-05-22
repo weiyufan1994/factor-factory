@@ -56,6 +56,7 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'effective_target_window',
     'run_status_candidate',
     'input_io_profile',
+    'step4_factor_io_profile',
     'step4_factor_csv_policy_observed',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
@@ -141,6 +142,35 @@ def step4_factor_csv_policy_from_step3b(existing_meta: dict[str, Any]) -> dict[s
         'factor_csv_write_allowed': bool(allowed),
         'factor_csv_written_by_step4': bool(written),
         'factor_csv_write_skipped_reason': reason,
+    }
+
+
+def classify_existing_factor_parquet_source(existing_meta: dict[str, Any]) -> dict[str, Any]:
+    prior_step4_profile = (existing_meta or {}).get('step4_factor_io_profile') or {}
+    if prior_step4_profile.get('source') == 'step4_recompute_fallback' or prior_step4_profile.get('recomputed_factor') is True:
+        return {
+            'source': 'prior_step4_parquet',
+            'upstream_recomputed_factor': True,
+            'provenance_basis': 'run_metadata.step4_factor_io_profile',
+        }
+
+    performance_profile = (existing_meta or {}).get('performance_profile') or {}
+    producer = (existing_meta or {}).get('producer')
+    if (
+        performance_profile.get('version') == 'factorforge_step3b_performance_profile_v1'
+        or producer in {'step3b', 'step3b_first_run'}
+        or prior_step4_profile.get('source') == 'step3b_factor_parquet'
+    ):
+        return {
+            'source': 'step3b_factor_parquet',
+            'upstream_recomputed_factor': False,
+            'provenance_basis': 'run_metadata.step3b_profile',
+        }
+
+    return {
+        'source': 'existing_factor_parquet_unknown_provenance',
+        'upstream_recomputed_factor': None,
+        'provenance_basis': 'run_metadata.missing_or_unrecognized',
     }
 
 
@@ -683,15 +713,6 @@ def main() -> None:
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
 
-        module = import_module_from_path(impl_path)
-        if not hasattr(module, 'compute_factor'):
-            issues.append({'severity': 'error', 'code': 'COMPUTE_FACTOR_MISSING', 'message': 'implementation module missing compute_factor', 'evidence': {'path': str(impl_path)}})
-            run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'COMPUTE_FACTOR_MISSING', 'implementation_import', start_utc)
-            write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
-            write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
-            write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
-            return
-
         # Frozen-schema execution: do not fabricate external data access. If no normalized local input snapshots
         # are provided by Step 3A, Step 4 fails explicitly rather than pretending to have executed.
         local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
@@ -731,6 +752,14 @@ def main() -> None:
                 return pd.read_parquet(p)
             return pd.read_csv(p)
 
+        parquet_path = run_dir / f'factor_values__{report_id}.parquet'
+        csv_path = run_dir / f'factor_values__{report_id}.csv'
+        sample_csv_path = run_dir / f'factor_values_sample__{report_id}.csv'
+        meta_path = run_dir / f'run_metadata__{report_id}.json'
+        existing_meta = load_json(meta_path) if meta_path.exists() else {}
+        factor_csv_policy_observed = step4_factor_csv_policy_from_step3b(existing_meta)
+        parquet_existed_before_step4 = parquet_path.exists()
+
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
         input_io_profile = {
@@ -739,7 +768,37 @@ def main() -> None:
             'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
             'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
         }
-        result_df = compute_factor_with_contract(module, daily_df, minute_df)
+        if parquet_existed_before_step4:
+            result_df = read_df(parquet_path)
+            factor_parquet_source = classify_existing_factor_parquet_source(existing_meta)
+            step4_factor_io_profile = {
+                'version': 'factorforge_step4_factor_io_profile_v1',
+                **factor_parquet_source,
+                'selected_factor_format': 'parquet',
+                'selected_factor_path': str(parquet_path),
+                'recomputed_factor': False,
+                'parquet_existed_before_step4': True,
+                'parquet_written_by_step4': False,
+            }
+        else:
+            module = import_module_from_path(impl_path)
+            if not hasattr(module, 'compute_factor'):
+                issues.append({'severity': 'error', 'code': 'COMPUTE_FACTOR_MISSING', 'message': 'implementation module missing compute_factor', 'evidence': {'path': str(impl_path)}})
+                run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'COMPUTE_FACTOR_MISSING', 'implementation_import', start_utc)
+                write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
+                write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
+                write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
+                return
+            result_df = compute_factor_with_contract(module, daily_df, minute_df)
+            step4_factor_io_profile = {
+                'version': 'factorforge_step4_factor_io_profile_v1',
+                'source': 'step4_recompute_fallback',
+                'selected_factor_format': 'computed',
+                'selected_factor_path': str(parquet_path),
+                'recomputed_factor': True,
+                'parquet_existed_before_step4': False,
+                'parquet_written_by_step4': True,
+            }
 
         if result_df is None or len(result_df) == 0:
             issues.append({'severity': 'error', 'code': 'EMPTY_MAIN_RESULT', 'message': 'main result not materially generated', 'evidence': {'rows': 0}})
@@ -749,18 +808,19 @@ def main() -> None:
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
 
-        ensure_dir(run_dir)
-        parquet_path = run_dir / f'factor_values__{report_id}.parquet'
-        csv_path = run_dir / f'factor_values__{report_id}.csv'
-        sample_csv_path = run_dir / f'factor_values_sample__{report_id}.csv'
-        meta_path = run_dir / f'run_metadata__{report_id}.json'
-        existing_meta = load_json(meta_path) if meta_path.exists() else {}
-        factor_csv_policy_observed = step4_factor_csv_policy_from_step3b(existing_meta)
-
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
-        result_df.to_parquet(parquet_path, index=False)
-        if factor_csv_policy_observed.get('factor_csv_write_allowed'):
+        if not parquet_existed_before_step4:
+            result_df.to_parquet(parquet_path, index=False)
+        if factor_csv_policy_observed.get('factor_csv_write_allowed') and not csv_path.exists():
             result_df.to_csv(csv_path, index=False)
+            step4_factor_io_profile['csv_written_by_step4'] = True
+        else:
+            step4_factor_io_profile['csv_written_by_step4'] = False
+        factor_csv_policy_observed['factor_csv_written_by_step4'] = bool(
+            step4_factor_io_profile['csv_written_by_step4']
+        )
+        if factor_csv_policy_observed.get('factor_csv_write_allowed') and not step4_factor_io_profile['csv_written_by_step4']:
+            factor_csv_policy_observed['factor_csv_write_skipped_reason'] = 'step3b_csv_already_available'
 
         row_count = int(len(result_df))
         date_count = int(result_df['trade_date'].nunique()) if 'trade_date' in result_df.columns else 0
@@ -805,6 +865,7 @@ def main() -> None:
             'effective_target_window': {'start': effective_target_start, 'end': effective_target_end},
             'run_status_candidate': run_status,
             'input_io_profile': input_io_profile,
+            'step4_factor_io_profile': step4_factor_io_profile,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
         }
         meta = merge_run_metadata(existing_meta, step4_owned_meta)
@@ -873,6 +934,7 @@ def main() -> None:
             'input_validation': {
                 'exists_check': {k: v.exists() for k, v in input_paths.items()},
                 'input_io_profile': input_io_profile,
+                'step4_factor_io_profile': step4_factor_io_profile,
                 'step4_factor_csv_policy_observed': factor_csv_policy_observed,
                 'schema_check': {'frozen_schema_execution': True},
                 'consistency_check': {

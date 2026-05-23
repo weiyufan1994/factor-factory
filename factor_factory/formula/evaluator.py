@@ -252,9 +252,15 @@ def _eval_cached(
         elif op == 'max':
             result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
         elif op == 'argmin':
-            result = ts_argmin(args[0], _window(args[1]), frame)
+            if (formula_kernel_config or {}).get('experimental_enabled'):
+                result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
+            else:
+                result = ts_argmin(args[0], _window(args[1]), frame)
         elif op == 'argmax':
-            result = ts_argmax(args[0], _window(args[1]), frame)
+            if (formula_kernel_config or {}).get('experimental_enabled'):
+                result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
+            else:
+                result = ts_argmax(args[0], _window(args[1]), frame)
         elif op == 'scale':
             result = cs_scale(args[0], frame)
         elif op == 'plus':

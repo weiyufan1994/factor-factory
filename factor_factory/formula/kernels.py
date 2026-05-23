@@ -31,6 +31,8 @@ NUMPY_ROLLING_SUPPORTED_OPERATORS = {
     'delta',
     'delay',
     'ts_rank',
+    'argmin',
+    'argmax',
 }
 
 
@@ -199,6 +201,35 @@ def _numpy_rolling(series: pd.Series, window: int, frame: pd.DataFrame, op: str)
     return pd.Series(result, index=series.index, name=series.name)
 
 
+def _rolling_arg_numpy_one(values: np.ndarray, window: int, op: str) -> np.ndarray:
+    out = np.full(len(values), np.nan, dtype='float64')
+    if window <= 0 or len(values) < window:
+        return out
+    windows = np.lib.stride_tricks.sliding_window_view(values, window_shape=window)
+    valid = ~np.isnan(windows).any(axis=1)
+    if not valid.any():
+        return out
+    valid_windows = windows[valid]
+    if op == 'argmin':
+        raw = np.argmin(valid_windows, axis=1)
+    elif op == 'argmax':
+        raw = np.argmax(valid_windows, axis=1)
+    else:
+        raise ValueError(f'unsupported numpy arg op: {op}')
+    out[np.flatnonzero(valid) + window - 1] = raw.astype('float64', copy=False) + 1.0
+    return out
+
+
+def _numpy_arg(series: pd.Series, window: int, frame: pd.DataFrame, op: str) -> pd.Series:
+    values = pd.to_numeric(series, errors='coerce').to_numpy(dtype='float64', copy=False)
+    result = np.full(len(values), np.nan, dtype='float64')
+    for positions in _group_positions(frame):
+        if len(positions) == 0:
+            continue
+        result[positions] = _rolling_arg_numpy_one(values[positions], window, op)
+    return pd.Series(result, index=series.index, name=series.name)
+
+
 def _numpy_delta(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
     values = pd.to_numeric(series, errors='coerce').to_numpy(dtype='float64', copy=False)
     result = np.full(len(values), np.nan, dtype='float64')
@@ -241,6 +272,14 @@ def _pandas_operator(op: str, args: list[Any], window: int, frame: pd.DataFrame)
         return series.groupby(frame['ts_code'], sort=False).shift(window)
     if op == 'ts_rank':
         return ts_rank_reference(series, window, frame)
+    if op == 'argmin':
+        return series.groupby(frame['ts_code'], sort=False).transform(
+            lambda s: s.rolling(window, min_periods=window).apply(lambda values: float(np.argmin(values)) + 1.0, raw=True)
+        )
+    if op == 'argmax':
+        return series.groupby(frame['ts_code'], sort=False).transform(
+            lambda s: s.rolling(window, min_periods=window).apply(lambda values: float(np.argmax(values)) + 1.0, raw=True)
+        )
     raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_KERNEL_OPERATOR:{op}')
 
 
@@ -274,6 +313,9 @@ def apply_kernel_operator(
                 optimized = True
             elif op == 'ts_rank':
                 result = ts_rank_fast_numpy(args[0], window, frame, stats=None)
+                optimized = True
+            elif op in {'argmin', 'argmax'}:
+                result = _numpy_arg(args[0], window, frame, op)
                 optimized = True
             else:
                 fallback_reason = f'unsupported_operator:{op}'

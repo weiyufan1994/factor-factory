@@ -143,6 +143,7 @@ def run_py_compile() -> dict[str, Any]:
         'factor_factory/formula/profiling.py',
         'factor_factory/formula/polars_evaluator.py',
         'factor_factory/formula/ts_rank_candidates.py',
+        'factor_factory/formula/operator_candidate_benchmarks.py',
         'factor_factory/formula/kernels.py',
         'factor_factory/data_access/__init__.py',
         'factor_factory/data_access/step4.py',
@@ -153,6 +154,8 @@ def run_py_compile() -> dict[str, Any]:
         'skills/factor-forge-step4/scripts/self_quant_adapter.py',
         'skills/factor-forge-step4/scripts/validate_step4.py',
         'scripts/run_factorforge_performance_profile.py',
+        'scripts/run_factorforge_operator_kernel_inventory.py',
+        'scripts/run_factorforge_operator_candidate_benchmark.py',
         'scripts/run_factorforge_throughput_profile.py',
         'scripts/run_ts_rank_candidate_benchmark.py',
         'scripts/run_factorforge_performance_smoke.py',
@@ -262,6 +265,14 @@ def sort_contract_key_hash(df: pd.DataFrame) -> str:
     key_frame = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
     payload = key_frame.to_csv(index=False).encode('utf-8')
     return hashlib.sha256(payload).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def attach_sort_contract(local_inputs: dict[str, Any], df: pd.DataFrame, *, mutate: str | None = None) -> dict[str, Any]:
@@ -2150,6 +2161,67 @@ def run_formula_kernel_ts_rank_candidate_parity_case() -> dict[str, Any]:
     return {'case': 'formula_kernel_ts_rank_candidate_parity', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
 
 
+def run_formula_kernel_argmin_argmax_parity_case() -> dict[str, Any]:
+    frame = build_kernel_formula_frame()
+    formula_ir = parse_formula('argmin(close, 4) + argmax(volume, 4)', available_columns=list(frame.columns), raise_on_error=True)
+    reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+        'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': None,
+    }):
+        kernel_config = resolve_formula_kernel_engine()
+        candidate, profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=kernel_config,
+        )
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-12)
+    kernel_profile = profile.get('kernel_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+        and int((by_operator.get('argmin') or {}).get('optimized_call_count') or 0) >= 1
+        and int((by_operator.get('argmax') or {}).get('optimized_call_count') or 0) >= 1
+        and kernel_profile.get('safe_to_make_default') is False
+    )
+    return {'case': 'formula_kernel_argmin_argmax_parity', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
+
+
+def run_formula_kernel_argmin_argmax_default_path_unchanged_case() -> dict[str, Any]:
+    frame = build_kernel_formula_frame()
+    formula_ir = parse_formula('argmin(close, 4) + argmax(volume, 4)', available_columns=list(frame.columns), raise_on_error=True)
+    reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': None,
+    }):
+        kernel_config = resolve_formula_kernel_engine()
+        candidate, profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=kernel_config,
+        )
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-12)
+    kernel_profile = profile.get('kernel_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+        and kernel_profile.get('selected_engine') == 'pandas_optimized'
+        and kernel_profile.get('experimental_enabled') is False
+        and int((by_operator.get('argmin') or {}).get('optimized_call_count') or 0) == 0
+        and int((by_operator.get('argmax') or {}).get('optimized_call_count') or 0) == 0
+    )
+    return {'case': 'formula_kernel_argmin_argmax_default_path_unchanged', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
+
+
 def run_formula_kernel_parity_failure_blocks_case(root: Path) -> dict[str, Any]:
     result = run_step3b_formula_kernel_case(
         root,
@@ -2163,6 +2235,21 @@ def run_formula_kernel_parity_failure_blocks_case(root: Path) -> dict[str, Any]:
     )
     token_present = 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED' in str(result.get('error') or '')
     return {'case': 'formula_kernel_parity_failure_blocks', 'rc': result.get('rc'), 'token_present': token_present, 'ok': bool(result.get('rc') == 1 and token_present)}
+
+
+def run_formula_kernel_argmin_argmax_parity_failure_blocks_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_formula_kernel_case(
+        root,
+        'PERF_SMOKE_FORMULA_KERNEL_ARGMIN_ARGMAX_PARITY_FAIL',
+        formula='argmin(close, 4) + argmax(volume, 4)',
+        env={
+            'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+            'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+            'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': '1',
+        },
+    )
+    token_present = 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED' in str(result.get('error') or '')
+    return {'case': 'formula_kernel_argmin_argmax_parity_failure_blocks', 'rc': result.get('rc'), 'token_present': token_present, 'ok': bool(result.get('rc') == 1 and token_present)}
 
 
 def run_formula_kernel_runtime_guard_blocks_case(root: Path) -> dict[str, Any]:
@@ -2245,6 +2332,35 @@ def run_step3b_formula_kernel_metadata_present_case(root: Path) -> dict[str, Any
         and kernel_profile.get('safe_to_make_default') is False
     )
     return {'case': 'step3b_formula_kernel_metadata_present', 'kernel_profile': kernel_profile, 'ok': ok}
+
+
+def run_step3b_formula_kernel_argmin_argmax_metadata_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_formula_kernel_case(
+        root,
+        'PERF_SMOKE_STEP3B_FORMULA_KERNEL_ARGMIN_ARGMAX_METADATA',
+        formula='argmin(close, 4) + argmax(volume, 4)',
+        env={
+            'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+            'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+            'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': None,
+        },
+    )
+    engine_profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('formula_engine_profile') or {})
+    kernel_profile = engine_profile.get('kernel_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        result.get('rc') == 0
+        and kernel_profile.get('version') == 'factorforge_formula_kernel_profile_v1'
+        and kernel_profile.get('selected_engine') == 'numpy_rolling_experimental'
+        and kernel_profile.get('experimental_enabled') is True
+        and kernel_profile.get('parity_checked') is True
+        and kernel_profile.get('parity_nan_mask_equal') is True
+        and kernel_profile.get('parity_key_order_equal') is True
+        and kernel_profile.get('safe_to_make_default') is False
+        and int((by_operator.get('argmin') or {}).get('optimized_call_count') or 0) >= 1
+        and int((by_operator.get('argmax') or {}).get('optimized_call_count') or 0) >= 1
+    )
+    return {'case': 'step3b_formula_kernel_argmin_argmax_metadata', 'rc': result.get('rc'), 'kernel_profile': kernel_profile, 'ok': ok}
 
 
 def run_step3b_formula_engine_profile_case(root: Path) -> dict[str, Any]:
@@ -2921,6 +3037,299 @@ def run_throughput_profile_reports_sort_contract_case(root: Path) -> dict[str, A
         'rc': proc.returncode,
         'normalize_sort_profile': profile,
         'diagnostic_codes': sorted(codes),
+        'ok': bool(ok),
+    }
+
+
+def _run_operator_kernel_inventory(root: Path, name: str = 'operator_kernel_inventory.json') -> tuple[subprocess.CompletedProcess[str], dict[str, Any], Path]:
+    output = root / name
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_operator_kernel_inventory.py',
+        '--output',
+        str(output),
+    ])
+    payload = read_json(output) if output.exists() else {}
+    return proc, payload, output
+
+
+def run_operator_kernel_inventory_contract_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_kernel_inventory(root, 'operator_kernel_inventory_contract.json')
+    diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    operators = {item.get('operator') for item in payload.get('operator_inventory', []) if isinstance(item, dict)}
+    required_ops = {'ts_rank', 'ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov'}
+    ok = (
+        proc.returncode == 0
+        and output.exists()
+        and payload.get('version') == 'factorforge_operator_kernel_inventory_v1'
+        and payload.get('read_only') is True
+        and ((payload.get('current_execution_model') or {}).get('step3b_factor_values_use_qlib_native') is False)
+        and 'QLIB_NOT_FORMAL_OPERATOR_ENGINE' in diagnostics
+        and required_ops.issubset(operators)
+        and payload.get('canonical_pollution') is False
+    )
+    return {
+        'case': 'operator_kernel_inventory_contract',
+        'rc': proc.returncode,
+        'output': str(output),
+        'diagnostic_codes': sorted(diagnostics),
+        'operators_present': sorted(required_ops & operators),
+        'ok': bool(ok),
+    }
+
+
+def run_operator_kernel_inventory_flags_hotspots_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_kernel_inventory(root, 'operator_kernel_inventory_hotspots.json')
+    by_op = {
+        item.get('operator'): item
+        for item in payload.get('operator_inventory', [])
+        if isinstance(item, dict)
+    }
+    diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    required_high = ['ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov', 'ts_rank']
+    high_ok = all((by_op.get(op) or {}).get('performance_risk') == 'high' for op in required_high)
+    ok = (
+        proc.returncode == 0
+        and output.exists()
+        and high_ok
+        and 'OPERATOR_KERNEL_HOTSPOT_ROLLING_APPLY' in diagnostics
+        and 'OPERATOR_KERNEL_HOTSPOT_GROUPBY_APPLY_CORR_COV' in diagnostics
+    )
+    return {
+        'case': 'operator_kernel_inventory_flags_hotspots',
+        'rc': proc.returncode,
+        'output': str(output),
+        'high_risk': {op: (by_op.get(op) or {}).get('performance_risk') for op in required_high},
+        'diagnostic_codes': sorted(diagnostics),
+        'ok': bool(ok),
+    }
+
+
+def run_operator_kernel_inventory_classifies_talib_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_kernel_inventory(root, 'operator_kernel_inventory_talib.json')
+    diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    talib_probe = ((payload.get('optional_dependency_probe') or {}).get('talib') or {})
+    landscape = {
+        item.get('library'): item
+        for item in payload.get('library_landscape', [])
+        if isinstance(item, dict)
+    }
+    talib_landscape = landscape.get('TA-Lib') or {}
+    ok = (
+        proc.returncode == 0
+        and output.exists()
+        and talib_probe.get('role') == 'factor_indicator_library'
+        and bool(talib_landscape)
+        and 'silent_replacement_of_formula_ir_rolling_semantics' in (talib_landscape.get('not_safe_for') or [])
+        and 'TA_LIB_FACTOR_LIBRARY_CANDIDATE' in diagnostics
+    )
+    return {
+        'case': 'operator_kernel_inventory_classifies_talib_as_factor_library',
+        'rc': proc.returncode,
+        'output': str(output),
+        'talib_probe': talib_probe,
+        'talib_landscape': talib_landscape,
+        'diagnostic_codes': sorted(diagnostics),
+        'ok': bool(ok),
+    }
+
+
+def run_operator_kernel_inventory_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
+    output = REPO_ROOT / 'docs' / f'.tmp_operator_kernel_inventory_should_block_{os.getpid()}.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_operator_kernel_inventory.py',
+        '--output',
+        str(output),
+    ])
+    combined = proc.stdout + proc.stderr
+    ok = (
+        proc.returncode != 0
+        and 'BLOCK_OPERATOR_KERNEL_INVENTORY_NON_TMP_OUTPUT' in combined
+        and not output.exists()
+    )
+    return {
+        'case': 'operator_kernel_inventory_blocks_non_tmp_output_unless_explicit',
+        'rc': proc.returncode,
+        'token_present': 'BLOCK_OPERATOR_KERNEL_INVENTORY_NON_TMP_OUTPUT' in combined,
+        'output_exists': output.exists(),
+        'ok': bool(ok),
+    }
+
+
+def run_operator_kernel_inventory_no_canonical_pollution_case(root: Path) -> dict[str, Any]:
+    before = snapshot_repo_files()
+    proc, payload, output = _run_operator_kernel_inventory(root, 'operator_kernel_inventory_pollution.json')
+    after = snapshot_repo_files()
+    polluted = bool(after - before)
+    ok = proc.returncode == 0 and output.exists() and payload.get('canonical_pollution') is False and not polluted
+    return {
+        'case': 'operator_kernel_inventory_no_canonical_pollution',
+        'rc': proc.returncode,
+        'output': str(output),
+        'inventory_canonical_pollution': payload.get('canonical_pollution'),
+        'repo_canonical_pollution': {'polluted': polluted, 'new_files': sorted(after - before)},
+        'ok': bool(ok),
+    }
+
+
+def _run_operator_candidate_benchmark(root: Path, name: str = 'operator_candidate_benchmark.json') -> tuple[subprocess.CompletedProcess[str], dict[str, Any], Path]:
+    output = root / name
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_operator_candidate_benchmark.py',
+        '--output',
+        str(output),
+        '--windows',
+        '5,10',
+        '--ticker-count',
+        '24',
+        '--days',
+        '60',
+        '--seed',
+        '707',
+        '--include-ts-rank',
+    ])
+    payload = read_json(output) if output.exists() else {}
+    return proc, payload, output
+
+
+def _operator_candidate_results(payload: dict[str, Any], operators: set[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for case in payload.get('cases', []):
+        if not isinstance(case, dict):
+            continue
+        for item in case.get('results', []):
+            if isinstance(item, dict) and item.get('operator') in operators and item.get('candidate') != 'pandas_reference':
+                results.append(item)
+    return results
+
+
+def run_operator_candidate_benchmark_contract_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_contract.json')
+    diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    recommendations = payload.get('recommendations') or []
+    rec_safety_ok = all((rec or {}).get('safe_to_wire_into_step3b') is False for rec in recommendations if isinstance(rec, dict))
+    required_diagnostics = {
+        'OPERATOR_CANDIDATE_BENCHMARK_READ_ONLY',
+        'PRODUCTION_OPERATOR_PATH_UNCHANGED',
+        'ARGMIN_ARGMAX_CANDIDATES_BENCHMARKED',
+        'CORR_COV_CANDIDATES_BENCHMARKED',
+        'TS_RANK_EXISTING_CANDIDATES_INCLUDED',
+    }
+    ok = (
+        proc.returncode == 0
+        and output.exists()
+        and payload.get('version') == 'factorforge_operator_candidate_benchmark_v1'
+        and payload.get('read_only') is True
+        and payload.get('production_semantics_changed') is False
+        and payload.get('canonical_pollution') is False
+        and required_diagnostics.issubset(diagnostics)
+        and {'ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov', 'ts_rank'}.issubset(set(payload.get('operators') or []))
+        and rec_safety_ok
+    )
+    return {
+        'case': 'operator_candidate_benchmark_contract',
+        'rc': proc.returncode,
+        'output': str(output),
+        'diagnostic_codes': sorted(diagnostics),
+        'recommendations_safe_to_wire': rec_safety_ok,
+        'ok': bool(ok),
+    }
+
+
+def run_operator_candidate_benchmark_argmin_argmax_parity_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_argmin_argmax.json')
+    results = _operator_candidate_results(payload, {'ts_argmin', 'ts_argmax'})
+    parity_ok = bool(results) and all(
+        item.get('status') == 'PASS'
+        and item.get('parity_pass') is True
+        and item.get('row_count_equal') is True
+        and item.get('key_order_equal') is True
+        and item.get('nan_mask_equal') is True
+        and float(item.get('max_abs_diff') or 0.0) <= 1e-12
+        and item.get('safe_to_wire_into_step3b') is False
+        for item in results
+    )
+    return {
+        'case': 'operator_candidate_benchmark_argmin_argmax_parity',
+        'rc': proc.returncode,
+        'output': str(output),
+        'candidate_count': len(results),
+        'parity_ok': parity_ok,
+        'ok': bool(proc.returncode == 0 and parity_ok),
+    }
+
+
+def run_operator_candidate_benchmark_corr_cov_parity_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_corr_cov.json')
+    results = _operator_candidate_results(payload, {'rolling_corr', 'rolling_cov'})
+    parity_ok = bool(results) and all(
+        item.get('status') == 'PASS'
+        and item.get('parity_pass') is True
+        and item.get('row_count_equal') is True
+        and item.get('key_order_equal') is True
+        and item.get('nan_mask_equal') is True
+        and float(item.get('max_abs_diff') or 0.0) <= 1e-10
+        and item.get('safe_to_wire_into_step3b') is False
+        for item in results
+    )
+    return {
+        'case': 'operator_candidate_benchmark_corr_cov_parity',
+        'rc': proc.returncode,
+        'output': str(output),
+        'candidate_count': len(results),
+        'parity_ok': parity_ok,
+        'ok': bool(proc.returncode == 0 and parity_ok),
+    }
+
+
+def run_operator_candidate_benchmark_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
+    output = REPO_ROOT / 'docs' / f'.tmp_operator_candidate_benchmark_should_block_{os.getpid()}.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_operator_candidate_benchmark.py',
+        '--output',
+        str(output),
+    ])
+    combined = proc.stdout + proc.stderr
+    ok = (
+        proc.returncode != 0
+        and 'BLOCK_OPERATOR_CANDIDATE_BENCHMARK_NON_TMP_OUTPUT' in combined
+        and not output.exists()
+    )
+    return {
+        'case': 'operator_candidate_benchmark_blocks_non_tmp_output_unless_explicit',
+        'rc': proc.returncode,
+        'token_present': 'BLOCK_OPERATOR_CANDIDATE_BENCHMARK_NON_TMP_OUTPUT' in combined,
+        'output_exists': output.exists(),
+        'ok': bool(ok),
+    }
+
+
+def run_operator_candidate_benchmark_does_not_modify_formula_runtime_case(root: Path) -> dict[str, Any]:
+    guarded_paths = [
+        REPO_ROOT / 'factor_factory' / 'formula' / 'operators.py',
+        REPO_ROOT / 'factor_factory' / 'formula' / 'kernels.py',
+        REPO_ROOT / 'skills' / 'factor-forge-step3' / 'scripts' / 'run_step3b.py',
+        REPO_ROOT / 'skills' / 'factor-forge-step4' / 'scripts' / 'run_step4.py',
+    ]
+    before = {str(path.relative_to(REPO_ROOT)): file_sha256(path) for path in guarded_paths if path.exists()}
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_runtime_guard.json')
+    after = {str(path.relative_to(REPO_ROOT)): file_sha256(path) for path in guarded_paths if path.exists()}
+    ok = (
+        proc.returncode == 0
+        and output.exists()
+        and before == after
+        and payload.get('production_semantics_changed') is False
+        and payload.get('read_only') is True
+        and payload.get('canonical_pollution') is False
+    )
+    return {
+        'case': 'operator_candidate_benchmark_does_not_modify_formula_runtime',
+        'rc': proc.returncode,
+        'output': str(output),
+        'guarded_hashes_unchanged': before == after,
         'ok': bool(ok),
     }
 
@@ -4072,9 +4481,13 @@ def main() -> int:
         run_formula_kernel_rolling_mean_sum_parity_case(),
         run_formula_kernel_rolling_std_parity_case(),
         run_formula_kernel_ts_rank_candidate_parity_case(),
+        run_formula_kernel_argmin_argmax_parity_case(),
+        run_formula_kernel_argmin_argmax_default_path_unchanged_case(),
         run_formula_kernel_parity_failure_blocks_case(root),
+        run_formula_kernel_argmin_argmax_parity_failure_blocks_case(root),
         run_formula_kernel_runtime_guard_blocks_case(root),
         run_step3b_formula_kernel_metadata_present_case(root),
+        run_step3b_formula_kernel_argmin_argmax_metadata_case(root),
         run_step3a_daily_parquet_contract_case(root),
         run_step3_daily_parquet_csv_schema_parity_case(root),
         run_step3_daily_large_schema_mismatch_block_case(root),
@@ -4128,6 +4541,16 @@ def main() -> int:
         run_throughput_profile_blocks_non_tmp_output_case(root),
         run_throughput_profile_reports_csv_policy_case(root),
         run_throughput_profile_reports_sort_contract_case(root),
+        run_operator_kernel_inventory_contract_case(root),
+        run_operator_kernel_inventory_flags_hotspots_case(root),
+        run_operator_kernel_inventory_classifies_talib_case(root),
+        run_operator_kernel_inventory_blocks_non_tmp_output_case(root),
+        run_operator_kernel_inventory_no_canonical_pollution_case(root),
+        run_operator_candidate_benchmark_contract_case(root),
+        run_operator_candidate_benchmark_argmin_argmax_parity_case(root),
+        run_operator_candidate_benchmark_corr_cov_parity_case(root),
+        run_operator_candidate_benchmark_blocks_non_tmp_output_case(root),
+        run_operator_candidate_benchmark_does_not_modify_formula_runtime_case(root),
         run_throughput_profile_reads_backend_timing_profile_case(root),
         run_throughput_profile_reports_shared_evaluation_context_case(root),
         run_step4_metadata_merge_case(root),

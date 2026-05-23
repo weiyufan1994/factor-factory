@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.formula.operators import ts_rank
+from factor_factory.formula.operators import resolve_ts_rank_engine, ts_rank
 from factor_factory.formula.evaluator import evaluate_formula_frame, evaluate_formula_ir, evaluate_formula_ir_optimized
 from factor_factory.formula.fast_rolling import ts_rank_reference
 from factor_factory.formula.parser import parse_formula
@@ -2030,6 +2030,27 @@ def build_kernel_formula_frame() -> pd.DataFrame:
     return pd.DataFrame(rows).iloc[[*range(2, len(rows), 4), *range(0, len(rows), 4), *range(3, len(rows), 4), *range(1, len(rows), 4)]].reset_index(drop=True)
 
 
+def build_ts_rank_edge_frame() -> pd.DataFrame:
+    rows = []
+    dates = pd.bdate_range('2020-01-01', periods=16)
+    for code in ['A', 'B', 'C', 'D']:
+        for idx, dt in enumerate(dates):
+            close = float((idx * 3) % 7)
+            volume = float(100 + idx)
+            if code == 'B' and idx in {4, 5, 6}:
+                close = 3.0
+            if code == 'C' and idx == 8:
+                close = np.nan
+            rows.append({
+                'ts_code': code,
+                'trade_date': dt.strftime('%Y%m%d'),
+                'close': close,
+                'volume': volume,
+            })
+    frame = pd.DataFrame(rows)
+    return frame.iloc[[*range(2, len(frame), 4), *range(0, len(frame), 4), *range(3, len(frame), 4), *range(1, len(frame), 4)]].reset_index(drop=True)
+
+
 def _kernel_formula_profile(formula: str, frame: pd.DataFrame, *, kernel_config: dict | None = None) -> tuple[pd.DataFrame, dict[str, Any]]:
     formula_ir = parse_formula(formula, available_columns=list(frame.columns), raise_on_error=True)
     return evaluate_formula_frame(
@@ -2161,6 +2182,114 @@ def run_formula_kernel_ts_rank_candidate_parity_case() -> dict[str, Any]:
     return {'case': 'formula_kernel_ts_rank_candidate_parity', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
 
 
+def run_formula_kernel_ts_rank_edge_parity_case() -> dict[str, Any]:
+    frame = build_ts_rank_edge_frame()
+    formula_ir = parse_formula('ts_rank(close, 5)', available_columns=list(frame.columns), raise_on_error=True)
+    reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+        'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': None,
+        'FACTORFORGE_TS_RANK_ENGINE': None,
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE': None,
+    }):
+        kernel_config = resolve_formula_kernel_engine()
+        candidate, profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=kernel_config,
+        )
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-12)
+    kernel_profile = profile.get('kernel_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+        and kernel_profile.get('selected_engine') == 'numpy_rolling_experimental'
+        and kernel_profile.get('experimental_enabled') is True
+        and int((by_operator.get('ts_rank') or {}).get('optimized_call_count') or 0) >= 1
+        and kernel_profile.get('safe_to_make_default') is False
+    )
+    return {'case': 'formula_kernel_ts_rank_edge_parity', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
+
+
+def run_formula_kernel_ts_rank_default_path_unchanged_case() -> dict[str, Any]:
+    frame = build_ts_rank_edge_frame()
+    formula_ir = parse_formula('ts_rank(close, 5)', available_columns=list(frame.columns), raise_on_error=True)
+    reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_TS_RANK_ENGINE': None,
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE': None,
+    }):
+        kernel_config = resolve_formula_kernel_engine()
+        candidate, profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=kernel_config,
+        )
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-12)
+    kernel_profile = profile.get('kernel_profile') or {}
+    ts_profile = profile.get('ts_rank_engine_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+        and kernel_profile.get('selected_engine') == 'pandas_optimized'
+        and kernel_profile.get('experimental_enabled') is False
+        and int((by_operator.get('ts_rank') or {}).get('optimized_call_count') or 0) == 0
+        and ts_profile.get('selected_engine') == 'pandas_reference'
+    )
+    return {'case': 'formula_kernel_ts_rank_default_path_unchanged', 'kernel_profile': kernel_profile, 'ts_rank_engine_profile': ts_profile, **parity, 'ok': ok}
+
+
+def run_formula_kernel_ts_rank_engine_gate_coexists_case() -> dict[str, Any]:
+    frame = build_ts_rank_edge_frame()
+    formula_ir = parse_formula('ts_rank(close, 5)', available_columns=list(frame.columns), raise_on_error=True)
+    reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_TS_RANK_ENGINE': 'numpy_sliding_window_experimental',
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE': '1',
+        'FACTORFORGE_EXPERIMENTAL_TS_RANK_MAX_SECONDS': None,
+    }):
+        kernel_config = resolve_formula_kernel_engine()
+        ts_rank_config = resolve_ts_rank_engine()
+        candidate, profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            ts_rank_engine_config=ts_rank_config,
+            formula_kernel_config=kernel_config,
+        )
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-12)
+    kernel_profile = profile.get('kernel_profile') or {}
+    ts_profile = profile.get('ts_rank_engine_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+        and kernel_profile.get('selected_engine') == 'pandas_optimized'
+        and int((by_operator.get('ts_rank') or {}).get('optimized_call_count') or 0) == 0
+        and ts_profile.get('selected_engine') == 'numpy_sliding_window_experimental'
+        and ts_profile.get('experimental_enabled') is True
+    )
+    return {'case': 'formula_kernel_ts_rank_engine_gate_coexists', 'kernel_profile': kernel_profile, 'ts_rank_engine_profile': ts_profile, **parity, 'ok': ok}
+
+
 def run_formula_kernel_argmin_argmax_parity_case() -> dict[str, Any]:
     frame = build_kernel_formula_frame()
     formula_ir = parse_formula('argmin(close, 4) + argmax(volume, 4)', available_columns=list(frame.columns), raise_on_error=True)
@@ -2252,6 +2381,21 @@ def run_formula_kernel_argmin_argmax_parity_failure_blocks_case(root: Path) -> d
     return {'case': 'formula_kernel_argmin_argmax_parity_failure_blocks', 'rc': result.get('rc'), 'token_present': token_present, 'ok': bool(result.get('rc') == 1 and token_present)}
 
 
+def run_formula_kernel_ts_rank_parity_failure_blocks_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_formula_kernel_case(
+        root,
+        'PERF_SMOKE_FORMULA_KERNEL_TS_RANK_PARITY_FAIL',
+        formula='ts_rank(close, 5)',
+        env={
+            'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+            'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+            'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': '1',
+        },
+    )
+    token_present = 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED' in str(result.get('error') or '')
+    return {'case': 'formula_kernel_ts_rank_parity_failure_blocks', 'rc': result.get('rc'), 'token_present': token_present, 'ok': bool(result.get('rc') == 1 and token_present)}
+
+
 def run_formula_kernel_runtime_guard_blocks_case(root: Path) -> dict[str, Any]:
     result = run_step3b_formula_kernel_case(
         root,
@@ -2265,6 +2409,21 @@ def run_formula_kernel_runtime_guard_blocks_case(root: Path) -> dict[str, Any]:
     )
     token_present = 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_RUNTIME_GUARD' in str(result.get('error') or '')
     return {'case': 'formula_kernel_runtime_guard_blocks', 'rc': result.get('rc'), 'token_present': token_present, 'ok': bool(result.get('rc') == 1 and token_present)}
+
+
+def run_formula_kernel_ts_rank_runtime_guard_blocks_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_formula_kernel_case(
+        root,
+        'PERF_SMOKE_FORMULA_KERNEL_TS_RANK_RUNTIME_GUARD',
+        formula='ts_rank(close, 5)',
+        env={
+            'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+            'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+            'FACTORFORGE_EXPERIMENTAL_FORMULA_KERNEL_MAX_SECONDS': '0.000001',
+        },
+    )
+    token_present = 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_RUNTIME_GUARD' in str(result.get('error') or '')
+    return {'case': 'formula_kernel_ts_rank_runtime_guard_blocks', 'rc': result.get('rc'), 'token_present': token_present, 'ok': bool(result.get('rc') == 1 and token_present)}
 
 
 def run_step3b_formula_kernel_case(root: Path, report_id: str, *, formula: str, env: dict[str, str | None], formula_kernel_engine: str | None = None) -> dict[str, Any]:
@@ -2361,6 +2520,36 @@ def run_step3b_formula_kernel_argmin_argmax_metadata_case(root: Path) -> dict[st
         and int((by_operator.get('argmax') or {}).get('optimized_call_count') or 0) >= 1
     )
     return {'case': 'step3b_formula_kernel_argmin_argmax_metadata', 'rc': result.get('rc'), 'kernel_profile': kernel_profile, 'ok': ok}
+
+
+def run_step3b_formula_kernel_ts_rank_metadata_case(root: Path) -> dict[str, Any]:
+    result = run_step3b_formula_kernel_case(
+        root,
+        'PERF_SMOKE_STEP3B_FORMULA_KERNEL_TS_RANK_METADATA',
+        formula='ts_rank(close, 5)',
+        env={
+            'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': '1',
+            'FACTORFORGE_FORMULA_KERNEL_ENGINE': 'numpy_rolling_experimental',
+            'FACTORFORGE_FORMULA_KERNEL_FAULT_INJECTION': None,
+            'FACTORFORGE_TS_RANK_ENGINE': None,
+            'FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE': None,
+        },
+    )
+    engine_profile = (((result.get('metadata') or {}).get('performance_profile') or {}).get('formula_engine_profile') or {})
+    kernel_profile = engine_profile.get('kernel_profile') or {}
+    by_operator = kernel_profile.get('by_operator') or {}
+    ok = bool(
+        result.get('rc') == 0
+        and kernel_profile.get('version') == 'factorforge_formula_kernel_profile_v1'
+        and kernel_profile.get('selected_engine') == 'numpy_rolling_experimental'
+        and kernel_profile.get('experimental_enabled') is True
+        and kernel_profile.get('parity_checked') is True
+        and kernel_profile.get('parity_nan_mask_equal') is True
+        and kernel_profile.get('parity_key_order_equal') is True
+        and kernel_profile.get('safe_to_make_default') is False
+        and int((by_operator.get('ts_rank') or {}).get('optimized_call_count') or 0) >= 1
+    )
+    return {'case': 'step3b_formula_kernel_ts_rank_metadata', 'rc': result.get('rc'), 'kernel_profile': kernel_profile, 'ok': ok}
 
 
 def run_step3b_formula_engine_profile_case(root: Path) -> dict[str, Any]:
@@ -4481,13 +4670,19 @@ def main() -> int:
         run_formula_kernel_rolling_mean_sum_parity_case(),
         run_formula_kernel_rolling_std_parity_case(),
         run_formula_kernel_ts_rank_candidate_parity_case(),
+        run_formula_kernel_ts_rank_edge_parity_case(),
+        run_formula_kernel_ts_rank_default_path_unchanged_case(),
+        run_formula_kernel_ts_rank_engine_gate_coexists_case(),
         run_formula_kernel_argmin_argmax_parity_case(),
         run_formula_kernel_argmin_argmax_default_path_unchanged_case(),
         run_formula_kernel_parity_failure_blocks_case(root),
         run_formula_kernel_argmin_argmax_parity_failure_blocks_case(root),
+        run_formula_kernel_ts_rank_parity_failure_blocks_case(root),
         run_formula_kernel_runtime_guard_blocks_case(root),
+        run_formula_kernel_ts_rank_runtime_guard_blocks_case(root),
         run_step3b_formula_kernel_metadata_present_case(root),
         run_step3b_formula_kernel_argmin_argmax_metadata_case(root),
+        run_step3b_formula_kernel_ts_rank_metadata_case(root),
         run_step3a_daily_parquet_contract_case(root),
         run_step3_daily_parquet_csv_schema_parity_case(root),
         run_step3_daily_large_schema_mismatch_block_case(root),

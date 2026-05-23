@@ -35,6 +35,45 @@ NUMPY_ROLLING_SUPPORTED_OPERATORS = {
     'argmax',
 }
 
+DEFAULT_NUMPY_TS_OPERATORS = {
+    'sum',
+    'mean',
+    'min',
+    'max',
+    'delta',
+    'delay',
+    'argmin',
+    'argmax',
+    'ts_rank',
+}
+
+DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS = {
+    'std',
+    'stddev',
+    'correlation',
+    'corr',
+    'covariance',
+    'rolling_corr',
+    'rolling_cov',
+}
+
+DEFAULT_NUMPY_TS_ROLLBACK_ENV = 'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL'
+
+
+def default_numpy_ts_enabled() -> bool:
+    return os.getenv(DEFAULT_NUMPY_TS_ROLLBACK_ENV) != '1'
+
+
+def default_numpy_ts_profile() -> dict[str, Any]:
+    enabled = default_numpy_ts_enabled()
+    return {
+        'version': 'factorforge_default_numpy_ts_profile_v1',
+        'enabled': bool(enabled),
+        'rollback_env': DEFAULT_NUMPY_TS_ROLLBACK_ENV,
+        'operators': sorted(DEFAULT_NUMPY_TS_OPERATORS),
+        'excluded_operators': sorted(DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS),
+    }
+
 
 def resolve_formula_kernel_engine(explicit_engine: str | None = None) -> dict[str, Any]:
     env_engine = os.getenv('FACTORFORGE_FORMULA_KERNEL_ENGINE')
@@ -103,6 +142,7 @@ def default_kernel_profile(config: dict[str, Any] | None = None) -> dict[str, An
         'runtime_guard_passed': True,
         'blocked_reason': cfg.get('blocked_reason'),
         'safe_to_make_default': False,
+        'default_numpy_ts_profile': default_numpy_ts_profile(),
     }
 
 
@@ -115,6 +155,7 @@ def _profile(stats: dict[str, Any] | None, config: dict[str, Any]) -> dict[str, 
     profile['selection_source'] = config.get('selection_source') or profile.get('selection_source')
     profile['runtime_guard_seconds'] = config.get('runtime_guard_seconds')
     profile['safe_to_make_default'] = False
+    profile['default_numpy_ts_profile'] = default_numpy_ts_profile()
     return profile
 
 
@@ -162,8 +203,8 @@ def _record_call(
 
 
 def _group_positions(frame: pd.DataFrame) -> list[np.ndarray]:
-    codes = frame['ts_code'].to_numpy()
-    return [np.flatnonzero(codes == code) for code in pd.unique(frame['ts_code'])]
+    grouped = frame.groupby('ts_code', sort=False, observed=True).indices
+    return [np.asarray(positions, dtype=np.intp) for positions in grouped.values()]
 
 
 def _rolling_numpy_one(values: np.ndarray, window: int, op: str) -> np.ndarray:
@@ -298,7 +339,30 @@ def apply_kernel_operator(
     optimized = False
     fallback_reason = None
     try:
-        if selected == 'numpy_rolling_experimental':
+        if selected == 'pandas_optimized' and op in DEFAULT_NUMPY_TS_OPERATORS:
+            if default_numpy_ts_enabled():
+                if op in {'sum', 'mean', 'min', 'max'}:
+                    result = _numpy_rolling(args[0], window, frame, op)
+                    optimized = True
+                elif op == 'delta':
+                    result = _numpy_delta(args[0], window, frame)
+                    optimized = True
+                elif op == 'delay':
+                    result = _numpy_delay(args[0], window, frame)
+                    optimized = True
+                elif op == 'ts_rank':
+                    result = ts_rank_fast_numpy(args[0], window, frame, stats=None)
+                    optimized = True
+                elif op in {'argmin', 'argmax'}:
+                    result = _numpy_arg(args[0], window, frame, op)
+                    optimized = True
+                else:
+                    fallback_reason = f'default_numpy_unsupported:{op}'
+                    result = _pandas_operator(op, args, window, frame)
+            else:
+                fallback_reason = 'default_numpy_ts_disabled'
+                result = _pandas_operator(op, args, window, frame)
+        elif selected == 'numpy_rolling_experimental':
             if op not in NUMPY_ROLLING_SUPPORTED_OPERATORS:
                 fallback_reason = f'unsupported_operator:{op}'
                 result = _pandas_operator(op, args, window, frame)

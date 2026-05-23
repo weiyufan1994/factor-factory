@@ -229,7 +229,9 @@ def _eval_cached(
         if op == 'rank':
             result = cs_rank(args[0], frame)
         elif op == 'ts_rank':
-            if formula_kernel_config and (formula_kernel_config.get('selected_engine') or 'pandas_optimized') != 'pandas_optimized':
+            if (ts_rank_engine_config or {}).get('experimental_enabled'):
+                result = ts_rank(args[0], _window(args[1]), frame, stats=stats, engine_config=ts_rank_engine_config)
+            elif formula_kernel_config:
                 result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
             else:
                 result = ts_rank(args[0], _window(args[1]), frame, stats=stats, engine_config=ts_rank_engine_config)
@@ -252,12 +254,12 @@ def _eval_cached(
         elif op == 'max':
             result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
         elif op == 'argmin':
-            if (formula_kernel_config or {}).get('experimental_enabled'):
+            if formula_kernel_config:
                 result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
             else:
                 result = ts_argmin(args[0], _window(args[1]), frame)
         elif op == 'argmax':
-            if (formula_kernel_config or {}).get('experimental_enabled'):
+            if formula_kernel_config:
                 result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
             else:
                 result = ts_argmax(args[0], _window(args[1]), frame)
@@ -305,6 +307,7 @@ def evaluate_formula_ir_optimized(
 ):
     _validate_formula_ir_inputs(formula_ir, frame)
     working, input_presorted = _prepare_optimized_frame(frame)
+    resolved_formula_kernel_config = formula_kernel_config or resolve_formula_kernel_engine()
     cache: dict[str, Any] = {}
     stats: dict[str, Any] = {
         'engine': 'pandas_formula_ir_optimized',
@@ -319,7 +322,7 @@ def evaluate_formula_ir_optimized(
         'ts_rank_fast_path_count': 0,
         'ts_rank_fallback_count': 0,
         'ts_rank_fallback_reasons': [],
-        'kernel_profile': default_kernel_profile(formula_kernel_config or resolve_formula_kernel_engine()),
+        'kernel_profile': default_kernel_profile(resolved_formula_kernel_config),
     }
     profiler = OperatorProfiler(enabled=operator_profile_enabled, engine='pandas_formula_ir_optimized')
     result = _eval_cached(
@@ -329,7 +332,7 @@ def evaluate_formula_ir_optimized(
         stats,
         profiler=profiler,
         ts_rank_engine_config=ts_rank_engine_config,
-        formula_kernel_config=formula_kernel_config,
+        formula_kernel_config=resolved_formula_kernel_config,
     )
     stats['operator_profile'] = profiler.summary()
     if return_profile:

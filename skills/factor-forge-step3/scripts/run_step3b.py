@@ -850,7 +850,7 @@ def _run_formula_engine_with_profile(
     })
     kernel_profile = formula_engine_profile.get('kernel_profile') or default_kernel_profile(formula_kernel_config)
     kernel_profile.update({
-        'parity_checked': bool((formula_kernel_config or {}).get('experimental_enabled')),
+        'parity_checked': bool((formula_kernel_config or {}).get('selected_engine') != 'pandas_reference'),
         'parity_sample_rows': int(parity.get('row_count') or len(sample)),
         'parity_max_abs_diff': float(parity.get('max_abs_diff') or 0.0),
         'parity_nan_mask_equal': parity_fields.get('nan_mask_equal'),

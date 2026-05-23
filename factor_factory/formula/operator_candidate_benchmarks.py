@@ -159,20 +159,47 @@ def compare_series_to_reference(
     row_count_equal = int(len(ref)) == int(len(cand)) == int(len(frame))
     key_order_equal = bool(row_count_equal and ref.index.equals(cand.index))
     nan_mask_equal = bool(ref.isna().equals(cand.isna()))
-    valid = ref.notna() & cand.notna()
-    max_abs_diff = float((ref[valid] - cand[valid]).abs().max()) if int(valid.sum()) else 0.0
+    ref_values = ref.to_numpy(dtype='float64', copy=False)
+    cand_values = cand.to_numpy(dtype='float64', copy=False)
+    ref_finite = np.isfinite(ref_values)
+    cand_finite = np.isfinite(cand_values)
+    valid_values = ref_finite & cand_finite
+    reference_finite_count = int(ref_finite.sum())
+    candidate_finite_count = int(cand_finite.sum())
+    finite_count = int(valid_values.sum())
+    max_abs_diff = float(np.max(np.abs(ref_values[valid_values] - cand_values[valid_values]))) if finite_count else 0.0
+    max_rel_diff = (
+        float(np.max(np.abs(ref_values[valid_values] - cand_values[valid_values]) / np.maximum(np.abs(ref_values[valid_values]), 1e-12)))
+        if finite_count
+        else 0.0
+    )
+    allclose_pass = bool(np.allclose(ref_values, cand_values, rtol=1e-10, atol=tolerance, equal_nan=True))
+    valid = ref_finite & cand_finite
     if int(valid.sum()) >= 2:
-        rank_corr_raw = ref[valid].rank(method='average').corr(cand[valid].rank(method='average'), method='pearson')
+        rank_corr_raw = ref.iloc[np.flatnonzero(valid)].rank(method='average').corr(cand.iloc[np.flatnonzero(valid)].rank(method='average'), method='pearson')
         rank_corr = float(rank_corr_raw) if pd.notna(rank_corr_raw) else None
     else:
         rank_corr = None
+    parity_pass = bool(
+        row_count_equal
+        and key_order_equal
+        and nan_mask_equal
+        and allclose_pass
+        and max_abs_diff <= tolerance
+        and (finite_count == 0 or max_rel_diff <= 1e-8)
+    )
     return {
         'row_count_equal': row_count_equal,
         'key_order_equal': key_order_equal,
         'nan_mask_equal': nan_mask_equal,
+        'finite_count': finite_count,
+        'reference_finite_count': reference_finite_count,
+        'candidate_finite_count': candidate_finite_count,
         'max_abs_diff': max_abs_diff,
+        'max_rel_diff': max_rel_diff,
         'rank_corr': rank_corr,
-        'parity_pass': bool(row_count_equal and key_order_equal and nan_mask_equal and max_abs_diff <= tolerance),
+        'allclose_pass': allclose_pass,
+        'parity_pass': parity_pass,
     }
 
 

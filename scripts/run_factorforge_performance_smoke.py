@@ -3452,7 +3452,13 @@ def run_operator_candidate_benchmark_argmin_argmax_parity_case(root: Path) -> di
 
 def run_operator_candidate_benchmark_corr_cov_parity_case(root: Path) -> dict[str, Any]:
     proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_corr_cov.json')
-    results = _operator_candidate_results(payload, {'rolling_corr', 'rolling_cov'})
+    results: list[dict[str, Any]] = []
+    for case in payload.get('cases', []):
+        if not isinstance(case, dict) or str(case.get('case') or '').startswith('corr_cov_edge_'):
+            continue
+        for item in case.get('results', []):
+            if isinstance(item, dict) and item.get('operator') in {'rolling_corr', 'rolling_cov'} and item.get('candidate') != 'pandas_reference':
+                results.append(item)
     parity_ok = bool(results) and all(
         item.get('status') == 'PASS'
         and item.get('parity_pass') is True
@@ -3470,6 +3476,106 @@ def run_operator_candidate_benchmark_corr_cov_parity_case(root: Path) -> dict[st
         'candidate_count': len(results),
         'parity_ok': parity_ok,
         'ok': bool(proc.returncode == 0 and parity_ok),
+    }
+
+
+def run_operator_candidate_benchmark_corr_cov_semantic_profile_case(root: Path) -> dict[str, Any]:
+    output = root / 'operator_candidate_corr_cov_semantic.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_operator_candidate_benchmark.py',
+        '--output',
+        str(output),
+        '--windows',
+        '3,5,10',
+        '--ticker-count',
+        '24',
+        '--days',
+        '60',
+        '--seed',
+        '907',
+    ])
+    payload = read_json(output) if output.exists() else {}
+    diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    profile = payload.get('corr_cov_semantic_profile') or {}
+    recs = {
+        item.get('operator'): item
+        for item in payload.get('recommendations', [])
+        if isinstance(item, dict) and item.get('operator') in {'rolling_corr', 'rolling_cov'}
+    }
+    ok = (
+        proc.returncode == 0
+        and payload.get('version') == 'factorforge_operator_candidate_benchmark_v1'
+        and profile.get('version') == 'factorforge_corr_cov_semantic_profile_v1'
+        and profile.get('edge_cases_included') is True
+        and 'CORR_COV_EDGE_CASES_INCLUDED' in diagnostics
+        and 'CORR_COV_NOT_WIRED_TO_RUNTIME' in diagnostics
+        and all((rec or {}).get('safe_to_wire_into_step3b') is False for rec in recs.values())
+    )
+    return {
+        'case': 'operator_candidate_benchmark_corr_cov_semantic_profile',
+        'rc': proc.returncode,
+        'output': str(output),
+        'corr_cov_semantic_profile': profile,
+        'diagnostic_codes': sorted(diagnostics),
+        'recommendations': recs,
+        'ok': bool(ok),
+    }
+
+
+def run_operator_candidate_benchmark_corr_cov_edge_parity_case(root: Path) -> dict[str, Any]:
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_corr_cov_edge.json')
+    profile = payload.get('corr_cov_semantic_profile') or {}
+    recommendations = {
+        item.get('operator'): item
+        for item in payload.get('recommendations', [])
+        if isinstance(item, dict) and item.get('operator') in {'rolling_corr', 'rolling_cov'}
+    }
+    edge_results = [
+        item
+        for case in payload.get('cases', [])
+        if str((case or {}).get('case') or '').startswith('corr_cov_edge_')
+        for item in (case.get('results') or [])
+        if isinstance(item, dict) and item.get('operator') in {'rolling_corr', 'rolling_cov'} and item.get('candidate') != 'pandas_reference'
+    ]
+    parity_ok = bool(edge_results) and all(
+        item.get('status') == 'PASS'
+        and item.get('parity_pass') is True
+        and item.get('row_count_equal') is True
+        and item.get('key_order_equal') is True
+        and item.get('nan_mask_equal') is True
+        and item.get('allclose_pass') is True
+        and float(item.get('max_abs_diff') or 0.0) <= 1e-10
+        and (int(item.get('finite_count') or 0) == 0 or float(item.get('max_rel_diff') or 0.0) <= 1e-8)
+        for item in edge_results
+    )
+    case_order_ok = all(
+        (case or {}).get('candidate_matches_reference_index_order') is True
+        for case in payload.get('cases', [])
+        if str((case or {}).get('case') or '').startswith('corr_cov_edge_')
+    )
+    semantic_gate_blocks_wiring = (
+        profile.get('version') == 'factorforge_corr_cov_semantic_profile_v1'
+        and profile.get('edge_cases_included') is True
+        and all((rec or {}).get('safe_to_wire_into_step3b') is False for rec in recommendations.values())
+        and all((rec or {}).get('semantic_profile_gate_passed') is False for rec in recommendations.values())
+        and profile.get('corr_safe_for_opt_in_kernel') is False
+        and profile.get('cov_safe_for_opt_in_kernel') is False
+    )
+    edge_failures_detected = bool(edge_results) and any(item.get('parity_pass') is not True for item in edge_results)
+    conservative_block_ok = bool(semantic_gate_blocks_wiring and edge_failures_detected)
+    return {
+        'case': 'operator_candidate_benchmark_corr_cov_edge_parity',
+        'rc': proc.returncode,
+        'output': str(output),
+        'edge_candidate_count': len(edge_results),
+        'case_order_ok': case_order_ok,
+        'parity_ok': parity_ok,
+        'semantic_gate_blocks_wiring': semantic_gate_blocks_wiring,
+        'edge_failures_detected': edge_failures_detected,
+        'corr_cov_semantic_profile': profile,
+        'recommendations': recommendations,
+        'ok': bool(proc.returncode == 0 and case_order_ok and (parity_ok or conservative_block_ok)),
     }
 
 
@@ -3492,6 +3598,36 @@ def run_operator_candidate_benchmark_blocks_non_tmp_output_case(root: Path) -> d
         'rc': proc.returncode,
         'token_present': 'BLOCK_OPERATOR_CANDIDATE_BENCHMARK_NON_TMP_OUTPUT' in combined,
         'output_exists': output.exists(),
+        'ok': bool(ok),
+    }
+
+
+def run_operator_candidate_benchmark_corr_cov_not_wired_case(root: Path) -> dict[str, Any]:
+    guarded_paths = [
+        REPO_ROOT / 'factor_factory' / 'formula' / 'operators.py',
+        REPO_ROOT / 'factor_factory' / 'formula' / 'kernels.py',
+        REPO_ROOT / 'factor_factory' / 'formula' / 'evaluator.py',
+        REPO_ROOT / 'skills' / 'factor-forge-step3' / 'scripts' / 'run_step3b.py',
+    ]
+    before = {str(path.relative_to(REPO_ROOT)): file_sha256(path) for path in guarded_paths if path.exists()}
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_corr_cov_not_wired.json')
+    after = {str(path.relative_to(REPO_ROOT)): file_sha256(path) for path in guarded_paths if path.exists()}
+    diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
+    ok = (
+        proc.returncode == 0
+        and output.exists()
+        and before == after
+        and 'CORR_COV_NOT_WIRED_TO_RUNTIME' in diagnostics
+        and payload.get('production_semantics_changed') is False
+        and payload.get('read_only') is True
+        and payload.get('canonical_pollution') is False
+    )
+    return {
+        'case': 'operator_candidate_benchmark_corr_cov_not_wired',
+        'rc': proc.returncode,
+        'output': str(output),
+        'guarded_hashes_unchanged': before == after,
+        'diagnostic_codes': sorted(diagnostics),
         'ok': bool(ok),
     }
 
@@ -4744,6 +4880,9 @@ def main() -> int:
         run_operator_candidate_benchmark_contract_case(root),
         run_operator_candidate_benchmark_argmin_argmax_parity_case(root),
         run_operator_candidate_benchmark_corr_cov_parity_case(root),
+        run_operator_candidate_benchmark_corr_cov_semantic_profile_case(root),
+        run_operator_candidate_benchmark_corr_cov_edge_parity_case(root),
+        run_operator_candidate_benchmark_corr_cov_not_wired_case(root),
         run_operator_candidate_benchmark_blocks_non_tmp_output_case(root),
         run_operator_candidate_benchmark_does_not_modify_formula_runtime_case(root),
         run_throughput_profile_reads_backend_timing_profile_case(root),

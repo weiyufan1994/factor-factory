@@ -91,9 +91,10 @@ Optional:
   - Formula-IR execution defaults to pandas optimized with pandas reference as
     the correctness oracle. A reviewed subset of default NumPy time-series
     kernels may run inside this `pandas_optimized` path for `sum`, `mean`,
-    `std`, `stddev`, `min`, `max`, `delta`, `delay`, `argmin`, `argmax`,
-    `ts_rank`, `corr`, `correlation`, and `covariance`; rollback must be
-    available through `FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL=1`. The
+    `min`, `max`, `delta`, `delay`, `argmin`, `argmax`, `ts_rank`, `corr`,
+    `correlation`, and `covariance`; rollback must be available through
+    `FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL=1`, and `std/stddev` remain
+    pandas fallback until separately proven on real large-panel input. The
     experimental Polars backend is
     opt-in only (`FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS=1` or
     `--formula-engine polars_experimental`), must record parity metadata, and

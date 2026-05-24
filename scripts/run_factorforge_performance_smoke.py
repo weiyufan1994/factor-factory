@@ -2082,8 +2082,7 @@ def _kernel_formula_profile(formula: str, frame: pd.DataFrame, *, kernel_config:
 PROMOTED_NUMPY_TS_FORMULA = (
     'sum(close, 4) + mean(volume, 4) + min(close, 4) + max(volume, 4) + '
     'delta(close, 3) + delay(volume, 2) + argmin(close, 4) + argmax(volume, 4) + '
-    'ts_rank(close, 5) + corr(close, volume, 4) + covariance(close, volume, 4) + '
-    'stddev(close, 4)'
+    'ts_rank(close, 5) + corr(close, volume, 4) + covariance(close, volume, 4)'
 )
 
 
@@ -2096,7 +2095,7 @@ def _fallback_count(kernel_profile: dict[str, Any], operator: str) -> int:
 
 
 def _promoted_operator_counts_ok(kernel_profile: dict[str, Any], *, expect_optimized: bool) -> bool:
-    expected = ['sum', 'mean', 'min', 'max', 'delta', 'delay', 'argmin', 'argmax', 'ts_rank', 'correlation', 'covariance', 'stddev']
+    expected = ['sum', 'mean', 'min', 'max', 'delta', 'delay', 'argmin', 'argmax', 'ts_rank', 'correlation', 'covariance']
     if expect_optimized:
         return all(_optimized_count(kernel_profile, op) >= 1 for op in expected)
     return all(_optimized_count(kernel_profile, op) == 0 and _fallback_count(kernel_profile, op) >= 1 for op in expected)
@@ -2551,9 +2550,9 @@ def run_formula_kernel_default_numpy_ts_rollback_env_restores_pandas_case() -> d
     return {'case': 'formula_kernel_default_numpy_ts_rollback_env_restores_pandas', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
 
 
-def run_formula_kernel_default_numpy_ts_std_promoted_case() -> dict[str, Any]:
+def run_formula_kernel_default_numpy_ts_std_excluded_case() -> dict[str, Any]:
     frame = build_kernel_formula_frame()
-    formula_ir = parse_formula('std(close, 4) + stddev(volume, 4)', available_columns=list(frame.columns), raise_on_error=True)
+    formula_ir = parse_formula('std(close, 4)', available_columns=list(frame.columns), raise_on_error=True)
     reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
     with temporary_envs({
         'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
@@ -2572,18 +2571,17 @@ def run_formula_kernel_default_numpy_ts_std_promoted_case() -> dict[str, Any]:
     kernel_profile = profile.get('kernel_profile') or {}
     default_profile = kernel_profile.get('default_numpy_ts_profile') or {}
     by_operator = kernel_profile.get('by_operator') or {}
-    std_bucket = by_operator.get('stddev') or {}
+    std_bucket = by_operator.get('std') or by_operator.get('stddev') or {}
     ok = bool(
         parity.get('row_count_equal') is True
         and parity.get('key_order_equal') is True
         and parity.get('nan_mask_equal') is True
         and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
-        and int(std_bucket.get('optimized_call_count') or 0) >= 2
-        and int(std_bucket.get('fallback_count') or 0) == 0
-        and {'std', 'stddev'}.issubset(set(default_profile.get('operators') or []))
-        and not ({'std', 'stddev'} & set(default_profile.get('excluded_operators') or []))
+        and int(std_bucket.get('optimized_call_count') or 0) == 0
+        and int(std_bucket.get('fallback_count') or 0) >= 1
+        and {'std', 'stddev'}.issubset(set(default_profile.get('excluded_operators') or []))
     )
-    return {'case': 'formula_kernel_default_numpy_ts_std_promoted', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
+    return {'case': 'formula_kernel_default_numpy_ts_std_excluded', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
 
 
 def run_formula_kernel_default_numpy_ts_corr_cov_promoted_case() -> dict[str, Any]:
@@ -4654,7 +4652,7 @@ def run_formula_kernel_benchmark_contract_case(root: Path) -> dict[str, Any]:
     proc, payload, output = _run_formula_kernel_benchmark(root, 'formula_kernel_benchmark_contract.json')
     diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
     cases = {item.get('case'): item for item in payload.get('formula_cases', []) if isinstance(item, dict)}
-    required_cases = {'promoted_ts_mix', 'corr_cov_mix', 'std_promoted_mix'}
+    required_cases = {'promoted_ts_mix', 'corr_cov_mix', 'std_excluded_control'}
     parity_ok = all((cases.get(name) or {}).get('parity_pass') is True for name in required_cases)
     speedup_present = all(float((cases.get(name) or {}).get('speedup_default_vs_rollback') or 0.0) > 0.0 for name in required_cases)
     ok = (
@@ -5889,7 +5887,7 @@ def main() -> int:
         run_formula_kernel_default_numpy_ts_promoted_parity_case(),
         run_formula_kernel_default_numpy_ts_direct_caller_promoted_case(),
         run_formula_kernel_default_numpy_ts_rollback_env_restores_pandas_case(),
-        run_formula_kernel_default_numpy_ts_std_promoted_case(),
+        run_formula_kernel_default_numpy_ts_std_excluded_case(),
         run_formula_kernel_default_numpy_ts_corr_cov_promoted_case(),
         run_formula_kernel_default_numpy_ts_corr_cov_speed_guard_case(),
         run_formula_kernel_corr_cov_single_group_rollback_case(),

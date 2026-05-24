@@ -209,7 +209,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             tolerance=1e-7,
         ),
         run_case(
-            'std_promoted_mix',
+            'std_excluded_control',
             'std(close, 20) + mean(close, 20)',
             frame,
             repeats=args.repeats,

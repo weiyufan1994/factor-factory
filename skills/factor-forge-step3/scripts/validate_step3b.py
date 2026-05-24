@@ -44,6 +44,7 @@ FORBIDDEN_DIRECT_CODE_PATTERNS = [
 ]
 MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
 HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
+HIGH_SPEED_CODE_PROFILE_VERSION = 'factorforge_high_speed_code_profile_v1'
 DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
     'ts_code',
     'trade_date',
@@ -58,6 +59,8 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
     'returns',
     'return',
 ]
+HIGH_SPEED_PREFERRED_BACKENDS = ['numpy', 'polars']
+HIGH_SPEED_AVOID_BY_DEFAULT = ['python_row_loops', 'pandas_groupby_apply', 'pandas_row_apply']
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -475,6 +478,143 @@ def scan_direct_code_ast(text: str) -> None:
         raise AssertionError(f'BLOCK_DIRECT_CODE_LEAKAGE_PATTERN: {hits}')
 
 
+def _attribute_chain(node: ast.AST) -> list[str]:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+    return list(reversed(parts))
+
+
+def _call_has_keyword_value(node: ast.Call, keyword_name: str, expected: object) -> bool:
+    for keyword in node.keywords or []:
+        if keyword.arg != keyword_name:
+            continue
+        value = keyword.value
+        if isinstance(value, ast.Constant) and value.value == expected:
+            return True
+    return False
+
+
+def _is_groupby_apply_call(node: ast.Call) -> bool:
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != 'apply':
+        return False
+    return _receiver_chain_contains_call(node.func.value, 'groupby')
+
+
+def _is_rolling_apply_call(node: ast.Call) -> bool:
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != 'apply':
+        return False
+    return _receiver_chain_contains_call(node.func.value, 'rolling')
+
+
+def _receiver_chain_contains_call(node: ast.AST, call_attr: str) -> bool:
+    current = node
+    while True:
+        if isinstance(current, ast.Subscript):
+            current = current.value
+            continue
+        if isinstance(current, ast.Attribute):
+            current = current.value
+            continue
+        if isinstance(current, ast.Call):
+            func = current.func
+            if isinstance(func, ast.Attribute) and func.attr == call_attr:
+                return True
+            if isinstance(func, ast.Attribute):
+                current = func.value
+                continue
+        return False
+
+
+def _call_uses_name(node: ast.Call, names: set[str]) -> bool:
+    chain = _attribute_chain(node.func)
+    return bool(chain and chain[0] in names)
+
+
+def build_high_speed_code_profile(text: str) -> dict:
+    tree = ast.parse(text)
+    import_aliases: dict[str, str] = {}
+    slow_patterns: list[dict] = []
+    vectorized_markers: list[dict] = []
+    uses_pandas_vectorized = False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split('.')[0]
+                import_aliases[alias.asname or root] = root
+        elif isinstance(node, ast.ImportFrom):
+            module_root = (node.module or '').split('.')[0]
+            for alias in node.names:
+                import_aliases[alias.asname or alias.name] = module_root
+
+    numpy_names = {name for name, root in import_aliases.items() if root == 'numpy'}
+    polars_names = {name for name, root in import_aliases.items() if root == 'polars'}
+    pandas_names = {name for name, root in import_aliases.items() if root == 'pandas'}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                attr = node.func.attr
+                if attr in {'iterrows', 'itertuples'}:
+                    slow_patterns.append({'code': attr, 'line': getattr(node, 'lineno', None)})
+                elif attr == 'apply' and _call_has_keyword_value(node, 'axis', 1):
+                    slow_patterns.append({'code': 'pandas_apply_axis1', 'line': getattr(node, 'lineno', None)})
+                elif _is_groupby_apply_call(node):
+                    slow_patterns.append({'code': 'pandas_groupby_apply', 'line': getattr(node, 'lineno', None)})
+                elif _is_rolling_apply_call(node):
+                    slow_patterns.append({'code': 'pandas_rolling_apply', 'line': getattr(node, 'lineno', None)})
+                elif attr in {'to_numpy', 'rank', 'shift', 'diff', 'rolling', 'transform', 'where', 'clip', 'fillna', 'assign', 'merge'}:
+                    uses_pandas_vectorized = True
+                    vectorized_markers.append({'code': f'pandas_{attr}', 'line': getattr(node, 'lineno', None)})
+            if _call_uses_name(node, numpy_names):
+                vectorized_markers.append({'code': 'numpy_call', 'line': getattr(node, 'lineno', None)})
+            if _call_uses_name(node, polars_names):
+                vectorized_markers.append({'code': 'polars_call', 'line': getattr(node, 'lineno', None)})
+            if isinstance(node.func, ast.Name) and node.func.id == 'range' and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Call) and isinstance(first.func, ast.Name) and first.func.id == 'len':
+                    slow_patterns.append({'code': 'range_len_loop', 'line': getattr(node, 'lineno', None)})
+
+    uses_numpy = bool(numpy_names)
+    uses_polars = bool(polars_names)
+    uses_pandas = bool(pandas_names) or 'pd' in import_aliases
+    vectorized_backend_present = bool(uses_numpy or uses_polars or uses_pandas_vectorized or vectorized_markers)
+    return {
+        'version': HIGH_SPEED_CODE_PROFILE_VERSION,
+        'preferred_backends': HIGH_SPEED_PREFERRED_BACKENDS,
+        'avoid_by_default': HIGH_SPEED_AVOID_BY_DEFAULT,
+        'uses_numpy': uses_numpy,
+        'uses_polars': uses_polars,
+        'uses_pandas': uses_pandas,
+        'uses_pandas_vectorized': bool(uses_pandas_vectorized),
+        'vectorized_backend_present': vectorized_backend_present,
+        'vectorized_markers': vectorized_markers[:20],
+        'slow_patterns': slow_patterns,
+        'requires_justification': bool(slow_patterns),
+    }
+
+
+def assert_high_speed_code_policy(text: str, contract: dict | None = None) -> dict:
+    profile = build_high_speed_code_profile(text)
+    contract = contract if isinstance(contract, dict) else {}
+    policy = contract.get('high_speed_code_policy') if isinstance(contract.get('high_speed_code_policy'), dict) else {}
+    justification = (
+        contract.get('performance_justification')
+        or contract.get('slow_pattern_justification')
+        or policy.get('performance_justification')
+        or policy.get('slow_pattern_justification')
+    )
+    allow_slow = bool(contract.get('allow_slow_patterns') is True or policy.get('allow_slow_patterns') is True)
+    if profile.get('requires_justification') and not (allow_slow and str(justification or '').strip()):
+        raise AssertionError(f'BLOCK_DIRECT_CODE_PERFORMANCE_RISK: {profile}')
+    return profile
+
+
 def import_module_from_path(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, path)
     if spec is None or spec.loader is None:
@@ -570,6 +710,7 @@ def validate_direct_code_mode(
     extra_patterns = list(code_contract.get('forbidden_patterns') or contract.get('forbidden_patterns') or [])
     scan_direct_code_text(text, extra_patterns)
     scan_direct_code_ast(text)
+    assert_high_speed_code_policy(text, code_contract or contract)
     run_direct_code_fixture_smoke(implementation_path, output_schema)
 
 
@@ -605,6 +746,10 @@ def assert_hybrid_custom_source_safe(block: dict) -> None:
         scan_direct_code_ast(source)
     except AssertionError as exc:
         raise AssertionError(f'BLOCK_HYBRID_CUSTOM_BLOCK_LEAKAGE_PATTERN: {exc}') from exc
+    try:
+        assert_high_speed_code_policy(source, block)
+    except AssertionError as exc:
+        raise AssertionError(f'BLOCK_HYBRID_CUSTOM_BLOCK_PERFORMANCE_RISK: {exc}') from exc
 
 
 def assert_hybrid_boundary(boundary: dict, custom_blocks: list[dict]) -> None:

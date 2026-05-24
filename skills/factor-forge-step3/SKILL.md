@@ -247,6 +247,8 @@ Hybrid mode must execute as `operator_subgraph + custom_block`, not as unbounded
 
 Generated hybrid code must expose `compute_operator_subgraph()`, `apply_custom_block()`, and `compute_factor()`, separated by `FACTORFORGE_OPERATOR_SUBGRAPH` and `FACTORFORGE_CUSTOM_BLOCK` markers. Custom blocks may not overwrite protected operator outputs unless the boundary explicitly allows it.
 
+Direct-code and hybrid custom implementations must also satisfy the high-speed code policy. Prefer vectorized NumPy or Polars, with pandas vectorized APIs acceptable for compatibility and reference parity. Python row loops, `DataFrame.apply(axis=1)`, `groupby.apply`, and `rolling.apply` require an explicit `allow_slow_patterns=true` plus a non-empty performance justification in the relevant code contract/custom block; otherwise Step3B must BLOCK with the high-speed profile evidence.
+
 ## Family Plugin Boundary
 
 Family-specific implementations may run only through `factor_factory.factor_families` after Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with structured evidence. Do not trigger a family plugin from `factor_id`, keywords, formula prose, or thesis text. Free-text matches may create a suggestion for human review, not an executable plugin selection.

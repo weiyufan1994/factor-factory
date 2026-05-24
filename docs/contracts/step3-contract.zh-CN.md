@@ -78,6 +78,9 @@ Hybrid mode 是有边界的组合：Formula IR operator subgraph 加上声明过
 
 生成的 hybrid code 必须用 `FACTORFORGE_OPERATOR_SUBGRAPH` 和 `FACTORFORGE_CUSTOM_BLOCK` markers 分隔 operator 和 custom 区域。除非 `allow_operator_output_overwrite=true`，custom block 不得覆盖受保护的 operator output；unsafe 或 unsupported hybrid contract 必须 BLOCK。
 
+## Direct-code 与 custom-block 性能策略
+Step3B 必须为 `direct_code` 实现和 hybrid custom block 生成 `factorforge_high_speed_code_profile_v1`。生成代码应优先使用向量化 NumPy 和/或 Polars；pandas 向量化 API 可作为兼容层或 reference 层。Python row loop、`DataFrame.apply(axis=1)`、`groupby.apply`、`rolling.apply` 属于慢模式风险，必须在对应 code contract 或 custom block 中写明 `allow_slow_patterns=true` 和非空 performance justification。未说明理由的慢模式必须在 fixture smoke 或 ready artifact 写入前 BLOCK。
+
 ## Family plugin 边界
 UBL、CPV、shadow candlestick、candle、Williams 等 family-specific 代码必须放在 `factor_factory.factor_families` registry 后面。Step3B 只有在 Step2 显式声明 `factor_family`、`family_plugin`、`family_plugin_allowed=true`，并写出带非 free-text 证据的 `factorforge_family_plugin_decision_v1` 时才能执行 plugin。`factor_id`、公式文本、thesis 关键词最多只能产生人工复核建议，不能触发 plugin。
 

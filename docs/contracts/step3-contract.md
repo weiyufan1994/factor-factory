@@ -79,6 +79,9 @@ Hybrid mode is a bounded composition: Formula IR operator subgraph plus one or m
 
 Generated hybrid code must expose separate operator and custom sections using `FACTORFORGE_OPERATOR_SUBGRAPH` and `FACTORFORGE_CUSTOM_BLOCK` markers. Custom blocks cannot overwrite protected operator outputs unless `allow_operator_output_overwrite=true`; unsafe or unsupported hybrid contracts must BLOCK.
 
+## Direct-code and custom-block performance policy
+Step3B must build `factorforge_high_speed_code_profile_v1` for `direct_code` implementations and hybrid custom blocks. Generated code should prefer vectorized NumPy and/or Polars; pandas vectorized APIs are acceptable as a compatibility or reference layer. Python row loops, `DataFrame.apply(axis=1)`, `groupby.apply`, and `rolling.apply` are slow-pattern risks and require `allow_slow_patterns=true` plus a non-empty performance justification in the relevant code contract or custom block. Unjustified slow patterns must BLOCK before fixture smoke or ready-artifact write.
+
 ## Family plugin boundary
 Family-specific code such as UBL, CPV, shadow candlestick, candle, or Williams logic must live behind the `factor_factory.factor_families` registry. Step3B may execute it only when Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with non-free-text evidence. `factor_id`, formula prose, or thesis keywords may suggest human review, but must never trigger a plugin.
 

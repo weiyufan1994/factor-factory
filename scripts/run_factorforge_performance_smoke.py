@@ -74,6 +74,16 @@ def run_cmd(cmd: list[str], *, root: Path | None = None) -> subprocess.Completed
     return subprocess.run(cmd, cwd=REPO_ROOT, env=env, text=True, capture_output=True)
 
 
+def load_step3b_validator_module():
+    path = REPO_ROOT / 'skills' / 'factor-forge-step3' / 'scripts' / 'validate_step3b.py'
+    spec = importlib.util.spec_from_file_location('factorforge_validate_step3b_smoke', path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'cannot load validator module from {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @contextmanager
 def temporary_env(name: str, value: str | None):
     old = os.environ.get(name)
@@ -2751,6 +2761,498 @@ def run_formula_kernel_corr_cov_single_group_rollback_case() -> dict[str, Any]:
     }
 
 
+def run_direct_code_high_speed_profile_case() -> dict[str, Any]:
+    validator = load_step3b_validator_module()
+    vectorized_source = """
+import numpy as np
+import polars as pl
+
+def compute_factor(daily_df, minute_df=None):
+    out = daily_df[['ts_code', 'trade_date', 'close']].copy()
+    values = np.log1p(out['close'].to_numpy(dtype='float64'))
+    out['factor_value'] = values
+    return out[['ts_code', 'trade_date', 'factor_value']]
+"""
+    slow_source = """
+def compute_factor(daily_df, minute_df=None):
+    rows = []
+    for _, row in daily_df.iterrows():
+        rows.append({'ts_code': row['ts_code'], 'trade_date': row['trade_date'], 'factor_value': row['close']})
+    return rows
+"""
+    chained_groupby_apply_source = """
+def compute_factor(daily_df, minute_df=None):
+    factor = daily_df.groupby('ts_code')['close'].apply(lambda values: values.rank())
+    out = daily_df[['ts_code', 'trade_date']].copy()
+    out['factor_value'] = factor.to_numpy()
+    return out
+"""
+    attr_groupby_apply_source = """
+def compute_factor(daily_df, minute_df=None):
+    factor = daily_df.groupby('ts_code').close.apply(lambda values: values.rank())
+    out = daily_df[['ts_code', 'trade_date']].copy()
+    out['factor_value'] = factor.to_numpy()
+    return out
+"""
+    hybrid_slow_block = {
+        'block_id': 'slow_groupby_apply',
+        'source_code': """
+def apply_custom_block(frame):
+    return frame.groupby('ts_code').apply(lambda group: group.assign(factor_value=group['close']))
+""",
+    }
+    vectorized_profile = validator.build_high_speed_code_profile(vectorized_source)
+    slow_profile = validator.build_high_speed_code_profile(slow_source)
+    chained_groupby_apply_profile = validator.build_high_speed_code_profile(chained_groupby_apply_source)
+    attr_groupby_apply_profile = validator.build_high_speed_code_profile(attr_groupby_apply_source)
+    block_error = None
+    try:
+        validator.assert_high_speed_code_policy(slow_source, {})
+    except AssertionError as exc:
+        block_error = str(exc)
+    chained_groupby_apply_error = None
+    try:
+        validator.assert_high_speed_code_policy(chained_groupby_apply_source, {})
+    except AssertionError as exc:
+        chained_groupby_apply_error = str(exc)
+    attr_groupby_apply_error = None
+    try:
+        validator.assert_high_speed_code_policy(attr_groupby_apply_source, {})
+    except AssertionError as exc:
+        attr_groupby_apply_error = str(exc)
+    justified_profile = validator.assert_high_speed_code_policy(
+        slow_source,
+        {
+            'allow_slow_patterns': True,
+            'performance_justification': 'bounded fallback fixture; not used for full-panel production evaluation',
+        },
+    )
+    hybrid_block_error = None
+    try:
+        validator.assert_hybrid_custom_source_safe(hybrid_slow_block)
+    except AssertionError as exc:
+        hybrid_block_error = str(exc)
+    ok = bool(
+        vectorized_profile.get('version') == 'factorforge_high_speed_code_profile_v1'
+        and vectorized_profile.get('vectorized_backend_present') is True
+        and vectorized_profile.get('uses_numpy') is True
+        and vectorized_profile.get('uses_polars') is True
+        and vectorized_profile.get('requires_justification') is False
+        and slow_profile.get('requires_justification') is True
+        and any(hit.get('code') == 'iterrows' for hit in slow_profile.get('slow_patterns') or [])
+        and block_error is not None
+        and 'BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in block_error
+        and any(hit.get('code') == 'pandas_groupby_apply' for hit in chained_groupby_apply_profile.get('slow_patterns') or [])
+        and chained_groupby_apply_error is not None
+        and 'BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in chained_groupby_apply_error
+        and any(hit.get('code') == 'pandas_groupby_apply' for hit in attr_groupby_apply_profile.get('slow_patterns') or [])
+        and attr_groupby_apply_error is not None
+        and 'BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in attr_groupby_apply_error
+        and justified_profile.get('requires_justification') is True
+        and hybrid_block_error is not None
+        and 'BLOCK_HYBRID_CUSTOM_BLOCK_PERFORMANCE_RISK' in hybrid_block_error
+        and 'pandas_groupby_apply' in hybrid_block_error
+    )
+    return {
+        'case': 'direct_code_high_speed_profile',
+        'vectorized_profile': vectorized_profile,
+        'slow_profile': slow_profile,
+        'chained_groupby_apply_profile': chained_groupby_apply_profile,
+        'chained_groupby_apply_error': chained_groupby_apply_error,
+        'attr_groupby_apply_profile': attr_groupby_apply_profile,
+        'attr_groupby_apply_error': attr_groupby_apply_error,
+        'block_error': block_error,
+        'justified_profile': justified_profile,
+        'hybrid_block_error': hybrid_block_error,
+        'ok': ok,
+    }
+
+
+def _step3b_direct_code_identity(report_id: str, role: str, code_hash: str) -> dict[str, Any]:
+    return {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'source_type': 'synthetic_tmp_fixture',
+        'implementation_mode': 'direct_code',
+        'contract_version': 'factorforge_artifact_identity_v1',
+        'producer': 'performance_smoke',
+        'upstream_producer': 'performance_smoke',
+        'formula_hash': None,
+        'code_hash': code_hash,
+        'code_contract_hash': 'rta09_direct_code_contract_hash',
+        'custom_block_hash': None,
+        'hybrid_hash': None,
+        'spec_hash': 'rta09_direct_code_spec_hash',
+        'branch_id': 'performance_smoke',
+        'run_id': f'{report_id}__run',
+        'parent_run_id': None,
+        'created_at_utc': utc_now(),
+        'artifact_role': role,
+    }
+
+
+def create_step3b_direct_code_validator_fixture(root: Path, report_id: str, source: str) -> Path:
+    objects = root / 'objects'
+    code_dir = root / 'generated_code' / report_id
+    code_dir.mkdir(parents=True, exist_ok=True)
+    real_impl = code_dir / f'factor_impl__{report_id}.py'
+    stub = code_dir / f'factor_impl_stub__{report_id}.py'
+    qlib = code_dir / f'qlib_expression_draft__{report_id}.json'
+    hybrid = code_dir / f'hybrid_execution_scaffold__{report_id}.json'
+    real_impl.write_text(source, encoding='utf-8')
+    stub.write_text(
+        "STEP2_RESEARCH_CONTEXT = {'source': 'performance_smoke'}\n"
+        "# target_statistic: factor_value\n"
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    return daily_df[['ts_code', 'trade_date']].assign(factor_value=0.0)\n",
+        encoding='utf-8',
+    )
+    code_hash = hashlib.sha256(real_impl.read_bytes()).hexdigest()
+    step2_context = {'source': 'performance_smoke', 'target_statistic': 'factor_value'}
+    mode_decision = {
+        'decision_version': 'factorforge_implementation_mode_decision_v1',
+        'selected_mode': 'direct_code',
+        'operator_attempted': True,
+        'operator_failure_reason': 'not_applicable_for_subprocess_fixture',
+        'hybrid_failure_reason': 'not_applicable_for_subprocess_fixture',
+        'direct_code_attempted': True,
+        'final_decision_reason': 'direct_code_fixture',
+    }
+    implementation_contract = {
+        'code_contract': {
+            'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        },
+        'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+    }
+    spec_identity = _step3b_direct_code_identity(report_id, 'factor_spec_master', code_hash)
+    plan_identity = _step3b_direct_code_identity(report_id, 'implementation_plan_master', code_hash)
+    qlib_identity = _step3b_direct_code_identity(report_id, 'generated_code', code_hash)
+    hybrid_identity = _step3b_direct_code_identity(report_id, 'generated_code', code_hash)
+    handoff_identity = _step3b_direct_code_identity(report_id, 'handoff_to_step4', code_hash)
+    write_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'direct_code',
+        'artifact_identity': spec_identity,
+        'implementation_contract': implementation_contract,
+        'canonical_spec': {'implementation_path': str(real_impl)},
+        'step2_research_context': step2_context,
+    })
+    write_json(objects / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'direct_code',
+        'artifact_identity': plan_identity,
+        'implementation_mode_decision': mode_decision,
+        'output_schema': implementation_contract['output_schema'],
+        'step2_research_context': step2_context,
+        'code_hash': code_hash,
+        'first_run_outputs': {'status': 'pending', 'no_first_run_reason': 'validator subprocess fixture blocks before ready write'},
+    })
+    qlib_payload = {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'direct_code',
+        'artifact_identity': qlib_identity,
+        'implementation_mode_decision': mode_decision,
+        'metadata': {
+            'implementation_mode': 'direct_code',
+            'artifact_identity': qlib_identity,
+            'implementation_mode_decision': mode_decision,
+            'implementation_path': str(real_impl),
+            'code_hash': code_hash,
+        },
+        'step2_research_context': step2_context,
+        'code_hash': code_hash,
+    }
+    write_json(qlib, qlib_payload)
+    hybrid_payload = {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'direct_code',
+        'artifact_identity': hybrid_identity,
+        'implementation_mode_decision': mode_decision,
+        'metadata': {
+            'implementation_mode': 'direct_code',
+            'artifact_identity': hybrid_identity,
+            'implementation_mode_decision': mode_decision,
+            'implementation_path': str(real_impl),
+            'code_hash': code_hash,
+        },
+        'step2_research_context': step2_context,
+        'code_hash': code_hash,
+    }
+    write_json(hybrid, hybrid_payload)
+    write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'feasibility': 'pending',
+        'field_mapping': {'ts_code': 'ts_code', 'trade_date': 'trade_date', 'close': 'close'},
+        'data_sources': [{'name': 'synthetic_tmp_fixture'}],
+        'local_input_paths': {'input_mode': 'plan_only'},
+    })
+    write_json(objects / 'handoff' / f'handoff_to_step4__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'direct_code',
+        'artifact_identity': handoff_identity,
+        'implementation_mode_decision': mode_decision,
+        'step3a_ready': False,
+        'step3b_ready': True,
+        'local_input_paths': {'input_mode': 'plan_only'},
+        'data_prep_master_ref': f'objects/data_prep_master/data_prep_master__{report_id}.json',
+        'qlib_adapter_config_ref': f'objects/data_prep_master/qlib_adapter_config__{report_id}.json',
+        'factor_spec_master_ref': f'objects/factor_spec_master/factor_spec_master__{report_id}.json',
+        'factor_impl_ref': str(real_impl),
+        'factor_impl_stub_ref': str(stub),
+        'step2_research_context': step2_context,
+        'code_hash': code_hash,
+        'first_run_outputs': {'status': 'pending', 'no_first_run_reason': 'validator subprocess fixture blocks before ready write'},
+    })
+    write_json(objects / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'logical_fields': {'close': 'close'},
+        'qlib_field_map': {'$close': 'close'},
+    })
+    return real_impl
+
+
+def run_direct_code_high_speed_subprocess_blocks_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_DIRECT_CODE_HIGH_SPEED_SUBPROCESS_BLOCK'
+    slow_source = """
+def compute_factor(daily_df, minute_df=None):
+    factor = daily_df.groupby('ts_code')['close'].apply(lambda values: values.rank())
+    out = daily_df[['ts_code', 'trade_date']].copy()
+    out['factor_value'] = factor.to_numpy()
+    return out
+"""
+    create_step3b_direct_code_validator_fixture(root, report_id, slow_source)
+    proc = run_cmd([
+        sys.executable,
+        'skills/factor-forge-step3/scripts/validate_step3b.py',
+        '--report-id',
+        report_id,
+    ], root=root)
+    combined = proc.stdout + proc.stderr
+    token_present = 'BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in combined
+    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
+    run_metadata = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+    ok = (
+        proc.returncode == 1
+        and token_present
+        and not factor_parquet.exists()
+        and not run_metadata.exists()
+    )
+    return {
+        'case': 'direct_code_high_speed_subprocess_blocks_before_ready',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'token_present': token_present,
+        'factor_parquet_exists': factor_parquet.exists(),
+        'run_metadata_exists': run_metadata.exists(),
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def _step3b_hybrid_identity(report_id: str, role: str) -> dict[str, Any]:
+    return {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'source_type': 'synthetic_tmp_fixture',
+        'implementation_mode': 'hybrid',
+        'contract_version': 'factorforge_artifact_identity_v1',
+        'producer': 'performance_smoke',
+        'upstream_producer': 'performance_smoke',
+        'formula_hash': 'rta09_hybrid_formula_hash',
+        'code_hash': 'rta09_hybrid_code_hash',
+        'code_contract_hash': None,
+        'custom_block_hash': 'rta09_hybrid_custom_block_hash',
+        'hybrid_hash': 'rta09_hybrid_hash',
+        'spec_hash': 'rta09_hybrid_spec_hash',
+        'branch_id': 'performance_smoke',
+        'run_id': f'{report_id}__run',
+        'parent_run_id': None,
+        'created_at_utc': utc_now(),
+        'artifact_role': role,
+    }
+
+
+def create_step3b_hybrid_validator_fixture(root: Path, report_id: str, custom_source: str) -> None:
+    objects = root / 'objects'
+    code_dir = root / 'generated_code' / report_id
+    code_dir.mkdir(parents=True, exist_ok=True)
+    real_impl = code_dir / f'factor_impl__{report_id}.py'
+    stub = code_dir / f'factor_impl_stub__{report_id}.py'
+    qlib = code_dir / f'qlib_expression_draft__{report_id}.json'
+    hybrid = code_dir / f'hybrid_execution_scaffold__{report_id}.json'
+    real_impl.write_text(
+        "# <FACTORFORGE_OPERATOR_SUBGRAPH_BEGIN>\n"
+        "def compute_operator_subgraph(daily_df):\n"
+        "    return daily_df[['ts_code', 'trade_date', 'close']].copy()\n"
+        "# <FACTORFORGE_OPERATOR_SUBGRAPH_END>\n"
+        "# <FACTORFORGE_CUSTOM_BLOCK_BEGIN>\n"
+        "def apply_custom_block(frame):\n"
+        "    return frame\n"
+        "# <FACTORFORGE_CUSTOM_BLOCK_END>\n"
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    return apply_custom_block(compute_operator_subgraph(daily_df))\n",
+        encoding='utf-8',
+    )
+    stub.write_text(
+        "STEP2_RESEARCH_CONTEXT = {'source': 'performance_smoke'}\n"
+        "# target_statistic: factor_value\n"
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    return daily_df[['ts_code', 'trade_date']].assign(factor_value=0.0)\n",
+        encoding='utf-8',
+    )
+    step2_context = {'source': 'performance_smoke', 'target_statistic': 'factor_value'}
+    mode_decision = {
+        'decision_version': 'factorforge_implementation_mode_decision_v1',
+        'selected_mode': 'hybrid',
+        'operator_attempted': True,
+        'operator_failure_reason': 'operator_subgraph_requires_custom_block',
+        'hybrid_attempted': True,
+        'final_decision_reason': 'hybrid_fixture',
+    }
+    formula_ir = {
+        'parse_status': 'success',
+        'formula_hash': 'rta09_hybrid_formula_hash',
+        'operator_set': [],
+        'resolved_fields': {'close': 'close'},
+    }
+    custom_block = {
+        'name': 'slow_custom_block',
+        'source_code': custom_source,
+        'custom_block_hash': 'rta09_placeholder_hash_not_reached',
+    }
+    implementation_contract = {
+        'hybrid_contract_version': 'factorforge_hybrid_contract_v1',
+        'operator_subgraph': {'formula_ir': formula_ir},
+        'custom_blocks': [custom_block],
+        'boundary': {
+            'operator_outputs': ['operator_signal'],
+            'custom_inputs': ['operator_signal', 'close'],
+            'custom_outputs': ['factor_value'],
+        },
+        'formula_hash': 'rta09_hybrid_formula_hash',
+        'custom_block_hash': 'rta09_hybrid_custom_block_hash',
+        'hybrid_hash': 'rta09_hybrid_hash',
+    }
+    spec_identity = _step3b_hybrid_identity(report_id, 'factor_spec_master')
+    plan_identity = _step3b_hybrid_identity(report_id, 'implementation_plan_master')
+    qlib_identity = _step3b_hybrid_identity(report_id, 'generated_code')
+    hybrid_identity = _step3b_hybrid_identity(report_id, 'generated_code')
+    handoff_identity = _step3b_hybrid_identity(report_id, 'handoff_to_step4')
+    write_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'hybrid',
+        'artifact_identity': spec_identity,
+        'implementation_contract': implementation_contract,
+        'canonical_spec': {'implementation_path': str(real_impl)},
+        'step2_research_context': step2_context,
+    })
+    write_json(objects / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'hybrid',
+        'artifact_identity': plan_identity,
+        'implementation_mode_decision': mode_decision,
+        'formula_hash': 'rta09_hybrid_formula_hash',
+        'custom_block_hash': 'rta09_hybrid_custom_block_hash',
+        'hybrid_hash': 'rta09_hybrid_hash',
+        'step2_research_context': step2_context,
+        'first_run_outputs': {'status': 'pending', 'no_first_run_reason': 'validator subprocess fixture blocks before ready write'},
+    })
+    shared_generated_payload = {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'hybrid',
+        'implementation_mode_decision': mode_decision,
+        'formula_hash': 'rta09_hybrid_formula_hash',
+        'custom_block_hash': 'rta09_hybrid_custom_block_hash',
+        'hybrid_hash': 'rta09_hybrid_hash',
+        'step2_research_context': step2_context,
+        'metadata': {
+            'implementation_mode': 'hybrid',
+            'implementation_mode_decision': mode_decision,
+            'implementation_path': str(real_impl),
+        },
+    }
+    write_json(qlib, {**shared_generated_payload, 'artifact_identity': qlib_identity, 'metadata': {**shared_generated_payload['metadata'], 'artifact_identity': qlib_identity}})
+    write_json(hybrid, {**shared_generated_payload, 'artifact_identity': hybrid_identity, 'metadata': {**shared_generated_payload['metadata'], 'artifact_identity': hybrid_identity}})
+    write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'feasibility': 'pending',
+        'field_mapping': {'ts_code': 'ts_code', 'trade_date': 'trade_date', 'close': 'close'},
+        'data_sources': [{'name': 'synthetic_tmp_fixture'}],
+        'local_input_paths': {'input_mode': 'plan_only'},
+    })
+    write_json(objects / 'handoff' / f'handoff_to_step4__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'hybrid',
+        'artifact_identity': handoff_identity,
+        'implementation_mode_decision': mode_decision,
+        'step3a_ready': False,
+        'step3b_ready': True,
+        'local_input_paths': {'input_mode': 'plan_only'},
+        'data_prep_master_ref': f'objects/data_prep_master/data_prep_master__{report_id}.json',
+        'qlib_adapter_config_ref': f'objects/data_prep_master/qlib_adapter_config__{report_id}.json',
+        'factor_spec_master_ref': f'objects/factor_spec_master/factor_spec_master__{report_id}.json',
+        'factor_impl_ref': str(real_impl),
+        'factor_impl_stub_ref': str(stub),
+        'step2_research_context': step2_context,
+        'first_run_outputs': {'status': 'pending', 'no_first_run_reason': 'validator subprocess fixture blocks before ready write'},
+    })
+    write_json(objects / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'logical_fields': {'close': 'close'},
+        'qlib_field_map': {'$close': 'close'},
+    })
+
+
+def run_hybrid_high_speed_subprocess_blocks_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_HYBRID_HIGH_SPEED_SUBPROCESS_BLOCK'
+    custom_source = """
+def apply_custom_block(frame):
+    return frame.groupby('ts_code')['close'].apply(lambda values: values.rank())
+"""
+    create_step3b_hybrid_validator_fixture(root, report_id, custom_source)
+    proc = run_cmd([
+        sys.executable,
+        'skills/factor-forge-step3/scripts/validate_step3b.py',
+        '--report-id',
+        report_id,
+    ], root=root)
+    combined = proc.stdout + proc.stderr
+    token_present = 'BLOCK_HYBRID_CUSTOM_BLOCK_PERFORMANCE_RISK' in combined and 'pandas_groupby_apply' in combined
+    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
+    run_metadata = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+    ok = (
+        proc.returncode == 1
+        and token_present
+        and not factor_parquet.exists()
+        and not run_metadata.exists()
+    )
+    return {
+        'case': 'hybrid_high_speed_subprocess_blocks_before_ready',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'token_present': token_present,
+        'factor_parquet_exists': factor_parquet.exists(),
+        'run_metadata_exists': run_metadata.exists(),
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
 def run_formula_kernel_parity_failure_blocks_case(root: Path) -> dict[str, Any]:
     result = run_step3b_formula_kernel_case(
         root,
@@ -5286,6 +5788,9 @@ def main() -> int:
         run_formula_kernel_default_numpy_ts_corr_cov_promoted_case(),
         run_formula_kernel_default_numpy_ts_corr_cov_speed_guard_case(),
         run_formula_kernel_corr_cov_single_group_rollback_case(),
+        run_direct_code_high_speed_profile_case(),
+        run_direct_code_high_speed_subprocess_blocks_case(root),
+        run_hybrid_high_speed_subprocess_blocks_case(root),
         run_formula_kernel_parity_failure_blocks_case(root),
         run_formula_kernel_argmin_argmax_parity_failure_blocks_case(root),
         run_formula_kernel_ts_rank_parity_failure_blocks_case(root),

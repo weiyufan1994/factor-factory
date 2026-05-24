@@ -68,8 +68,8 @@ def _rolling_arg_one(values: np.ndarray, window: int, mode: str) -> np.ndarray:
 
 
 def _group_positions(frame: pd.DataFrame) -> list[np.ndarray]:
-    codes = frame['ts_code'].to_numpy()
-    return [np.flatnonzero(codes == code) for code in pd.unique(frame['ts_code'])]
+    grouped = frame.groupby('ts_code', sort=False, observed=True).indices
+    return [np.asarray(positions, dtype=np.intp) for positions in grouped.values()]
 
 
 def numpy_argmin_per_ticker(frame: pd.DataFrame, value_col: str, window: int) -> OperatorCandidateResult:
@@ -90,6 +90,19 @@ def numpy_argmax_per_ticker(frame: pd.DataFrame, value_col: str, window: int) ->
     return OperatorCandidateResult('ts_argmax', 'numpy_argmax_per_ticker', 'PASS', pd.Series(out, index=frame.index, name=value_col))
 
 
+PAIRWISE_DEGENERATE_EPS = 1e-16
+
+
+def _pandas_pairwise_one(left: np.ndarray, right: np.ndarray, window: int, mode: str) -> pd.Series:
+    left_s = pd.Series(left)
+    right_s = pd.Series(right)
+    if mode == 'corr':
+        return left_s.rolling(window, min_periods=window).corr(right_s)
+    if mode == 'cov':
+        return left_s.rolling(window, min_periods=window).cov(right_s)
+    raise ValueError(f'unsupported pairwise mode: {mode}')
+
+
 def _rolling_pairwise_one(left: np.ndarray, right: np.ndarray, window: int, mode: str) -> np.ndarray:
     out = np.full(len(left), np.nan, dtype='float64')
     if window <= 1 or len(left) < window:
@@ -106,18 +119,26 @@ def _rolling_pairwise_one(left: np.ndarray, right: np.ndarray, window: int, mode
     lx_centered = lx - lx_mean[:, None]
     ry_centered = ry - ry_mean[:, None]
     cov = (lx_centered * ry_centered).sum(axis=1) / float(window - 1)
+    var_l = (lx_centered * lx_centered).sum(axis=1) / float(window - 1)
+    var_r = (ry_centered * ry_centered).sum(axis=1) / float(window - 1)
     if mode == 'cov':
         values = cov
+        degenerate = (np.abs(cov) < PAIRWISE_DEGENERATE_EPS) | (var_l < PAIRWISE_DEGENERATE_EPS) | (var_r < PAIRWISE_DEGENERATE_EPS)
     elif mode == 'corr':
-        var_l = (lx_centered * lx_centered).sum(axis=1) / float(window - 1)
-        var_r = (ry_centered * ry_centered).sum(axis=1) / float(window - 1)
         denom = np.sqrt(var_l * var_r)
         values = np.full(len(cov), np.nan, dtype='float64')
         nonzero = denom != 0.0
         values[nonzero] = cov[nonzero] / denom[nonzero]
+        degenerate = (var_l < PAIRWISE_DEGENERATE_EPS) | (var_r < PAIRWISE_DEGENERATE_EPS)
     else:
         raise ValueError(f'unsupported pairwise mode: {mode}')
-    out[np.flatnonzero(valid) + window - 1] = values
+    valid_offsets = np.flatnonzero(valid)
+    output_offsets = valid_offsets + window - 1
+    out[output_offsets] = values
+    if degenerate.any():
+        fallback = _pandas_pairwise_one(left, right, window, mode)
+        fallback_offsets = output_offsets[degenerate]
+        out[fallback_offsets] = fallback.iloc[fallback_offsets].to_numpy(dtype='float64', copy=False)
     return out
 
 

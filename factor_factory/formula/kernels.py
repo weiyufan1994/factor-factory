@@ -33,6 +33,9 @@ NUMPY_ROLLING_SUPPORTED_OPERATORS = {
     'ts_rank',
     'argmin',
     'argmax',
+    'correlation',
+    'corr',
+    'covariance',
 }
 
 DEFAULT_NUMPY_TS_OPERATORS = {
@@ -45,19 +48,18 @@ DEFAULT_NUMPY_TS_OPERATORS = {
     'argmin',
     'argmax',
     'ts_rank',
+    'correlation',
+    'corr',
+    'covariance',
 }
 
 DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS = {
     'std',
     'stddev',
-    'correlation',
-    'corr',
-    'covariance',
-    'rolling_corr',
-    'rolling_cov',
 }
 
 DEFAULT_NUMPY_TS_ROLLBACK_ENV = 'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL'
+PAIRWISE_DEGENERATE_EPS = 1e-16
 
 
 def default_numpy_ts_enabled() -> bool:
@@ -271,6 +273,81 @@ def _numpy_arg(series: pd.Series, window: int, frame: pd.DataFrame, op: str) -> 
     return pd.Series(result, index=series.index, name=series.name)
 
 
+def _pandas_pairwise_one(left: np.ndarray, right: np.ndarray, window: int, mode: str) -> pd.Series:
+    left_s = pd.Series(left)
+    right_s = pd.Series(right)
+    if mode == 'corr':
+        return left_s.rolling(window, min_periods=window).corr(right_s)
+    if mode == 'cov':
+        return left_s.rolling(window, min_periods=window).cov(right_s)
+    raise ValueError(f'unsupported pairwise mode: {mode}')
+
+
+def _rolling_pairwise_one(left: np.ndarray, right: np.ndarray, window: int, mode: str) -> np.ndarray:
+    out = np.full(len(left), np.nan, dtype='float64')
+    if window <= 1 or len(left) < window:
+        return out
+    left_windows = np.lib.stride_tricks.sliding_window_view(left, window_shape=window)
+    right_windows = np.lib.stride_tricks.sliding_window_view(right, window_shape=window)
+    valid = (~np.isnan(left_windows).any(axis=1)) & (~np.isnan(right_windows).any(axis=1))
+    if not valid.any():
+        return out
+    left_valid = left_windows[valid]
+    right_valid = right_windows[valid]
+    left_centered = left_valid - left_valid.mean(axis=1)[:, None]
+    right_centered = right_valid - right_valid.mean(axis=1)[:, None]
+    cov = (left_centered * right_centered).sum(axis=1) / float(window - 1)
+    var_left = (left_centered * left_centered).sum(axis=1) / float(window - 1)
+    var_right = (right_centered * right_centered).sum(axis=1) / float(window - 1)
+    if mode == 'cov':
+        values = cov
+        degenerate = (np.abs(cov) < PAIRWISE_DEGENERATE_EPS) | (var_left < PAIRWISE_DEGENERATE_EPS) | (var_right < PAIRWISE_DEGENERATE_EPS)
+    elif mode == 'corr':
+        denom = np.sqrt(var_left * var_right)
+        values = np.full(len(cov), np.nan, dtype='float64')
+        nonzero = denom != 0.0
+        values[nonzero] = cov[nonzero] / denom[nonzero]
+        degenerate = (var_left < PAIRWISE_DEGENERATE_EPS) | (var_right < PAIRWISE_DEGENERATE_EPS)
+    else:
+        raise ValueError(f'unsupported pairwise mode: {mode}')
+    valid_offsets = np.flatnonzero(valid)
+    output_offsets = valid_offsets + window - 1
+    out[output_offsets] = values
+    if degenerate.any():
+        fallback = _pandas_pairwise_one(left, right, window, mode)
+        fallback_offsets = output_offsets[degenerate]
+        out[fallback_offsets] = fallback.iloc[fallback_offsets].to_numpy(dtype='float64', copy=False)
+    return out
+
+
+def _numpy_pairwise(left: pd.Series, right: pd.Series, window: int, frame: pd.DataFrame, mode: str) -> pd.Series:
+    left_values = pd.to_numeric(left, errors='coerce').to_numpy(dtype='float64', copy=False)
+    right_values = pd.to_numeric(right, errors='coerce').to_numpy(dtype='float64', copy=False)
+    result = np.full(len(frame), np.nan, dtype='float64')
+    ordered_positions: list[np.ndarray] = []
+    for positions in _group_positions(frame):
+        if len(positions) == 0:
+            continue
+        result[positions] = _rolling_pairwise_one(left_values[positions], right_values[positions], window, mode)
+        ordered_positions.append(positions)
+    if ordered_positions:
+        order = np.concatenate(ordered_positions)
+        return pd.Series(result[order], index=frame.index[order], name=getattr(left, 'name', None))
+    return pd.Series(result, index=frame.index, name=getattr(left, 'name', None))
+
+
+def _pandas_pairwise_grouped(left: pd.Series, right: pd.Series, window: int, frame: pd.DataFrame, mode: str) -> pd.Series:
+    left_values = pd.to_numeric(left, errors='coerce').to_numpy(dtype='float64', copy=False)
+    right_values = pd.to_numeric(right, errors='coerce').to_numpy(dtype='float64', copy=False)
+    result = np.full(len(frame), np.nan, dtype='float64')
+    for positions in _group_positions(frame):
+        if len(positions) == 0:
+            continue
+        grouped = _pandas_pairwise_one(left_values[positions], right_values[positions], window, mode)
+        result[positions] = grouped.to_numpy(dtype='float64', copy=False)
+    return pd.Series(result, index=frame.index, name=getattr(left, 'name', None))
+
+
 def _numpy_delta(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
     values = pd.to_numeric(series, errors='coerce').to_numpy(dtype='float64', copy=False)
     result = np.full(len(values), np.nan, dtype='float64')
@@ -321,6 +398,10 @@ def _pandas_operator(op: str, args: list[Any], window: int, frame: pd.DataFrame)
         return series.groupby(frame['ts_code'], sort=False).transform(
             lambda s: s.rolling(window, min_periods=window).apply(lambda values: float(np.argmax(values)) + 1.0, raw=True)
         )
+    if op in {'correlation', 'corr'}:
+        return _pandas_pairwise_grouped(args[0], args[1], window, frame, 'corr')
+    if op == 'covariance':
+        return _pandas_pairwise_grouped(args[0], args[1], window, frame, 'cov')
     raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_KERNEL_OPERATOR:{op}')
 
 
@@ -356,6 +437,12 @@ def apply_kernel_operator(
                 elif op in {'argmin', 'argmax'}:
                     result = _numpy_arg(args[0], window, frame, op)
                     optimized = True
+                elif op in {'correlation', 'corr'}:
+                    result = _numpy_pairwise(args[0], args[1], window, frame, 'corr')
+                    optimized = True
+                elif op == 'covariance':
+                    result = _numpy_pairwise(args[0], args[1], window, frame, 'cov')
+                    optimized = True
                 else:
                     fallback_reason = f'default_numpy_unsupported:{op}'
                     result = _pandas_operator(op, args, window, frame)
@@ -380,6 +467,12 @@ def apply_kernel_operator(
                 optimized = True
             elif op in {'argmin', 'argmax'}:
                 result = _numpy_arg(args[0], window, frame, op)
+                optimized = True
+            elif op in {'correlation', 'corr'}:
+                result = _numpy_pairwise(args[0], args[1], window, frame, 'corr')
+                optimized = True
+            elif op == 'covariance':
+                result = _numpy_pairwise(args[0], args[1], window, frame, 'cov')
                 optimized = True
             else:
                 fallback_reason = f'unsupported_operator:{op}'

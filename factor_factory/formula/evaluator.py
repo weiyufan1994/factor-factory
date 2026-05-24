@@ -246,9 +246,9 @@ def _eval_cached(
         elif op == 'delay':
             result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
         elif op in {'correlation', 'corr'}:
-            result = rolling_corr(args[0], args[1], _window(args[2]), frame)
+            result = apply_kernel_operator(op, args, _window(args[2]), frame, stats=stats, config=formula_kernel_config)
         elif op == 'covariance':
-            result = rolling_cov(args[0], args[1], _window(args[2]), frame)
+            result = apply_kernel_operator(op, args, _window(args[2]), frame, stats=stats, config=formula_kernel_config)
         elif op == 'min':
             result = apply_kernel_operator(op, args, _window(args[1]), frame, stats=stats, config=formula_kernel_config)
         elif op == 'max':

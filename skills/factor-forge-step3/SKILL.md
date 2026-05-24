@@ -89,8 +89,13 @@ Optional:
     both are opt-in performance modes while parquet remains the formal
     high-performance read path.
   - Formula-IR execution defaults to pandas optimized with pandas reference as
-    the correctness oracle. The experimental Polars backend is opt-in only
-    (`FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS=1` or
+    the correctness oracle. A reviewed subset of default NumPy time-series
+    kernels may run inside this `pandas_optimized` path for `sum`, `mean`,
+    `min`, `max`, `delta`, `delay`, `argmin`, `argmax`, `ts_rank`, `corr`,
+    `correlation`, and `covariance`; rollback must be available through
+    `FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL=1`, and `std/stddev` remain
+    pandas fallback until separately proven. The experimental Polars backend is
+    opt-in only (`FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS=1` or
     `--formula-engine polars_experimental`), must record parity metadata, and
     must BLOCK on missing dependency or parity failure. Unsupported Polars
     operators may fall back to pandas only when the metadata records an explicit
@@ -98,27 +103,34 @@ Optional:
   - The experimental `ts_rank` engine is opt-in only
     (`FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE=1` plus
     `FACTORFORGE_TS_RANK_ENGINE=numpy_sliding_window_experimental`, or
-    `--ts-rank-engine numpy_sliding_window_experimental`). The default remains
-    `pandas_reference`; experimental runs must record
-    `formula_engine_profile.ts_rank_engine_profile`, pass pandas-reference
-    sample parity, and obey the runtime guard before writing factor values.
+    `--ts-rank-engine numpy_sliding_window_experimental`). This independent
+    engine remains separate from the default Formula-IR NumPy kernel subset;
+    experimental runs must record `formula_engine_profile.ts_rank_engine_profile`,
+    pass pandas-reference sample parity, and obey the runtime guard before
+    writing factor values.
     The legacy `FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_FAST` flag must not
     enable or select an experimental engine; if present, metadata should record
     it only as an ignored stale environment flag.
   - Formula-IR operator kernels default to `pandas_optimized` with pandas
-    reference as the correctness oracle. Experimental kernels are opt-in only
-    (`FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL=1` plus
+    reference as the correctness oracle and the default NumPy time-series kernel
+    subset enabled. Experimental kernels beyond that reviewed default subset are
+    opt-in only (`FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL=1` plus
     `FACTORFORGE_FORMULA_KERNEL_ENGINE=numpy_rolling_experimental`, or
     `--formula-kernel-engine numpy_rolling_experimental`). Step3B must record
-    `formula_engine_profile.kernel_profile`, must not mark any kernel
-    `safe_to_make_default`, and must BLOCK on invalid engine, missing explicit
-    enable gate, parity failure, dependency failure, or runtime guard failure.
+    `formula_engine_profile.kernel_profile`; experimental kernels must not be
+    marked `safe_to_make_default`, and must BLOCK on invalid engine, missing
+    explicit enable gate, parity failure, dependency failure, or runtime guard
+    failure.
   - Production Step3B runs must not enable experimental Polars, experimental
     `ts_rank`, or future experimental Formula-IR kernel engines unless the user
-    explicitly asks for a performance experiment. The production path is pandas
-    Formula-IR with pandas reference parity, Parquet IO, and optional
-    `sample_csv` audit output. Phase N.5 operator-kernel rewrite work is an
-    experimental performance track, not a production default.
+    explicitly asks for a performance experiment. The production path is
+    Formula-IR `pandas_optimized` with pandas reference parity, default NumPy
+    time-series kernels, Parquet IO, and optional `sample_csv` audit output.
+  - For `direct_code` or `hybrid` custom blocks that cannot be represented as
+    Formula-IR, generated implementations should prefer vectorized NumPy and/or
+    Polars. Pandas remains acceptable as a reference or compatibility layer, but
+    Python row loops and pandas `groupby.apply` require explicit justification
+    in the implementation plan and generated-code comments.
   - Child revision runs created by the ultimate loop must consume
     `objects/research_iteration_master/executable_revision_spec__{child_report_id}.json`
     before generating code or factor values. A child report id must not silently

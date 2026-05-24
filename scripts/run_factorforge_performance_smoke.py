@@ -2070,7 +2070,8 @@ def _kernel_formula_profile(formula: str, frame: pd.DataFrame, *, kernel_config:
 
 PROMOTED_NUMPY_TS_FORMULA = (
     'sum(close, 4) + mean(volume, 4) + min(close, 4) + max(volume, 4) + '
-    'delta(close, 3) + delay(volume, 2) + argmin(close, 4) + argmax(volume, 4) + ts_rank(close, 5)'
+    'delta(close, 3) + delay(volume, 2) + argmin(close, 4) + argmax(volume, 4) + '
+    'ts_rank(close, 5) + corr(close, volume, 4) + covariance(close, volume, 4)'
 )
 
 
@@ -2083,10 +2084,46 @@ def _fallback_count(kernel_profile: dict[str, Any], operator: str) -> int:
 
 
 def _promoted_operator_counts_ok(kernel_profile: dict[str, Any], *, expect_optimized: bool) -> bool:
-    expected = ['sum', 'mean', 'min', 'max', 'delta', 'delay', 'argmin', 'argmax', 'ts_rank']
+    expected = ['sum', 'mean', 'min', 'max', 'delta', 'delay', 'argmin', 'argmax', 'ts_rank', 'correlation', 'covariance']
     if expect_optimized:
         return all(_optimized_count(kernel_profile, op) >= 1 for op in expected)
     return all(_optimized_count(kernel_profile, op) == 0 and _fallback_count(kernel_profile, op) >= 1 for op in expected)
+
+
+def build_corr_cov_kernel_edge_frame() -> pd.DataFrame:
+    rows = []
+    dates = pd.bdate_range('2020-01-02', periods=18)
+    for ticker in ['POS', 'NEG', 'ZERO_LEFT', 'ZERO_RIGHT', 'NEAR_CONST', 'NAN_MIX']:
+        for idx, dt in enumerate(dates):
+            x = float(idx + 1)
+            if ticker == 'POS':
+                close, volume = x, 2.0 * x + 5.0
+            elif ticker == 'NEG':
+                close, volume = x, -3.0 * x + 20.0
+            elif ticker == 'ZERO_LEFT':
+                close, volume = 7.0, x
+            elif ticker == 'ZERO_RIGHT':
+                close, volume = x, -4.0
+            elif ticker == 'NEAR_CONST':
+                close = 1.0 + (idx % 3) * 1e-9
+                volume = 2.0 + (idx % 4) * 1e-9
+            elif ticker == 'NAN_MIX':
+                close, volume = x, x * 0.5
+                if idx in {4, 9}:
+                    close = np.nan
+                if idx in {6, 11}:
+                    volume = np.nan
+            else:
+                raise ValueError(f'unknown ticker: {ticker}')
+            rows.append({
+                'ts_code': ticker,
+                'trade_date': dt.strftime('%Y%m%d'),
+                'close': close,
+                'volume': volume,
+            })
+    frame = pd.DataFrame(rows)
+    order = [*range(2, len(frame), 7), *range(0, len(frame), 7), *range(5, len(frame), 7), *range(1, len(frame), 7), *range(4, len(frame), 7), *range(3, len(frame), 7), *range(6, len(frame), 7)]
+    return frame.iloc[order].reset_index(drop=True)
 
 
 def run_formula_kernel_default_path_remains_pandas_case() -> dict[str, Any]:
@@ -2536,8 +2573,8 @@ def run_formula_kernel_default_numpy_ts_std_excluded_case() -> dict[str, Any]:
     return {'case': 'formula_kernel_default_numpy_ts_std_excluded', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
 
 
-def run_formula_kernel_default_numpy_ts_corr_cov_excluded_case() -> dict[str, Any]:
-    frame = build_kernel_formula_frame()
+def run_formula_kernel_default_numpy_ts_corr_cov_promoted_case() -> dict[str, Any]:
+    frame = build_corr_cov_kernel_edge_frame()
     formula_ir = parse_formula('corr(close, volume, 4) + covariance(close, volume, 4)', available_columns=list(frame.columns), raise_on_error=True)
     reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
     with temporary_envs({
@@ -2557,20 +2594,161 @@ def run_formula_kernel_default_numpy_ts_corr_cov_excluded_case() -> dict[str, An
     kernel_profile = profile.get('kernel_profile') or {}
     default_profile = kernel_profile.get('default_numpy_ts_profile') or {}
     by_operator = kernel_profile.get('by_operator') or {}
-    excluded = set(default_profile.get('excluded_operators') or [])
-    optimized_corr_cov = any(
-        int((by_operator.get(op) or {}).get('optimized_call_count') or 0) > 0
-        for op in ['corr', 'correlation', 'covariance', 'rolling_corr', 'rolling_cov']
-    )
     ok = bool(
         parity.get('row_count_equal') is True
         and parity.get('key_order_equal') is True
         and parity.get('nan_mask_equal') is True
         and float(parity.get('max_abs_diff') or 0.0) <= 1e-10
-        and not optimized_corr_cov
-        and {'corr', 'covariance', 'rolling_corr', 'rolling_cov'}.issubset(excluded)
+        and default_profile.get('enabled') is True
+        and int((by_operator.get('correlation') or {}).get('optimized_call_count') or 0) >= 1
+        and int((by_operator.get('covariance') or {}).get('optimized_call_count') or 0) >= 1
+        and 'correlation' in set(default_profile.get('operators') or [])
+        and 'covariance' in set(default_profile.get('operators') or [])
+        and 'correlation' not in set(default_profile.get('excluded_operators') or [])
+        and 'covariance' not in set(default_profile.get('excluded_operators') or [])
     )
-    return {'case': 'formula_kernel_default_numpy_ts_corr_cov_excluded', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
+    return {'case': 'formula_kernel_default_numpy_ts_corr_cov_promoted', 'kernel_profile': kernel_profile, **parity, 'ok': ok}
+
+
+def run_formula_kernel_default_numpy_ts_corr_cov_speed_guard_case() -> dict[str, Any]:
+    rng = np.random.default_rng(7707)
+    ticker_count = 500
+    rows_per_ticker = 100
+    row_count = ticker_count * rows_per_ticker
+    base = rng.normal(size=row_count)
+    frame = pd.DataFrame({
+        'ts_code': np.repeat([f'S{i:05d}' for i in range(ticker_count)], rows_per_ticker),
+        'trade_date': np.tile(np.arange(rows_per_ticker), ticker_count).astype(str),
+        'close': base,
+        'volume': 0.25 * base + rng.normal(size=row_count),
+    })
+    formula_ir = parse_formula('corr(close, volume, 10) + covariance(close, volume, 10)', available_columns=list(frame.columns), raise_on_error=True)
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL': None,
+    }):
+        started = time.perf_counter()
+        candidate, profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=resolve_formula_kernel_engine(),
+        )
+        default_seconds = time.perf_counter() - started
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL': '1',
+    }):
+        started = time.perf_counter()
+        fallback, fallback_profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=resolve_formula_kernel_engine(),
+        )
+        fallback_seconds = time.perf_counter() - started
+    parity = assert_polars_result_parity(fallback, candidate, tolerance=1e-10)
+    speedup = float(fallback_seconds / default_seconds) if default_seconds > 0 else 0.0
+    kernel_profile = profile.get('kernel_profile') or {}
+    fallback_kernel_profile = fallback_profile.get('kernel_profile') or {}
+    ok = bool(
+        parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-10
+        and _optimized_count(kernel_profile, 'correlation') >= 1
+        and _optimized_count(kernel_profile, 'covariance') >= 1
+        and _fallback_count(fallback_kernel_profile, 'correlation') >= 1
+        and _fallback_count(fallback_kernel_profile, 'covariance') >= 1
+        and speedup >= 1.1
+    )
+    return {
+        'case': 'formula_kernel_default_numpy_ts_corr_cov_speed_guard',
+        'rows': row_count,
+        'tickers': ticker_count,
+        'default_seconds': default_seconds,
+        'fallback_seconds': fallback_seconds,
+        'speedup_vs_pandas_fallback': speedup,
+        'kernel_profile': kernel_profile,
+        'fallback_kernel_profile': fallback_kernel_profile,
+        **parity,
+        'ok': ok,
+    }
+
+
+def run_formula_kernel_corr_cov_single_group_rollback_case() -> dict[str, Any]:
+    frame = pd.DataFrame({
+        'ts_code': ['SINGLE'] * 8,
+        'trade_date': [f'2020010{i}' for i in range(1, 9)],
+        'close': [1.0, 2.0, 4.0, 7.0, 11.0, 16.0, 22.0, 29.0],
+        'volume': [3.0, 1.0, 5.0, 4.0, 10.0, 8.0, 13.0, 21.0],
+    })
+    formula_ir = parse_formula(
+        'corr(close, volume, 3) + covariance(close, volume, 3) + std(close, 3)',
+        available_columns=list(frame.columns),
+        raise_on_error=True,
+    )
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL': None,
+    }):
+        default_candidate, default_profile = evaluate_formula_frame(
+            formula_ir,
+            frame,
+            engine='optimized',
+            return_profile=True,
+            formula_kernel_config=resolve_formula_kernel_engine(),
+        )
+    rollback_error = None
+    rollback_candidate = None
+    rollback_profile: dict[str, Any] = {}
+    with temporary_envs({
+        'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL': None,
+        'FACTORFORGE_FORMULA_KERNEL_ENGINE': None,
+        'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL': '1',
+    }):
+        try:
+            rollback_candidate, rollback_profile = evaluate_formula_frame(
+                formula_ir,
+                frame,
+                engine='optimized',
+                return_profile=True,
+                formula_kernel_config=resolve_formula_kernel_engine(),
+            )
+        except Exception as exc:  # pragma: no cover - failure payload for smoke diagnostics
+            rollback_error = f'{type(exc).__name__}: {exc}'
+    parity = (
+        assert_polars_result_parity(default_candidate, rollback_candidate, tolerance=1e-10)
+        if rollback_candidate is not None
+        else {'row_count_equal': False, 'key_order_equal': False, 'nan_mask_equal': False, 'max_abs_diff': None}
+    )
+    default_kernel_profile = default_profile.get('kernel_profile') or {}
+    rollback_kernel_profile = rollback_profile.get('kernel_profile') or {}
+    ok = bool(
+        rollback_error is None
+        and parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-10
+        and _optimized_count(default_kernel_profile, 'correlation') >= 1
+        and _optimized_count(default_kernel_profile, 'covariance') >= 1
+        and _fallback_count(rollback_kernel_profile, 'correlation') >= 1
+        and _fallback_count(rollback_kernel_profile, 'covariance') >= 1
+        and (_fallback_count(rollback_kernel_profile, 'std') + _fallback_count(rollback_kernel_profile, 'stddev')) >= 1
+    )
+    return {
+        'case': 'formula_kernel_corr_cov_single_group_rollback',
+        'rollback_error': rollback_error,
+        'default_kernel_profile': default_kernel_profile,
+        'rollback_kernel_profile': rollback_kernel_profile,
+        **parity,
+        'ok': ok,
+    }
 
 
 def run_formula_kernel_parity_failure_blocks_case(root: Path) -> dict[str, Any]:
@@ -3560,20 +3738,25 @@ def run_operator_kernel_inventory_flags_hotspots_case(root: Path) -> dict[str, A
         if isinstance(item, dict)
     }
     diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
-    required_high = ['ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov', 'ts_rank']
-    high_ok = all((by_op.get(op) or {}).get('performance_risk') == 'high' for op in required_high)
+    default_enabled = ['ts_sum', 'ts_mean', 'ts_min', 'ts_max', 'ts_delta', 'ts_delay', 'ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov', 'ts_rank']
+    excluded = ['ts_std']
+    default_enabled_ok = all((by_op.get(op) or {}).get('default_kernel_enabled') is True for op in default_enabled)
+    excluded_ok = all((by_op.get(op) or {}).get('default_kernel_enabled') is not True for op in excluded)
     ok = (
         proc.returncode == 0
         and output.exists()
-        and high_ok
+        and default_enabled_ok
+        and excluded_ok
         and 'OPERATOR_KERNEL_HOTSPOT_ROLLING_APPLY' in diagnostics
         and 'OPERATOR_KERNEL_HOTSPOT_GROUPBY_APPLY_CORR_COV' in diagnostics
+        and 'DEFAULT_NUMPY_TS_KERNELS_ENABLED' in diagnostics
     )
     return {
         'case': 'operator_kernel_inventory_flags_hotspots',
         'rc': proc.returncode,
         'output': str(output),
-        'high_risk': {op: (by_op.get(op) or {}).get('performance_risk') for op in required_high},
+        'default_kernel_enabled': {op: (by_op.get(op) or {}).get('default_kernel_enabled') for op in default_enabled},
+        'default_kernel_excluded': {op: (by_op.get(op) or {}).get('default_kernel_enabled') for op in excluded},
         'diagnostic_codes': sorted(diagnostics),
         'ok': bool(ok),
     }
@@ -3794,7 +3977,7 @@ def run_operator_candidate_benchmark_corr_cov_semantic_profile_case(root: Path) 
         and profile.get('version') == 'factorforge_corr_cov_semantic_profile_v1'
         and profile.get('edge_cases_included') is True
         and 'CORR_COV_EDGE_CASES_INCLUDED' in diagnostics
-        and 'CORR_COV_NOT_WIRED_TO_RUNTIME' in diagnostics
+        and 'CORR_COV_BENCHMARK_READ_ONLY' in diagnostics
         and all((rec or {}).get('safe_to_wire_into_step3b') is False for rec in recs.values())
     )
     return {
@@ -3887,7 +4070,7 @@ def run_operator_candidate_benchmark_blocks_non_tmp_output_case(root: Path) -> d
     }
 
 
-def run_operator_candidate_benchmark_corr_cov_not_wired_case(root: Path) -> dict[str, Any]:
+def run_operator_candidate_benchmark_corr_cov_readonly_case(root: Path) -> dict[str, Any]:
     guarded_paths = [
         REPO_ROOT / 'factor_factory' / 'formula' / 'operators.py',
         REPO_ROOT / 'factor_factory' / 'formula' / 'kernels.py',
@@ -3895,20 +4078,20 @@ def run_operator_candidate_benchmark_corr_cov_not_wired_case(root: Path) -> dict
         REPO_ROOT / 'skills' / 'factor-forge-step3' / 'scripts' / 'run_step3b.py',
     ]
     before = {str(path.relative_to(REPO_ROOT)): file_sha256(path) for path in guarded_paths if path.exists()}
-    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_corr_cov_not_wired.json')
+    proc, payload, output = _run_operator_candidate_benchmark(root, 'operator_candidate_benchmark_corr_cov_readonly.json')
     after = {str(path.relative_to(REPO_ROOT)): file_sha256(path) for path in guarded_paths if path.exists()}
     diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
     ok = (
         proc.returncode == 0
         and output.exists()
         and before == after
-        and 'CORR_COV_NOT_WIRED_TO_RUNTIME' in diagnostics
+        and 'CORR_COV_BENCHMARK_READ_ONLY' in diagnostics
         and payload.get('production_semantics_changed') is False
         and payload.get('read_only') is True
         and payload.get('canonical_pollution') is False
     )
     return {
-        'case': 'operator_candidate_benchmark_corr_cov_not_wired',
+        'case': 'operator_candidate_benchmark_corr_cov_readonly',
         'rc': proc.returncode,
         'output': str(output),
         'guarded_hashes_unchanged': before == after,
@@ -5100,7 +5283,9 @@ def main() -> int:
         run_formula_kernel_default_numpy_ts_direct_caller_promoted_case(),
         run_formula_kernel_default_numpy_ts_rollback_env_restores_pandas_case(),
         run_formula_kernel_default_numpy_ts_std_excluded_case(),
-        run_formula_kernel_default_numpy_ts_corr_cov_excluded_case(),
+        run_formula_kernel_default_numpy_ts_corr_cov_promoted_case(),
+        run_formula_kernel_default_numpy_ts_corr_cov_speed_guard_case(),
+        run_formula_kernel_corr_cov_single_group_rollback_case(),
         run_formula_kernel_parity_failure_blocks_case(root),
         run_formula_kernel_argmin_argmax_parity_failure_blocks_case(root),
         run_formula_kernel_ts_rank_parity_failure_blocks_case(root),
@@ -5174,7 +5359,7 @@ def main() -> int:
         run_operator_candidate_benchmark_corr_cov_parity_case(root),
         run_operator_candidate_benchmark_corr_cov_semantic_profile_case(root),
         run_operator_candidate_benchmark_corr_cov_edge_parity_case(root),
-        run_operator_candidate_benchmark_corr_cov_not_wired_case(root),
+        run_operator_candidate_benchmark_corr_cov_readonly_case(root),
         run_operator_candidate_benchmark_blocks_non_tmp_output_case(root),
         run_operator_candidate_benchmark_does_not_modify_formula_runtime_case(root),
         run_throughput_profile_reads_backend_timing_profile_case(root),

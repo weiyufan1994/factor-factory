@@ -345,11 +345,11 @@ def build_corr_cov_semantic_profile(cases: list[dict[str, Any]]) -> dict[str, An
     corr_ok = bool(edge_cases and by_operator['rolling_corr']['edge_result_count'] and by_operator['rolling_corr']['edge_failure_count'] == 0)
     cov_ok = bool(edge_cases and by_operator['rolling_cov']['edge_result_count'] and by_operator['rolling_cov']['edge_failure_count'] == 0)
     if corr_ok:
-        reasons.append('rolling_corr edge cases passed but requires reviewer approval before RTA-07F')
+        reasons.append('rolling_corr edge cases passed; runtime wiring still requires smoke/reviewer approval')
     else:
         reasons.append('rolling_corr edge cases failed or were missing; fix candidate semantics before wiring')
     if cov_ok:
-        reasons.append('rolling_cov edge cases passed but requires reviewer approval before RTA-07F')
+        reasons.append('rolling_cov edge cases passed; runtime wiring still requires smoke/reviewer approval')
     else:
         reasons.append('rolling_cov edge cases failed or were missing; fix candidate semantics before wiring')
     return {
@@ -406,7 +406,7 @@ def build_recommendations(cases: list[dict[str, Any]], semantic_profile: dict[st
                 'reason': 'fastest parity-passing candidate in benchmark fixtures',
                 **({'semantic_profile_gate_passed': semantic_gate_passed} if operator in {'rolling_corr', 'rolling_cov'} else {}),
                 'safe_to_wire_into_step3b': False,
-                'next_phase_required': 'RTA-07F opt-in experimental kernel implementation with reviewer approval' if operator in {'rolling_corr', 'rolling_cov'} else 'RTA-07C opt-in experimental kernel implementation with smoke and reviewer approval',
+                'next_phase_required': 'RTA-07G runtime kernel implementation with smoke and reviewer approval' if operator in {'rolling_corr', 'rolling_cov'} else 'RTA-07C opt-in experimental kernel implementation with smoke and reviewer approval',
             })
         else:
             recommendations.append({
@@ -429,7 +429,7 @@ def diagnostics() -> list[dict[str, str]]:
         {'severity': 'info', 'code': 'CORR_COV_CANDIDATES_BENCHMARKED', 'message': 'rolling_corr and rolling_cov numpy formula candidates were benchmarked against pandas reference.'},
         {'severity': 'info', 'code': 'CORR_COV_EDGE_CASES_INCLUDED', 'message': 'rolling_corr and rolling_cov edge cases cover zero variance, near-constant series, NaNs, unsorted order, and perfect correlation.'},
         {'severity': 'info', 'code': 'CORR_COV_SEMANTIC_PROFILE_RECORDED', 'message': 'corr/cov semantic profile records conservative readiness for later opt-in wiring.'},
-        {'severity': 'info', 'code': 'CORR_COV_NOT_WIRED_TO_RUNTIME', 'message': 'rolling_corr and rolling_cov candidates are benchmark-only and are not wired into Formula-IR runtime.'},
+        {'severity': 'info', 'code': 'CORR_COV_BENCHMARK_READ_ONLY', 'message': 'rolling_corr and rolling_cov candidate benchmark is read-only; Formula-IR runtime wiring is validated by performance smoke.'},
         {'severity': 'info', 'code': 'TS_RANK_EXISTING_CANDIDATES_INCLUDED', 'message': 'Existing ts_rank candidates are included only when --include-ts-rank is set.'},
     ]
 

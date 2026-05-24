@@ -43,6 +43,20 @@ OPERATOR_ORDER = [
     'signed_power',
 ]
 
+DEFAULT_NUMPY_TS_INVENTORY_OPERATORS = {
+    'ts_sum',
+    'ts_mean',
+    'ts_min',
+    'ts_max',
+    'ts_argmin',
+    'ts_argmax',
+    'ts_delta',
+    'ts_delay',
+    'ts_rank',
+    'rolling_corr',
+    'rolling_cov',
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
@@ -138,6 +152,7 @@ def classify_operator(operator: str, qlib_support: dict[str, bool | None], sourc
     }.get(operator, operator)
     supported = qlib_support.get(qlib_alias)
     note = None if supported is not None else 'qlib bridge support not detected from registry aliases'
+    default_kernel_enabled = operator in DEFAULT_NUMPY_TS_INVENTORY_OPERATORS
     if operator in {'ts_argmin', 'ts_argmax'}:
         current_impl = 'pandas_groupby_rolling_apply_raw_lambda'
         performance_risk = 'high'
@@ -186,6 +201,15 @@ def classify_operator(operator: str, qlib_support: dict[str, bool | None], sourc
         semantic_risk = 'medium'
         reason = 'elementwise semantics are simple; optimize only after higher-risk rolling operators'
         candidates = []
+    if default_kernel_enabled:
+        current_impl = f'default_numpy_ts_kernel_active_with_legacy_reference__{current_impl}'
+        performance_risk = 'low' if operator in {'ts_delta', 'ts_delay', 'ts_sum', 'ts_mean', 'ts_min', 'ts_max'} else 'medium'
+        semantic_risk = 'low' if operator in {'ts_delta', 'ts_delay', 'ts_sum', 'ts_mean', 'ts_min', 'ts_max'} else 'medium'
+        reason = (
+            'default pandas_optimized runtime uses a parity-proven NumPy kernel for this operator; '
+            'legacy pandas implementation remains the correctness oracle and rollback path'
+        )
+        candidates = ['default_numpy_ts_kernel_active', 'pandas_reference_rollback']
     return {
         'operator': operator,
         'current_impl': current_impl,
@@ -194,7 +218,8 @@ def classify_operator(operator: str, qlib_support: dict[str, bool | None], sourc
         'semantic_risk': semantic_risk,
         'reason': reason,
         'upgrade_candidates': candidates,
-        'default_safe_to_change': False,
+        'default_kernel_enabled': default_kernel_enabled,
+        'default_safe_to_change': default_kernel_enabled,
         'notes': [note] if note else [],
     }
 
@@ -213,8 +238,20 @@ def build_operator_inventory(repo_root: Path) -> list[dict[str, Any]]:
 def current_execution_model() -> dict[str, Any]:
     return {
         'step3b_factor_values_use_qlib_native': False,
-        'formal_factor_engine': 'factor_forge_formula_ir_pandas',
+        'formal_factor_engine': 'factor_forge_formula_ir_pandas_optimized_with_default_numpy_ts_kernels',
         'qlib_role': 'bridge_export_backtest_compatibility',
+        'default_numpy_ts_kernel_policy': {
+            'enabled': True,
+            'operators': ['argmax', 'argmin', 'corr', 'correlation', 'covariance', 'delay', 'delta', 'max', 'mean', 'min', 'sum', 'ts_rank'],
+            'excluded_operators': ['std', 'stddev'],
+            'rollback_env': 'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL',
+            'correctness_oracle': 'pandas_reference',
+        },
+        'custom_factor_code_policy': {
+            'preferred_backends': ['numpy', 'polars'],
+            'avoid_by_default': ['python_row_loops', 'pandas_groupby_apply'],
+            'rule': 'direct_code and hybrid custom blocks should use vectorized NumPy/Polars where practical and must justify slower Python loops explicitly.',
+        },
         'evidence_files': [
             'skills/factor-forge-step3/scripts/run_step3b.py',
             'factor_factory/formula/evaluator.py',
@@ -223,6 +260,7 @@ def current_execution_model() -> dict[str, Any]:
         ],
         'notes': [
             "Current slowness should be attributed first to pandas/groupby/rolling/apply execution in Factor Forge's formal Formula-IR path, not to qlib native operator execution.",
+            'A reviewed subset of Formula-IR time-series operators now defaults to NumPy kernels while pandas remains the correctness oracle and rollback path.',
         ],
     }
 
@@ -292,27 +330,27 @@ def upgrade_priority() -> list[dict[str, Any]]:
     return [
         {
             'rank': 1,
-            'operators': ['rolling_corr', 'rolling_cov'],
-            'why': 'groupby.apply rolling pairwise statistics likely high overhead and common in Alpha101-style formulas',
-            'next_phase': 'RTA-07B benchmark and parity harness',
+            'operators': ['ts_std', 'stddev'],
+            'why': 'std/stddev remain excluded from the default NumPy TS kernel set until ddof, NaN, and edge-window semantics are proven',
+            'next_phase': 'RTA-07H std semantic gate and benchmark',
         },
         {
             'rank': 2,
-            'operators': ['ts_argmin', 'ts_argmax'],
-            'why': 'rolling apply lambda is avoidable and semantics are narrow enough for numba/numpy parity',
-            'next_phase': 'RTA-07B candidate implementation',
+            'operators': ['cs_rank', 'cs_scale'],
+            'why': 'cross-sectional daily operations can dominate wide panels and are not yet covered by default NumPy TS kernels',
+            'next_phase': 'RTA-08 cross-sectional kernel inventory and parity',
         },
         {
             'rank': 3,
-            'operators': ['ts_rank'],
-            'why': 'already has experimental candidate; needs benchmark across ties, NaNs, memory, and real panel shapes',
-            'next_phase': 'RTA-07B benchmark matrix',
+            'operators': ['direct_code', 'hybrid_custom_block'],
+            'why': 'non-formula factor implementations need an explicit high-speed NumPy/Polars generation policy',
+            'next_phase': 'RTA-09 direct-code vectorization policy and smoke fixtures',
         },
         {
             'rank': 4,
-            'operators': ['ts_sum', 'ts_mean', 'ts_std', 'ts_min', 'ts_max'],
-            'why': 'medium-risk rolling reductions; benchmark before changing because pandas builtins may already be competitive',
-            'next_phase': 'RTA-07C optional dependency comparison',
+            'operators': ['polars_experimental_backend'],
+            'why': 'Polars is available locally and promising for dataframe-level execution, but cannot silently replace Formula-IR semantics without parity contracts',
+            'next_phase': 'RTA-10 Polars backend parity and performance envelope',
         },
     ]
 
@@ -327,12 +365,12 @@ def diagnostics() -> list[dict[str, Any]]:
         {
             'severity': 'warning',
             'code': 'OPERATOR_KERNEL_HOTSPOT_ROLLING_APPLY',
-            'message': 'ts_rank/argmin/argmax use rolling apply style paths that require benchmarked kernel candidates.',
+            'message': 'Legacy pandas rollback/reference paths for ts_rank/argmin/argmax still use rolling apply style code; default runtime uses NumPy kernels.',
         },
         {
             'severity': 'warning',
             'code': 'OPERATOR_KERNEL_HOTSPOT_GROUPBY_APPLY_CORR_COV',
-            'message': 'rolling_corr/rolling_cov use groupby.apply around rolling pairwise statistics.',
+            'message': 'Legacy pandas rollback/reference paths for rolling_corr/rolling_cov still use groupby.apply around rolling pairwise statistics; default runtime uses NumPy hybrid kernels.',
         },
         {
             'severity': 'info',
@@ -341,8 +379,8 @@ def diagnostics() -> list[dict[str, Any]]:
         },
         {
             'severity': 'info',
-            'code': 'EXPERIMENTAL_KERNELS_PRESENT_NOT_DEFAULT',
-            'message': 'Experimental Formula-IR kernels exist but are not the default production path.',
+            'code': 'DEFAULT_NUMPY_TS_KERNELS_ENABLED',
+            'message': 'High-confidence Formula-IR time-series kernels are default-enabled under pandas_optimized with pandas reference rollback.',
         },
     ]
 

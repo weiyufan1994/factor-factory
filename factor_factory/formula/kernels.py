@@ -41,6 +41,8 @@ NUMPY_ROLLING_SUPPORTED_OPERATORS = {
 DEFAULT_NUMPY_TS_OPERATORS = {
     'sum',
     'mean',
+    'std',
+    'stddev',
     'min',
     'max',
     'delta',
@@ -53,10 +55,7 @@ DEFAULT_NUMPY_TS_OPERATORS = {
     'covariance',
 }
 
-DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS = {
-    'std',
-    'stddev',
-}
+DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS: set[str] = set()
 
 DEFAULT_NUMPY_TS_ROLLBACK_ENV = 'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL'
 PAIRWISE_DEGENERATE_EPS = 1e-16
@@ -422,7 +421,7 @@ def apply_kernel_operator(
     try:
         if selected == 'pandas_optimized' and op in DEFAULT_NUMPY_TS_OPERATORS:
             if default_numpy_ts_enabled():
-                if op in {'sum', 'mean', 'min', 'max'}:
+                if op in {'sum', 'mean', 'std', 'stddev', 'min', 'max'}:
                     result = _numpy_rolling(args[0], window, frame, op)
                     optimized = True
                 elif op == 'delta':

@@ -39,8 +39,6 @@ NUMPY_ROLLING_SUPPORTED_OPERATORS = {
 }
 
 DEFAULT_NUMPY_TS_OPERATORS = {
-    'sum',
-    'mean',
     'min',
     'max',
     'delta',
@@ -219,9 +217,9 @@ def _rolling_numpy_one(values: np.ndarray, window: int, op: str) -> np.ndarray:
         return out
     valid_windows = windows[valid]
     if op == 'sum':
-        vals = valid_windows.sum(axis=1)
+        vals = _kahan_sum_axis1(valid_windows)
     elif op == 'mean':
-        vals = valid_windows.mean(axis=1)
+        vals = _kahan_sum_axis1(valid_windows) / float(window)
     elif op in {'std', 'stddev'}:
         vals = valid_windows.std(axis=1, ddof=1)
     elif op == 'min':
@@ -232,6 +230,17 @@ def _rolling_numpy_one(values: np.ndarray, window: int, op: str) -> np.ndarray:
         raise ValueError(f'unsupported numpy rolling op: {op}')
     out[np.flatnonzero(valid) + window - 1] = vals.astype('float64', copy=False)
     return out
+
+
+def _kahan_sum_axis1(values: np.ndarray) -> np.ndarray:
+    totals = np.zeros(values.shape[0], dtype='float64')
+    compensation = np.zeros(values.shape[0], dtype='float64')
+    for col_idx in range(values.shape[1]):
+        y = values[:, col_idx] - compensation
+        t = totals + y
+        compensation = (t - totals) - y
+        totals = t
+    return totals
 
 
 def _numpy_rolling(series: pd.Series, window: int, frame: pd.DataFrame, op: str) -> pd.Series:

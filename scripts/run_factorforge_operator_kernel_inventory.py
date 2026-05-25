@@ -44,8 +44,6 @@ OPERATOR_ORDER = [
 ]
 
 DEFAULT_NUMPY_TS_INVENTORY_OPERATORS = {
-    'ts_sum',
-    'ts_mean',
     'ts_min',
     'ts_max',
     'ts_argmin',

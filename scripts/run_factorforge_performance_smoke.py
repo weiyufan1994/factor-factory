@@ -167,6 +167,8 @@ def run_py_compile() -> dict[str, Any]:
         'scripts/run_factorforge_operator_kernel_inventory.py',
         'scripts/run_factorforge_operator_candidate_benchmark.py',
         'scripts/run_factorforge_formula_kernel_benchmark.py',
+        'scripts/run_factorforge_polars_adaptive_replay.py',
+        'scripts/run_factorforge_polars_parity_forensics.py',
         'scripts/run_factorforge_throughput_profile.py',
         'scripts/run_ts_rank_candidate_benchmark.py',
         'scripts/run_factorforge_performance_smoke.py',
@@ -2159,7 +2161,7 @@ def _fallback_count(kernel_profile: dict[str, Any], operator: str) -> int:
 
 
 def _promoted_operator_counts_ok(kernel_profile: dict[str, Any], *, expect_optimized: bool) -> bool:
-    expected = ['sum', 'mean', 'min', 'max', 'delta', 'delay', 'argmin', 'argmax', 'ts_rank', 'correlation', 'covariance']
+    expected = ['min', 'max', 'delta', 'delay', 'argmin', 'argmax', 'ts_rank', 'correlation', 'covariance']
     if expect_optimized:
         return all(_optimized_count(kernel_profile, op) >= 1 for op in expected)
     return all(_optimized_count(kernel_profile, op) == 0 and _fallback_count(kernel_profile, op) >= 1 for op in expected)
@@ -2220,8 +2222,10 @@ def run_formula_kernel_default_path_remains_pandas_case() -> dict[str, Any]:
         and kernel_profile.get('safe_to_make_default') is False
         and int(kernel_profile.get('operator_call_count') or 0) >= 2
         and default_profile.get('enabled') is True
-        and _optimized_count(kernel_profile, 'mean') >= 1
-        and _optimized_count(kernel_profile, 'sum') >= 1
+        and _optimized_count(kernel_profile, 'mean') == 0
+        and _optimized_count(kernel_profile, 'sum') == 0
+        and _fallback_count(kernel_profile, 'mean') >= 1
+        and _fallback_count(kernel_profile, 'sum') >= 1
     )
     return {'case': 'formula_kernel_default_path_remains_pandas', 'kernel_profile': kernel_profile, 'ok': ok}
 
@@ -3909,6 +3913,172 @@ def run_step3b_polars_experimental_uses_lazy_parquet_case(root: Path) -> dict[st
     }
 
 
+def _write_polars_replay_factor_spec(root: Path, report_id: str, formula: str, daily: pd.DataFrame) -> None:
+    spec_dir = root / 'objects' / 'factor_spec_master'
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    formula_ir = parse_formula(formula, available_columns=list(daily.columns), raise_on_error=True)
+    write_json(spec_dir / f'factor_spec_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': report_id,
+        'canonical_spec': {
+            'formula_ir': formula_ir,
+        },
+    })
+    run_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+    run_dir.mkdir(parents=True, exist_ok=True)
+    daily.to_parquet(run_dir / f'daily_input__{report_id}.parquet', index=False)
+
+
+def run_polars_adaptive_replay_benchmark_contract_case(root: Path) -> dict[str, Any]:
+    daily = build_polars_alpha017_like_frame(unsorted=False)
+    supported_report_id = 'PERF_SMOKE_POLARS_REPLAY_SUPPORTED'
+    unsupported_report_id = 'PERF_SMOKE_POLARS_REPLAY_UNSUPPORTED'
+    supported_formula = (
+        'plus('
+        'plus('
+        'negate(rank(plus(plus(sign(delta(close,1)), sign(delta(delay(close,1),1))), sign(delta(delay(close,2),1))))),'
+        '1'
+        '),'
+        'divide(sum(volume,5), sum(volume,20))'
+        ')'
+    )
+    _write_polars_replay_factor_spec(root, supported_report_id, supported_formula, daily)
+    _write_polars_replay_factor_spec(root, unsupported_report_id, 'rank(ts_rank(close, 5))', daily)
+    output = root / 'polars_adaptive_replay_benchmark.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_polars_adaptive_replay.py',
+        '--root',
+        str(root),
+        '--output',
+        str(output),
+        '--max-cases',
+        '10',
+    ])
+    payload = read_json(output) if output.exists() else {}
+    cases = payload.get('cases') or []
+    by_report = {case.get('report_id'): case for case in cases if isinstance(case, dict)}
+    supported = by_report.get(supported_report_id) or {}
+    unsupported = by_report.get(unsupported_report_id) or {}
+    ok = bool(
+        proc.returncode == 0
+        and output.exists()
+        and payload.get('version') == 'factorforge_polars_adaptive_replay_v1'
+        and payload.get('read_only') is True
+        and payload.get('canonical_pollution') is False
+        and supported.get('polars_candidate') is True
+        and supported.get('polars_used') is True
+        and supported.get('parity_pass') is True
+        and supported.get('speedup_polars_vs_pandas') is not None
+        and unsupported.get('polars_candidate') is False
+        and unsupported.get('polars_skip_reason') == 'unsupported_operator:ts_rank'
+    )
+    return {
+        'case': 'polars_adaptive_replay_benchmark_contract',
+        'rc': proc.returncode,
+        'output': str(output),
+        'payload_version': payload.get('version'),
+        'supported_case': supported,
+        'unsupported_case': unsupported,
+        'ok': ok,
+    }
+
+
+def run_polars_adaptive_replay_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
+    output = REPO_ROOT / 'polars_adaptive_replay_forbidden.json'
+    if output.exists():
+        output.unlink()
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_polars_adaptive_replay.py',
+        '--root',
+        str(root),
+        '--output',
+        str(output),
+    ])
+    ok = bool(proc.returncode == 1 and 'BLOCK_POLARS_ADAPTIVE_REPLAY_NON_TMP_OUTPUT' in proc.stderr + proc.stdout and not output.exists())
+    return {
+        'case': 'polars_adaptive_replay_blocks_non_tmp_output',
+        'rc': proc.returncode,
+        'token_present': 'BLOCK_POLARS_ADAPTIVE_REPLAY_NON_TMP_OUTPUT' in proc.stderr + proc.stdout,
+        'output_exists': output.exists(),
+        'ok': ok,
+    }
+
+
+def run_polars_parity_forensics_contract_case(root: Path) -> dict[str, Any]:
+    daily = build_polars_alpha017_like_frame(unsorted=False)
+    report_id = 'PERF_SMOKE_POLARS_PARITY_FORENSICS'
+    formula = (
+        'multiply('
+        'negate(sign(plus(minus(close, delay(close, 7)), delta(close, 7)))),'
+        'plus(1, rank(plus(1, sum(returns, 20))))'
+        ')'
+    )
+    _write_polars_replay_factor_spec(root, report_id, formula, daily)
+    output = root / 'polars_parity_forensics.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_polars_parity_forensics.py',
+        '--root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--output',
+        str(output),
+        '--tolerance',
+        '1e-8',
+    ])
+    payload = read_json(output) if output.exists() else {}
+    node_profiles = payload.get('node_profiles') if isinstance(payload.get('node_profiles'), list) else []
+    ok = bool(
+        proc.returncode == 0
+        and output.exists()
+        and payload.get('version') == 'factorforge_polars_parity_forensics_v1'
+        and payload.get('read_only') is True
+        and payload.get('canonical_pollution') is False
+        and payload.get('report_id') == report_id
+        and len(node_profiles) >= 8
+        and all('node_id' in profile and 'parity_pass' in profile for profile in node_profiles)
+        and payload.get('first_divergent_node') is None
+        and payload.get('verdict') == 'ACCEPT'
+    )
+    return {
+        'case': 'polars_parity_forensics_contract',
+        'rc': proc.returncode,
+        'output': str(output),
+        'payload_version': payload.get('version'),
+        'node_profile_count': len(node_profiles),
+        'first_divergent_node': payload.get('first_divergent_node'),
+        'verdict': payload.get('verdict'),
+        'ok': ok,
+    }
+
+
+def run_polars_parity_forensics_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
+    output = REPO_ROOT / 'polars_parity_forensics_forbidden.json'
+    if output.exists():
+        output.unlink()
+    proc = run_cmd([
+        sys.executable,
+        'scripts/run_factorforge_polars_parity_forensics.py',
+        '--root',
+        str(root),
+        '--report-id',
+        'PERF_SMOKE_POLARS_PARITY_FORENSICS',
+        '--output',
+        str(output),
+    ])
+    ok = bool(proc.returncode == 1 and 'BLOCK_POLARS_PARITY_FORENSICS_NON_TMP_OUTPUT' in proc.stderr + proc.stdout and not output.exists())
+    return {
+        'case': 'polars_parity_forensics_blocks_non_tmp_output',
+        'rc': proc.returncode,
+        'token_present': 'BLOCK_POLARS_PARITY_FORENSICS_NON_TMP_OUTPUT' in proc.stderr + proc.stdout,
+        'output_exists': output.exists(),
+        'ok': ok,
+    }
+
+
 def create_self_quant_fixture(root: Path, report_id: str) -> None:
     run_dir = root / 'runs' / report_id
     input_dir = run_dir / 'step3a_local_inputs'
@@ -4383,8 +4553,8 @@ def run_operator_kernel_inventory_flags_hotspots_case(root: Path) -> dict[str, A
         if isinstance(item, dict)
     }
     diagnostics = {item.get('code') for item in payload.get('diagnostics', []) if isinstance(item, dict)}
-    default_enabled = ['ts_sum', 'ts_mean', 'ts_min', 'ts_max', 'ts_delta', 'ts_delay', 'ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov', 'ts_rank']
-    excluded = ['ts_std']
+    default_enabled = ['ts_min', 'ts_max', 'ts_delta', 'ts_delay', 'ts_argmin', 'ts_argmax', 'rolling_corr', 'rolling_cov', 'ts_rank']
+    excluded = ['ts_sum', 'ts_mean', 'ts_std']
     default_enabled_ok = all((by_op.get(op) or {}).get('default_kernel_enabled') is True for op in default_enabled)
     excluded_ok = all((by_op.get(op) or {}).get('default_kernel_enabled') is not True for op in excluded)
     ok = (
@@ -6071,6 +6241,10 @@ def main() -> int:
         run_operator_profile_disabled_metadata_present_case(root),
         run_step3b_polars_experimental_profile_case(root),
         run_step3b_polars_experimental_uses_lazy_parquet_case(root),
+        run_polars_adaptive_replay_benchmark_contract_case(root),
+        run_polars_adaptive_replay_blocks_non_tmp_output_case(root),
+        run_polars_parity_forensics_contract_case(root),
+        run_polars_parity_forensics_blocks_non_tmp_output_case(root),
         run_self_quant_parity_case(root),
         run_self_quant_profile_case(root),
         run_step4_self_quant_prefers_daily_parquet_case(root),

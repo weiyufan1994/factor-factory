@@ -1492,6 +1492,48 @@ def run_polars_alpha017_subset_parity_case() -> dict[str, Any]:
     }
 
 
+def run_polars_alpha030_native_subset_parity_case() -> dict[str, Any]:
+    frame = build_polars_alpha017_like_frame(unsorted=True)
+    formula = (
+        'plus('
+        'plus('
+        'negate(rank(plus(plus(sign(delta(close,1)), sign(delta(delay(close,1),1))), sign(delta(delay(close,2),1))))),'
+        '1'
+        '),'
+        'divide(sum(volume,5), sum(volume,20))'
+        ')'
+    )
+    formula_ir = parse_formula(formula, available_columns=list(frame.columns), raise_on_error=True)
+    if not polars_dependency_available():
+        return {
+            'case': 'polars_alpha030_native_subset_parity',
+            'polars_installed': False,
+            'skipped_reason': 'polars_dependency_missing',
+            'ok': True,
+        }
+    reference = evaluate_formula_frame(formula_ir, frame, engine='reference')
+    experimental, profile = evaluate_formula_frame(formula_ir, frame, engine='polars_experimental', return_profile=True)
+    parity = assert_polars_result_parity(reference, experimental, tolerance=1e-12)
+    ok = bool(
+        profile.get('engine') == 'polars_experimental'
+        and profile.get('polars_used') is True
+        and profile.get('polars_fallback_used') is False
+        and parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+        and ((parity.get('rank_corr') is None) or float(parity.get('rank_corr')) >= 0.999999)
+        and int(parity.get('parity_sample_rows') or 0) >= 5000
+    )
+    return {
+        'case': 'polars_alpha030_native_subset_parity',
+        'polars_installed': True,
+        'profile': profile,
+        **parity,
+        'ok': ok,
+    }
+
+
 def run_polars_unsupported_operator_fallback_or_block_case() -> dict[str, Any]:
     frame = build_polars_alpha017_like_frame()
     formula = 'rank(ts_rank(close, 5))'
@@ -1534,6 +1576,28 @@ def run_polars_parity_failure_blocks_case() -> dict[str, Any]:
         'case': 'polars_parity_failure_blocks',
         'token_present': bool(token_present),
         'ok': bool(token_present),
+    }
+
+
+def run_polars_key_order_parity_ignores_key_dtype_case() -> dict[str, Any]:
+    reference = pd.DataFrame({
+        'ts_code': ['A', 'A', 'B', 'B'],
+        'trade_date': [20200101, 20200102, 20200101, 20200102],
+        'factor_value': [0.1, 0.2, 0.3, 0.4],
+    })
+    candidate = reference.copy()
+    candidate['trade_date'] = candidate['trade_date'].astype(str)
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-12)
+    ok = bool(
+        parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-12
+    )
+    return {
+        'case': 'polars_key_order_parity_ignores_key_dtype',
+        **parity,
+        'ok': ok,
     }
 
 
@@ -3767,6 +3831,84 @@ def run_step3b_polars_experimental_profile_case(root: Path) -> dict[str, Any]:
     }
 
 
+def run_step3b_polars_experimental_uses_lazy_parquet_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP3B_POLARS_LAZY_PARQUET'
+    run_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+    run_dir.mkdir(parents=True, exist_ok=True)
+    daily = build_polars_alpha017_like_frame(unsorted=False)
+    daily_parquet_path = run_dir / f'daily_input__{report_id}.parquet'
+    daily.to_parquet(daily_parquet_path, index=False)
+    formula = (
+        'plus('
+        'plus('
+        'negate(rank(plus(plus(sign(delta(close,1)), sign(delta(delay(close,1),1))), sign(delta(delay(close,2),1))))),'
+        '1'
+        '),'
+        'divide(sum(volume,5), sum(volume,20))'
+        ')'
+    )
+    formula_ir = parse_formula(formula, available_columns=list(daily.columns), raise_on_error=True)
+    impl_dir = root / 'generated_code' / report_id
+    impl_dir.mkdir(parents=True, exist_ok=True)
+    impl = impl_dir / 'factor_impl.py'
+    impl.write_text(generate_pandas_formula_code(report_id=report_id, factor_id='POLARS_LAZY_PARQUET', formula_ir=formula_ir), encoding='utf-8')
+    module = import_run_step3b(root)
+    kwargs = {
+        'report_id': report_id,
+        'factor_id': 'POLARS_LAZY_PARQUET',
+        'implementation_path': impl,
+        'local_inputs': {
+            'input_mode': 'daily_only',
+            'daily_df_parquet': str(daily_parquet_path),
+            'preferred_daily_format': 'parquet',
+            'daily_io_contract': {
+                'version': 'factorforge_step3a_daily_io_contract_v1',
+                'performance_path': 'parquet',
+                'parquet_required_for_performance': True,
+            },
+        },
+        'step2_research_context': {'smoke': True},
+        'mode_decision': {'implementation_mode': 'operator'},
+        'artifact_identity': {},
+        'formula_engine': 'polars_experimental',
+        'csv_output_policy': 'no_csv',
+    }
+    if not polars_dependency_available():
+        return {
+            'case': 'step3b_polars_experimental_uses_lazy_parquet',
+            'polars_installed': False,
+            'skipped_reason': 'polars_dependency_missing',
+            'ok': True,
+        }
+    original_read_df = module.read_df
+
+    def block_full_daily_read(path):
+        if Path(path) == daily_parquet_path:
+            raise RuntimeError('BLOCK_TEST_FULL_PANDAS_DAILY_READ')
+        return original_read_df(path)
+
+    module.read_df = block_full_daily_read
+    outputs = module.generate_first_run_factor_values(**kwargs)
+    metadata = read_json(root / outputs['run_metadata_path'])
+    engine_profile = (metadata.get('performance_profile') or {}).get('formula_engine_profile') or {}
+    ok = bool(
+        engine_profile.get('engine') == 'polars_experimental'
+        and engine_profile.get('polars_used') is True
+        and engine_profile.get('polars_fallback_used') is False
+        and engine_profile.get('polars_execution_path') == 'lazy_parquet'
+        and engine_profile.get('polars_input_format') == 'parquet'
+        and engine_profile.get('parity_checked') is True
+        and engine_profile.get('key_order_equal') is True
+        and engine_profile.get('nan_mask_equal') is True
+    )
+    return {
+        'case': 'step3b_polars_experimental_uses_lazy_parquet',
+        'polars_installed': True,
+        'engine_profile': engine_profile,
+        'ok': ok,
+    }
+
+
 def create_self_quant_fixture(root: Path, report_id: str) -> None:
     run_dir = root / 'runs' / report_id
     input_dir = run_dir / 'step3a_local_inputs'
@@ -5855,8 +5997,10 @@ def main() -> int:
         run_polars_delta_nan_parity_case(),
         run_polars_arithmetic_nan_parity_case(),
         run_polars_alpha017_subset_parity_case(),
+        run_polars_alpha030_native_subset_parity_case(),
         run_polars_unsupported_operator_fallback_or_block_case(),
         run_polars_parity_failure_blocks_case(),
+        run_polars_key_order_parity_ignores_key_dtype_case(),
         run_polars_parity_failure_diagnostics_present_case(),
         run_ts_rank_default_disabled_large_case(),
         run_ts_rank_experimental_fast_parity_case(),
@@ -5926,6 +6070,7 @@ def main() -> int:
         run_step3b_operator_profile_metadata_present_case(root),
         run_operator_profile_disabled_metadata_present_case(root),
         run_step3b_polars_experimental_profile_case(root),
+        run_step3b_polars_experimental_uses_lazy_parquet_case(root),
         run_self_quant_parity_case(root),
         run_self_quant_profile_case(root),
         run_step4_self_quant_prefers_daily_parquet_case(root),

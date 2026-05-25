@@ -794,9 +794,11 @@ def _run_formula_engine_with_profile(
     operator_profile: bool = False,
     ts_rank_engine_config: dict | None = None,
     formula_kernel_config: dict | None = None,
+    daily_parquet_path: Path | None = None,
+    formula_ir_override: dict | None = None,
 ):
     metadata = getattr(module, 'METADATA', {}) if module is not None else {}
-    formula_ir = getattr(module, 'FORMULA_IR', None)
+    formula_ir = formula_ir_override or getattr(module, 'FORMULA_IR', None)
     if not isinstance(metadata, dict) or metadata.get('implementation_source') != 'formula_ir_pandas_codegen' or not isinstance(formula_ir, dict):
         return None, _default_formula_engine_profile()
 
@@ -831,15 +833,24 @@ def _run_formula_engine_with_profile(
         if parity_fields.get('key_order_equal') is not True or parity_fields.get('nan_mask_equal') is not True:
             raise AssertionError(f'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED:{parity_fields}')
     compare_seconds = time.perf_counter() - compare_start
-    profile_frame, formula_engine_profile = evaluate_formula_frame(
-        formula_ir,
-        daily_df,
-        engine=formula_engine,
-        return_profile=True,
-        operator_profile_enabled=operator_profile,
-        ts_rank_engine_config=ts_rank_engine_config,
-        formula_kernel_config=formula_kernel_config,
-    )
+    if formula_engine == 'polars_experimental' and daily_parquet_path is not None and daily_parquet_path.suffix.lower() == '.parquet':
+        from factor_factory.formula.polars_evaluator import evaluate_formula_parquet_polars_experimental
+
+        profile_frame, formula_engine_profile = evaluate_formula_parquet_polars_experimental(
+            formula_ir,
+            daily_parquet_path,
+            return_profile=True,
+        )
+    else:
+        profile_frame, formula_engine_profile = evaluate_formula_frame(
+            formula_ir,
+            daily_df,
+            engine=formula_engine,
+            return_profile=True,
+            operator_profile_enabled=operator_profile,
+            ts_rank_engine_config=ts_rank_engine_config,
+            formula_kernel_config=formula_kernel_config,
+        )
     ts_rank_profile = formula_engine_profile.get('ts_rank_engine_profile') or default_ts_rank_engine_profile(ts_rank_engine_config)
     ts_rank_profile.update({
         'parity_checked': bool((ts_rank_engine_config or {}).get('selected_engine') != 'pandas_reference'),
@@ -936,10 +947,37 @@ def generate_first_run_factor_values(
     module = import_module_from_path(implementation_path)
     if not hasattr(module, 'compute_factor'):
         raise SystemExit(f'Step3B implementation missing compute_factor(): {implementation_path}')
+    metadata = getattr(module, 'METADATA', {}) if module is not None else {}
+    module_formula_ir = getattr(module, 'FORMULA_IR', None)
+    use_lazy_polars_parquet = bool(
+        selected_formula_engine == 'polars_experimental'
+        and daily_path == daily_parquet_path
+        and daily_path is not None
+        and daily_path.suffix.lower() == '.parquet'
+        and isinstance(metadata, dict)
+        and metadata.get('implementation_source') == 'formula_ir_pandas_codegen'
+        and isinstance(module_formula_ir, dict)
+    )
+    lazy_polars_formula_ir = None
 
     with timer.phase('read_inputs'):
         minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
-        daily_df = read_df(daily_path)
+        if use_lazy_polars_parquet:
+            try:
+                from factor_factory.formula.polars_evaluator import read_formula_parquet_sample_for_polars_parity
+
+                daily_df, lazy_polars_formula_ir = read_formula_parquet_sample_for_polars_parity(module_formula_ir, daily_path)
+            except ModuleNotFoundError as exc:
+                if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
+                    raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
+                raise
+            except (KeyError, ValueError) as exc:
+                message = str(exc)
+                if 'BLOCK_POLARS_EXPERIMENTAL_' in message or 'BLOCK_UNSUPPORTED_FORMULA_SYNTAX' in message:
+                    raise SystemExit(message) from exc
+                raise
+        else:
+            daily_df = read_df(daily_path)
 
     formula_engine_profile = _default_formula_engine_profile()
     with timer.phase('compute_factor'):
@@ -951,6 +989,8 @@ def generate_first_run_factor_values(
                 operator_profile=operator_profile_enabled,
                 ts_rank_engine_config=ts_rank_engine_config,
                 formula_kernel_config=formula_kernel_config,
+                daily_parquet_path=daily_parquet_path,
+                formula_ir_override=lazy_polars_formula_ir,
             )
             if profiled_result is not None:
                 result_df = profiled_result
@@ -977,6 +1017,11 @@ def generate_first_run_factor_values(
             if 'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_' in message:
                 raise SystemExit(message) from exc
             if 'BLOCK_EXPERIMENTAL_TS_RANK_' in message:
+                raise SystemExit(message) from exc
+            raise
+        except ValueError as exc:
+            message = str(exc)
+            if 'BLOCK_POLARS_EXPERIMENTAL_' in message or 'BLOCK_UNSUPPORTED_FORMULA_SYNTAX' in message:
                 raise SystemExit(message) from exc
             raise
     if result_df is None or len(result_df) == 0:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -9,7 +10,7 @@ import pandas as pd
 
 from .evaluator import _is_key_sorted, _prepare_optimized_frame, _validate_formula_ir_inputs, evaluate_formula_frame
 POLARS_ENGINE = 'polars_experimental'
-SUPPORTED_POLARS_OPERATORS = {'rank', 'delta', 'multiply', 'divide', 'plus', 'minus', 'negate'}
+SUPPORTED_POLARS_OPERATORS = {'rank', 'delta', 'delay', 'sum', 'sign', 'multiply', 'divide', 'plus', 'minus', 'negate'}
 
 
 def polars_dependency_available() -> bool:
@@ -42,14 +43,111 @@ def first_unsupported_operator(formula_ir: dict[str, Any]) -> str | None:
     return None
 
 
+def _resolve_formula_ir_for_schema(formula_ir: dict[str, Any], available_columns: set[str]) -> dict[str, Any]:
+    resolved_ir = json.loads(json.dumps(formula_ir, ensure_ascii=False))
+    aliases = resolved_ir.get('field_aliases') if isinstance(resolved_ir.get('field_aliases'), dict) else {}
+
+    def resolve_field(name: str, current: str | None) -> str:
+        candidates = []
+        for value in [current, name, *(aliases.get(name) or [])]:
+            if value and value not in candidates:
+                candidates.append(str(value))
+        for candidate in candidates:
+            if candidate in available_columns:
+                return candidate
+        raise KeyError(f'BLOCK_POLARS_EXPERIMENTAL_MISSING_FIELD:{name}')
+
+    def update_node(node: dict[str, Any]) -> dict[str, Any]:
+        if node.get('type') == 'field':
+            node['resolved_field'] = resolve_field(str(node.get('name')), node.get('resolved_field'))
+        elif node.get('type') == 'operator':
+            node['args'] = [update_node(arg) for arg in node.get('args') or []]
+        return node
+
+    resolved_ir['root'] = update_node(resolved_ir['root'])
+    return resolved_ir
+
+
+def _collect_resolved_fields(node: dict[str, Any], out: set[str]) -> None:
+    if not isinstance(node, dict):
+        return
+    if node.get('type') == 'field':
+        out.add(str(node.get('resolved_field') or node.get('name')))
+    for arg in node.get('args') or []:
+        _collect_resolved_fields(arg, out)
+
+
+def resolve_formula_ir_for_parquet_schema(formula_ir: dict[str, Any], parquet_path: str | Path) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    if formula_ir.get('parse_status') != 'success':
+        raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_SYNTAX: {formula_ir.get("parse_errors")}')
+    if not polars_dependency_available():
+        raise ModuleNotFoundError('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING')
+
+    import polars as pl
+
+    schema = pl.read_parquet_schema(str(parquet_path))
+    available_columns = set(schema.keys())
+    if not {'ts_code', 'trade_date'}.issubset(available_columns):
+        raise KeyError('BLOCK_POLARS_EXPERIMENTAL_MISSING_KEYS')
+    resolved_ir = _resolve_formula_ir_for_schema(formula_ir, available_columns)
+    required_fields: set[str] = set()
+    _collect_resolved_fields(resolved_ir.get('root') or {}, required_fields)
+    selected_columns = ['ts_code', 'trade_date', *sorted(required_fields - {'ts_code', 'trade_date'})]
+    return resolved_ir, selected_columns, {key: str(value) for key, value in schema.items()}
+
+
+def read_formula_parquet_sample_for_polars_parity(
+    formula_ir: dict[str, Any],
+    parquet_path: str | Path,
+    *,
+    max_rows: int = 5000,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    if not polars_dependency_available():
+        raise ModuleNotFoundError('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING')
+
+    import polars as pl
+
+    resolved_ir, selected_columns, _schema = resolve_formula_ir_for_parquet_schema(formula_ir, parquet_path)
+    sample = (
+        pl.scan_parquet(str(parquet_path))
+        .select(selected_columns)
+        .with_columns([
+            pl.col('ts_code').cast(pl.Utf8),
+            pl.col('trade_date').cast(pl.Utf8),
+        ])
+        .sort(['ts_code', 'trade_date'])
+        .limit(max_rows)
+        .collect()
+        .to_pandas()
+    )
+    return sample, resolved_ir
+
+
 def _constant_value(value: Any) -> float:
     if isinstance(value, pd.Series):
         value = value.dropna().iloc[0]
     return float(value)
 
 
+def _window_from_node(node: dict[str, Any], default: int = 1) -> int:
+    args = node.get('args') or []
+    if len(args) < 2:
+        return int(default)
+    return int(_constant_value(args[1].get('value')))
+
+
 def _nullify_nan(expr: Any) -> Any:
     return expr.fill_nan(None)
+
+
+def _sign_expr(expr: Any, pl: Any) -> Any:
+    value = _nullify_nan(expr)
+    return (
+        pl.when(value > 0).then(pl.lit(1.0))
+        .when(value < 0).then(pl.lit(-1.0))
+        .when(value == 0).then(pl.lit(0.0))
+        .otherwise(None)
+    )
 
 
 def _eval_expr(node: dict[str, Any], pl: Any):
@@ -68,9 +166,19 @@ def _eval_expr(node: dict[str, Any], pl: Any):
         ranked = value.rank(method='average').over('trade_date')
         return pl.when(value.is_null()).then(None).otherwise(ranked / non_missing_count)
     if op == 'delta':
-        window = int(_constant_value(node.get('args', [None, {'value': 1}])[1].get('value')))
+        window = _window_from_node(node)
         value = _nullify_nan(args[0])
         return _nullify_nan(value - value.shift(window).over('ts_code'))
+    if op == 'delay':
+        window = _window_from_node(node)
+        value = _nullify_nan(args[0])
+        return _nullify_nan(value.shift(window).over('ts_code'))
+    if op == 'sum':
+        window = _window_from_node(node)
+        value = _nullify_nan(args[0])
+        return _nullify_nan(value.rolling_sum(window_size=window, min_samples=window).over('ts_code'))
+    if op == 'sign':
+        return _sign_expr(args[0], pl)
     if op == 'multiply':
         return _nullify_nan(args[0] * args[1])
     if op == 'divide':
@@ -122,9 +230,19 @@ def _eval_column(node: dict[str, Any], pl_frame: Any, pl: Any, cache: dict[str, 
         ranked = value.rank(method='average').over('trade_date')
         expr = pl.when(value.is_null()).then(None).otherwise(ranked / non_missing_count)
     elif op == 'delta':
-        window = int(_constant_value(node.get('args', [None, {'value': 1}])[1].get('value')))
+        window = _window_from_node(node)
         value = pl.col(arg_cols[0])
         expr = _nullify_nan(value - value.shift(window).over('ts_code'))
+    elif op == 'delay':
+        window = _window_from_node(node)
+        value = pl.col(arg_cols[0])
+        expr = _nullify_nan(value.shift(window).over('ts_code'))
+    elif op == 'sum':
+        window = _window_from_node(node)
+        value = pl.col(arg_cols[0])
+        expr = _nullify_nan(value.rolling_sum(window_size=window, min_samples=window).over('ts_code'))
+    elif op == 'sign':
+        expr = _sign_expr(pl.col(arg_cols[0]), pl)
     elif op == 'multiply':
         expr = _nullify_nan(pl.col(arg_cols[0]) * pl.col(arg_cols[1]))
     elif op == 'divide':
@@ -143,8 +261,10 @@ def _eval_column(node: dict[str, Any], pl_frame: Any, pl: Any, cache: dict[str, 
 
 
 def _rank_corr(reference: pd.DataFrame, optimized: pd.DataFrame) -> float | None:
-    merged = reference[['ts_code', 'trade_date', 'factor_value']].merge(
-        optimized[['ts_code', 'trade_date', 'factor_value']],
+    reference_norm = _normalize_key_columns(reference[['ts_code', 'trade_date', 'factor_value']])
+    optimized_norm = _normalize_key_columns(optimized[['ts_code', 'trade_date', 'factor_value']])
+    merged = reference_norm.merge(
+        optimized_norm,
         on=['ts_code', 'trade_date'],
         how='inner',
         suffixes=('_reference', '_optimized'),
@@ -169,9 +289,18 @@ def _json_safe_float(value: Any) -> float | None | str:
     return value
 
 
+def _normalize_key_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    out['ts_code'] = out['ts_code'].astype(str)
+    out['trade_date'] = out['trade_date'].astype(str)
+    return out
+
+
 def _parity_fields(reference: pd.DataFrame, candidate: pd.DataFrame, tolerance: float) -> dict[str, Any]:
-    ref_sorted = reference.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-    cand_sorted = candidate.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    reference_norm = _normalize_key_columns(reference)
+    candidate_norm = _normalize_key_columns(candidate)
+    ref_sorted = reference_norm.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    cand_sorted = candidate_norm.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
     ref_values = pd.to_numeric(ref_sorted['factor_value'], errors='coerce')
     cand_values = pd.to_numeric(cand_sorted['factor_value'], errors='coerce')
     ref_mask = ref_values.notna()
@@ -199,8 +328,8 @@ def _parity_fields(reference: pd.DataFrame, candidate: pd.DataFrame, tolerance: 
         'rank_corr': _rank_corr(reference, candidate),
         'row_count_equal': int(len(reference)) == int(len(candidate)),
         'key_order_equal': bool(
-            reference[['ts_code', 'trade_date']].reset_index(drop=True).equals(
-                candidate[['ts_code', 'trade_date']].reset_index(drop=True)
+            reference_norm[['ts_code', 'trade_date']].reset_index(drop=True).equals(
+                candidate_norm[['ts_code', 'trade_date']].reset_index(drop=True)
             )
         ),
         'nan_mask_equal': bool(ref_nan_mask.equals(cand_nan_mask)),
@@ -310,6 +439,77 @@ def evaluate_formula_frame_polars_experimental(
         'polars_fallback_used': False,
         'polars_fallback_reason': None,
         **parity_fields,
+    }
+    if return_profile:
+        return result, profile
+    return result
+
+
+def evaluate_formula_parquet_polars_experimental(
+    formula_ir: dict[str, Any],
+    parquet_path: str | Path,
+    *,
+    return_profile: bool = False,
+):
+    if formula_ir.get('parse_status') != 'success':
+        raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_SYNTAX: {formula_ir.get("parse_errors")}')
+    if not polars_dependency_available():
+        raise ModuleNotFoundError('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING')
+    unsupported = first_unsupported_operator(formula_ir)
+    if unsupported is not None:
+        raise ValueError(f'BLOCK_POLARS_EXPERIMENTAL_UNSUPPORTED_OPERATOR:{unsupported}')
+
+    path = Path(parquet_path)
+    resolved_ir, selected_columns, _schema = resolve_formula_ir_for_parquet_schema(formula_ir, path)
+
+    import polars as pl
+
+    lf = (
+        pl.scan_parquet(str(path))
+        .select(selected_columns)
+        .with_columns([
+            pl.col('ts_code').cast(pl.Utf8),
+            pl.col('trade_date').cast(pl.Utf8),
+        ])
+        .sort(['ts_code', 'trade_date'])
+    )
+    lf, factor_col = _eval_column(resolved_ir['root'], lf, pl, {})
+    result = (
+        lf.select([
+            pl.col('ts_code'),
+            pl.col('trade_date'),
+            pl.col(factor_col).alias('factor_value'),
+        ])
+        .with_columns(pl.col('factor_value').fill_nan(None))
+        .collect()
+        .to_pandas()
+    )
+    result['factor_value'] = pd.to_numeric(result['factor_value'], errors='coerce')
+    profile = {
+        'engine': POLARS_ENGINE,
+        'reference_engine': 'pandas_formula_ir_reference',
+        'memoization_enabled': False,
+        'cache_hits': None,
+        'cache_misses': None,
+        'input_presorted': None,
+        'output_presorted': True,
+        'ts_rank_engine': None,
+        'ts_rank_fast_path_enabled': False,
+        'ts_rank_fast_path_count': 0,
+        'ts_rank_fallback_count': 0,
+        'ts_rank_fallback_reasons': [],
+        'polars_enabled': True,
+        'polars_used': True,
+        'polars_fallback_used': False,
+        'polars_fallback_reason': None,
+        'polars_execution_path': 'lazy_parquet',
+        'polars_input_format': 'parquet',
+        'polars_parquet_path': str(path),
+        'parity_checked': False,
+        'parity_sample_rows': 0,
+        'row_count_equal': None,
+        'key_order_equal': None,
+        'nan_mask_equal': None,
     }
     if return_profile:
         return result, profile

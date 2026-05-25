@@ -230,6 +230,85 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
     return payload
 
 
+def _complete_hybrid_contract(payload: dict[str, Any]) -> bool:
+    contract = payload.get("implementation_contract")
+    if not isinstance(contract, dict):
+        return False
+    operator_subgraph = contract.get("operator_subgraph")
+    if not isinstance(operator_subgraph, dict):
+        return False
+    formula_ir = operator_subgraph.get("formula_ir")
+    custom_blocks = contract.get("custom_blocks")
+    return bool(
+        contract.get("hybrid_contract_version") == "factorforge_hybrid_implementation_contract_v1"
+        and isinstance(formula_ir, dict)
+        and formula_ir.get("parse_status") == "success"
+        and isinstance(custom_blocks, list)
+        and custom_blocks
+        and contract.get("formula_hash")
+        and contract.get("custom_block_hash")
+        and contract.get("hybrid_hash")
+    )
+
+
+def _invalid_step2_hybrid(payload: dict[str, Any], request: dict[str, Any]) -> bool:
+    role = str(request.get("role") or "")
+    if role not in {"primary", "challenger"}:
+        return False
+    return str(payload.get("implementation_mode") or "").strip() == "hybrid" and not _complete_hybrid_contract(payload)
+
+
+def repair_step2_payload(
+    *,
+    provider: dict[str, Any],
+    model: str,
+    request: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    role = str(request.get("role") or "")
+    repair_prompt = (
+        "Your previous Step2 raw JSON declared implementation_mode='hybrid' without a complete executable "
+        "Factor Forge hybrid contract. Return corrected Step2 raw JSON only, with fields at the top level. "
+        "Do not wrap inside factor_spec_raw. If you cannot provide all hybrid fields "
+        "(hybrid_contract_version=factorforge_hybrid_implementation_contract_v1, operator_subgraph.formula_ir.parse_status='success', "
+        "non-empty custom_blocks, formula_hash, custom_block_hash, hybrid_hash), choose implementation_mode='direct_code'. "
+        "For the smart-money VWAP/minute sorting algorithm, direct_code is appropriate unless the full hybrid contract is truly complete. "
+        "Preserve report-specific formulas, required_inputs, ambiguities, and mechanism contracts. "
+        "Do not use fixture or template content."
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a Factor Forge formal Step2 extraction provider. Output strict JSON only.",
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Role: {role}\n"
+                f"Report ID: {request.get('report_id')}\n"
+                f"Correction requirement:\n{repair_prompt}\n\n"
+                f"Previous invalid raw JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+            ),
+        },
+    ]
+    raw = openai_chat_completion(
+        provider=provider,
+        model=model,
+        messages=messages,
+        max_tokens=int(os.getenv("FACTORFORGE_STEP2_LLM_REPAIR_MAX_TOKENS", "8000")),
+    )
+    repaired = normalize_step2_payload(extract_json_object(raw), request)
+    if _invalid_step2_hybrid(repaired, request):
+        raise RuntimeError("Step2 LLM returned incomplete hybrid_contract after repair")
+    repaired.setdefault("_llm_bridge_provider_repairs", []).append(
+        {
+            "repair": "invalid_hybrid_contract_reasked_llm",
+            "reason": "implementation_mode=hybrid requires complete executable hybrid_contract",
+        }
+    )
+    return repaired
+
+
 def step1_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, str]:
     role = str(request.get("role") or "")
     model = os.getenv("FACTORFORGE_STEP1_LLM_MODEL", DEFAULT_STEP1_MODEL)
@@ -330,6 +409,9 @@ def main() -> int:
         payload = extract_json_object(raw)
         if version == "factorforge_step2_llm_bridge_v1":
             payload = normalize_step2_payload(payload, request)
+            if _invalid_step2_hybrid(payload, request):
+                eprint("[factorforge-provider] invalid Step2 hybrid contract returned; asking model for corrected raw JSON")
+                payload = repair_step2_payload(provider=provider, model=model, request=request, payload=payload)
         payload = enrich_provenance(payload, request, provider_name=provider_name, model=model)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0

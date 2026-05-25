@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -12,6 +13,23 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RID = "FORMAL_LLM_BRIDGE_SMOKE"
+SAMPLE_DIRECT_CODE_SOURCE = """import numpy as np
+import pandas as pd
+
+
+def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    if daily_df is None or daily_df.empty:
+        raise ValueError("daily_df is required")
+    df = daily_df.copy()
+    required = {"ts_code", "trade_date", "close"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"daily_df missing required columns: {missing}")
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df["factor_value"] = df.groupby("ts_code", sort=False)["close"].pct_change()
+    out = df[["ts_code", "trade_date", "factor_value"]].replace([np.inf, -np.inf], np.nan)
+    return out.dropna(subset=["factor_value"]).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+"""
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -300,6 +318,8 @@ def case_step2_fixture(root: Path) -> dict[str, Any]:
 def case_prepare_chain(root: Path) -> dict[str, Any]:
     step1 = root / "objects" / "raw_llm" / RID / "step1"
     step2 = root / "objects" / "raw_llm" / RID / "step2"
+    _inject_explicit_direct_code_source(step2 / "step2_primary_raw.json")
+    _inject_explicit_direct_code_source(step2 / "step2_challenger_raw.json")
     proc = run_cmd(
         [
             sys.executable,
@@ -376,6 +396,26 @@ def case_prepare_chain(root: Path) -> dict[str, Any]:
 def _write_raw_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _inject_explicit_direct_code_source(raw_path: Path) -> None:
+    raw = read_json(raw_path)
+    contract = raw.setdefault("implementation_contract", {})
+    contract["implementation_mode"] = "direct_code"
+    code_contract = contract.setdefault("code_contract", {})
+    code_contract.update({
+        "code_contract_version": "factorforge_direct_code_contract_v1",
+        "function_name": "compute_factor",
+        "entrypoint": "compute_factor",
+        "source_code": SAMPLE_DIRECT_CODE_SOURCE,
+        "code_hash": hashlib.sha256(SAMPLE_DIRECT_CODE_SOURCE.encode("utf-8")).hexdigest(),
+        "imports": ["numpy", "pandas"],
+        "dependencies": ["numpy", "pandas"],
+        "input_schema": {"daily_df": ["ts_code", "trade_date", "close"]},
+        "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
+        "required_fields": ["ts_code", "trade_date", "close"],
+    })
+    _write_raw_json(raw_path, raw)
 
 
 def _generate_fixture_raw(root: Path, report_id: str) -> tuple[Path, Path]:

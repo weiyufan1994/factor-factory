@@ -4,6 +4,7 @@ Independent Step 2 runner for FactorForge.
 Consumes Step 1 artifacts and produces Step 2 side artifacts + factor_spec_master.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -181,6 +182,53 @@ def direct_code_contract_available(primary: Dict[str, Any], aim: Dict[str, Any])
         or aim_contract.get('code_contract')
         or any(token in text for token in ['smart money', '聪明钱', 'custom', 'direct_code', '自然语言'])
     )
+
+
+def explicit_direct_code_source_contract(primary: Dict[str, Any], aim: Dict[str, Any]) -> Dict[str, Any]:
+    candidates: List[Dict[str, Any]] = []
+    for payload in [primary, aim]:
+        if not isinstance(payload, dict):
+            continue
+        raw_contract = payload.get('implementation_contract') if isinstance(payload.get('implementation_contract'), dict) else {}
+        for candidate in [
+            raw_contract.get('code_contract') if isinstance(raw_contract.get('code_contract'), dict) else {},
+            payload.get('code_contract') if isinstance(payload.get('code_contract'), dict) else {},
+            payload.get('direct_code_contract') if isinstance(payload.get('direct_code_contract'), dict) else {},
+            (payload.get('canonical_spec') or {}).get('code_contract') if isinstance(payload.get('canonical_spec'), dict) and isinstance((payload.get('canonical_spec') or {}).get('code_contract'), dict) else {},
+        ]:
+            if candidate:
+                candidates.append(candidate)
+
+    for candidate in candidates:
+        source = str(candidate.get('source_code') or candidate.get('code') or candidate.get('custom_source') or '').strip()
+        if not source:
+            continue
+        source = source if source.endswith('\n') else source + '\n'
+        imports = candidate.get('imports') or candidate.get('dependencies') or ['numpy', 'pandas']
+        if not isinstance(imports, list):
+            imports = [str(imports)]
+        output_schema = candidate.get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']}
+        contract = {
+            **candidate,
+            'code_contract_version': candidate.get('code_contract_version') or 'factorforge_direct_code_contract_v1',
+            'function_name': candidate.get('function_name') or candidate.get('entrypoint') or 'compute_factor',
+            'entrypoint': candidate.get('entrypoint') or candidate.get('function_name') or 'compute_factor',
+            'source_code': source,
+            'code_hash': hashlib.sha256(source.encode('utf-8')).hexdigest(),
+            'imports': imports,
+            'dependencies': candidate.get('dependencies') or imports,
+            'input_schema': candidate.get('input_schema') or {},
+            'output_schema': output_schema,
+            'required_fields': candidate.get('required_fields') or primary.get('required_inputs', []),
+            'information_set_rules': candidate.get('information_set_rules') or ['no future-looking fields or negative shifts'],
+            'forbidden_patterns': candidate.get('forbidden_patterns') or DEFAULT_FORBIDDEN_CODE_PATTERNS,
+            'source_derivation': candidate.get('source_derivation') or {
+                'derivation': 'source_code_preserved_from_formal_step2_raw_direct_code_contract',
+                'not_fallback': True,
+            },
+        }
+        return contract
+    return {}
 
 
 def infer_implementation_mode(source_type: str, primary: Dict[str, Any], aim: Dict[str, Any]) -> str:
@@ -852,6 +900,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     research_contract['producer'] = producer
     family_plugin_selection = explicit_family_plugin_selection(aim, primary)
     hybrid_contract = build_hybrid_contract(primary, aim) if implementation_mode == 'hybrid' else None
+    direct_code_source_contract = explicit_direct_code_source_contract(primary, aim) if implementation_mode == 'direct_code' else {}
 
     master = {
         'contract_version': STEP2_SOURCE_CONTRACT_VERSION,
@@ -898,9 +947,10 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'branch_id': branch_id,
             'run_id': run_id,
             'parent_run_id': parent_run_id,
-            'code_contract': {
+            'code_contract': (direct_code_source_contract or {
                 'code_contract_version': 'factorforge_direct_code_contract_v1',
                 'function_name': 'compute_factor',
+                'entrypoint': 'compute_factor',
                 'input_schema': {},
                 'output_schema': {
                     'columns': ['ts_code', 'trade_date', 'factor_value'],
@@ -916,7 +966,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
                     'future_',
                     'lookahead',
                 ],
-            } if implementation_mode == 'direct_code' else None,
+            }) if implementation_mode == 'direct_code' else None,
             'output_schema': {
                 'columns': ['ts_code', 'trade_date', 'factor_value'],
             } if implementation_mode == 'direct_code' else None,

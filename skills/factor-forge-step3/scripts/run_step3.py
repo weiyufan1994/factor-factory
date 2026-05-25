@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sys
-import textwrap
 from pathlib import Path
 
 import pandas as pd
@@ -397,125 +396,6 @@ def declared_implementation_mode(fsm: dict, *, price_volume_minute: bool) -> str
     return 'hybrid' if price_volume_minute else 'direct_code'
 
 
-def _direct_code_context_text(fsm: dict) -> str:
-    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
-    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
-    parts = [
-        canonical.get('formula_text'),
-        canonical.get('raw_formula_text'),
-        canonical.get('time_series_steps'),
-        canonical.get('cross_sectional_steps'),
-        canonical.get('implementation_assumptions'),
-        contract.get('description'),
-        contract.get('calculation_steps'),
-        contract.get('required_fields'),
-        fsm.get('factor_id'),
-    ]
-    return json.dumps(parts, ensure_ascii=False).lower()
-
-
-def build_minute_correlation_source() -> str:
-    return textwrap.dedent(
-        '''
-        import numpy as np
-        import pandas as pd
-
-
-        def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
-            if minute_df is None or minute_df.empty:
-                raise ValueError("minute_df is required for this direct_code contract")
-            df = minute_df.copy()
-            if "vol" not in df.columns and "volume" in df.columns:
-                df["vol"] = df["volume"]
-            required = {"ts_code", "trade_date", "close", "vol"}
-            missing = sorted(required - set(df.columns))
-            if missing:
-                raise ValueError(f"minute_df missing required columns: {missing}")
-            sort_cols = ["ts_code", "trade_date"] + (["trade_time"] if "trade_time" in df.columns else [])
-            df = df.sort_values(sort_cols).reset_index(drop=True)
-            df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "", regex=False)
-            df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            df["vol"] = pd.to_numeric(df["vol"], errors="coerce")
-            keys = ["ts_code", "trade_date"]
-            df["minute_return"] = df.groupby(keys, sort=False)["close"].pct_change()
-            group_close_mean = df.groupby(keys, sort=False)["minute_return"].transform("mean")
-            group_vol_mean = df.groupby(keys, sort=False)["vol"].transform("mean")
-            x = df["minute_return"] - group_close_mean
-            y = df["vol"] - group_vol_mean
-            cov = (x * y).groupby([df["ts_code"], df["trade_date"]], sort=False).transform("mean")
-            x_var = (x * x).groupby([df["ts_code"], df["trade_date"]], sort=False).transform("mean")
-            y_var = (y * y).groupby([df["ts_code"], df["trade_date"]], sort=False).transform("mean")
-            denom = np.sqrt(x_var * y_var).replace(0, np.nan)
-            df["factor_value"] = cov / denom
-            out = (
-                df[keys + ["factor_value"]]
-                .drop_duplicates(keys, keep="last")
-                .replace([np.inf, -np.inf], np.nan)
-                .dropna(subset=["factor_value"])
-                .sort_values(keys)
-                .reset_index(drop=True)
-            )
-            return out[["ts_code", "trade_date", "factor_value"]]
-        '''
-    ).strip() + '\n'
-
-
-def build_smart_money_source() -> str:
-    return textwrap.dedent(
-        '''
-        import numpy as np
-        import pandas as pd
-
-
-        def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
-            if minute_df is None or minute_df.empty:
-                raise ValueError("minute_df is required for this direct_code contract")
-            df = minute_df.copy()
-            if "vol" not in df.columns and "volume" in df.columns:
-                df["vol"] = df["volume"]
-            if "amount" not in df.columns:
-                df["amount"] = pd.to_numeric(df.get("close"), errors="coerce") * pd.to_numeric(df.get("vol"), errors="coerce")
-            required = {"ts_code", "trade_date", "close", "vol", "amount"}
-            missing = sorted(required - set(df.columns))
-            if missing:
-                raise ValueError(f"minute_df missing required columns: {missing}")
-            sort_cols = ["ts_code", "trade_date"] + (["trade_time"] if "trade_time" in df.columns else [])
-            df = df.sort_values(sort_cols).reset_index(drop=True)
-            df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "", regex=False)
-            df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            df["vol"] = pd.to_numeric(df["vol"], errors="coerce")
-            df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-            keys = ["ts_code", "trade_date"]
-            df["minute_return"] = df.groupby(keys, sort=False)["close"].pct_change()
-            df["smart_score"] = df["minute_return"].abs() / np.log1p(df["vol"]).replace(0, np.nan)
-            ranked = df.sort_values(keys + ["smart_score"], ascending=[True, True, False]).reset_index(drop=True)
-            ranked["group_volume"] = ranked.groupby(keys, sort=False)["vol"].transform("sum")
-            ranked["cum_volume"] = ranked.groupby(keys, sort=False)["vol"].cumsum()
-            ranked["row_number"] = ranked.groupby(keys, sort=False).cumcount()
-            ranked["is_smart_slice"] = (ranked["cum_volume"] <= ranked["group_volume"] * 0.2) | (ranked["row_number"] == 0)
-            ranked["smart_amount"] = ranked["amount"].where(ranked["is_smart_slice"], 0.0)
-            ranked["smart_volume"] = ranked["vol"].where(ranked["is_smart_slice"], 0.0)
-            agg = ranked.groupby(keys, as_index=False, sort=True).agg(
-                smart_amount=("smart_amount", "sum"),
-                smart_volume=("smart_volume", "sum"),
-                total_amount=("amount", "sum"),
-                total_volume=("vol", "sum"),
-            )
-            smart_vwap = agg["smart_amount"] / agg["smart_volume"].replace(0, np.nan)
-            all_vwap = agg["total_amount"] / agg["total_volume"].replace(0, np.nan)
-            agg["factor_value"] = (smart_vwap / all_vwap.replace(0, np.nan)) - 1.0
-            out = (
-                agg[["ts_code", "trade_date", "factor_value"]]
-                .replace([np.inf, -np.inf], np.nan)
-                .dropna(subset=["factor_value"])
-                .sort_values(["ts_code", "trade_date"])
-                .reset_index(drop=True)
-            )
-            return out
-        '''
-    ).strip() + '\n'
-
-
 def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) -> dict:
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
@@ -525,20 +405,13 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
         or str(contract.get('source_code') or '').strip()
         or str(canonical.get('source_code') or '').strip()
     )
-    text = _direct_code_context_text(fsm)
     if existing_source:
         source = existing_source if existing_source.endswith('\n') else existing_source + '\n'
         derivation = 'source_code_preserved_from_step2_direct_code_contract'
-    elif any(term in text for term in ['smart money', '聪明钱', 'vwap', '聪明']):
-        source = build_smart_money_source()
-        derivation = 'rendered_from_step2_smart_money_direct_code_contract'
-    elif any(term in text for term in ['corr', 'correlation', '相关', 'price-volume', '价量']):
-        source = build_minute_correlation_source()
-        derivation = 'rendered_from_step2_price_volume_correlation_direct_code_contract'
     else:
         return {
             'status': 'blocked',
-            'blocked_reason': 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: no explicit source_code or supported direct_code renderer in Step2 contract',
+            'blocked_reason': 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: Step2 direct_code contract must explicitly provide code_contract.source_code',
         }
 
     required_fields = list(dict.fromkeys(

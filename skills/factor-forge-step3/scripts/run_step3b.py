@@ -774,11 +774,65 @@ def resolve_formula_engine(formula_engine: str | None = None) -> str:
         'pandas_optimized': 'optimized',
         'pandas_formula_ir_optimized': 'optimized',
         'polars': 'polars_experimental',
+        'polars_adaptive': 'adaptive',
+        'adaptive_polars': 'adaptive',
     }
     engine = aliases.get(engine, engine)
-    if engine not in {'optimized', 'polars_experimental'}:
+    if engine not in {'optimized', 'polars_experimental', 'adaptive'}:
         raise SystemExit(f'BLOCK_UNSUPPORTED_FORMULA_ENGINE:{engine}')
     return engine
+
+
+def select_adaptive_formula_engine(
+    requested_engine: str,
+    *,
+    daily_path: Path | None,
+    daily_parquet_path: Path | None,
+    metadata: dict | None,
+    formula_ir: dict | None,
+) -> tuple[str, dict]:
+    selector = {
+        'version': 'factorforge_polars_adaptive_selector_v1',
+        'requested_engine': requested_engine,
+        'selected_engine': requested_engine,
+        'reason': 'explicit_engine',
+        'polars_candidate': False,
+        'requires_lazy_parquet': True,
+    }
+    if requested_engine != 'adaptive':
+        return requested_engine, selector
+
+    selector['selected_engine'] = 'optimized'
+    if os.getenv('FACTORFORGE_DISABLE_ADAPTIVE_POLARS') == '1':
+        selector['reason'] = 'adaptive_polars_disabled'
+        return 'optimized', selector
+    if not isinstance(metadata, dict) or metadata.get('implementation_source') != 'formula_ir_pandas_codegen' or not isinstance(formula_ir, dict):
+        selector['reason'] = 'non_formula_ir_codegen'
+        return 'optimized', selector
+    if daily_path is None or daily_parquet_path is None or daily_path != daily_parquet_path or daily_path.suffix.lower() != '.parquet':
+        selector['reason'] = 'lazy_parquet_unavailable'
+        return 'optimized', selector
+
+    try:
+        from factor_factory.formula.polars_evaluator import first_unsupported_operator, polars_dependency_available
+    except ModuleNotFoundError:
+        selector['reason'] = 'polars_dependency_missing'
+        return 'optimized', selector
+
+    unsupported = first_unsupported_operator(formula_ir)
+    if unsupported is not None:
+        selector['reason'] = f'unsupported_operator:{unsupported}'
+        return 'optimized', selector
+    if not polars_dependency_available():
+        selector['reason'] = 'polars_dependency_missing'
+        return 'optimized', selector
+
+    selector.update({
+        'selected_engine': 'polars_experimental',
+        'reason': 'native_polars_lazy_parquet_supported',
+        'polars_candidate': True,
+    })
+    return 'polars_experimental', selector
 
 
 def resolve_operator_profile(operator_profile: bool | None = None) -> bool:
@@ -924,7 +978,16 @@ def generate_first_run_factor_values(
     daily_selected_format = 'parquet' if daily_path and daily_path.suffix.lower() == '.parquet' else 'csv'
     csv_policy = resolve_csv_policy(csv_output_policy)
     trust_sort_contract = resolve_trust_step3a_sort_contract(trust_step3a_sort_contract)
-    selected_formula_engine = resolve_formula_engine(formula_engine)
+    requested_formula_engine = resolve_formula_engine(formula_engine)
+    selected_formula_engine = requested_formula_engine
+    adaptive_selector_profile = {
+        'version': 'factorforge_polars_adaptive_selector_v1',
+        'requested_engine': requested_formula_engine,
+        'selected_engine': selected_formula_engine,
+        'reason': 'explicit_engine',
+        'polars_candidate': False,
+        'requires_lazy_parquet': True,
+    }
     operator_profile_enabled = resolve_operator_profile(operator_profile)
     try:
         ts_rank_engine_config = resolve_formula_ts_rank_engine(ts_rank_engine)
@@ -949,6 +1012,13 @@ def generate_first_run_factor_values(
         raise SystemExit(f'Step3B implementation missing compute_factor(): {implementation_path}')
     metadata = getattr(module, 'METADATA', {}) if module is not None else {}
     module_formula_ir = getattr(module, 'FORMULA_IR', None)
+    selected_formula_engine, adaptive_selector_profile = select_adaptive_formula_engine(
+        requested_formula_engine,
+        daily_path=daily_path,
+        daily_parquet_path=daily_parquet_path,
+        metadata=metadata if isinstance(metadata, dict) else None,
+        formula_ir=module_formula_ir if isinstance(module_formula_ir, dict) else None,
+    )
     use_lazy_polars_parquet = bool(
         selected_formula_engine == 'polars_experimental'
         and daily_path == daily_parquet_path
@@ -1024,6 +1094,7 @@ def generate_first_run_factor_values(
             if 'BLOCK_POLARS_EXPERIMENTAL_' in message or 'BLOCK_UNSUPPORTED_FORMULA_SYNTAX' in message:
                 raise SystemExit(message) from exc
             raise
+    formula_engine_profile['adaptive_selector'] = adaptive_selector_profile
     if result_df is None or len(result_df) == 0:
         raise SystemExit('Step3B first-run implementation returned empty factor values')
     if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
@@ -1719,7 +1790,7 @@ def main():
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
     ap.add_argument('--csv-output-policy', help='Step3B factor CSV output policy. Defaults to full_csv.')
-    ap.add_argument('--formula-engine', help='Formula-IR engine. Defaults to pandas optimized; polars_experimental is explicit opt-in.')
+    ap.add_argument('--formula-engine', help='Formula-IR engine. Defaults to pandas optimized; adaptive/polars_experimental are explicit opt-ins.')
     ap.add_argument('--operator-profile', action='store_true', help='Record Formula-IR operator-level timing metadata.')
     ap.add_argument('--ts-rank-engine', help='Experimental ts_rank engine. Defaults to pandas_reference.')
     ap.add_argument('--formula-kernel-engine', help='Formula-IR operator kernel engine. Experimental engines require explicit enable gate.')

@@ -102,7 +102,10 @@ Optional:
     `--formula-engine polars_experimental`), must record parity metadata, and
     must BLOCK on missing dependency or parity failure. Unsupported Polars
     operators may fall back to pandas only when the metadata records an explicit
-    `polars_fallback_reason`.
+    `polars_fallback_reason`. The adaptive selector is also explicit opt-in
+    (`--formula-engine adaptive`); it may select lazy Polars only for native
+    parquet Formula-IR subsets, otherwise it must choose pandas optimized and
+    record `formula_engine_profile.adaptive_selector.reason`.
   - The experimental `ts_rank` engine is opt-in only
     (`FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE=1` plus
     `FACTORFORGE_TS_RANK_ENGINE=numpy_sliding_window_experimental`, or

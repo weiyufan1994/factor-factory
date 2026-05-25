@@ -79,6 +79,10 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
     ok = bool(
         proc.returncode == 0
         and payload.get('verdict') == 'ACCEPT'
+        and payload.get('formal_artifacts_valid') is True
+        and payload.get('workflow_may_dispatch_worker') is True
+        and payload.get('worker_started') is False
+        and payload.get('worker_dispatch_status') == 'not_dispatched_by_prepare'
         and payload.get('canonical_report_id_preserved') is True
         and alpha.get('report_id') == report_id
         and spec.get('report_id') == report_id
@@ -99,8 +103,38 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
         'output': str(output),
         'payload_verdict': payload.get('verdict'),
         'canonical_report_id_preserved': payload.get('canonical_report_id_preserved'),
+        'formal_artifacts_valid': payload.get('formal_artifacts_valid'),
+        'workflow_may_dispatch_worker': payload.get('workflow_may_dispatch_worker'),
+        'worker_started': payload.get('worker_started'),
+        'worker_dispatch_status': payload.get('worker_dispatch_status'),
         'runtime_context_exists': runtime_context.exists(),
         'ok': ok,
+    }
+
+
+def run_no_raw_blocks_case(root: Path) -> dict:
+    report_id = 'FORMAL_NO_RAW'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/prepare_factorforge_formal_artifacts.py',
+        '--factorforge-root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--report-pdf',
+        'fixtures/step2/sample_report_stub.pdf',
+        '--end-step',
+        '3a',
+        '--write-report',
+    ], root=root)
+    token_present = 'BLOCK_FORMAL_STEP1_LLM_OUTPUT_REQUIRED' in proc.stdout + proc.stderr
+    runtime_context = root / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'
+    return {
+        'case': 'no_raw_formal_artifacts_block',
+        'rc': proc.returncode,
+        'token_present': token_present,
+        'runtime_context_exists': runtime_context.exists(),
+        'ok': bool(proc.returncode != 0 and token_present and not runtime_context.exists()),
     }
 
 
@@ -135,6 +169,7 @@ def run_bad_artifact_schema_blocks_case(root: Path) -> dict:
 def main() -> int:
     root = build_root(Path('/tmp/factorforge_formal_artifact_smoke'))
     cases = [
+        run_no_raw_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_no_raw_smoke'))),
         run_prepare_formal_debug_chain_case(root),
         run_bad_artifact_schema_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_bad_smoke'))),
     ]

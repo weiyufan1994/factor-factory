@@ -488,6 +488,9 @@ def build_report(args: argparse.Namespace, root: Path, verdict: str, validators:
     identity_ok, identity_errors = canonical_identity_check(root, args.report_id, args.end_step)
     validator_ok = all((v or {}).get('rc') == 0 for v in validators.values())
     paths = artifact_paths(root, args.report_id, args.end_step)
+    runtime_written = runtime_context_exists(root, args.report_id)
+    formal_artifacts_valid = bool(verdict == 'ACCEPT' and identity_ok and validator_ok)
+    workflow_may_dispatch_worker = bool(formal_artifacts_valid and not runtime_written)
     report = {
         'version': VERSION,
         'report_id': args.report_id,
@@ -497,8 +500,12 @@ def build_report(args: argparse.Namespace, root: Path, verdict: str, validators:
         'validators': validators,
         'canonical_report_id_preserved': bool(identity_ok and validator_ok),
         'canonical_identity_errors': identity_errors,
-        'runtime_context_written': runtime_context_exists(root, args.report_id),
-        'worker_dispatch_allowed': bool(verdict == 'ACCEPT' and identity_ok and validator_ok and not runtime_context_exists(root, args.report_id)),
+        'runtime_context_written': runtime_written,
+        'formal_artifacts_valid': formal_artifacts_valid,
+        'workflow_may_dispatch_worker': workflow_may_dispatch_worker,
+        'worker_started': False,
+        'worker_dispatch_status': 'not_dispatched_by_prepare',
+        'worker_dispatch_allowed': workflow_may_dispatch_worker,
     }
     if extra:
         report.update(extra)
@@ -550,7 +557,7 @@ def main() -> int:
         validators = validate_chain(args.report_id, root, args.end_step)
         identity_ok, identity_errors = canonical_identity_check(root, args.report_id, args.end_step)
         validator_ok = all(v.get('rc') == 0 for v in validators.values())
-        verdict = 'ACCEPT' if validator_ok and identity_ok and not runtime_context_exists(root, args.report_id) else 'BLOCK'
+        verdict = 'ACCEPT' if validator_ok and identity_ok else 'BLOCK'
         report = build_report(args, root, verdict, validators, extra)
         write_report_if_requested(args, root, report)
         if verdict != 'ACCEPT':

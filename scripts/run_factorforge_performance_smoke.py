@@ -740,6 +740,36 @@ def run_step3_daily_parquet_csv_schema_parity_case(root: Path) -> dict[str, Any]
 
 def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: dict[str, Any]) -> None:
     objects = root / 'objects'
+    source_code = (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:\n"
+        "    out = daily_df[['ts_code', 'trade_date', 'close']].copy()\n"
+        "    out['factor_value'] = pd.to_numeric(out['close'], errors='coerce')\n"
+        "    return out[['ts_code', 'trade_date', 'factor_value']]\n"
+    )
+    code_hash = hashlib.sha256(source_code.encode('utf-8')).hexdigest()
+    code_contract = {
+        'code_contract_version': 'factorforge_direct_code_contract_v1',
+        'function_name': 'compute_factor',
+        'entrypoint': 'compute_factor',
+        'source_code': source_code,
+        'code_hash': code_hash,
+        'imports': ['pandas'],
+        'dependencies': ['pandas'],
+        'input_schema': {'daily_df': ['ts_code', 'trade_date', 'close']},
+        'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        'required_fields': ['close'],
+        'information_set_rules': ['no future-looking fields or negative shifts'],
+        'forbidden_patterns': [
+            r'shift\s*\(\s*-\d+',
+            r'\bfuture_return\b',
+            r'\bnext_return\b',
+            r'\blabel\b',
+            r'\btarget\b',
+            r'\bfuture_',
+            r'\blookahead\b',
+        ],
+    }
     write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
@@ -765,6 +795,17 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
         'report_id': report_id,
         'factor_id': 'SMOKE',
         'implementation_mode': 'direct_code',
+        'code_contract': code_contract,
+        'source_code': source_code,
+        'code_hash': code_hash,
+        'code_contract_hash': hashlib.sha256(json.dumps(code_contract, sort_keys=True, default=str).encode('utf-8')).hexdigest(),
+        'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        'implementation_contract': {
+            'implementation_mode': 'direct_code',
+            'mode': 'direct_code',
+            'code_contract': code_contract,
+            'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        },
         'calculation_steps': ['read daily snapshot', 'compute smoke factor'],
         'step4_contract': {'execution_mode': 'direct_code'},
     })

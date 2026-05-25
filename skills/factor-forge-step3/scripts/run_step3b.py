@@ -391,7 +391,10 @@ def derive_child_identity(parent: dict, *, artifact_role: str, producer: str, co
     out = dict(parent)
     out['artifact_role'] = artifact_role
     out['producer'] = producer
-    out['code_hash'] = code_hash or out.get('code_hash')
+    if out.get('implementation_mode') == 'direct_code' and not out.get('code_hash'):
+        out['code_hash'] = None
+    else:
+        out['code_hash'] = code_hash or out.get('code_hash')
     if family_fields:
         out.update(family_fields)
     return out
@@ -1703,12 +1706,37 @@ def build_hybrid_artifacts(report_id: str, prep: dict, spec: dict, identity: dic
     return implementation_plan, python_stub, qlib_payload, hybrid_scaffold
 
 
-def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity: dict):
+def _direct_code_contract_candidates(spec: dict, plan: dict | None) -> list[dict]:
+    candidates: list[dict] = []
+    for source in [spec, plan or {}]:
+        if not isinstance(source, dict):
+            continue
+        contract = source.get('implementation_contract') if isinstance(source.get('implementation_contract'), dict) else {}
+        code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+        if code_contract:
+            candidates.append(code_contract)
+        top_contract = source.get('code_contract') if isinstance(source.get('code_contract'), dict) else {}
+        if top_contract:
+            candidates.append(top_contract)
+    return candidates
+
+
+def _merge_direct_code_contracts(spec: dict, plan: dict | None) -> dict:
+    merged: dict = {}
+    for candidate in _direct_code_contract_candidates(spec, plan):
+        merged.update(candidate)
+    return merged
+
+
+def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity: dict, plan: dict | None = None):
     contract = spec.get('implementation_contract') or {}
-    code_contract = contract.get('code_contract') or {}
+    plan_contract = (plan or {}).get('implementation_contract') if isinstance((plan or {}).get('implementation_contract'), dict) else {}
+    code_contract = _merge_direct_code_contracts(spec, plan)
     source_code = str(
         code_contract.get('source_code')
         or contract.get('source_code')
+        or plan_contract.get('source_code')
+        or (plan or {}).get('source_code')
         or (spec.get('canonical_spec') or {}).get('source_code')
         or ''
     )
@@ -1721,7 +1749,7 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
         raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code source_code must define compute_factor().')
 
     factor_id = spec.get('factor_id') or report_id
-    code_contract_hash = identity.get('code_contract_hash') or stable_hash(code_contract)
+    code_contract_hash = code_contract.get('code_contract_hash') or (plan or {}).get('code_contract_hash') or identity.get('code_contract_hash') or stable_hash(code_contract)
     output_schema = code_contract.get('output_schema') or contract.get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']}
     metadata = {
         'implementation_mode': 'direct_code',
@@ -1768,7 +1796,7 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
     return implementation_plan, source_code, qlib_payload, hybrid_scaffold
 
 
-def dispatch_mode_codegen(report_id: str, prep: dict, spec: dict, identity: dict):
+def dispatch_mode_codegen(report_id: str, prep: dict, spec: dict, identity: dict, plan: dict | None = None):
     mode = identity.get('implementation_mode')
     if has_family_plugin_declaration(spec):
         try:
@@ -1779,7 +1807,7 @@ def dispatch_mode_codegen(report_id: str, prep: dict, spec: dict, identity: dict
     if mode == 'operator':
         return build_operator_artifacts(report_id, prep, spec, identity)
     if mode == 'direct_code':
-        return build_direct_code_artifacts(report_id, prep, spec, identity)
+        return build_direct_code_artifacts(report_id, prep, spec, identity, plan)
     if mode == 'hybrid':
         return build_hybrid_artifacts(report_id, prep, spec, identity)
     raise SystemExit(f'BLOCK_UNSUPPORTED_IMPLEMENTATION_MODE: {mode}')
@@ -1849,6 +1877,7 @@ def main():
     qlib_path = code_dir / f'qlib_expression_draft__{report_id}.json'
     hybrid_path = code_dir / f'hybrid_execution_scaffold__{report_id}.json'
     handoff_path = OBJ / 'handoff' / f'handoff_to_step4__{report_id}.json'
+    existing_implementation_plan = read_existing_json(impl_path)
 
     prep = load_json(prep_path)
     step3a_ready = prep.get('feasibility') in {'ready', 'proxy_ready'}
@@ -1859,7 +1888,13 @@ def main():
     executable_impl_abs = FF / executable_impl_rel
 
     try:
-        implementation_plan, python_stub, qlib_expression, hybrid_scaffold = dispatch_mode_codegen(report_id, prep, spec, spec_identity)
+        implementation_plan, python_stub, qlib_expression, hybrid_scaffold = dispatch_mode_codegen(
+            report_id,
+            prep,
+            spec,
+            spec_identity,
+            existing_implementation_plan,
+        )
         artifact_producer = implementation_plan.get('producer') or 'step3b'
         family_fields = explicit_plugin_identity_fields(spec) if artifact_producer == FAMILY_PLUGIN_PRODUCER else {}
         mode_decision = finalize_mode_decision_success(

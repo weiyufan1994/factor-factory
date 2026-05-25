@@ -75,6 +75,9 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
     spec = read_json(Path(paths.get('factor_spec_master'))) if paths.get('factor_spec_master') else {}
     handoff = read_json(Path(paths.get('handoff_to_step3'))) if paths.get('handoff_to_step3') else {}
     prep = read_json(Path(paths.get('data_prep_master'))) if paths.get('data_prep_master') else {}
+    impl_path = root / 'objects' / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json'
+    impl = read_json(impl_path) if impl_path.exists() else {}
+    code_contract = impl.get('code_contract') if isinstance(impl.get('code_contract'), dict) else {}
     runtime_context = root / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'
     ok = bool(
         proc.returncode == 0
@@ -88,6 +91,10 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
         and spec.get('report_id') == report_id
         and handoff.get('report_id') == report_id
         and prep.get('report_id') == report_id
+        and impl.get('implementation_mode') == 'direct_code'
+        and isinstance(code_contract.get('source_code'), str)
+        and 'def compute_factor' in code_contract.get('source_code', '')
+        and code_contract.get('code_hash')
         and spec.get('artifact_identity')
         and handoff.get('artifact_identity', {}).get('spec_hash') == spec.get('artifact_identity', {}).get('spec_hash')
         and payload.get('validators', {}).get('step1', {}).get('rc') == 0
@@ -108,7 +115,63 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
         'worker_started': payload.get('worker_started'),
         'worker_dispatch_status': payload.get('worker_dispatch_status'),
         'runtime_context_exists': runtime_context.exists(),
+        'direct_code_source_contract_present': bool(code_contract.get('source_code') and code_contract.get('code_hash')),
         'ok': ok,
+    }
+
+
+def run_direct_code_missing_source_blocks_case(root: Path) -> dict:
+    report_id = 'FORMAL_DIRECT_CODE_MISSING_SOURCE'
+    output = root / 'objects' / 'validation' / f'formal_artifact_prepare_report__{report_id}.json'
+    proc = run_cmd([
+        sys.executable,
+        'scripts/prepare_factorforge_formal_artifacts.py',
+        '--factorforge-root',
+        str(root),
+        '--report-id',
+        report_id,
+        '--report-pdf',
+        'fixtures/step2/sample_report_stub.pdf',
+        '--step1-primary-raw',
+        'fixtures/step1/sample_intake_response.json',
+        '--step1-challenger-raw',
+        'fixtures/step1/sample_intake_response.json',
+        '--allow-deterministic-debug',
+        '--end-step',
+        '3a',
+        '--write-report',
+    ], root=root)
+    impl_path = root / 'objects' / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json'
+    if impl_path.exists():
+        impl = read_json(impl_path)
+        if isinstance(impl.get('code_contract'), dict):
+            impl['code_contract'].pop('source_code', None)
+            impl['code_contract'].pop('code_hash', None)
+        if isinstance(impl.get('implementation_contract'), dict) and isinstance(impl['implementation_contract'].get('code_contract'), dict):
+            impl['implementation_contract']['code_contract'].pop('source_code', None)
+            impl['implementation_contract']['code_contract'].pop('code_hash', None)
+        impl.pop('source_code', None)
+        impl.pop('code_hash', None)
+        impl_path.write_text(json.dumps(impl, ensure_ascii=False, indent=2), encoding='utf-8')
+    validate = run_cmd([
+        sys.executable,
+        'skills/factor-forge-step3/scripts/validate_step3.py',
+        '--report-id',
+        report_id,
+    ], root=root)
+    text = validate.stdout + validate.stderr
+    token_present = 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING' in text
+    runtime_context = root / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'
+    return {
+        'case': 'direct_code_missing_source_contract_blocks_step3_validation',
+        'prepare_rc': proc.returncode,
+        'prepare_report': str(output),
+        'validate_rc': validate.returncode,
+        'token_present': token_present,
+        'runtime_context_exists': runtime_context.exists(),
+        'stdout_tail': validate.stdout[-2000:],
+        'stderr_tail': validate.stderr[-2000:],
+        'ok': bool(proc.returncode == 0 and validate.returncode != 0 and token_present and not runtime_context.exists()),
     }
 
 
@@ -171,6 +234,7 @@ def main() -> int:
     cases = [
         run_no_raw_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_no_raw_smoke'))),
         run_prepare_formal_debug_chain_case(root),
+        run_direct_code_missing_source_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_direct_code_source_smoke'))),
         run_bad_artifact_schema_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_bad_smoke'))),
     ]
     verdict = 'ACCEPT' if all(case.get('ok') for case in cases) else 'BLOCK'

@@ -406,6 +406,8 @@ def scan_direct_code_text(text: str, extra_patterns: list[str]) -> None:
                 f'BLOCK_DIRECT_CODE_INVALID_FORBIDDEN_PATTERN: pattern={pattern!r}, error={exc}'
             ) from exc
         for lineno, line in enumerate(text.splitlines(), start=1):
+            if line.strip().startswith('#'):
+                continue
             if regex.search(line):
                 hits.append({'pattern': pattern, 'line': lineno, 'text': line.strip()[:180]})
     if hits:
@@ -641,7 +643,21 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
         'vol': [1000.0, 2000.0],
         'pct_chg': [1.0, -1.0],
     })
-    minute_df = pd.DataFrame(columns=['ts_code', 'trade_date', 'trade_time', 'close', 'vol'])
+    minute_df = pd.DataFrame({
+        'ts_code': ['000001.SZ', '000001.SZ', '000001.SZ', '000002.SZ', '000002.SZ', '000002.SZ'],
+        'trade_date': ['20260101', '20260101', '20260101', '20260101', '20260101', '20260101'],
+        'trade_time': [
+            '20260101 09:30:00',
+            '20260101 09:31:00',
+            '20260101 09:32:00',
+            '20260101 09:30:00',
+            '20260101 09:31:00',
+            '20260101 09:32:00',
+        ],
+        'close': [10.0, 10.1, 10.05, 20.0, 19.8, 20.2],
+        'vol': [1000.0, 1500.0, 900.0, 2000.0, 1800.0, 2200.0],
+        'amount': [10000.0, 15150.0, 9045.0, 40000.0, 35640.0, 44440.0],
+    })
     signature = inspect.signature(compute)
     try:
         if 'daily_df' in signature.parameters:

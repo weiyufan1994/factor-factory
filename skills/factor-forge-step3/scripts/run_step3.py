@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +43,7 @@ CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
+DIRECT_CODE_CONTRACT_VERSION = 'factorforge_direct_code_contract_v1'
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -129,6 +131,37 @@ def deterministic_csv_sample(df: pd.DataFrame, *, max_rows: int = CSV_SAMPLE_MAX
 def key_order_hash(df: pd.DataFrame) -> str:
     key_frame = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
     return hashlib.sha256(key_frame.to_csv(index=False).encode('utf-8')).hexdigest()
+
+
+def stable_hash(data) -> str:
+    return hashlib.sha256(
+        json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+
+
+def source_hash(source_code: str) -> str:
+    return hashlib.sha256(source_code.encode('utf-8')).hexdigest()
+
+
+def _existing_code_contract_source(contract: dict) -> str:
+    if not isinstance(contract, dict):
+        return ''
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    return str(
+        code_contract.get('source_code')
+        or contract.get('source_code')
+        or ''
+    )
+
+
+def _contract_has_source(plan: dict) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    return bool(
+        str((plan.get('code_contract') or {}).get('source_code') if isinstance(plan.get('code_contract'), dict) else '').strip()
+        or _existing_code_contract_source(plan.get('implementation_contract') or {}).strip()
+        or str(plan.get('source_code') or '').strip()
+    )
 
 
 def sample_sortedness_check(df: pd.DataFrame, *, max_points: int = 2048) -> bool:
@@ -275,6 +308,11 @@ def merge_implementation_plan(existing: dict, updates: dict) -> dict:
         merged['implementation_mode'] = existing['implementation_mode']
         merged['preferred_execution_mode'] = existing['implementation_mode']
 
+    if _contract_has_source(updates) and not _contract_has_source(existing):
+        for key in ['code_contract', 'implementation_contract', 'output_schema', 'source_code', 'code_hash', 'code_contract_hash']:
+            if key in updates:
+                merged[key] = updates[key]
+
     return merged
 
 
@@ -343,6 +381,228 @@ def is_price_volume_minute_formula(canonical: dict) -> bool:
     has_core_fields = {'close', 'vol', 'amount'}.issubset(set(required_inputs))
     has_pv_semantics = any(token in f'{formula_text} {cross_steps}' for token in ['price-volume', '价量', 'corr', '相关'])
     return has_core_fields and has_pv_semantics
+
+
+def declared_implementation_mode(fsm: dict, *, price_volume_minute: bool) -> str:
+    identity = fsm.get('artifact_identity') if isinstance(fsm.get('artifact_identity'), dict) else {}
+    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    raw = (
+        identity.get('implementation_mode')
+        or fsm.get('implementation_mode')
+        or contract.get('implementation_mode')
+        or contract.get('mode')
+    )
+    if raw in {'operator', 'direct_code', 'hybrid'}:
+        return str(raw)
+    return 'hybrid' if price_volume_minute else 'direct_code'
+
+
+def _direct_code_context_text(fsm: dict) -> str:
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    parts = [
+        canonical.get('formula_text'),
+        canonical.get('raw_formula_text'),
+        canonical.get('time_series_steps'),
+        canonical.get('cross_sectional_steps'),
+        canonical.get('implementation_assumptions'),
+        contract.get('description'),
+        contract.get('calculation_steps'),
+        contract.get('required_fields'),
+        fsm.get('factor_id'),
+    ]
+    return json.dumps(parts, ensure_ascii=False).lower()
+
+
+def build_minute_correlation_source() -> str:
+    return textwrap.dedent(
+        '''
+        import numpy as np
+        import pandas as pd
+
+
+        def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
+            if minute_df is None or minute_df.empty:
+                raise ValueError("minute_df is required for this direct_code contract")
+            df = minute_df.copy()
+            if "vol" not in df.columns and "volume" in df.columns:
+                df["vol"] = df["volume"]
+            required = {"ts_code", "trade_date", "close", "vol"}
+            missing = sorted(required - set(df.columns))
+            if missing:
+                raise ValueError(f"minute_df missing required columns: {missing}")
+            sort_cols = ["ts_code", "trade_date"] + (["trade_time"] if "trade_time" in df.columns else [])
+            df = df.sort_values(sort_cols).reset_index(drop=True)
+            df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "", regex=False)
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df["vol"] = pd.to_numeric(df["vol"], errors="coerce")
+            keys = ["ts_code", "trade_date"]
+            df["minute_return"] = df.groupby(keys, sort=False)["close"].pct_change()
+            group_close_mean = df.groupby(keys, sort=False)["minute_return"].transform("mean")
+            group_vol_mean = df.groupby(keys, sort=False)["vol"].transform("mean")
+            x = df["minute_return"] - group_close_mean
+            y = df["vol"] - group_vol_mean
+            cov = (x * y).groupby([df["ts_code"], df["trade_date"]], sort=False).transform("mean")
+            x_var = (x * x).groupby([df["ts_code"], df["trade_date"]], sort=False).transform("mean")
+            y_var = (y * y).groupby([df["ts_code"], df["trade_date"]], sort=False).transform("mean")
+            denom = np.sqrt(x_var * y_var).replace(0, np.nan)
+            df["factor_value"] = cov / denom
+            out = (
+                df[keys + ["factor_value"]]
+                .drop_duplicates(keys, keep="last")
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna(subset=["factor_value"])
+                .sort_values(keys)
+                .reset_index(drop=True)
+            )
+            return out[["ts_code", "trade_date", "factor_value"]]
+        '''
+    ).strip() + '\n'
+
+
+def build_smart_money_source() -> str:
+    return textwrap.dedent(
+        '''
+        import numpy as np
+        import pandas as pd
+
+
+        def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
+            if minute_df is None or minute_df.empty:
+                raise ValueError("minute_df is required for this direct_code contract")
+            df = minute_df.copy()
+            if "vol" not in df.columns and "volume" in df.columns:
+                df["vol"] = df["volume"]
+            if "amount" not in df.columns:
+                df["amount"] = pd.to_numeric(df.get("close"), errors="coerce") * pd.to_numeric(df.get("vol"), errors="coerce")
+            required = {"ts_code", "trade_date", "close", "vol", "amount"}
+            missing = sorted(required - set(df.columns))
+            if missing:
+                raise ValueError(f"minute_df missing required columns: {missing}")
+            sort_cols = ["ts_code", "trade_date"] + (["trade_time"] if "trade_time" in df.columns else [])
+            df = df.sort_values(sort_cols).reset_index(drop=True)
+            df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "", regex=False)
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df["vol"] = pd.to_numeric(df["vol"], errors="coerce")
+            df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+            keys = ["ts_code", "trade_date"]
+            df["minute_return"] = df.groupby(keys, sort=False)["close"].pct_change()
+            df["smart_score"] = df["minute_return"].abs() / np.log1p(df["vol"]).replace(0, np.nan)
+            ranked = df.sort_values(keys + ["smart_score"], ascending=[True, True, False]).reset_index(drop=True)
+            ranked["group_volume"] = ranked.groupby(keys, sort=False)["vol"].transform("sum")
+            ranked["cum_volume"] = ranked.groupby(keys, sort=False)["vol"].cumsum()
+            ranked["row_number"] = ranked.groupby(keys, sort=False).cumcount()
+            ranked["is_smart_slice"] = (ranked["cum_volume"] <= ranked["group_volume"] * 0.2) | (ranked["row_number"] == 0)
+            ranked["smart_amount"] = ranked["amount"].where(ranked["is_smart_slice"], 0.0)
+            ranked["smart_volume"] = ranked["vol"].where(ranked["is_smart_slice"], 0.0)
+            agg = ranked.groupby(keys, as_index=False, sort=True).agg(
+                smart_amount=("smart_amount", "sum"),
+                smart_volume=("smart_volume", "sum"),
+                total_amount=("amount", "sum"),
+                total_volume=("vol", "sum"),
+            )
+            smart_vwap = agg["smart_amount"] / agg["smart_volume"].replace(0, np.nan)
+            all_vwap = agg["total_amount"] / agg["total_volume"].replace(0, np.nan)
+            agg["factor_value"] = (smart_vwap / all_vwap.replace(0, np.nan)) - 1.0
+            out = (
+                agg[["ts_code", "trade_date", "factor_value"]]
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna(subset=["factor_value"])
+                .sort_values(["ts_code", "trade_date"])
+                .reset_index(drop=True)
+            )
+            return out
+        '''
+    ).strip() + '\n'
+
+
+def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) -> dict:
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    existing_code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    existing_source = (
+        str(existing_code_contract.get('source_code') or '').strip()
+        or str(contract.get('source_code') or '').strip()
+        or str(canonical.get('source_code') or '').strip()
+    )
+    text = _direct_code_context_text(fsm)
+    if existing_source:
+        source = existing_source if existing_source.endswith('\n') else existing_source + '\n'
+        derivation = 'source_code_preserved_from_step2_direct_code_contract'
+    elif any(term in text for term in ['smart money', '聪明钱', 'vwap', '聪明']):
+        source = build_smart_money_source()
+        derivation = 'rendered_from_step2_smart_money_direct_code_contract'
+    elif any(term in text for term in ['corr', 'correlation', '相关', 'price-volume', '价量']):
+        source = build_minute_correlation_source()
+        derivation = 'rendered_from_step2_price_volume_correlation_direct_code_contract'
+    else:
+        return {
+            'status': 'blocked',
+            'blocked_reason': 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: no explicit source_code or supported direct_code renderer in Step2 contract',
+        }
+
+    required_fields = list(dict.fromkeys(
+        list(existing_code_contract.get('required_fields') or [])
+        + list(contract.get('required_fields') or [])
+        + list(canonical.get('required_inputs') or [])
+        + ['ts_code', 'trade_date']
+    ))
+    if 'vol' not in required_fields and 'volume' not in required_fields:
+        required_fields.append('vol')
+    if 'close' not in required_fields:
+        required_fields.append('close')
+    output_schema = (
+        existing_code_contract.get('output_schema')
+        or contract.get('output_schema')
+        or {'columns': ['ts_code', 'trade_date', 'factor_value']}
+    )
+    imports = list(dict.fromkeys(list(existing_code_contract.get('imports') or []) + ['numpy', 'pandas']))
+    code_contract = {
+        **existing_code_contract,
+        'code_contract_version': existing_code_contract.get('code_contract_version') or DIRECT_CODE_CONTRACT_VERSION,
+        'function_name': existing_code_contract.get('function_name') or contract.get('function_name') or 'compute_factor',
+        'entrypoint': existing_code_contract.get('entrypoint') or contract.get('entrypoint') or 'compute_factor',
+        'source_code': source,
+        'code_hash': source_hash(source),
+        'imports': imports,
+        'dependencies': list(dict.fromkeys(list(existing_code_contract.get('dependencies') or []) + imports)),
+        'input_schema': existing_code_contract.get('input_schema') or {
+            'daily_df': list((qlib_adapter_config.get('logical_fields') or {}).values()),
+            'minute_df': ['ts_code', 'trade_date', 'trade_time', 'close', 'vol', 'amount'],
+        },
+        'output_schema': output_schema,
+        'required_fields': required_fields,
+        'information_set_rules': existing_code_contract.get('information_set_rules') or ['no future-looking fields or negative shifts'],
+        'forbidden_patterns': existing_code_contract.get('forbidden_patterns') or [
+            r'shift\s*\(\s*-\d+',
+            r'\bfuture_return\b',
+            r'\bnext_return\b',
+            r'\blabel\b',
+            r'\btarget\b',
+            r'\bfuture_',
+            r'\blookahead\b',
+        ],
+        'source_derivation': {
+            'derivation': derivation,
+            'source_fields': [
+                'factor_spec_master.canonical_spec',
+                'factor_spec_master.implementation_contract',
+                'qlib_adapter_config.logical_fields',
+            ],
+            'not_fallback': True,
+        },
+    }
+    code_contract['code_contract_hash'] = stable_hash({
+        key: value for key, value in code_contract.items() if key != 'code_contract_hash'
+    })
+    return {
+        'status': 'ready',
+        'code_contract': code_contract,
+        'code_contract_hash': code_contract['code_contract_hash'],
+        'source_code': source,
+        'code_hash': code_contract['code_hash'],
+        'output_schema': output_schema,
+    }
 
 
 def inspect_minute_root(path: Path) -> dict | None:
@@ -807,11 +1067,17 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'step4_access_rule': 'Step 4 should prefer Step 3A normalized local inputs / adapter config, not raw S3 paths directly.'
     }
 
+    implementation_mode = declared_implementation_mode(fsm, price_volume_minute=price_volume_minute)
+    direct_code_contract = (
+        build_direct_code_contract_for_step3a(fsm, qlib_adapter_config)
+        if implementation_mode == 'direct_code' else {}
+    )
+    direct_code_ready = direct_code_contract.get('status') == 'ready'
     implementation_plan_stub = {
         'report_id': report_id,
         'factor_id': factor_id,
-        'preferred_execution_mode': 'hybrid' if price_volume_minute else 'direct_code',
-        'implementation_mode': 'hybrid' if price_volume_minute else 'direct_code',
+        'preferred_execution_mode': implementation_mode,
+        'implementation_mode': implementation_mode,
         'candidate_paths': ['operator', 'hybrid', 'direct_code'],
         'current_decision': 'defer_to_step3b',
         'notes': [
@@ -819,6 +1085,22 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             '正式实现顺序为 operator -> hybrid -> direct_code；无法保证正确时必须 BLOCK'
         ]
     }
+    if implementation_mode == 'direct_code':
+        implementation_plan_stub.update({
+            'implementation_contract': {
+                'implementation_mode': 'direct_code',
+                'mode': 'direct_code',
+                'code_contract': direct_code_contract.get('code_contract') if direct_code_ready else None,
+                'output_schema': direct_code_contract.get('output_schema') if direct_code_ready else None,
+            },
+            'code_contract': direct_code_contract.get('code_contract') if direct_code_ready else None,
+            'source_code': direct_code_contract.get('source_code') if direct_code_ready else None,
+            'code_hash': direct_code_contract.get('code_hash') if direct_code_ready else None,
+            'code_contract_hash': direct_code_contract.get('code_contract_hash') if direct_code_ready else None,
+            'output_schema': direct_code_contract.get('output_schema') if direct_code_ready else {'columns': ['ts_code', 'trade_date', 'factor_value']},
+            'direct_code_contract_status': direct_code_contract.get('status'),
+            'direct_code_contract_blocked_reason': direct_code_contract.get('blocked_reason'),
+        })
 
     return data_prep_master, qlib_adapter_config, implementation_plan_stub
 

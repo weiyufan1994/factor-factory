@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-import argparse, json
+import argparse, hashlib, json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
+DIRECT_CODE_CONTRACT_VERSION = 'factorforge_direct_code_contract_v1'
 
 
 def validate_sort_contract(contract: dict) -> None:
@@ -28,6 +30,50 @@ def validate_sort_contract(contract: dict) -> None:
     assert isinstance(contract.get('data_hash'), str) and len(contract.get('data_hash')) >= 32, 'STEP3_DAILY_SORT_CONTRACT_INVALID: data_hash'
     assert isinstance(contract.get('duplicate_key_check'), bool), 'STEP3_DAILY_SORT_CONTRACT_INVALID: duplicate_key_check'
     assert isinstance(contract.get('sample_sortedness_check'), bool), 'STEP3_DAILY_SORT_CONTRACT_INVALID: sample_sortedness_check'
+
+
+def direct_code_contract_from_plan(impl: dict) -> dict:
+    code_contract = impl.get('code_contract') if isinstance(impl.get('code_contract'), dict) else {}
+    if code_contract:
+        return code_contract
+    contract = impl.get('implementation_contract') if isinstance(impl.get('implementation_contract'), dict) else {}
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    if code_contract:
+        return code_contract
+    return {}
+
+
+def validate_direct_code_source_contract(impl: dict) -> None:
+    code_contract = direct_code_contract_from_plan(impl)
+    assert code_contract, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code requires code_contract before worker dispatch'
+    assert code_contract.get('code_contract_version') == DIRECT_CODE_CONTRACT_VERSION, (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: invalid direct_code code_contract_version'
+    )
+    source = str(code_contract.get('source_code') or impl.get('source_code') or '')
+    assert source.strip(), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code requires code_contract.source_code before worker dispatch'
+    entrypoint = str(code_contract.get('entrypoint') or code_contract.get('function_name') or '')
+    assert entrypoint == 'compute_factor', 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code entrypoint/function_name must be compute_factor'
+    assert re.search(r'def\s+compute_factor\s*\(', source), (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_code must define compute_factor()'
+    )
+    declared_hash = str(code_contract.get('code_hash') or impl.get('code_hash') or '')
+    assert declared_hash, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code requires code_hash'
+    actual_hash = hashlib.sha256(source.encode('utf-8')).hexdigest()
+    assert declared_hash == actual_hash, (
+        f'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_HASH_MISMATCH: declared={declared_hash} actual={actual_hash}'
+    )
+    imports = code_contract.get('imports') or code_contract.get('dependencies')
+    assert isinstance(imports, list) and imports, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code imports/dependencies required'
+    input_schema = code_contract.get('input_schema')
+    output_schema = code_contract.get('output_schema') or impl.get('output_schema')
+    assert isinstance(input_schema, dict) and input_schema, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code input_schema required'
+    assert isinstance(output_schema, dict) and output_schema.get('columns'), (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema.columns required'
+    )
+    required_outputs = {'ts_code', 'trade_date', 'factor_value'}
+    assert required_outputs.issubset(set(output_schema.get('columns') or [])), (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema must include ts_code/trade_date/factor_value'
+    )
 
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
@@ -172,6 +218,8 @@ if __name__ == '__main__':
     assert impl_mode in {'operator', 'direct_code', 'hybrid'}, (
         f'formal implementation_mode must be operator/direct_code/hybrid, got {impl_mode}'
     )
+    if impl_mode == 'direct_code':
+        validate_direct_code_source_contract(impl)
     if 'calculation_steps' in impl:
         assert isinstance(impl.get('calculation_steps'), list) and impl['calculation_steps']
     if 'code_artifacts' in impl:

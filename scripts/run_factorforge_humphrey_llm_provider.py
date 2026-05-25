@@ -144,6 +144,69 @@ def enrich_provenance(payload: dict[str, Any], request: dict[str, Any], *, provi
     return payload
 
 
+def _as_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, dict):
+        items = [f"{key}: {json.dumps(val, ensure_ascii=False, sort_keys=True)}" for key, val in value.items()]
+    else:
+        items = [value]
+
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            text = item.strip()
+        else:
+            text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        if text:
+            out.append(text)
+    return out
+
+
+def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    role = str(request.get("role") or "")
+    if role not in {"primary", "challenger"}:
+        return payload
+
+    nested = payload.get("factor_spec_raw")
+    if isinstance(nested, dict):
+        outer_provenance = payload.get("_llm_bridge_provenance")
+        payload = dict(nested)
+        if isinstance(outer_provenance, dict) and "_llm_bridge_provenance" not in payload:
+            payload["_llm_bridge_provenance"] = outer_provenance
+
+    for key in [
+        "operators",
+        "required_inputs",
+        "time_series_steps",
+        "cross_sectional_steps",
+        "preprocessing",
+        "normalization",
+        "neutralization",
+        "explicit_items",
+        "inferred_items",
+        "ambiguities",
+        "implementation_assumptions",
+    ]:
+        if key in payload:
+            payload[key] = _as_text_list(payload.get(key))
+
+    mode = str(payload.get("implementation_mode") or "").strip()
+    if mode == "direct_code":
+        contract = payload.get("implementation_contract")
+        if not isinstance(contract, dict):
+            contract = {}
+        contract.setdefault("implementation_mode", "direct_code")
+        contract.setdefault("mode", "direct_code")
+        contract.setdefault("function_name", "compute_factor")
+        contract.setdefault("required_fields", payload.get("required_inputs") or [])
+        payload["implementation_contract"] = contract
+
+    return payload
+
+
 def step1_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, str]:
     role = str(request.get("role") or "")
     model = os.getenv("FACTORFORGE_STEP1_LLM_MODEL", DEFAULT_STEP1_MODEL)
@@ -199,6 +262,7 @@ def step2_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, 
     if role in {"primary", "challenger"}:
         role_extra = (
             "Extract executable factor spec raw JSON. Select implementation_mode from executable structure only. "
+            "Return the factor spec fields at the top level; do not wrap them inside factor_spec_raw. "
             "Use direct_code for natural-language/custom smart-money algorithms unless you can provide a complete hybrid_contract. "
             "Never default pdf_report to hybrid. Include required_inputs, operators, time_series_steps, cross_sectional_steps, "
             "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported."
@@ -241,6 +305,8 @@ def main() -> int:
         eprint(f"[factorforge-provider] role={role} provider={provider_name} model={model} prompt_hash={request.get('prompt_hash')}")
         raw = openai_chat_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
         payload = extract_json_object(raw)
+        if version == "factorforge_step2_llm_bridge_v1":
+            payload = normalize_step2_payload(payload, request)
         payload = enrich_provenance(payload, request, provider_name=provider_name, model=model)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0

@@ -31,7 +31,7 @@ from factor_factory.provenance import (
     build_knowledge_provenance,
     derive_identity as derive_provenance_identity,
 )
-from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
+from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
     validate_formula_specific_derivation,
@@ -43,7 +43,7 @@ from factor_factory.mechanism_math.main_agent_memo import (
     render_main_agent_mechanism_questionnaire_markdown,
     validate_main_agent_mechanism_memo,
 )
-from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
@@ -1100,6 +1100,22 @@ def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any
     return rebuilt
 
 
+def mechanism_math_contract_v2_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    spec = bundle.get('factor_spec_master') or {}
+    case = bundle.get('factor_case_master') or {}
+    handoff = bundle.get('handoff_to_step6') or {}
+    canonical = spec.get('canonical_spec') or {}
+    for candidate in [
+        spec.get('mechanism_math_contract_v2'),
+        canonical.get('mechanism_math_contract_v2'),
+        case.get('mechanism_math_contract_v2'),
+        handoff.get('mechanism_math_contract_v2'),
+    ]:
+        if isinstance(candidate, dict) and candidate and not validate_mechanism_math_contract_v2(candidate):
+            return candidate
+    return build_mechanism_math_contract_v2(spec or canonical or bundle)
+
+
 def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
     revision_ops = contract.get('revision_operators') if isinstance(contract.get('revision_operators'), list) else []
     first_op = revision_ops[0] if revision_ops and isinstance(revision_ops[0], dict) else {}
@@ -1218,6 +1234,7 @@ def build_mechanism_analysis(
     del payloads
     text, canonical = _step6_spec_text(bundle)
     mechanism_math_contract = mechanism_math_contract_from_bundle(bundle)
+    mechanism_math_contract_v2 = mechanism_math_contract_v2_from_bundle(bundle)
     mechanism_math_summary = mechanism_math_summary_from_contract(mechanism_math_contract)
     factor_family, classification_evidence_items, uncertainty = _classify_mechanism_family(text, canonical)
     formula_understanding = mechanism_math_contract.get('formula_understanding') if isinstance(mechanism_math_contract, dict) else {}
@@ -1361,7 +1378,38 @@ def build_mechanism_analysis(
         },
         'classification_uncertainty': uncertainty,
         'mechanism_math_contract': mechanism_math_contract,
+        'mechanism_math_contract_v2': mechanism_math_contract_v2,
         'mechanism_math_summary': mechanism_math_summary,
+        'mechanism_projection_diagnosis': {
+            'economic_hypothesis': 'supported' if fit in {'strong', 'partial'} else 'challenged',
+            'primary_mechanism_model': 'supported' if fit in {'strong', 'partial'} else 'challenged',
+            'stochastic_projection': 'supported' if metrics.get('metric_verdict') in {'supportive', 'mixed'} else 'challenged',
+            'observable_estimator': 'supported' if not short_dominance and not long_negative else 'challenged',
+            'implementation_data_contract': evidence_verdict,
+        },
+        'metric_signature_match': {
+            'economic_hypothesis': fit,
+            'primary_mechanism_model': fit,
+            'stochastic_projection': metrics.get('metric_verdict') or 'inconclusive',
+            'observable_estimator': long_quality.get('long_side_verdict') or 'inconclusive',
+            'implementation_contract': evidence_verdict,
+        },
+        'model_layer_failure_attribution': [
+            layer
+            for layer, failed in {
+                'economic_hypothesis': fit in {'weak', 'contradicted'},
+                'primary_mechanism_model': fit in {'weak', 'contradicted'},
+                'stochastic_projection': metrics.get('metric_verdict') in {'negative', 'inconclusive'},
+                'observable_estimator': short_dominance or long_negative,
+                'implementation_contract': evidence_verdict == 'blocked',
+            }.items()
+            if failed
+        ] or ['none'],
+        'revision_model_target': 'implementation_contract' if evidence_verdict == 'blocked' else (
+            'observable_estimator' if short_dominance or long_negative else (
+                'stochastic_projection' if metrics.get('metric_verdict') in {'negative', 'inconclusive'} else 'primary_mechanism_model'
+            )
+        ),
     }
 
 
@@ -1562,18 +1610,23 @@ def _revision_hypothesis(
     target_text = f'{mechanism_target} {expression_change}'.lower()
     if 'mechanism' in target_text:
         revision_target_math_object = 'model_family_challenge'
+        revision_model_layer = 'primary_mechanism_model'
     elif 'regime' in target_text or 'state' in target_text:
         revision_target_math_object = 'state_variable'
+        revision_model_layer = 'stochastic_projection'
     elif 'smooth' in target_text or 'persistence' in target_text or 'window' in target_text:
         revision_target_math_object = 'estimator_kernel'
+        revision_model_layer = 'observable_estimator'
     else:
         revision_target_math_object = 'estimator_kernel'
+        revision_model_layer = 'observable_estimator'
     return {
         'hypothesis_id': hypothesis_id,
         'hypothesis': hypothesis,
         'mechanism_target': mechanism_target,
         'expression_change': expression_change,
         'revision_target_math_object': revision_target_math_object,
+        'revision_model_layer': revision_model_layer,
         'math_change': expression_change,
         'expected_metric_effect': expected_metric_change,
         'math_falsification_tests': falsification_tests,

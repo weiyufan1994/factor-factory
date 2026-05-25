@@ -52,7 +52,7 @@ from factor_factory.artifact_identity import (
 )
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
-from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
+from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
@@ -929,8 +929,15 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     if isinstance(mechanism_math_contract, dict):
         mechanism_math_contract.setdefault('source_economic_hypothesis', research_contract.get('economic_hypothesis') or {})
         mechanism_math_contract.setdefault('source_math_hypothesis_candidates', research_contract.get('math_hypothesis_candidates') or [])
+    mechanism_math_contract_v2 = (
+        primary.get('mechanism_math_contract_v2')
+        or aim.get('mechanism_math_contract_v2')
+        or build_mechanism_math_contract_v2(master)
+    )
     master['mechanism_math_contract'] = mechanism_math_contract
+    master['mechanism_math_contract_v2'] = mechanism_math_contract_v2
     master['canonical_spec']['mechanism_math_contract'] = mechanism_math_contract
+    master['canonical_spec']['mechanism_math_contract_v2'] = mechanism_math_contract_v2
     master['math_discipline_review']['mechanism_math_contract_ref'] = {
         'math_model_status': mechanism_math_contract.get('math_model_status'),
         'model_family': mechanism_math_contract.get('model_family'),
@@ -1004,6 +1011,7 @@ def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> Non
         'research_contract': master.get('research_contract') or {},
         'math_discipline_review': master.get('math_discipline_review') or {},
         'mechanism_math_contract': master.get('mechanism_math_contract') or {},
+        'mechanism_math_contract_v2': master.get('mechanism_math_contract_v2') or {},
         'learning_and_innovation': master.get('learning_and_innovation') or {},
     }
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)

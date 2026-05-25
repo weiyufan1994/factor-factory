@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 CONTRACT_VERSION = "factorforge_mechanism_math_contract_v1"
+CONTRACT_VERSION_V2 = "mechanism_math_contract_v2"
 
 VALID_MODEL_STATUSES = {"specified", "under_specified", "invalid"}
 
@@ -13,6 +14,56 @@ VALID_MODEL_FAMILIES = {
     "functional_filter",
     "constraint_model",
     "other",
+}
+
+VALID_PRIMARY_MODEL_FAMILIES_V2 = {
+    "stochastic_process",
+    "microstructure_response_function",
+    "dimensional_scaling_analysis",
+    "potential_field_or_barrier_model",
+    "entropy_or_information_theory",
+    "wavelet_or_spectral_model",
+    "copula_or_dependence_model",
+    "regime_switching_model",
+    "behavioral_constraint_model",
+    "inventory_or_execution_model",
+    "network_or_contagion_model",
+    # Compatibility aliases from the v1 classifier. These are accepted as
+    # primary families only when the v2 positive modelling fields are present.
+    "valuation_identity",
+    "price_volume_microstructure",
+    "cross_sectional_statistics",
+    "linear_factor_projection",
+    "functional_filter",
+    "constraint_model",
+    "other",
+}
+
+VALID_PRICE_PROCESS_TERMS_V2 = {
+    "drift",
+    "diffusion",
+    "jump_intensity",
+    "friction",
+    "regime_transition",
+    "observation_equation",
+}
+
+VALID_FORMULA_MODEL_ROLES_V2 = {
+    "state_variable",
+    "response_variable",
+    "conditioning_variable",
+    "barrier_proxy",
+    "entropy_proxy",
+    "regime_proxy",
+}
+
+VALID_PRICE_PROCESS_PROJECTION_ROLES_V2 = {
+    "drift",
+    "diffusion",
+    "jump",
+    "friction",
+    "regime",
+    "observation",
 }
 
 VALID_TOOLKITS = {

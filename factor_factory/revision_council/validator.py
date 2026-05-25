@@ -47,6 +47,31 @@ def _nonempty_str_list(value: Any, *, min_count: int = 1) -> bool:
     )
 
 
+VALID_REVISION_MODEL_LAYERS = {
+    "economic_hypothesis",
+    "primary_mechanism_model",
+    "stochastic_projection",
+    "observable_estimator",
+    "implementation_contract",
+}
+
+
+def _model_layer_attribution_present(proposal: dict[str, Any]) -> bool:
+    layer = proposal.get("revision_model_layer") or proposal.get("revision_model_target")
+    if layer in VALID_REVISION_MODEL_LAYERS:
+        return True
+    record = proposal.get("derivation_record") if isinstance(proposal.get("derivation_record"), dict) else {}
+    if record.get("revision_model_layer") in VALID_REVISION_MODEL_LAYERS:
+        return True
+    for item in record.get("revision_hypotheses") or []:
+        if isinstance(item, dict) and item.get("revision_model_layer") in VALID_REVISION_MODEL_LAYERS:
+            return True
+    for law in proposal.get("candidate_revision_laws") or []:
+        if isinstance(law, dict) and law.get("revision_model_layer") in VALID_REVISION_MODEL_LAYERS:
+            return True
+    return False
+
+
 def _validate_derivation_record(proposal: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     role = proposal.get("agent_role")
@@ -197,6 +222,9 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
         reasons.append("revision_council_generation_mode_invalid")
     if producer == "agentic_research" and research_depth not in {"medium", "high"}:
         reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_DEPTH_INVALID")
+
+    if not _model_layer_attribution_present(proposal):
+        reasons.append("BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING")
 
     reasons.extend(_validate_derivation_record(proposal))
 

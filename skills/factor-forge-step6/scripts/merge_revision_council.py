@@ -257,6 +257,7 @@ def proposal_like_from_agent_result(result: dict[str, Any]) -> dict[str, Any]:
         "research_depth": result.get("research_depth"),
         "proposal_generation_mode": result.get("proposal_generation_mode"),
         "revision_type": revision_type,
+        "revision_model_layer": law.get("revision_model_layer") or "observable_estimator",
         "target_failure_signature": "cost_too_high" if role == "microstructure_cost_analyst" else "mechanism_unclear",
         "selected_math_tools": [item.get("tool") for item in public.get("selected_tools") or [] if isinstance(item, dict) and item.get("tool")],
         "market_phenomenon": public.get("research_question") or claim.get("claim") or "Agentic council result.",
@@ -268,6 +269,7 @@ def proposal_like_from_agent_result(result: dict[str, Any]) -> dict[str, Any]:
             {
                 "law_statement": law.get("law_statement"),
                 "formula_direction": law.get("expression_change_direction"),
+                "revision_model_layer": law.get("revision_model_layer") or "observable_estimator",
                 "expected_metric_change": law.get("expected_metric_change") or [],
                 "falsification_tests": law.get("falsification_tests") or [],
                 "kill_criteria": law.get("kill_criteria") or [],
@@ -285,6 +287,7 @@ def proposal_like_from_agent_result(result: dict[str, Any]) -> dict[str, Any]:
                 {
                     "hypothesis": law.get("law_statement"),
                     "expression_direction": law.get("expression_change_direction"),
+                    "revision_model_layer": law.get("revision_model_layer") or "observable_estimator",
                     "expected_metric_change": law.get("expected_metric_change") or [],
                     "falsification_tests": law.get("falsification_tests") or [],
                     "kill_criteria": law.get("kill_criteria") or [],

@@ -40,7 +40,7 @@ ALLOWED_IMPLEMENTATION_MODES = {'operator', 'direct_code', 'hybrid'}
 from factor_factory.artifact_identity import build_spec_hash
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.factor_families.registry import FamilyPluginContractError, get_family_plugin_contract
-from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 
 
 def check(name: str, condition: bool, error: str | None = None, severity: str = 'BLOCK'):
@@ -110,6 +110,16 @@ def mechanism_contract_carries_source_hypotheses(contract, expected_economic, ex
         and source_economic == expected_economic
         and source_math == expected_math
     )
+
+
+def mechanism_contract_v2_consistent(master_v2, canonical_v2, handoff_v2) -> bool:
+    if not isinstance(master_v2, dict) or not isinstance(canonical_v2, dict):
+        return False
+    if master_v2 != canonical_v2:
+        return False
+    if handoff_v2 is not None and handoff_v2 != master_v2:
+        return False
+    return True
 
 
 def producer_has_forbidden_token(value) -> bool:
@@ -264,8 +274,13 @@ def main() -> None:
         master_mechanism_math_contract = master.get('mechanism_math_contract')
         canonical_mechanism_math_contract = canonical.get('mechanism_math_contract')
         handoff_mechanism_math_contract = handoff.get('mechanism_math_contract') if isinstance(handoff, dict) else None
+        master_mechanism_math_contract_v2 = master.get('mechanism_math_contract_v2')
+        canonical_mechanism_math_contract_v2 = canonical.get('mechanism_math_contract_v2')
+        handoff_mechanism_math_contract_v2 = handoff.get('mechanism_math_contract_v2') if isinstance(handoff, dict) else None
         mechanism_math_contract = master_mechanism_math_contract or canonical_mechanism_math_contract
         mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        has_any_mechanism_math_v2 = any(isinstance(item, dict) and bool(item) for item in [master_mechanism_math_contract_v2, canonical_mechanism_math_contract_v2, handoff_mechanism_math_contract_v2])
+        mechanism_math_v2_failures = validate_mechanism_math_contract_v2(master_mechanism_math_contract_v2) if has_any_mechanism_math_v2 else []
         checks.extend([
             check('report_id_match', master.get('report_id') == rid, 'report_id mismatch'),
             check('contract_version_present', nonempty_str(master.get('contract_version')), 'contract_version missing'),
@@ -303,6 +318,12 @@ def main() -> None:
             check('expected_failure_modes_present', nonempty_list(research_contract.get('expected_failure_modes') or math_review.get('expected_failure_modes')), 'expected_failure_modes missing'),
             check('mechanism_math_contract_present', isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract), 'mechanism_math_contract missing'),
             check('mechanism_math_contract_valid', not mechanism_math_failures, f'mechanism_math_contract invalid: {mechanism_math_failures}'),
+            check('mechanism_math_contract_v2_present_or_legacy_v1', has_any_mechanism_math_v2, 'legacy v1 artifact without mechanism_math_contract_v2', severity='WARN'),
+            check('mechanism_math_contract_v2_present', not has_any_mechanism_math_v2 or (isinstance(master_mechanism_math_contract_v2, dict) and bool(master_mechanism_math_contract_v2)), 'mechanism_math_contract_v2 missing'),
+            check('canonical_mechanism_math_contract_v2_present', not has_any_mechanism_math_v2 or (isinstance(canonical_mechanism_math_contract_v2, dict) and bool(canonical_mechanism_math_contract_v2)), 'canonical_spec.mechanism_math_contract_v2 missing'),
+            check('handoff_mechanism_math_contract_v2_present', not has_any_mechanism_math_v2 or not handoff or (isinstance(handoff_mechanism_math_contract_v2, dict) and bool(handoff_mechanism_math_contract_v2)), 'handoff mechanism_math_contract_v2 missing'),
+            check('mechanism_math_contract_v2_valid', not mechanism_math_v2_failures, f'mechanism_math_contract_v2 invalid: {mechanism_math_v2_failures}'),
+            check('mechanism_math_contract_v2_consistent', not has_any_mechanism_math_v2 or mechanism_contract_v2_consistent(master_mechanism_math_contract_v2, canonical_mechanism_math_contract_v2, handoff_mechanism_math_contract_v2 if handoff else None), 'mechanism_math_contract_v2 mismatch across master/canonical/handoff'),
             check(
                 'mechanism_math_contract_source_economic_hypothesis_present',
                 mechanism_contract_carries_source_hypotheses(master_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),

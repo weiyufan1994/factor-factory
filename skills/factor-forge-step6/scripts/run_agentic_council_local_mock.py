@@ -144,6 +144,7 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
             {
                 "law_id": law_id,
                 "revision_type": "expression_revision" if failure in {"cost_too_high", "non_monotonic"} else "mechanism_challenge",
+                "revision_model_layer": "observable_estimator" if failure in {"cost_too_high", "non_monotonic"} else "primary_mechanism_model",
                 "law_statement": "A valid revision must improve the mathematical estimator state before any code path is considered.",
                 "expression_change_direction": expression_direction,
                 "expected_metric_change": [

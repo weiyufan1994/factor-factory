@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
@@ -22,7 +23,7 @@ from factor_factory.mechanism_math.formula_specific import (
     validate_mechanism_formula_consistency,
 )
 from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
-from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 from factor_factory.revision_council.guards import FORBIDDEN_TEXT_TOKEN, FORBIDDEN_PATTERNS
 from factor_factory.revision_council.validator import validate_revision_council_proposal
 from validate_agentic_council_result import validate_agentic_result
@@ -178,6 +179,25 @@ REVISION_MATH_OBJECTS = {
     'model_family_challenge',
 }
 VALID_FINAL_REVISION_SOURCES = {'revision_council', 'deterministic_fallback', 'none'}
+VALID_MODEL_LAYER_TARGETS = {
+    'economic_hypothesis',
+    'primary_mechanism_model',
+    'stochastic_projection',
+    'observable_estimator',
+    'implementation_contract',
+    'none',
+}
+REQUIRED_MODEL_LINKAGE_KEYS = {
+    'economic_hypothesis',
+    'primary_mechanism_model',
+    'stochastic_projection',
+    'observable_estimator',
+}
+IMPLEMENTATION_MODEL_LINKAGE_KEYS = {
+    'implementation_contract',
+    'implementation_data_contract',
+}
+PLACEHOLDER_MODEL_LINKAGE_VALUES = {'', 'unknown', 'under_specified', 'n/a', 'none', 'todo', 'tbd'}
 COUNCIL_FORBIDDEN_SKIP_KEYS = {
     'hard_guards',
     'forbidden_search',
@@ -289,6 +309,50 @@ def scan_forbidden_revision_text(value, prefix: str = '$') -> list[dict]:
             if pattern in normalized:
                 findings.append({'path': prefix, 'pattern': pattern})
     return findings
+
+
+def validate_step6_model_linkage(mechanism_analysis: dict, revision_strategy: dict | None = None) -> list[str]:
+    revision_strategy = revision_strategy or {}
+    failures: list[str] = []
+    model_layer_failure_attribution = mechanism_analysis.get('model_layer_failure_attribution')
+    revision_model_target = mechanism_analysis.get('revision_model_target')
+    projection_diagnosis = mechanism_analysis.get('mechanism_projection_diagnosis')
+    metric_signature_match = mechanism_analysis.get('metric_signature_match')
+    def has_required_model_linkage_keys(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        keys = set(value.keys())
+        return REQUIRED_MODEL_LINKAGE_KEYS.issubset(keys) and bool(keys & IMPLEMENTATION_MODEL_LINKAGE_KEYS)
+
+    projection_keys_ok = has_required_model_linkage_keys(projection_diagnosis)
+    metric_keys_ok = has_required_model_linkage_keys(metric_signature_match)
+
+    def meaningful_model_link_values(value: Any) -> bool:
+        if not isinstance(value, dict) or not value:
+            return False
+        for item in value.values():
+            if isinstance(item, str) and item.strip().lower() in PLACEHOLDER_MODEL_LINKAGE_VALUES:
+                return False
+            if item in (None, {}, []):
+                return False
+        return True
+
+    metrics_linked_to_model = (
+        projection_keys_ok
+        and metric_keys_ok
+        and meaningful_model_link_values(projection_diagnosis)
+        and meaningful_model_link_values(metric_signature_match)
+        and isinstance(model_layer_failure_attribution, list)
+        and bool(model_layer_failure_attribution)
+        and all(str(item) in VALID_MODEL_LAYER_TARGETS for item in model_layer_failure_attribution)
+        and revision_model_target in VALID_MODEL_LAYER_TARGETS - {'none'}
+    )
+    if not metrics_linked_to_model:
+        failures.append('BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL')
+    revision_hypotheses = revision_strategy.get('revision_hypotheses') or []
+    if revision_hypotheses and not all(isinstance(item, dict) and item.get('revision_model_layer') in VALID_MODEL_LAYER_TARGETS - {'none'} for item in revision_hypotheses):
+        failures.append('BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING')
+    return failures
 
 
 def proposal_by_id(report_id: str, proposal_id: str) -> tuple[Path | None, dict | None]:
@@ -911,7 +975,9 @@ if __name__ == '__main__':
         checks.append(check('mechanism_classification_evidence_present', isinstance(mechanism_analysis.get('classification_evidence'), dict) and bool(mechanism_analysis.get('classification_evidence')), 'classification_evidence missing'))
         checks.append(check('mechanism_classification_uncertainty_enum', mechanism_analysis.get('classification_uncertainty') in VALID_CLASSIFICATION_UNCERTAINTY, f"invalid classification_uncertainty: {mechanism_analysis.get('classification_uncertainty')}"))
         mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or {}
+        mechanism_math_contract_v2 = mechanism_analysis.get('mechanism_math_contract_v2') or {}
         mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        mechanism_math_v2_failures = validate_mechanism_math_contract_v2(mechanism_math_contract_v2) if isinstance(mechanism_math_contract_v2, dict) and mechanism_math_contract_v2 else []
         checks.append(check(
             'mechanism_math_contract_present',
             isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract),
@@ -921,6 +987,17 @@ if __name__ == '__main__':
             'mechanism_math_contract_valid',
             not mechanism_math_failures,
             f'mechanism_analysis.mechanism_math_contract invalid: {mechanism_math_failures}',
+        ))
+        checks.append(check(
+            'mechanism_math_contract_v2_valid_if_present',
+            not mechanism_math_v2_failures,
+            f'mechanism_analysis.mechanism_math_contract_v2 invalid: {mechanism_math_v2_failures}',
+        ))
+        model_linkage_failures = validate_step6_model_linkage(mechanism_analysis, revision_strategy)
+        checks.append(check(
+            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL',
+            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL' not in model_linkage_failures,
+            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract',
         ))
         factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
         factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}
@@ -1092,6 +1169,13 @@ if __name__ == '__main__':
             ),
             'mechanism_unclear requires a mechanism challenge hypothesis or reject rationale',
         ))
+        revision_hypotheses = revision_strategy.get('revision_hypotheses') or []
+        if revision_hypotheses:
+            checks.append(check(
+                'revision_hypotheses_model_layer_present',
+                'BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING' not in model_linkage_failures,
+                'BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING: revision hypotheses must declare the model layer being revised',
+            ))
         checks.append(check(
             'reject_requires_revision_reject_reason',
             decision != 'reject' or nonempty_str(revision_strategy.get('reject_reason_if_no_revision')),

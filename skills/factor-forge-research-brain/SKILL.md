@@ -285,3 +285,7 @@ time, information theory, or other justified tools. It should select tools based
 on the factor and evidence, not apply a fixed checklist. Mathematical
 plausibility is not evidence and must be checked against Step4/5/6 evidence and
 provenance gates before any future human-approved implementation work.
+
+## Mechanism Math Contract v2
+
+Research interpretation must start from the economic hypothesis and choose a primary mechanism model before discussing formulas. The primary model may be stochastic, microstructure, scaling, barrier, information-theoretic, spectral, dependence, regime-switching, behavioral, inventory/execution, network/contagion, or another justified family. Regardless of family, state the stochastic price-process projection: which term of the conditional return distribution changes, why, and how the formula estimates it. Do not use generic SDE text as decoration; if the model cannot name state variables, observable proxies, expected metric signature, falsification tests, and kill criteria, mark it under-specified or block promotion.

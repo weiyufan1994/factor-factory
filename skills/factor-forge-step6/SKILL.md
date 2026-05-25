@@ -596,3 +596,7 @@ low-depth advisory output. It is not the full agentic research mode. If a
 proposal is scaffold-generated, record `producer=deterministic_scaffold` and
 `research_depth=low`. Formal research should prefer agentic council reasoning
 when the runtime supports main-agent or subagent proposal generation.
+
+## Mechanism Math Contract v2
+
+Step6 must interpret metrics against the model layers: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, and implementation_contract. A revision proposal is incomplete unless it states which layer is being revised and how the expected metric signature would change. Council output remains advisory-only and cannot bypass evidence, provenance, human approval, or promotion gates.

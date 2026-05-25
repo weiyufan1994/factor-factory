@@ -372,3 +372,7 @@ The qlib bridge is explicit: Step2 may write a qlib expression draft only when t
 Hybrid mode is a bounded composition of an operator subgraph plus explicit custom Python blocks. Step2 must write `factorforge_hybrid_contract_v1` with `operator_subgraph`, nonempty `custom_blocks`, `boundary`, `formula_hash`, `custom_block_hash`, and `hybrid_hash`. Missing boundary/schema/hash fields must BLOCK as `BLOCK_INVALID_HYBRID_CONTRACT`.
 
 Custom blocks are not free-form unsafe code: they must declare `function_name`, input/output schema, required fields, forbidden patterns, and source code. Operator outputs are protected by default; overwriting them requires an explicit boundary permission.
+
+## Mechanism Math Contract v2
+
+Step2 writes mechanism_math_contract_v2 at factor_spec_master, canonical_spec, and handoff_to_step3. The v2 contract maps formula components or direct-code observable estimators to model roles and stochastic price-process projection roles. Operator, direct_code, and hybrid modes all need an estimator mapping; unsupported or vague mappings should be under-specified or blocked rather than replaced with a generic model. Legacy v1 contracts remain readable for older artifacts.

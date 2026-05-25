@@ -192,3 +192,7 @@ Structured object schemas are in `references/schema.md`.
 - Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
 - If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
 - Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Mechanism Math Contract v2
+
+Step1 should add market_process_thesis, primary_mechanism_model_candidates, and stochastic_price_process_projection under research_discipline. These are early research hypotheses and may be under-specified, but they must not be empty or generic. Step1 may list multiple candidate primary models and should mark the preferred/ranked candidate plus why alternatives are less suitable.

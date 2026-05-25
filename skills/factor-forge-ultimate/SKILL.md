@@ -740,3 +740,7 @@ At the skill level, `awaiting_agent_results` must be handled by autonomous
 Council continuation above. The agent should not present it as the final answer
 to the user unless it is technically unable to create valid Council results in
 the current runtime.
+
+## Mechanism Math Contract v2
+
+Factor Forge treats a factor as a falsifiable market-process model first and a formula second. Step1/2/6 artifacts should preserve the chain: market behavior -> economic hypothesis -> primary mechanism model -> stochastic price-process projection -> formula observable estimator -> expected metric signature -> falsification or revision logic. The primary model is selected from the economic hypothesis and is not automatically a stochastic process, but every formal factor must state how the signal changes the conditional distribution of next-horizon return under F_t. Formula explanations that merely restate the formula, or decorative generic SDE/physics language without state variables, observable proxies, and falsification, must BLOCK. Council revisions must declare which model layer they revise: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract.

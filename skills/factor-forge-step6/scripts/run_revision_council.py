@@ -53,6 +53,7 @@ def base_proposal(packet: dict[str, Any], role: str) -> dict[str, Any]:
         "research_depth": "low",
         "proposal_generation_mode": "deterministic_scaffold",
         "revision_type": "no_action",
+        "revision_model_layer": "primary_mechanism_model",
         "target_failure_signature": failure,
         "selected_math_tools": [],
         "market_phenomenon": "Assess the factor expression as a research hypothesis using verified Step4/5/6 evidence.",
@@ -78,6 +79,7 @@ def law(statement: str, direction: str) -> dict[str, Any]:
     return {
         "law_statement": statement,
         "formula_direction": direction,
+        "revision_model_layer": "observable_estimator",
         "expected_metric_change": [
             "cost-adjusted long-side return should improve if the mathematical state is persistent",
             "turnover or estimator variance should fall without losing all gross signal",
@@ -203,6 +205,7 @@ def build_derivation_record(packet: dict[str, Any], proposal: dict[str, Any]) ->
             {
                 "hypothesis": first_law.get("law_statement") or "Test the expression-level direction only after human approval.",
                 "expression_direction": first_law.get("formula_direction") or proposal.get("expression_change") or "See candidate_revision_laws",
+                "revision_model_layer": first_law.get("revision_model_layer") or proposal.get("revision_model_layer") or "observable_estimator",
                 "expected_metric_change": expected_metric_change,
                 "falsification_tests": falsification_tests,
                 "kill_criteria": kill_criteria,

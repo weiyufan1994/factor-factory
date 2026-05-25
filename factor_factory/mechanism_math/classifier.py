@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .schema import CONTRACT_VERSION
+from .schema import CONTRACT_VERSION, CONTRACT_VERSION_V2
 from .formula_specific import build_formula_understanding, select_math_model_from_economic_hypothesis
 
 
@@ -501,4 +501,144 @@ def build_mechanism_math_contract(spec_like: dict[str, Any]) -> dict[str, Any]:
             formula_understanding if isinstance(formula_understanding, dict) else {},
         ),
         "classification_evidence": {"matched_rules": evidence, "classification_uncertainty": uncertainty, "formula_text": formula},
+    }
+
+
+def _return_source_family(research_contract: dict[str, Any]) -> str:
+    economic = research_contract.get("economic_hypothesis") if isinstance(research_contract.get("economic_hypothesis"), dict) else {}
+    value = str(economic.get("macro_return_source") or research_contract.get("initial_return_source_hypothesis") or "mixed")
+    if value == "market_structure_arbitrage":
+        return "market_structure_arbitrage"
+    if value in {"risk_premium", "information_advantage", "constraint_driven_arbitrage", "mixed"}:
+        return value
+    return "mixed"
+
+
+def _payer_from_research_contract(research_contract: dict[str, Any]) -> tuple[str, str]:
+    economic = research_contract.get("economic_hypothesis") if isinstance(research_contract.get("economic_hypothesis"), dict) else {}
+    second = economic.get("second_layer") if isinstance(economic.get("second_layer"), dict) else {}
+    payer = str(
+        second.get("expected_counterparty_or_payer")
+        or economic.get("counterparty_loss_hypothesis")
+        or "counterparty group implied by the report-specific economic hypothesis"
+    )
+    why = str(
+        second.get("why_they_may_pay")
+        or "they pay only if the report-specific behavior, constraint, or information lag creates a conditional return distribution shift"
+    )
+    return payer, why
+
+
+def _primary_v2_family(v1_family: str) -> str:
+    mapping = {
+        "price_volume_microstructure": "microstructure_response_function",
+        "constraint_model": "behavioral_constraint_model",
+        "linear_factor_projection": "stochastic_process",
+        "cross_sectional_statistics": "stochastic_process",
+        "functional_filter": "stochastic_process",
+        "valuation_identity": "stochastic_process",
+        "stochastic_process": "stochastic_process",
+    }
+    return mapping.get(v1_family, v1_family or "stochastic_process")
+
+
+def _projection_terms_for_family(v1_family: str) -> list[str]:
+    if v1_family == "price_volume_microstructure":
+        return ["friction", "drift"]
+    if v1_family == "constraint_model":
+        return ["regime_transition", "drift"]
+    if v1_family == "valuation_identity":
+        return ["drift", "observation_equation"]
+    if v1_family == "linear_factor_projection":
+        return ["observation_equation", "drift"]
+    return ["drift", "observation_equation"]
+
+
+def _component_mapping_from_inputs(inputs: list[str], contract: dict[str, Any]) -> list[dict[str, Any]]:
+    role = "state_variable"
+    projection_role = "drift"
+    family = contract.get("model_family")
+    if family == "price_volume_microstructure":
+        role = "conditioning_variable"
+        projection_role = "friction"
+    elif family == "linear_factor_projection":
+        role = "conditioning_variable"
+        projection_role = "observation"
+    mapping = []
+    for item in inputs or ["formula_expression"]:
+        mapping.append(
+            {
+                "formula_component": str(item),
+                "observable_proxy_for": str(contract.get("state_or_object") or contract.get("latent_state") or "latent return-process state"),
+                "model_role": role,
+                "price_process_projection_role": projection_role,
+            }
+        )
+    return mapping
+
+
+def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any]:
+    """Build the v2 positive mechanism model contract from the current v1 classifier.
+
+    This is intentionally conservative: v1 remains the compatibility contract,
+    while v2 adds the explicit market-process -> primary model -> stochastic
+    projection -> estimator chain.
+    """
+    canonical = spec_like.get("canonical_spec") if isinstance(spec_like.get("canonical_spec"), dict) else spec_like
+    research_contract = spec_like.get("research_contract") if isinstance(spec_like.get("research_contract"), dict) else {}
+    v1 = build_mechanism_math_contract(spec_like)
+    inputs = _observable_inputs(spec_like)
+    formula = str(canonical.get("formula_text") or canonical.get("raw_formula_text") or "").strip()
+    payer, why_pay = _payer_from_research_contract(research_contract)
+    family = str(v1.get("model_family") or "stochastic_process")
+    projection_terms = _projection_terms_for_family(family)
+    formula_estimator = str(v1.get("observable_estimator") or v1.get("factor_as_estimator") or "formula observable estimator")
+    conditional = str(v1.get("conditional_distribution_hypothesis") or "r_{t+1} | F_t, estimated_state_t")
+    return {
+        "contract_version": CONTRACT_VERSION_V2,
+        "market_process_thesis": {
+            "market_phenomenon": str(v1.get("economic_mechanism") or research_contract.get("economic_mechanism") or "report-specific market behavior"),
+            "economic_hypothesis": str(research_contract.get("economic_mechanism") or v1.get("economic_mechanism") or "report-specific economic hypothesis"),
+            "return_source_family": _return_source_family(research_contract),
+            "payer_or_counterparty": payer,
+            "why_they_pay": why_pay,
+            "what_must_be_true": research_contract.get("what_must_be_true") or [
+                "The formula must estimate a state that changes the conditional distribution of next-horizon return."
+            ],
+            "what_would_break_it": research_contract.get("what_would_break_it") or [
+                "The thesis breaks if observed metrics contradict the declared state, projection, or estimator mapping."
+            ],
+        },
+        "primary_mechanism_model": {
+            "selected_model_family": _primary_v2_family(family),
+            "selected_model_reason": str(v1.get("classification_evidence", {}).get("matched_rules") or v1.get("economic_mechanism") or "selected from formula and economic hypothesis"),
+            "why_alternatives_are_less_suitable": [
+                "Alternative models remain secondary unless they explain the same payer, state variable, and observed estimator mapping more directly."
+            ],
+            "state_variables": [str(v1.get("state_or_object") or v1.get("latent_state") or "latent return-process state")],
+            "observable_proxies": inputs or [formula or "formula expression"],
+            "target_functional": str(v1.get("target_functional") or "E[r_{t+1} | F_t, estimated_state_t]"),
+        },
+        "stochastic_price_process_projection": {
+            "projection_required": True,
+            "price_process_form": str(v1.get("process_hypothesis") or "conditional return process with state-dependent distribution terms"),
+            "affected_price_process_terms": projection_terms,
+            "conditional_distribution_claim": conditional,
+            "formula_should_estimate": formula_estimator,
+            "expected_return_distribution_change": str(v1.get("metric_signature_match") or "metrics should reveal whether the estimated state shifts next-horizon return distribution in the claimed direction"),
+        },
+        "formula_component_mapping": _component_mapping_from_inputs(inputs, v1),
+        "expected_metric_signature": v1.get("expected_metric_signature") or {
+            "rank_ic": "positive after sign convention",
+            "long_side_return": "positive after costs",
+            "turnover": "consistent with estimator horizon",
+        },
+        "falsification_tests": v1.get("mechanism_falsification_tests") or v1.get("falsification_tests") or [
+            "Reject if the formula cannot be tied to a conditional distribution shift under F_t."
+        ],
+        "revision_operators": v1.get("revision_operators") or [],
+        "kill_criteria": v1.get("kill_criteria") or [
+            "Kill or redesign if the factor remains a formula transform without a falsifiable market-process model."
+        ],
+        "source_mechanism_math_contract_v1": v1,
     }

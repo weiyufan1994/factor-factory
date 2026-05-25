@@ -68,6 +68,55 @@ def valid_math_hypothesis_candidates(value) -> bool:
     return True
 
 
+def not_vague(value) -> bool:
+    if not nonempty_str(value):
+        return False
+    return str(value).strip().lower() not in {'under_specified', 'unknown', 'n/a', 'none', 'todo', 'tbd'}
+
+
+def meaningful_list(value) -> bool:
+    return isinstance(value, list) and any(not_vague(item) for item in value)
+
+
+def valid_market_process_thesis(value) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    required = ['market_phenomenon', 'economic_hypothesis', 'return_source_family', 'payer_or_counterparty', 'why_they_pay']
+    return all(not_vague(value.get(key)) for key in required) and meaningful_list(value.get('what_must_be_true')) and meaningful_list(value.get('what_would_break_it'))
+
+
+def valid_primary_model_candidates(value) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    has_preferred = False
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        has_preferred = has_preferred or item.get('preferred') is True or item.get('rank') == 1
+        if not not_vague(item.get('selected_model_family')):
+            return False
+        if not not_vague(item.get('why_this_model_fits')):
+            return False
+        if not meaningful_list(item.get('why_alternatives_are_less_suitable')):
+            return False
+        if not meaningful_list(item.get('state_variables')) and not meaningful_list(item.get('observable_proxies')):
+            return False
+    return has_preferred
+
+
+def valid_stochastic_projection(value) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    return (
+        value.get('projection_required') is True
+        and meaningful_list(value.get('affected_price_process_terms'))
+        and not_vague(value.get('price_process_form'))
+        and not_vague(value.get('conditional_distribution_claim'))
+        and not_vague(value.get('formula_should_estimate'))
+        and not_vague(value.get('expected_return_distribution_change'))
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -92,6 +141,9 @@ def main() -> None:
             check('initial_return_source_hypothesis_present', nonempty_str(discipline.get('initial_return_source_hypothesis')), 'initial_return_source_hypothesis missing'),
             check('economic_hypothesis_present', valid_economic_hypothesis(discipline.get('economic_hypothesis')), 'research_discipline.economic_hypothesis missing or incomplete'),
             check('math_hypothesis_candidates_present', valid_math_hypothesis_candidates(discipline.get('math_hypothesis_candidates')), 'research_discipline.math_hypothesis_candidates missing or incomplete'),
+            check('market_process_thesis_present', valid_market_process_thesis(discipline.get('market_process_thesis')), 'research_discipline.market_process_thesis missing or incomplete'),
+            check('primary_mechanism_model_candidates_present', valid_primary_model_candidates(discipline.get('primary_mechanism_model_candidates')), 'research_discipline.primary_mechanism_model_candidates missing or incomplete'),
+            check('stochastic_price_process_projection_present', valid_stochastic_projection(discipline.get('stochastic_price_process_projection')), 'research_discipline.stochastic_price_process_projection missing or incomplete'),
             check('similar_case_lessons_imported_present', nonempty_list(discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
             check('what_must_be_true_present', nonempty_list(discipline.get('what_must_be_true')), 'what_must_be_true missing'),
             check('what_would_break_it_present', nonempty_list(discipline.get('what_would_break_it')), 'what_would_break_it missing'),

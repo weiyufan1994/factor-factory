@@ -307,6 +307,56 @@ def build_math_hypothesis_candidates(
     return candidates[:4]
 
 
+def build_market_process_thesis(economic_hypothesis: Dict[str, Any], what_must_be_true: List[str], what_would_break_it: List[str]) -> Dict[str, Any]:
+    second = economic_hypothesis.get("second_layer") if isinstance(economic_hypothesis.get("second_layer"), dict) else {}
+    return {
+        "market_phenomenon": second.get("subtype") or "under_specified_market_process",
+        "economic_hypothesis": second.get("why_they_may_pay") or "under_specified_economic_hypothesis",
+        "return_source_family": economic_hypothesis.get("macro_return_source") or "mixed",
+        "payer_or_counterparty": second.get("expected_counterparty_or_payer") or economic_hypothesis.get("counterparty_loss_hypothesis") or "under_specified_counterparty",
+        "why_they_pay": second.get("why_they_may_pay") or "under_specified_payment_reason",
+        "what_must_be_true": what_must_be_true,
+        "what_would_break_it": what_would_break_it,
+    }
+
+
+def build_primary_mechanism_model_candidates(math_hypothesis_candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate(math_hypothesis_candidates):
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "candidate_id": item.get("hypothesis_id") or f"primary_model_candidate_{idx + 1}",
+                "rank": idx + 1,
+                "selected_model_family": item.get("model_family") or "other",
+                "why_this_model_fits": item.get("why_suitable") or "under_specified",
+                "why_alternatives_are_less_suitable": [
+                    "Alternative model families are secondary until they better explain the payer, state variables, and formula estimator mapping."
+                ],
+                "state_variables": [item.get("state_or_object") or "under_specified_state"],
+                "observable_proxies": [item.get("observable_estimator") or "under_specified_observable_estimator"],
+                "target_functional": item.get("target_functional") or "under_specified_target_functional",
+                "preferred": idx == 0,
+            }
+        )
+    return out
+
+
+def build_stochastic_price_process_projection(math_hypothesis_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    preferred = math_hypothesis_candidates[0] if math_hypothesis_candidates else {}
+    estimator = preferred.get("observable_estimator") or "under_specified_observable_estimator"
+    target = preferred.get("target_functional") or "E[r_{t+1} | F_t, estimated_state_t]"
+    return {
+        "projection_required": True,
+        "price_process_form": preferred.get("process_or_distribution_hypothesis") or "under_specified_price_process_form",
+        "affected_price_process_terms": ["drift", "observation_equation"],
+        "conditional_distribution_claim": str(target),
+        "formula_should_estimate": str(estimator),
+        "expected_return_distribution_change": "under_specified_until_step2_quantifies_metric_signature",
+    }
+
+
 def infer_information_set_hint(alpha_idea_master: Dict[str, Any], *context: Any) -> str:
     text = _text_blob(alpha_idea_master, *context)
     if any(tok in text for tok in ["future", "lead", "lookahead", "未来收益", "事后"]):
@@ -398,6 +448,9 @@ def build_step1_research_discipline(
         "economic_hypothesis": economic_hypothesis,
         "economic_to_math_modelling": economic_to_math,
         "math_hypothesis_candidates": math_hypothesis_candidates,
+        "market_process_thesis": build_market_process_thesis(economic_hypothesis, [str(x) for x in what_must_be_true if str(x).strip()], [str(x) for x in what_would_break_it if str(x).strip()]),
+        "primary_mechanism_model_candidates": build_primary_mechanism_model_candidates(math_hypothesis_candidates),
+        "stochastic_price_process_projection": build_stochastic_price_process_projection(math_hypothesis_candidates),
         "what_must_be_true": [str(x) for x in what_must_be_true if str(x).strip()],
         "what_would_break_it": [str(x) for x in what_would_break_it if str(x).strip()],
         "similar_case_lessons_imported": similar_lessons,

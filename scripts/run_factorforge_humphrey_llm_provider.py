@@ -193,11 +193,17 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
         if key in payload:
             payload[key] = _as_text_list(payload.get(key))
 
+    contract = payload.get("implementation_contract")
+    if not isinstance(contract, dict):
+        contract = {}
+
     mode = str(payload.get("implementation_mode") or "").strip()
+    contract_mode = str(contract.get("implementation_mode") or contract.get("mode") or "").strip()
+    if not mode and contract_mode in {"operator", "direct_code", "hybrid"}:
+        payload["implementation_mode"] = contract_mode
+        mode = contract_mode
+
     if mode == "direct_code":
-        contract = payload.get("implementation_contract")
-        if not isinstance(contract, dict):
-            contract = {}
         contract.setdefault("implementation_mode", "direct_code")
         contract.setdefault("mode", "direct_code")
         contract.setdefault("function_name", "compute_factor")

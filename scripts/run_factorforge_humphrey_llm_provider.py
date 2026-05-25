@@ -126,6 +126,23 @@ def pdf_text(pdf_path: str) -> str:
     return text
 
 
+def request_pdf_sha256(request: dict[str, Any]) -> Any:
+    direct = request.get("pdf_sha256")
+    if direct:
+        return direct
+    context = request.get("step1_context")
+    if not isinstance(context, dict):
+        return None
+    for key in ["step1_chief_raw", "step1_primary_raw", "step1_challenger_raw"]:
+        raw = context.get(key)
+        if not isinstance(raw, dict):
+            continue
+        provenance = raw.get("_llm_bridge_provenance")
+        if isinstance(provenance, dict) and provenance.get("pdf_sha256"):
+            return provenance.get("pdf_sha256")
+    return None
+
+
 def enrich_provenance(payload: dict[str, Any], request: dict[str, Any], *, provider_name: str, model: str) -> dict[str, Any]:
     provenance = {
         "provider_wrapper": "run_factorforge_humphrey_llm_provider.py",
@@ -135,7 +152,7 @@ def enrich_provenance(payload: dict[str, Any], request: dict[str, Any], *, provi
         "report_id": request.get("report_id"),
         "prompt_name": request.get("prompt_name"),
         "prompt_hash": request.get("prompt_hash"),
-        "pdf_sha256": request.get("pdf_sha256"),
+        "pdf_sha256": request_pdf_sha256(request),
         "formal_llm_extraction": True,
         "fixture_only": False,
         "request_version": request.get("version"),

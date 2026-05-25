@@ -330,6 +330,13 @@ def case_prepare_chain(root: Path) -> dict[str, Any]:
     )
     report_path = root / "objects" / "validation" / f"formal_artifact_prepare_report__{RID}.json"
     report = read_json(report_path) if report_path.exists() else {}
+    alpha_path = root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{RID}.json"
+    spec_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{RID}.json"
+    alpha = read_json(alpha_path) if alpha_path.exists() else {}
+    spec = read_json(spec_path) if spec_path.exists() else {}
+    discipline = alpha.get("research_discipline") or {}
+    mpt = discipline.get("market_process_thesis") or {}
+    provenance = discipline.get("what_must_be_true_provenance") or {}
     runtime_context = root / "objects" / "runtime_context" / f"runtime_context__{RID}.json"
     ok = bool(
         proc.returncode == 0
@@ -342,7 +349,14 @@ def case_prepare_chain(root: Path) -> dict[str, Any]:
         and report.get("workflow_may_dispatch_worker") is True
         and report.get("worker_started") is False
         and report.get("worker_dispatch_status") == "not_dispatched_by_prepare"
+        and report.get("worker_dispatch_allowed") is True
         and not runtime_context.exists()
+        and isinstance(mpt, dict)
+        and mpt.get("what_must_be_true")
+        and discipline.get("what_must_be_true")
+        and (provenance.get("generic_template_used") is False or provenance == {})
+        and spec.get("implementation_mode") == "direct_code"
+        and (spec.get("artifact_identity") or {}).get("code_contract_hash")
     )
     return {
         "case": "formal_fixture_chain_passes_without_runtime_context",
@@ -351,6 +365,194 @@ def case_prepare_chain(root: Path) -> dict[str, Any]:
         "stderr_tail": tail(proc.stderr),
         "prepare_report": str(report_path),
         "runtime_context_exists": runtime_context.exists(),
+        "worker_dispatch_allowed": report.get("worker_dispatch_allowed"),
+        "step1_market_process_thesis_present": bool(mpt),
+        "step1_what_must_be_true": discipline.get("what_must_be_true"),
+        "step2_implementation_mode": spec.get("implementation_mode"),
+        "ok": ok,
+    }
+
+
+def _write_raw_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _generate_fixture_raw(root: Path, report_id: str) -> tuple[Path, Path]:
+    step1 = root / "objects" / "raw_llm" / report_id / "step1"
+    step2 = root / "objects" / "raw_llm" / report_id / "step2"
+    run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step1_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--out-dir",
+            str(step1),
+            "--provider",
+            "fixture",
+            "--write-report",
+        ],
+        factorforge_root=root,
+    )
+    run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(root),
+            "--out-dir",
+            str(step2),
+            "--provider",
+            "fixture",
+            "--write-report",
+        ],
+        factorforge_root=root,
+    )
+    return step1, step2
+
+
+def case_step1_underivable_mechanism_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "kaiyuan_missing_step1_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    report_id = "KAIYUAN_RTA19_MISSING_MECHANISM"
+    step1, _ = _generate_fixture_raw(case_root, report_id)
+    chief_path = step1 / "step1_chief_raw.json"
+    chief = read_json(chief_path)
+    chief.pop("market_process_thesis", None)
+    chief.pop("what_must_be_true", None)
+    chief.pop("mechanism_assumptions", None)
+    ff = chief.get("final_factor") or {}
+    for key in [
+        "economic_logic",
+        "behavioral_logic",
+        "causal_chain",
+        "what_must_be_true",
+        "what_would_break_it",
+        "key_implementation_risks",
+    ]:
+        ff[key] = [] if key.startswith("what_") or key == "key_implementation_risks" else ""
+    chief["final_factor"] = ff
+    _write_raw_json(chief_path, chief)
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(case_root),
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--step1-primary-raw",
+            str(step1 / "step1_primary_raw.json"),
+            "--step1-challenger-raw",
+            str(step1 / "step1_challenger_raw.json"),
+            "--step1-chief-raw",
+            str(chief_path),
+            "--end-step",
+            "1",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+    )
+    report_path = case_root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    step1_stdout = (report.get("validators") or {}).get("step1", {}).get("stdout_tail", "")
+    ok = bool(
+        proc.returncode != 0
+        and report.get("verdict") == "BLOCK"
+        and (report.get("validators") or {}).get("step1", {}).get("rc") == 1
+        and "what_must_be_true missing" in step1_stdout
+        and report.get("runtime_context_written") is False
+        and report.get("worker_started") is False
+        and not runtime_context.exists()
+    )
+    return {
+        "case": "kaiyuan_step1_missing_underivable_mechanism_blocks",
+        "rc": proc.returncode,
+        "prepare_report": str(report_path),
+        "runtime_context_exists": runtime_context.exists(),
+        "runtime_context_written": report.get("runtime_context_written"),
+        "worker_started": report.get("worker_started"),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": ok,
+    }
+
+
+def case_step2_hybrid_missing_contract_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "hybrid_missing_contract_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    report_id = "KAIYUAN_RTA19_BAD_HYBRID"
+    step1, step2 = _generate_fixture_raw(case_root, report_id)
+    primary_path = step2 / "step2_primary_raw.json"
+    challenger_path = step2 / "step2_challenger_raw.json"
+    for raw_path in [primary_path, challenger_path]:
+        raw = read_json(raw_path)
+        raw["implementation_mode"] = "hybrid"
+        raw["implementation_contract"] = {
+            "implementation_mode": "hybrid",
+            "operator_subgraph": {},
+            "custom_blocks": [],
+        }
+        raw.pop("custom_blocks", None)
+        _write_raw_json(raw_path, raw)
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(case_root),
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--step1-primary-raw",
+            str(step1 / "step1_primary_raw.json"),
+            "--step1-challenger-raw",
+            str(step1 / "step1_challenger_raw.json"),
+            "--step1-chief-raw",
+            str(step1 / "step1_chief_raw.json"),
+            "--step2-primary-raw",
+            str(primary_path),
+            "--step2-challenger-raw",
+            str(challenger_path),
+            "--step2-auditor-raw",
+            str(step2 / "step2_auditor_raw.json"),
+            "--end-step",
+            "2",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+    )
+    report_path = case_root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    step2_stdout = (report.get("validators") or {}).get("step2", {}).get("stdout_tail", "")
+    step2_stderr = (report.get("validators") or {}).get("step2", {}).get("stderr_tail", "")
+    text = step2_stdout + step2_stderr + proc.stdout + proc.stderr
+    ok = bool(
+        proc.returncode != 0
+        and report.get("verdict") == "BLOCK"
+        and (report.get("validators") or {}).get("step2", {}).get("rc") == 1
+        and "BLOCK_INVALID_HYBRID_CONTRACT" in text
+        and report.get("runtime_context_written") is False
+        and report.get("worker_started") is False
+    )
+    return {
+        "case": "step2_hybrid_mode_missing_hybrid_contract_blocks",
+        "rc": proc.returncode,
+        "validate_rc": (report.get("validators") or {}).get("step2", {}).get("rc"),
+        "token_present": "BLOCK_INVALID_HYBRID_CONTRACT" in text,
+        "runtime_context_written": report.get("runtime_context_written"),
+        "worker_started": report.get("worker_started"),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
         "ok": ok,
     }
 
@@ -420,6 +622,8 @@ def main() -> int:
         case_step2_alpha_only_blocks(root),
         case_step2_fixture(root),
         case_prepare_chain(root),
+        case_step1_underivable_mechanism_blocks(root),
+        case_step2_hybrid_missing_contract_blocks(root),
         case_prepare_existing_runtime_context_blocks_dispatch(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"

@@ -202,12 +202,17 @@ def role_prompt(role: str) -> str:
         return (
             "You are the Step2 primary spec extraction agent. Given Step1 context and the report provenance, "
             "extract factor_spec_raw JSON with report_id, factor_id, raw_formula_text or direct/hybrid contract, "
-            "operators, required_inputs, implementation_mode, implementation_contract, ambiguities, and inferred_items."
+            "operators, required_inputs, implementation_mode, implementation_contract, ambiguities, and inferred_items. "
+            "Select implementation_mode from the executable structure, not from source type. Choose hybrid only when "
+            "you can provide a complete hybrid_contract with parseable operator_subgraph.formula_ir, nonempty custom_blocks, "
+            "and formula/custom block identity. If the report describes a natural-language or custom smart-money calculation "
+            "that cannot be represented as legal hybrid, choose direct_code and provide a direct_code implementation contract."
         )
     if role == "challenger":
         return (
             "You are the Step2 challenger spec extraction agent. Independently challenge the primary interpretation and "
-            "output factor_spec_raw JSON with the same required fields, preserving disagreements and ambiguities."
+            "output factor_spec_raw JSON with the same required fields, preserving disagreements and ambiguities. "
+            "Do not default pdf_report to hybrid; require executable hybrid structure or use direct_code."
         )
     return (
         "You are the Step2 consistency auditor. Compare alpha_idea_master, primary factor_spec_raw, and challenger "

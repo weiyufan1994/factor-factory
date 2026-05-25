@@ -307,9 +307,29 @@ def build_math_hypothesis_candidates(
     return candidates[:4]
 
 
-def build_market_process_thesis(economic_hypothesis: Dict[str, Any], what_must_be_true: List[str], what_would_break_it: List[str]) -> Dict[str, Any]:
+def _meaningful_list(values: Any) -> List[str]:
+    out: List[str] = []
+    for value in _as_list(values):
+        text = str(value or "").strip()
+        if text and text.lower() not in {"under_specified", "unknown", "n/a", "none", "todo", "tbd"} and text not in out:
+            out.append(text)
+    return out
+
+
+def _explicit_market_process_thesis(alpha_idea_master: Dict[str, Any]) -> Dict[str, Any]:
+    thesis = alpha_idea_master.get("market_process_thesis")
+    if isinstance(thesis, dict):
+        return {k: v for k, v in thesis.items() if v not in (None, "", [])}
+    discipline = alpha_idea_master.get("research_discipline") or {}
+    thesis = discipline.get("market_process_thesis") if isinstance(discipline, dict) else None
+    if isinstance(thesis, dict):
+        return {k: v for k, v in thesis.items() if v not in (None, "", [])}
+    return {}
+
+
+def build_market_process_thesis(economic_hypothesis: Dict[str, Any], what_must_be_true: List[str], what_would_break_it: List[str], explicit: Dict[str, Any] | None = None) -> Dict[str, Any]:
     second = economic_hypothesis.get("second_layer") if isinstance(economic_hypothesis.get("second_layer"), dict) else {}
-    return {
+    thesis = {
         "market_phenomenon": second.get("subtype") or "under_specified_market_process",
         "economic_hypothesis": second.get("why_they_may_pay") or "under_specified_economic_hypothesis",
         "return_source_family": economic_hypothesis.get("macro_return_source") or "mixed",
@@ -318,6 +338,15 @@ def build_market_process_thesis(economic_hypothesis: Dict[str, Any], what_must_b
         "what_must_be_true": what_must_be_true,
         "what_would_break_it": what_would_break_it,
     }
+    if explicit:
+        for key in ["market_phenomenon", "economic_hypothesis", "return_source_family", "payer_or_counterparty", "why_they_pay"]:
+            if explicit.get(key):
+                thesis[key] = explicit[key]
+        if _meaningful_list(explicit.get("what_must_be_true")):
+            thesis["what_must_be_true"] = _meaningful_list(explicit.get("what_must_be_true"))
+        if _meaningful_list(explicit.get("what_would_break_it")):
+            thesis["what_would_break_it"] = _meaningful_list(explicit.get("what_would_break_it"))
+    return thesis
 
 
 def build_primary_mechanism_model_candidates(math_hypothesis_candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -433,12 +462,17 @@ def build_step1_research_discipline(
     }
     info_hint = infer_information_set_hint(alpha_idea_master, *context)
     similar_lessons = load_similar_case_lessons(repo, query_text)
-    what_must_be_true = _as_list(final_factor.get("what_must_be_true")) or _as_list(final_factor.get("economic_logic"))[:1]
-    what_would_break_it = _as_list(final_factor.get("what_would_break_it")) or _as_list(final_factor.get("key_implementation_risks"))
-    if not what_must_be_true:
-        what_must_be_true = ["The report thesis must map to a repeatable return source rather than one-off descriptive pattern fitting."]
-    if not what_would_break_it:
-        what_would_break_it = ["The thesis breaks if the signal cannot survive legal information-set review, robustness checks, or tradable portfolio construction."]
+    explicit_thesis = _explicit_market_process_thesis(alpha_idea_master)
+    what_must_be_true = (
+        _meaningful_list(final_factor.get("what_must_be_true"))
+        or _meaningful_list(explicit_thesis.get("what_must_be_true"))
+        or _meaningful_list(final_factor.get("economic_logic"))[:1]
+    )
+    what_would_break_it = (
+        _meaningful_list(final_factor.get("what_would_break_it"))
+        or _meaningful_list(explicit_thesis.get("what_would_break_it"))
+        or _meaningful_list(final_factor.get("key_implementation_risks"))
+    )
     return {
         "step1_random_object": random_object,
         "target_statistic_hint": target_hint,
@@ -448,11 +482,12 @@ def build_step1_research_discipline(
         "economic_hypothesis": economic_hypothesis,
         "economic_to_math_modelling": economic_to_math,
         "math_hypothesis_candidates": math_hypothesis_candidates,
-        "market_process_thesis": build_market_process_thesis(economic_hypothesis, [str(x) for x in what_must_be_true if str(x).strip()], [str(x) for x in what_would_break_it if str(x).strip()]),
+        "market_process_thesis": build_market_process_thesis(economic_hypothesis, [str(x) for x in what_must_be_true if str(x).strip()], [str(x) for x in what_would_break_it if str(x).strip()], explicit_thesis),
         "primary_mechanism_model_candidates": build_primary_mechanism_model_candidates(math_hypothesis_candidates),
         "stochastic_price_process_projection": build_stochastic_price_process_projection(math_hypothesis_candidates),
         "what_must_be_true": [str(x) for x in what_must_be_true if str(x).strip()],
         "what_would_break_it": [str(x) for x in what_would_break_it if str(x).strip()],
+        "what_must_be_true_provenance": alpha_idea_master.get("market_process_thesis_provenance"),
         "similar_case_lessons_imported": similar_lessons,
         "producer": "step1_research_discipline",
     }

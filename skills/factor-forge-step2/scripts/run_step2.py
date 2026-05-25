@@ -153,17 +153,54 @@ def formal_step2_producer(source_type: str) -> str:
     return SOURCE_TYPE_STEP2_PRODUCER[source_type]
 
 
+def hybrid_contract_executable(contract: Dict[str, Any]) -> bool:
+    operator_subgraph = contract.get('operator_subgraph') if isinstance(contract.get('operator_subgraph'), dict) else {}
+    formula_ir = operator_subgraph.get('formula_ir') if isinstance(operator_subgraph.get('formula_ir'), dict) else {}
+    custom_blocks = contract.get('custom_blocks')
+    return bool(
+        contract.get('hybrid_contract_version') == HYBRID_CONTRACT_VERSION
+        and formula_ir
+        and formula_ir.get('parse_status') == 'success'
+        and isinstance(custom_blocks, list)
+        and custom_blocks
+        and contract.get('formula_hash')
+        and contract.get('custom_block_hash')
+        and contract.get('hybrid_hash')
+    )
+
+
+def direct_code_contract_available(primary: Dict[str, Any], aim: Dict[str, Any]) -> bool:
+    raw_contract = primary.get('implementation_contract') if isinstance(primary.get('implementation_contract'), dict) else {}
+    aim_contract = aim.get('implementation_contract') if isinstance(aim.get('implementation_contract'), dict) else {}
+    text = text_blob(primary.get('raw_formula_text'), primary.get('description'), aim.get('final_factor'), raw_contract, aim_contract)
+    return bool(
+        primary.get('required_inputs')
+        or raw_contract.get('required_fields')
+        or raw_contract.get('code_contract')
+        or raw_contract.get('function_name')
+        or aim_contract.get('code_contract')
+        or any(token in text for token in ['smart money', '聪明钱', 'custom', 'direct_code', '自然语言'])
+    )
+
+
 def infer_implementation_mode(source_type: str, primary: Dict[str, Any], aim: Dict[str, Any]) -> str:
     explicit = aim.get('implementation_mode') or primary.get('implementation_mode')
     if explicit:
         value = str(explicit)
-        if value in {'operator', 'direct_code', 'hybrid'}:
+        if value in {'operator', 'direct_code'}:
             return value
+        if value == 'hybrid':
+            hybrid_contract = build_hybrid_contract(primary, aim)
+            if hybrid_contract_executable(hybrid_contract):
+                return 'hybrid'
+            return 'hybrid'
     if source_type == 'paper_canonical_formula':
         return 'operator'
     if source_type == 'natural_language_hypothesis':
         return 'direct_code'
-    return 'hybrid'
+    if source_type == 'pdf_report':
+        return 'direct_code'
+    return 'direct_code'
 
 
 def build_mode_decision(implementation_mode: str, primary: Dict[str, Any]) -> Dict[str, Any]:

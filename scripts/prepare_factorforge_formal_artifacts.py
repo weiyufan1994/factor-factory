@@ -130,6 +130,20 @@ def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) ->
         if isinstance(sf, dict) and sf.get('name')
     ]
     assembly_steps = final.get('assembly_steps') or pff.get('assembly_steps') or cff.get('assembly_steps') or []
+    economic_logic = final.get('economic_logic', '')
+    behavioral_logic = final.get('behavioral_logic', '')
+    causal_chain = final.get('causal_chain', '')
+    what_must_be_true = [
+        item
+        for item in [
+            economic_logic,
+            behavioral_logic,
+            ' ; '.join(str(x) for x in causal_chain) if isinstance(causal_chain, list) else causal_chain,
+        ]
+        if str(item or '').strip()
+    ]
+    ambiguities = dedupe((primary_intake.ambiguities or []) + (challenger_intake.ambiguities or []))
+    what_would_break_it = final.get('key_implementation_risks', []) or ambiguities
     return {
         'final_factor': {
             'name': final.get('name') or pff.get('name') or cff.get('name') or 'UNNAMED_FACTOR',
@@ -139,20 +153,33 @@ def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) ->
             'alpha_strength': final.get('alpha_strength', ''),
             'alpha_source': final.get('alpha_source', ''),
             'key_implementation_risks': final.get('key_implementation_risks', []),
-            'economic_logic': final.get('economic_logic', ''),
+            'economic_logic': economic_logic,
             'economic_logic_provenance': final.get('economic_logic_provenance') or final.get('economic_logic_source', ''),
-            'behavioral_logic': final.get('behavioral_logic', ''),
+            'behavioral_logic': behavioral_logic,
             'behavioral_logic_provenance': final.get('behavioral_logic_provenance') or final.get('behavioral_logic_source', ''),
-            'causal_chain': final.get('causal_chain', ''),
+            'causal_chain': causal_chain,
             'causal_chain_provenance': final.get('causal_chain_provenance') or final.get('causal_chain_source', ''),
+            'what_must_be_true': what_must_be_true,
+            'what_would_break_it': what_would_break_it,
             'rejected_subfactor_details': [],
         },
+        'market_process_thesis': {
+            'market_phenomenon': ' ; '.join(str(x) for x in assembly_steps) if assembly_steps else '',
+            'economic_hypothesis': economic_logic,
+            'return_source_family': 'mixed',
+            'payer_or_counterparty': '',
+            'why_they_pay': behavioral_logic,
+            'what_must_be_true': what_must_be_true,
+            'what_would_break_it': what_would_break_it,
+        },
+        'what_must_be_true': what_must_be_true,
+        'mechanism_assumptions': what_must_be_true,
         'logic_provenance_summary': {
             'merge_mode': 'deterministic_debug_fallback',
             'note': 'chief decision auto-built from provided primary/challenger intake payloads',
         },
         'assembly_path': assembly_steps,
-        'unresolved_ambiguities': dedupe((primary_intake.ambiguities or []) + (challenger_intake.ambiguities or [])),
+        'unresolved_ambiguities': ambiguities,
         'chief_decision_summary': 'Auto chief merge from primary/challenger intake payloads.',
         'chief_confidence': 'medium',
         'chief_rationale': 'Primary route preferred; challenger route used for ambiguity coverage and sanity check.',

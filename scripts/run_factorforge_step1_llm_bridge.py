@@ -92,6 +92,14 @@ def fixture_intake(report_id: str, role: str, provenance: dict[str, Any]) -> dic
 
 
 def fixture_chief(report_id: str, provenance: dict[str, Any]) -> dict[str, Any]:
+    what_must_be_true = [
+        "分钟价量相关性必须反映交易拥挤、注意力或短期冲击状态，而不是纯粹数据噪声。",
+        "拥挤交易者或追涨交易者必须在价量共振过强后承担短期反转成本。",
+    ]
+    what_would_break_it = [
+        "价量相关性特征在中性化后无法解释截面收益排序。",
+        "分钟频率或相关系数口径与研报定义不一致。",
+    ]
     return {
         "report_id": report_id,
         "final_factor": {
@@ -114,8 +122,21 @@ def fixture_chief(report_id: str, provenance: dict[str, Any]) -> dict[str, Any]:
             "behavioral_logic_provenance": "fixture",
             "causal_chain": "分钟价量依赖 -> 拥挤/冲击状态 -> 截面收益排序差异",
             "causal_chain_provenance": "fixture",
+            "what_must_be_true": what_must_be_true,
+            "what_would_break_it": what_would_break_it,
             "rejected_subfactor_details": [],
         },
+        "market_process_thesis": {
+            "market_phenomenon": "分钟价量依赖显示拥挤/短期冲击状态",
+            "economic_hypothesis": "价量相关性异常代表交易拥挤、注意力和短期冲击衰减的组合状态。",
+            "return_source_family": "market_structure_arbitrage",
+            "payer_or_counterparty": "追涨和拥挤交易者",
+            "why_they_pay": "追涨和拥挤交易者可能为过强价量共振支付短期反转成本。",
+            "what_must_be_true": what_must_be_true,
+            "what_would_break_it": what_would_break_it,
+        },
+        "what_must_be_true": what_must_be_true,
+        "mechanism_assumptions": what_must_be_true,
         "logic_provenance_summary": {
             "merge_mode": "fixture_llm_bridge",
             "note": "Fixture provider output for smoke tests only; not formal production extraction.",
@@ -172,7 +193,11 @@ def chief_prompt() -> str:
         "You are the Step1 chief merge agent. Inputs are primary and challenger report-intake JSON. "
         "Output only JSON matching the chief decision structure required by merge_to_alpha_idea_master: "
         "final_factor, logic_provenance_summary, assembly_path, unresolved_ambiguities, "
-        "chief_decision_summary, chief_confidence, chief_rationale."
+        "chief_decision_summary, chief_confidence, chief_rationale, market_process_thesis, "
+        "what_must_be_true, and either economic_hypothesis or mechanism_assumptions. "
+        "market_process_thesis must include market_phenomenon, economic_hypothesis, return_source_family, "
+        "payer_or_counterparty, why_they_pay, what_must_be_true, and what_would_break_it. "
+        "Do not invent generic template assumptions; if the raw report does not support a field, leave it missing so validation blocks."
     )
 
 

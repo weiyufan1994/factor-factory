@@ -659,6 +659,7 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
             return {
                 'minute_df_parquet': str(minute_parquet.relative_to(WORKSPACE)),
                 **daily_slice,
+                'input_mode': 'price_volume_minute',
                 'sample_window_actual': sample_actual,
                 'snapshot_note': (
                     f'Real local minute snapshot sourced from {real_minute_root}; daily leg is sliced from shared clean '
@@ -760,6 +761,7 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
         'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
         'preferred_daily_format': 'parquet',
         **audit_payload,
+        'input_mode': 'price_volume_minute',
         'sample_window_actual': sample_actual,
         'snapshot_note': 'Synthetic fallback snapshot; use only when real local data layer is unavailable.',
         'snapshot_source': 'synthetic_fallback',

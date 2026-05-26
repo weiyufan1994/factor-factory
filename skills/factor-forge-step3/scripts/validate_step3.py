@@ -16,6 +16,11 @@ CODE = FF / 'generated_code'
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 DIRECT_CODE_CONTRACT_VERSION = 'factorforge_direct_code_contract_v1'
+DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
+    'source_code_preserved_from_formal_step2_raw_direct_code_contract',
+    'source_code_preserved_from_step2_direct_code_contract',
+    'source_code_generated_by_step3a_llm_provider',
+}
 
 
 def validate_sort_contract(contract: dict) -> None:
@@ -51,6 +56,16 @@ def validate_direct_code_source_contract(impl: dict) -> None:
     )
     source = str(code_contract.get('source_code') or impl.get('source_code') or '')
     assert source.strip(), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code requires code_contract.source_code before worker dispatch'
+    source_derivation = code_contract.get('source_derivation')
+    assert isinstance(source_derivation, dict), (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_code requires source_derivation provenance'
+    )
+    assert source_derivation.get('not_fallback') is True, (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_code provenance must mark not_fallback=true'
+    )
+    assert source_derivation.get('derivation') in DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS, (
+        f'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: unsupported direct_code source derivation {source_derivation.get("derivation")}'
+    )
     entrypoint = str(code_contract.get('entrypoint') or code_contract.get('function_name') or '')
     assert entrypoint == 'compute_factor', 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code entrypoint/function_name must be compute_factor'
     assert re.search(r'def\s+compute_factor\s*\(', source), (

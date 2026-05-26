@@ -759,6 +759,11 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
         'input_schema': {'daily_df': ['ts_code', 'trade_date', 'close']},
         'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
         'required_fields': ['close'],
+        'source_derivation': {
+            'derivation': 'source_code_preserved_from_formal_step2_raw_direct_code_contract',
+            'source_fields': ['tmp.performance_smoke.explicit_code_contract.source_code'],
+            'not_fallback': True,
+        },
         'information_set_rules': ['no future-looking fields or negative shifts'],
         'forbidden_patterns': [
             r'shift\s*\(\s*-\d+',

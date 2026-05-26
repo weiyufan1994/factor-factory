@@ -214,7 +214,7 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
 
 
 def run_direct_code_missing_source_blocks_case(root: Path) -> dict:
-    report_id = 'FORMAL_DIRECT_CODE_MISSING_SOURCE'
+    report_id = 'kaiyuan_20200209_smart_money_v2'
     step2_raw = write_step2_raw_files(root, report_id, include_source=False)
     output = root / 'objects' / 'validation' / f'formal_artifact_prepare_report__{report_id}.json'
     proc = run_cmd([
@@ -247,7 +247,7 @@ def run_direct_code_missing_source_blocks_case(root: Path) -> dict:
     token_present = 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING' in text
     runtime_context = root / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'
     return {
-        'case': 'direct_code_missing_source_contract_blocks_step3a_producer_path',
+        'case': 'kaiyuan_direct_code_missing_source_contract_blocks_step3a_producer_path',
         'prepare_rc': proc.returncode,
         'prepare_report': str(output),
         'prepare_verdict': payload.get('verdict'),

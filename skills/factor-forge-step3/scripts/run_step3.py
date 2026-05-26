@@ -43,6 +43,11 @@ CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 DIRECT_CODE_CONTRACT_VERSION = 'factorforge_direct_code_contract_v1'
+DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
+    'source_code_preserved_from_formal_step2_raw_direct_code_contract',
+    'source_code_preserved_from_step2_direct_code_contract',
+    'source_code_generated_by_step3a_llm_provider',
+}
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -400,14 +405,16 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
     existing_code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
-    existing_source = (
-        str(existing_code_contract.get('source_code') or '').strip()
-        or str(contract.get('source_code') or '').strip()
-        or str(canonical.get('source_code') or '').strip()
-    )
+    existing_source = str(existing_code_contract.get('source_code') or '').strip()
     if existing_source:
         source = existing_source if existing_source.endswith('\n') else existing_source + '\n'
-        derivation = 'source_code_preserved_from_step2_direct_code_contract'
+        source_derivation = existing_code_contract.get('source_derivation') if isinstance(existing_code_contract.get('source_derivation'), dict) else {}
+        derivation = str(source_derivation.get('derivation') or 'source_code_preserved_from_step2_direct_code_contract')
+        if derivation not in DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS:
+            return {
+                'status': 'blocked',
+                'blocked_reason': f'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: unsupported source_code derivation {derivation}',
+            }
     else:
         return {
             'status': 'blocked',
@@ -456,11 +463,10 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
             r'\blookahead\b',
         ],
         'source_derivation': {
+            **source_derivation,
             'derivation': derivation,
             'source_fields': [
-                'factor_spec_master.canonical_spec',
-                'factor_spec_master.implementation_contract',
-                'qlib_adapter_config.logical_fields',
+                'factor_spec_master.implementation_contract.code_contract.source_code',
             ],
             'not_fallback': True,
         },

@@ -171,17 +171,12 @@ def hybrid_contract_executable(contract: Dict[str, Any]) -> bool:
 
 
 def direct_code_contract_available(primary: Dict[str, Any], aim: Dict[str, Any]) -> bool:
-    raw_contract = primary.get('implementation_contract') if isinstance(primary.get('implementation_contract'), dict) else {}
-    aim_contract = aim.get('implementation_contract') if isinstance(aim.get('implementation_contract'), dict) else {}
-    text = text_blob(primary.get('raw_formula_text'), primary.get('description'), aim.get('final_factor'), raw_contract, aim_contract)
-    return bool(
-        primary.get('required_inputs')
-        or raw_contract.get('required_fields')
-        or raw_contract.get('code_contract')
-        or raw_contract.get('function_name')
-        or aim_contract.get('code_contract')
-        or any(token in text for token in ['smart money', '聪明钱', 'custom', 'direct_code', '自然语言'])
-    )
+    return bool(explicit_direct_code_source_contract(primary, aim))
+
+
+def formula_ir_executable(primary: Dict[str, Any]) -> bool:
+    formula_ir = primary.get('formula_ir') if isinstance(primary.get('formula_ir'), dict) else {}
+    return bool(formula_ir and formula_ir.get('parse_status') == 'success')
 
 
 def explicit_direct_code_source_contract(primary: Dict[str, Any], aim: Dict[str, Any]) -> Dict[str, Any]:
@@ -242,18 +237,19 @@ def infer_implementation_mode(source_type: str, primary: Dict[str, Any], aim: Di
             if hybrid_contract_executable(hybrid_contract):
                 return 'hybrid'
             return 'hybrid'
+    if formula_ir_executable(primary):
+        return 'operator'
+    if direct_code_contract_available(primary, aim):
+        return 'direct_code'
     if source_type == 'paper_canonical_formula':
         return 'operator'
-    if source_type == 'natural_language_hypothesis':
-        return 'direct_code'
-    if source_type == 'pdf_report':
-        return 'direct_code'
-    return 'direct_code'
+    return 'operator'
 
 
-def build_mode_decision(implementation_mode: str, primary: Dict[str, Any]) -> Dict[str, Any]:
+def build_mode_decision(implementation_mode: str, primary: Dict[str, Any], aim: Dict[str, Any] | None = None) -> Dict[str, Any]:
     formula_ir = primary.get('formula_ir')
     parse_error = primary.get('formula_parse_error')
+    direct_source_available = bool(explicit_direct_code_source_contract(primary, aim or {}))
     operator_success = (
         implementation_mode == 'operator'
         and isinstance(formula_ir, dict)
@@ -268,12 +264,25 @@ def build_mode_decision(implementation_mode: str, primary: Dict[str, Any]) -> Di
         'hybrid_result': 'success' if implementation_mode == 'hybrid' else 'not_applicable',
         'hybrid_failure_reason': None if implementation_mode == 'hybrid' else 'not selected by Step2 contract',
         'direct_code_attempted': implementation_mode == 'direct_code',
-        'direct_code_result': 'success' if implementation_mode == 'direct_code' else 'not_applicable',
-        'direct_code_failure_reason': None if implementation_mode == 'direct_code' else 'not selected by Step2 contract',
+        'direct_code_result': (
+            'success' if implementation_mode == 'direct_code' and direct_source_available else
+            'failed' if implementation_mode == 'direct_code' else
+            'not_applicable'
+        ),
+        'direct_code_failure_reason': (
+            None if implementation_mode == 'direct_code' and direct_source_available else
+            'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: explicit direct_code mode requires source_code contract'
+            if implementation_mode == 'direct_code' else
+            'not selected by Step2 contract'
+        ),
         'final_decision_reason': (
             'formula parsed into registered operator IR'
             if operator_success else
-            'natural-language or family-specific implementation requires non-operator contract'
+            'explicit source_code direct_code contract provided'
+            if implementation_mode == 'direct_code' and direct_source_available else
+            'direct_code selected explicitly but source_code contract is missing'
+            if implementation_mode == 'direct_code' else
+            'operator path selected; validator must confirm formula_ir'
         ),
     }
 
@@ -980,7 +989,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             **(hybrid_contract or {}),
         },
         **{k: v for k, v in family_plugin_selection.items() if k in {'factor_family', 'family_plugin', 'family_plugin_allowed', 'family_plugin_decision', 'family_plugin_suggestion'}},
-        'implementation_mode_decision': build_mode_decision(implementation_mode, primary),
+        'implementation_mode_decision': build_mode_decision(implementation_mode, primary, aim),
         'thesis': {
             'alpha_thesis': thesis.get('thesis_name') or (aim.get('final_factor') or {}).get('name'),
             'target_prediction': research_contract['target_statistic'],

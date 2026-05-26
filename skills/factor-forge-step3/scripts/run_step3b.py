@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, hashlib, importlib.util, json
+import argparse, hashlib, importlib.util, inspect, json
 import os
 import re
 import sys
@@ -660,6 +660,49 @@ def import_module_from_path(path: Path):
     return module
 
 
+def add_direct_code_alias_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if 'vol' in out.columns and 'volume' not in out.columns:
+        out['volume'] = out['vol']
+    if 'volume' in out.columns and 'vol' not in out.columns:
+        out['vol'] = out['volume']
+    if 'trade_time' in out.columns and 'datetime' not in out.columns:
+        out['datetime'] = out['trade_time']
+    if 'datetime' in out.columns and 'trade_time' not in out.columns:
+        out['trade_time'] = out['datetime']
+    return out
+
+
+def compute_factor_with_contract(module, daily_df: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
+    fn = getattr(module, 'compute_factor')
+    daily_input = add_direct_code_alias_columns(daily_df)
+    minute_input = add_direct_code_alias_columns(minute_df)
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+    positional = [
+        p for p in params
+        if p.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+    if len(positional) == 1:
+        first = positional[0].name.lower()
+        if 'daily' in first:
+            return fn(daily_input)
+        if 'minute' in first or 'intraday' in first:
+            return fn(minute_input)
+        return fn(minute_input if not minute_input.empty else daily_input)
+
+    try:
+        return fn(daily_df=daily_input, minute_df=minute_input)
+    except TypeError:
+        if positional:
+            first = positional[0].name.lower()
+            if 'minute' in first:
+                return fn(minute_input, daily_input)
+        return fn(daily_input, minute_input)
+
+
 def resolve_local_input_path(raw: str | None) -> Path | None:
     if not raw:
         return None
@@ -1068,10 +1111,7 @@ def generate_first_run_factor_values(
             if profiled_result is not None:
                 result_df = profiled_result
             else:
-                try:
-                    result_df = module.compute_factor(daily_df=daily_df, minute_df=minute_df)
-                except TypeError:
-                    result_df = module.compute_factor(minute_df, daily_df)
+                result_df = compute_factor_with_contract(module, daily_df, minute_df)
         except ModuleNotFoundError as exc:
             if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
                 raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc

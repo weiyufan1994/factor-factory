@@ -626,6 +626,19 @@ def import_module_from_path(path: Path):
     return module
 
 
+def add_direct_code_alias_columns(df):
+    out = df.copy()
+    if 'vol' in out.columns and 'volume' not in out.columns:
+        out['volume'] = out['vol']
+    if 'volume' in out.columns and 'vol' not in out.columns:
+        out['vol'] = out['volume']
+    if 'trade_time' in out.columns and 'datetime' not in out.columns:
+        out['datetime'] = out['trade_time']
+    if 'datetime' in out.columns and 'trade_time' not in out.columns:
+        out['trade_time'] = out['datetime']
+    return out
+
+
 def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     import pandas as pd
 
@@ -633,39 +646,55 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     compute = getattr(module, 'compute_factor', None)
     if compute is None or not callable(compute):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor missing')
-    daily_df = pd.DataFrame({
-        'ts_code': ['000001.SZ', '000002.SZ'],
-        'trade_date': ['20260101', '20260101'],
-        'open': [10.0, 20.0],
-        'close': [11.0, 19.0],
-        'high': [11.5, 20.5],
-        'low': [9.8, 18.8],
-        'vol': [1000.0, 2000.0],
-        'pct_chg': [1.0, -1.0],
-    })
-    minute_df = pd.DataFrame({
-        'ts_code': ['000001.SZ', '000001.SZ', '000001.SZ', '000002.SZ', '000002.SZ', '000002.SZ'],
-        'trade_date': ['20260101', '20260101', '20260101', '20260101', '20260101', '20260101'],
-        'trade_time': [
-            '20260101 09:30:00',
-            '20260101 09:31:00',
-            '20260101 09:32:00',
-            '20260101 09:30:00',
-            '20260101 09:31:00',
-            '20260101 09:32:00',
-        ],
-        'close': [10.0, 10.1, 10.05, 20.0, 19.8, 20.2],
-        'vol': [1000.0, 1500.0, 900.0, 2000.0, 1800.0, 2200.0],
-        'amount': [10000.0, 15150.0, 9045.0, 40000.0, 35640.0, 44440.0],
-    })
-    signature = inspect.signature(compute)
+    dates = [f'202601{day:02d}' for day in range(1, 12)]
+    daily_rows = []
+    minute_rows = []
+    for stock_index, ts_code in enumerate(['000001.SZ', '000002.SZ']):
+        base = 10.0 + stock_index * 10.0
+        for day_index, trade_date in enumerate(dates):
+            close = base + day_index * 0.05
+            daily_rows.append({
+                'ts_code': ts_code,
+                'trade_date': trade_date,
+                'open': close - 0.1,
+                'close': close,
+                'high': close + 0.2,
+                'low': close - 0.2,
+                'vol': 1000.0 + day_index * 10.0,
+                'pct_chg': 0.1,
+            })
+            for minute_index, minute in enumerate(['09:30:00', '09:31:00', '09:32:00']):
+                minute_close = close + (minute_index - 1) * 0.03
+                volume = 1000.0 + stock_index * 500.0 + day_index * 20.0 + minute_index * 50.0
+                minute_rows.append({
+                    'ts_code': ts_code,
+                    'trade_date': trade_date,
+                    'trade_time': f'{trade_date} {minute}',
+                    'close': minute_close,
+                    'vol': volume,
+                    'amount': minute_close * volume,
+                })
+    daily_df = add_direct_code_alias_columns(pd.DataFrame(daily_rows))
+    minute_df = add_direct_code_alias_columns(pd.DataFrame(minute_rows))
     try:
-        if 'daily_df' in signature.parameters:
+        params = list(inspect.signature(compute).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+    positional = [
+        p for p in params
+        if p.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+    if len(positional) == 1:
+        first = positional[0].name.lower()
+        result = compute(daily_df if 'daily' in first else minute_df)
+    else:
+        try:
             result = compute(daily_df=daily_df, minute_df=minute_df)
-        else:
-            result = compute(minute_df, daily_df)
-    except TypeError:
-        result = compute(daily_df, minute_df)
+        except TypeError:
+            if positional and 'minute' in positional[0].name.lower():
+                result = compute(minute_df, daily_df)
+            else:
+                result = compute(daily_df, minute_df)
     if not isinstance(result, pd.DataFrame):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor must return DataFrame')
     if len(result) <= 0:

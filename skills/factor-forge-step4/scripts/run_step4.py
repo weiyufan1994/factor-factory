@@ -791,25 +791,51 @@ def import_module_from_path(path: Path):
     return module
 
 
+def add_direct_code_alias_columns(df: Any) -> Any:
+    if not hasattr(df, 'copy') or not hasattr(df, 'columns'):
+        return df
+    out = df.copy()
+    if 'vol' in out.columns and 'volume' not in out.columns:
+        out['volume'] = out['vol']
+    if 'volume' in out.columns and 'vol' not in out.columns:
+        out['vol'] = out['volume']
+    if 'trade_time' in out.columns and 'datetime' not in out.columns:
+        out['datetime'] = out['trade_time']
+    if 'datetime' in out.columns and 'trade_time' not in out.columns:
+        out['trade_time'] = out['datetime']
+    return out
+
+
 def compute_factor_with_contract(module: Any, daily_df: Any, minute_df: Any) -> Any:
     """Call factor implementations without assuming legacy argument order."""
     fn = getattr(module, 'compute_factor')
+    daily_input = add_direct_code_alias_columns(daily_df)
+    minute_input = add_direct_code_alias_columns(minute_df)
     try:
-        params = list(inspect.signature(fn).parameters)
+        params = list(inspect.signature(fn).parameters.values())
     except (TypeError, ValueError):
         params = []
+    positional = [
+        p for p in params
+        if p.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
 
-    if params:
-        first = params[0].lower()
+    if len(positional) == 1:
+        first = positional[0].name.lower()
         if 'daily' in first:
-            return fn(daily_df, minute_df)
-        if 'minute' in first:
-            return fn(minute_df, daily_df)
+            return fn(daily_input)
+        if 'minute' in first or 'intraday' in first:
+            return fn(minute_input)
+        return fn(minute_input if not minute_input.empty else daily_input)
 
     try:
-        return fn(daily_df=daily_df, minute_df=minute_df)
+        return fn(daily_df=daily_input, minute_df=minute_input)
     except TypeError:
-        return fn(minute_df, daily_df)
+        if positional:
+            first = positional[0].name.lower()
+            if 'minute' in first:
+                return fn(minute_input, daily_input)
+        return fn(daily_input, minute_input)
 
 
 def build_failure_outputs(report_id: str, factor_id: str | None, implementation_path: str | None, sample_window: dict[str, Any], run_dir: Path, input_paths: dict[str, Path], issues: list[dict[str, Any]], warnings: list[str], failure_reason: str, failed_stage: str, start_utc: str, revision_of: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:

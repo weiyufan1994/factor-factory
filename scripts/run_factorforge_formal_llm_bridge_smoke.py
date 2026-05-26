@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -736,6 +738,239 @@ print(json.dumps(out, ensure_ascii=False))
     return provider
 
 
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _write_provider_mock_server(root: Path) -> Path:
+    server = root / "humphrey_provider_mock_server.py"
+    server.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(sys.argv[1])
+MODE = sys.argv[2]
+
+
+def response_json():
+    return {
+        "report_id": "HUMPHREY_PROVIDER_MOCK",
+        "final_factor": {
+            "name": "mock factor",
+            "assembly_steps": ["mock formula extraction"],
+            "economic_logic": "mock economic hypothesis",
+            "behavioral_logic": "mock behavior",
+            "what_must_be_true": ["mock condition"],
+            "what_would_break_it": ["mock falsification"],
+        },
+        "market_process_thesis": {
+            "market_phenomenon": "mock phenomenon",
+            "economic_hypothesis": "mock economic hypothesis",
+            "return_source_family": "information_advantage",
+            "payer_or_counterparty": "mock counterparty",
+            "why_they_pay": "mock reason",
+            "what_must_be_true": ["mock condition"],
+            "what_would_break_it": ["mock falsification"],
+        },
+        "what_must_be_true": ["mock condition"],
+        "mechanism_assumptions": ["mock condition"],
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length") or "0")
+        self.rfile.read(length)
+        if MODE == "malformed":
+            body = {"unexpected": "shape"}
+        elif self.path.endswith("/chat/completions"):
+            body = {"choices": [{"message": {"content": json.dumps(response_json(), ensure_ascii=False)}}]}
+        elif self.path.endswith("/messages"):
+            body = {"content": [{"type": "text", "text": json.dumps(response_json(), ensure_ascii=False)}]}
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+""",
+        encoding="utf-8",
+    )
+    server.chmod(0o755)
+    return server
+
+
+def _write_openclaw_config(path: Path, *, provider_name: str, api: str, base_url: str) -> None:
+    payload = {
+        "models": {
+            "providers": {
+                provider_name: {
+                    "api": api,
+                    "baseUrl": base_url,
+                    "apiKey": "mock-key",
+                }
+            }
+        }
+    }
+    _write_raw_json(path, payload)
+
+
+def _humphrey_provider_request() -> dict[str, Any]:
+    return {
+        "version": "factorforge_step2_llm_bridge_v1",
+        "role": "auditor",
+        "report_id": "HUMPHREY_PROVIDER_MOCK",
+        "prompt_name": "mock_step2_auditor_prompt",
+        "prompt_hash": "mock_prompt_hash",
+        "prompt": "Return JSON only.",
+        "step1_context": {
+            "step1_raw_present": True,
+            "step1_primary_raw": {"report_id": "HUMPHREY_PROVIDER_MOCK"},
+            "step1_chief_raw": {"report_id": "HUMPHREY_PROVIDER_MOCK"},
+        },
+        "prior_outputs": {},
+    }
+
+
+def _run_humphrey_provider_case(
+    root: Path,
+    *,
+    case_name: str,
+    provider_api: str,
+    server_mode: str = "ok",
+    expect_rc: int = 0,
+    expected_token: str | None = None,
+) -> dict[str, Any]:
+    case_root = root / case_name
+    case_root.mkdir(parents=True, exist_ok=True)
+    provider_name = f"{case_name}_provider"
+    port = _free_port()
+    server = _write_provider_mock_server(case_root)
+    proc_server = subprocess.Popen(
+        [sys.executable, str(server), str(port), server_mode],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(0.2)
+    try:
+        config = case_root / "openclaw.json"
+        _write_openclaw_config(config, provider_name=provider_name, api=provider_api, base_url=f"http://127.0.0.1:{port}")
+        proc = subprocess.run(
+            [sys.executable, "scripts/run_factorforge_humphrey_llm_provider.py"],
+            cwd=ROOT,
+            input=json.dumps(_humphrey_provider_request(), ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "FACTORFORGE_OPENCLAW_CONFIG": str(config),
+                "FACTORFORGE_FORMAL_LLM_PROVIDER": provider_name,
+                "FACTORFORGE_STEP1_LLM_MODEL": "mock-model",
+                "FACTORFORGE_STEP2_LLM_MODEL": "mock-model",
+                "FACTORFORGE_FORMAL_LLM_TIMEOUT_SECONDS": "5",
+            },
+        )
+    finally:
+        proc_server.terminate()
+        try:
+            proc_server.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc_server.kill()
+    parsed: dict[str, Any] = {}
+    parse_error = None
+    if proc.returncode == 0:
+        try:
+            parsed = json.loads(proc.stdout)
+        except Exception as exc:  # noqa: BLE001 - smoke diagnostic
+            parse_error = f"{type(exc).__name__}: {exc}"
+    provenance = parsed.get("_llm_bridge_provenance") if isinstance(parsed, dict) else {}
+    token_present = expected_token in (proc.stdout + proc.stderr) if expected_token else True
+    ok = bool(
+        proc.returncode == expect_rc
+        and token_present
+        and (
+            expect_rc != 0
+            or (
+                isinstance(parsed, dict)
+                and parsed.get("report_id") == "HUMPHREY_PROVIDER_MOCK"
+                and isinstance(provenance, dict)
+                and provenance.get("provider") == provider_name
+                and provenance.get("provider_api") == provider_api
+                and provenance.get("model") == "mock-model"
+                and provenance.get("formal_llm_extraction") is True
+                and provenance.get("fixture_only") is False
+                and parse_error is None
+            )
+        )
+    )
+    return {
+        "case": case_name,
+        "rc": proc.returncode,
+        "expected_rc": expect_rc,
+        "provider_api": provider_api,
+        "token_present": token_present,
+        "parsed_json": bool(parsed),
+        "parse_error": parse_error,
+        "provenance": provenance if isinstance(provenance, dict) else {},
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": ok,
+    }
+
+
+def case_humphrey_provider_openai_completions_mock(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="humphrey_provider_openai_completions_mock",
+        provider_api="openai-completions",
+    )
+
+
+def case_humphrey_provider_anthropic_messages_mock(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="humphrey_provider_anthropic_messages_mock",
+        provider_api="anthropic-messages",
+    )
+
+
+def case_humphrey_provider_unsupported_api_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="humphrey_provider_unsupported_api_blocks",
+        provider_api="unsupported-api",
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_UNSUPPORTED_API",
+    )
+
+
+def case_humphrey_provider_malformed_response_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="humphrey_provider_malformed_response_blocks",
+        provider_api="openai-completions",
+        server_mode="malformed",
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
+    )
+
+
 def case_step1_underivable_mechanism_blocks(root: Path) -> dict[str, Any]:
     case_root = root / "kaiyuan_missing_step1_case"
     case_root.mkdir(parents=True, exist_ok=True)
@@ -1230,6 +1465,10 @@ def main() -> int:
         case_step1_provider_missing(root),
         case_step1_fixture(root),
         case_step1_command_bad_json_writes_failure_report(root),
+        case_humphrey_provider_openai_completions_mock(root),
+        case_humphrey_provider_anthropic_messages_mock(root),
+        case_humphrey_provider_unsupported_api_blocks(root),
+        case_humphrey_provider_malformed_response_blocks(root),
         case_step2_provider_missing(root),
         case_step2_alpha_only_blocks(root),
         case_step2_command_direct_code_missing_source_blocks(root),

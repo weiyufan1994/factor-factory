@@ -14,10 +14,16 @@ import requests
 
 
 BLOCK_PROVIDER_FAILED = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED"
+BLOCK_UNSUPPORTED_API = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_UNSUPPORTED_API"
 DEFAULT_CONFIG = Path("/home/ubuntu/.openclaw/openclaw.json")
 DEFAULT_PROVIDER = "modelstudio"
 DEFAULT_STEP1_MODEL = "qwen3.5-plus"
 DEFAULT_STEP2_MODEL = "qwen3.5-plus"
+SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
+
+
+class UnsupportedProviderApi(RuntimeError):
+    pass
 
 
 def sha256_text(text: str) -> str:
@@ -46,8 +52,9 @@ def read_openclaw_provider(provider_name: str) -> dict[str, Any]:
     provider = ((config.get("models") or {}).get("providers") or {}).get(provider_name)
     if not isinstance(provider, dict):
         raise RuntimeError(f"provider not found in OpenClaw config: {provider_name}")
-    if provider.get("api") != "openai-completions":
-        raise RuntimeError(f"provider {provider_name} is not openai-completions; api={provider.get('api')}")
+    provider_api = str(provider.get("api") or "").strip()
+    if provider_api not in SUPPORTED_PROVIDER_APIS:
+        raise UnsupportedProviderApi(f"{BLOCK_UNSUPPORTED_API}: provider={provider_name} api={provider_api}")
     if not provider.get("baseUrl") or not provider.get("apiKey"):
         raise RuntimeError(f"provider {provider_name} missing baseUrl/apiKey")
     return provider
@@ -83,6 +90,69 @@ def openai_chat_completion(*, provider: dict[str, Any], model: str, messages: li
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError(f"LLM response empty content: {body}")
     return content
+
+
+def anthropic_messages_completion(*, provider: dict[str, Any], model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+    base_url = str(provider["baseUrl"]).rstrip("/")
+    if base_url.endswith("/v1/messages") or base_url.endswith("/messages"):
+        url = base_url
+    elif base_url.endswith("/v1"):
+        url = f"{base_url}/messages"
+    else:
+        url = f"{base_url}/v1/messages"
+    system_parts = [str(item.get("content") or "") for item in messages if item.get("role") == "system"]
+    user_messages = [
+        {"role": item.get("role") if item.get("role") in {"user", "assistant"} else "user", "content": str(item.get("content") or "")}
+        for item in messages
+        if item.get("role") != "system"
+    ]
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": user_messages,
+        "temperature": float(os.getenv("FACTORFORGE_FORMAL_LLM_TEMPERATURE", "0.1")),
+        "max_tokens": max_tokens,
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(part for part in system_parts if part)
+    timeout = int(os.getenv("FACTORFORGE_FORMAL_LLM_TIMEOUT_SECONDS", "240"))
+    resp = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {provider['apiKey']}",
+            "X-Api-Key": str(provider["apiKey"]),
+            "anthropic-version": os.getenv("FACTORFORGE_ANTHROPIC_VERSION", "2023-06-01"),
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"LLM HTTP {resp.status_code}: {resp.text[:1000]}")
+    body = resp.json()
+    content = body.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+            elif isinstance(item, str) and item.strip():
+                parts.append(item)
+        if parts:
+            return "\n".join(parts)
+    raise RuntimeError(f"LLM response missing anthropic text content: {body}")
+
+
+def provider_completion(*, provider: dict[str, Any], model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+    provider_api = str(provider.get("api") or "").strip()
+    if provider_api == "openai-completions":
+        return openai_chat_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
+    if provider_api == "anthropic-messages":
+        return anthropic_messages_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
+    raise UnsupportedProviderApi(f"{BLOCK_UNSUPPORTED_API}: api={provider_api}")
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -147,6 +217,7 @@ def enrich_provenance(payload: dict[str, Any], request: dict[str, Any], *, provi
     provenance = {
         "provider_wrapper": "run_factorforge_humphrey_llm_provider.py",
         "provider": provider_name,
+        "provider_api": request.get("_provider_api"),
         "model": model,
         "role": request.get("role"),
         "report_id": request.get("report_id"),
@@ -383,7 +454,7 @@ def repair_step2_payload(
             ),
         },
     ]
-    raw = openai_chat_completion(
+    raw = provider_completion(
         provider=provider,
         model=model,
         messages=messages,
@@ -497,14 +568,15 @@ def main() -> int:
         version = str(request.get("version") or "")
         provider_name = os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER", DEFAULT_PROVIDER)
         provider = read_openclaw_provider(provider_name)
+        request["_provider_api"] = str(provider.get("api") or "")
         if version == "factorforge_step1_llm_bridge_v1":
             messages, max_tokens, model = step1_messages(request)
         elif version == "factorforge_step2_llm_bridge_v1":
             messages, max_tokens, model = step2_messages(request)
         else:
             raise RuntimeError(f"unsupported bridge request version: {version}")
-        eprint(f"[factorforge-provider] role={role} provider={provider_name} model={model} prompt_hash={request.get('prompt_hash')}")
-        raw = openai_chat_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
+        eprint(f"[factorforge-provider] role={role} provider={provider_name} api={provider.get('api')} model={model} prompt_hash={request.get('prompt_hash')}")
+        raw = provider_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
         payload = extract_json_object(raw)
         if version == "factorforge_step2_llm_bridge_v1":
             payload = normalize_step2_payload(payload, request)
@@ -517,6 +589,9 @@ def main() -> int:
         payload = enrich_provenance(payload, request, provider_name=provider_name, model=model)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
+    except UnsupportedProviderApi as exc:
+        eprint(str(exc))
+        return 1
     except Exception as exc:  # noqa: BLE001 - provider command reports cleanly to bridge stderr.
         eprint(f"{BLOCK_PROVIDER_FAILED}: {type(exc).__name__}: {exc}")
         return 1

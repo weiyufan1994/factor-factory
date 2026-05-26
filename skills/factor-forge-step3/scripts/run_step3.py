@@ -387,6 +387,33 @@ def is_price_volume_minute_formula(canonical: dict) -> bool:
     return has_core_fields and has_pv_semantics
 
 
+def direct_code_requires_minute_inputs(fsm: dict) -> bool:
+    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    required_fields = (
+        list(code_contract.get('required_fields') or [])
+        + list(contract.get('required_fields') or [])
+        + list(canonical.get('required_inputs') or [])
+    )
+    required_text = ' '.join(str(value).lower() for value in required_fields)
+    source_text = str(code_contract.get('source_code') or contract.get('source_code') or '').lower()
+    combined = f'{required_text} {source_text}'
+    minute_tokens = {
+        'minute',
+        '分钟',
+        '高频',
+        'trade_time',
+        'bar_time',
+        'minute_index',
+        'minute_bar',
+        'stk_mins_1min',
+    }
+    if any(token in combined for token in minute_tokens):
+        return True
+    return bool(re.search(r'\bdatetime\b', combined))
+
+
 def declared_implementation_mode(fsm: dict, *, price_volume_minute: bool) -> str:
     identity = fsm.get('artifact_identity') if isinstance(fsm.get('artifact_identity'), dict) else {}
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
@@ -752,9 +779,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     factor_id = fsm.get('factor_id', report_id)
     canonical = fsm.get('canonical_spec', {})
     price_volume_minute = is_price_volume_minute_formula(canonical)
+    direct_code_minute = direct_code_requires_minute_inputs(fsm)
     required = canonical.get('required_inputs', [])
     required_text = ' '.join(required)
-    need_minute = bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute
+    need_minute = bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute
     need_daily = True
     need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
 
@@ -845,19 +873,23 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         })
 
     local_input_paths = {}
-    if price_volume_minute:
+    if need_minute:
         # Formula-declared price-volume minute factors may need daily_basic for scale / turnover features.
         # Only keep risks that are truly unresolved in the current data contract.
-        proxy_rules.extend([
-            {
-                'missing_field': 'industry_dummy',
-                'proxy_field': '',
-                'reason': '当前未接入申万行业字段，不做纯行业中性化',
-                'risk': 'high'
-            }
-        ])
+        if price_volume_minute:
+            proxy_rules.extend([
+                {
+                    'missing_field': 'industry_dummy',
+                    'proxy_field': '',
+                    'reason': '当前未接入申万行业字段，不做纯行业中性化',
+                    'risk': 'high'
+                }
+            ])
         local_input_paths = build_local_price_volume_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
-        notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
+        if price_volume_minute:
+            notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
+        if direct_code_minute and not price_volume_minute:
+            notes.append('Step 3A selected minute local inputs because the direct_code contract references minute-level fields.')
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_source in {'shared_clean_daily_layer', 'synthetic_fallback'}:

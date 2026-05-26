@@ -15,8 +15,8 @@
 - report_map / validation artifact 写出路径
 
 ## 当前 runner
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.sh`
+- `scripts/deprecated/run_step1_sample.py`
 
 ## 成功预期
 一次成功的样本运行，应产出与以下类别等价的 Step 1 artifact：

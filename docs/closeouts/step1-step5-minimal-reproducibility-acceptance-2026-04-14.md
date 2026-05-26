@@ -33,8 +33,8 @@ The repository now contains explicit reproducibility structure:
 - `docs/contracts/`
 - `docs/closeouts/`
 - `fixtures/step1/` through `fixtures/step5/`
-- `scripts/run_step1_sample.sh` through `scripts/run_step5_sample.sh`
-- `scripts/run_step1_sample.py` through `scripts/run_step5_sample.py`
+- `scripts/deprecated/run_step1_sample.sh` through `scripts/run_step5_sample.sh`
+- `scripts/deprecated/run_step1_sample.py` through `scripts/run_step5_sample.py`
 
 This means source/skill/reproducibility/fixture layers are now visibly separated enough for Bernard/Mac-oriented use.
 
@@ -44,8 +44,8 @@ This means source/skill/reproducibility/fixture layers are now visibly separated
 - `fixtures/step1/sample_intake_response.json`
 
 #### Sample runner present
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.sh`
+- `scripts/deprecated/run_step1_sample.py`
 
 #### Evidence
 The local sample run produced Step 1 artifact classes equivalent to:

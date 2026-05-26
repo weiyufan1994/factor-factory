@@ -22,12 +22,16 @@
 
 这一层负责定义：仓库**声称自己是什么**，以及**当前到底能复现到什么程度**。
 
+可执行入口请优先阅读
+`docs/operations/factorforge-entrypoints.md`。正式运行应使用其中列出的
+production entrypoints，不应从 sample、smoke 或 deprecated 脚本推断主线。
+
 ### B. 微型可复现层
 这是提交进 git、可最小运行的样本层。
 
 - `fixtures/step1/` 到 `fixtures/step5/`
-- `scripts/run_step1_sample.sh` 到 `scripts/run_step5_sample.sh`
-- `scripts/run_step1_sample.py` 到 `scripts/run_step5_sample.py`
+- `scripts/deprecated/run_step1_sample.sh` 到 `scripts/run_step5_sample.sh`
+- `scripts/deprecated/run_step1_sample.py` 到 `scripts/run_step5_sample.py`
 
 这一层存在的目的，是避免仓库只能依赖隐藏本地状态或聊天上下文才能被理解和运行。
 
@@ -52,6 +56,9 @@
 - `generated_code/`
 
 这些路径在操作上很重要，但不应决定仓库对人的顶层表达。
+它们通常应放在仓库工作区之外，或放在明确的临时根目录下。把这些目录
+留在 checkout 里，会增加 agent 和脚本把本地 smoke 输出误认成 production
+artifact 的概率。
 
 ## 命名原则
 
@@ -88,7 +95,7 @@
 ### 4. 脚本命名
 微型样本运行入口应保持显式、带步骤编号。
 
-- `run_step1_sample.py|sh`
+- `scripts/deprecated/run_step1_sample.py|sh`
 - `run_step2_sample.py|sh`
 - `run_step3_sample.py|sh`
 - `run_step4_sample.py|sh`

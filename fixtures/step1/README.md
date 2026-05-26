@@ -15,8 +15,8 @@ These files provide the first tiny committed Step 1 reproducibility substrate fo
 - report_map / validation artifact writing path
 
 ## Current runner
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.sh`
+- `scripts/deprecated/run_step1_sample.py`
 
 ## Success expectation
 A successful sample run should materialize Step 1 artifact classes equivalent to:

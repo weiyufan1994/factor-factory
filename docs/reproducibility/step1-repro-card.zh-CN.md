@@ -19,8 +19,8 @@ Step 1 已经成为仓库中第一个具备“已提交、可运行、可说明�
 - `skills/factor_forge_step1/modules/report_ingestion/orchestration/run_step1.py`
 
 最小已提交可复现 runner：
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.sh`
+- `scripts/deprecated/run_step1_sample.py`
 
 ## 当前已提交 fixture
 - `fixtures/step1/sample_factor_report.html`

@@ -19,8 +19,8 @@ Primary code entry:
 - `skills/factor_forge_step1/modules/report_ingestion/orchestration/run_step1.py`
 
 Minimal committed reproducibility runner:
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.sh`
+- `scripts/deprecated/run_step1_sample.py`
 
 ## Current committed fixture
 - `fixtures/step1/sample_factor_report.html`

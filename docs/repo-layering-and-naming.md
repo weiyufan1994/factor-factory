@@ -22,12 +22,17 @@ This is the layer a fresh reader should use first.
 
 This layer defines what the repository *claims* and what can currently be reproduced.
 
+For runnable entrypoints, start with
+`docs/operations/factorforge-entrypoints.md`. Production runs should use the
+production entrypoints listed there rather than sample, smoke, or deprecated
+scripts.
+
 ### B. Tiny reproducibility layer
 This is the minimal runnable substrate retained in git.
 
 - `fixtures/step1/` through `fixtures/step5/`
-- `scripts/run_step1_sample.sh` through `scripts/run_step5_sample.sh`
-- `scripts/run_step1_sample.py` through `scripts/run_step5_sample.py`
+- `scripts/deprecated/run_step1_sample.sh` through `scripts/run_step5_sample.sh`
+- `scripts/deprecated/run_step1_sample.py` through `scripts/run_step5_sample.py`
 
 This layer exists so the repo does not depend purely on hidden local state or chat memory.
 
@@ -52,6 +57,9 @@ This is where locally produced outputs accumulate.
 - `generated_code/`
 
 These paths are useful operationally, but they should not define the human-facing repo identity.
+They should normally live outside the repo worktree or under an explicit
+temporary root. Keeping them in the repo checkout makes it easier for agents and
+scripts to confuse local smoke output with production artifacts.
 
 ## Naming doctrine
 
@@ -88,7 +96,7 @@ Examples:
 ### 4. Script naming
 Keep runnable tiny sample entry points explicit and step-indexed.
 
-- `run_step1_sample.py|sh`
+- `scripts/deprecated/run_step1_sample.py|sh`
 - `run_step2_sample.py|sh`
 - `run_step3_sample.py|sh`
 - `run_step4_sample.py|sh`

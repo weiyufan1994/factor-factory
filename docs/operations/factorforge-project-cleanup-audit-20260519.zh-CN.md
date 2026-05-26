@@ -28,7 +28,7 @@
 - `scripts/run_mechanism_math_contract_smoke.py`
 - `scripts/run_step12_from_report.py`
 - `scripts/run_step12_hypothesis_contract_smoke.py`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.py`
 - `scripts/step12_intake_common.py`
 - `skills/factor-forge-step2/SKILL.md`
 - `skills/factor-forge-step2/scripts/run_step2.py`

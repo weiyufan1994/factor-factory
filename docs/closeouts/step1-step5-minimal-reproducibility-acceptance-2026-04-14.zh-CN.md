@@ -34,8 +34,8 @@
 - `docs/contracts/`
 - `docs/closeouts/`
 - `fixtures/step1/` 到 `fixtures/step5/`
-- `scripts/run_step1_sample.sh` 到 `scripts/run_step5_sample.sh`
-- `scripts/run_step1_sample.py` 到 `scripts/run_step5_sample.py`
+- `scripts/deprecated/run_step1_sample.sh` 到 `scripts/run_step5_sample.sh`
+- `scripts/deprecated/run_step1_sample.py` 到 `scripts/run_step5_sample.py`
 
 这意味着 source / skill / reproducibility / fixture 等层次已经能够在仓库中被显式区分，足以支持 Bernard/Mac 视角的最小复现。
 
@@ -45,8 +45,8 @@
 - `fixtures/step1/sample_intake_response.json`
 
 #### sample runner 已存在
-- `scripts/run_step1_sample.sh`
-- `scripts/run_step1_sample.py`
+- `scripts/deprecated/run_step1_sample.sh`
+- `scripts/deprecated/run_step1_sample.py`
 
 #### 证据
 本地样本运行已产出与 Step 1 对应的 artifact 类别：

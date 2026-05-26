@@ -417,12 +417,11 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
                     "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
                     "provider_source_derivation": source_derivation.get("derivation"),
                 }
-            code_hash = code_contract.get("code_hash")
             code_contract.update(
                 {
                     "code_contract_version": code_contract.get("code_contract_version") or "factorforge_direct_code_contract_v1",
                     "source_code": source,
-                    "code_hash": code_hash or sha256_text(source),
+                    "code_hash": sha256_text(source),
                     "imports": imports,
                     "dependencies": _as_list(code_contract.get("dependencies") or imports),
                     "input_schema": code_contract.get("input_schema") or {"daily_df": required_inputs},
@@ -521,6 +520,7 @@ def repair_step2_payload(
         "Do not attempt hybrid unless the full executable hybrid contract is truly complete. "
         "If you choose direct_code, you must provide implementation_contract.code_contract.source_code with entrypoint/function_name, "
         "imports/dependencies, required_fields, input_schema, output_schema, and source_derivation.not_fallback=true. "
+        "Do not invent code_hash; the bridge will compute code_hash from source_code. "
         "The direct_code output_schema must be exactly or at least {'columns': ['ts_code', 'trade_date', 'factor_value']}; "
         "do not return an empty output_schema, a dtype-only output_schema, or output_schema nested outside code_contract. "
         "Do not use direct_code without source_code. "
@@ -625,7 +625,7 @@ def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[st
             "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported. "
             "If you choose direct_code, implementation_contract.code_contract is mandatory and must include source_code, "
             "function_name/entrypoint=compute_factor, imports/dependencies, required_fields, input_schema, output_schema, "
-            "source_derivation.not_fallback=true, code_hash matching source_code, "
+            "source_derivation.not_fallback=true. Do not invent code_hash; the bridge will compute code_hash from source_code. "
             "and report-derived implementation notes. For the Kaiyuan smart-money factor preserve the PDF mechanics "
             "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract. "
             "The direct_code output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "

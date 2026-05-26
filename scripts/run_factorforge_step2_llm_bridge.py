@@ -305,12 +305,11 @@ def normalize_command_raw(payload: dict[str, Any], *, role: str, request: dict[s
                     "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
                     "provider_source_derivation": source_derivation.get("derivation"),
                 }
-            code_hash = code_contract.get("code_hash")
             code_contract.update(
                 {
                     "code_contract_version": code_contract.get("code_contract_version") or "factorforge_direct_code_contract_v1",
                     "source_code": source,
-                    "code_hash": code_hash or sha256_text(source),
+                    "code_hash": sha256_text(source),
                     "imports": imports,
                     "dependencies": _as_list(code_contract.get("dependencies") or imports),
                     "input_schema": code_contract.get("input_schema") or {"daily_df": required_inputs},
@@ -402,7 +401,8 @@ def role_prompt(role: str) -> str:
             "or any natural-language or custom smart-money calculation "
             "that cannot be represented as legal hybrid, choose direct_code and provide implementation_contract.code_contract "
             "with source_code, function_name/entrypoint=compute_factor, dependencies/imports, required_fields, input_schema, output_schema, "
-            "code_hash if available, and source_derivation.not_fallback=true. Do not choose direct_code without source_code. "
+            "and source_derivation.not_fallback=true. Do not invent code_hash; the bridge will compute code_hash from source_code. "
+            "Do not choose direct_code without source_code. "
             "For direct_code, output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "
             "an empty output_schema, dtype-only output_schema, or output_schema nested outside implementation_contract.code_contract."
         )

@@ -481,6 +481,101 @@ print(json.dumps(out, ensure_ascii=False))
     }
 
 
+def case_step2_command_direct_code_wrong_hash_system_overwrites(root: Path) -> dict[str, Any]:
+    case_root = root / "step2_command_wrong_hash_case"
+    report_id = "FORMAL_STEP2_COMMAND_WRONG_HASH"
+    step1, _ = _generate_fixture_raw(case_root, report_id)
+    provider = case_root / "bad_step2_wrong_hash_provider.py"
+    source = (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df=None, minute_df=None):\n"
+        "    return pd.DataFrame(columns=['ts_code', 'trade_date', 'factor_value'])\n"
+    )
+    provider.write_text(
+        f"""import json, sys
+req = json.loads(sys.stdin.read())
+role = req.get("role")
+source = {source!r}
+if role in {{"primary", "challenger"}}:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "DIRECT_CODE_WRONG_HASH",
+        "raw_formula_text": "custom direct-code algorithm with wrong llm hash",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["close"],
+        "implementation_mode": "direct_code",
+        "implementation_contract": {{
+            "implementation_mode": "direct_code",
+            "code_contract": {{
+                "function_name": "compute_factor",
+                "entrypoint": "compute_factor",
+                "source_code": source,
+                "code_hash": "wrong_hash_from_llm",
+                "output_schema": {{"columns": ["factor_value"]}},
+                "required_fields": ["close"],
+                "source_derivation": {{"derivation": "provider_supplied_source", "not_fallback": True}}
+            }}
+        }},
+        "_llm_bridge_provenance": {{"provider": "command-smoke-wrong-hash", "formal_llm_extraction": True, "fixture_only": False}}
+    }}
+else:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "DIRECT_CODE_WRONG_HASH",
+        "consistency_score": 0.9,
+        "matches_core_driver": True,
+        "mismatch_points": [],
+        "missing_steps": [],
+        "distortion_risks": [],
+        "recommendation": "proceed"
+    }}
+print(json.dumps(out, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step2"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(case_root),
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+    )
+    primary = read_json(out_dir / "step2_primary_raw.json") if (out_dir / "step2_primary_raw.json").exists() else {}
+    code_contract = ((primary.get("implementation_contract") or {}).get("code_contract") or {})
+    normalized_source = source if source.endswith("\n") else source + "\n"
+    expected_hash = hashlib.sha256(normalized_source.encode("utf-8")).hexdigest()
+    columns = ((code_contract.get("output_schema") or {}).get("columns") or [])
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    return {
+        "case": "step2_command_direct_code_wrong_hash_system_overwrites",
+        "rc": proc.returncode,
+        "step1_raw_dir": str(step1),
+        "actual_code_hash": code_contract.get("code_hash"),
+        "expected_code_hash": expected_hash,
+        "output_columns": columns,
+        "runtime_context_exists": runtime_context.exists(),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(
+            proc.returncode == 0
+            and code_contract.get("code_hash") == expected_hash
+            and all(col in columns for col in ["ts_code", "trade_date", "factor_value"])
+            and not runtime_context.exists()
+        ),
+    }
+
+
 def case_step2_fixture(root: Path) -> dict[str, Any]:
     out_dir = root / "objects" / "raw_llm" / RID / "step2"
     proc = run_cmd(
@@ -866,6 +961,7 @@ def _write_provider_mock_server(root: Path) -> Path:
     server.write_text(
         """#!/usr/bin/env python3
 import json
+import hashlib
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -876,20 +972,34 @@ MODE = sys.argv[2]
 SOURCE = "import pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    return pd.DataFrame(columns=[\\"ts_code\\", \\"trade_date\\", \\"factor_value\\"])\\n"
 
 
-def direct_code_payload(model=None, *, output_schema=None, include_source=True, include_entrypoint=True):
+def direct_code_payload(
+    model=None,
+    *,
+    output_schema=None,
+    include_source=True,
+    include_entrypoint=True,
+    code_hash_mode="correct",
+    include_source_derivation=True,
+    not_fallback=True,
+):
     code_contract = {
         "imports": ["pandas"],
         "dependencies": ["pandas"],
         "required_fields": ["ts_code", "trade_date", "close"],
         "input_schema": {"daily_df": ["ts_code", "trade_date", "close"]},
         "output_schema": output_schema if output_schema is not None else {"columns": ["ts_code", "trade_date", "factor_value"]},
-        "source_derivation": {"derivation": "mock_provider_report_derived", "not_fallback": True},
     }
+    if include_source_derivation:
+        code_contract["source_derivation"] = {"derivation": "mock_provider_report_derived", "not_fallback": not_fallback}
     if include_entrypoint:
         code_contract["function_name"] = "compute_factor"
         code_contract["entrypoint"] = "compute_factor"
     if include_source:
         code_contract["source_code"] = SOURCE
+        if code_hash_mode == "correct":
+            code_contract["code_hash"] = hashlib.sha256(SOURCE.encode("utf-8")).hexdigest()
+        elif code_hash_mode == "wrong":
+            code_contract["code_hash"] = "wrong_hash_from_llm"
     return {
         "report_id": "HUMPHREY_PROVIDER_MOCK",
         "observed_api_model": model,
@@ -934,6 +1044,18 @@ def response_json(model=None, request_body=None):
         return direct_code_payload(model, output_schema={"columns": ["custom_score"], "description": "provider omitted standard output columns"})
     if MODE == "rta26_direct_missing_entrypoint":
         return direct_code_payload(model, output_schema={"description": "missing columns and missing entrypoint"}, include_entrypoint=False)
+    if MODE == "rta29_direct_missing_hash":
+        return direct_code_payload(model, code_hash_mode="missing")
+    if MODE == "rta29_direct_wrong_hash":
+        return direct_code_payload(model, code_hash_mode="wrong")
+    if MODE == "rta29_direct_missing_not_fallback":
+        return direct_code_payload(model, code_hash_mode="missing", include_source_derivation=False)
+    if MODE == "rta29_direct_not_fallback_false":
+        return direct_code_payload(model, code_hash_mode="missing", not_fallback=False)
+    if MODE == "rta29_repair_wrong_hash":
+        if is_repair:
+            return direct_code_payload(model, output_schema={"columns": ["factor_value"]}, code_hash_mode="wrong")
+        return incomplete_hybrid_payload(model)
     return {
         "report_id": "HUMPHREY_PROVIDER_MOCK",
         "observed_api_model": model,
@@ -1114,6 +1236,9 @@ def _run_humphrey_provider_case(
     provenance = parsed.get("_llm_bridge_provenance") if isinstance(parsed, dict) else {}
     code_contract = (((parsed.get("implementation_contract") or {}).get("code_contract") or {}) if isinstance(parsed, dict) else {})
     output_columns = ((code_contract.get("output_schema") or {}).get("columns") or []) if isinstance(code_contract, dict) else []
+    source_code = str(code_contract.get("source_code") or "") if isinstance(code_contract, dict) else ""
+    expected_code_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest() if source_code else None
+    actual_code_hash = code_contract.get("code_hash") if isinstance(code_contract, dict) else None
     token_present = expected_token in (proc.stdout + proc.stderr) if expected_token else True
     ok = bool(
         proc.returncode == expect_rc
@@ -1145,6 +1270,8 @@ def _run_humphrey_provider_case(
         "provenance": provenance if isinstance(provenance, dict) else {},
         "observed_api_model": parsed.get("observed_api_model") if isinstance(parsed, dict) else None,
         "direct_code_output_columns": output_columns,
+        "direct_code_code_hash": actual_code_hash,
+        "direct_code_code_hash_matches_source": bool(source_code and actual_code_hash == expected_code_hash),
         "stdout_tail": tail(proc.stdout),
         "stderr_tail": tail(proc.stderr),
         "ok": ok,
@@ -1258,6 +1385,71 @@ def case_rta26_direct_code_missing_entrypoint_blocks(root: Path) -> dict[str, An
         case_name="rta26_direct_code_missing_entrypoint_blocks",
         provider_api="openai-completions",
         server_mode="rta26_direct_missing_entrypoint",
+        request_override=_humphrey_step2_primary_request(),
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
+    )
+
+
+def case_rta29_direct_code_missing_hash_system_computes(root: Path) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name="rta29_direct_code_missing_hash_system_computes",
+        provider_api="openai-completions",
+        server_mode="rta29_direct_missing_hash",
+        request_override=_humphrey_step2_primary_request(),
+    )
+    result["ok"] = bool(result.get("ok") and result.get("direct_code_code_hash_matches_source") is True)
+    return result
+
+
+def case_rta29_direct_code_wrong_hash_system_overwrites(root: Path) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name="rta29_direct_code_wrong_hash_system_overwrites",
+        provider_api="openai-completions",
+        server_mode="rta29_direct_wrong_hash",
+        request_override=_humphrey_step2_primary_request(),
+    )
+    result["ok"] = bool(result.get("ok") and result.get("direct_code_code_hash_matches_source") is True)
+    return result
+
+
+def case_rta29_repair_direct_code_wrong_hash_system_overwrites(root: Path) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name="rta29_repair_direct_code_wrong_hash_system_overwrites",
+        provider_api="openai-completions",
+        server_mode="rta29_repair_wrong_hash",
+        request_override=_humphrey_step2_primary_request(),
+    )
+    cols = result.get("direct_code_output_columns") or []
+    result["ok"] = bool(
+        result.get("ok")
+        and result.get("direct_code_code_hash_matches_source") is True
+        and all(col in cols for col in ["ts_code", "trade_date", "factor_value"])
+    )
+    return result
+
+
+def case_rta29_direct_code_missing_not_fallback_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="rta29_direct_code_missing_not_fallback_blocks",
+        provider_api="openai-completions",
+        server_mode="rta29_direct_missing_not_fallback",
+        request_override=_humphrey_step2_primary_request(),
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
+    )
+
+
+def case_rta29_direct_code_not_fallback_false_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="rta29_direct_code_not_fallback_false_blocks",
+        provider_api="openai-completions",
+        server_mode="rta29_direct_not_fallback_false",
         request_override=_humphrey_step2_primary_request(),
         expect_rc=1,
         expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
@@ -1767,10 +1959,16 @@ def main() -> int:
         case_rta26_repair_direct_code_missing_source_blocks(root),
         case_rta26_direct_code_output_schema_standard_columns_added(root),
         case_rta26_direct_code_missing_entrypoint_blocks(root),
+        case_rta29_direct_code_missing_hash_system_computes(root),
+        case_rta29_direct_code_wrong_hash_system_overwrites(root),
+        case_rta29_repair_direct_code_wrong_hash_system_overwrites(root),
+        case_rta29_direct_code_missing_not_fallback_blocks(root),
+        case_rta29_direct_code_not_fallback_false_blocks(root),
         case_step2_provider_missing(root),
         case_step2_alpha_only_blocks(root),
         case_step2_command_direct_code_missing_source_blocks(root),
         case_step2_command_direct_code_missing_entrypoint_blocks(root),
+        case_step2_command_direct_code_wrong_hash_system_overwrites(root),
         case_step2_fixture(root),
         case_prepare_chain(root),
         case_step1_underivable_mechanism_blocks(root),

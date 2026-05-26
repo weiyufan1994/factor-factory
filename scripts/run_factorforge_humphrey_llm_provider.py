@@ -21,6 +21,7 @@ DEFAULT_STEP1_MODEL = "qwen3.5-plus"
 DEFAULT_STEP2_MODEL = "qwen3.5-plus"
 SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
+STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
 
 
 class UnsupportedProviderApi(RuntimeError):
@@ -331,6 +332,18 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _normalize_direct_code_output_schema(code_contract: dict[str, Any]) -> dict[str, Any]:
+    output_schema = code_contract.get("output_schema")
+    if not isinstance(output_schema, dict):
+        output_schema = {}
+    columns = [str(col) for col in _as_list(output_schema.get("columns")) if str(col).strip()]
+    for column in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS:
+        if column not in columns:
+            columns.append(column)
+    output_schema["columns"] = columns
+    return output_schema
+
+
 def _direct_code_contract(payload: dict[str, Any]) -> dict[str, Any]:
     contract = payload.get("implementation_contract")
     if not isinstance(contract, dict):
@@ -386,7 +399,6 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
     if mode == "direct_code":
         contract.setdefault("implementation_mode", "direct_code")
         contract.setdefault("mode", "direct_code")
-        contract.setdefault("function_name", "compute_factor")
         contract.setdefault("required_fields", payload.get("required_inputs") or [])
         code_contract = contract.get("code_contract")
         if not isinstance(code_contract, dict):
@@ -395,6 +407,8 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
         if source:
             source = source if source.endswith("\n") else source + "\n"
             required_inputs = _as_list(payload.get("required_inputs"))
+            required_fields = _as_list(code_contract.get("required_fields") or required_inputs)
+            has_entrypoint = bool(code_contract.get("function_name") or code_contract.get("entrypoint"))
             imports = _as_list(code_contract.get("imports") or code_contract.get("dependencies") or ["numpy", "pandas"])
             source_derivation = code_contract.get("source_derivation")
             if isinstance(source_derivation, dict) and source_derivation.get("not_fallback") is True:
@@ -403,27 +417,23 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
                     "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
                     "provider_source_derivation": source_derivation.get("derivation"),
                 }
-            else:
-                source_derivation = {
-                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
-                    "not_fallback": True,
-                    "provider": "humphrey_formal_llm_wrapper",
-                }
+            code_hash = code_contract.get("code_hash")
             code_contract.update(
                 {
                     "code_contract_version": code_contract.get("code_contract_version") or "factorforge_direct_code_contract_v1",
-                    "function_name": code_contract.get("function_name") or code_contract.get("entrypoint") or "compute_factor",
-                    "entrypoint": code_contract.get("entrypoint") or code_contract.get("function_name") or "compute_factor",
                     "source_code": source,
-                    "code_hash": sha256_text(source),
+                    "code_hash": code_hash or sha256_text(source),
                     "imports": imports,
                     "dependencies": _as_list(code_contract.get("dependencies") or imports),
                     "input_schema": code_contract.get("input_schema") or {"daily_df": required_inputs},
-                    "output_schema": code_contract.get("output_schema") or {"columns": ["ts_code", "trade_date", "factor_value"]},
-                    "required_fields": _as_list(code_contract.get("required_fields") or required_inputs),
-                    "source_derivation": source_derivation,
+                    "output_schema": _normalize_direct_code_output_schema(code_contract)
+                    if required_fields and has_entrypoint
+                    else code_contract.get("output_schema"),
+                    "required_fields": required_fields,
                 }
             )
+            if source_derivation:
+                code_contract["source_derivation"] = source_derivation
         contract["code_contract"] = code_contract
         payload["implementation_contract"] = contract
 
@@ -447,6 +457,10 @@ def _direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
     output_schema = contract.get("output_schema")
     if not isinstance(output_schema, dict) or not _as_list(output_schema.get("columns")):
         return "direct_code code_contract.output_schema.columns missing"
+    columns = [str(col) for col in _as_list(output_schema.get("columns"))]
+    missing_columns = [col for col in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS if col not in columns]
+    if missing_columns:
+        return f"direct_code code_contract.output_schema.columns missing standard columns: {missing_columns}"
     source_derivation = contract.get("source_derivation")
     if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
         return "direct_code code_contract.source_derivation.not_fallback=true missing"
@@ -503,9 +517,12 @@ def repair_step2_payload(
         "Do not wrap inside factor_spec_raw. If you cannot provide all hybrid fields "
         "(hybrid_contract_version=factorforge_hybrid_implementation_contract_v1, operator_subgraph.formula_ir.parse_status='success', "
         "non-empty custom_blocks, formula_hash, custom_block_hash, hybrid_hash), choose implementation_mode='direct_code'. "
-        "For the smart-money VWAP/minute sorting algorithm, direct_code is appropriate unless the full hybrid contract is truly complete. "
+        "For minute sorting + top cumulative volume + VWAP ratio algorithms, use implementation_mode='direct_code' by default. "
+        "Do not attempt hybrid unless the full executable hybrid contract is truly complete. "
         "If you choose direct_code, you must provide implementation_contract.code_contract.source_code with entrypoint/function_name, "
         "imports/dependencies, required_fields, input_schema, output_schema, and source_derivation.not_fallback=true. "
+        "The direct_code output_schema must be exactly or at least {'columns': ['ts_code', 'trade_date', 'factor_value']}; "
+        "do not return an empty output_schema, a dtype-only output_schema, or output_schema nested outside code_contract. "
         "Do not use direct_code without source_code. "
         "Preserve report-specific formulas, required_inputs, ambiguities, and mechanism contracts. "
         "Do not use fixture or template content."
@@ -602,12 +619,17 @@ def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[st
             "Extract executable factor spec raw JSON. Select implementation_mode from executable structure only. "
             "Return the factor spec fields at the top level; do not wrap them inside factor_spec_raw. "
             "Use direct_code for natural-language/custom smart-money algorithms unless you can provide a complete hybrid_contract. "
+            "For minute sorting + top cumulative volume + VWAP ratio algorithms, implementation_mode must be direct_code unless "
+            "you can provide the complete executable hybrid contract. "
             "Never default pdf_report to hybrid. Include required_inputs, operators, time_series_steps, cross_sectional_steps, "
             "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported. "
             "If you choose direct_code, implementation_contract.code_contract is mandatory and must include source_code, "
-            "function_name/entrypoint, imports/dependencies, required_fields, input_schema, output_schema, source_derivation.not_fallback=true, "
+            "function_name/entrypoint=compute_factor, imports/dependencies, required_fields, input_schema, output_schema, "
+            "source_derivation.not_fallback=true, code_hash matching source_code, "
             "and report-derived implementation notes. For the Kaiyuan smart-money factor preserve the PDF mechanics "
-            "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract."
+            "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract. "
+            "The direct_code output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "
+            "empty output_schema, dtype-only output_schema, or output_schema nested outside implementation_contract.code_contract."
         )
     elif role == "auditor":
         role_extra = (

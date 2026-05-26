@@ -350,6 +350,14 @@ print(json.dumps(out, ensure_ascii=False))
         "report_exists": report_path.exists(),
         "primary_parsed_json_valid": primary_report.get("parsed_json_valid"),
         "primary_validation_error": primary_report.get("validation_error"),
+        "report_role": report.get("role"),
+        "report_rc": report.get("rc"),
+        "report_stderr_tail": report.get("stderr_tail"),
+        "report_block_token": report.get("block_token"),
+        "provider_request_contract_version": report.get("provider_request_contract_version"),
+        "provider_request_hash_present": bool(report.get("provider_request_hash")),
+        "report_worker_started": report.get("worker_started"),
+        "report_runtime_context_written": report.get("runtime_context_written"),
         "runtime_context_exists": runtime_context.exists(),
         "stdout_tail": tail(proc.stdout),
         "stderr_tail": tail(proc.stderr),
@@ -357,8 +365,117 @@ print(json.dumps(out, ensure_ascii=False))
             proc.returncode != 0
             and token
             and report.get("verdict") == "BLOCK"
+            and report.get("role") == "primary"
+            and report.get("block_token") == "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING"
+            and report.get("worker_started") is False
+            and report.get("runtime_context_written") is False
+            and report.get("provider_request_contract_version") == "factorforge_formal_llm_provider_request_v1"
+            and bool(report.get("provider_request_hash"))
             and primary_report.get("parsed_json_valid") is False
             and "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING" in str(primary_report.get("validation_error") or "")
+            and not runtime_context.exists()
+        ),
+    }
+
+
+def case_step2_command_direct_code_missing_entrypoint_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "step2_command_missing_entrypoint_case"
+    report_id = "FORMAL_STEP2_COMMAND_MISSING_ENTRYPOINT"
+    step1, _ = _generate_fixture_raw(case_root, report_id)
+    provider = case_root / "bad_step2_missing_entrypoint_provider.py"
+    source = (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df=None, minute_df=None):\n"
+        "    return pd.DataFrame(columns=['ts_code', 'trade_date', 'factor_value'])\n"
+    )
+    provider.write_text(
+        f"""import hashlib, json, sys
+req = json.loads(sys.stdin.read())
+role = req.get("role")
+source = {source!r}
+if role in {{"primary", "challenger"}}:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "BAD_DIRECT_CODE_ENTRYPOINT",
+        "raw_formula_text": "custom direct-code algorithm without entrypoint",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["close"],
+        "implementation_mode": "direct_code",
+        "implementation_contract": {{
+            "implementation_mode": "direct_code",
+            "code_contract": {{
+                "source_code": source,
+                "code_hash": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                "output_schema": {{"description": "missing columns and entrypoint"}},
+                "required_fields": ["close"],
+                "source_derivation": {{"derivation": "bad_missing_entrypoint", "not_fallback": True}}
+            }}
+        }},
+        "_llm_bridge_provenance": {{"provider": "command-smoke-bad", "formal_llm_extraction": True, "fixture_only": False}}
+    }}
+else:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "BAD_DIRECT_CODE_ENTRYPOINT",
+        "consistency_score": 0.9,
+        "matches_core_driver": True,
+        "mismatch_points": [],
+        "missing_steps": [],
+        "distortion_risks": [],
+        "recommendation": "proceed"
+    }}
+print(json.dumps(out, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step2"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(case_root),
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+    )
+    report_path = out_dir / "step2_llm_bridge_report.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    primary_report = ((report.get("raw_outputs") or {}).get("primary") or {})
+    text = proc.stdout + proc.stderr + json.dumps(report, ensure_ascii=False)
+    token = "function_name/entrypoint missing" in text
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    return {
+        "case": "step2_command_direct_code_missing_entrypoint_blocks",
+        "rc": proc.returncode,
+        "token_present": token,
+        "step1_raw_dir": str(step1),
+        "report_path": str(report_path),
+        "report_exists": report_path.exists(),
+        "primary_parsed_json_valid": primary_report.get("parsed_json_valid"),
+        "primary_validation_error": primary_report.get("validation_error"),
+        "report_block_token": report.get("block_token"),
+        "report_worker_started": report.get("worker_started"),
+        "report_runtime_context_written": report.get("runtime_context_written"),
+        "runtime_context_exists": runtime_context.exists(),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(
+            proc.returncode != 0
+            and token
+            and report.get("verdict") == "BLOCK"
+            and report.get("block_token") == "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING"
+            and primary_report.get("parsed_json_valid") is False
+            and "function_name/entrypoint missing" in str(primary_report.get("validation_error") or "")
+            and report.get("worker_started") is False
+            and report.get("runtime_context_written") is False
             and not runtime_context.exists()
         ),
     }
@@ -756,7 +873,67 @@ PORT = int(sys.argv[1])
 MODE = sys.argv[2]
 
 
-def response_json(model=None):
+SOURCE = "import pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    return pd.DataFrame(columns=[\\"ts_code\\", \\"trade_date\\", \\"factor_value\\"])\\n"
+
+
+def direct_code_payload(model=None, *, output_schema=None, include_source=True, include_entrypoint=True):
+    code_contract = {
+        "imports": ["pandas"],
+        "dependencies": ["pandas"],
+        "required_fields": ["ts_code", "trade_date", "close"],
+        "input_schema": {"daily_df": ["ts_code", "trade_date", "close"]},
+        "output_schema": output_schema if output_schema is not None else {"columns": ["ts_code", "trade_date", "factor_value"]},
+        "source_derivation": {"derivation": "mock_provider_report_derived", "not_fallback": True},
+    }
+    if include_entrypoint:
+        code_contract["function_name"] = "compute_factor"
+        code_contract["entrypoint"] = "compute_factor"
+    if include_source:
+        code_contract["source_code"] = SOURCE
+    return {
+        "report_id": "HUMPHREY_PROVIDER_MOCK",
+        "observed_api_model": model,
+        "factor_id": "MOCK_DIRECT_CODE",
+        "raw_formula_text": "minute sorting top cumulative volume smart-money VWAP ratio",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["ts_code", "trade_date", "close"],
+        "implementation_mode": "direct_code",
+        "implementation_contract": {
+            "implementation_mode": "direct_code",
+            "code_contract": code_contract,
+        },
+    }
+
+
+def incomplete_hybrid_payload(model=None):
+    return {
+        "report_id": "HUMPHREY_PROVIDER_MOCK",
+        "observed_api_model": model,
+        "factor_id": "MOCK_BAD_HYBRID",
+        "raw_formula_text": "minute sorting top cumulative volume smart-money VWAP ratio",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["ts_code", "trade_date", "close"],
+        "implementation_mode": "hybrid",
+        "implementation_contract": {"implementation_mode": "hybrid", "operator_subgraph": {}, "custom_blocks": []},
+    }
+
+
+def response_json(model=None, request_body=None):
+    messages = request_body.get("messages") if isinstance(request_body, dict) else []
+    joined = json.dumps(messages, ensure_ascii=False)
+    is_repair = "Previous invalid raw JSON" in joined
+    if MODE == "rta26_repair_missing_columns":
+        if is_repair:
+            return direct_code_payload(model, output_schema={"description": "missing columns but source is explicit"})
+        return incomplete_hybrid_payload(model)
+    if MODE == "rta26_repair_missing_source":
+        if is_repair:
+            return direct_code_payload(model, include_source=False)
+        return incomplete_hybrid_payload(model)
+    if MODE == "rta26_direct_columns_missing_standard":
+        return direct_code_payload(model, output_schema={"columns": ["custom_score"], "description": "provider omitted standard output columns"})
+    if MODE == "rta26_direct_missing_entrypoint":
+        return direct_code_payload(model, output_schema={"description": "missing columns and missing entrypoint"}, include_entrypoint=False)
     return {
         "report_id": "HUMPHREY_PROVIDER_MOCK",
         "observed_api_model": model,
@@ -796,9 +973,9 @@ class Handler(BaseHTTPRequestHandler):
         if MODE == "malformed":
             body = {"unexpected": "shape"}
         elif self.path.endswith("/chat/completions"):
-            body = {"choices": [{"message": {"content": json.dumps(response_json(request_body.get("model")), ensure_ascii=False)}}]}
+            body = {"choices": [{"message": {"content": json.dumps(response_json(request_body.get("model"), request_body), ensure_ascii=False)}}]}
         elif self.path.endswith("/messages"):
-            body = {"content": [{"type": "text", "text": json.dumps(response_json(request_body.get("model")), ensure_ascii=False)}]}
+            body = {"content": [{"type": "text", "text": json.dumps(response_json(request_body.get("model"), request_body), ensure_ascii=False)}]}
         else:
             self.send_response(404)
             self.end_headers()
@@ -845,6 +1022,33 @@ def _humphrey_provider_request() -> dict[str, Any]:
         "step1_context": {
             "step1_raw_present": True,
             "step1_primary_raw": {"report_id": "HUMPHREY_PROVIDER_MOCK"},
+            "step1_chief_raw": {"report_id": "HUMPHREY_PROVIDER_MOCK"},
+        },
+        "prior_outputs": {},
+    }
+
+
+def _humphrey_step2_primary_request() -> dict[str, Any]:
+    return {
+        "version": "factorforge_step2_llm_bridge_v1",
+        "role": "primary",
+        "report_id": "HUMPHREY_PROVIDER_MOCK",
+        "prompt_name": "mock_step2_primary_prompt",
+        "prompt_hash": "mock_step2_primary_hash",
+        "prompt": "Return Step2 raw JSON only.",
+        "step1_context": {
+            "step1_raw_present": True,
+            "step1_primary_raw": {
+                "report_id": "HUMPHREY_PROVIDER_MOCK",
+                "final_factor": {
+                    "assembly_steps": [
+                        "S_t=|R_t|/ln(V_t)",
+                        "sort minutes by S_t descending",
+                        "take top 20 percent cumulative volume",
+                        "compute VWAPsmart / VWAPall",
+                    ]
+                },
+            },
             "step1_chief_raw": {"report_id": "HUMPHREY_PROVIDER_MOCK"},
         },
         "prior_outputs": {},
@@ -908,6 +1112,8 @@ def _run_humphrey_provider_case(
         except Exception as exc:  # noqa: BLE001 - smoke diagnostic
             parse_error = f"{type(exc).__name__}: {exc}"
     provenance = parsed.get("_llm_bridge_provenance") if isinstance(parsed, dict) else {}
+    code_contract = (((parsed.get("implementation_contract") or {}).get("code_contract") or {}) if isinstance(parsed, dict) else {})
+    output_columns = ((code_contract.get("output_schema") or {}).get("columns") or []) if isinstance(code_contract, dict) else []
     token_present = expected_token in (proc.stdout + proc.stderr) if expected_token else True
     ok = bool(
         proc.returncode == expect_rc
@@ -938,6 +1144,7 @@ def _run_humphrey_provider_case(
         "parse_error": parse_error,
         "provenance": provenance if isinstance(provenance, dict) else {},
         "observed_api_model": parsed.get("observed_api_model") if isinstance(parsed, dict) else None,
+        "direct_code_output_columns": output_columns,
         "stdout_tail": tail(proc.stdout),
         "stderr_tail": tail(proc.stderr),
         "ok": ok,
@@ -995,6 +1202,63 @@ def case_humphrey_provider_malformed_response_blocks(root: Path) -> dict[str, An
         case_name="humphrey_provider_malformed_response_blocks",
         provider_api="openai-completions",
         server_mode="malformed",
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
+    )
+
+
+def case_rta26_repair_direct_code_output_schema_columns_filled(root: Path) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name="rta26_repair_direct_code_output_schema_columns_filled",
+        provider_api="openai-completions",
+        server_mode="rta26_repair_missing_columns",
+        request_override=_humphrey_step2_primary_request(),
+    )
+    cols = result.get("direct_code_output_columns") or []
+    result["ok"] = bool(
+        result.get("ok")
+        and all(col in cols for col in ["ts_code", "trade_date", "factor_value"])
+    )
+    return result
+
+
+def case_rta26_repair_direct_code_missing_source_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="rta26_repair_direct_code_missing_source_blocks",
+        provider_api="openai-completions",
+        server_mode="rta26_repair_missing_source",
+        request_override=_humphrey_step2_primary_request(),
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
+    )
+
+
+def case_rta26_direct_code_output_schema_standard_columns_added(root: Path) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name="rta26_direct_code_output_schema_standard_columns_added",
+        provider_api="openai-completions",
+        server_mode="rta26_direct_columns_missing_standard",
+        request_override=_humphrey_step2_primary_request(),
+    )
+    cols = result.get("direct_code_output_columns") or []
+    result["ok"] = bool(
+        result.get("ok")
+        and all(col in cols for col in ["ts_code", "trade_date", "factor_value"])
+        and "custom_score" in cols
+    )
+    return result
+
+
+def case_rta26_direct_code_missing_entrypoint_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="rta26_direct_code_missing_entrypoint_blocks",
+        provider_api="openai-completions",
+        server_mode="rta26_direct_missing_entrypoint",
+        request_override=_humphrey_step2_primary_request(),
         expect_rc=1,
         expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
     )
@@ -1499,9 +1763,14 @@ def main() -> int:
         case_humphrey_provider_request_contract_overrides_env_model(root),
         case_humphrey_provider_unsupported_api_blocks(root),
         case_humphrey_provider_malformed_response_blocks(root),
+        case_rta26_repair_direct_code_output_schema_columns_filled(root),
+        case_rta26_repair_direct_code_missing_source_blocks(root),
+        case_rta26_direct_code_output_schema_standard_columns_added(root),
+        case_rta26_direct_code_missing_entrypoint_blocks(root),
         case_step2_provider_missing(root),
         case_step2_alpha_only_blocks(root),
         case_step2_command_direct_code_missing_source_blocks(root),
+        case_step2_command_direct_code_missing_entrypoint_blocks(root),
         case_step2_fixture(root),
         case_prepare_chain(root),
         case_step1_underivable_mechanism_blocks(root),

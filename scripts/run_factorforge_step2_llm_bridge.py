@@ -22,6 +22,15 @@ VERSION = "factorforge_step2_llm_bridge_v1"
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
 BLOCK_STEP1_CONTEXT = "BLOCK_STEP2_STEP1_CONTEXT_REQUIRED"
 BLOCK_DIRECT_CODE_RAW = "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING"
+STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
+
+
+class CommandProviderError(RuntimeError):
+    def __init__(self, *, role: str, rc: int, stderr_tail: str) -> None:
+        self.role = role
+        self.rc = rc
+        self.stderr_tail = stderr_tail
+        super().__init__(f"{BLOCK_PROVIDER_FAILED}: role={role} rc={rc} stderr={stderr_tail}")
 
 
 def now_utc() -> str:
@@ -76,6 +85,18 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _normalize_direct_code_output_schema(code_contract: dict[str, Any]) -> dict[str, Any]:
+    output_schema = code_contract.get("output_schema")
+    if not isinstance(output_schema, dict):
+        output_schema = {}
+    columns = [str(col) for col in _as_list(output_schema.get("columns")) if str(col).strip()]
+    for column in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS:
+        if column not in columns:
+            columns.append(column)
+    output_schema["columns"] = columns
+    return output_schema
 
 
 def source_context(root: Path, report_id: str) -> dict[str, Any]:
@@ -274,6 +295,8 @@ def normalize_command_raw(payload: dict[str, Any], *, role: str, request: dict[s
         if source:
             source = source if source.endswith("\n") else source + "\n"
             required_inputs = _as_list(payload.get("required_inputs"))
+            required_fields = _as_list(code_contract.get("required_fields") or required_inputs)
+            has_entrypoint = bool(code_contract.get("function_name") or code_contract.get("entrypoint"))
             imports = _as_list(code_contract.get("imports") or code_contract.get("dependencies") or ["numpy", "pandas"])
             source_derivation = code_contract.get("source_derivation")
             if isinstance(source_derivation, dict) and source_derivation.get("not_fallback") is True:
@@ -282,27 +305,23 @@ def normalize_command_raw(payload: dict[str, Any], *, role: str, request: dict[s
                     "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
                     "provider_source_derivation": source_derivation.get("derivation"),
                 }
-            else:
-                source_derivation = {
-                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
-                    "not_fallback": True,
-                    "provider": "command",
-                }
+            code_hash = code_contract.get("code_hash")
             code_contract.update(
                 {
                     "code_contract_version": code_contract.get("code_contract_version") or "factorforge_direct_code_contract_v1",
-                    "function_name": code_contract.get("function_name") or code_contract.get("entrypoint") or "compute_factor",
-                    "entrypoint": code_contract.get("entrypoint") or code_contract.get("function_name") or "compute_factor",
                     "source_code": source,
-                    "code_hash": sha256_text(source),
+                    "code_hash": code_hash or sha256_text(source),
                     "imports": imports,
                     "dependencies": _as_list(code_contract.get("dependencies") or imports),
                     "input_schema": code_contract.get("input_schema") or {"daily_df": required_inputs},
-                    "output_schema": code_contract.get("output_schema") or {"columns": ["ts_code", "trade_date", "factor_value"]},
-                    "required_fields": _as_list(code_contract.get("required_fields") or required_inputs),
-                    "source_derivation": source_derivation,
+                    "output_schema": _normalize_direct_code_output_schema(code_contract)
+                    if required_fields and has_entrypoint
+                    else code_contract.get("output_schema"),
+                    "required_fields": required_fields,
                 }
             )
+            if source_derivation:
+                code_contract["source_derivation"] = source_derivation
         contract["code_contract"] = code_contract
         payload["implementation_contract"] = contract
     provenance = payload.get("_llm_bridge_provenance")
@@ -341,6 +360,10 @@ def direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
     output_schema = contract.get("output_schema")
     if not isinstance(output_schema, dict) or not _as_list(output_schema.get("columns")):
         return f"{BLOCK_DIRECT_CODE_RAW}: output_schema.columns missing"
+    columns = [str(col) for col in _as_list(output_schema.get("columns"))]
+    missing_columns = [col for col in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS if col not in columns]
+    if missing_columns:
+        return f"{BLOCK_DIRECT_CODE_RAW}: output_schema.columns missing standard columns: {missing_columns}"
     source_derivation = contract.get("source_derivation")
     if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
         return f"{BLOCK_DIRECT_CODE_RAW}: source_derivation.not_fallback=true required"
@@ -375,17 +398,21 @@ def role_prompt(role: str) -> str:
             "operators, required_inputs, implementation_mode, implementation_contract, ambiguities, and inferred_items. "
             "Select implementation_mode from the executable structure, not from source type. Choose hybrid only when "
             "you can provide a complete hybrid_contract with parseable operator_subgraph.formula_ir, nonempty custom_blocks, "
-            "and formula/custom block identity. If the report describes a natural-language or custom smart-money calculation "
+            "and formula/custom block identity. If the report describes minute sorting + top cumulative volume + VWAP ratio, "
+            "or any natural-language or custom smart-money calculation "
             "that cannot be represented as legal hybrid, choose direct_code and provide implementation_contract.code_contract "
-            "with source_code, function_name/entrypoint, dependencies/imports, required_fields, input_schema, output_schema, "
-            "code_hash if available, and source_derivation.not_fallback=true. Do not choose direct_code without source_code."
+            "with source_code, function_name/entrypoint=compute_factor, dependencies/imports, required_fields, input_schema, output_schema, "
+            "code_hash if available, and source_derivation.not_fallback=true. Do not choose direct_code without source_code. "
+            "For direct_code, output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "
+            "an empty output_schema, dtype-only output_schema, or output_schema nested outside implementation_contract.code_contract."
         )
     if role == "challenger":
         return (
             "You are the Step2 challenger spec extraction agent. Independently challenge the primary interpretation and "
             "output factor_spec_raw JSON with the same required fields, preserving disagreements and ambiguities. "
             "Do not default pdf_report to hybrid; require executable hybrid structure or use direct_code with "
-            "implementation_contract.code_contract.source_code and source_derivation.not_fallback=true."
+            "implementation_contract.code_contract.source_code, compute_factor entrypoint, output_schema.columns "
+            "['ts_code', 'trade_date', 'factor_value'], and source_derivation.not_fallback=true."
         )
     return (
         "You are the Step2 consistency auditor. Compare alpha_idea_master, primary factor_spec_raw, and challenger "
@@ -403,7 +430,11 @@ def run_command_provider(command: str, request: dict[str, Any]) -> str:
         cwd=REPO_ROOT,
     )
     if proc.returncode != 0:
-        raise SystemExit(f"{BLOCK_PROVIDER_FAILED}: role={request.get('role')} rc={proc.returncode} stderr={proc.stderr[-1000:]}")
+        raise CommandProviderError(
+            role=str(request.get("role") or ""),
+            rc=proc.returncode,
+            stderr_tail=proc.stderr[-1000:],
+        )
     return proc.stdout.strip()
 
 
@@ -417,7 +448,14 @@ def write_command_failure_report(
     prompt_context_hash: str,
     failed_role: str,
     error: str,
+    rc: int | None = None,
+    stderr_tail: str = "",
+    block_token: str = BLOCK_PROVIDER_FAILED,
+    provider_request: dict[str, Any] | None = None,
 ) -> None:
+    provider_request = provider_request if isinstance(provider_request, dict) else {}
+    provider_request_hash = str(provider_request.get("request_hash") or stable_hash(provider_request)) if provider_request else None
+    provider_request_version = str(provider_request.get("contract_version") or "") if provider_request else None
     raw_outputs: dict[str, Any] = {}
     for role, path in role_paths.items():
         if not path.exists():
@@ -438,9 +476,18 @@ def write_command_failure_report(
             "report_id": args.report_id,
             "verdict": "BLOCK",
             "block_reason": f"{BLOCK_PROVIDER_FAILED}: role={failed_role}: {error}",
+            "block_token": block_token,
+            "role": failed_role,
+            "failed_role": failed_role,
+            "rc": rc,
+            "stderr_tail": stderr_tail,
             "provider": "command",
             "model": os.getenv("FACTORFORGE_STEP2_LLM_MODEL", "external-command"),
             "temperature": os.getenv("FACTORFORGE_STEP2_LLM_TEMPERATURE", "provider_default"),
+            "provider_request_contract_version": provider_request_version,
+            "provider_request_hash": provider_request_hash,
+            "worker_started": False,
+            "runtime_context_written": False,
             "created_at_utc": created_at_utc,
             "fixture_only": False,
             "formal_llm_extraction": False,
@@ -484,7 +531,24 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
             "prior_outputs": prior_outputs,
             "formal_llm_provider_request": formal_llm_provider_request(),
         }
-        response_text = run_command_provider(command, request)
+        try:
+            response_text = run_command_provider(command, request)
+        except CommandProviderError as exc:
+            write_command_failure_report(
+                args,
+                root,
+                out_dir,
+                created_at_utc=created,
+                role_paths=role_paths,
+                prompt_context_hash=prompt_context_hash,
+                failed_role=role,
+                error=str(exc),
+                rc=exc.rc,
+                stderr_tail=exc.stderr_tail,
+                block_token=BLOCK_PROVIDER_FAILED,
+                provider_request=request.get("formal_llm_provider_request"),
+            )
+            raise SystemExit(str(exc)) from exc
         path = role_paths[role]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(response_text + "\n", encoding="utf-8")
@@ -512,10 +576,14 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
                     prompt_context_hash=prompt_context_hash,
                     failed_role=role,
                     error=str(error),
+                    rc=1,
+                    stderr_tail=str(error),
+                    block_token=BLOCK_DIRECT_CODE_RAW if str(error).startswith(BLOCK_DIRECT_CODE_RAW) else BLOCK_PROVIDER_FAILED,
+                    provider_request=request.get("formal_llm_provider_request"),
                 )
                 raise SystemExit(f"{BLOCK_PROVIDER_FAILED}: role={role} {error}")
             prior_outputs[role] = parsed
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, ValueError) as exc:
             write_command_failure_report(
                 args,
                 root,
@@ -525,6 +593,10 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
                 prompt_context_hash=prompt_context_hash,
                 failed_role=role,
                 error=f"{type(exc).__name__}: {exc}",
+                rc=1,
+                stderr_tail=f"{type(exc).__name__}: {exc}",
+                block_token=BLOCK_PROVIDER_FAILED,
+                provider_request=request.get("formal_llm_provider_request"),
             )
             raise SystemExit(f"{BLOCK_PROVIDER_FAILED}: role={role} {type(exc).__name__}: {exc}") from exc
 

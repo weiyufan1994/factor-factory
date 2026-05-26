@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 BLOCK_PROVIDER = "BLOCK_STEP1_LLM_PROVIDER_UNAVAILABLE"
 BLOCK_PROVIDER_FAILED = "BLOCK_STEP1_LLM_PROVIDER_FAILED"
 VERSION = "factorforge_step1_llm_bridge_v1"
+PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
 
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_client import PdfSkillClient
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_prompts import build_step1_report_intake_prompt
@@ -51,6 +52,25 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def formal_llm_provider_request() -> dict[str, Any]:
+    provider = os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER")
+    model = os.getenv("FACTORFORGE_STEP1_LLM_MODEL")
+    payload: dict[str, Any] = {
+        "contract_version": PROVIDER_REQUEST_CONTRACT_VERSION,
+        "step": "step1",
+        "provider_source": "FACTORFORGE_FORMAL_LLM_PROVIDER" if provider else "provider_wrapper_default",
+        "model_source": "FACTORFORGE_STEP1_LLM_MODEL" if model else "provider_wrapper_default",
+    }
+    if provider:
+        payload["provider"] = provider
+    if model:
+        payload["model"] = model
+    temperature = os.getenv("FACTORFORGE_STEP1_LLM_TEMPERATURE") or os.getenv("FACTORFORGE_FORMAL_LLM_TEMPERATURE")
+    if temperature:
+        payload["temperature"] = temperature
+    return payload
 
 
 def resolve_path(raw: str) -> Path:
@@ -282,6 +302,7 @@ def build_command(args: argparse.Namespace, report_pdf: Path, pdf_meta: dict[str
             "prompt_hash": sha256_text(prompt),
             "prompt": prompt,
             "prior_outputs": prior_outputs,
+            "formal_llm_provider_request": formal_llm_provider_request(),
         }
         response_text = run_command_provider(command, request)
         path = role_paths[role]

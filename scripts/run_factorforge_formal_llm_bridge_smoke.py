@@ -756,9 +756,10 @@ PORT = int(sys.argv[1])
 MODE = sys.argv[2]
 
 
-def response_json():
+def response_json(model=None):
     return {
         "report_id": "HUMPHREY_PROVIDER_MOCK",
+        "observed_api_model": model,
         "final_factor": {
             "name": "mock factor",
             "assembly_steps": ["mock formula extraction"],
@@ -787,13 +788,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("content-length") or "0")
-        self.rfile.read(length)
+        raw_body = self.rfile.read(length)
+        try:
+            request_body = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except Exception:
+            request_body = {}
         if MODE == "malformed":
             body = {"unexpected": "shape"}
         elif self.path.endswith("/chat/completions"):
-            body = {"choices": [{"message": {"content": json.dumps(response_json(), ensure_ascii=False)}}]}
+            body = {"choices": [{"message": {"content": json.dumps(response_json(request_body.get("model")), ensure_ascii=False)}}]}
         elif self.path.endswith("/messages"):
-            body = {"content": [{"type": "text", "text": json.dumps(response_json(), ensure_ascii=False)}]}
+            body = {"content": [{"type": "text", "text": json.dumps(response_json(request_body.get("model")), ensure_ascii=False)}]}
         else:
             self.send_response(404)
             self.end_headers()
@@ -854,6 +859,9 @@ def _run_humphrey_provider_case(
     server_mode: str = "ok",
     expect_rc: int = 0,
     expected_token: str | None = None,
+    request_override: dict[str, Any] | None = None,
+    env_model: str = "mock-model",
+    expected_model: str = "mock-model",
 ) -> dict[str, Any]:
     case_root = root / case_name
     case_root.mkdir(parents=True, exist_ok=True)
@@ -874,15 +882,15 @@ def _run_humphrey_provider_case(
         proc = subprocess.run(
             [sys.executable, "scripts/run_factorforge_humphrey_llm_provider.py"],
             cwd=ROOT,
-            input=json.dumps(_humphrey_provider_request(), ensure_ascii=False),
+            input=json.dumps(request_override or _humphrey_provider_request(), ensure_ascii=False),
             text=True,
             capture_output=True,
             env={
                 **os.environ,
                 "FACTORFORGE_OPENCLAW_CONFIG": str(config),
                 "FACTORFORGE_FORMAL_LLM_PROVIDER": provider_name,
-                "FACTORFORGE_STEP1_LLM_MODEL": "mock-model",
-                "FACTORFORGE_STEP2_LLM_MODEL": "mock-model",
+                "FACTORFORGE_STEP1_LLM_MODEL": env_model,
+                "FACTORFORGE_STEP2_LLM_MODEL": env_model,
                 "FACTORFORGE_FORMAL_LLM_TIMEOUT_SECONDS": "5",
             },
         )
@@ -912,7 +920,8 @@ def _run_humphrey_provider_case(
                 and isinstance(provenance, dict)
                 and provenance.get("provider") == provider_name
                 and provenance.get("provider_api") == provider_api
-                and provenance.get("model") == "mock-model"
+                and provenance.get("model") == expected_model
+                and parsed.get("observed_api_model") == expected_model
                 and provenance.get("formal_llm_extraction") is True
                 and provenance.get("fixture_only") is False
                 and parse_error is None
@@ -928,6 +937,7 @@ def _run_humphrey_provider_case(
         "parsed_json": bool(parsed),
         "parse_error": parse_error,
         "provenance": provenance if isinstance(provenance, dict) else {},
+        "observed_api_model": parsed.get("observed_api_model") if isinstance(parsed, dict) else None,
         "stdout_tail": tail(proc.stdout),
         "stderr_tail": tail(proc.stderr),
         "ok": ok,
@@ -947,6 +957,25 @@ def case_humphrey_provider_anthropic_messages_mock(root: Path) -> dict[str, Any]
         root,
         case_name="humphrey_provider_anthropic_messages_mock",
         provider_api="anthropic-messages",
+    )
+
+
+def case_humphrey_provider_request_contract_overrides_env_model(root: Path) -> dict[str, Any]:
+    case_name = "humphrey_provider_request_contract_overrides_env_model"
+    request = _humphrey_provider_request()
+    request["formal_llm_provider_request"] = {
+        "contract_version": "factorforge_formal_llm_provider_request_v1",
+        "provider": f"{case_name}_provider",
+        "model": "contract-model",
+        "model_source": "bridge_request",
+    }
+    return _run_humphrey_provider_case(
+        root,
+        case_name=case_name,
+        provider_api="openai-completions",
+        request_override=request,
+        env_model="wrong-env-model",
+        expected_model="contract-model",
     )
 
 
@@ -1467,6 +1496,7 @@ def main() -> int:
         case_step1_command_bad_json_writes_failure_report(root),
         case_humphrey_provider_openai_completions_mock(root),
         case_humphrey_provider_anthropic_messages_mock(root),
+        case_humphrey_provider_request_contract_overrides_env_model(root),
         case_humphrey_provider_unsupported_api_blocks(root),
         case_humphrey_provider_malformed_response_blocks(root),
         case_step2_provider_missing(root),

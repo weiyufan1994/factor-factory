@@ -20,6 +20,7 @@ DEFAULT_PROVIDER = "modelstudio"
 DEFAULT_STEP1_MODEL = "qwen3.5-plus"
 DEFAULT_STEP2_MODEL = "qwen3.5-plus"
 SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
+PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
 
 
 class UnsupportedProviderApi(RuntimeError):
@@ -44,6 +45,36 @@ def read_request() -> dict[str, Any]:
     return payload
 
 
+def stable_hash(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256_text(encoded)
+
+
+def resolve_provider_request(request: dict[str, Any], *, version: str) -> dict[str, Any]:
+    raw = request.get("formal_llm_provider_request")
+    contract = raw if isinstance(raw, dict) else {}
+    step = "step1" if version == "factorforge_step1_llm_bridge_v1" else "step2"
+    model_env = "FACTORFORGE_STEP1_LLM_MODEL" if step == "step1" else "FACTORFORGE_STEP2_LLM_MODEL"
+    default_model = DEFAULT_STEP1_MODEL if step == "step1" else DEFAULT_STEP2_MODEL
+    provider_name = str(contract.get("provider") or os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER", DEFAULT_PROVIDER)).strip()
+    model = str(contract.get("model") or os.getenv(model_env, default_model)).strip()
+    if not provider_name:
+        raise RuntimeError("formal LLM provider name is empty")
+    if not model:
+        raise RuntimeError("formal LLM model is empty")
+    resolved = {
+        "contract_version": str(contract.get("contract_version") or PROVIDER_REQUEST_CONTRACT_VERSION),
+        "provider": provider_name,
+        "model": model,
+        "provider_source": str(contract.get("provider_source") or ("request" if contract.get("provider") else "FACTORFORGE_FORMAL_LLM_PROVIDER/default")),
+        "model_source": str(contract.get("model_source") or ("request" if contract.get("model") else f"{model_env}/default")),
+    }
+    if contract.get("temperature") is not None:
+        resolved["temperature"] = contract.get("temperature")
+    resolved["request_hash"] = stable_hash(resolved)
+    return resolved
+
+
 def read_openclaw_provider(provider_name: str) -> dict[str, Any]:
     config_path = Path(os.getenv("FACTORFORGE_OPENCLAW_CONFIG", str(DEFAULT_CONFIG))).expanduser()
     if not config_path.exists():
@@ -60,13 +91,27 @@ def read_openclaw_provider(provider_name: str) -> dict[str, Any]:
     return provider
 
 
-def openai_chat_completion(*, provider: dict[str, Any], model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+def resolved_temperature(provider_request: dict[str, Any]) -> float:
+    raw = provider_request.get("temperature")
+    if raw is None:
+        raw = os.getenv("FACTORFORGE_FORMAL_LLM_TEMPERATURE", "0.1")
+    return float(raw)
+
+
+def openai_chat_completion(
+    *,
+    provider: dict[str, Any],
+    model: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    temperature: float,
+) -> str:
     base_url = str(provider["baseUrl"]).rstrip("/")
     url = f"{base_url}/chat/completions"
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": float(os.getenv("FACTORFORGE_FORMAL_LLM_TEMPERATURE", "0.1")),
+        "temperature": temperature,
         "max_tokens": max_tokens,
     }
     timeout = int(os.getenv("FACTORFORGE_FORMAL_LLM_TIMEOUT_SECONDS", "240"))
@@ -92,7 +137,14 @@ def openai_chat_completion(*, provider: dict[str, Any], model: str, messages: li
     return content
 
 
-def anthropic_messages_completion(*, provider: dict[str, Any], model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+def anthropic_messages_completion(
+    *,
+    provider: dict[str, Any],
+    model: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    temperature: float,
+) -> str:
     base_url = str(provider["baseUrl"]).rstrip("/")
     if base_url.endswith("/v1/messages") or base_url.endswith("/messages"):
         url = base_url
@@ -109,7 +161,7 @@ def anthropic_messages_completion(*, provider: dict[str, Any], model: str, messa
     payload: dict[str, Any] = {
         "model": model,
         "messages": user_messages,
-        "temperature": float(os.getenv("FACTORFORGE_FORMAL_LLM_TEMPERATURE", "0.1")),
+        "temperature": temperature,
         "max_tokens": max_tokens,
     }
     if system_parts:
@@ -146,12 +198,19 @@ def anthropic_messages_completion(*, provider: dict[str, Any], model: str, messa
     raise RuntimeError(f"LLM response missing anthropic text content: {body}")
 
 
-def provider_completion(*, provider: dict[str, Any], model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+def provider_completion(
+    *,
+    provider: dict[str, Any],
+    model: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    temperature: float,
+) -> str:
     provider_api = str(provider.get("api") or "").strip()
     if provider_api == "openai-completions":
-        return openai_chat_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
+        return openai_chat_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
     if provider_api == "anthropic-messages":
-        return anthropic_messages_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
+        return anthropic_messages_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
     raise UnsupportedProviderApi(f"{BLOCK_UNSUPPORTED_API}: api={provider_api}")
 
 
@@ -213,12 +272,23 @@ def request_pdf_sha256(request: dict[str, Any]) -> Any:
     return None
 
 
-def enrich_provenance(payload: dict[str, Any], request: dict[str, Any], *, provider_name: str, model: str) -> dict[str, Any]:
+def enrich_provenance(
+    payload: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    provider_name: str,
+    model: str,
+    provider_request: dict[str, Any],
+) -> dict[str, Any]:
     provenance = {
         "provider_wrapper": "run_factorforge_humphrey_llm_provider.py",
         "provider": provider_name,
         "provider_api": request.get("_provider_api"),
         "model": model,
+        "model_source": provider_request.get("model_source"),
+        "provider_source": provider_request.get("provider_source"),
+        "provider_request_contract_version": provider_request.get("contract_version"),
+        "provider_request_hash": provider_request.get("request_hash"),
         "role": request.get("role"),
         "report_id": request.get("report_id"),
         "prompt_name": request.get("prompt_name"),
@@ -422,6 +492,7 @@ def repair_step2_payload(
     *,
     provider: dict[str, Any],
     model: str,
+    temperature: float,
     request: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -459,6 +530,7 @@ def repair_step2_payload(
         model=model,
         messages=messages,
         max_tokens=int(os.getenv("FACTORFORGE_STEP2_LLM_REPAIR_MAX_TOKENS", "8000")),
+        temperature=temperature,
     )
     repaired = normalize_step2_payload(extract_json_object(raw), request)
     if _invalid_step2_hybrid(repaired, request):
@@ -475,9 +547,8 @@ def repair_step2_payload(
     return repaired
 
 
-def step1_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, str]:
+def step1_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[str, str]], int]:
     role = str(request.get("role") or "")
-    model = os.getenv("FACTORFORGE_STEP1_LLM_MODEL", DEFAULT_STEP1_MODEL)
     prompt = str(request.get("prompt") or "")
     prior = request.get("prior_outputs") or {}
     text = pdf_text(str(request.get("pdf_path") or ""))
@@ -516,12 +587,11 @@ def step1_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, 
     return [
         {"role": "system", "content": "You are a Factor Forge formal PDF/LLM extraction provider. Output strict JSON only."},
         user,
-    ], int(os.getenv("FACTORFORGE_STEP1_LLM_MAX_TOKENS", "12000")), model
+    ], int(os.getenv("FACTORFORGE_STEP1_LLM_MAX_TOKENS", "12000"))
 
 
-def step2_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, str]:
+def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[str, str]], int]:
     role = str(request.get("role") or "")
-    model = os.getenv("FACTORFORGE_STEP2_LLM_MODEL", DEFAULT_STEP2_MODEL)
     prompt = str(request.get("prompt") or "")
     context = request.get("step1_context") or {}
     prior = request.get("prior_outputs") or {}
@@ -558,7 +628,7 @@ def step2_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, 
     return [
         {"role": "system", "content": "You are a Factor Forge formal Step2 extraction provider. Output strict JSON only."},
         user,
-    ], int(os.getenv("FACTORFORGE_STEP2_LLM_MAX_TOKENS", "12000")), model
+    ], int(os.getenv("FACTORFORGE_STEP2_LLM_MAX_TOKENS", "12000"))
 
 
 def main() -> int:
@@ -566,27 +636,30 @@ def main() -> int:
         request = read_request()
         role = str(request.get("role") or "")
         version = str(request.get("version") or "")
-        provider_name = os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER", DEFAULT_PROVIDER)
+        provider_request = resolve_provider_request(request, version=version)
+        provider_name = str(provider_request["provider"])
+        model = str(provider_request["model"])
+        temperature = resolved_temperature(provider_request)
         provider = read_openclaw_provider(provider_name)
         request["_provider_api"] = str(provider.get("api") or "")
         if version == "factorforge_step1_llm_bridge_v1":
-            messages, max_tokens, model = step1_messages(request)
+            messages, max_tokens = step1_messages(request, model=model)
         elif version == "factorforge_step2_llm_bridge_v1":
-            messages, max_tokens, model = step2_messages(request)
+            messages, max_tokens = step2_messages(request, model=model)
         else:
             raise RuntimeError(f"unsupported bridge request version: {version}")
         eprint(f"[factorforge-provider] role={role} provider={provider_name} api={provider.get('api')} model={model} prompt_hash={request.get('prompt_hash')}")
-        raw = provider_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens)
+        raw = provider_completion(provider=provider, model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
         payload = extract_json_object(raw)
         if version == "factorforge_step2_llm_bridge_v1":
             payload = normalize_step2_payload(payload, request)
             if _invalid_step2_hybrid(payload, request) or _invalid_step2_direct_code(payload, request):
                 eprint("[factorforge-provider] invalid Step2 hybrid contract returned; asking model for corrected raw JSON")
-                payload = repair_step2_payload(provider=provider, model=model, request=request, payload=payload)
+                payload = repair_step2_payload(provider=provider, model=model, temperature=temperature, request=request, payload=payload)
             direct_failure = _invalid_step2_direct_code(payload, request)
             if direct_failure:
                 raise RuntimeError(direct_failure)
-        payload = enrich_provenance(payload, request, provider_name=provider_name, model=model)
+        payload = enrich_provenance(payload, request, provider_name=provider_name, model=model, provider_request=provider_request)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
     except UnsupportedProviderApi as exc:

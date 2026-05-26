@@ -56,6 +56,34 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def direct_code_contract_checks(master):
+    if master.get('implementation_mode') != 'direct_code':
+        return []
+    contract = master.get('implementation_contract') or {}
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    source_code = code_contract.get('source_code')
+    source_derivation = code_contract.get('source_derivation')
+    output_schema = code_contract.get('output_schema')
+    required_fields = code_contract.get('required_fields') or contract.get('required_fields') or (master.get('canonical_spec') or {}).get('required_inputs')
+    code_hash = code_contract.get('code_hash')
+    expected_hash = None
+    if nonempty_str(source_code):
+        normalized_source = source_code if str(source_code).endswith('\n') else f'{source_code}\n'
+        import hashlib
+        expected_hash = hashlib.sha256(normalized_source.encode('utf-8')).hexdigest()
+    return [
+        check('direct_code_contract_present', isinstance(code_contract, dict) and bool(code_contract), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: implementation_contract.code_contract missing'),
+        check('direct_code_source_code_present', nonempty_str(source_code), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: implementation_contract.code_contract.source_code missing'),
+        check('direct_code_entrypoint_present', nonempty_str(code_contract.get('entrypoint') or code_contract.get('function_name')), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code entrypoint/function_name missing'),
+        check('direct_code_hash_present', nonempty_str(code_hash), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code code_hash missing'),
+        check('direct_code_hash_matches_source', not expected_hash or code_hash == expected_hash, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code code_hash mismatch'),
+        check('direct_code_required_fields_present', nonempty_list(required_fields), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code required_fields missing'),
+        check('direct_code_output_schema_present', isinstance(output_schema, dict) and nonempty_list(output_schema.get('columns')), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema.columns missing'),
+        check('direct_code_source_derivation_present', isinstance(source_derivation, dict) and bool(source_derivation), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_derivation missing'),
+        check('direct_code_source_derivation_not_fallback', isinstance(source_derivation, dict) and source_derivation.get('not_fallback') is True, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_derivation.not_fallback=true required'),
+    ]
+
+
 def valid_economic_hypothesis(value) -> bool:
     if not isinstance(value, dict) or not value:
         return False
@@ -348,6 +376,7 @@ def main() -> None:
         checks.extend(identity_check(master, handoff, rid))
         checks.extend(family_plugin_checks(master, handoff))
         checks.extend(hybrid_contract_checks(master))
+        checks.extend(direct_code_contract_checks(master))
     for item in checks:
         if item['status'] == 'BLOCK':
             errors.append(item['error'])

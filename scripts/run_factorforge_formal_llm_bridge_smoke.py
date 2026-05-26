@@ -272,6 +272,96 @@ def case_step2_alpha_only_blocks(root: Path) -> dict[str, Any]:
     }
 
 
+def case_step2_command_direct_code_missing_source_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "step2_command_missing_source_case"
+    report_id = "FORMAL_STEP2_COMMAND_MISSING_SOURCE"
+    step1, _ = _generate_fixture_raw(case_root, report_id)
+    provider = case_root / "bad_step2_missing_source_provider.py"
+    provider.write_text(
+        """import json, sys
+req = json.loads(sys.stdin.read())
+role = req.get("role")
+if role in {"primary", "challenger"}:
+    out = {
+        "report_id": req.get("report_id"),
+        "factor_id": "BAD_DIRECT_CODE",
+        "raw_formula_text": "custom direct-code algorithm without source",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["close"],
+        "implementation_mode": "direct_code",
+        "implementation_contract": {
+            "implementation_mode": "direct_code",
+            "code_contract": {
+                "function_name": "compute_factor",
+                "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
+                "required_fields": ["close"],
+                "source_derivation": {"derivation": "bad_missing_source", "not_fallback": True}
+            }
+        },
+        "_llm_bridge_provenance": {"provider": "command-smoke-bad", "formal_llm_extraction": True, "fixture_only": False}
+    }
+else:
+    out = {
+        "report_id": req.get("report_id"),
+        "factor_id": "BAD_DIRECT_CODE",
+        "consistency_score": 0.9,
+        "matches_core_driver": True,
+        "mismatch_points": [],
+        "missing_steps": [],
+        "distortion_risks": [],
+        "recommendation": "proceed"
+    }
+print(json.dumps(out, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step2"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(case_root),
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+    )
+    report_path = out_dir / "step2_llm_bridge_report.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    primary_report = ((report.get("raw_outputs") or {}).get("primary") or {})
+    text = proc.stdout + proc.stderr + json.dumps(report, ensure_ascii=False)
+    token = "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING" in text
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    return {
+        "case": "step2_command_direct_code_missing_source_blocks",
+        "rc": proc.returncode,
+        "token_present": token,
+        "step1_raw_dir": str(step1),
+        "report_path": str(report_path),
+        "report_exists": report_path.exists(),
+        "primary_parsed_json_valid": primary_report.get("parsed_json_valid"),
+        "primary_validation_error": primary_report.get("validation_error"),
+        "runtime_context_exists": runtime_context.exists(),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(
+            proc.returncode != 0
+            and token
+            and report.get("verdict") == "BLOCK"
+            and primary_report.get("parsed_json_valid") is False
+            and "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING" in str(primary_report.get("validation_error") or "")
+            and not runtime_context.exists()
+        ),
+    }
+
+
 def case_step2_fixture(root: Path) -> dict[str, Any]:
     out_dir = root / "objects" / "raw_llm" / RID / "step2"
     proc = run_cmd(
@@ -414,6 +504,11 @@ def _inject_explicit_direct_code_source(raw_path: Path) -> None:
         "input_schema": {"daily_df": ["ts_code", "trade_date", "close"]},
         "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
         "required_fields": ["ts_code", "trade_date", "close"],
+        "source_derivation": {
+            "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+            "not_fallback": True,
+            "fixture_only": True,
+        },
     })
     _write_raw_json(raw_path, raw)
 
@@ -454,6 +549,191 @@ def _generate_fixture_raw(root: Path, report_id: str) -> tuple[Path, Path]:
         factorforge_root=root,
     )
     return step1, step2
+
+
+def _write_command_provider(root: Path) -> Path:
+    provider = root / "fresh_command_provider.py"
+    provider.write_text(
+        f"""#!/usr/bin/env python3
+import copy
+import hashlib
+import json
+import pathlib
+import sys
+
+ROOT = pathlib.Path({str(ROOT)!r})
+SOURCE = {SAMPLE_DIRECT_CODE_SOURCE!r}
+
+
+def provenance(req, role):
+    return {{
+        "provider": "command-smoke-fresh",
+        "model": "command-smoke-model",
+        "role": role,
+        "report_id": req.get("report_id"),
+        "prompt_hash": req.get("prompt_hash"),
+        "pdf_sha256": req.get("pdf_sha256") or "smoke-pdf-sha",
+        "formal_llm_extraction": True,
+        "fixture_only": False,
+        "source_derivation": "fresh_command_provider_smoke",
+    }}
+
+
+def step1_intake(req, role):
+    payload = json.loads((ROOT / "fixtures" / "step1" / "sample_intake_response.json").read_text(encoding="utf-8"))
+    payload["report_id"] = req.get("report_id")
+    payload["_llm_bridge_provenance"] = provenance(req, role)
+    payload.setdefault("final_factor", {{}})["name"] = "聪明钱因子2.0"
+    payload["final_factor"]["assembly_steps"] = [
+        "计算分钟收益率绝对值与成交量对数比 S=|R|/ln(V)",
+        "按 S 对分钟成交切片排序",
+        "选取累计成交量 top20% 的聪明钱分钟",
+        "计算 VWAPsmart/VWAPall 作为日度聪明钱强度",
+    ]
+    payload["final_factor"]["economic_logic"] = "聪明钱成交切片可能代表信息优势交易或约束驱动订单流。"
+    payload["final_factor"]["behavioral_logic"] = "慢反应流动性提供者和噪声交易者可能为信息优势订单流支付价格冲击成本。"
+    payload["final_factor"]["what_must_be_true"] = [
+        "S=|R|/ln(V) 能够区分信息含量更高的分钟成交切片。",
+        "top20% 累计成交量对应的 VWAPsmart 相对 VWAPall 对未来收益分布有可检验关系。",
+    ]
+    return payload
+
+
+def step1_chief(req):
+    must = [
+        "S=|R|/ln(V) 必须能识别信息含量更高或冲击更强的分钟成交。",
+        "VWAPsmart/VWAPall 必须与后续收益的条件分布变化相关，而不是纯粹成交量噪声。",
+    ]
+    breaks = [
+        "S 排序选出的 top20% 成交切片不稳定或不可复现。",
+        "VWAPsmart/VWAPall 与未来收益无关或方向在样本外反转。",
+    ]
+    return {{
+        "report_id": req.get("report_id"),
+        "final_factor": {{
+            "name": "聪明钱因子2.0",
+            "assembly_steps": [
+                "计算 S=|R|/ln(V)",
+                "按 S 排序并选取累计成交量 top20%",
+                "计算 VWAPsmart/VWAPall",
+            ],
+            "accepted_subfactor_names": ["smart_money_vwap_ratio"],
+            "direction": "positive_if_smart_vwap_strength_predicts_return",
+            "alpha_strength": "requires_step4_validation",
+            "alpha_source": "kaiyuan smart money v2 PDF",
+            "economic_logic": "信息优势或约束驱动订单流在分钟成交中留下可观测价格冲击。",
+            "behavioral_logic": "噪声交易者、慢反应流动性提供者或被动调仓需求为信息优势订单流支付短期价格冲击成本。",
+            "causal_chain": "高信息分钟切片 -> VWAPsmart/VWAPall 状态 -> 后续收益分布变化",
+            "what_must_be_true": must,
+            "what_would_break_it": breaks,
+            "key_implementation_risks": ["分钟数据字段与成交量口径必须一致"],
+        }},
+        "market_process_thesis": {{
+            "market_phenomenon": "聪明钱分钟成交切片反映信息优势订单流或约束驱动冲击。",
+            "economic_hypothesis": "S 排序识别高信息成交切片，VWAPsmart/VWAPall 估计该状态并预测未来收益分布。",
+            "return_source_family": "information_advantage",
+            "payer_or_counterparty": "噪声交易者、慢反应流动性提供者或被动调仓交易者",
+            "why_they_pay": "他们在信息优势订单流或约束交易压力下以不利价格成交。",
+            "what_must_be_true": must,
+            "what_would_break_it": breaks,
+        }},
+        "what_must_be_true": must,
+        "mechanism_assumptions": must,
+        "logic_provenance_summary": {{
+            "merge_mode": "fresh_command_provider_smoke",
+            "derived_from": ["PDF formula S=|R|/ln(V)", "S sorting", "top20% cumulative volume", "VWAPsmart/VWAPall"],
+        }},
+        "assembly_path": ["S=|R|/ln(V)", "S排序", "top20% cumulative volume", "VWAPsmart/VWAPall"],
+        "unresolved_ambiguities": ["正式生产 LLM 需确认分钟成交量字段和排序方向。"],
+        "chief_decision_summary": "Use smart-money VWAP ratio as the report-specific factor idea.",
+        "chief_confidence": "medium",
+        "chief_rationale": "Both extraction routes preserve the same formula mechanics.",
+        "_llm_bridge_provenance": provenance(req, "chief"),
+    }}
+
+
+def step2_raw(req, role):
+    required = ["ts_code", "trade_date", "close"]
+    code_contract = {{
+        "code_contract_version": "factorforge_direct_code_contract_v1",
+        "function_name": "compute_factor",
+        "entrypoint": "compute_factor",
+        "source_code": SOURCE,
+        "code_hash": hashlib.sha256(SOURCE.encode("utf-8")).hexdigest(),
+        "imports": ["numpy", "pandas"],
+        "dependencies": ["numpy", "pandas"],
+        "input_schema": {{"daily_df": required}},
+        "output_schema": {{"columns": ["ts_code", "trade_date", "factor_value"]}},
+        "required_fields": required,
+        "source_derivation": {{
+            "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+            "not_fallback": True,
+            "fixture_only": False,
+        }},
+    }}
+    return {{
+        "report_id": req.get("report_id"),
+        "factor_id": "SMART_MONEY_V2",
+        "route": role,
+        "raw_formula_text": "smart_money_v2 = VWAPsmart / VWAPall using S=|R|/ln(V), S sorting, and top20% cumulative volume",
+        "operators": ["custom_direct_code"],
+        "required_inputs": required,
+        "implementation_mode": "direct_code",
+        "implementation_contract": {{
+            "implementation_mode": "direct_code",
+            "mode": "direct_code",
+            "required_fields": required,
+            "function_name": "compute_factor",
+            "code_contract": code_contract,
+            "output_schema": {{"columns": ["ts_code", "trade_date", "factor_value"]}},
+        }},
+        "time_series_steps": ["estimate smart-money state from completed market observations"],
+        "cross_sectional_steps": ["rank or compare smart-money strength cross-sectionally after construction"],
+        "preprocessing": ["validate price and volume fields before implementation"],
+        "normalization": [],
+        "neutralization": [],
+        "explicit_items": ["S=|R|/ln(V)", "S sorting", "top20% cumulative volume", "VWAPsmart/VWAPall"],
+        "inferred_items": ["direct_code selected because the custom smart-money algorithm is not a pure Formula-IR expression"],
+        "ambiguities": ["production LLM must confirm minute-data field mapping before worker execution"],
+        "_llm_bridge_provenance": provenance(req, role),
+    }}
+
+
+def auditor(req):
+    return {{
+        "report_id": req.get("report_id"),
+        "factor_id": "SMART_MONEY_V2",
+        "consistency_score": 0.93,
+        "matches_core_driver": True,
+        "mismatch_points": [],
+        "missing_steps": [],
+        "distortion_risks": ["minute data field mapping requires production confirmation"],
+        "recommendation": "proceed",
+        "_llm_bridge_provenance": provenance(req, "auditor"),
+    }}
+
+
+req = json.loads(sys.stdin.read())
+role = req.get("role")
+version = req.get("version")
+if version == "factorforge_step1_llm_bridge_v1":
+    if role in {{"primary", "challenger"}}:
+        out = step1_intake(req, role)
+    else:
+        out = step1_chief(req)
+elif version == "factorforge_step2_llm_bridge_v1":
+    if role in {{"primary", "challenger"}}:
+        out = step2_raw(req, role)
+    else:
+        out = auditor(req)
+else:
+    raise SystemExit("unsupported request")
+print(json.dumps(out, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    provider.chmod(0o755)
+    return provider
 
 
 def case_step1_underivable_mechanism_blocks(root: Path) -> dict[str, Any]:
@@ -597,6 +877,298 @@ def case_step2_hybrid_missing_contract_blocks(root: Path) -> dict[str, Any]:
     }
 
 
+def case_command_fresh_kaiyuan_chain_passes(root: Path) -> dict[str, Any]:
+    case_root = root / "kaiyuan_command_fresh_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    report_id = "kaiyuan_20200209_smart_money_v2"
+    provider = _write_command_provider(case_root)
+    command = f"{sys.executable} {provider}"
+    step1 = case_root / "objects" / "raw_llm" / report_id / "step1"
+    step2 = case_root / "objects" / "raw_llm" / report_id / "step2"
+    env = {
+        "FACTORFORGE_STEP1_LLM_COMMAND": command,
+        "FACTORFORGE_STEP2_LLM_COMMAND": command,
+        "FACTORFORGE_STEP1_LLM_MODEL": "command-smoke-model",
+        "FACTORFORGE_STEP2_LLM_MODEL": "command-smoke-model",
+    }
+    step1_proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step1_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--out-dir",
+            str(step1),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env=env,
+    )
+    step2_proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(case_root),
+            "--out-dir",
+            str(step2),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env=env,
+    )
+    prepare_proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(case_root),
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--step1-primary-raw",
+            str(step1 / "step1_primary_raw.json"),
+            "--step1-challenger-raw",
+            str(step1 / "step1_challenger_raw.json"),
+            "--step1-chief-raw",
+            str(step1 / "step1_chief_raw.json"),
+            "--step2-primary-raw",
+            str(step2 / "step2_primary_raw.json"),
+            "--step2-challenger-raw",
+            str(step2 / "step2_challenger_raw.json"),
+            "--step2-auditor-raw",
+            str(step2 / "step2_auditor_raw.json"),
+            "--end-step",
+            "3a",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+    )
+    runtime_proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+    if prepare_proc.returncode == 0:
+        runtime_proc = run_cmd(
+            [
+                sys.executable,
+                "scripts/build_factorforge_runtime_context.py",
+                "--report-id",
+                report_id,
+                "--factorforge-root",
+                str(case_root),
+                "--write",
+            ],
+            factorforge_root=case_root,
+        )
+    report_path = case_root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    spec_path = case_root / "objects" / "factor_spec_master" / f"factor_spec_master__{report_id}.json"
+    spec = read_json(spec_path) if spec_path.exists() else {}
+    alpha_path = case_root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{report_id}.json"
+    alpha = read_json(alpha_path) if alpha_path.exists() else {}
+    primary_raw = read_json(step2 / "step2_primary_raw.json") if (step2 / "step2_primary_raw.json").exists() else {}
+    code_contract = ((spec.get("implementation_contract") or {}).get("code_contract") or {})
+    raw_code_contract = ((primary_raw.get("implementation_contract") or {}).get("code_contract") or {})
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    discipline = alpha.get("research_discipline") or {}
+    mpt = discipline.get("market_process_thesis") or {}
+    ok = bool(
+        step1_proc.returncode == 0
+        and step2_proc.returncode == 0
+        and prepare_proc.returncode == 0
+        and runtime_proc.returncode == 0
+        and report.get("verdict") == "ACCEPT"
+        and (report.get("validators") or {}).get("step1", {}).get("rc") == 0
+        and (report.get("validators") or {}).get("step2", {}).get("rc") == 0
+        and (report.get("validators") or {}).get("step3", {}).get("rc") == 0
+        and report.get("workflow_may_dispatch_worker") is True
+        and report.get("worker_started") is False
+        and report.get("runtime_context_written") is False
+        and runtime_context.exists()
+        and spec.get("report_id") == report_id
+        and (spec.get("artifact_identity") or {}).get("report_id") == report_id
+        and spec.get("implementation_mode") == "direct_code"
+        and bool((spec.get("canonical_spec") or {}).get("formula_text"))
+        and bool((spec.get("canonical_spec") or {}).get("required_inputs"))
+        and bool((spec.get("thesis") or {}).get("alpha_thesis"))
+        and bool((spec.get("mechanism_math_contract") or {}).get("observable_inputs"))
+        and bool(code_contract.get("source_code") and code_contract.get("code_hash"))
+        and bool(raw_code_contract.get("source_code") and raw_code_contract.get("code_hash"))
+        and bool(discipline.get("what_must_be_true"))
+        and bool(mpt.get("what_must_be_true"))
+    )
+    return {
+        "case": "command_fresh_kaiyuan_direct_code_chain_passes",
+        "step1_rc": step1_proc.returncode,
+        "step2_rc": step2_proc.returncode,
+        "prepare_rc": prepare_proc.returncode,
+        "runtime_context_rc": runtime_proc.returncode,
+        "prepare_report": str(report_path),
+        "raw_step1_dir": str(step1),
+        "raw_step2_dir": str(step2),
+        "validate_step1_rc": (report.get("validators") or {}).get("step1", {}).get("rc"),
+        "validate_step2_rc": (report.get("validators") or {}).get("step2", {}).get("rc"),
+        "validate_step3_rc": (report.get("validators") or {}).get("step3", {}).get("rc"),
+        "implementation_mode": spec.get("implementation_mode"),
+        "raw_code_hash_present": bool(raw_code_contract.get("code_hash")),
+        "spec_code_hash_present": bool(code_contract.get("code_hash")),
+        "prepare_runtime_context_written": report.get("runtime_context_written"),
+        "new_runtime_context_written": runtime_context.exists(),
+        "worker_started": report.get("worker_started"),
+        "workflow_may_dispatch_worker": report.get("workflow_may_dispatch_worker"),
+        "stdout_tail": tail(prepare_proc.stdout),
+        "stderr_tail": tail(prepare_proc.stderr),
+        "ok": ok,
+    }
+
+
+def case_prepare_runs_formal_bridges_and_writes_runtime_context(root: Path) -> dict[str, Any]:
+    case_root = root / "prepare_bridge_wiring_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    report_id = "kaiyuan_smart_money_RTA_22"
+    provider = _write_command_provider(case_root)
+    command = f"{sys.executable} {provider}"
+    env = {
+        "FACTORFORGE_STEP1_LLM_COMMAND": command,
+        "FACTORFORGE_STEP2_LLM_COMMAND": command,
+        "FACTORFORGE_STEP1_LLM_MODEL": "command-smoke-model",
+        "FACTORFORGE_STEP2_LLM_MODEL": "command-smoke-model",
+    }
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(case_root),
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--run-formal-llm-bridges",
+            "--formal-llm-provider",
+            "command",
+            "--write-runtime-context",
+            "--end-step",
+            "3a",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env=env,
+    )
+    report_path = case_root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    step1 = case_root / "objects" / "raw_llm" / report_id / "step1"
+    step2 = case_root / "objects" / "raw_llm" / report_id / "step2"
+    step1_primary = read_json(step1 / "step1_primary_raw.json") if (step1 / "step1_primary_raw.json").exists() else {}
+    step1_chief = read_json(step1 / "step1_chief_raw.json") if (step1 / "step1_chief_raw.json").exists() else {}
+    step2_primary = read_json(step2 / "step2_primary_raw.json") if (step2 / "step2_primary_raw.json").exists() else {}
+    spec_path = case_root / "objects" / "factor_spec_master" / f"factor_spec_master__{report_id}.json"
+    spec = read_json(spec_path) if spec_path.exists() else {}
+    raw_code_contract = ((step2_primary.get("implementation_contract") or {}).get("code_contract") or {})
+    spec_code_contract = ((spec.get("implementation_contract") or {}).get("code_contract") or {})
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    bridge_meta = report.get("formal_llm_bridges") or {}
+    ok = bool(
+        proc.returncode == 0
+        and report.get("verdict") == "ACCEPT"
+        and (report.get("validators") or {}).get("step1", {}).get("rc") == 0
+        and (report.get("validators") or {}).get("step2", {}).get("rc") == 0
+        and (report.get("validators") or {}).get("step3", {}).get("rc") == 0
+        and report.get("runtime_context_written") is True
+        and report.get("worker_started") is False
+        and report.get("worker_dispatch_status") == "not_dispatched_by_prepare"
+        and runtime_context.exists()
+        and (bridge_meta.get("step1") or {}).get("generated") is True
+        and (bridge_meta.get("step2") or {}).get("generated") is True
+        and step1_primary.get("report_id") == report_id
+        and step1_chief.get("report_id") == report_id
+        and step2_primary.get("report_id") == report_id
+        and bool((step1_primary.get("_llm_bridge_provenance") or {}).get("prompt_hash"))
+        and bool((step1_primary.get("_llm_bridge_provenance") or {}).get("pdf_sha256"))
+        and bool(raw_code_contract.get("source_code") and raw_code_contract.get("code_hash"))
+        and bool(raw_code_contract.get("required_fields") and raw_code_contract.get("output_schema"))
+        and bool(spec_code_contract.get("source_code") and spec_code_contract.get("code_hash"))
+        and spec.get("implementation_mode") == "direct_code"
+    )
+    return {
+        "case": "prepare_runs_formal_bridges_and_writes_runtime_context",
+        "rc": proc.returncode,
+        "prepare_report": str(report_path),
+        "raw_step1_dir": str(step1),
+        "raw_step2_dir": str(step2),
+        "validate_step1_rc": (report.get("validators") or {}).get("step1", {}).get("rc"),
+        "validate_step2_rc": (report.get("validators") or {}).get("step2", {}).get("rc"),
+        "validate_step3_rc": (report.get("validators") or {}).get("step3", {}).get("rc"),
+        "runtime_context_written": report.get("runtime_context_written"),
+        "new_runtime_context_written": runtime_context.exists(),
+        "worker_started": report.get("worker_started"),
+        "step1_bridge_generated": (bridge_meta.get("step1") or {}).get("generated"),
+        "step2_bridge_generated": (bridge_meta.get("step2") or {}).get("generated"),
+        "raw_report_id_matches": bool(
+            step1_primary.get("report_id") == report_id
+            and step1_chief.get("report_id") == report_id
+            and step2_primary.get("report_id") == report_id
+        ),
+        "raw_code_hash_present": bool(raw_code_contract.get("code_hash")),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": ok,
+    }
+
+
+def case_prepare_stale_step1_raw_report_id_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "stale_step1_raw_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    stale_id = "kaiyuan_20200209_smart_money_v2"
+    report_id = "kaiyuan_smart_money_RTA_22"
+    step1, _ = _generate_fixture_raw(case_root, stale_id)
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(case_root),
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--step1-primary-raw",
+            str(step1 / "step1_primary_raw.json"),
+            "--step1-challenger-raw",
+            str(step1 / "step1_challenger_raw.json"),
+            "--step1-chief-raw",
+            str(step1 / "step1_chief_raw.json"),
+            "--end-step",
+            "1",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+    )
+    report_path = case_root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    text = proc.stdout + proc.stderr + json.dumps(report, ensure_ascii=False)
+    token = "BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH" in text
+    return {
+        "case": "prepare_stale_step1_raw_report_id_blocks",
+        "rc": proc.returncode,
+        "token_present": token,
+        "prepare_report": str(report_path),
+        "runtime_context_exists": runtime_context.exists(),
+        "worker_started": report.get("worker_started"),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(proc.returncode != 0 and token and not runtime_context.exists() and report.get("worker_started") is False),
+    }
+
+
 def case_prepare_existing_runtime_context_blocks_dispatch(root: Path) -> dict[str, Any]:
     runtime_dir = root / "objects" / "runtime_context"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -660,10 +1232,14 @@ def main() -> int:
         case_step1_command_bad_json_writes_failure_report(root),
         case_step2_provider_missing(root),
         case_step2_alpha_only_blocks(root),
+        case_step2_command_direct_code_missing_source_blocks(root),
         case_step2_fixture(root),
         case_prepare_chain(root),
         case_step1_underivable_mechanism_blocks(root),
         case_step2_hybrid_missing_contract_blocks(root),
+        case_command_fresh_kaiyuan_chain_passes(root),
+        case_prepare_runs_formal_bridges_and_writes_runtime_context(root),
+        case_prepare_stale_step1_raw_report_id_blocks(root),
         case_prepare_existing_runtime_context_blocks_dispatch(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"

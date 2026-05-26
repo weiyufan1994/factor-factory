@@ -182,6 +182,28 @@ def _as_text_list(value: Any) -> list[str]:
     return out
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _direct_code_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    contract = payload.get("implementation_contract")
+    if not isinstance(contract, dict):
+        return {}
+    code_contract = contract.get("code_contract")
+    if isinstance(code_contract, dict):
+        return code_contract
+    for key in ["code_contract", "direct_code_contract"]:
+        candidate = payload.get(key)
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
 def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     role = str(request.get("role") or "")
     if role not in {"primary", "challenger"}:
@@ -225,9 +247,69 @@ def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) ->
         contract.setdefault("mode", "direct_code")
         contract.setdefault("function_name", "compute_factor")
         contract.setdefault("required_fields", payload.get("required_inputs") or [])
+        code_contract = contract.get("code_contract")
+        if not isinstance(code_contract, dict):
+            code_contract = {}
+        source = str(code_contract.get("source_code") or code_contract.get("code") or code_contract.get("custom_source") or "").strip()
+        if source:
+            source = source if source.endswith("\n") else source + "\n"
+            required_inputs = _as_list(payload.get("required_inputs"))
+            imports = _as_list(code_contract.get("imports") or code_contract.get("dependencies") or ["numpy", "pandas"])
+            source_derivation = code_contract.get("source_derivation")
+            if isinstance(source_derivation, dict) and source_derivation.get("not_fallback") is True:
+                source_derivation = {
+                    **source_derivation,
+                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+                    "provider_source_derivation": source_derivation.get("derivation"),
+                }
+            else:
+                source_derivation = {
+                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+                    "not_fallback": True,
+                    "provider": "humphrey_formal_llm_wrapper",
+                }
+            code_contract.update(
+                {
+                    "code_contract_version": code_contract.get("code_contract_version") or "factorforge_direct_code_contract_v1",
+                    "function_name": code_contract.get("function_name") or code_contract.get("entrypoint") or "compute_factor",
+                    "entrypoint": code_contract.get("entrypoint") or code_contract.get("function_name") or "compute_factor",
+                    "source_code": source,
+                    "code_hash": sha256_text(source),
+                    "imports": imports,
+                    "dependencies": _as_list(code_contract.get("dependencies") or imports),
+                    "input_schema": code_contract.get("input_schema") or {"daily_df": required_inputs},
+                    "output_schema": code_contract.get("output_schema") or {"columns": ["ts_code", "trade_date", "factor_value"]},
+                    "required_fields": _as_list(code_contract.get("required_fields") or required_inputs),
+                    "source_derivation": source_derivation,
+                }
+            )
+        contract["code_contract"] = code_contract
         payload["implementation_contract"] = contract
 
     return payload
+
+
+def _direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
+    if str(payload.get("implementation_mode") or "").strip() != "direct_code":
+        return None
+    contract = _direct_code_contract(payload)
+    source = str(contract.get("source_code") or "").strip()
+    if not source:
+        return "direct_code implementation_mode requires implementation_contract.code_contract.source_code"
+    normalized_source = source if source.endswith("\n") else source + "\n"
+    if contract.get("code_hash") != sha256_text(normalized_source):
+        return "direct_code code_contract.code_hash missing or mismatched"
+    if not contract.get("function_name") and not contract.get("entrypoint"):
+        return "direct_code code_contract.function_name/entrypoint missing"
+    if not _as_list(contract.get("required_fields")) and not _as_list(payload.get("required_inputs")):
+        return "direct_code code_contract.required_fields or required_inputs missing"
+    output_schema = contract.get("output_schema")
+    if not isinstance(output_schema, dict) or not _as_list(output_schema.get("columns")):
+        return "direct_code code_contract.output_schema.columns missing"
+    source_derivation = contract.get("source_derivation")
+    if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
+        return "direct_code code_contract.source_derivation.not_fallback=true missing"
+    return None
 
 
 def _complete_hybrid_contract(payload: dict[str, Any]) -> bool:
@@ -258,6 +340,13 @@ def _invalid_step2_hybrid(payload: dict[str, Any], request: dict[str, Any]) -> b
     return str(payload.get("implementation_mode") or "").strip() == "hybrid" and not _complete_hybrid_contract(payload)
 
 
+def _invalid_step2_direct_code(payload: dict[str, Any], request: dict[str, Any]) -> str | None:
+    role = str(request.get("role") or "")
+    if role not in {"primary", "challenger"}:
+        return None
+    return _direct_code_source_contract_failure(payload)
+
+
 def repair_step2_payload(
     *,
     provider: dict[str, Any],
@@ -273,6 +362,9 @@ def repair_step2_payload(
         "(hybrid_contract_version=factorforge_hybrid_implementation_contract_v1, operator_subgraph.formula_ir.parse_status='success', "
         "non-empty custom_blocks, formula_hash, custom_block_hash, hybrid_hash), choose implementation_mode='direct_code'. "
         "For the smart-money VWAP/minute sorting algorithm, direct_code is appropriate unless the full hybrid contract is truly complete. "
+        "If you choose direct_code, you must provide implementation_contract.code_contract.source_code with entrypoint/function_name, "
+        "imports/dependencies, required_fields, input_schema, output_schema, and source_derivation.not_fallback=true. "
+        "Do not use direct_code without source_code. "
         "Preserve report-specific formulas, required_inputs, ambiguities, and mechanism contracts. "
         "Do not use fixture or template content."
     )
@@ -300,6 +392,9 @@ def repair_step2_payload(
     repaired = normalize_step2_payload(extract_json_object(raw), request)
     if _invalid_step2_hybrid(repaired, request):
         raise RuntimeError("Step2 LLM returned incomplete hybrid_contract after repair")
+    direct_failure = _invalid_step2_direct_code(repaired, request)
+    if direct_failure:
+        raise RuntimeError(f"Step2 LLM returned incomplete direct_code contract after repair: {direct_failure}")
     repaired.setdefault("_llm_bridge_provider_repairs", []).append(
         {
             "repair": "invalid_hybrid_contract_reasked_llm",
@@ -367,7 +462,11 @@ def step2_messages(request: dict[str, Any]) -> tuple[list[dict[str, str]], int, 
             "Return the factor spec fields at the top level; do not wrap them inside factor_spec_raw. "
             "Use direct_code for natural-language/custom smart-money algorithms unless you can provide a complete hybrid_contract. "
             "Never default pdf_report to hybrid. Include required_inputs, operators, time_series_steps, cross_sectional_steps, "
-            "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported."
+            "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported. "
+            "If you choose direct_code, implementation_contract.code_contract is mandatory and must include source_code, "
+            "function_name/entrypoint, imports/dependencies, required_fields, input_schema, output_schema, source_derivation.not_fallback=true, "
+            "and report-derived implementation notes. For the Kaiyuan smart-money factor preserve the PDF mechanics "
+            "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract."
         )
     elif role == "auditor":
         role_extra = (
@@ -409,9 +508,12 @@ def main() -> int:
         payload = extract_json_object(raw)
         if version == "factorforge_step2_llm_bridge_v1":
             payload = normalize_step2_payload(payload, request)
-            if _invalid_step2_hybrid(payload, request):
+            if _invalid_step2_hybrid(payload, request) or _invalid_step2_direct_code(payload, request):
                 eprint("[factorforge-provider] invalid Step2 hybrid contract returned; asking model for corrected raw JSON")
                 payload = repair_step2_payload(provider=provider, model=model, request=request, payload=payload)
+            direct_failure = _invalid_step2_direct_code(payload, request)
+            if direct_failure:
+                raise RuntimeError(direct_failure)
         payload = enrich_provenance(payload, request, provider_name=provider_name, model=model)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0

@@ -20,6 +20,7 @@ BLOCK_PROVIDER = "BLOCK_STEP2_LLM_PROVIDER_UNAVAILABLE"
 BLOCK_PROVIDER_FAILED = "BLOCK_STEP2_LLM_PROVIDER_FAILED"
 VERSION = "factorforge_step2_llm_bridge_v1"
 BLOCK_STEP1_CONTEXT = "BLOCK_STEP2_STEP1_CONTEXT_REQUIRED"
+BLOCK_DIRECT_CODE_RAW = "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING"
 
 
 def now_utc() -> str:
@@ -49,6 +50,14 @@ def stable_hash(payload: Any) -> str:
     return sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def source_context(root: Path, report_id: str) -> dict[str, Any]:
     aim = read_json_if_exists(root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{report_id}.json")
     raw_step1 = root / "objects" / "raw_llm" / report_id / "step1"
@@ -67,6 +76,23 @@ def source_context(root: Path, report_id: str) -> dict[str, Any]:
 
 def fixture_primary(report_id: str, provenance: dict[str, Any]) -> dict[str, Any]:
     required_inputs = ["close", "volume", "amount", "total_mv", "ret20", "vol20", "turn20"]
+    source_code = """import numpy as np
+import pandas as pd
+
+
+def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    if daily_df is None or daily_df.empty:
+        raise ValueError("daily_df is required")
+    required = {"ts_code", "trade_date", "close"}
+    missing = sorted(required - set(daily_df.columns))
+    if missing:
+        raise ValueError(f"daily_df missing required columns: {missing}")
+    df = daily_df[["ts_code", "trade_date", "close"]].copy()
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df["factor_value"] = df.groupby("ts_code", sort=False)["close"].pct_change()
+    out = df[["ts_code", "trade_date", "factor_value"]].replace([np.inf, -np.inf], np.nan)
+    return out.dropna(subset=["factor_value"]).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+"""
     return {
         "report_id": report_id,
         "factor_id": "CPV",
@@ -79,6 +105,23 @@ def fixture_primary(report_id: str, provenance: dict[str, Any]) -> dict[str, Any
             "implementation_mode": "direct_code",
             "required_fields": required_inputs,
             "function_name": "compute_factor",
+            "code_contract": {
+                "code_contract_version": "factorforge_direct_code_contract_v1",
+                "function_name": "compute_factor",
+                "entrypoint": "compute_factor",
+                "source_code": source_code,
+                "code_hash": sha256_text(source_code),
+                "imports": ["numpy", "pandas"],
+                "dependencies": ["numpy", "pandas"],
+                "input_schema": {"daily_df": required_inputs},
+                "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
+                "required_fields": required_inputs,
+                "source_derivation": {
+                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+                    "not_fallback": True,
+                    "fixture_only": True,
+                },
+            },
             "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
         },
         "mechanism_math_contract": fixture_mechanism_math_contract(),
@@ -180,13 +223,120 @@ def fixture_auditor(report_id: str, provenance: dict[str, Any]) -> dict[str, Any
     }
 
 
-def validate_raw(path: Path, required: list[str]) -> dict[str, Any]:
+def _direct_code_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    contract = payload.get("implementation_contract")
+    if not isinstance(contract, dict):
+        return {}
+    code_contract = contract.get("code_contract")
+    if isinstance(code_contract, dict):
+        return code_contract
+    for key in ["code_contract", "direct_code_contract"]:
+        candidate = payload.get(key)
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def normalize_command_raw(payload: dict[str, Any], *, role: str, request: dict[str, Any]) -> dict[str, Any]:
+    if role not in {"primary", "challenger"}:
+        return payload
+    mode = str(payload.get("implementation_mode") or "").strip()
+    contract = payload.get("implementation_contract")
+    if not isinstance(contract, dict):
+        contract = {}
+    if mode == "direct_code":
+        contract.setdefault("implementation_mode", "direct_code")
+        contract.setdefault("mode", "direct_code")
+        code_contract = contract.get("code_contract")
+        if not isinstance(code_contract, dict):
+            code_contract = {}
+        source = str(code_contract.get("source_code") or code_contract.get("code") or code_contract.get("custom_source") or "").strip()
+        if source:
+            source = source if source.endswith("\n") else source + "\n"
+            required_inputs = _as_list(payload.get("required_inputs"))
+            imports = _as_list(code_contract.get("imports") or code_contract.get("dependencies") or ["numpy", "pandas"])
+            source_derivation = code_contract.get("source_derivation")
+            if isinstance(source_derivation, dict) and source_derivation.get("not_fallback") is True:
+                source_derivation = {
+                    **source_derivation,
+                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+                    "provider_source_derivation": source_derivation.get("derivation"),
+                }
+            else:
+                source_derivation = {
+                    "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
+                    "not_fallback": True,
+                    "provider": "command",
+                }
+            code_contract.update(
+                {
+                    "code_contract_version": code_contract.get("code_contract_version") or "factorforge_direct_code_contract_v1",
+                    "function_name": code_contract.get("function_name") or code_contract.get("entrypoint") or "compute_factor",
+                    "entrypoint": code_contract.get("entrypoint") or code_contract.get("function_name") or "compute_factor",
+                    "source_code": source,
+                    "code_hash": sha256_text(source),
+                    "imports": imports,
+                    "dependencies": _as_list(code_contract.get("dependencies") or imports),
+                    "input_schema": code_contract.get("input_schema") or {"daily_df": required_inputs},
+                    "output_schema": code_contract.get("output_schema") or {"columns": ["ts_code", "trade_date", "factor_value"]},
+                    "required_fields": _as_list(code_contract.get("required_fields") or required_inputs),
+                    "source_derivation": source_derivation,
+                }
+            )
+        contract["code_contract"] = code_contract
+        payload["implementation_contract"] = contract
+    provenance = payload.get("_llm_bridge_provenance")
+    if not isinstance(provenance, dict):
+        provenance = {}
+    provenance.update(
+        {
+            "provider": "command",
+            "model": os.getenv("FACTORFORGE_STEP2_LLM_MODEL", "external-command"),
+            "role": role,
+            "report_id": request.get("report_id"),
+            "prompt_name": request.get("prompt_name"),
+            "prompt_hash": request.get("prompt_hash"),
+            "formal_llm_extraction": True,
+            "fixture_only": False,
+            "request_version": request.get("version"),
+        }
+    )
+    payload["_llm_bridge_provenance"] = provenance
+    return payload
+
+
+def direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
+    if str(payload.get("implementation_mode") or "").strip() != "direct_code":
+        return None
+    contract = _direct_code_contract(payload)
+    source = str(contract.get("source_code") or "").strip()
+    if not source:
+        return f"{BLOCK_DIRECT_CODE_RAW}: implementation_mode=direct_code requires implementation_contract.code_contract.source_code"
+    if contract.get("code_hash") != sha256_text(source if source.endswith("\n") else source + "\n"):
+        return f"{BLOCK_DIRECT_CODE_RAW}: code_hash missing or does not match source_code"
+    if not contract.get("function_name") and not contract.get("entrypoint"):
+        return f"{BLOCK_DIRECT_CODE_RAW}: function_name/entrypoint missing"
+    if not _as_list(contract.get("required_fields")) and not _as_list(payload.get("required_inputs")):
+        return f"{BLOCK_DIRECT_CODE_RAW}: required_inputs/required_fields missing"
+    output_schema = contract.get("output_schema")
+    if not isinstance(output_schema, dict) or not _as_list(output_schema.get("columns")):
+        return f"{BLOCK_DIRECT_CODE_RAW}: output_schema.columns missing"
+    source_derivation = contract.get("source_derivation")
+    if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
+        return f"{BLOCK_DIRECT_CODE_RAW}: source_derivation.not_fallback=true required"
+    return None
+
+
+def validate_raw(path: Path, required: list[str], *, enforce_direct_code_contract: bool = False) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     parsed = False
     error = None
     try:
         payload = json.loads(text)
         parsed = all(payload.get(key) not in (None, "", []) for key in required)
+        if parsed and enforce_direct_code_contract:
+            error = direct_code_source_contract_failure(payload)
+            parsed = error is None
     except Exception as exc:  # noqa: BLE001 - record raw validation status for audit.
         error = f"{type(exc).__name__}: {exc}"
     return {
@@ -206,13 +356,16 @@ def role_prompt(role: str) -> str:
             "Select implementation_mode from the executable structure, not from source type. Choose hybrid only when "
             "you can provide a complete hybrid_contract with parseable operator_subgraph.formula_ir, nonempty custom_blocks, "
             "and formula/custom block identity. If the report describes a natural-language or custom smart-money calculation "
-            "that cannot be represented as legal hybrid, choose direct_code and provide a direct_code implementation contract."
+            "that cannot be represented as legal hybrid, choose direct_code and provide implementation_contract.code_contract "
+            "with source_code, function_name/entrypoint, dependencies/imports, required_fields, input_schema, output_schema, "
+            "code_hash if available, and source_derivation.not_fallback=true. Do not choose direct_code without source_code."
         )
     if role == "challenger":
         return (
             "You are the Step2 challenger spec extraction agent. Independently challenge the primary interpretation and "
             "output factor_spec_raw JSON with the same required fields, preserving disagreements and ambiguities. "
-            "Do not default pdf_report to hybrid; require executable hybrid structure or use direct_code."
+            "Do not default pdf_report to hybrid; require executable hybrid structure or use direct_code with "
+            "implementation_contract.code_contract.source_code and source_derivation.not_fallback=true."
         )
     return (
         "You are the Step2 consistency auditor. Compare alpha_idea_master, primary factor_spec_raw, and challenger "
@@ -254,7 +407,7 @@ def write_command_failure_report(
         else:
             required = ["report_id", "factor_id", "raw_formula_text", "operators", "required_inputs", "implementation_mode"]
         raw_outputs[role] = {
-            **validate_raw(path, required),
+            **validate_raw(path, required, enforce_direct_code_contract=role in {"primary", "challenger"}),
             "prompt_name": f"step2_{role}_formal_extraction",
             "prompt_hash": sha256_text(role_prompt(role)),
         }
@@ -315,7 +468,32 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(response_text + "\n", encoding="utf-8")
         try:
-            prior_outputs[role] = json.loads(response_text)
+            parsed = json.loads(response_text)
+            if not isinstance(parsed, dict):
+                raise ValueError("provider output JSON root must be object")
+            parsed = normalize_command_raw(parsed, role=role, request=request)
+            path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            validation = validate_raw(
+                path,
+                ["report_id", "factor_id", "raw_formula_text", "operators", "required_inputs", "implementation_mode"]
+                if role in {"primary", "challenger"}
+                else ["report_id", "factor_id", "consistency_score", "recommendation"],
+                enforce_direct_code_contract=role in {"primary", "challenger"},
+            )
+            if validation.get("parsed_json_valid") is not True:
+                error = validation.get("validation_error") or "raw validation failed"
+                write_command_failure_report(
+                    args,
+                    root,
+                    out_dir,
+                    created_at_utc=created,
+                    role_paths=role_paths,
+                    prompt_context_hash=prompt_context_hash,
+                    failed_role=role,
+                    error=str(error),
+                )
+                raise SystemExit(f"{BLOCK_PROVIDER_FAILED}: role={role} {error}")
+            prior_outputs[role] = parsed
         except json.JSONDecodeError as exc:
             write_command_failure_report(
                 args,
@@ -345,12 +523,12 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
         },
         "raw_outputs": {
             "primary": {
-                **validate_raw(role_paths["primary"], ["report_id", "factor_id", "raw_formula_text", "operators", "required_inputs", "implementation_mode"]),
+                **validate_raw(role_paths["primary"], ["report_id", "factor_id", "raw_formula_text", "operators", "required_inputs", "implementation_mode"], enforce_direct_code_contract=True),
                 "prompt_name": "step2_primary_formal_extraction",
                 "prompt_hash": sha256_text(role_prompt("primary")),
             },
             "challenger": {
-                **validate_raw(role_paths["challenger"], ["report_id", "factor_id", "raw_formula_text", "operators", "required_inputs", "implementation_mode"]),
+                **validate_raw(role_paths["challenger"], ["report_id", "factor_id", "raw_formula_text", "operators", "required_inputs", "implementation_mode"], enforce_direct_code_contract=True),
                 "prompt_name": "step2_challenger_formal_extraction",
                 "prompt_hash": sha256_text(role_prompt("challenger")),
             },

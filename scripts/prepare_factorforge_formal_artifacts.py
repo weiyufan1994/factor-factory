@@ -21,6 +21,8 @@ BLOCK_SCHEMA = 'BLOCK_FORMAL_ARTIFACT_SCHEMA_INVALID'
 BLOCK_STEP1_RAW = 'BLOCK_FORMAL_STEP1_LLM_OUTPUT_REQUIRED'
 BLOCK_STEP2_RAW = 'BLOCK_FORMAL_STEP2_LLM_OUTPUT_REQUIRED'
 BLOCK_REPORT_ID = 'BLOCK_NON_CANONICAL_REPORT_ID'
+BLOCK_BRIDGE = 'BLOCK_FORMAL_LLM_BRIDGE_FAILED'
+BLOCK_RAW_REPORT_ID = 'BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH'
 RUNTIME_CONTEXT_DIR = ('objects', 'runtime_context')
 
 from skills.factor_forge_step1.modules.report_ingestion.builders.report_map_builder import ReportMapBuilder
@@ -75,6 +77,45 @@ def path_arg(value: str | None) -> Path | None:
     if not path.is_absolute():
         path = (REPO_ROOT / path).resolve()
     return path
+
+
+def set_path_arg(args: argparse.Namespace, name: str, path: Path) -> None:
+    setattr(args, name, str(path.resolve()))
+
+
+def _walk_report_ids(payload: Any, prefix: str = '') -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            child = f'{prefix}.{key}' if prefix else str(key)
+            if key == 'report_id' and isinstance(value, str) and value.strip():
+                found.append((child, value.strip()))
+            elif isinstance(value, (dict, list)):
+                found.extend(_walk_report_ids(value, child))
+    elif isinstance(payload, list):
+        for idx, value in enumerate(payload):
+            if isinstance(value, (dict, list)):
+                found.extend(_walk_report_ids(value, f'{prefix}[{idx}]'))
+    return found
+
+
+def validate_raw_report_id(path: Path, expected_report_id: str, *, allow_missing: bool) -> None:
+    if not path.exists():
+        raise SystemExit(f'{BLOCK_RAW_REPORT_ID}: raw path missing: {path}')
+    payload = read_json(path)
+    ids = _walk_report_ids(payload)
+    mismatches = [(field, value) for field, value in ids if value != expected_report_id]
+    if mismatches:
+        details = ', '.join(f'{field}={value}' for field, value in mismatches[:5])
+        raise SystemExit(f'{BLOCK_RAW_REPORT_ID}: expected={expected_report_id} path={path} mismatches={details}')
+    if not ids and not allow_missing:
+        raise SystemExit(f'{BLOCK_RAW_REPORT_ID}: expected={expected_report_id} path={path} report_id missing')
+
+
+def validate_raw_report_ids(paths: list[Path | None], expected_report_id: str, *, allow_missing: bool) -> None:
+    for path in paths:
+        if path is not None:
+            validate_raw_report_id(path, expected_report_id, allow_missing=allow_missing)
 
 
 def canonical_report_id_valid(report_id: str) -> bool:
@@ -306,6 +347,111 @@ def run_subprocess(cmd: list[str], root: Path) -> dict[str, Any]:
     }
 
 
+def run_bridge_subprocess(cmd: list[str], root: Path) -> dict[str, Any]:
+    result = run_subprocess(cmd, root)
+    if result['rc'] != 0:
+        stderr = result.get('stderr_tail') or ''
+        stdout = result.get('stdout_tail') or ''
+        raise SystemExit(f'{BLOCK_BRIDGE}: rc={result["rc"]} stderr={stderr[-1000:]} stdout={stdout[-1000:]}')
+    return result
+
+
+def ensure_step1_bridge_raw(args: argparse.Namespace, root: Path, report_pdf: Path) -> dict[str, Any]:
+    primary = path_arg(args.step1_primary_raw)
+    challenger = path_arg(args.step1_challenger_raw)
+    chief = path_arg(args.step1_chief_raw)
+    if primary or challenger or chief:
+        return {'generated': False, 'reason': 'raw_paths_provided'}
+    if not args.run_formal_llm_bridges:
+        return {'generated': False, 'reason': 'bridge_not_requested'}
+    out_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step1'
+    result = run_bridge_subprocess(
+        [
+            sys.executable,
+            'scripts/run_factorforge_step1_llm_bridge.py',
+            '--report-id',
+            args.report_id,
+            '--report-pdf',
+            str(report_pdf),
+            '--out-dir',
+            str(out_dir),
+            '--provider',
+            args.formal_llm_provider,
+            '--write-report',
+        ],
+        root,
+    )
+    set_path_arg(args, 'step1_primary_raw', out_dir / 'step1_primary_raw.json')
+    set_path_arg(args, 'step1_challenger_raw', out_dir / 'step1_challenger_raw.json')
+    set_path_arg(args, 'step1_chief_raw', out_dir / 'step1_chief_raw.json')
+    return {
+        'generated': True,
+        'provider': args.formal_llm_provider,
+        'out_dir': str(out_dir),
+        'primary_raw_path': args.step1_primary_raw,
+        'challenger_raw_path': args.step1_challenger_raw,
+        'chief_raw_path': args.step1_chief_raw,
+        'subprocess': result,
+    }
+
+
+def ensure_step2_bridge_raw(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+    primary = path_arg(args.step2_primary_raw)
+    challenger = path_arg(args.step2_challenger_raw)
+    auditor = path_arg(args.step2_auditor_raw)
+    if primary or challenger or auditor:
+        return {'generated': False, 'reason': 'raw_paths_provided'}
+    if not args.run_formal_llm_bridges:
+        return {'generated': False, 'reason': 'bridge_not_requested'}
+    out_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step2'
+    result = run_bridge_subprocess(
+        [
+            sys.executable,
+            'scripts/run_factorforge_step2_llm_bridge.py',
+            '--report-id',
+            args.report_id,
+            '--factorforge-root',
+            str(root),
+            '--out-dir',
+            str(out_dir),
+            '--provider',
+            args.formal_llm_provider,
+            '--write-report',
+        ],
+        root,
+    )
+    set_path_arg(args, 'step2_primary_raw', out_dir / 'step2_primary_raw.json')
+    set_path_arg(args, 'step2_challenger_raw', out_dir / 'step2_challenger_raw.json')
+    set_path_arg(args, 'step2_auditor_raw', out_dir / 'step2_auditor_raw.json')
+    return {
+        'generated': True,
+        'provider': args.formal_llm_provider,
+        'out_dir': str(out_dir),
+        'primary_raw_path': args.step2_primary_raw,
+        'challenger_raw_path': args.step2_challenger_raw,
+        'auditor_raw_path': args.step2_auditor_raw,
+        'subprocess': result,
+    }
+
+
+def validate_step1_raw_paths(args: argparse.Namespace) -> None:
+    allow_missing = bool(args.allow_deterministic_debug and not args.run_formal_llm_bridges)
+    validate_raw_report_ids(
+        [path_arg(args.step1_primary_raw), path_arg(args.step1_challenger_raw), path_arg(args.step1_chief_raw)],
+        args.report_id,
+        allow_missing=allow_missing,
+    )
+
+
+def validate_step2_raw_paths(args: argparse.Namespace) -> None:
+    allow_missing = bool(args.allow_deterministic_debug and not args.run_formal_llm_bridges)
+    validate_raw_report_ids(
+        [path_arg(args.step2_primary_raw), path_arg(args.step2_challenger_raw), path_arg(args.step2_auditor_raw)],
+        args.report_id,
+        allow_missing=allow_missing,
+    )
+
+
 def load_step2_module(root: Path) -> Any:
     os.environ['FACTORFORGE_ROOT'] = str(root)
     path = REPO_ROOT / 'skills' / 'factor-forge-step2' / 'scripts' / 'run_step2.py'
@@ -504,6 +650,33 @@ def runtime_context_exists(root: Path, report_id: str) -> bool:
     return root.joinpath(*RUNTIME_CONTEXT_DIR, f'runtime_context__{report_id}.json').exists()
 
 
+def write_runtime_context_if_requested(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+    if not args.write_runtime_context:
+        return {'requested': False, 'written': runtime_context_exists(root, args.report_id)}
+    result = run_subprocess(
+        [
+            sys.executable,
+            'scripts/build_factorforge_runtime_context.py',
+            '--report-id',
+            args.report_id,
+            '--factorforge-root',
+            str(root),
+            '--write',
+        ],
+        root,
+    )
+    if result['rc'] != 0:
+        stderr = result.get('stderr_tail') or ''
+        stdout = result.get('stdout_tail') or ''
+        raise SystemExit(f'BLOCK_FORMAL_RUNTIME_CONTEXT_WRITE_FAILED: rc={result["rc"]} stderr={stderr[-1000:]} stdout={stdout[-1000:]}')
+    return {
+        'requested': True,
+        'written': runtime_context_exists(root, args.report_id),
+        'path': str(root.joinpath(*RUNTIME_CONTEXT_DIR, f'runtime_context__{args.report_id}.json')),
+        'subprocess': result,
+    }
+
+
 def write_report_if_requested(args: argparse.Namespace, root: Path, report: dict[str, Any]) -> None:
     if not args.write_report:
         return
@@ -553,6 +726,9 @@ def main() -> int:
     ap.add_argument('--step2-primary-raw')
     ap.add_argument('--step2-challenger-raw')
     ap.add_argument('--step2-auditor-raw')
+    ap.add_argument('--run-formal-llm-bridges', action='store_true', help='Generate missing Step1/Step2 raw artifacts through the formal LLM bridge before building masters.')
+    ap.add_argument('--formal-llm-provider', default='command', choices=['command', 'fixture'], help='Provider passed to the Step1/Step2 formal LLM bridge when --run-formal-llm-bridges is set.')
+    ap.add_argument('--write-runtime-context', action='store_true', help='After Step1/2/3A validation passes, write objects/runtime_context for the workflow layer without starting the worker.')
     ap.add_argument('--allow-deterministic-debug', action='store_true')
     ap.add_argument('--csv-output-policy', default='sample_csv', choices=['full_csv', 'sample_csv', 'no_csv'])
     args = ap.parse_args()
@@ -570,9 +746,13 @@ def main() -> int:
         extra: dict[str, Any] = {'report_pdf': str(report_pdf), 'report_pdf_sha256': sha256_file(report_pdf), 'report_pdf_metadata': pdf_meta}
         if not args.validate_existing_only:
             if args.end_step in {'1', '2', '3a'}:
+                extra.setdefault('formal_llm_bridges', {})['step1'] = ensure_step1_bridge_raw(args, root, report_pdf)
+                validate_step1_raw_paths(args)
                 step1_paths = run_step1(args, root, report_pdf, pdf_meta)
                 extra['step1_paths'] = step1_paths
             if args.end_step in {'2', '3a'}:
+                extra.setdefault('formal_llm_bridges', {})['step2'] = ensure_step2_bridge_raw(args, root)
+                validate_step2_raw_paths(args)
                 step2_paths, step2_meta = run_step2(args, root)
                 extra['step2_paths'] = step2_paths
                 extra['step2_meta'] = step2_meta
@@ -585,6 +765,8 @@ def main() -> int:
         identity_ok, identity_errors = canonical_identity_check(root, args.report_id, args.end_step)
         validator_ok = all(v.get('rc') == 0 for v in validators.values())
         verdict = 'ACCEPT' if validator_ok and identity_ok else 'BLOCK'
+        if verdict == 'ACCEPT':
+            extra['runtime_context_creation'] = write_runtime_context_if_requested(args, root)
         report = build_report(args, root, verdict, validators, extra)
         write_report_if_requested(args, root, report)
         if verdict != 'ACCEPT':

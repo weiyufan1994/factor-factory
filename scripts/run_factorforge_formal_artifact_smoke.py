@@ -38,6 +38,12 @@ def run_cmd(cmd: list[str], *, root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
 
 
+def run_cmd_without_factorforge_root(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop('FACTORFORGE_ROOT', None)
+    return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
+
+
 def stable_source_hash(source: str) -> str:
     import hashlib
 
@@ -286,6 +292,32 @@ def run_no_raw_blocks_case(root: Path) -> dict:
     }
 
 
+def run_repo_root_formal_write_blocks_case() -> dict:
+    report_id = 'FORMAL_REPO_ROOT_WRITE'
+    proc = run_cmd_without_factorforge_root([
+        sys.executable,
+        'scripts/prepare_factorforge_formal_artifacts.py',
+        '--report-id',
+        report_id,
+        '--report-pdf',
+        'fixtures/step2/sample_report_stub.pdf',
+        '--end-step',
+        '3a',
+        '--write-report',
+    ])
+    token_present = 'BLOCK_FORMAL_ROOT_UNSPECIFIED' in proc.stdout + proc.stderr
+    runtime_context = ROOT / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'
+    return {
+        'case': 'repo_root_formal_write_blocks',
+        'rc': proc.returncode,
+        'token_present': token_present,
+        'runtime_context_exists': runtime_context.exists(),
+        'stdout_tail': proc.stdout[-2000:],
+        'stderr_tail': proc.stderr[-2000:],
+        'ok': bool(proc.returncode != 0 and token_present and not runtime_context.exists()),
+    }
+
+
 def run_bad_artifact_schema_blocks_case(root: Path) -> dict:
     report_id = 'FORMAL_BAD_ARTIFACT'
     write_bad_existing_artifacts(root, report_id)
@@ -317,6 +349,7 @@ def run_bad_artifact_schema_blocks_case(root: Path) -> dict:
 def main() -> int:
     root = build_root(Path('/tmp/factorforge_formal_artifact_smoke'))
     cases = [
+        run_repo_root_formal_write_blocks_case(),
         run_no_raw_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_no_raw_smoke'))),
         run_prepare_formal_debug_chain_case(root),
         run_direct_code_missing_source_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_direct_code_source_smoke'))),

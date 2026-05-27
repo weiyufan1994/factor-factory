@@ -1188,6 +1188,7 @@ def _run_humphrey_provider_case(
     request_override: dict[str, Any] | None = None,
     env_model: str = "mock-model",
     expected_model: str = "mock-model",
+    inject_provider_contract: bool = True,
 ) -> dict[str, Any]:
     case_root = root / case_name
     case_root.mkdir(parents=True, exist_ok=True)
@@ -1205,10 +1206,19 @@ def _run_humphrey_provider_case(
     try:
         config = case_root / "openclaw.json"
         _write_openclaw_config(config, provider_name=provider_name, api=provider_api, base_url=f"http://127.0.0.1:{port}")
+        request = json.loads(json.dumps(request_override or _humphrey_provider_request(), ensure_ascii=False))
+        if inject_provider_contract and "formal_llm_provider_request" not in request:
+            request["formal_llm_provider_request"] = {
+                "contract_version": "factorforge_formal_llm_provider_request_v1",
+                "provider": provider_name,
+                "model": expected_model,
+                "provider_source": "smoke_contract",
+                "model_source": "smoke_contract",
+            }
         proc = subprocess.run(
             [sys.executable, "scripts/run_factorforge_humphrey_llm_provider.py"],
             cwd=ROOT,
-            input=json.dumps(request_override or _humphrey_provider_request(), ensure_ascii=False),
+            input=json.dumps(request, ensure_ascii=False),
             text=True,
             capture_output=True,
             env={
@@ -1310,6 +1320,17 @@ def case_humphrey_provider_request_contract_overrides_env_model(root: Path) -> d
         request_override=request,
         env_model="wrong-env-model",
         expected_model="contract-model",
+    )
+
+
+def case_humphrey_provider_request_contract_required_blocks(root: Path) -> dict[str, Any]:
+    return _run_humphrey_provider_case(
+        root,
+        case_name="humphrey_provider_request_contract_required_blocks",
+        provider_api="openai-completions",
+        expect_rc=1,
+        expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_REQUEST_CONTRACT_INVALID",
+        inject_provider_contract=False,
     )
 
 
@@ -1953,6 +1974,7 @@ def main() -> int:
         case_humphrey_provider_openai_completions_mock(root),
         case_humphrey_provider_anthropic_messages_mock(root),
         case_humphrey_provider_request_contract_overrides_env_model(root),
+        case_humphrey_provider_request_contract_required_blocks(root),
         case_humphrey_provider_unsupported_api_blocks(root),
         case_humphrey_provider_malformed_response_blocks(root),
         case_rta26_repair_direct_code_output_schema_columns_filled(root),

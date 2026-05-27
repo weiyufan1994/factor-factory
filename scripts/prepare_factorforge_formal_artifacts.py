@@ -23,6 +23,7 @@ BLOCK_STEP2_RAW = 'BLOCK_FORMAL_STEP2_LLM_OUTPUT_REQUIRED'
 BLOCK_REPORT_ID = 'BLOCK_NON_CANONICAL_REPORT_ID'
 BLOCK_BRIDGE = 'BLOCK_FORMAL_LLM_BRIDGE_FAILED'
 BLOCK_RAW_REPORT_ID = 'BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH'
+BLOCK_ROOT = 'BLOCK_FORMAL_ROOT_UNSPECIFIED'
 RUNTIME_CONTEXT_DIR = ('objects', 'runtime_context')
 
 from skills.factor_forge_step1.modules.report_ingestion.builders.report_map_builder import ReportMapBuilder
@@ -126,6 +127,12 @@ def resolve_factorforge_root(raw: str | None) -> Path:
     if raw:
         return Path(raw).expanduser().resolve()
     return Path(os.getenv('FACTORFORGE_ROOT') or REPO_ROOT).expanduser().resolve()
+
+
+def formal_write_would_touch_repo_root(args: argparse.Namespace, root: Path) -> bool:
+    if root != REPO_ROOT:
+        return False
+    return bool(args.write_report or args.write_runtime_context or not args.validate_existing_only)
 
 
 def resolve_report_pdf(raw: str, root: Path) -> tuple[Path, dict[str, Any]]:
@@ -734,6 +741,12 @@ def main() -> int:
     args = ap.parse_args()
 
     root = resolve_factorforge_root(args.factorforge_root)
+    if formal_write_would_touch_repo_root(args, root):
+        print(
+            f'{BLOCK_ROOT}: explicit --factorforge-root outside the repo worktree is required for formal writes',
+            file=sys.stderr,
+        )
+        return 1
     root.mkdir(parents=True, exist_ok=True)
     os.environ['FACTORFORGE_ROOT'] = str(root)
 

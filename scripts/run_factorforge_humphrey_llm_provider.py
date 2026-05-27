@@ -14,11 +14,9 @@ import requests
 
 
 BLOCK_PROVIDER_FAILED = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED"
+BLOCK_PROVIDER_REQUEST_CONTRACT = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_REQUEST_CONTRACT_INVALID"
 BLOCK_UNSUPPORTED_API = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_UNSUPPORTED_API"
 DEFAULT_CONFIG = Path("/home/ubuntu/.openclaw/openclaw.json")
-DEFAULT_PROVIDER = "modelstudio"
-DEFAULT_STEP1_MODEL = "qwen3.5-plus"
-DEFAULT_STEP2_MODEL = "qwen3.5-plus"
 SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
 STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
@@ -53,22 +51,28 @@ def stable_hash(payload: Any) -> str:
 
 def resolve_provider_request(request: dict[str, Any], *, version: str) -> dict[str, Any]:
     raw = request.get("formal_llm_provider_request")
-    contract = raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"{BLOCK_PROVIDER_REQUEST_CONTRACT}: formal_llm_provider_request object is required")
+    contract = raw
     step = "step1" if version == "factorforge_step1_llm_bridge_v1" else "step2"
-    model_env = "FACTORFORGE_STEP1_LLM_MODEL" if step == "step1" else "FACTORFORGE_STEP2_LLM_MODEL"
-    default_model = DEFAULT_STEP1_MODEL if step == "step1" else DEFAULT_STEP2_MODEL
-    provider_name = str(contract.get("provider") or os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER", DEFAULT_PROVIDER)).strip()
-    model = str(contract.get("model") or os.getenv(model_env, default_model)).strip()
+    contract_version = str(contract.get("contract_version") or "").strip()
+    if contract_version != PROVIDER_REQUEST_CONTRACT_VERSION:
+        raise RuntimeError(
+            f"{BLOCK_PROVIDER_REQUEST_CONTRACT}: unsupported contract_version={contract_version!r}"
+        )
+    provider_name = str(contract.get("provider") or "").strip()
+    model = str(contract.get("model") or "").strip()
     if not provider_name:
-        raise RuntimeError("formal LLM provider name is empty")
+        raise RuntimeError(f"{BLOCK_PROVIDER_REQUEST_CONTRACT}: provider is required")
     if not model:
-        raise RuntimeError("formal LLM model is empty")
+        raise RuntimeError(f"{BLOCK_PROVIDER_REQUEST_CONTRACT}: model is required")
     resolved = {
-        "contract_version": str(contract.get("contract_version") or PROVIDER_REQUEST_CONTRACT_VERSION),
+        "contract_version": contract_version,
+        "step": str(contract.get("step") or step),
         "provider": provider_name,
         "model": model,
-        "provider_source": str(contract.get("provider_source") or ("request" if contract.get("provider") else "FACTORFORGE_FORMAL_LLM_PROVIDER/default")),
-        "model_source": str(contract.get("model_source") or ("request" if contract.get("model") else f"{model_env}/default")),
+        "provider_source": str(contract.get("provider_source") or "bridge_request"),
+        "model_source": str(contract.get("model_source") or "bridge_request"),
     }
     if contract.get("temperature") is not None:
         resolved["temperature"] = contract.get("temperature")

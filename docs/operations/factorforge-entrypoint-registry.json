@@ -1,0 +1,97 @@
+{
+  "version": "factorforge_entrypoint_registry_v1",
+  "purpose": "Classify every top-level scripts/ file so Factor Forge production entrypoints do not get mixed with smoke, data ops, deprecated one-off runs, or adjacent projects.",
+  "production_main": [
+    "scripts/prepare_factorforge_formal_artifacts.py",
+    "scripts/build_factorforge_runtime_context.py",
+    "scripts/run_factorforge_ultimate.py",
+    "scripts/run_factorforge_ultimate_loop.py"
+  ],
+  "formal_llm_boundary": [
+    "scripts/run_factorforge_step1_llm_bridge.py",
+    "scripts/run_factorforge_step2_llm_bridge.py",
+    "scripts/run_factorforge_humphrey_llm_provider.py"
+  ],
+  "step4_backend_helpers": [
+    "scripts/build_report_qlib_provider.py",
+    "scripts/run_qlib_backtest_wrapper.py",
+    "scripts/run_qlib_native_report.py",
+    "scripts/step4_custom_backend_template.py"
+  ],
+  "alternative_intake_or_research_scaffold": [
+    "scripts/run_step12_from_canonical_formula.py",
+    "scripts/run_step12_from_hypothesis.py",
+    "scripts/run_step12_from_intake.py",
+    "scripts/run_step12_from_report.py",
+    "scripts/step12_intake_common.py"
+  ],
+  "smoke_and_acceptance": [
+    "scripts/check_step34_comment_policy.py",
+    "scripts/run_agentic_council_contract_smoke.py",
+    "scripts/run_agentic_council_dispatch_smoke.py",
+    "scripts/run_agentic_council_manual_dispatch_smoke.py",
+    "scripts/run_agentic_council_operating_protocol_smoke.py",
+    "scripts/run_factorforge_acceptance_smoke.py",
+    "scripts/run_factorforge_entrypoint_hygiene_smoke.py",
+    "scripts/run_factorforge_formal_artifact_smoke.py",
+    "scripts/run_factorforge_formal_llm_bridge_smoke.py",
+    "scripts/run_factorforge_knowledge_sync_smoke.py",
+    "scripts/run_factorforge_mechanism_math_v2_smoke.py",
+    "scripts/run_factorforge_multibranch_comparison_smoke.py",
+    "scripts/run_factorforge_multibranch_materialization_smoke.py",
+    "scripts/run_factorforge_multibranch_synthesis_smoke.py",
+    "scripts/run_factorforge_ultimate_loop_smoke.py",
+    "scripts/run_main_agent_mechanism_memo_smoke.py",
+    "scripts/run_mechanism_math_contract_smoke.py",
+    "scripts/run_revision_council_smoke.py",
+    "scripts/run_step12_hypothesis_contract_smoke.py",
+    "scripts/run_step6_council_primary_smoke.py",
+    "scripts/run_step6_intelligence_acceptance.py",
+    "scripts/run_step6_intelligence_smoke.py"
+  ],
+  "performance_experiments": [
+    "scripts/run_factorforge_formula_kernel_benchmark.py",
+    "scripts/run_factorforge_operator_candidate_benchmark.py",
+    "scripts/run_factorforge_operator_kernel_inventory.py",
+    "scripts/run_factorforge_performance_profile.py",
+    "scripts/run_factorforge_performance_smoke.py",
+    "scripts/run_factorforge_polars_adaptive_replay.py",
+    "scripts/run_factorforge_polars_parity_forensics.py",
+    "scripts/run_factorforge_throughput_profile.py",
+    "scripts/run_ts_rank_candidate_benchmark.py"
+  ],
+  "knowledge_and_retrieval_ops": [
+    "scripts/build_factorforge_embedding_index.py",
+    "scripts/build_factorforge_retrieval_index.py",
+    "scripts/export_factorforge_obsidian.py",
+    "scripts/query_factorforge_retrieval_index.py",
+    "scripts/sync_factorforge_knowledge_bundle.py"
+  ],
+  "data_ops": [
+    "scripts/append_clean_daily_layer.py",
+    "scripts/build_clean_daily_layer.py",
+    "scripts/build_daily_clean_enhanced.py",
+    "scripts/merge_daily_incremental_into_daily.py",
+    "scripts/preprocess_daily_data.py",
+    "scripts/refresh_clean_daily_after_tushare_update.py",
+    "scripts/run_tushare_daily_update_via_ssm.py",
+    "scripts/run_tushare_nonminute_download_via_ssm.py",
+    "scripts/run_tushare_report_rc_daily_update_via_ssm.py",
+    "scripts/sync_tushare_raw_from_s3.py",
+    "scripts/tushare_ec2.crontab",
+    "scripts/tushare_ec2_cron_entrypoint.sh",
+    "scripts/tushare_ec2_daily_self_update.py",
+    "scripts/tushare_ec2_missing_nonminute_backfill.sh",
+    "scripts/tushare_nonminute_to_s3.py",
+    "scripts/update_clean_daily_bar_after_daily_update.py"
+  ],
+  "maintenance_and_migrations": [
+    "scripts/backfill_mechanism_math_contract.py",
+    "scripts/factorforge_task_ledger.py"
+  ],
+  "deprecated_or_historical": [
+    "scripts/deprecated/run_alpha014_step3b.py",
+    "scripts/deprecated/run_step1_sample.py",
+    "scripts/deprecated/run_step1_sample.sh"
+  ]
+}

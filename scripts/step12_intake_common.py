@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from factor_factory.runtime_context import resolve_factorforge_context
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_headline,
     build_formula_understanding,
@@ -15,18 +16,23 @@ from factor_factory.mechanism_math.formula_specific import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
-FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
+FACTORFORGE = resolve_factorforge_context(os.getenv('FACTORFORGE_ROOT')).factorforge_root
 OBJECTS = FACTORFORGE / 'objects'
 VALIDATION = OBJECTS / 'validation'
 REPORT_MAPS = OBJECTS / 'report_maps'
 ALPHA_IDEA_MASTER = OBJECTS / 'alpha_idea_master'
+BLOCK_ROOT = 'BLOCK_STEP12_ROOT_UNSPECIFIED'
 
 
 def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'[WRITE] {path}')
+
+
+def ensure_non_repo_factorforge_root() -> None:
+    if FACTORFORGE.resolve() == REPO_ROOT.resolve():
+        raise SystemExit(f'{BLOCK_ROOT}: set FACTORFORGE_ROOT outside the repo worktree before writing Step12 intake artifacts')
 
 
 def dedupe(items: List[Any]) -> List[Any]:
@@ -317,6 +323,7 @@ def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: Lis
 
 
 def write_step1_artifacts(report_id: str, aim: Dict[str, Any], primary: Dict[str, Any], challenger: Dict[str, Any], report_map: Dict[str, Any]) -> None:
+    ensure_non_repo_factorforge_root()
     write_json(ALPHA_IDEA_MASTER / f'alpha_idea_master__{report_id}.json', aim)
     write_json(VALIDATION / f'report_map_validation__{report_id}__alpha_thesis.json', primary)
     write_json(VALIDATION / f'report_map_validation__{report_id}__challenger_alpha_thesis.json', challenger)

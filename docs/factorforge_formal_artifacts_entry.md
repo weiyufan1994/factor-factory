@@ -15,11 +15,13 @@ python3 scripts/prepare_factorforge_formal_artifacts.py \
 ```
 
 This command is the only approved host-side boundary for producing Step1,
-Step2, and Step3A formal artifacts before Step3B or worker dispatch.
+Step2, and Step3A formal artifacts before Step3B or worker dispatch. Formal
+writes must use an explicit `--factorforge-root` or `FACTORFORGE_ROOT` outside
+the repo worktree; the repository root is source code only.
 
-The command never creates `runtime_context` and never dispatches a worker. It
-only allows downstream execution when all requested step validators pass and the
-canonical artifact identity chain is intact.
+The command never dispatches a worker. It may create `runtime_context` only when
+`--write-runtime-context` is explicitly set and all requested validators pass.
+The runtime context is a handoff artifact, not a worker start signal.
 
 ## Step Boundaries
 
@@ -98,3 +100,9 @@ BLOCK_FORMAL_ARTIFACT_SCHEMA_INVALID
 
 When this token is returned, the host must not create runtime context, sync
 worker artifacts, or start Step3B/Step4.
+
+If a formal write would target the repository root, the command must return:
+
+```text
+BLOCK_FORMAL_ROOT_UNSPECIFIED
+```

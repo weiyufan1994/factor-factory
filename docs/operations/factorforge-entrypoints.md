@@ -5,6 +5,16 @@ and deprecated developer entrypoints. Agents should prefer the production
 entrypoints below unless the user explicitly asks for a smoke or historical
 reproducibility check.
 
+Every file under `scripts/` must be classified in
+`docs/operations/factorforge-entrypoint-registry.json`. Run
+`scripts/run_factorforge_entrypoint_hygiene_smoke.py` after adding, moving, or
+renaming an entrypoint.
+
+Adjacent topic-monitoring, AI-interest, and intraday source-layer utilities do
+not belong in this repository. They live in separate workspaces under
+`/Users/humphrey/projects/topic-liquidity`, `/Users/humphrey/projects/ai-interests`,
+and `/Users/humphrey/projects/data-yichu`.
+
 ## Production Entrypoints
 
 - `scripts/prepare_factorforge_formal_artifacts.py`
@@ -41,8 +51,16 @@ reproducibility check.
   - Humphrey/OpenClaw provider adapter used by the formal bridges.
   - It is an IO adapter, not a research entrypoint.
 
+Alternative Step12 intake helpers are classified as research scaffolds, not the
+PDF formal path. They must write through explicit `FACTORFORGE_ROOT` outside the
+repo worktree and may not create repo-root `objects/`.
+
 Provider/model selection must be explicit and auditable. OpenClaw display names
-are not formal API model names unless a contract maps them explicitly.
+are not formal API model names unless a contract maps them explicitly. In formal
+mode the Humphrey provider adapter must receive
+`formal_llm_provider_request.contract_version`, `provider`, and `model` from the
+Step1/Step2 bridge request; wrapper defaults and environment fallback are not a
+valid production provider contract.
 
 ## Smoke And Developer Entrypoints
 
@@ -52,10 +70,13 @@ not be cited as fresh factor-research proof.
 
 The deprecated Step1 sample entrypoints live under:
 
+- `scripts/deprecated/run_alpha014_step3b.py`
 - `scripts/deprecated/run_step1_sample.py`
 - `scripts/deprecated/run_step1_sample.sh`
 
-They are retained for historical fixture reproducibility only.
+They are retained for historical fixture reproducibility only. Deprecated files
+must stay under `scripts/deprecated/` and must not be used as formal research
+entrypoints.
 
 ## Workspace Hygiene
 
@@ -74,3 +95,7 @@ root:
 
 For local smoke tests, prefer `/tmp/factorforge_*` roots. For production, use the
 environment-specific `FACTORFORGE_ROOT`.
+
+`scripts/prepare_factorforge_formal_artifacts.py` blocks formal writes to the
+repository root with `BLOCK_FORMAL_ROOT_UNSPECIFIED`; pass an explicit temporary
+or production root instead.

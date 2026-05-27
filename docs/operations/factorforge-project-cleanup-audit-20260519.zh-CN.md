@@ -101,9 +101,9 @@ python3 -m py_compile factor_factory/data_access/*.py scripts/run_factorforge_pe
 python3 scripts/run_factorforge_performance_smoke.py --fresh --root /tmp/factorforge_performance_release_check
 ```
 
-### D. Factor family / topic-liquidity experimental work
+### D. Factor family experimental work
 
-建议作为第四个独立提交/PR，或暂时搁置。原因：它包含 family plugin 重构、`cpv.py` 删除、topic liquidity 报告脚本大改，风险和 Step1-6 主合同不同。
+建议作为第四个独立提交/PR，或暂时搁置。原因：它包含 family plugin 重构、`cpv.py` 删除，风险和 Step1-6 主合同不同。
 
 文件：
 
@@ -112,13 +112,14 @@ python3 scripts/run_factorforge_performance_smoke.py --fresh --root /tmp/factorf
 - `factor_factory/factor_families/price_volume.py`
 - `factor_factory/factor_families/registry.py`
 - `factor_factory/factor_families/shadow_candlestick.py`
-- `scripts/report_topic_liquidity_dragon_candidates.py`
-- `scripts/topic_liquidity_hhi.py`
+- Topic-liquidity operational scripts have been migrated out of this repository
+  into `/Users/humphrey/projects/topic-liquidity`; they are no longer part of
+  Factor Forge commit grouping.
 
 Required verification before commit:
 
 ```bash
-python3 -m py_compile factor_factory/factor_families/*.py scripts/report_topic_liquidity_dragon_candidates.py scripts/topic_liquidity_hhi.py
+python3 -m py_compile factor_factory/factor_families/*.py
 rg -n "cpv|price_volume|shadow_candlestick" factor_factory scripts skills tests
 ```
 
@@ -126,14 +127,14 @@ rg -n "cpv|price_volume|shadow_candlestick" factor_factory scripts skills tests
 
 - 不建议把所有 dirty files 做成一个提交。审查面过大，任何一个回归都会阻塞全部工作。
 - 不建议直接删除 runtime canonical artifacts；`objects/`, `runs/`, `evaluations/`, `generated_code/`, `data/clean/` 已由 `.gitignore` 管理，清理应通过专门 archive/retention 策略，不应在本轮混入代码提交。
-- 不建议回滚 `cpv.py` 删除或 topic-liquidity 改动，除非先确认这组实验是否继续保留。
+- 不建议回滚 `cpv.py` 删除，除非先确认这组实验是否继续保留。
 
 ## 推荐版本控制路径
 
 1. 保持当前分支 `codex/factorresearcher` 作为集成工作分支。
 2. 从当前脏工作树按 pathspec 分批 staging。
 3. 先提交 A，再提交 B，再提交 C。
-4. D 单独判断：如果 topic-liquidity/factor-family 是正式方向，则单独提交；否则另开分支保留或暂不提交。
+4. D 单独判断：如果 factor-family 是正式方向，则单独提交；否则另开分支保留或暂不提交。
 5. 每个提交都要带对应 smoke summary 路径和命令，不用聊天记录作为证明。
 
 ## 当前最高优先级

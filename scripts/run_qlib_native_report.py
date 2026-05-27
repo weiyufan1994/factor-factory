@@ -15,8 +15,6 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = REPO_ROOT.parent
-RUNS = REPO_ROOT / "runs"
-EVALS = REPO_ROOT / "evaluations"
 QLIB_REPO = WORKSPACE / "qlib_repo"
 
 if str(REPO_ROOT) not in sys.path:
@@ -33,6 +31,11 @@ from qlib.backtest.executor import SimulatorExecutor  # noqa: E402
 from qlib.contrib.strategy import TopkDropoutStrategy  # noqa: E402
 
 from factor_factory.data_access import load_factor_values_with_signal, to_qlib_signal_frame  # noqa: E402
+from factor_factory.runtime_context import resolve_factorforge_context  # noqa: E402
+
+CTX = resolve_factorforge_context()
+RUNS = CTX.runs_root
+EVALS = CTX.evaluations_root
 
 
 def write_line_plot(df: pd.DataFrame, columns: list[str], path: Path, title: str) -> None:

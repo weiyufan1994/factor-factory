@@ -60,7 +60,17 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
     'return',
 ]
 HIGH_SPEED_PREFERRED_BACKENDS = ['numpy', 'polars']
-HIGH_SPEED_AVOID_BY_DEFAULT = ['python_row_loops', 'pandas_groupby_apply', 'pandas_row_apply']
+HIGH_SPEED_AVOID_BY_DEFAULT = [
+    'python_row_loops',
+    'pandas_groupby_iteration',
+    'pandas_groupby_apply',
+    'pandas_row_apply',
+    'nested_python_for_loop',
+    'sort_values_inside_loop',
+    'list_append_inside_loop',
+]
+LARGE_STEP3B_FIRST_RUN_ROWS = 50_000
+MIN_LARGE_STEP3B_COMPUTE_ROWS_PER_SECOND = 5_000.0
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -537,12 +547,46 @@ def _call_uses_name(node: ast.Call, names: set[str]) -> bool:
     return bool(chain and chain[0] in names)
 
 
+def _is_groupby_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'groupby'
+    )
+
+
+def _for_iter_uses_groupby(node: ast.For, groupby_iterable_names: set[str]) -> bool:
+    iter_node = node.iter
+    if isinstance(iter_node, ast.Name) and iter_node.id in groupby_iterable_names:
+        return True
+    if _is_groupby_call(iter_node):
+        return True
+    if isinstance(iter_node, ast.Call) and isinstance(iter_node.func, ast.Name) and iter_node.func.id in {'iter', 'enumerate'}:
+        return bool(iter_node.args and _for_iter_uses_groupby(ast.For(target=node.target, iter=iter_node.args[0], body=[], orelse=[]), groupby_iterable_names))
+    return False
+
+
+def _contains_call_attr(node: ast.AST, attrs: set[str]) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and child.func.attr in attrs:
+            return True
+    return False
+
+
+def _contains_list_append(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and child.func.attr == 'append':
+            return True
+    return False
+
+
 def build_high_speed_code_profile(text: str) -> dict:
     tree = ast.parse(text)
     import_aliases: dict[str, str] = {}
     slow_patterns: list[dict] = []
     vectorized_markers: list[dict] = []
     uses_pandas_vectorized = False
+    groupby_iterable_names: set[str] = set()
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -553,6 +597,11 @@ def build_high_speed_code_profile(text: str) -> dict:
             module_root = (node.module or '').split('.')[0]
             for alias in node.names:
                 import_aliases[alias.asname or alias.name] = module_root
+        elif isinstance(node, ast.Assign):
+            if _is_groupby_call(node.value):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        groupby_iterable_names.add(target.id)
 
     numpy_names = {name for name, root in import_aliases.items() if root == 'numpy'}
     polars_names = {name for name, root in import_aliases.items() if root == 'polars'}
@@ -581,6 +630,23 @@ def build_high_speed_code_profile(text: str) -> dict:
                 first = node.args[0]
                 if isinstance(first, ast.Call) and isinstance(first.func, ast.Name) and first.func.id == 'len':
                     slow_patterns.append({'code': 'range_len_loop', 'line': getattr(node, 'lineno', None)})
+        elif isinstance(node, ast.For):
+            nested_for = any(isinstance(child, ast.For) for stmt in node.body for child in ast.walk(stmt))
+            if _for_iter_uses_groupby(node, groupby_iterable_names):
+                slow_patterns.append({'code': 'pandas_groupby_iteration', 'line': getattr(node, 'lineno', None)})
+            if nested_for:
+                slow_patterns.append({'code': 'nested_python_for_loop', 'line': getattr(node, 'lineno', None)})
+            if _contains_call_attr(node, {'sort_values'}):
+                slow_patterns.append({'code': 'sort_values_inside_loop', 'line': getattr(node, 'lineno', None)})
+            if _contains_list_append(node):
+                slow_patterns.append({'code': 'list_append_inside_loop', 'line': getattr(node, 'lineno', None)})
+    deduped_slow_patterns: list[dict] = []
+    seen_slow: set[tuple[str, int | None]] = set()
+    for item in slow_patterns:
+        key = (str(item.get('code')), item.get('line'))
+        if key not in seen_slow:
+            seen_slow.add(key)
+            deduped_slow_patterns.append(item)
 
     uses_numpy = bool(numpy_names)
     uses_polars = bool(polars_names)
@@ -596,8 +662,8 @@ def build_high_speed_code_profile(text: str) -> dict:
         'uses_pandas_vectorized': bool(uses_pandas_vectorized),
         'vectorized_backend_present': vectorized_backend_present,
         'vectorized_markers': vectorized_markers[:20],
-        'slow_patterns': slow_patterns,
-        'requires_justification': bool(slow_patterns),
+        'slow_patterns': deduped_slow_patterns,
+        'requires_justification': bool(deduped_slow_patterns),
     }
 
 
@@ -615,6 +681,44 @@ def assert_high_speed_code_policy(text: str, contract: dict | None = None) -> di
     if profile.get('requires_justification') and not (allow_slow and str(justification or '').strip()):
         raise AssertionError(f'BLOCK_DIRECT_CODE_PERFORMANCE_RISK: {profile}')
     return profile
+
+
+def assert_step3b_runtime_performance_policy(run_metadata: dict) -> dict:
+    profile = run_metadata.get('performance_profile') if isinstance(run_metadata.get('performance_profile'), dict) else {}
+    row_count = int(profile.get('row_count') or run_metadata.get('row_count') or 0)
+    phase_seconds = profile.get('phase_seconds') if isinstance(profile.get('phase_seconds'), dict) else {}
+    compute_seconds = phase_seconds.get('compute_factor')
+    rows_per_second = profile.get('rows_per_second_compute')
+    policy = profile.get('runtime_performance_policy') if isinstance(profile.get('runtime_performance_policy'), dict) else {}
+    allow_slow = bool(profile.get('allow_slow_runtime') is True or policy.get('allow_slow_runtime') is True)
+    justification = (
+        profile.get('performance_justification')
+        or profile.get('slow_runtime_justification')
+        or policy.get('performance_justification')
+        or policy.get('slow_runtime_justification')
+    )
+    result = {
+        'version': 'factorforge_step3b_runtime_performance_policy_v1',
+        'large_row_threshold': LARGE_STEP3B_FIRST_RUN_ROWS,
+        'min_large_compute_rows_per_second': MIN_LARGE_STEP3B_COMPUTE_ROWS_PER_SECOND,
+        'row_count': row_count,
+        'compute_factor_seconds': compute_seconds,
+        'rows_per_second_compute': rows_per_second,
+        'large_first_run': row_count >= LARGE_STEP3B_FIRST_RUN_ROWS,
+        'allow_slow_runtime': allow_slow,
+        'has_justification': bool(str(justification or '').strip()),
+    }
+    if row_count >= LARGE_STEP3B_FIRST_RUN_ROWS:
+        if rows_per_second is None:
+            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: missing rows_per_second_compute: {result}')
+        try:
+            rps = float(rows_per_second)
+        except (TypeError, ValueError) as exc:
+            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: invalid rows_per_second_compute: {result}') from exc
+        result['rows_per_second_compute'] = rps
+        if rps < MIN_LARGE_STEP3B_COMPUTE_ROWS_PER_SECOND and not (allow_slow and str(justification or '').strip()):
+            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: {result}')
+    return result
 
 
 def import_module_from_path(path: Path):
@@ -1196,6 +1300,7 @@ if __name__ == '__main__':
         assert factor_parquet.exists() or factor_csv.exists(), 'Step 3B requires first-run factor_values when local snapshots exist'
         assert meta_json.exists(), 'Step 3B requires run_metadata when local snapshots exist'
         run_meta = load(meta_json)
+        assert_step3b_runtime_performance_policy(run_meta)
         assert_step2_context('run_metadata', run_meta.get('step2_research_context'))
         assert_no_step4_outputs_in_step3b(data.get('first_run_outputs') or h.get('first_run_outputs') or {}, code_dir, run_meta)
         first_run_outputs = data.get('first_run_outputs') or h.get('first_run_outputs')

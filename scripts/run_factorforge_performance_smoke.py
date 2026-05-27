@@ -594,6 +594,112 @@ def run_step3b_profile_case(root: Path) -> dict[str, Any]:
     return {'case': 'step3b_performance_profile_present', 'report_id': report_id, 'profile': profile, 'input_io_profile': input_io_profile, 'ok': bool(ok)}
 
 
+def slow_nested_direct_code_source() -> str:
+    return (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    df = daily_df.sort_values(['ts_code', 'trade_date']).copy()\n"
+        "    grouped = df.groupby('ts_code')\n"
+        "    results = []\n"
+        "    for ts_code, group in grouped:\n"
+        "        dates = sorted(group['trade_date'].unique())\n"
+        "        for i, trade_date in enumerate(dates):\n"
+        "            window = group[group['trade_date'].isin(dates[max(0, i - 2):i + 1])]\n"
+        "            value = window.sort_values('close', ascending=False)['close'].mean()\n"
+        "            results.append({'ts_code': ts_code, 'trade_date': trade_date, 'factor_value': value})\n"
+        "    return pd.DataFrame(results)\n"
+    )
+
+
+def run_high_speed_code_policy_flags_nested_groupby_date_loops_case(root: Path) -> dict[str, Any]:
+    module = load_step3b_validator_module()
+    source = slow_nested_direct_code_source()
+    try:
+        profile = module.assert_high_speed_code_policy(source, {})
+    except AssertionError as exc:
+        message = str(exc)
+        return {
+            'case': 'high_speed_code_policy_flags_nested_groupby_date_loops',
+            'rc': 1,
+            'message': message,
+            'token_present': 'BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in message,
+            'ok': bool('BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in message),
+        }
+    return {
+        'case': 'high_speed_code_policy_flags_nested_groupby_date_loops',
+        'rc': 0,
+        'profile': profile,
+        'ok': False,
+    }
+
+
+def run_step3b_first_run_blocks_slow_direct_code_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP3B_SLOW_DIRECT_CODE'
+    impl, local_inputs = create_step3b_fixture(root, report_id)
+    impl.write_text(slow_nested_direct_code_source(), encoding='utf-8')
+    module = import_run_step3b(root)
+    try:
+        outputs = module.generate_first_run_factor_values(
+            report_id=report_id,
+            factor_id='SMOKE',
+            implementation_path=impl,
+            local_inputs=local_inputs,
+            step2_research_context={'smoke': True},
+            mode_decision={'implementation_mode': 'direct_code'},
+            artifact_identity={},
+        )
+    except SystemExit as exc:
+        message = str(exc)
+        run_metadata = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+        return {
+            'case': 'step3b_first_run_blocks_slow_direct_code',
+            'rc': 1,
+            'message': message,
+            'token_present': 'BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in message,
+            'run_metadata_exists': run_metadata.exists(),
+            'ok': bool('BLOCK_DIRECT_CODE_PERFORMANCE_RISK' in message and not run_metadata.exists()),
+        }
+    return {
+        'case': 'step3b_first_run_blocks_slow_direct_code',
+        'rc': 0,
+        'outputs': outputs,
+        'ok': False,
+    }
+
+
+def run_step3b_runtime_throughput_gate_blocks_large_slow_profile_case(root: Path) -> dict[str, Any]:
+    module = load_step3b_validator_module()
+    run_metadata = {
+        'row_count': 112326,
+        'performance_profile': {
+            'version': 'factorforge_step3b_performance_profile_v1',
+            'row_count': 112326,
+            'rows_per_second_compute': 501.03,
+            'phase_seconds': {
+                'compute_factor': 224.18,
+                'total': 228.06,
+            },
+        },
+    }
+    try:
+        profile = module.assert_step3b_runtime_performance_policy(run_metadata)
+    except AssertionError as exc:
+        message = str(exc)
+        return {
+            'case': 'step3b_runtime_throughput_gate_blocks_large_slow_profile',
+            'rc': 1,
+            'message': message,
+            'token_present': 'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK' in message,
+            'ok': bool('BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK' in message),
+        }
+    return {
+        'case': 'step3b_runtime_throughput_gate_blocks_large_slow_profile',
+        'rc': 0,
+        'profile': profile,
+        'ok': False,
+    }
+
+
 def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_CONTRACT'
     module = import_run_step3(root)
@@ -6411,6 +6517,9 @@ def main() -> int:
         run_step3a_daily_sample_schema_mismatch_block_case(root),
         run_step3a_daily_no_csv_contract_stale_path_block_case(root),
         run_price_volume_plugin_uses_volume_case(),
+        run_high_speed_code_policy_flags_nested_groupby_date_loops_case(root),
+        run_step3b_first_run_blocks_slow_direct_code_case(root),
+        run_step3b_runtime_throughput_gate_blocks_large_slow_profile_case(root),
         run_step3b_profile_case(root),
         run_step3b_factor_sample_csv_policy_case(root),
         run_step3b_factor_no_csv_policy_case(root),

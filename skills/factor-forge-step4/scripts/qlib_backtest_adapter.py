@@ -229,9 +229,8 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     cfg_path = FF / 'objects' / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
     run_dir = FF / 'runs' / report_id
     factor_path = run_dir / f'factor_values__{report_id}.parquet'
-    daily_path = run_dir / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
 
-    missing = [str(p) for p in [cfg_path, factor_path, daily_path] if not p.exists()]
+    missing = [str(p) for p in [cfg_path, factor_path] if not p.exists()]
     if missing:
         return {
             'backend': 'qlib_backtest',

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -16,10 +17,12 @@ import requests
 BLOCK_PROVIDER_FAILED = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED"
 BLOCK_PROVIDER_REQUEST_CONTRACT = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_REQUEST_CONTRACT_INVALID"
 BLOCK_UNSUPPORTED_API = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_UNSUPPORTED_API"
+BLOCK_DIRECT_CODE_PERFORMANCE_RISK = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK"
 DEFAULT_CONFIG = Path("/home/ubuntu/.openclaw/openclaw.json")
 SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
 STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
+DIRECT_CODE_PERFORMANCE_PROFILE_VERSION = "factorforge_direct_code_performance_contract_v1"
 
 
 class UnsupportedProviderApi(RuntimeError):
@@ -362,6 +365,152 @@ def _direct_code_contract(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _attribute_chain(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Attribute):
+        return [*_attribute_chain(node.value), node.attr]
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Call):
+        return [*_attribute_chain(node.func), "()"]
+    if isinstance(node, ast.Subscript):
+        return _attribute_chain(node.value)
+    return []
+
+
+def _call_attr(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _receiver_chain_contains_call(node: ast.AST, name: str) -> bool:
+    chain = _attribute_chain(node)
+    return name in chain and "()" in chain
+
+
+def _call_has_keyword_value(node: ast.Call, keyword: str, value: Any) -> bool:
+    for kw in node.keywords:
+        if kw.arg != keyword:
+            continue
+        if isinstance(kw.value, ast.Constant) and kw.value.value == value:
+            return True
+    return False
+
+
+def _call_has_positional_value(node: ast.Call, index: int, value: Any) -> bool:
+    if len(node.args) <= index:
+        return False
+    arg = node.args[index]
+    return isinstance(arg, ast.Constant) and arg.value == value
+
+
+def _is_groupby_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "groupby"
+
+
+def _is_groupby_apply_call(node: ast.Call) -> bool:
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "apply" and _receiver_chain_contains_call(node.func.value, "groupby")
+
+
+def _for_iter_uses_groupby(node: ast.For) -> bool:
+    return any(_is_groupby_call(child) for child in ast.walk(node.iter))
+
+
+def _groupby_alias_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not _is_groupby_call(node.value):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+    return names
+
+
+def _for_iter_uses_groupby_alias(node: ast.For, aliases: set[str]) -> bool:
+    return isinstance(node.iter, ast.Name) and node.iter.id in aliases
+
+
+def _contains_call_attr(node: ast.AST, attr: str) -> bool:
+    return any(_call_attr(child) == attr for child in ast.walk(node))
+
+
+def _contains_nested_for(node: ast.For) -> bool:
+    for child in node.body:
+        if any(isinstance(grandchild, ast.For) for grandchild in ast.walk(child)):
+            return True
+    return False
+
+
+def _is_range_len_loop(node: ast.For) -> bool:
+    call = node.iter
+    if not isinstance(call, ast.Call):
+        return False
+    if not isinstance(call.func, ast.Name) or call.func.id != "range" or not call.args:
+        return False
+    first = call.args[0]
+    return isinstance(first, ast.Call) and isinstance(first.func, ast.Name) and first.func.id == "len"
+
+
+def build_direct_code_performance_profile(source: str) -> dict[str, Any]:
+    profile: dict[str, Any] = {
+        "version": DIRECT_CODE_PERFORMANCE_PROFILE_VERSION,
+        "slow_patterns": [],
+        "preferred_backend_markers": [],
+    }
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        profile["slow_patterns"].append("python_syntax_error")
+        profile["syntax_error"] = f"{exc.msg} line={exc.lineno}"
+        return profile
+
+    slow: set[str] = set()
+    preferred: set[str] = set()
+    groupby_aliases = _groupby_alias_names(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            attr = _call_attr(node)
+            chain = _attribute_chain(node.func)
+            if chain and chain[0] in {"np", "numpy", "pl", "polars"}:
+                preferred.add(chain[0])
+            if attr in {"to_numpy", "transform", "where", "clip", "fillna", "merge", "assign", "pct_change", "diff", "shift"}:
+                preferred.add(f"pandas_{attr}")
+            if attr in {"iterrows", "itertuples"}:
+                slow.add("pandas_row_iteration")
+            if attr == "apply" and (
+                _call_has_keyword_value(node, "axis", 1) or _call_has_positional_value(node, 1, 1)
+            ):
+                slow.add("pandas_row_apply")
+            if _is_groupby_apply_call(node):
+                slow.add("pandas_groupby_apply")
+        if isinstance(node, ast.For):
+            if _for_iter_uses_groupby(node) or _for_iter_uses_groupby_alias(node, groupby_aliases):
+                slow.add("pandas_groupby_iteration")
+            if _contains_nested_for(node):
+                slow.add("nested_python_for_loop")
+            if _contains_call_attr(node, "sort_values"):
+                slow.add("sort_values_inside_loop")
+            if _contains_call_attr(node, "append"):
+                slow.add("list_append_inside_loop")
+            if _is_range_len_loop(node):
+                slow.add("range_len_loop")
+    profile["slow_patterns"] = sorted(slow)
+    profile["preferred_backend_markers"] = sorted(preferred)
+    return profile
+
+
+def direct_code_performance_failure(source: str) -> str | None:
+    profile = build_direct_code_performance_profile(source)
+    slow_patterns = profile.get("slow_patterns") or []
+    if slow_patterns:
+        return (
+            f"{BLOCK_DIRECT_CODE_PERFORMANCE_RISK}: direct_code source uses disallowed slow patterns "
+            f"{slow_patterns}; profile={json.dumps(profile, ensure_ascii=False, sort_keys=True)}"
+        )
+    return None
+
+
 def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     role = str(request.get("role") or "")
     if role not in {"primary", "challenger"}:
@@ -467,6 +616,9 @@ def _direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
     source_derivation = contract.get("source_derivation")
     if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
         return "direct_code code_contract.source_derivation.not_fallback=true missing"
+    perf_failure = direct_code_performance_failure(source)
+    if perf_failure:
+        return perf_failure
     return None
 
 
@@ -515,8 +667,9 @@ def repair_step2_payload(
 ) -> dict[str, Any]:
     role = str(request.get("role") or "")
     repair_prompt = (
-        "Your previous Step2 raw JSON declared implementation_mode='hybrid' without a complete executable "
-        "Factor Forge hybrid contract. Return corrected Step2 raw JSON only, with fields at the top level. "
+        "Your previous Step2 raw JSON failed the Factor Forge executable implementation contract "
+        "(incomplete hybrid or direct_code source/performance contract). Return corrected Step2 raw JSON only, "
+        "with fields at the top level. "
         "Do not wrap inside factor_spec_raw. If you cannot provide all hybrid fields "
         "(hybrid_contract_version=factorforge_hybrid_implementation_contract_v1, operator_subgraph.formula_ir.parse_status='success', "
         "non-empty custom_blocks, formula_hash, custom_block_hash, hybrid_hash), choose implementation_mode='direct_code'. "
@@ -525,6 +678,10 @@ def repair_step2_payload(
         "If you choose direct_code, you must provide implementation_contract.code_contract.source_code with entrypoint/function_name, "
         "imports/dependencies, required_fields, input_schema, output_schema, and source_derivation.not_fallback=true. "
         "Do not invent code_hash; the bridge will compute code_hash from source_code. "
+        "Direct_code source_code must be high-performance and validator-safe: prefer NumPy, Polars, or vectorized pandas; "
+        "do not use for-loop iteration over pandas groupby objects, groupby.apply, row apply/apply(axis=1), iterrows, "
+        "itertuples, nested Python loops over rows/tickers/dates/minutes, list append inside loops, or sort_values inside loops. "
+        "Sort once globally or use vectorized group operations; never sort each group inside a Python loop. "
         "The direct_code output_schema must be exactly or at least {'columns': ['ts_code', 'trade_date', 'factor_value']}; "
         "do not return an empty output_schema, a dtype-only output_schema, or output_schema nested outside code_contract. "
         "Do not use direct_code without source_code. "
@@ -561,8 +718,8 @@ def repair_step2_payload(
         raise RuntimeError(f"Step2 LLM returned incomplete direct_code contract after repair: {direct_failure}")
     repaired.setdefault("_llm_bridge_provider_repairs", []).append(
         {
-            "repair": "invalid_hybrid_contract_reasked_llm",
-            "reason": "implementation_mode=hybrid requires complete executable hybrid_contract",
+            "repair": "invalid_implementation_contract_reasked_llm",
+            "reason": "hybrid contract or direct_code source/performance contract failed",
         }
     )
     return repaired
@@ -629,8 +786,13 @@ def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[st
             "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported. "
             "If you choose direct_code, implementation_contract.code_contract is mandatory and must include source_code, "
             "function_name/entrypoint=compute_factor, imports/dependencies, required_fields, input_schema, output_schema, "
-            "source_derivation.not_fallback=true. Do not invent code_hash; the bridge will compute code_hash from source_code. "
-            "and report-derived implementation notes. For the Kaiyuan smart-money factor preserve the PDF mechanics "
+            "source_derivation.not_fallback=true and report-derived implementation notes. "
+            "Do not invent code_hash; the bridge will compute code_hash from source_code. "
+            "Direct_code source_code must be high-performance and validator-safe: prefer NumPy, Polars, or vectorized pandas; "
+            "do not use pandas groupby iteration, groupby.apply, row apply/apply(axis=1), iterrows, itertuples, nested Python "
+            "loops over rows/tickers/dates/minutes, list append inside loops, or sort_values inside loops. Sort once globally "
+            "or use vectorized group operations; never sort each group inside a Python loop. "
+            "For the Kaiyuan smart-money factor preserve the PDF mechanics "
             "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract. "
             "The direct_code output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "
             "empty output_schema, dtype-only output_schema, or output_schema nested outside implementation_contract.code_contract."
@@ -680,7 +842,7 @@ def main() -> int:
         if version == "factorforge_step2_llm_bridge_v1":
             payload = normalize_step2_payload(payload, request)
             if _invalid_step2_hybrid(payload, request) or _invalid_step2_direct_code(payload, request):
-                eprint("[factorforge-provider] invalid Step2 hybrid contract returned; asking model for corrected raw JSON")
+                eprint("[factorforge-provider] invalid Step2 implementation contract returned; asking model for corrected raw JSON")
                 payload = repair_step2_payload(provider=provider, model=model, temperature=temperature, request=request, payload=payload)
             direct_failure = _invalid_step2_direct_code(payload, request)
             if direct_failure:

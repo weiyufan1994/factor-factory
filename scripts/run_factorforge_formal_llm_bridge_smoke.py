@@ -576,6 +576,261 @@ print(json.dumps(out, ensure_ascii=False))
     }
 
 
+def case_rta28_step2_command_slow_direct_code_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "rta28_step2_command_slow_direct_code_case"
+    report_id = "FORMAL_STEP2_COMMAND_SLOW_DIRECT_CODE"
+    step1, _ = _generate_fixture_raw(case_root, report_id)
+    provider = case_root / "bad_step2_slow_direct_code_provider.py"
+    source = (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df=None, minute_df=None):\n"
+        "    rows = []\n"
+        "    for ts_code, group in daily_df.groupby('ts_code'):\n"
+        "        group = group.sort_values('trade_date')\n"
+        "        values = []\n"
+        "        for _, row in group.iterrows():\n"
+        "            values.append(row.get('close'))\n"
+        "        rows.append({'ts_code': ts_code, 'trade_date': group['trade_date'].iloc[-1], 'factor_value': values[-1]})\n"
+        "    return pd.DataFrame(rows)\n"
+    )
+    provider.write_text(
+        f"""import hashlib, json, sys
+req = json.loads(sys.stdin.read())
+role = req.get("role")
+source = {source!r}
+if role in {{"primary", "challenger"}}:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "SLOW_DIRECT_CODE",
+        "raw_formula_text": "custom slow direct-code algorithm",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["ts_code", "trade_date", "close"],
+        "implementation_mode": "direct_code",
+        "implementation_contract": {{
+            "implementation_mode": "direct_code",
+            "code_contract": {{
+                "function_name": "compute_factor",
+                "entrypoint": "compute_factor",
+                "source_code": source,
+                "code_hash": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                "output_schema": {{"columns": ["ts_code", "trade_date", "factor_value"]}},
+                "required_fields": ["ts_code", "trade_date", "close"],
+                "source_derivation": {{"derivation": "provider_supplied_slow_source", "not_fallback": True}}
+            }}
+        }},
+        "_llm_bridge_provenance": {{"provider": "command-smoke-slow", "formal_llm_extraction": True, "fixture_only": False}}
+    }}
+else:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "SLOW_DIRECT_CODE",
+        "consistency_score": 0.9,
+        "matches_core_driver": True,
+        "mismatch_points": [],
+        "missing_steps": [],
+        "distortion_risks": [],
+        "recommendation": "proceed"
+    }}
+print(json.dumps(out, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step2"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(case_root),
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+    )
+    report_path = out_dir / "step2_llm_bridge_report.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    primary_report = ((report.get("raw_outputs") or {}).get("primary") or {})
+    text = proc.stdout + proc.stderr + json.dumps(report, ensure_ascii=False)
+    token = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK" in text
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    return {
+        "case": "rta28_step2_command_slow_direct_code_blocks",
+        "rc": proc.returncode,
+        "token_present": token,
+        "step1_raw_dir": str(step1),
+        "report_path": str(report_path),
+        "report_exists": report_path.exists(),
+        "primary_parsed_json_valid": primary_report.get("parsed_json_valid"),
+        "primary_validation_error": primary_report.get("validation_error"),
+        "report_block_token": report.get("block_token"),
+        "report_worker_started": report.get("worker_started"),
+        "report_runtime_context_written": report.get("runtime_context_written"),
+        "runtime_context_exists": runtime_context.exists(),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(
+            proc.returncode != 0
+            and token
+            and report.get("verdict") == "BLOCK"
+            and primary_report.get("parsed_json_valid") is False
+            and "BLOCK_DIRECT_CODE_PERFORMANCE_RISK" in str(primary_report.get("validation_error") or "")
+            and report.get("worker_started") is False
+            and report.get("runtime_context_written") is False
+            and not runtime_context.exists()
+        ),
+    }
+
+
+def _case_rta28_step2_command_performance_blocks(
+    root: Path,
+    *,
+    case_name: str,
+    report_id: str,
+    source: str,
+    expected_pattern: str,
+) -> dict[str, Any]:
+    case_root = root / case_name
+    step1, _ = _generate_fixture_raw(case_root, report_id)
+    provider = case_root / f"{case_name}_provider.py"
+    provider.write_text(
+        f"""import hashlib, json, sys
+req = json.loads(sys.stdin.read())
+role = req.get("role")
+source = {source!r}
+if role in {{"primary", "challenger"}}:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "SLOW_DIRECT_CODE",
+        "raw_formula_text": "custom slow direct-code algorithm",
+        "operators": ["custom_direct_code"],
+        "required_inputs": ["ts_code", "trade_date", "close"],
+        "implementation_mode": "direct_code",
+        "implementation_contract": {{
+            "implementation_mode": "direct_code",
+            "code_contract": {{
+                "function_name": "compute_factor",
+                "entrypoint": "compute_factor",
+                "source_code": source,
+                "code_hash": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                "output_schema": {{"columns": ["ts_code", "trade_date", "factor_value"]}},
+                "required_fields": ["ts_code", "trade_date", "close"],
+                "source_derivation": {{"derivation": "provider_supplied_slow_source", "not_fallback": True}}
+            }}
+        }},
+        "_llm_bridge_provenance": {{"provider": "command-smoke-slow", "formal_llm_extraction": True, "fixture_only": False}}
+    }}
+else:
+    out = {{
+        "report_id": req.get("report_id"),
+        "factor_id": "SLOW_DIRECT_CODE",
+        "consistency_score": 0.9,
+        "matches_core_driver": True,
+        "mismatch_points": [],
+        "missing_steps": [],
+        "distortion_risks": [],
+        "recommendation": "proceed"
+    }}
+print(json.dumps(out, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step2"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step2_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(case_root),
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+    )
+    report_path = out_dir / "step2_llm_bridge_report.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    primary_report = ((report.get("raw_outputs") or {}).get("primary") or {})
+    validation_error = str(primary_report.get("validation_error") or "")
+    text = proc.stdout + proc.stderr + json.dumps(report, ensure_ascii=False)
+    token = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK" in text
+    runtime_context = case_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    return {
+        "case": case_name,
+        "rc": proc.returncode,
+        "token_present": token,
+        "expected_pattern_present": expected_pattern in validation_error,
+        "step1_raw_dir": str(step1),
+        "report_path": str(report_path),
+        "report_exists": report_path.exists(),
+        "primary_parsed_json_valid": primary_report.get("parsed_json_valid"),
+        "primary_validation_error": primary_report.get("validation_error"),
+        "report_block_token": report.get("block_token"),
+        "report_worker_started": report.get("worker_started"),
+        "report_runtime_context_written": report.get("runtime_context_written"),
+        "runtime_context_exists": runtime_context.exists(),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(
+            proc.returncode != 0
+            and token
+            and expected_pattern in validation_error
+            and report.get("verdict") == "BLOCK"
+            and primary_report.get("parsed_json_valid") is False
+            and report.get("block_token") == "BLOCK_DIRECT_CODE_PERFORMANCE_RISK"
+            and report.get("worker_started") is False
+            and report.get("runtime_context_written") is False
+            and not runtime_context.exists()
+        ),
+    }
+
+
+def case_rta28_step2_command_aliased_groupby_blocks(root: Path) -> dict[str, Any]:
+    source = (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df=None, minute_df=None):\n"
+        "    rows = []\n"
+        "    grouped = daily_df.groupby('ts_code')\n"
+        "    for ts_code, group in grouped:\n"
+        "        rows.append({'ts_code': ts_code, 'trade_date': group['trade_date'].iloc[-1], 'factor_value': group['close'].iloc[-1]})\n"
+        "    return pd.DataFrame(rows)\n"
+    )
+    return _case_rta28_step2_command_performance_blocks(
+        root,
+        case_name="rta28_step2_command_aliased_groupby_blocks",
+        report_id="FORMAL_STEP2_COMMAND_ALIASED_GROUPBY",
+        source=source,
+        expected_pattern="pandas_groupby_iteration",
+    )
+
+
+def case_rta28_step2_command_positional_row_apply_blocks(root: Path) -> dict[str, Any]:
+    source = (
+        "import pandas as pd\n\n"
+        "def compute_factor(daily_df=None, minute_df=None):\n"
+        "    df = daily_df.copy()\n"
+        "    df['factor_value'] = df.apply(lambda row: row['close'], 1)\n"
+        "    return df[['ts_code', 'trade_date', 'factor_value']]\n"
+    )
+    return _case_rta28_step2_command_performance_blocks(
+        root,
+        case_name="rta28_step2_command_positional_row_apply_blocks",
+        report_id="FORMAL_STEP2_COMMAND_POSITIONAL_ROW_APPLY",
+        source=source,
+        expected_pattern="pandas_row_apply",
+    )
+
+
 def case_step2_fixture(root: Path) -> dict[str, Any]:
     out_dir = root / "objects" / "raw_llm" / RID / "step2"
     proc = run_cmd(
@@ -970,6 +1225,10 @@ MODE = sys.argv[2]
 
 
 SOURCE = "import pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    return pd.DataFrame(columns=[\\"ts_code\\", \\"trade_date\\", \\"factor_value\\"])\\n"
+SLOW_SOURCE = "import pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    rows = []\\n    for ts_code, group in daily_df.groupby('ts_code'):\\n        group = group.sort_values('trade_date')\\n        values = []\\n        for _, row in group.iterrows():\\n            values.append(row.get('close'))\\n        rows.append({'ts_code': ts_code, 'trade_date': group['trade_date'].iloc[-1], 'factor_value': values[-1]})\\n    return pd.DataFrame(rows)\\n"
+ALIASED_GROUPBY_SOURCE = "import pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    rows = []\\n    grouped = daily_df.groupby('ts_code')\\n    for ts_code, group in grouped:\\n        rows.append({'ts_code': ts_code, 'trade_date': group['trade_date'].iloc[-1], 'factor_value': group['close'].iloc[-1]})\\n    return pd.DataFrame(rows)\\n"
+POSITIONAL_ROW_APPLY_SOURCE = "import pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    df = daily_df.copy()\\n    df['factor_value'] = df.apply(lambda row: row['close'], 1)\\n    return df[['ts_code', 'trade_date', 'factor_value']]\\n"
+FAST_SOURCE = "import numpy as np\\nimport pandas as pd\\n\\ndef compute_factor(daily_df=None, minute_df=None):\\n    if daily_df is None or daily_df.empty:\\n        return pd.DataFrame(columns=['ts_code', 'trade_date', 'factor_value'])\\n    df = daily_df[['ts_code', 'trade_date', 'close']].copy()\\n    df['close'] = pd.to_numeric(df['close'], errors='coerce')\\n    df = df.sort_values(['ts_code', 'trade_date'])\\n    df['factor_value'] = df.groupby('ts_code', sort=False)['close'].pct_change()\\n    return df[['ts_code', 'trade_date', 'factor_value']].replace([np.inf, -np.inf], np.nan)\\n"
 
 
 def direct_code_payload(
@@ -981,7 +1240,9 @@ def direct_code_payload(
     code_hash_mode="correct",
     include_source_derivation=True,
     not_fallback=True,
+    source_text=None,
 ):
+    source = source_text or SOURCE
     code_contract = {
         "imports": ["pandas"],
         "dependencies": ["pandas"],
@@ -995,9 +1256,9 @@ def direct_code_payload(
         code_contract["function_name"] = "compute_factor"
         code_contract["entrypoint"] = "compute_factor"
     if include_source:
-        code_contract["source_code"] = SOURCE
+        code_contract["source_code"] = source
         if code_hash_mode == "correct":
-            code_contract["code_hash"] = hashlib.sha256(SOURCE.encode("utf-8")).hexdigest()
+            code_contract["code_hash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
         elif code_hash_mode == "wrong":
             code_contract["code_hash"] = "wrong_hash_from_llm"
     return {
@@ -1056,6 +1317,18 @@ def response_json(model=None, request_body=None):
         if is_repair:
             return direct_code_payload(model, output_schema={"columns": ["factor_value"]}, code_hash_mode="wrong")
         return incomplete_hybrid_payload(model)
+    if MODE == "rta28_repair_slow_direct_code":
+        if is_repair:
+            return direct_code_payload(model, source_text=FAST_SOURCE, code_hash_mode="missing")
+        return direct_code_payload(model, source_text=SLOW_SOURCE)
+    if MODE == "rta28_repair_aliased_groupby_direct_code":
+        if is_repair:
+            return direct_code_payload(model, source_text=FAST_SOURCE, code_hash_mode="missing")
+        return direct_code_payload(model, source_text=ALIASED_GROUPBY_SOURCE)
+    if MODE == "rta28_repair_positional_row_apply_direct_code":
+        if is_repair:
+            return direct_code_payload(model, source_text=FAST_SOURCE, code_hash_mode="missing")
+        return direct_code_payload(model, source_text=POSITIONAL_ROW_APPLY_SOURCE)
     return {
         "report_id": "HUMPHREY_PROVIDER_MOCK",
         "observed_api_model": model,
@@ -1474,6 +1747,69 @@ def case_rta29_direct_code_not_fallback_false_blocks(root: Path) -> dict[str, An
         request_override=_humphrey_step2_primary_request(),
         expect_rc=1,
         expected_token="BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED",
+    )
+
+
+def case_rta28_provider_repairs_slow_direct_code(root: Path) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name="rta28_provider_repairs_slow_direct_code",
+        provider_api="openai-completions",
+        server_mode="rta28_repair_slow_direct_code",
+        request_override=_humphrey_step2_primary_request(),
+    )
+    stdout = result.get("stdout_tail") or ""
+    stderr = result.get("stderr_tail") or ""
+    slow_markers_absent = all(
+        marker not in stdout
+        for marker in ["for ts_code, group in", ".iterrows(", ".append("]
+    )
+    repair_attempted = "asking model for corrected raw JSON" in stderr
+    result["slow_markers_absent"] = slow_markers_absent
+    result["repair_attempted"] = repair_attempted
+    result["ok"] = bool(result.get("ok") and slow_markers_absent and repair_attempted)
+    return result
+
+
+def _case_rta28_provider_repairs_performance_issue(
+    root: Path,
+    *,
+    case_name: str,
+    server_mode: str,
+    forbidden_markers: list[str],
+) -> dict[str, Any]:
+    result = _run_humphrey_provider_case(
+        root,
+        case_name=case_name,
+        provider_api="openai-completions",
+        server_mode=server_mode,
+        request_override=_humphrey_step2_primary_request(),
+    )
+    stdout = result.get("stdout_tail") or ""
+    stderr = result.get("stderr_tail") or ""
+    slow_markers_absent = all(marker not in stdout for marker in forbidden_markers)
+    repair_attempted = "asking model for corrected raw JSON" in stderr
+    result["slow_markers_absent"] = slow_markers_absent
+    result["repair_attempted"] = repair_attempted
+    result["ok"] = bool(result.get("ok") and slow_markers_absent and repair_attempted)
+    return result
+
+
+def case_rta28_provider_repairs_aliased_groupby(root: Path) -> dict[str, Any]:
+    return _case_rta28_provider_repairs_performance_issue(
+        root,
+        case_name="rta28_provider_repairs_aliased_groupby",
+        server_mode="rta28_repair_aliased_groupby_direct_code",
+        forbidden_markers=["grouped = daily_df.groupby", "for ts_code, group in grouped", ".append("],
+    )
+
+
+def case_rta28_provider_repairs_positional_row_apply(root: Path) -> dict[str, Any]:
+    return _case_rta28_provider_repairs_performance_issue(
+        root,
+        case_name="rta28_provider_repairs_positional_row_apply",
+        server_mode="rta28_repair_positional_row_apply_direct_code",
+        forbidden_markers=[".apply(lambda row", ", 1)"],
     )
 
 
@@ -1986,11 +2322,17 @@ def main() -> int:
         case_rta29_repair_direct_code_wrong_hash_system_overwrites(root),
         case_rta29_direct_code_missing_not_fallback_blocks(root),
         case_rta29_direct_code_not_fallback_false_blocks(root),
+        case_rta28_provider_repairs_slow_direct_code(root),
+        case_rta28_provider_repairs_aliased_groupby(root),
+        case_rta28_provider_repairs_positional_row_apply(root),
         case_step2_provider_missing(root),
         case_step2_alpha_only_blocks(root),
         case_step2_command_direct_code_missing_source_blocks(root),
         case_step2_command_direct_code_missing_entrypoint_blocks(root),
         case_step2_command_direct_code_wrong_hash_system_overwrites(root),
+        case_rta28_step2_command_slow_direct_code_blocks(root),
+        case_rta28_step2_command_aliased_groupby_blocks(root),
+        case_rta28_step2_command_positional_row_apply_blocks(root),
         case_step2_fixture(root),
         case_prepare_chain(root),
         case_step1_underivable_mechanism_blocks(root),

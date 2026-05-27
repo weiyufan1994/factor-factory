@@ -1303,6 +1303,9 @@ def generate_first_run_factor_values(
                 raise
         else:
             daily_df = read_df(daily_path)
+    minute_input_row_count = int(len(minute_df)) if minute_path is not None else 0
+    daily_input_row_count = int(len(daily_df))
+    input_row_count = int(minute_input_row_count + daily_input_row_count)
 
     formula_engine_profile = _default_formula_engine_profile()
     with timer.phase('compute_factor'):
@@ -1490,7 +1493,11 @@ def generate_first_run_factor_values(
             },
             'normalize_sort_profile': normalize_sort_profile,
             'source_code_performance_profile': source_profile,
+            'input_row_count': input_row_count,
+            'minute_input_row_count': minute_input_row_count,
+            'daily_input_row_count': daily_input_row_count,
             'rows_per_second_compute': float(len(result_df) / phase_seconds['compute_factor']) if phase_seconds.get('compute_factor') else None,
+            'rows_per_second_input_compute': float(input_row_count / phase_seconds['compute_factor']) if phase_seconds.get('compute_factor') else None,
             'formula_engine_profile': formula_engine_profile,
             'output_bytes': {
                 'parquet': safe_file_size(factor_parquet),

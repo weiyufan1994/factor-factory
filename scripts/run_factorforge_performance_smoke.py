@@ -700,6 +700,42 @@ def run_step3b_runtime_throughput_gate_blocks_large_slow_profile_case(root: Path
     }
 
 
+def run_step3b_runtime_throughput_gate_uses_input_rows_for_minute_compression_case(root: Path) -> dict[str, Any]:
+    module = load_step3b_validator_module()
+    run_metadata = {
+        'row_count': 112326,
+        'performance_profile': {
+            'version': 'factorforge_step3b_performance_profile_v1',
+            'row_count': 112326,
+            'input_row_count': 35045497,
+            'rows_per_second_compute': 4464.52,
+            'rows_per_second_input_compute': 1392922.0,
+            'phase_seconds': {
+                'compute_factor': 25.16,
+                'total': 30.35,
+            },
+        },
+    }
+    try:
+        profile = module.assert_step3b_runtime_performance_policy(run_metadata)
+    except AssertionError as exc:
+        return {
+            'case': 'step3b_runtime_throughput_gate_uses_input_rows_for_minute_compression',
+            'rc': 1,
+            'message': str(exc),
+            'ok': False,
+        }
+    return {
+        'case': 'step3b_runtime_throughput_gate_uses_input_rows_for_minute_compression',
+        'rc': 0,
+        'profile': profile,
+        'ok': bool(
+            profile.get('throughput_basis') == 'input_rows'
+            and profile.get('rows_per_second_for_gate', 0) > 5000
+        ),
+    }
+
+
 def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_CONTRACT'
     module = import_run_step3(root)
@@ -6520,6 +6556,7 @@ def main() -> int:
         run_high_speed_code_policy_flags_nested_groupby_date_loops_case(root),
         run_step3b_first_run_blocks_slow_direct_code_case(root),
         run_step3b_runtime_throughput_gate_blocks_large_slow_profile_case(root),
+        run_step3b_runtime_throughput_gate_uses_input_rows_for_minute_compression_case(root),
         run_step3b_profile_case(root),
         run_step3b_factor_sample_csv_policy_case(root),
         run_step3b_factor_no_csv_policy_case(root),

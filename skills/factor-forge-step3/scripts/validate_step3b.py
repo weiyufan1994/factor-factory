@@ -686,9 +686,16 @@ def assert_high_speed_code_policy(text: str, contract: dict | None = None) -> di
 def assert_step3b_runtime_performance_policy(run_metadata: dict) -> dict:
     profile = run_metadata.get('performance_profile') if isinstance(run_metadata.get('performance_profile'), dict) else {}
     row_count = int(profile.get('row_count') or run_metadata.get('row_count') or 0)
+    input_row_count = int(profile.get('input_row_count') or 0)
     phase_seconds = profile.get('phase_seconds') if isinstance(profile.get('phase_seconds'), dict) else {}
     compute_seconds = phase_seconds.get('compute_factor')
     rows_per_second = profile.get('rows_per_second_compute')
+    rows_per_second_input = profile.get('rows_per_second_input_compute')
+    if rows_per_second_input is None and input_row_count > 0 and compute_seconds:
+        try:
+            rows_per_second_input = float(input_row_count) / float(compute_seconds)
+        except (TypeError, ValueError, ZeroDivisionError):
+            rows_per_second_input = None
     policy = profile.get('runtime_performance_policy') if isinstance(profile.get('runtime_performance_policy'), dict) else {}
     allow_slow = bool(profile.get('allow_slow_runtime') is True or policy.get('allow_slow_runtime') is True)
     justification = (
@@ -697,25 +704,35 @@ def assert_step3b_runtime_performance_policy(run_metadata: dict) -> dict:
         or policy.get('performance_justification')
         or policy.get('slow_runtime_justification')
     )
+    throughput_basis = 'input_rows' if input_row_count >= row_count and input_row_count > 0 else 'output_rows'
+    gate_row_count = input_row_count if throughput_basis == 'input_rows' else row_count
     result = {
         'version': 'factorforge_step3b_runtime_performance_policy_v1',
         'large_row_threshold': LARGE_STEP3B_FIRST_RUN_ROWS,
         'min_large_compute_rows_per_second': MIN_LARGE_STEP3B_COMPUTE_ROWS_PER_SECOND,
         'row_count': row_count,
+        'input_row_count': input_row_count,
         'compute_factor_seconds': compute_seconds,
         'rows_per_second_compute': rows_per_second,
-        'large_first_run': row_count >= LARGE_STEP3B_FIRST_RUN_ROWS,
+        'rows_per_second_input_compute': rows_per_second_input,
+        'throughput_basis': throughput_basis,
+        'gate_row_count': gate_row_count,
+        'rows_per_second_for_gate': rows_per_second_input if throughput_basis == 'input_rows' else rows_per_second,
+        'large_first_run': gate_row_count >= LARGE_STEP3B_FIRST_RUN_ROWS,
         'allow_slow_runtime': allow_slow,
         'has_justification': bool(str(justification or '').strip()),
     }
-    if row_count >= LARGE_STEP3B_FIRST_RUN_ROWS:
-        if rows_per_second is None:
-            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: missing rows_per_second_compute: {result}')
+    if gate_row_count >= LARGE_STEP3B_FIRST_RUN_ROWS:
+        rows_per_second_for_gate = result.get('rows_per_second_for_gate')
+        if rows_per_second_for_gate is None:
+            field = 'rows_per_second_input_compute' if result.get('throughput_basis') == 'input_rows' else 'rows_per_second_compute'
+            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: missing {field}: {result}')
         try:
-            rps = float(rows_per_second)
+            rps = float(rows_per_second_for_gate)
         except (TypeError, ValueError) as exc:
-            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: invalid rows_per_second_compute: {result}') from exc
-        result['rows_per_second_compute'] = rps
+            field = 'rows_per_second_input_compute' if result.get('throughput_basis') == 'input_rows' else 'rows_per_second_compute'
+            raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: invalid {field}: {result}') from exc
+        result['rows_per_second_for_gate'] = rps
         if rps < MIN_LARGE_STEP3B_COMPUTE_ROWS_PER_SECOND and not (allow_slow and str(justification or '').strip()):
             raise AssertionError(f'BLOCK_STEP3B_RUNTIME_PERFORMANCE_RISK: {result}')
     return result

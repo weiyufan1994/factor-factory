@@ -24,8 +24,11 @@ PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
 BLOCK_STEP1_CONTEXT = "BLOCK_STEP2_STEP1_CONTEXT_REQUIRED"
 BLOCK_DIRECT_CODE_RAW = "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING"
 BLOCK_DIRECT_CODE_PERFORMANCE_RISK = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK"
+BLOCK_PROVIDER_ROUTING = "BLOCK_STEP2_PROVIDER_ROUTING_MISMATCH"
 STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
 DIRECT_CODE_PERFORMANCE_PROFILE_VERSION = "factorforge_direct_code_performance_contract_v1"
+DEFAULT_STEP2_ALLOWED_PROVIDER_TOKENS = ["minimax", "deepseek"]
+DEFAULT_STEP2_ALLOWED_MODEL_TOKENS = ["minimax", "deepseek"]
 
 
 class CommandProviderError(RuntimeError):
@@ -60,12 +63,18 @@ def read_json_if_exists(path: Path) -> dict[str, Any]:
 
 
 def formal_llm_provider_request() -> dict[str, Any]:
-    provider = os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER")
+    provider = os.getenv("FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER") or os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER")
     model = os.getenv("FACTORFORGE_STEP2_LLM_MODEL")
     payload: dict[str, Any] = {
         "contract_version": PROVIDER_REQUEST_CONTRACT_VERSION,
         "step": "step2",
-        "provider_source": "FACTORFORGE_FORMAL_LLM_PROVIDER" if provider else "provider_wrapper_default",
+        "provider_source": (
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER"
+            if os.getenv("FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER")
+            else "FACTORFORGE_FORMAL_LLM_PROVIDER"
+            if provider
+            else "provider_wrapper_default"
+        ),
         "model_source": "FACTORFORGE_STEP2_LLM_MODEL" if model else "provider_wrapper_default",
     }
     if provider:
@@ -76,6 +85,37 @@ def formal_llm_provider_request() -> dict[str, Any]:
     if temperature:
         payload["temperature"] = temperature
     return payload
+
+
+def _csv_tokens(env_name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(env_name)
+    if raw is None:
+        return default
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def assert_step2_provider_routing(provider_request: dict[str, Any]) -> None:
+    provider = str(provider_request.get("provider") or "").strip()
+    model = str(provider_request.get("model") or "").strip()
+    provider_norm = provider.lower()
+    model_norm = model.lower()
+    allowed_providers = _csv_tokens(
+        "FACTORFORGE_STEP2_ALLOWED_FORMAL_LLM_PROVIDERS",
+        DEFAULT_STEP2_ALLOWED_PROVIDER_TOKENS,
+    )
+    allowed_models = _csv_tokens(
+        "FACTORFORGE_STEP2_ALLOWED_LLM_MODELS",
+        DEFAULT_STEP2_ALLOWED_MODEL_TOKENS,
+    )
+    provider_ok = bool(provider_norm and any(token in provider_norm for token in allowed_providers))
+    model_ok = bool(model_norm and any(token in model_norm for token in allowed_models))
+    if provider_ok and model_ok:
+        return
+    raise SystemExit(
+        f"{BLOCK_PROVIDER_ROUTING}: Step2 formal factor spec/direct_code requires an allowed provider/model; "
+        f"provider={provider or 'NOT_SET'} model={model or 'NOT_SET'} "
+        f"allowed_provider_tokens={allowed_providers} allowed_model_tokens={allowed_models}"
+    )
 
 
 def stable_hash(payload: Any) -> str:
@@ -665,6 +705,8 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
     command = os.getenv("FACTORFORGE_STEP2_LLM_COMMAND")
     if not command:
         raise SystemExit(f"{BLOCK_PROVIDER}: FACTORFORGE_STEP2_LLM_COMMAND is required for --provider command")
+    provider_request = formal_llm_provider_request()
+    assert_step2_provider_routing(provider_request)
 
     created = now_utc()
     role_paths = {
@@ -687,7 +729,7 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
             "prompt": prompt,
             "step1_context": ctx,
             "prior_outputs": prior_outputs,
-            "formal_llm_provider_request": formal_llm_provider_request(),
+            "formal_llm_provider_request": provider_request,
         }
         try:
             response_text = run_command_provider(command, request)

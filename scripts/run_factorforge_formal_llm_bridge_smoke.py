@@ -179,7 +179,11 @@ def case_step1_command_bad_json_writes_failure_report(root: Path) -> dict[str, A
             "--write-report",
         ],
         factorforge_root=root,
-        extra_env={"FACTORFORGE_STEP1_LLM_COMMAND": f"{sys.executable} {provider}"},
+        extra_env={
+            "FACTORFORGE_STEP1_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": "google",
+            "FACTORFORGE_STEP1_LLM_MODEL": "gemini-3.1-pro-preview",
+        },
     )
     report_path = out_dir / "step1_llm_bridge_report.json"
     report = read_json(report_path) if report_path.exists() else {}
@@ -204,6 +208,58 @@ def case_step1_command_bad_json_writes_failure_report(root: Path) -> dict[str, A
         "stdout_tail": tail(proc.stdout),
         "stderr_tail": tail(proc.stderr),
         "ok": ok,
+    }
+
+
+def case_step1_deepseek_flash_routing_blocks_before_provider(root: Path) -> dict[str, Any]:
+    case_root = root / "step1_deepseek_flash_routing_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    called_path = case_root / "provider_called.txt"
+    provider = case_root / "provider_should_not_run.py"
+    provider.write_text(
+        (
+            "import pathlib, sys\n"
+            "sys.stdin.read()\n"
+            f"pathlib.Path({str(called_path)!r}).write_text('called', encoding='utf-8')\n"
+            "print('{}')\n"
+        ),
+        encoding="utf-8",
+    )
+    out_dir = case_root / "objects" / "raw_llm" / "STEP1_DEEPSEEK_FLASH_ROUTING" / "step1"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step1_llm_bridge.py",
+            "--report-id",
+            "STEP1_DEEPSEEK_FLASH_ROUTING",
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env={
+            "FACTORFORGE_STEP1_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP1_LLM_MODEL": "deepseek-v4-flash",
+        },
+    )
+    raw_files = list(out_dir.glob("step1_*_raw.json")) if out_dir.exists() else []
+    report_path = out_dir / "step1_llm_bridge_report.json"
+    token = "BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH" in (proc.stdout + proc.stderr)
+    return {
+        "case": "step1_deepseek_flash_routing_blocks_before_provider",
+        "rc": proc.returncode,
+        "token_present": token,
+        "provider_called": called_path.exists(),
+        "raw_files": [str(p) for p in raw_files],
+        "report_exists": report_path.exists(),
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(proc.returncode != 0 and token and not called_path.exists() and not raw_files and not report_path.exists()),
     }
 
 
@@ -333,7 +389,11 @@ print(json.dumps(out, ensure_ascii=False))
             "--write-report",
         ],
         factorforge_root=case_root,
-        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+        extra_env={
+            "FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
+        },
     )
     report_path = out_dir / "step2_llm_bridge_report.json"
     report = read_json(report_path) if report_path.exists() else {}
@@ -444,7 +504,11 @@ print(json.dumps(out, ensure_ascii=False))
             "--write-report",
         ],
         factorforge_root=case_root,
-        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+        extra_env={
+            "FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
+        },
     )
     report_path = out_dir / "step2_llm_bridge_report.json"
     report = read_json(report_path) if report_path.exists() else {}
@@ -549,7 +613,11 @@ print(json.dumps(out, ensure_ascii=False))
             "--write-report",
         ],
         factorforge_root=case_root,
-        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+        extra_env={
+            "FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
+        },
     )
     primary = read_json(out_dir / "step2_primary_raw.json") if (out_dir / "step2_primary_raw.json").exists() else {}
     code_contract = ((primary.get("implementation_contract") or {}).get("code_contract") or {})
@@ -651,7 +719,11 @@ print(json.dumps(out, ensure_ascii=False))
             "--write-report",
         ],
         factorforge_root=case_root,
-        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+        extra_env={
+            "FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
+        },
     )
     report_path = out_dir / "step2_llm_bridge_report.json"
     report = read_json(report_path) if report_path.exists() else {}
@@ -756,7 +828,11 @@ print(json.dumps(out, ensure_ascii=False))
             "--write-report",
         ],
         factorforge_root=case_root,
-        extra_env={"FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}"},
+        extra_env={
+            "FACTORFORGE_STEP2_LLM_COMMAND": f"{sys.executable} {provider}",
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
+        },
     )
     report_path = out_dir / "step2_llm_bridge_report.json"
     report = read_json(report_path) if report_path.exists() else {}
@@ -1965,8 +2041,10 @@ def case_command_fresh_kaiyuan_chain_passes(root: Path) -> dict[str, Any]:
     env = {
         "FACTORFORGE_STEP1_LLM_COMMAND": command,
         "FACTORFORGE_STEP2_LLM_COMMAND": command,
-        "FACTORFORGE_STEP1_LLM_MODEL": "command-smoke-model",
-        "FACTORFORGE_STEP2_LLM_MODEL": "command-smoke-model",
+        "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": "google",
+        "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "minimax",
+        "FACTORFORGE_STEP1_LLM_MODEL": "gemini-3.1-pro-preview",
+        "FACTORFORGE_STEP2_LLM_MODEL": "minimax-m2.7",
     }
     step1_proc = run_cmd(
         [
@@ -2115,8 +2193,10 @@ def case_prepare_runs_formal_bridges_and_writes_runtime_context(root: Path) -> d
     env = {
         "FACTORFORGE_STEP1_LLM_COMMAND": command,
         "FACTORFORGE_STEP2_LLM_COMMAND": command,
-        "FACTORFORGE_STEP1_LLM_MODEL": "command-smoke-model",
-        "FACTORFORGE_STEP2_LLM_MODEL": "command-smoke-model",
+        "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": "google",
+        "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+        "FACTORFORGE_STEP1_LLM_MODEL": "gemini-3.1-pro-preview",
+        "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
     }
     proc = run_cmd(
         [
@@ -2307,6 +2387,7 @@ def main() -> int:
         case_step1_provider_missing(root),
         case_step1_fixture(root),
         case_step1_command_bad_json_writes_failure_report(root),
+        case_step1_deepseek_flash_routing_blocks_before_provider(root),
         case_humphrey_provider_openai_completions_mock(root),
         case_humphrey_provider_anthropic_messages_mock(root),
         case_humphrey_provider_request_contract_overrides_env_model(root),

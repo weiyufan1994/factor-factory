@@ -18,8 +18,11 @@ if str(REPO_ROOT) not in sys.path:
 
 BLOCK_PROVIDER = "BLOCK_STEP1_LLM_PROVIDER_UNAVAILABLE"
 BLOCK_PROVIDER_FAILED = "BLOCK_STEP1_LLM_PROVIDER_FAILED"
+BLOCK_PROVIDER_ROUTING = "BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH"
 VERSION = "factorforge_step1_llm_bridge_v1"
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
+STEP1_ALLOWED_PROVIDER_TOKENS = ("gemini", "google")
+STEP1_REQUIRED_MODEL_TOKENS = ("gemini",)
 
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_client import PdfSkillClient
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_prompts import build_step1_report_intake_prompt
@@ -55,12 +58,18 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def formal_llm_provider_request() -> dict[str, Any]:
-    provider = os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER")
+    provider = os.getenv("FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER") or os.getenv("FACTORFORGE_FORMAL_LLM_PROVIDER")
     model = os.getenv("FACTORFORGE_STEP1_LLM_MODEL")
     payload: dict[str, Any] = {
         "contract_version": PROVIDER_REQUEST_CONTRACT_VERSION,
         "step": "step1",
-        "provider_source": "FACTORFORGE_FORMAL_LLM_PROVIDER" if provider else "provider_wrapper_default",
+        "provider_source": (
+            "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER"
+            if os.getenv("FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER")
+            else "FACTORFORGE_FORMAL_LLM_PROVIDER"
+            if provider
+            else "provider_wrapper_default"
+        ),
         "model_source": "FACTORFORGE_STEP1_LLM_MODEL" if model else "provider_wrapper_default",
     }
     if provider:
@@ -71,6 +80,21 @@ def formal_llm_provider_request() -> dict[str, Any]:
     if temperature:
         payload["temperature"] = temperature
     return payload
+
+
+def assert_step1_provider_routing(provider_request: dict[str, Any]) -> None:
+    provider = str(provider_request.get("provider") or "").strip()
+    model = str(provider_request.get("model") or "").strip()
+    provider_norm = provider.lower()
+    model_norm = model.lower()
+    provider_ok = bool(provider_norm and any(token in provider_norm for token in STEP1_ALLOWED_PROVIDER_TOKENS))
+    model_ok = bool(model_norm and any(token in model_norm for token in STEP1_REQUIRED_MODEL_TOKENS))
+    if provider_ok and model_ok:
+        return
+    raise SystemExit(
+        f"{BLOCK_PROVIDER_ROUTING}: Step1 formal PDF extraction/chief merge requires Gemini provider/model; "
+        f"provider={provider or 'NOT_SET'} model={model or 'NOT_SET'}"
+    )
 
 
 def resolve_path(raw: str) -> Path:
@@ -276,6 +300,8 @@ def build_command(args: argparse.Namespace, report_pdf: Path, pdf_meta: dict[str
     command = os.getenv("FACTORFORGE_STEP1_LLM_COMMAND")
     if not command:
         raise SystemExit(f"{BLOCK_PROVIDER}: FACTORFORGE_STEP1_LLM_COMMAND is required for --provider command")
+    provider_request = formal_llm_provider_request()
+    assert_step1_provider_routing(provider_request)
 
     created = now_utc()
     prompts = {
@@ -302,7 +328,7 @@ def build_command(args: argparse.Namespace, report_pdf: Path, pdf_meta: dict[str
             "prompt_hash": sha256_text(prompt),
             "prompt": prompt,
             "prior_outputs": prior_outputs,
-            "formal_llm_provider_request": formal_llm_provider_request(),
+            "formal_llm_provider_request": provider_request,
         }
         response_text = run_command_provider(command, request)
         path = role_paths[role]

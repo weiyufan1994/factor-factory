@@ -364,8 +364,11 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         qlib_signal_native = to_qlib_signal_frame(factor_df, signal_col=signal_col, instrument_style='ts_code')
         strategy = TopkDropoutStrategy(signal=qlib_signal_native, topk=50, n_drop=5)
         executor = SimulatorExecutor(time_per_step='day', generate_portfolio_metrics=True)
-        start = qlib_signal.index.get_level_values('datetime').min()
-        end = qlib_signal.index.get_level_values('datetime').max()
+        trading_calendar = sorted(qlib_signal.index.get_level_values('datetime').unique())
+        start = trading_calendar[0]
+        # qlib's simulator reads the next trading step while settling the final bar.
+        # Avoid using the last available provider date as the backtest end.
+        end = trading_calendar[-2] if len(trading_calendar) > 1 else trading_calendar[-1]
         report, positions = backtest(
             start_time=start,
             end_time=end,

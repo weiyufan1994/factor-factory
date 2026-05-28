@@ -10,6 +10,7 @@
   "formal_llm_boundary": [
     "scripts/run_factorforge_step1_llm_bridge.py",
     "scripts/run_factorforge_step2_llm_bridge.py",
+    "scripts/run_factorforge_gemini_step1_provider.py",
     "scripts/run_factorforge_humphrey_llm_provider.py"
   ],
   "step4_backend_helpers": [

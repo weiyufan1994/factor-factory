@@ -152,6 +152,40 @@ def case_step1_provider_missing(root: Path) -> dict[str, Any]:
     }
 
 
+def case_step1_command_missing_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "step1_command_missing_case"
+    report_id = "FORMAL_STEP1_COMMAND_MISSING"
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step1"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step1_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            "fixtures/step2/sample_report_stub.pdf",
+            "--out-dir",
+            str(out_dir),
+            "--provider",
+            "command",
+            "--write-report",
+        ],
+        factorforge_root=case_root,
+        extra_env=formal_command_env(case_root, report_id=report_id),
+    )
+    token = "BLOCK_STEP1_LLM_PROVIDER_UNAVAILABLE" in (proc.stdout + proc.stderr)
+    raw_files = list(out_dir.glob("step1_*_raw.json")) if out_dir.exists() else []
+    return {
+        "case": "step1_command_missing_blocks",
+        "rc": proc.returncode,
+        "token_present": token,
+        "raw_files": [str(path) for path in raw_files],
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(proc.returncode != 0 and token and not raw_files),
+    }
+
+
 def case_step1_run_manifest_report_id_mismatch_blocks_before_provider(root: Path) -> dict[str, Any]:
     case_root = root / "step1_manifest_report_id_mismatch"
     case_root.mkdir(parents=True, exist_ok=True)
@@ -438,6 +472,150 @@ def case_step1_deepseek_flash_routing_blocks_before_provider(root: Path) -> dict
         "stdout_tail": tail(proc.stdout),
         "stderr_tail": tail(proc.stderr),
         "ok": bool(proc.returncode != 0 and token and not called_path.exists() and not raw_files and not report_path.exists()),
+    }
+
+
+def case_step1_gemini_command_wrapper_contract(root: Path) -> dict[str, Any]:
+    case_root = root / "step1_gemini_command_wrapper_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    report_id = "STEP1_GEMINI_COMMAND_WRAPPER"
+    out_dir = case_root / "objects" / "raw_llm" / report_id / "step1"
+    port = _free_port()
+    server, observed_path = _write_gemini_mock_server(case_root)
+    proc_server = subprocess.Popen(
+        [sys.executable, str(server), str(port), str(observed_path)],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(0.2)
+    try:
+        proc = run_cmd(
+            [
+                sys.executable,
+                "scripts/run_factorforge_step1_llm_bridge.py",
+                "--report-id",
+                report_id,
+                "--report-pdf",
+                "fixtures/step2/sample_report_stub.pdf",
+                "--out-dir",
+                str(out_dir),
+                "--provider",
+                "command",
+                "--write-report",
+            ],
+            factorforge_root=case_root,
+            extra_env={
+                **formal_command_env(
+                    case_root,
+                    report_id=report_id,
+                    step1_command=f"{sys.executable} scripts/run_factorforge_gemini_step1_provider.py",
+                    step1_provider="google",
+                    step1_model="gemini-3.1-pro-preview",
+                ),
+                "GEMINI_API_KEY": "mock-gemini-key",
+                "FACTORFORGE_GEMINI_API_BASE": f"http://127.0.0.1:{port}",
+                "FACTORFORGE_GEMINI_TIMEOUT_SECONDS": "5",
+            },
+        )
+    finally:
+        proc_server.terminate()
+        try:
+            proc_server.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc_server.kill()
+
+    report_path = out_dir / "step1_llm_bridge_report.json"
+    report = read_json(report_path) if report_path.exists() else {}
+    observed = []
+    if observed_path.exists():
+        observed = [json.loads(line) for line in observed_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    raw_paths = [out_dir / "step1_primary_raw.json", out_dir / "step1_challenger_raw.json", out_dir / "step1_chief_raw.json"]
+    raw_payloads = [read_json(path) for path in raw_paths if path.exists()]
+    provenances = [payload.get("_llm_bridge_provenance") or {} for payload in raw_payloads]
+    inline_pdf_count = 0
+    for item in observed:
+        parts = (((item.get("body") or {}).get("contents") or [{}])[0].get("parts") or [])
+        if any(isinstance(part, dict) and (part.get("inline_data") or {}).get("mime_type") == "application/pdf" for part in parts):
+            inline_pdf_count += 1
+    ok = bool(
+        proc.returncode == 0
+        and report.get("verdict") is None
+        and report.get("provider") == "command"
+        and report.get("formal_llm_extraction") is True
+        and len(raw_payloads) == 3
+        and len(observed) == 3
+        and inline_pdf_count == 3
+        and all((p.get("provider_wrapper") == "run_factorforge_gemini_step1_provider.py") for p in provenances)
+        and all((p.get("provider_api") == "gemini-generate-content") for p in provenances)
+        and all((p.get("model") == "gemini-3.1-pro-preview") for p in provenances)
+        and all((p.get("formal_llm_extraction") is True and p.get("fixture_only") is False) for p in provenances)
+        and all(((report.get("raw_outputs") or {}).get(role) or {}).get("parsed_json_valid") is True for role in ["primary", "challenger", "chief"])
+    )
+    return {
+        "case": "step1_gemini_command_wrapper_contract",
+        "rc": proc.returncode,
+        "report_path": str(report_path),
+        "report_exists": report_path.exists(),
+        "observed_request_count": len(observed),
+        "observed_inline_pdf_count": inline_pdf_count,
+        "provider_wrappers": [p.get("provider_wrapper") for p in provenances],
+        "provider_apis": [p.get("provider_api") for p in provenances],
+        "models": [p.get("model") for p in provenances],
+        "raw_outputs_valid": {
+            role: ((report.get("raw_outputs") or {}).get(role) or {}).get("parsed_json_valid")
+            for role in ["primary", "challenger", "chief"]
+        },
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": ok,
+    }
+
+
+def case_step1_gemini_wrapper_missing_credentials_blocks(root: Path) -> dict[str, Any]:
+    case_root = root / "step1_gemini_missing_credentials_case"
+    case_root.mkdir(parents=True, exist_ok=True)
+    pdf = (ROOT / "fixtures" / "step2" / "sample_report_stub.pdf").resolve()
+    request = {
+        "version": "factorforge_step1_llm_bridge_v1",
+        "role": "primary",
+        "report_id": "STEP1_GEMINI_MISSING_CREDENTIALS",
+        "pdf_path": str(pdf),
+        "pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
+        "prompt_name": "mock_step1_primary",
+        "prompt_hash": "mock_prompt_hash",
+        "prompt": "Return JSON only.",
+        "prior_outputs": {},
+        "formal_llm_provider_request": {
+            "contract_version": "factorforge_formal_llm_provider_request_v1",
+            "step": "step1",
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview",
+            "provider_source": "smoke",
+            "model_source": "smoke",
+        },
+    }
+    env = os.environ.copy()
+    env.pop("GEMINI_API_KEY", None)
+    env.pop("GOOGLE_API_KEY", None)
+    env["FACTORFORGE_STEP1_LLM_MODEL"] = "gemini-3.1-pro-preview"
+    proc = subprocess.run(
+        [sys.executable, "scripts/run_factorforge_gemini_step1_provider.py"],
+        cwd=ROOT,
+        input=json.dumps(request, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    text = proc.stdout + proc.stderr
+    return {
+        "case": "step1_gemini_wrapper_missing_credentials_blocks",
+        "rc": proc.returncode,
+        "token_present": "BLOCK_FORMAL_GEMINI_BRIDGE_UNAVAILABLE" in text,
+        "stdout_tail": tail(proc.stdout),
+        "stderr_tail": tail(proc.stderr),
+        "ok": bool(proc.returncode != 0 and "BLOCK_FORMAL_GEMINI_BRIDGE_UNAVAILABLE" in text and not proc.stdout.strip()),
     }
 
 
@@ -1437,6 +1615,99 @@ print(json.dumps(out, ensure_ascii=False))
     )
     provider.chmod(0o755)
     return provider
+
+
+def _write_gemini_mock_server(root: Path) -> tuple[Path, Path]:
+    server = root / "gemini_mock_server.py"
+    observed_path = root / "gemini_observed_requests.jsonl"
+    sample_intake = read_json(ROOT / "fixtures" / "step1" / "sample_intake_response.json")
+    server.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import re
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PORT = int(sys.argv[1])
+OBSERVED = Path(sys.argv[2])
+SAMPLE_INTAKE = {json.dumps(sample_intake, ensure_ascii=False)!r}
+
+
+def response_payload(body):
+    text = json.dumps(body, ensure_ascii=False)
+    role_match = re.search(r"Role: ([a-z]+)", text)
+    report_match = re.search(r"Report ID: ([^\\\\n]+)", text)
+    role = role_match.group(1) if role_match else "primary"
+    report_id = report_match.group(1).strip() if report_match else "GEMINI_STEP1_WRAPPER_SMOKE"
+    if role in {{"primary", "challenger"}}:
+        payload = json.loads(SAMPLE_INTAKE)
+        payload["report_id"] = report_id
+        payload.setdefault("ambiguities", []).append(f"mock gemini {{role}} route")
+        return payload
+    what_must_be_true = [
+        "分钟价量结构必须代表可观察的交易拥挤或冲击状态。",
+        "聪明钱成交片段的 VWAP 比值必须与未来收益分布有稳定关系。"
+    ]
+    return {{
+        "report_id": report_id,
+        "final_factor": {{
+            "name": "SMART_MONEY_V2",
+            "assembly_steps": ["从分钟成交中计算 S=|R|/ln(V)", "按 S 排序并取累计成交量前 20%", "计算 VWAPsmart/VWAPall"],
+            "economic_logic": "聪明钱成交片段刻画信息型交易或冲击较低的成交状态。",
+            "behavioral_logic": "噪声交易者为不利成交状态支付短期收益差。",
+            "what_must_be_true": what_must_be_true,
+            "what_would_break_it": ["聪明钱片段无法稳定区分未来收益状态。"]
+        }},
+        "market_process_thesis": {{
+            "market_phenomenon": "分钟成交排序揭示信息型交易状态",
+            "economic_hypothesis": "低 Q 状态对应更有利的未来收益分布。",
+            "return_source_family": "information_advantage",
+            "payer_or_counterparty": "噪声交易者或被动流动性需求方",
+            "why_they_pay": "他们在高冲击或低信息成交状态下付出价格让步。",
+            "what_must_be_true": what_must_be_true,
+            "what_would_break_it": ["成交排序只是噪声或数据处理产物。"]
+        }},
+        "what_must_be_true": what_must_be_true,
+        "mechanism_assumptions": what_must_be_true,
+        "logic_provenance_summary": {{"merge_mode": "mock_gemini_step1_bridge"}},
+        "assembly_path": ["S 排序", "top cumulative volume", "VWAP ratio"],
+        "unresolved_ambiguities": [],
+        "chief_decision_summary": "Use SMART_MONEY_V2 mock extraction.",
+        "chief_confidence": "medium",
+        "chief_rationale": "Mock Gemini smoke preserves report-specific mechanics."
+    }}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length") or "0")
+        raw = self.rfile.read(length)
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {{}}
+        except Exception:
+            body = {{}}
+        OBSERVED.parent.mkdir(parents=True, exist_ok=True)
+        OBSERVED.open("a", encoding="utf-8").write(json.dumps({{"path": self.path, "body": body}}, ensure_ascii=False) + "\\n")
+        payload = response_payload(body)
+        response = {{"candidates": [{{"content": {{"parts": [{{"text": json.dumps(payload, ensure_ascii=False)}}]}}}}]}}
+        encoded = json.dumps(response, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+""",
+        encoding="utf-8",
+    )
+    server.chmod(0o755)
+    return server, observed_path
 
 
 def _free_port() -> int:
@@ -2541,11 +2812,14 @@ def main() -> int:
     cases = [
         case_prepare_no_raw_blocks(root),
         case_step1_provider_missing(root),
+        case_step1_command_missing_blocks(root),
         case_step1_run_manifest_report_id_mismatch_blocks_before_provider(root),
         case_prepare_run_manifest_root_mismatch_blocks_before_artifacts(root),
         case_step1_fixture(root),
         case_step1_command_bad_json_writes_failure_report(root),
         case_step1_deepseek_flash_routing_blocks_before_provider(root),
+        case_step1_gemini_wrapper_missing_credentials_blocks(root),
+        case_step1_gemini_command_wrapper_contract(root),
         case_humphrey_provider_openai_completions_mock(root),
         case_humphrey_provider_anthropic_messages_mock(root),
         case_humphrey_provider_request_contract_overrides_env_model(root),

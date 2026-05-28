@@ -369,6 +369,86 @@ def case_prepare_block_no_report_runtime(root: Path) -> dict[str, Any]:
     }
 
 
+def case_agent_tool_step1_writes_task_packet_only(root: Path) -> dict[str, Any]:
+    report_id = "RUN_ISOLATION_AGENT_TOOL_STEP1"
+    archive = root / "archive" / "factorforge-runs"
+    factor_root, manifest = allocate_formal_run_root(
+        report_id=report_id,
+        pdf_sha256=pdf_sha(),
+        step_scope="step1-agent-tool",
+        archive_root=archive,
+        step1_provider="google",
+        step1_model="google/gemini-3.1-pro-preview",
+        step2_provider="deepseek",
+        step2_model="deepseek-v4-pro",
+    )
+    manifest_path = factor_root / "formal_run_manifest.json"
+    proc = run_cmd(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(factor_root),
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            str(PDF),
+            "--end-step",
+            "1",
+            "--run-formal-llm-bridges",
+            "--formal-llm-provider",
+            "agent_tool",
+            "--run-manifest",
+            str(manifest_path),
+            "--write-report",
+        ],
+        env={
+            "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": "google",
+            "FACTORFORGE_STEP1_LLM_MODEL": "google/gemini-3.1-pro-preview",
+            "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": "deepseek",
+            "FACTORFORGE_STEP2_LLM_MODEL": "deepseek-v4-pro",
+        },
+    )
+    text = proc.stdout + proc.stderr
+    token = "BLOCK_AGENT_TOOL_STEP1_REQUIRED"
+    task_packet = factor_root / "objects" / "agent_tool_tasks" / report_id / "step1_openclaw_pdf_task_packet.json"
+    raw_dir = factor_root / "objects" / "raw_llm" / report_id / "step1"
+    report_path = factor_root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+    runtime_context = factor_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    packet = read_json(task_packet) if task_packet.exists() else {}
+    roles = packet.get("roles") if isinstance(packet.get("roles"), list) else []
+    next_command = str(packet.get("next_command_after_raw_written") or "")
+    return {
+        "case": "agent_tool_step1_missing_raw_writes_task_packet_only",
+        "rc": proc.returncode,
+        "token_present": token in text,
+        "task_packet_exists": task_packet.exists(),
+        "task_packet_version": packet.get("version"),
+        "task_packet_provider": ((packet.get("agent_tool") or {}).get("provider") if isinstance(packet.get("agent_tool"), dict) else None),
+        "role_count": len(roles),
+        "next_command_uses_agent_tool_resume": "--formal-llm-provider agent_tool" in next_command,
+        "raw_written": raw_dir.exists(),
+        "prepare_report_exists": report_path.exists(),
+        "runtime_context_exists": runtime_context.exists(),
+        "manifest_sha_bound": manifest.get("repo_sha") == current_repo_sha(),
+        "worker_started": False,
+        "ok": bool(
+            proc.returncode != 0
+            and token in text
+            and task_packet.exists()
+            and packet.get("version") == "factorforge_step1_agent_tool_task_packet_v1"
+            and ((packet.get("agent_tool") or {}).get("provider") == "openclaw_pdf_tool")
+            and len(roles) == 3
+            and "--formal-llm-provider agent_tool" in next_command
+            and "--end-step 1" in next_command
+            and not raw_dir.exists()
+            and not report_path.exists()
+            and not runtime_context.exists()
+        ),
+        "stderr_tail": proc.stderr[-1200:],
+    }
+
+
 def case_smoke_roots_forbidden() -> dict[str, Any]:
     probes = {
         "tmp": Path(f"/tmp/factorforge-smoke-forbidden-{os.getpid()}"),
@@ -420,6 +500,7 @@ def main() -> int:
         case_fresh_archive_root_and_exact_resume(root),
         case_step2_block_no_raw_report_runtime(root),
         case_prepare_block_no_report_runtime(root),
+        case_agent_tool_step1_writes_task_packet_only(root),
         case_smoke_roots_forbidden(),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"

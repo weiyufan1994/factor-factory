@@ -12,6 +12,33 @@ fallback 冒充正式抽取。
 
 ## Step1 Bridge
 
+Step1 有两条 formal route：
+
+- `agent_tool`：生产 OpenClaw PDF route。`prepare_factorforge_formal_artifacts.py`
+  只写一个 task packet，要求 OpenClaw agent runtime 用内部 `pdf` tool
+  调用 `google/gemini-3.1-pro-preview`，并把 primary/challenger/chief raw
+  JSON 原样写回同一个 run root。它不要求、也不接受把 OpenClaw `pdf` tool
+  伪装成 shell command。
+- `command`：普通 stdin JSON -> stdout raw JSON 的外部 provider route。只适合
+  已经有同步命令 wrapper 的 provider，不是 OpenClaw 内部 pdf tool route。
+
+OpenClaw `pdf` tool 是 agent runtime 内部工具，不是独立 CLI。缺少 Step1 raw
+时，`agent_tool` route 会返回：
+
+```text
+BLOCK_AGENT_TOOL_STEP1_REQUIRED
+```
+
+并写入：
+
+```text
+<factorforge_root>/objects/agent_tool_tasks/<report_id>/step1_openclaw_pdf_task_packet.json
+```
+
+该 task packet 是下一步给 OpenClaw agent 执行的唯一输入。agent 写回 raw 后，
+再次运行 `prepare_factorforge_formal_artifacts.py` 编译/validate；compiler
+不会在进程内调用真实 pdf tool。
+
 ```bash
 python3 scripts/run_factorforge_step1_llm_bridge.py \
   --report-id <report_id> \
@@ -26,7 +53,7 @@ python3 scripts/run_factorforge_step1_llm_bridge.py \
 BLOCK_STEP1_LLM_PROVIDER_UNAVAILABLE
 ```
 
-生产接入可以使用通用 command provider：
+外部 provider 生产接入可以使用通用 command provider：
 
 ```bash
 FACTORFORGE_STEP1_LLM_COMMAND='your-step1-provider-command' \
@@ -150,6 +177,8 @@ python3 scripts/run_factorforge_formal_llm_bridge_smoke.py \
 该 smoke 覆盖：
 
 - no raw artifacts -> `BLOCK_FORMAL_STEP1_LLM_OUTPUT_REQUIRED`
+- agent_tool Step1 no raw -> `BLOCK_AGENT_TOOL_STEP1_REQUIRED`，只写
+  `objects/agent_tool_tasks/<report_id>/step1_openclaw_pdf_task_packet.json`
 - Step1 provider missing -> `BLOCK_STEP1_LLM_PROVIDER_UNAVAILABLE`
 - Step1 fixture raw outputs 可解析并记录 prompt/model/pdf sha256 provenance
 - Step2 provider missing -> `BLOCK_STEP2_LLM_PROVIDER_UNAVAILABLE`

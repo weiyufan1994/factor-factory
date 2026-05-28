@@ -22,9 +22,12 @@ BLOCK_STEP1_RAW = 'BLOCK_FORMAL_STEP1_LLM_OUTPUT_REQUIRED'
 BLOCK_STEP2_RAW = 'BLOCK_FORMAL_STEP2_LLM_OUTPUT_REQUIRED'
 BLOCK_REPORT_ID = 'BLOCK_NON_CANONICAL_REPORT_ID'
 BLOCK_BRIDGE = 'BLOCK_FORMAL_LLM_BRIDGE_FAILED'
+BLOCK_AGENT_TOOL_STEP1 = 'BLOCK_AGENT_TOOL_STEP1_REQUIRED'
+BLOCK_AGENT_TOOL_RAW = 'BLOCK_AGENT_TOOL_STEP1_RAW_INVALID'
 BLOCK_RAW_REPORT_ID = 'BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH'
 BLOCK_ROOT = 'BLOCK_FORMAL_ROOT_UNSPECIFIED'
 RUNTIME_CONTEXT_DIR = ('objects', 'runtime_context')
+AGENT_TOOL_TASK_VERSION = 'factorforge_step1_agent_tool_task_packet_v1'
 
 from scripts.factorforge_formal_run_manifest import BLOCK_MANIFEST_REQUIRED, BLOCK_RUN_MANIFEST, load_required_manifest, validate_manifest
 from scripts.factorforge_run_registry import assert_formal_run_root_allowed
@@ -34,6 +37,7 @@ from skills.factor_forge_step1.modules.report_ingestion.challenger.challenger_to
 from skills.factor_forge_step1.modules.report_ingestion.finalizers.alpha_idea_master_writer import AlphaIdeaMasterWriter
 from skills.factor_forge_step1.modules.report_ingestion.finalizers.handoff_to_step2 import HandoffToStep2
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_client import PdfSkillClient
+from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_prompts import build_step1_report_intake_prompt
 from skills.factor_forge_step1.modules.report_ingestion.merge.merge_to_alpha_idea_master import merge_to_alpha_idea_master
 from skills.factor_forge_step1.modules.report_ingestion.normalizers.intake_to_alpha_thesis import intake_to_alpha_thesis
 from skills.factor_forge_step1.modules.report_ingestion.orchestration.step1_pipeline import Step1Pipeline
@@ -175,8 +179,32 @@ def formal_provider_request_for_step(step: str) -> dict[str, Any]:
     return payload
 
 
+def step1_challenger_prompt() -> str:
+    return (
+        build_step1_report_intake_prompt()
+        + '\n\nRole override: you are the challenger reader. Independently identify missing subfactors, formulas, '
+        'implementation clues, and ambiguities. Output only the same JSON schema.'
+    )
+
+
+def step1_chief_prompt() -> str:
+    return (
+        'You are the Step1 chief merge agent. Inputs are primary and challenger report-intake JSON. '
+        'Output only JSON matching the chief decision structure required by merge_to_alpha_idea_master: '
+        'final_factor, logic_provenance_summary, assembly_path, unresolved_ambiguities, '
+        'chief_decision_summary, chief_confidence, chief_rationale, market_process_thesis, '
+        'what_must_be_true, and either economic_hypothesis or mechanism_assumptions. '
+        'Do not invent generic template assumptions; if the raw report does not support a field, leave it missing so validation blocks.'
+    )
+
+
 def should_suppress_block_report(message: str) -> bool:
-    return message.startswith(BLOCK_RUN_MANIFEST) or message.startswith(BLOCK_MANIFEST_REQUIRED) or 'BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH' in message
+    return (
+        message.startswith(BLOCK_RUN_MANIFEST)
+        or message.startswith(BLOCK_MANIFEST_REQUIRED)
+        or message.startswith(BLOCK_AGENT_TOOL_STEP1)
+        or 'BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH' in message
+    )
 
 
 def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) -> dict[str, Any]:
@@ -389,6 +417,8 @@ def ensure_step1_bridge_raw(args: argparse.Namespace, root: Path, report_pdf: Pa
         return {'generated': False, 'reason': 'raw_paths_provided'}
     if not args.run_formal_llm_bridges:
         return {'generated': False, 'reason': 'bridge_not_requested'}
+    if args.formal_llm_provider == 'agent_tool':
+        return ensure_step1_agent_tool_raw(args, root, report_pdf)
     out_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step1'
     result = run_bridge_subprocess(
         [
@@ -428,6 +458,8 @@ def ensure_step2_bridge_raw(args: argparse.Namespace, root: Path) -> dict[str, A
         return {'generated': False, 'reason': 'raw_paths_provided'}
     if not args.run_formal_llm_bridges:
         return {'generated': False, 'reason': 'bridge_not_requested'}
+    if args.formal_llm_provider == 'agent_tool':
+        raise SystemExit('BLOCK_STEP2_LLM_PROVIDER_UNAVAILABLE: agent_tool currently owns Step1 PDF extraction only; provide Step2 raw paths or use command provider for Step2')
     out_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step2'
     result = run_bridge_subprocess(
         [
@@ -465,6 +497,146 @@ def validate_step1_raw_paths(args: argparse.Namespace) -> None:
         [path_arg(args.step1_primary_raw), path_arg(args.step1_challenger_raw), path_arg(args.step1_chief_raw)],
         args.report_id,
         allow_missing=allow_missing,
+    )
+
+
+def _agent_tool_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+    provenance = payload.get('_llm_bridge_provenance')
+    if isinstance(provenance, dict):
+        return provenance
+    provenance = payload.get('provenance')
+    if isinstance(provenance, dict):
+        return provenance
+    return payload
+
+
+def validate_step1_agent_tool_raw(path: Path, *, report_id: str, role: str, pdf_sha256: str, prompt_hash: str) -> None:
+    if not path.exists():
+        raise SystemExit(f'{BLOCK_AGENT_TOOL_RAW}: missing {role} raw: {path}')
+    payload = read_json(path)
+    provenance = _agent_tool_provenance(payload)
+    required = {
+        'report_id': report_id,
+        'role': role,
+        'provider': 'openclaw_pdf_tool',
+        'model': 'google/gemini-3.1-pro-preview',
+        'pdf_sha256': pdf_sha256,
+        'prompt_hash': prompt_hash,
+        'source_derivation': 'agent_tool_formal_route',
+    }
+    mismatches = []
+    for key, expected in required.items():
+        actual = str(provenance.get(key) or '').strip()
+        if actual != expected:
+            mismatches.append(f'{key} expected={expected} actual={actual or "MISSING"}')
+    if not str(provenance.get('created_at_utc') or '').strip():
+        mismatches.append('created_at_utc missing')
+    if mismatches:
+        raise SystemExit(f'{BLOCK_AGENT_TOOL_RAW}: role={role} path={path} mismatches={mismatches[:8]}')
+
+
+def write_step1_agent_tool_task_packet(args: argparse.Namespace, root: Path, report_pdf: Path) -> Path:
+    pdf_hash = sha256_file(report_pdf)
+    prompts = {
+        'primary': ('step1_report_intake_primary', build_step1_report_intake_prompt()),
+        'challenger': ('step1_report_intake_challenger', step1_challenger_prompt()),
+        'chief': ('step1_chief_merge', step1_chief_prompt()),
+    }
+    raw_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step1'
+    roles = []
+    for role, (prompt_name, prompt) in prompts.items():
+        roles.append(
+            {
+                'role': role,
+                'prompt_name': prompt_name,
+                'prompt_hash': stable_hash({'prompt': prompt}),
+                'prompt': prompt,
+                'target_raw_path': str(raw_dir / f'step1_{role}_raw.json'),
+            }
+        )
+    packet = {
+        'version': AGENT_TOOL_TASK_VERSION,
+        'block_token': BLOCK_AGENT_TOOL_STEP1,
+        'report_id': args.report_id,
+        'factorforge_root': str(root),
+        'report_pdf': str(report_pdf),
+        'pdf_sha256': pdf_hash,
+        'agent_tool': {
+            'runtime': 'openclaw',
+            'tool': 'pdf',
+            'provider': 'openclaw_pdf_tool',
+            'model': 'google/gemini-3.1-pro-preview',
+        },
+        'roles': roles,
+        'required_raw_provenance': {
+            'report_id': args.report_id,
+            'role': '<primary|challenger|chief>',
+            'provider': 'openclaw_pdf_tool',
+            'model': 'google/gemini-3.1-pro-preview',
+            'pdf_sha256': pdf_hash,
+            'prompt_hash': '<matching role prompt_hash>',
+            'source_derivation': 'agent_tool_formal_route',
+            'created_at_utc': '<UTC ISO timestamp>',
+        },
+        'forbidden': [
+            'do not use old raw/root/artifacts',
+            'do not hand patch schema after model output',
+            'do not write repo root or production workspace top-level objects/runs/output/tmp',
+            'do not start worker or run Step3B/Step4',
+        ],
+        'next_command_after_raw_written': (
+            'FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER=google '
+            'FACTORFORGE_STEP1_LLM_MODEL=google/gemini-3.1-pro-preview '
+            'python3 scripts/prepare_factorforge_formal_artifacts.py '
+            f'--factorforge-root {root} --report-id {args.report_id} --report-pdf {report_pdf} '
+            f'--run-manifest {root / "formal_run_manifest.json"} --end-step 1 '
+            '--run-formal-llm-bridges --formal-llm-provider agent_tool --write-report'
+        ),
+    }
+    path = root / 'objects' / 'agent_tool_tasks' / args.report_id / 'step1_openclaw_pdf_task_packet.json'
+    write_json(path, packet)
+    return path
+
+
+def ensure_step1_agent_tool_raw(args: argparse.Namespace, root: Path, report_pdf: Path) -> dict[str, Any]:
+    raw_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step1'
+    prompts = {
+        'primary': stable_hash({'prompt': build_step1_report_intake_prompt()}),
+        'challenger': stable_hash({'prompt': step1_challenger_prompt()}),
+        'chief': stable_hash({'prompt': step1_chief_prompt()}),
+    }
+    paths = {
+        'primary': raw_dir / 'step1_primary_raw.json',
+        'challenger': raw_dir / 'step1_challenger_raw.json',
+        'chief': raw_dir / 'step1_chief_raw.json',
+    }
+    if all(path.exists() for path in paths.values()):
+        pdf_hash = sha256_file(report_pdf)
+        for role, path in paths.items():
+            validate_step1_agent_tool_raw(
+                path,
+                report_id=args.report_id,
+                role=role,
+                pdf_sha256=pdf_hash,
+                prompt_hash=prompts[role],
+            )
+        set_path_arg(args, 'step1_primary_raw', paths['primary'])
+        set_path_arg(args, 'step1_challenger_raw', paths['challenger'])
+        set_path_arg(args, 'step1_chief_raw', paths['chief'])
+        return {
+            'generated': False,
+            'provider': 'agent_tool',
+            'agent_tool': 'openclaw_pdf',
+            'reason': 'agent_tool_raw_present',
+            'out_dir': str(raw_dir),
+            'primary_raw_path': args.step1_primary_raw,
+            'challenger_raw_path': args.step1_challenger_raw,
+            'chief_raw_path': args.step1_chief_raw,
+        }
+    packet_path = write_step1_agent_tool_task_packet(args, root, report_pdf)
+    raise SystemExit(
+        f'{BLOCK_AGENT_TOOL_STEP1}: OpenClaw runtime must execute pdf tool from task_packet={packet_path} '
+        f'and write Step1 raw JSON to {raw_dir}'
     )
 
 
@@ -752,7 +924,7 @@ def main() -> int:
     ap.add_argument('--step2-challenger-raw')
     ap.add_argument('--step2-auditor-raw')
     ap.add_argument('--run-formal-llm-bridges', action='store_true', help='Generate missing Step1/Step2 raw artifacts through the formal LLM bridge before building masters.')
-    ap.add_argument('--formal-llm-provider', default='command', choices=['command', 'fixture'], help='Provider passed to the Step1/Step2 formal LLM bridge when --run-formal-llm-bridges is set.')
+    ap.add_argument('--formal-llm-provider', default='command', choices=['command', 'fixture', 'agent_tool'], help='Provider passed to the formal LLM bridge when --run-formal-llm-bridges is set. agent_tool writes a Step1 OpenClaw pdf task packet instead of calling a shell command.')
     ap.add_argument('--run-manifest', default=os.getenv('FACTORFORGE_FORMAL_RUN_MANIFEST'))
     ap.add_argument('--write-runtime-context', action='store_true', help='After Step1/2/3A validation passes, write objects/runtime_context for the workflow layer without starting the worker.')
     ap.add_argument('--allow-deterministic-debug', action='store_true')
@@ -760,7 +932,7 @@ def main() -> int:
     args = ap.parse_args()
 
     root = resolve_factorforge_root(args.factorforge_root)
-    if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider == 'command'):
+    if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider in {'command', 'agent_tool'}):
         try:
             assert_formal_run_root_allowed(root)
         except SystemExit as exc:
@@ -781,7 +953,7 @@ def main() -> int:
 
     try:
         report_pdf, pdf_meta = resolve_report_pdf(args.report_pdf, root)
-        if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider == 'command'):
+        if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider in {'command', 'agent_tool'}):
             _, manifest = load_required_manifest(args.run_manifest)
             validate_manifest(
                 manifest,
@@ -789,7 +961,7 @@ def main() -> int:
                 factorforge_root=root,
                 report_pdf=report_pdf,
             )
-            if args.run_formal_llm_bridges and args.formal_llm_provider == 'command':
+            if args.run_formal_llm_bridges and args.formal_llm_provider in {'command', 'agent_tool'}:
                 validate_manifest(
                     manifest,
                     report_id=args.report_id,
@@ -799,7 +971,7 @@ def main() -> int:
                     provider_request=formal_provider_request_for_step('step1'),
                     expected_out_dir=root / 'objects' / 'raw_llm' / args.report_id / 'step1',
                 )
-                if args.end_step in {'2', '3a'}:
+                if args.formal_llm_provider == 'command' and args.end_step in {'2', '3a'}:
                     validate_manifest(
                         manifest,
                         report_id=args.report_id,

@@ -878,10 +878,49 @@ def add_direct_code_alias_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def direct_code_expects_polars(module) -> bool:
+    path = Path(getattr(module, '__file__', '') or '')
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        text = ''
+    polars_api_markers = [
+        '.with_columns(',
+        '.select(',
+        '.lazy(',
+        'pl.col(',
+        'polars.col(',
+    ]
+    return any(marker in text for marker in polars_api_markers)
+
+
+def maybe_polars_frame(df: pd.DataFrame, use_polars: bool):
+    if not use_polars:
+        return df
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise SystemExit(f'BLOCK_STEP3B_DIRECT_CODE_DEPENDENCY_MISSING: polars dependency missing: {exc}') from exc
+    return pl.from_pandas(df)
+
+
+def normalize_direct_code_result(result) -> pd.DataFrame:
+    if isinstance(result, pd.DataFrame):
+        return result
+    if hasattr(result, 'to_pandas') and callable(result.to_pandas):
+        return result.to_pandas()
+    if hasattr(result, 'to_dicts') and callable(result.to_dicts):
+        return pd.DataFrame(result.to_dicts())
+    return result
+
+
 def compute_factor_with_contract(module, daily_df: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
     fn = getattr(module, 'compute_factor')
     daily_input = add_direct_code_alias_columns(daily_df)
     minute_input = add_direct_code_alias_columns(minute_df)
+    use_polars = direct_code_expects_polars(module)
+    daily_call_input = maybe_polars_frame(daily_input, use_polars)
+    minute_call_input = maybe_polars_frame(minute_input, use_polars)
     try:
         params = list(inspect.signature(fn).parameters.values())
     except (TypeError, ValueError):
@@ -893,19 +932,20 @@ def compute_factor_with_contract(module, daily_df: pd.DataFrame, minute_df: pd.D
     if len(positional) == 1:
         first = positional[0].name.lower()
         if 'daily' in first:
-            return fn(daily_input)
+            return normalize_direct_code_result(fn(daily_call_input))
         if 'minute' in first or 'intraday' in first:
-            return fn(minute_input)
-        return fn(minute_input if not minute_input.empty else daily_input)
+            return normalize_direct_code_result(fn(minute_call_input))
+        chosen = minute_call_input if not minute_input.empty else daily_call_input
+        return normalize_direct_code_result(fn(chosen))
 
     try:
-        return fn(daily_df=daily_input, minute_df=minute_input)
+        return normalize_direct_code_result(fn(daily_df=daily_call_input, minute_df=minute_call_input))
     except TypeError:
         if positional:
             first = positional[0].name.lower()
             if 'minute' in first:
-                return fn(minute_input, daily_input)
-        return fn(daily_input, minute_input)
+                return normalize_direct_code_result(fn(minute_call_input, daily_call_input))
+        return normalize_direct_code_result(fn(daily_call_input, minute_call_input))
 
 
 def resolve_local_input_path(raw: str | None) -> Path | None:

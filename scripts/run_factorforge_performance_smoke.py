@@ -84,6 +84,16 @@ def load_step3b_validator_module():
     return module
 
 
+def load_step3b_runner_module():
+    path = REPO_ROOT / 'skills' / 'factor-forge-step3' / 'scripts' / 'run_step3b.py'
+    spec = importlib.util.spec_from_file_location('factorforge_run_step3b_smoke', path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'cannot load Step3B runner module from {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @contextmanager
 def temporary_env(name: str, value: str | None):
     old = os.environ.get(name)
@@ -3121,6 +3131,59 @@ def apply_custom_block(frame):
         'block_error': block_error,
         'justified_profile': justified_profile,
         'hybrid_block_error': hybrid_block_error,
+        'ok': ok,
+    }
+
+
+def run_direct_code_polars_contract_case(root: Path) -> dict[str, Any]:
+    import pandas as pd
+
+    validator = load_step3b_validator_module()
+    runner = load_step3b_runner_module()
+    case_dir = root / 'direct_code_polars_contract_case'
+    case_dir.mkdir(parents=True, exist_ok=True)
+    implementation_path = case_dir / 'factor_impl_polars.py'
+    implementation_path.write_text(
+        """
+import polars as pl
+
+def compute_factor(daily_df, minute_df=None):
+    frame = daily_df.with_columns(
+        (pl.col("close") / pl.col("open") - 1.0).alias("factor_value")
+    )
+    return frame.select(["ts_code", "trade_date", "factor_value"])
+""".lstrip(),
+        encoding='utf-8',
+    )
+    output_schema = {'columns': ['ts_code', 'trade_date', 'factor_value']}
+    validator_error = None
+    try:
+        validator.run_direct_code_fixture_smoke(implementation_path, output_schema)
+    except Exception as exc:
+        validator_error = f'{type(exc).__name__}: {exc}'
+
+    runner_error = None
+    runner_output_type = None
+    try:
+        module = runner.import_module_from_path(implementation_path)
+        daily_df = pd.DataFrame([
+            {'ts_code': '000001.SZ', 'trade_date': '20260101', 'open': 10.0, 'close': 10.2, 'vol': 100.0},
+            {'ts_code': '000001.SZ', 'trade_date': '20260102', 'open': 10.2, 'close': 10.1, 'vol': 110.0},
+        ])
+        minute_df = pd.DataFrame([
+            {'ts_code': '000001.SZ', 'trade_date': '20260101', 'trade_time': '20260101 09:30:00', 'close': 10.1, 'vol': 20.0},
+        ])
+        result = runner.compute_factor_with_contract(module, daily_df, minute_df)
+        runner_output_type = type(result).__name__
+    except Exception as exc:
+        runner_error = f'{type(exc).__name__}: {exc}'
+
+    ok = validator_error is None and runner_error is None and runner_output_type == 'DataFrame'
+    return {
+        'case': 'direct_code_polars_contract',
+        'validator_error': validator_error,
+        'runner_error': runner_error,
+        'runner_output_type': runner_output_type,
         'ok': ok,
     }
 
@@ -6533,6 +6596,7 @@ def main() -> int:
         run_formula_kernel_default_numpy_ts_corr_cov_speed_guard_case(),
         run_formula_kernel_corr_cov_single_group_rollback_case(),
         run_direct_code_high_speed_profile_case(),
+        run_direct_code_polars_contract_case(root),
         run_direct_code_high_speed_subprocess_blocks_case(root),
         run_hybrid_high_speed_subprocess_blocks_case(root),
         run_formula_kernel_parity_failure_blocks_case(root),

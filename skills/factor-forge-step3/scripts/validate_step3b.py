@@ -760,6 +760,44 @@ def add_direct_code_alias_columns(df):
     return out
 
 
+def direct_code_expects_polars(module) -> bool:
+    path = Path(getattr(module, '__file__', '') or '')
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        text = ''
+    polars_api_markers = [
+        '.with_columns(',
+        '.select(',
+        '.lazy(',
+        'pl.col(',
+        'polars.col(',
+    ]
+    return any(marker in text for marker in polars_api_markers)
+
+
+def maybe_polars_frame(df, use_polars: bool):
+    if not use_polars:
+        return df
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise AssertionError(f'BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: polars dependency missing: {exc}') from exc
+    return pl.from_pandas(df)
+
+
+def normalize_direct_code_result(result):
+    import pandas as pd
+
+    if isinstance(result, pd.DataFrame):
+        return result
+    if hasattr(result, 'to_pandas') and callable(result.to_pandas):
+        return result.to_pandas()
+    if hasattr(result, 'to_dicts') and callable(result.to_dicts):
+        return pd.DataFrame(result.to_dicts())
+    return result
+
+
 def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     import pandas as pd
 
@@ -797,6 +835,9 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
                 })
     daily_df = add_direct_code_alias_columns(pd.DataFrame(daily_rows))
     minute_df = add_direct_code_alias_columns(pd.DataFrame(minute_rows))
+    use_polars = direct_code_expects_polars(module)
+    daily_input = maybe_polars_frame(daily_df, use_polars)
+    minute_input = maybe_polars_frame(minute_df, use_polars)
     try:
         params = list(inspect.signature(compute).parameters.values())
     except (TypeError, ValueError):
@@ -807,15 +848,16 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     ]
     if len(positional) == 1:
         first = positional[0].name.lower()
-        result = compute(daily_df if 'daily' in first else minute_df)
+        result = compute(daily_input if 'daily' in first else minute_input)
     else:
         try:
-            result = compute(daily_df=daily_df, minute_df=minute_df)
+            result = compute(daily_df=daily_input, minute_df=minute_input)
         except TypeError:
             if positional and 'minute' in positional[0].name.lower():
-                result = compute(minute_df, daily_df)
+                result = compute(minute_input, daily_input)
             else:
-                result = compute(daily_df, minute_df)
+                result = compute(daily_input, minute_input)
+    result = normalize_direct_code_result(result)
     if not isinstance(result, pd.DataFrame):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor must return DataFrame')
     if len(result) <= 0:

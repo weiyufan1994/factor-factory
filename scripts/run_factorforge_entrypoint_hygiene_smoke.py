@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 REGISTRY = ROOT / "docs" / "operations" / "factorforge-entrypoint-registry.json"
+
+from scripts.factorforge_run_registry import assert_smoke_root_allowed
 
 PRODUCTION_MAIN = {
     "scripts/prepare_factorforge_formal_artifacts.py",
@@ -174,6 +181,19 @@ def case_step12_blocks_repo_root_writes() -> dict[str, Any]:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=str(Path.home() / ".factorforge-smoke" / "entrypoint_hygiene_smoke"))
+    ap.add_argument("--fresh", action="store_true")
+    args = ap.parse_args()
+    root = Path(args.root).expanduser().resolve()
+    try:
+        assert_smoke_root_allowed(root)
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return int(exc.code) if isinstance(exc.code, int) and exc.code else 1
+    if args.fresh and root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
     registry = read_registry()
     cases = [
         case_registry_covers_scripts(registry),

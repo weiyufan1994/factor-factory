@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 RID = "FORMAL_LLM_BRIDGE_SMOKE"
 SAMPLE_DIRECT_CODE_SOURCE = """import numpy as np
 import pandas as pd
@@ -32,6 +34,8 @@ def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame
     out = df[["ts_code", "trade_date", "factor_value"]].replace([np.inf, -np.inf], np.nan)
     return out.dropna(subset=["factor_value"]).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 """
+
+from scripts.factorforge_run_registry import assert_smoke_root_allowed
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -64,10 +68,14 @@ def write_run_manifest(
     pdf = (ROOT / pdf_path).resolve()
     payload = {
         "manifest_version": "factorforge_formal_run_manifest_v1",
+        "run_id": f"smoke_{report_id}",
+        "created_at_utc": "2026-01-01T00:00:00Z",
         "report_id": report_id,
         "factorforge_root": str(root.resolve()),
+        "artifact_root": str(root.resolve()),
         "report_pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
         "repo_sha": repo_sha or current_repo_sha(),
+        "step_scope": "smoke",
         "steps": {
             "step1": {"provider": step1_provider, "model": step1_model},
             "step2": {"provider": step2_provider, "model": step2_model},
@@ -2529,11 +2537,16 @@ def case_prepare_existing_runtime_context_blocks_dispatch(root: Path) -> dict[st
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/tmp/factorforge_formal_llm_bridge_smoke")
+    ap.add_argument("--root", default=str(Path.home() / ".factorforge-smoke" / "formal_llm_bridge_smoke"))
     ap.add_argument("--fresh", action="store_true")
     args = ap.parse_args()
 
     root = Path(args.root).expanduser().resolve()
+    try:
+        assert_smoke_root_allowed(root)
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return int(exc.code) if isinstance(exc.code, int) and exc.code else 1
     if args.fresh and root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)

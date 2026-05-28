@@ -26,7 +26,8 @@ BLOCK_RAW_REPORT_ID = 'BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH'
 BLOCK_ROOT = 'BLOCK_FORMAL_ROOT_UNSPECIFIED'
 RUNTIME_CONTEXT_DIR = ('objects', 'runtime_context')
 
-from scripts.factorforge_formal_run_manifest import BLOCK_RUN_MANIFEST, load_required_manifest, validate_manifest
+from scripts.factorforge_formal_run_manifest import BLOCK_MANIFEST_REQUIRED, BLOCK_RUN_MANIFEST, load_required_manifest, validate_manifest
+from scripts.factorforge_run_registry import assert_formal_run_root_allowed
 
 from skills.factor_forge_step1.modules.report_ingestion.builders.report_map_builder import ReportMapBuilder
 from skills.factor_forge_step1.modules.report_ingestion.challenger.challenger_to_thesis import challenger_intake_to_thesis
@@ -175,7 +176,7 @@ def formal_provider_request_for_step(step: str) -> dict[str, Any]:
 
 
 def should_suppress_block_report(message: str) -> bool:
-    return message.startswith(BLOCK_RUN_MANIFEST) or 'BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH' in message
+    return message.startswith(BLOCK_RUN_MANIFEST) or message.startswith(BLOCK_MANIFEST_REQUIRED) or 'BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH' in message
 
 
 def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) -> dict[str, Any]:
@@ -759,6 +760,12 @@ def main() -> int:
     args = ap.parse_args()
 
     root = resolve_factorforge_root(args.factorforge_root)
+    if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider == 'command'):
+        try:
+            assert_formal_run_root_allowed(root)
+        except SystemExit as exc:
+            print(str(exc), file=sys.stderr)
+            return int(exc.code) if isinstance(exc.code, int) and exc.code else 1
     if formal_write_would_touch_repo_root(args, root):
         print(
             f'{BLOCK_ROOT}: explicit --factorforge-root outside the repo worktree is required for formal writes',

@@ -11,7 +11,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 BLOCK_RUN_MANIFEST = "BLOCK_RUN_MANIFEST_MISMATCH"
+BLOCK_MANIFEST_REQUIRED = "BLOCK_FORMAL_RUN_MANIFEST_REQUIRED"
 MANIFEST_ENV = "FACTORFORGE_FORMAL_RUN_MANIFEST"
+
+from scripts.factorforge_run_registry import assert_formal_run_root_allowed, assert_root_reuse_matches
 
 
 def sha256_file(path: Path) -> str:
@@ -36,7 +39,7 @@ def current_repo_sha() -> str:
 def _resolve_manifest_path(raw: str | None) -> Path:
     value = raw or os.getenv(MANIFEST_ENV)
     if not value:
-        raise SystemExit(f"{BLOCK_RUN_MANIFEST}: {MANIFEST_ENV} or --run-manifest is required for formal command bridge runs")
+        raise SystemExit(f"{BLOCK_MANIFEST_REQUIRED}: {MANIFEST_ENV} or --run-manifest is required for formal command bridge runs")
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = (REPO_ROOT / path).resolve()
@@ -123,6 +126,8 @@ def validate_manifest(
         raise SystemExit(f"{BLOCK_RUN_MANIFEST}: report_id expected={report_id} manifest={manifest_report_id}")
 
     manifest_root = _manifest_root(manifest)
+    assert_formal_run_root_allowed(manifest_root)
+    assert_root_reuse_matches(manifest_root, manifest)
     if factorforge_root is not None and manifest_root != factorforge_root.resolve():
         raise SystemExit(f"{BLOCK_RUN_MANIFEST}: factorforge_root expected={factorforge_root.resolve()} manifest={manifest_root}")
 
@@ -162,4 +167,3 @@ def validate_manifest(
     existing_report_ids = [rid for rid in _root_report_ids(manifest_root) if rid != report_id]
     if existing_report_ids:
         raise SystemExit(f"{BLOCK_RUN_MANIFEST}: factorforge_root contains other report_ids={existing_report_ids[:10]}")
-

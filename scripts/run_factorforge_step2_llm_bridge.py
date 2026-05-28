@@ -701,9 +701,6 @@ def write_command_failure_report(
 
 
 def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[str, Any]:
-    ctx = source_context(root, args.report_id)
-    if not ctx["step1_raw_present"]:
-        raise SystemExit(f"{BLOCK_STEP1_CONTEXT}: Step2 bridge requires Step1 context before formal extraction")
     command = os.getenv("FACTORFORGE_STEP2_LLM_COMMAND")
     if not command:
         raise SystemExit(f"{BLOCK_PROVIDER}: FACTORFORGE_STEP2_LLM_COMMAND is required for --provider command")
@@ -718,6 +715,9 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
         expected_out_dir=out_dir,
     )
     assert_step2_provider_routing(provider_request)
+    ctx = source_context(root, args.report_id)
+    if not ctx["step1_raw_present"]:
+        raise SystemExit(f"{BLOCK_STEP1_CONTEXT}: Step2 bridge requires Step1 context before formal extraction")
 
     created = now_utc()
     role_paths = {

@@ -26,6 +26,8 @@ BLOCK_RAW_REPORT_ID = 'BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH'
 BLOCK_ROOT = 'BLOCK_FORMAL_ROOT_UNSPECIFIED'
 RUNTIME_CONTEXT_DIR = ('objects', 'runtime_context')
 
+from scripts.factorforge_formal_run_manifest import BLOCK_RUN_MANIFEST, load_required_manifest, validate_manifest
+
 from skills.factor_forge_step1.modules.report_ingestion.builders.report_map_builder import ReportMapBuilder
 from skills.factor_forge_step1.modules.report_ingestion.challenger.challenger_to_thesis import challenger_intake_to_thesis
 from skills.factor_forge_step1.modules.report_ingestion.finalizers.alpha_idea_master_writer import AlphaIdeaMasterWriter
@@ -159,6 +161,21 @@ def resolve_report_pdf(raw: str, root: Path) -> tuple[Path, dict[str, Any]]:
         else:
             raise SystemExit(f'BLOCK_REPORT_PDF_MISSING: {candidate}')
     return candidate.resolve(), {'input_type': 'local_pdf'}
+
+
+def formal_provider_request_for_step(step: str) -> dict[str, Any]:
+    provider = os.getenv(f'FACTORFORGE_{step.upper()}_FORMAL_LLM_PROVIDER') or os.getenv('FACTORFORGE_FORMAL_LLM_PROVIDER')
+    model = os.getenv(f'FACTORFORGE_{step.upper()}_LLM_MODEL')
+    payload: dict[str, Any] = {'step': step}
+    if provider:
+        payload['provider'] = provider
+    if model:
+        payload['model'] = model
+    return payload
+
+
+def should_suppress_block_report(message: str) -> bool:
+    return message.startswith(BLOCK_RUN_MANIFEST) or 'BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH' in message
 
 
 def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) -> dict[str, Any]:
@@ -735,6 +752,7 @@ def main() -> int:
     ap.add_argument('--step2-auditor-raw')
     ap.add_argument('--run-formal-llm-bridges', action='store_true', help='Generate missing Step1/Step2 raw artifacts through the formal LLM bridge before building masters.')
     ap.add_argument('--formal-llm-provider', default='command', choices=['command', 'fixture'], help='Provider passed to the Step1/Step2 formal LLM bridge when --run-formal-llm-bridges is set.')
+    ap.add_argument('--run-manifest', default=os.getenv('FACTORFORGE_FORMAL_RUN_MANIFEST'))
     ap.add_argument('--write-runtime-context', action='store_true', help='After Step1/2/3A validation passes, write objects/runtime_context for the workflow layer without starting the worker.')
     ap.add_argument('--allow-deterministic-debug', action='store_true')
     ap.add_argument('--csv-output-policy', default='sample_csv', choices=['full_csv', 'sample_csv', 'no_csv'])
@@ -756,6 +774,34 @@ def main() -> int:
 
     try:
         report_pdf, pdf_meta = resolve_report_pdf(args.report_pdf, root)
+        if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider == 'command'):
+            _, manifest = load_required_manifest(args.run_manifest)
+            validate_manifest(
+                manifest,
+                report_id=args.report_id,
+                factorforge_root=root,
+                report_pdf=report_pdf,
+            )
+            if args.run_formal_llm_bridges and args.formal_llm_provider == 'command':
+                validate_manifest(
+                    manifest,
+                    report_id=args.report_id,
+                    factorforge_root=root,
+                    report_pdf=report_pdf,
+                    step='step1',
+                    provider_request=formal_provider_request_for_step('step1'),
+                    expected_out_dir=root / 'objects' / 'raw_llm' / args.report_id / 'step1',
+                )
+                if args.end_step in {'2', '3a'}:
+                    validate_manifest(
+                        manifest,
+                        report_id=args.report_id,
+                        factorforge_root=root,
+                        report_pdf=report_pdf,
+                        step='step2',
+                        provider_request=formal_provider_request_for_step('step2'),
+                        expected_out_dir=root / 'objects' / 'raw_llm' / args.report_id / 'step2',
+                    )
         extra: dict[str, Any] = {'report_pdf': str(report_pdf), 'report_pdf_sha256': sha256_file(report_pdf), 'report_pdf_metadata': pdf_meta}
         if not args.validate_existing_only:
             if args.end_step in {'1', '2', '3a'}:
@@ -791,7 +837,8 @@ def main() -> int:
         message = str(exc)
         validators = validate_chain(args.report_id, root, args.end_step) if args.validate_existing_only else {}
         report = build_report(args, root, 'BLOCK', validators, {'block_reason': message})
-        write_report_if_requested(args, root, report)
+        if not should_suppress_block_report(message):
+            write_report_if_requested(args, root, report)
         print(message, file=sys.stderr)
         if message.startswith(BLOCK_SCHEMA):
             return 1

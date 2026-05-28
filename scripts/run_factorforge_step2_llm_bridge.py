@@ -30,6 +30,8 @@ DIRECT_CODE_PERFORMANCE_PROFILE_VERSION = "factorforge_direct_code_performance_c
 DEFAULT_STEP2_ALLOWED_PROVIDER_TOKENS = ["minimax", "deepseek"]
 DEFAULT_STEP2_ALLOWED_MODEL_TOKENS = ["minimax", "deepseek"]
 
+from scripts.factorforge_formal_run_manifest import load_required_manifest, validate_manifest
+
 
 class CommandProviderError(RuntimeError):
     def __init__(self, *, role: str, rc: int, stderr_tail: str) -> None:
@@ -706,6 +708,15 @@ def build_command(args: argparse.Namespace, root: Path, out_dir: Path) -> dict[s
     if not command:
         raise SystemExit(f"{BLOCK_PROVIDER}: FACTORFORGE_STEP2_LLM_COMMAND is required for --provider command")
     provider_request = formal_llm_provider_request()
+    _, manifest = load_required_manifest(args.run_manifest)
+    validate_manifest(
+        manifest,
+        report_id=args.report_id,
+        factorforge_root=root,
+        step="step2",
+        provider_request=provider_request,
+        expected_out_dir=out_dir,
+    )
     assert_step2_provider_routing(provider_request)
 
     created = now_utc()
@@ -906,6 +917,7 @@ def main() -> int:
     ap.add_argument("--factorforge-root")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--provider", default=os.getenv("FACTORFORGE_STEP2_LLM_PROVIDER"))
+    ap.add_argument("--run-manifest", default=os.getenv("FACTORFORGE_FORMAL_RUN_MANIFEST"))
     ap.add_argument("--write-report", action="store_true")
     args = ap.parse_args()
 

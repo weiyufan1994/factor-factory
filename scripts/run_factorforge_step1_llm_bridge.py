@@ -26,6 +26,7 @@ STEP1_REQUIRED_MODEL_TOKENS = ("gemini",)
 
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_client import PdfSkillClient
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_prompts import build_step1_report_intake_prompt
+from scripts.factorforge_formal_run_manifest import load_required_manifest, validate_manifest
 
 
 def now_utc() -> str:
@@ -301,6 +302,15 @@ def build_command(args: argparse.Namespace, report_pdf: Path, pdf_meta: dict[str
     if not command:
         raise SystemExit(f"{BLOCK_PROVIDER}: FACTORFORGE_STEP1_LLM_COMMAND is required for --provider command")
     provider_request = formal_llm_provider_request()
+    _, manifest = load_required_manifest(args.run_manifest)
+    validate_manifest(
+        manifest,
+        report_id=args.report_id,
+        report_pdf=report_pdf,
+        step="step1",
+        provider_request=provider_request,
+        expected_out_dir=out_dir,
+    )
     assert_step1_provider_routing(provider_request)
 
     created = now_utc()
@@ -422,6 +432,7 @@ def main() -> int:
     ap.add_argument("--report-pdf", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--provider", default=os.getenv("FACTORFORGE_STEP1_LLM_PROVIDER"))
+    ap.add_argument("--run-manifest", default=os.getenv("FACTORFORGE_FORMAL_RUN_MANIFEST"))
     ap.add_argument("--write-report", action="store_true")
     args = ap.parse_args()
 

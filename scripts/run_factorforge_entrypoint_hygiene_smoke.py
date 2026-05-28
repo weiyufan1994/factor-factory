@@ -17,7 +17,7 @@ PRODUCTION_MAIN = {
 FORMAL_LLM_BOUNDARY = {
     "scripts/run_factorforge_step1_llm_bridge.py",
     "scripts/run_factorforge_step2_llm_bridge.py",
-    "scripts/run_factorforge_gemini_step1_provider.py",
+    "scripts/run_factorforge_openclaw_pdf_step1_provider.py",
     "scripts/run_factorforge_humphrey_llm_provider.py",
 }
 RUNTIME_ROOTS = [
@@ -107,7 +107,7 @@ def case_runtime_dirs_absent_from_repo_root() -> dict[str, Any]:
 def case_provider_adapter_has_no_default_model_fallback() -> dict[str, Any]:
     paths = [
         ROOT / "scripts" / "run_factorforge_humphrey_llm_provider.py",
-        ROOT / "scripts" / "run_factorforge_gemini_step1_provider.py",
+        ROOT / "scripts" / "run_factorforge_openclaw_pdf_step1_provider.py",
     ]
     text = "\n".join(path.read_text(encoding="utf-8") for path in paths)
     forbidden = [

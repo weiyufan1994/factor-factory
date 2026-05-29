@@ -946,6 +946,116 @@ def case_factorforgectl_run_worker_dry_run_no_ssm(root: Path) -> dict[str, Any]:
     }
 
 
+def worker_ready_registry(root: Path, report_id: str, run_id: str) -> tuple[Path, Path]:
+    artifact_root = root / "archive" / "factorforge-runs" / run_id
+    runtime_context = artifact_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    write_json(runtime_context, {"report_id": report_id, "artifact_root": str(artifact_root)})
+    registry_path = root / f"factorforgectl_{run_id}" / "active_run_registry.json"
+    write_json(
+        registry_path,
+        {
+            "registry_version": "factorforge_active_run_registry_v2",
+            "active_runs": {
+                report_id: {
+                    "report_id": report_id,
+                    "run_id": run_id,
+                    "artifact_root": str(artifact_root),
+                    "repo_sha": current_repo_sha(),
+                    "status": "LOCAL_STEPS_READY",
+                    "current_step": "step3b",
+                    "runtime_context_written": True,
+                    "steps": {
+                        "step1": {"status": "PASS"},
+                        "step2": {"status": "PASS"},
+                        "step3a": {"status": "PASS"},
+                    },
+                }
+            },
+        },
+    )
+    return registry_path, artifact_root
+
+
+def case_factorforgectl_sync_worker_artifacts_dry_run_no_ssm(root: Path) -> dict[str, Any]:
+    report_id = "SYNC_WORKER_ARTIFACTS_DRY_RUN"
+    registry_path, artifact_root = worker_ready_registry(root, report_id, "sync_worker_artifacts_dry_run")
+    proc = run_factorforgectl(
+        [
+            "sync-worker-artifacts",
+            "--report-id",
+            report_id,
+            "--registry",
+            str(registry_path),
+            "--worker-instance-id",
+            "i-syncdry",
+            "--artifact-sync-s3-uri",
+            "s3://factorforge-smoke/sync_worker_artifacts_dry_run.tgz",
+            "--dry-run",
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    payload = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
+    registry = read_json(registry_path)
+    run = (registry.get("active_runs") or {}).get(report_id) or {}
+    command_text = "\n".join(payload.get("worker_sync_command") or [])
+    return {
+        "case": "factorforgectl_sync_worker_artifacts_dry_run_no_ssm",
+        "rc": proc.returncode,
+        "status": payload.get("status"),
+        "worker_artifact_sync_dry_run": payload.get("worker_artifact_sync_dry_run"),
+        "worker_started": payload.get("worker_started"),
+        "ssm_command_id": payload.get("ssm_command_id"),
+        "registry_status": run.get("status"),
+        "command_has_s3_uri": "s3://factorforge-smoke/sync_worker_artifacts_dry_run.tgz" in command_text,
+        "command_has_artifact_root": str(artifact_root) in command_text,
+        "proof_exists": bool(payload.get("proof_ledger")) and Path(payload.get("proof_ledger") or "").exists(),
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(
+            proc.returncode == 0
+            and payload.get("status") == "PASS"
+            and payload.get("worker_artifact_sync_dry_run") is True
+            and payload.get("worker_started") is False
+            and payload.get("ssm_command_id") is None
+            and run.get("status") == "WORKER_ARTIFACT_SYNC_DRY_RUN_READY"
+            and "s3://factorforge-smoke/sync_worker_artifacts_dry_run.tgz" in command_text
+            and str(artifact_root) in command_text
+            and bool(payload.get("proof_ledger"))
+            and Path(payload.get("proof_ledger") or "").exists()
+        ),
+    }
+
+
+def case_factorforgectl_run_worker_blocks_without_sync_proof(root: Path) -> dict[str, Any]:
+    report_id = "RUN_WORKER_NO_SYNC_PROOF"
+    registry_path, _artifact_root = worker_ready_registry(root, report_id, "run_worker_no_sync_proof")
+    proc = run_factorforgectl(
+        [
+            "run-worker",
+            "--report-id",
+            report_id,
+            "--registry",
+            str(registry_path),
+            "--worker-instance-id",
+            "i-nosync",
+            "--start-step",
+            "3b",
+            "--end-step",
+            "5",
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    payload = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
+    return {
+        "case": "factorforgectl_run_worker_blocks_without_sync_proof",
+        "rc": proc.returncode,
+        "block_token": payload.get("block_token"),
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(proc.returncode != 0 and payload.get("block_token") == "BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED"),
+    }
+
+
 def case_factorforgectl_check_worker_preflight_passes(root: Path) -> dict[str, Any]:
     report_id = "CHECK_WORKER_PREFLIGHT"
     artifact_root = root / "archive" / "factorforge-runs" / "check_worker_preflight"
@@ -1109,6 +1219,8 @@ def main() -> int:
         case_factorforgectl_run_local_step2_to_3a_fixture_passes(root),
         case_factorforgectl_check_worker_preflight_passes(root),
         case_factorforgectl_check_worker_blocks_without_runtime_context(root),
+        case_factorforgectl_sync_worker_artifacts_dry_run_no_ssm(root),
+        case_factorforgectl_run_worker_blocks_without_sync_proof(root),
         case_factorforgectl_run_worker_dry_run_no_ssm(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"

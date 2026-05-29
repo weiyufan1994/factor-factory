@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,9 @@ BLOCK_WORKER_COMMAND_FAILED = "BLOCK_WORKER_COMMAND_FAILED"
 BLOCK_WORKER_SSM_TIMEOUT = "BLOCK_WORKER_SSM_TIMEOUT"
 BLOCK_WORKER_READINESS_FAILED = "BLOCK_WORKER_READINESS_FAILED"
 BLOCK_WORKER_RUNTIME_CONTEXT_INVALID = "BLOCK_WORKER_RUNTIME_CONTEXT_INVALID"
+BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED = "BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED"
+BLOCK_WORKER_ARTIFACT_SYNC_FAILED = "BLOCK_WORKER_ARTIFACT_SYNC_FAILED"
+BLOCK_WORKER_ARTIFACT_SYNC_S3_URI_REQUIRED = "BLOCK_WORKER_ARTIFACT_SYNC_S3_URI_REQUIRED"
 BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
 BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
 BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
@@ -547,6 +551,172 @@ def worker_command(run: dict[str, Any], *, start_step: str, end_step: str, worke
     ]
 
 
+def worker_sync_command(run: dict[str, Any], *, artifact_sync_s3_uri: str) -> list[str]:
+    report_id = str(run.get("report_id"))
+    runtime_context_check = (
+        "import json, os, pathlib; "
+        "root = pathlib.Path(os.environ['FACTORFORGE_ROOT']); "
+        "report_id = os.environ['FACTORFORGE_REPORT_ID']; "
+        "ctx = root / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'; "
+        "manifest = json.loads((root / 'formal_run_manifest.json').read_text()); "
+        "payload = json.loads(ctx.read_text()); "
+        "assert payload.get('report_id') == report_id, payload.get('report_id'); "
+        "assert manifest.get('report_id') == report_id, manifest.get('report_id'); "
+        "assert manifest.get('repo_sha') == os.environ['FACTORFORGE_REPO_SHA'], manifest.get('repo_sha'); "
+        "print('SYNC_ARTIFACT_IDENTITY_OK')"
+    )
+    return [
+        "set -eu",
+        f"export FACTORFORGE_ROOT={json.dumps(run['artifact_root'])}",
+        f"export FACTORFORGE_REPORT_ID={json.dumps(run.get('report_id'))}",
+        f"export FACTORFORGE_ACTIVE_RUN_ID={json.dumps(run.get('run_id'))}",
+        f"export FACTORFORGE_REPO_SHA={json.dumps(run.get('repo_sha'))}",
+        f"export FACTORFORGE_ARTIFACT_SYNC_S3_URI={json.dumps(artifact_sync_s3_uri)}",
+        "mkdir -p \"$(dirname \"$FACTORFORGE_ROOT\")\"",
+        "rm -rf \"$FACTORFORGE_ROOT\"",
+        "mkdir -p \"$FACTORFORGE_ROOT\"",
+        "aws s3 cp \"$FACTORFORGE_ARTIFACT_SYNC_S3_URI\" \"/tmp/${FACTORFORGE_ACTIVE_RUN_ID}.tgz\"",
+        "tar -xzf \"/tmp/${FACTORFORGE_ACTIVE_RUN_ID}.tgz\" -C \"$FACTORFORGE_ROOT\"",
+        "test -f \"$FACTORFORGE_ROOT/formal_run_manifest.json\"",
+        "test -f \"$FACTORFORGE_ROOT/objects/runtime_context/runtime_context__${FACTORFORGE_REPORT_ID}.json\"",
+        f"python3 -c {json.dumps(runtime_context_check)}",
+    ]
+
+
+def worker_sync_proof(run: dict[str, Any], *, worker_instance_id: str) -> dict[str, Any] | None:
+    sync = run.get("worker_artifact_sync")
+    if not isinstance(sync, dict):
+        return None
+    if sync.get("status") != "PASS":
+        return None
+    if sync.get("instance_id") != worker_instance_id:
+        return None
+    if sync.get("run_id") != run.get("run_id"):
+        return None
+    if sync.get("report_id") != run.get("report_id"):
+        return None
+    if sync.get("artifact_root") != run.get("artifact_root"):
+        return None
+    if sync.get("repo_sha") != run.get("repo_sha"):
+        return None
+    return sync
+
+
+def make_artifact_archive(root: Path, run_id: str) -> Path:
+    archive = Path(tempfile.gettempdir()) / f"factorforge_artifact_sync__{run_id}.tgz"
+    proc = subprocess.run(["tar", "-czf", str(archive), "-C", str(root), "."], cwd=ROOT, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise FactorForgeBlock(BLOCK_WORKER_ARTIFACT_SYNC_FAILED, "failed to create artifact archive", payload={"stderr": proc.stderr, "stdout": proc.stdout})
+    return archive
+
+
+def upload_archive_to_s3(archive: Path, s3_uri: str) -> None:
+    proc = subprocess.run(["aws", "s3", "cp", str(archive), s3_uri], cwd=ROOT, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise FactorForgeBlock(
+            BLOCK_WORKER_ARTIFACT_SYNC_FAILED,
+            "failed to upload artifact archive to S3",
+            payload={"s3_uri": s3_uri, "stderr": proc.stderr, "stdout": proc.stdout, "returncode": proc.returncode},
+        )
+
+
+def cmd_sync_worker_artifacts(args: argparse.Namespace) -> int:
+    path, registry, run = load_run(args)
+    root = resolve_path(run["artifact_root"])
+    start = normalize_worker_step(args.start_step)
+    end = normalize_worker_step(args.end_step)
+    checks = worker_readiness_checks(run, report_id=args.report_id, start_step=start, end_step=end)
+    artifact_sync_s3_uri = str(args.artifact_sync_s3_uri or "").strip()
+    if not artifact_sync_s3_uri:
+        raise FactorForgeBlock(BLOCK_WORKER_ARTIFACT_SYNC_S3_URI_REQUIRED, "--artifact-sync-s3-uri is required for worker artifact sync")
+    commands = worker_sync_command(run, artifact_sync_s3_uri=artifact_sync_s3_uri)
+    if args.dry_run:
+        run["status"] = "WORKER_ARTIFACT_SYNC_DRY_RUN_READY"
+        run["current_step"] = start
+        run["worker_artifact_sync"] = {
+            "status": "DRY_RUN_READY",
+            "instance_id": args.worker_instance_id,
+            "report_id": args.report_id,
+            "run_id": run.get("run_id"),
+            "artifact_root": run.get("artifact_root"),
+            "repo_sha": run.get("repo_sha"),
+            "artifact_sync_s3_uri": artifact_sync_s3_uri,
+            "dry_run": True,
+        }
+        update_run(path, registry, args.report_id, run)
+        payload = pass_payload(
+            report_id=args.report_id,
+            run=run,
+            command="sync-worker-artifacts",
+            worker_artifact_sync_dry_run=True,
+            worker_started=False,
+            artifact_synced=False,
+            ssm_command_id=None,
+            artifact_sync_s3_uri=artifact_sync_s3_uri,
+            worker_sync_command=commands,
+            readiness_checks=checks,
+        )
+        proof = write_proof_ledger(root, args.report_id, payload)
+        payload["proof_ledger"] = str(proof)
+        print_json(payload)
+        return 0
+
+    archive = make_artifact_archive(root, str(run.get("run_id")))
+    upload_archive_to_s3(archive, artifact_sync_s3_uri)
+    sent = send_worker_command(args.worker_instance_id, commands, comment=f"FactorForge sync artifacts {args.report_id}")
+    if not sent.get("ok"):
+        raise FactorForgeBlock(BLOCK_WORKER_ARTIFACT_SYNC_FAILED, "aws ssm send-command failed for artifact sync", payload=sent)
+    command_id = ((sent.get("Command") or {}).get("CommandId")) if isinstance(sent.get("Command"), dict) else None
+    final_invocation = None
+    sync_status = "SYNCING"
+    if args.poll and command_id:
+        deadline = time.time() + args.timeout_seconds
+        while time.time() < deadline:
+            final_invocation = get_command_invocation(args.worker_instance_id, command_id)
+            status = final_invocation.get("Status")
+            if status in {"Success", "Failed", "Cancelled", "TimedOut", "Cancelling"}:
+                break
+            time.sleep(args.poll_interval_seconds)
+        if final_invocation is None or final_invocation.get("Status") not in {"Success", "Failed", "Cancelled", "TimedOut", "Cancelling"}:
+            raise FactorForgeBlock(BLOCK_WORKER_SSM_TIMEOUT, f"worker artifact sync timed out: {command_id}", payload={"command_id": command_id})
+        if final_invocation.get("Status") != "Success":
+            raise FactorForgeBlock(BLOCK_WORKER_ARTIFACT_SYNC_FAILED, "worker artifact sync command failed", payload={"command_id": command_id, "ssm_invocation": final_invocation})
+        sync_status = "PASS"
+
+    run["status"] = "WORKER_ARTIFACT_SYNCED" if sync_status == "PASS" else "WORKER_ARTIFACT_SYNCING"
+    run["current_step"] = start
+    run["worker_artifact_sync"] = {
+        "status": sync_status,
+        "instance_id": args.worker_instance_id,
+        "command_id": command_id,
+        "report_id": args.report_id,
+        "run_id": run.get("run_id"),
+        "artifact_root": run.get("artifact_root"),
+        "repo_sha": run.get("repo_sha"),
+        "archive_path": str(archive),
+        "artifact_sync_s3_uri": artifact_sync_s3_uri,
+        "synced_at_utc": utc_now() if sync_status == "PASS" else None,
+    }
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="sync-worker-artifacts",
+        worker_artifact_sync_dry_run=False,
+        worker_started=False,
+        artifact_synced=(sync_status == "PASS"),
+        ssm_command_id=command_id,
+        ssm_invocation=final_invocation,
+        artifact_sync_s3_uri=artifact_sync_s3_uri,
+        worker_sync_command=commands,
+        readiness_checks=checks,
+    )
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
+
+
 def cmd_check_worker(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
     start = normalize_worker_step(args.start_step)
@@ -620,6 +790,13 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
         payload["proof_ledger"] = str(proof)
         print_json(payload)
         return 0
+    sync = worker_sync_proof(run, worker_instance_id=args.worker_instance_id)
+    if sync is None:
+        raise FactorForgeBlock(
+            BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED,
+            "worker artifact sync PASS proof is required before real worker dispatch",
+            payload={"worker_instance_id": args.worker_instance_id, "artifact_root": run.get("artifact_root")},
+        )
     sent = send_worker_command(args.worker_instance_id, commands, comment=f"FactorForge {args.report_id} {start}-{end}")
     if not sent.get("ok"):
         raise FactorForgeBlock(BLOCK_WORKER_COMMAND_FAILED, "aws ssm send-command failed", payload=sent)
@@ -717,6 +894,20 @@ def build_parser() -> argparse.ArgumentParser:
     check_worker.add_argument("--end-step", required=True)
     check_worker.add_argument("--worker-repo-root", default=os.getenv("FACTORFORGE_WORKER_REPO_ROOT", "/opt/factorforge/factor-factory-production"))
     check_worker.set_defaults(func=cmd_check_worker)
+
+    sync_worker = sub.add_parser("sync-worker-artifacts")
+    sync_worker.add_argument("--registry", dest="sub_registry", default=None)
+    sync_worker.add_argument("--report-id", required=True)
+    sync_worker.add_argument("--artifact-root", default=None)
+    sync_worker.add_argument("--worker-instance-id", required=True)
+    sync_worker.add_argument("--artifact-sync-s3-uri", default=os.getenv("FACTORFORGE_ARTIFACT_SYNC_S3_URI"))
+    sync_worker.add_argument("--start-step", default="3b")
+    sync_worker.add_argument("--end-step", default="5")
+    sync_worker.add_argument("--dry-run", action="store_true")
+    sync_worker.add_argument("--poll", action="store_true")
+    sync_worker.add_argument("--timeout-seconds", type=int, default=1800)
+    sync_worker.add_argument("--poll-interval-seconds", type=int, default=10)
+    sync_worker.set_defaults(func=cmd_sync_worker_artifacts)
 
     run_worker = sub.add_parser("run-worker")
     run_worker.add_argument("--registry", dest="sub_registry", default=None)

@@ -118,6 +118,32 @@ python3 scripts/factorforgectl.py check-worker \
 `worker_started=false`，并且所有 `readiness_checks[].ok=true`。它会写
 proof ledger，但不会调用 SSM。
 
+然后同步 active artifact root 到研究机。dry-run 只生成同步命令与 proof，
+不上传 S3、不调用 SSM：
+
+```bash
+python3 scripts/factorforgectl.py sync-worker-artifacts \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --artifact-sync-s3-uri s3://<bucket>/<prefix>/<run_id>.tgz \
+  --dry-run
+```
+
+真实同步必须指定同一个 S3 tgz URI，并建议使用 `--poll` 等待同步命令完成。
+只有同步命令返回 `artifact_synced=true`，registry 中的
+`worker_artifact_sync.status=PASS` 后，才允许真实 worker dispatch：
+
+```bash
+python3 scripts/factorforgectl.py sync-worker-artifacts \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --artifact-sync-s3-uri s3://<bucket>/<prefix>/<run_id>.tgz \
+  --poll
+```
+
+如果未完成同步 proof，真实 `run-worker` 必须返回
+`BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED`，不得发送 Step3B/4/5 SSM 命令。
+
 先做 dry-run，只生成将要发给 worker 的命令、proof ledger 和 registry 状态，
 不调用 SSM、不启动 worker：
 

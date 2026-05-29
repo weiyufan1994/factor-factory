@@ -12,6 +12,9 @@
     "scripts/run_factorforge_step2_llm_bridge.py",
     "scripts/run_factorforge_humphrey_llm_provider.py"
   ],
+  "openclaw_operator": [
+    "scripts/factorforgectl.py"
+  ],
   "step4_backend_helpers": [
     "scripts/build_report_qlib_provider.py",
     "scripts/run_qlib_backtest_wrapper.py",

@@ -26,6 +26,7 @@ FORMAL_LLM_BOUNDARY = {
     "scripts/run_factorforge_step2_llm_bridge.py",
     "scripts/run_factorforge_humphrey_llm_provider.py",
 }
+OPENCLAW_OPERATOR = {"scripts/factorforgectl.py"}
 RUNTIME_ROOTS = [
     "objects",
     "runs",
@@ -93,11 +94,41 @@ def case_registry_covers_scripts(registry: dict[str, Any]) -> dict[str, Any]:
 def case_production_entrypoints_are_single_set(registry: dict[str, Any]) -> dict[str, Any]:
     production = set(registry.get("production_main") or [])
     formal = set(registry.get("formal_llm_boundary") or [])
+    operator = set(registry.get("openclaw_operator") or [])
     return {
         "case": "production_entrypoints_are_single_set",
         "production_main": sorted(production),
         "formal_llm_boundary": sorted(formal),
-        "ok": production == PRODUCTION_MAIN and formal == FORMAL_LLM_BOUNDARY,
+        "openclaw_operator": sorted(operator),
+        "ok": production == PRODUCTION_MAIN and formal == FORMAL_LLM_BOUNDARY and operator == OPENCLAW_OPERATOR,
+    }
+
+
+def case_openclaw_operator_is_control_plane_only() -> dict[str, Any]:
+    path = ROOT / "scripts" / "factorforgectl.py"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    required = [
+        "active_run_for_report",
+        "assert_active_identity",
+        "write_proof_ledger",
+        "send_worker_command",
+        "get_command_invocation",
+    ]
+    missing = [item for item in required if item not in text]
+    forbidden = [
+        "rglob(",
+        "os.walk(",
+        "glob.glob(",
+        "list-commands",
+        "s3 ls",
+        "/tmp/factorforge",
+    ]
+    hits = [item for item in forbidden if item in text]
+    return {
+        "case": "openclaw_operator_is_control_plane_only",
+        "missing_required_calls": missing,
+        "forbidden_discovery_hits": hits,
+        "ok": path.exists() and not missing and not hits,
     }
 
 
@@ -199,6 +230,7 @@ def main() -> int:
         case_registry_covers_scripts(registry),
         case_production_entrypoints_are_single_set(registry),
         case_runtime_dirs_absent_from_repo_root(),
+        case_openclaw_operator_is_control_plane_only(),
         case_provider_adapter_has_no_default_model_fallback(),
         case_deprecated_scripts_are_under_deprecated_dir(registry),
         case_adjacent_projects_migrated_out(),

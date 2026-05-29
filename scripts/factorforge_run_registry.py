@@ -19,7 +19,7 @@ BLOCK_PRODUCTION_SMOKE_ROOT_FORBIDDEN = "BLOCK_PRODUCTION_SMOKE_ROOT_FORBIDDEN"
 
 PRODUCTION_WORKSPACE = Path(os.getenv("FACTORFORGE_PRODUCTION_WORKSPACE", "/home/ubuntu/.openclaw/workspace")).expanduser()
 PRODUCTION_RUN_ARCHIVE_ROOT = Path(
-    os.getenv("FACTORFORGE_PRODUCTION_RUN_ARCHIVE_ROOT", str(PRODUCTION_WORKSPACE / "archive" / "factorforge-runs"))
+    os.getenv("FACTORFORGE_PRODUCTION_RUN_ARCHIVE_ROOT", "/var/lib/factorforge/artifacts")
 ).expanduser()
 FORMAL_MANIFEST_NAME = "formal_run_manifest.json"
 FORMAL_RUN_MANIFEST_VERSION = "factorforge_formal_run_manifest_v1"

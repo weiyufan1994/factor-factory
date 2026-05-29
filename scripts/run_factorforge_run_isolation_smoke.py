@@ -476,6 +476,105 @@ def case_smoke_roots_forbidden() -> dict[str, Any]:
     }
 
 
+def run_factorforgectl(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return run_cmd([sys.executable, "scripts/factorforgectl.py", *args], env=env)
+
+
+def case_factorforgectl_missing_active_run_blocks(root: Path) -> dict[str, Any]:
+    registry_path = root / "factorforgectl_missing" / "active_run_registry.json"
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(
+        json.dumps({"registry_version": "factorforge_active_run_registry_v2", "active_runs": {}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    proc = run_factorforgectl(
+        ["status", "--report-id", "MISSING_REPORT", "--registry", str(registry_path)],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    text = proc.stdout + proc.stderr
+    return {
+        "case": "factorforgectl_missing_active_run_blocks",
+        "rc": proc.returncode,
+        "token_present": "BLOCK_ACTIVE_RUN_NOT_FOUND" in text,
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(proc.returncode != 0 and "BLOCK_ACTIVE_RUN_NOT_FOUND" in text),
+    }
+
+
+def case_factorforgectl_proof_tmp_root_forbidden(root: Path) -> dict[str, Any]:
+    registry_path = root / "factorforgectl_tmp_root" / "active_run_registry.json"
+    artifact_root = Path(f"/tmp/factorforgectl-forbidden-{os.getpid()}")
+    payload = {
+        "registry_version": "factorforge_active_run_registry_v2",
+        "active_runs": {
+            "TMP_ROOT_REPORT": {
+                "report_id": "TMP_ROOT_REPORT",
+                "run_id": "tmp_root_report_run",
+                "artifact_root": str(artifact_root),
+                "repo_sha": current_repo_sha(),
+                "status": "CREATED",
+                "steps": {},
+            }
+        },
+    }
+    write_json(registry_path, payload)
+    proc = run_factorforgectl(
+        ["proof", "--report-id", "TMP_ROOT_REPORT", "--registry", str(registry_path)],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    text = proc.stdout + proc.stderr
+    return {
+        "case": "factorforgectl_proof_tmp_root_forbidden",
+        "rc": proc.returncode,
+        "token_present": BLOCK_FORMAL_RUN_ROOT_FORBIDDEN in text,
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(proc.returncode != 0 and BLOCK_FORMAL_RUN_ROOT_FORBIDDEN in text and not artifact_root.exists()),
+    }
+
+
+def case_factorforgectl_root_mismatch_blocks(root: Path) -> dict[str, Any]:
+    registry_path = root / "factorforgectl_root_mismatch" / "active_run_registry.json"
+    allowed_root = root / "archive" / "factorforge-runs" / "root_mismatch_run"
+    other_root = root / "archive" / "factorforge-runs" / "root_mismatch_other"
+    payload = {
+        "registry_version": "factorforge_active_run_registry_v2",
+        "active_runs": {
+            "ROOT_MISMATCH_REPORT": {
+                "report_id": "ROOT_MISMATCH_REPORT",
+                "run_id": "root_mismatch_run",
+                "artifact_root": str(allowed_root),
+                "repo_sha": current_repo_sha(),
+                "status": "CREATED",
+                "steps": {},
+            }
+        },
+    }
+    write_json(registry_path, payload)
+    proc = run_factorforgectl(
+        [
+            "proof",
+            "--report-id",
+            "ROOT_MISMATCH_REPORT",
+            "--registry",
+            str(registry_path),
+            "--artifact-root",
+            str(other_root),
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    text = proc.stdout + proc.stderr
+    return {
+        "case": "factorforgectl_root_mismatch_blocks",
+        "rc": proc.returncode,
+        "token_present": "BLOCK_ACTIVE_RUN_IDENTITY_MISMATCH" in text,
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(proc.returncode != 0 and "BLOCK_ACTIVE_RUN_IDENTITY_MISMATCH" in text),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(Path.home() / ".factorforge-smoke" / "run_isolation_smoke"))
@@ -502,6 +601,9 @@ def main() -> int:
         case_prepare_block_no_report_runtime(root),
         case_agent_tool_step1_writes_task_packet_only(root),
         case_smoke_roots_forbidden(),
+        case_factorforgectl_missing_active_run_blocks(root),
+        case_factorforgectl_proof_tmp_root_forbidden(root),
+        case_factorforgectl_root_mismatch_blocks(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"
     summary = {

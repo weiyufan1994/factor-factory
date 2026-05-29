@@ -26,6 +26,7 @@ BLOCK_AGENT_TOOL_STEP1 = 'BLOCK_AGENT_TOOL_STEP1_REQUIRED'
 BLOCK_AGENT_TOOL_RAW = 'BLOCK_AGENT_TOOL_STEP1_RAW_INVALID'
 BLOCK_RAW_REPORT_ID = 'BLOCK_FORMAL_LLM_RAW_REPORT_ID_MISMATCH'
 BLOCK_ROOT = 'BLOCK_FORMAL_ROOT_UNSPECIFIED'
+BLOCK_CONTROL_PLANE = 'BLOCK_FACTORFORGE_CONTROL_PLANE_REQUIRED'
 RUNTIME_CONTEXT_DIR = ('objects', 'runtime_context')
 AGENT_TOOL_TASK_VERSION = 'factorforge_step1_agent_tool_task_packet_v1'
 
@@ -204,6 +205,20 @@ def should_suppress_block_report(message: str) -> bool:
         or message.startswith(BLOCK_MANIFEST_REQUIRED)
         or message.startswith(BLOCK_AGENT_TOOL_STEP1)
         or 'BLOCK_STEP1_PROVIDER_ROUTING_MISMATCH' in message
+    )
+
+
+def enforce_control_plane_entrypoint(args: argparse.Namespace) -> None:
+    if args.validate_existing_only:
+        return
+    if os.getenv('FACTORFORGE_ALLOW_DIRECT_PREPARE') == '1':
+        return
+    if os.getenv('FACTORFORGE_CONTROL_PLANE_ENTRYPOINT') == 'factorforgectl':
+        return
+    raise SystemExit(
+        f'{BLOCK_CONTROL_PLANE}: formal artifact writes must go through '
+        'scripts/factorforgectl.py; direct prepare_factorforge_formal_artifacts.py '
+        'calls are read-only only via --validate-existing-only'
     )
 
 
@@ -461,22 +476,22 @@ def ensure_step2_bridge_raw(args: argparse.Namespace, root: Path) -> dict[str, A
     if args.formal_llm_provider == 'agent_tool':
         raise SystemExit('BLOCK_STEP2_LLM_PROVIDER_UNAVAILABLE: agent_tool currently owns Step1 PDF extraction only; provide Step2 raw paths or use command provider for Step2')
     out_dir = root / 'objects' / 'raw_llm' / args.report_id / 'step2'
-    result = run_bridge_subprocess(
-        [
-            sys.executable,
-            'scripts/run_factorforge_step2_llm_bridge.py',
-            '--report-id',
-            args.report_id,
-            '--factorforge-root',
-            str(root),
-            '--out-dir',
-            str(out_dir),
-            '--provider',
-            args.formal_llm_provider,
-            '--write-report',
-        ],
-        root,
-    )
+    bridge_cmd = [
+        sys.executable,
+        'scripts/run_factorforge_step2_llm_bridge.py',
+        '--report-id',
+        args.report_id,
+        '--factorforge-root',
+        str(root),
+        '--out-dir',
+        str(out_dir),
+        '--provider',
+        args.formal_llm_provider,
+        '--write-report',
+    ]
+    if args.run_manifest:
+        bridge_cmd.extend(['--run-manifest', args.run_manifest])
+    result = run_bridge_subprocess(bridge_cmd, root)
     set_path_arg(args, 'step2_primary_raw', out_dir / 'step2_primary_raw.json')
     set_path_arg(args, 'step2_challenger_raw', out_dir / 'step2_challenger_raw.json')
     set_path_arg(args, 'step2_auditor_raw', out_dir / 'step2_auditor_raw.json')
@@ -932,6 +947,11 @@ def main() -> int:
     args = ap.parse_args()
 
     root = resolve_factorforge_root(args.factorforge_root)
+    try:
+        enforce_control_plane_entrypoint(args)
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return int(exc.code) if isinstance(exc.code, int) and exc.code else 1
     if args.run_manifest or (args.run_formal_llm_bridges and args.formal_llm_provider in {'command', 'agent_tool'}):
         try:
             assert_formal_run_root_allowed(root)

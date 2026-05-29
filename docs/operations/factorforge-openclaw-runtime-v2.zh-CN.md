@@ -29,6 +29,11 @@ Humphrey 禁止：
 - 将 worker `stopped` 解释为 run 失败。
 - 用同 report_id 的旧 artifact 替代 active registry 指向的 root。
 - 手工 patch raw LLM artifact。
+- 直接调用 `prepare_factorforge_formal_artifacts.py` 或其他底层脚本写 formal artifacts；
+  正式写入只能通过 `factorforgectl.py`。
+- 使用 `sessions_spawn` / sub-agent 代写 Step1/Step2 raw JSON。Step1 raw 只能来自
+  OpenClaw `tools.pdf`，Step2 raw 只能来自 formal LLM bridge，且必须通过 provenance
+  与 schema 校验。
 - 在 `recover-block` 之前自行 `show` manifest、proof、runtime_context 或旧 root。
 - 修改 registry、manifest、runtime_context 或 raw JSON 来绕过 BLOCK。
 - 在正式 `挖因子` 流程使用 `--allow-deterministic-debug` 或 `fixture`。

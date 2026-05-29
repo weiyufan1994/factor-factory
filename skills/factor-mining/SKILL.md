@@ -30,6 +30,11 @@ the "固定口令" section.
   evidence in place of the active registry.
 - Do not `show`, `find`, `grep`, or scan artifact roots to recover from a
   failed step. Recovery must start with `factorforgectl.py recover-block`.
+- Do not call `prepare_factorforge_formal_artifacts.py` directly during factor
+  mining. Formal writes are only valid when launched by `factorforgectl.py`.
+- Do not use `sessions_spawn` or a sub-agent to produce Step1/Step2 raw JSON.
+  Raw artifacts must come from the controlled PDF tool / formal LLM bridge and
+  pass provenance validation.
 - Step1 must use OpenClaw `tools.pdf` and then `resume-step1`.
 - Step2/3A must use `--formal-llm-provider command` by default, not `fixture`.
 - `run-local` may only run `1->1`, `2->2`, or `3a->3a`. Never call

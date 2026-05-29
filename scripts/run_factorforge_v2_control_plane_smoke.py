@@ -5,6 +5,7 @@ import sys
 import shutil
 import contextlib
 import io
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +86,49 @@ def main() -> int:
     assert factorforgectl.validate_worker_step_range("4", "4") == ("4", "4")
     assert factorforgectl.validate_worker_step_range("5", "5") == ("5", "5")
     assert_blocks(lambda: factorforgectl.validate_worker_step_range("3b", "4"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
+
+    manifest_path = "/var/lib/factorforge/artifacts/smoke_report/smoke_run/formal_run_manifest.json"
+    env_overrides = factorforgectl.local_prepare_env_overrides(
+        {
+            "formal_run_manifest": manifest_path,
+            "providers": {
+                "step1": {"provider": "openclaw_pdf_tool", "model": "google/gemini-3.1-pro-preview"},
+                "step2": {"provider": "deepseek", "model": "deepseek-chat"},
+            },
+        },
+        start="2",
+        formal_llm_provider="command",
+        manifest=manifest_path,
+    )
+    assert env_overrides["FACTORFORGE_FORMAL_RUN_MANIFEST"] == manifest_path
+    assert env_overrides["FACTORFORGE_CONTROL_PLANE_ENTRYPOINT"] == "factorforgectl"
+    assert "FACTORFORGE_STEP2_LLM_COMMAND" in env_overrides
+
+    direct_root = smoke_root("direct_prepare_requires_control_plane")
+    fake_pdf = direct_root / "report.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4\n% smoke\n")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "scripts/prepare_factorforge_formal_artifacts.py",
+            "--factorforge-root",
+            str(direct_root),
+            "--report-id",
+            "direct_prepare_smoke",
+            "--report-pdf",
+            str(fake_pdf),
+            "--run-manifest",
+            str(direct_root / "formal_run_manifest.json"),
+            "--end-step",
+            "2",
+            "--write-report",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == 1, proc
+    assert "BLOCK_FACTORFORGE_CONTROL_PLANE_REQUIRED" in (proc.stdout + proc.stderr), proc.stderr
 
     report_id = "step6_smoke_report"
     blocked_root = smoke_root("step6_missing_worker_evidence")

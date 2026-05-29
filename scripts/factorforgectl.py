@@ -542,6 +542,26 @@ def run_prepare_command(cmd: list[str], *, env_overrides: dict[str, str]) -> sub
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
 
 
+def local_prepare_env_overrides(run: dict[str, Any], *, start: str, formal_llm_provider: str, manifest: str | None = None) -> dict[str, str]:
+    providers = run.get("providers") if isinstance(run.get("providers"), dict) else {}
+    step1_provider = providers.get("step1") if isinstance(providers.get("step1"), dict) else {}
+    step2_provider = providers.get("step2") if isinstance(providers.get("step2"), dict) else {}
+    manifest = manifest or run.get("formal_run_manifest")
+    env_overrides = {
+        "FACTORFORGE_CONTROL_PLANE_ENTRYPOINT": "factorforgectl",
+        "FACTORFORGE_CONTROL_PLANE_COMMAND": "run-local",
+        "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": str(step1_provider.get("provider") or AGENT_TOOL_PROVIDER),
+        "FACTORFORGE_STEP1_LLM_MODEL": str(step1_provider.get("model") or AGENT_TOOL_MODEL),
+        "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": str(step2_provider.get("provider") or "deepseek"),
+        "FACTORFORGE_STEP2_LLM_MODEL": str(step2_provider.get("model") or "deepseek-chat"),
+    }
+    if manifest:
+        env_overrides["FACTORFORGE_FORMAL_RUN_MANIFEST"] = str(manifest)
+    if start != "1" and formal_llm_provider == "command":
+        env_overrides["FACTORFORGE_STEP2_LLM_COMMAND"] = default_step2_llm_command()
+    return env_overrides
+
+
 def run_factorforge_root_command(cmd: list[str], *, root: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["FACTORFORGE_ROOT"] = str(root)
@@ -767,17 +787,7 @@ def cmd_run_local(args: argparse.Namespace) -> int:
         if args.allow_deterministic_debug:
             cmd.append("--allow-deterministic-debug")
 
-    providers = run.get("providers") if isinstance(run.get("providers"), dict) else {}
-    step1_provider = providers.get("step1") if isinstance(providers.get("step1"), dict) else {}
-    step2_provider = providers.get("step2") if isinstance(providers.get("step2"), dict) else {}
-    env_overrides = {
-        "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": str(step1_provider.get("provider") or AGENT_TOOL_PROVIDER),
-        "FACTORFORGE_STEP1_LLM_MODEL": str(step1_provider.get("model") or AGENT_TOOL_MODEL),
-        "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": str(step2_provider.get("provider") or "deepseek"),
-        "FACTORFORGE_STEP2_LLM_MODEL": str(step2_provider.get("model") or "deepseek-chat"),
-    }
-    if start != "1" and args.formal_llm_provider == "command":
-        env_overrides["FACTORFORGE_STEP2_LLM_COMMAND"] = default_step2_llm_command()
+    env_overrides = local_prepare_env_overrides(run, start=start, formal_llm_provider=args.formal_llm_provider, manifest=str(manifest))
     proc = run_prepare_command(cmd, env_overrides=env_overrides)
     text = proc.stdout + proc.stderr
     if proc.returncode != 0:

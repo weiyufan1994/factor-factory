@@ -32,6 +32,8 @@ Humphrey 禁止：
 
 ## 固定口令
 
+`factor-mining` / `挖因子` 是本流程的用户口令别名。
+
 当用户说：
 
 ```text

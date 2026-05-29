@@ -78,8 +78,9 @@ LOCAL_STEP_ALIASES = {
     "step3": "3a",
     "step3a": "3a",
 }
-LOCAL_STEP_RANGES = {("1", "1"), ("2", "2"), ("2", "3a")}
+LOCAL_STEP_RANGES = {("1", "1"), ("2", "2"), ("3a", "3a")}
 LOCAL_PREPARE_END_STEPS = {"1": "1", "2": "2", "3a": "3a"}
+WORKER_STEP_RANGES = {("3b", "3b"), ("4", "4"), ("5", "5"), ("3b", "5")}
 
 
 def print_json(payload: dict[str, Any]) -> None:
@@ -401,8 +402,12 @@ def recover_block_next_action(run: dict[str, Any], *, report_id: str, root: Path
             f"python3 scripts/factorforgectl.py resume-step1 --report-id {report_id}",
         ]
     if status == "STEP1_READY" or current_step == "step2":
-        return "READY_FOR_STEP2_3A", [
-            f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 2 --end-step 3a --formal-llm-provider command",
+        return "READY_FOR_STEP2_AFTER_USER_APPROVAL", [
+            f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 2 --end-step 2 --formal-llm-provider command",
+        ]
+    if step1_status == "PASS" and step2_status == "PASS" and step3a_status != "PASS":
+        return "READY_FOR_STEP3A_AFTER_USER_APPROVAL", [
+            f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 3a --end-step 3a",
         ]
     if step1_status == "PASS" and step2_status == "PASS" and step3a_status == "PASS" and bool(run.get("runtime_context_written")):
         return "READY_FOR_WORKER_PREFLIGHT", [
@@ -416,7 +421,7 @@ def recover_block_next_action(run: dict[str, Any], *, report_id: str, root: Path
         ]
     return "BLOCK_LOCAL_STEPS_INCOMPLETE", [
         f"python3 scripts/factorforgectl.py status --report-id {report_id}",
-        f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 2 --end-step 3a --formal-llm-provider command",
+        f"python3 scripts/factorforgectl.py recover-block --report-id {report_id}",
     ]
 
 
@@ -537,6 +542,13 @@ def run_prepare_command(cmd: list[str], *, env_overrides: dict[str, str]) -> sub
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
 
 
+def run_factorforge_root_command(cmd: list[str], *, root: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["FACTORFORGE_ROOT"] = str(root)
+    env["FACTORFORGE_ULTIMATE_RUN"] = "1"
+    return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
+
+
 def default_step2_llm_command() -> str:
     existing = os.getenv("FACTORFORGE_STEP2_LLM_COMMAND")
     if existing:
@@ -553,7 +565,7 @@ def block_token_from_text(text: str) -> str:
 
 
 def update_run_after_prepare_accept(path: Path, registry: dict[str, Any], report_id: str, run: dict[str, Any], *, end: str, report: dict[str, Any] | None) -> None:
-    run["status"] = "LOCAL_STEPS_READY"
+    run["status"] = {"1": "STEP1_READY", "2": "STEP2_READY", "3a": "STEP3A_READY"}.get(end, "LOCAL_STEPS_READY")
     run["current_step"] = "step3b" if end == "3a" else {"1": "step2", "2": "step3a"}.get(end, end)
     steps = run.setdefault("steps", {})
     if end in {"1", "2", "3a"}:
@@ -568,6 +580,132 @@ def update_run_after_prepare_accept(path: Path, registry: dict[str, Any], report
         run["last_prepare_verdict"] = report.get("verdict")
         run["validators"] = report.get("validators")
     update_run(path, registry, report_id, run)
+
+
+def cmd_run_local_step3a(args: argparse.Namespace, path: Path, registry: dict[str, Any], run: dict[str, Any], root: Path) -> int:
+    steps = run.get("steps") if isinstance(run.get("steps"), dict) else {}
+    missing = []
+    for step in ("step1", "step2"):
+        status = (steps.get(step) if isinstance(steps.get(step), dict) else {}).get("status")
+        if status != "PASS":
+            missing.append({"step": step, "status": status})
+    if missing:
+        raise FactorForgeBlock(
+            BLOCK_LOCAL_PREPARE_FAILED,
+            "Step3A requires Step1 and Step2 PASS in the active registry",
+            payload={"missing_preconditions": missing},
+        )
+
+    run_step3 = run_factorforge_root_command(
+        [
+            sys.executable,
+            "skills/factor-forge-step3/scripts/run_step3.py",
+            "--report-id",
+            args.report_id,
+        ],
+        root=root,
+    )
+    text = run_step3.stdout + run_step3.stderr
+    if run_step3.returncode != 0:
+        payload = block_payload(
+            block_token_from_text(text),
+            text.strip()[-2000:],
+            report_id=args.report_id,
+            step3a_rc=run_step3.returncode,
+            stderr_tail=run_step3.stderr[-2000:],
+            stdout_tail=run_step3.stdout[-2000:],
+        )
+        proof = write_proof_ledger(root, args.report_id, payload)
+        payload["proof_ledger"] = str(proof)
+        print_json(payload)
+        return 1
+
+    validate = run_factorforge_root_command(
+        [
+            sys.executable,
+            "skills/factor-forge-step3/scripts/validate_step3.py",
+            "--report-id",
+            args.report_id,
+        ],
+        root=root,
+    )
+    build_ctx = run_factorforge_root_command(
+        [
+            sys.executable,
+            "scripts/build_factorforge_runtime_context.py",
+            "--report-id",
+            args.report_id,
+            "--factorforge-root",
+            str(root),
+            "--write",
+        ],
+        root=root,
+    )
+    validator_ok = validate.returncode == 0
+    runtime_context_written = runtime_context_path(root, args.report_id).exists() and build_ctx.returncode == 0
+    verdict = "ACCEPT" if validator_ok and runtime_context_written else "BLOCK"
+    report = {
+        "report_id": args.report_id,
+        "verdict": verdict,
+        "formal_artifacts_valid": verdict == "ACCEPT",
+        "runtime_context_written": runtime_context_written,
+        "validators": {
+            "step3": {
+                "script": "skills/factor-forge-step3/scripts/validate_step3.py",
+                "rc": validate.returncode,
+                "stdout_tail": validate.stdout[-5000:],
+                "stderr_tail": validate.stderr[-5000:],
+            }
+        },
+        "step3a": {
+            "run_step3_rc": run_step3.returncode,
+            "run_step3_stdout_tail": run_step3.stdout[-5000:],
+            "run_step3_stderr_tail": run_step3.stderr[-5000:],
+            "runtime_context_rc": build_ctx.returncode,
+            "runtime_context_stdout_tail": build_ctx.stdout[-5000:],
+            "runtime_context_stderr_tail": build_ctx.stderr[-5000:],
+        },
+    }
+    prepare_path = prepare_report_path(root, args.report_id)
+    prepare_path.parent.mkdir(parents=True, exist_ok=True)
+    prepare_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    if verdict != "ACCEPT":
+        payload = block_payload(
+            BLOCK_LOCAL_PREPARE_FAILED,
+            "Step3A validation or runtime_context write failed",
+            report_id=args.report_id,
+            prepare_report=str(prepare_path),
+            validate_step3_rc=validate.returncode,
+            runtime_context_rc=build_ctx.returncode,
+            validate_step3_stderr_tail=validate.stderr[-2000:],
+            runtime_context_stderr_tail=build_ctx.stderr[-2000:],
+        )
+        proof = write_proof_ledger(root, args.report_id, payload)
+        payload["proof_ledger"] = str(proof)
+        print_json(payload)
+        return 1
+
+    run["status"] = "STEP3A_READY"
+    run["current_step"] = "step3b"
+    run["runtime_context_written"] = True
+    steps.setdefault("step3a", {})["status"] = "PASS"
+    run["last_prepare_report"] = str(prepare_path)
+    run["last_prepare_verdict"] = verdict
+    run["validators"] = report["validators"]
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="run-local",
+        requested_steps=["3a", "3a"],
+        prepare_report=str(prepare_path),
+        prepare_verdict=verdict,
+        runtime_context_written=True,
+    )
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
 
 
 def cmd_run_local(args: argparse.Namespace) -> int:
@@ -588,6 +726,8 @@ def cmd_run_local(args: argparse.Namespace) -> int:
             payload={"formal_llm_provider": args.formal_llm_provider},
         )
     root = resolve_path(run["artifact_root"])
+    if start == "3a":
+        return cmd_run_local_step3a(args, path, registry, run, root)
     report_pdf = report_pdf_input(args, run)
     manifest = run.get("formal_run_manifest") or str(root / "formal_run_manifest.json")
     cmd = [
@@ -684,6 +824,19 @@ def normalize_worker_step(step: str) -> str:
     if key not in aliases:
         raise FactorForgeBlock(BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP, f"unsupported worker step: {step}")
     return aliases[key]
+
+
+def validate_worker_step_range(start: str, end: str) -> tuple[str, str]:
+    start = normalize_worker_step(start)
+    end = normalize_worker_step(end)
+    if (start, end) not in WORKER_STEP_RANGES:
+        allowed = ", ".join(f"{item[0]}->{item[1]}" for item in sorted(WORKER_STEP_RANGES))
+        raise FactorForgeBlock(
+            BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP,
+            f"unsupported worker step range: {start}->{end}; allowed ranges: {allowed}",
+            payload={"start_step": start, "end_step": end, "allowed_ranges": sorted(f"{item[0]}->{item[1]}" for item in WORKER_STEP_RANGES)},
+        )
+    return start, end
 
 
 def runtime_context_path(root: Path, report_id: str) -> Path:
@@ -1071,8 +1224,7 @@ def upload_archive_to_s3(archive: Path, s3_uri: str) -> None:
 def cmd_sync_worker_artifacts(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
     root = resolve_path(run["artifact_root"])
-    start = normalize_worker_step(args.start_step)
-    end = normalize_worker_step(args.end_step)
+    start, end = validate_worker_step_range(args.start_step, args.end_step)
     checks = worker_readiness_checks(run, report_id=args.report_id, start_step=start, end_step=end)
     artifact_sync_s3_uri = str(args.artifact_sync_s3_uri or "").strip()
     if not artifact_sync_s3_uri:
@@ -1167,8 +1319,7 @@ def cmd_sync_worker_artifacts(args: argparse.Namespace) -> int:
 
 def cmd_check_worker(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
-    start = normalize_worker_step(args.start_step)
-    end = normalize_worker_step(args.end_step)
+    start, end = validate_worker_step_range(args.start_step, args.end_step)
     root = resolve_path(run["artifact_root"])
     checks = worker_readiness_checks(run, report_id=args.report_id, start_step=start, end_step=end)
     commands = worker_command(run, start_step=start, end_step=end, worker_repo_root=args.worker_repo_root)
@@ -1203,8 +1354,7 @@ def cmd_check_worker(args: argparse.Namespace) -> int:
 
 def cmd_run_worker(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
-    start = normalize_worker_step(args.start_step)
-    end = normalize_worker_step(args.end_step)
+    start, end = validate_worker_step_range(args.start_step, args.end_step)
     root = resolve_path(run["artifact_root"])
     checks = worker_readiness_checks(run, report_id=args.report_id, start_step=start, end_step=end)
     commands = worker_command(run, start_step=start, end_step=end, worker_repo_root=args.worker_repo_root)
@@ -1270,10 +1420,17 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
                 "worker command finished without Success",
                 payload={"command_id": command_id, "ssm_invocation": final_invocation},
             )
-        run["status"] = "WORKER_DONE"
-        run["current_step"] = "6"
+        next_after_worker = {
+            ("3b", "3b"): ("WORKER_STEP3B_DONE", "4", ("step3b",)),
+            ("4", "4"): ("WORKER_STEP4_DONE", "5", ("step4",)),
+            ("5", "5"): ("WORKER_DONE", "6", ("step5",)),
+            ("3b", "5"): ("WORKER_DONE", "6", ("step3b", "step4", "step5")),
+        }
+        next_status, next_step, completed_steps = next_after_worker[(start, end)]
+        run["status"] = next_status
+        run["current_step"] = next_step
         steps = run.setdefault("steps", {})
-        for step in ("step3b", "step4", "step5"):
+        for step in completed_steps:
             steps.setdefault(step, {})["status"] = "PASS"
         last_worker = run.setdefault("worker_commands", [])[-1]
         last_worker["status"] = final_invocation.get("Status")

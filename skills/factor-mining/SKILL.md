@@ -32,7 +32,11 @@ the "固定口令" section.
   failed step. Recovery must start with `factorforgectl.py recover-block`.
 - Step1 must use OpenClaw `tools.pdf` and then `resume-step1`.
 - Step2/3A must use `--formal-llm-provider command` by default, not `fixture`.
-- `run-local` may only run `1->1`, `2->2`, or `2->3a`. Never call
+- `run-local` may only run `1->1`, `2->2`, or `3a->3a`. Never call
+  `2->3a` or any other combined host-side range. After each completed host-side
+  step, report the proof/verdict and wait for explicit user approval before the
+  next host-side step.
+- Never call
   `run-local --end-step 6`; Step6 requires completed worker Step3B/4/5 evidence
   and a separate post-worker authorization path.
 - Stop at worker dry-run unless the user separately authorizes real worker
@@ -74,8 +78,11 @@ FactorForge V2 worker: <report_id>
 ```
 
 Only use the same `report_id/run_id/artifact_root` that passed dry-run, and only
-run Step3B/4/5 on the worker. After worker Step5 finishes, Step6 may run locally
-through the controlled post-worker command below; it is not part of `run-local`.
+run Step3B/4/5 on the worker. Once the user authorizes real worker execution,
+the worker may run Step3B/4/5 continuously as `3b->5`; it does not need to stop
+between worker-internal steps. After worker Step5 finishes, Step6 may run
+locally through the controlled post-worker command below; it is not part of
+`run-local`, and it still requires a new user approval after the worker report.
 
 If the worker is stopped, the agent may start it with
 `factorforgectl.py start-worker --poll` before sync/run. After the worker run

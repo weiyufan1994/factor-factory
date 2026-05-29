@@ -76,9 +76,15 @@ def main() -> int:
 
     assert factorforgectl.validate_local_step_range("1", "1") == ("1", "1")
     assert factorforgectl.validate_local_step_range("2", "2") == ("2", "2")
-    assert factorforgectl.validate_local_step_range("2", "3a") == ("2", "3a")
+    assert factorforgectl.validate_local_step_range("3a", "3a") == ("3a", "3a")
+    assert_blocks(lambda: factorforgectl.validate_local_step_range("2", "3a"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
     assert_blocks(lambda: factorforgectl.validate_local_step_range("1", "3a"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
     assert_blocks(lambda: factorforgectl.validate_local_step_range("3a", "2"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
+    assert factorforgectl.validate_worker_step_range("3b", "5") == ("3b", "5")
+    assert factorforgectl.validate_worker_step_range("3b", "3b") == ("3b", "3b")
+    assert factorforgectl.validate_worker_step_range("4", "4") == ("4", "4")
+    assert factorforgectl.validate_worker_step_range("5", "5") == ("5", "5")
+    assert_blocks(lambda: factorforgectl.validate_worker_step_range("3b", "4"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
 
     report_id = "step6_smoke_report"
     blocked_root = smoke_root("step6_missing_worker_evidence")

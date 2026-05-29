@@ -88,9 +88,11 @@ Humphrey 必须按以下固定语义执行，不需要用户重复长规则：
 6. Step1 必须走 OpenClaw `tools.pdf` agent-tool 路线，写入 primary/challenger/chief 三份 raw。
 7. Step1 raw/schema 禁止手工 patch；必须由 `resume-step1` 校验 provenance 后继续。
 8. Step2/3A 默认必须使用真实 provider 路线 `--formal-llm-provider command`；禁止使用 `fixture`，除非用户明确说这是 smoke test。
-9. 只允许执行到 worker dry-run：`check-worker`、`sync-worker-artifacts --dry-run`、`run-worker --dry-run`。
-10. 禁止真实 `sync-worker-artifacts --poll`、真实 `run-worker --poll`、Step3B/4/5、Step6、search/promotion，除非用户另行授权。
-11. 如果发现自己使用了 fixture、旧 root、旧 artifact 或无法确认 PDF 来源，必须立即返回 BLOCK，不得继续。
+9. 主机侧必须分步执行并逐步汇报：Step1 完成后停；用户确认后 Step2；Step2 完成后停；用户确认后 Step3A；Step3A 完成后停。
+10. 只允许执行到 worker dry-run：`check-worker`、`sync-worker-artifacts --dry-run`、`run-worker --dry-run`。
+11. 禁止真实 `sync-worker-artifacts --poll`、真实 `run-worker --poll`、Step3B/4/5、Step6、search/promotion，除非用户另行授权。
+12. 用户授权进入真实 worker 后，研究机内 Step3B/4/5 可以作为一个连续作业 `3b->5` 执行；完成后必须汇报 proof 并等待用户验收，不得自动 Step6 或 stop。
+13. 如果发现自己使用了 fixture、旧 root、旧 artifact 或无法确认 PDF 来源，必须立即返回 BLOCK，不得继续。
 
 该固定口令的标准流程是：
 
@@ -99,7 +101,11 @@ python3 scripts/factorforgectl.py init-run ...
 python3 scripts/factorforgectl.py run-local --report-id <report_id> --start-step 1 --end-step 1
 # Humphrey 使用 OpenClaw tools.pdf 生成 Step1 primary/challenger/chief raw
 python3 scripts/factorforgectl.py resume-step1 --report-id <report_id>
-python3 scripts/factorforgectl.py run-local --report-id <report_id> --start-step 2 --end-step 3a --formal-llm-provider command
+## Step1 完成后：汇报，等待用户明确允许继续
+python3 scripts/factorforgectl.py run-local --report-id <report_id> --start-step 2 --end-step 2 --formal-llm-provider command
+## Step2 完成后：汇报，等待用户明确允许继续
+python3 scripts/factorforgectl.py run-local --report-id <report_id> --start-step 3a --end-step 3a
+## Step3A 完成后：汇报，等待用户明确允许继续 worker dry-run
 python3 scripts/factorforgectl.py check-worker --report-id <report_id> --start-step 3b --end-step 5
 python3 scripts/factorforgectl.py sync-worker-artifacts --report-id <report_id> --worker-instance-id <instance_id> --artifact-sync-s3-uri <s3_uri> --dry-run
 python3 scripts/factorforgectl.py run-worker --report-id <report_id> --worker-instance-id <instance_id> --start-step 3b --end-step 5 --dry-run
@@ -132,7 +138,8 @@ FactorForge V2 worker: <report_id>
 Humphrey 只能对已经通过上述 dry-run 的同一个 `report_id/run_id/artifact_root`
 执行真实 worker 阶段。若研究机处于 stopped，Humphrey 可以先执行
 `start-worker --poll`，等待 EC2 running 且 SSM Online 后再继续。范围限定为
-Step3B/4/5。Step6 是合法的 post-worker 研判/迭代层，但必须在 worker
+Step3B/4/5。真实 worker 获得用户授权后可连续执行 `3b->5`，中间不需要再等用户逐步确认。
+Step6 是合法的 post-worker 研判/迭代层，但必须在 worker
 Step3B/4/5 与 Step5 证据完成后，经 `run-step6` 专用入口触发；不得通过
 `run-local --end-step 6` 或手工扫描 artifact 触发。
 
@@ -161,7 +168,7 @@ python3 scripts/factorforgectl.py run-worker \
 研究机停止规则：
 
 - `run-worker --poll` 结束后，Humphrey 只回报 proof、SSM command id、
-  Step3B/4/5 verdict、artifact path、BLOCK token（如有），不得自行 stop。
+  Step3B/4/5 verdict、artifact path、BLOCK token（如有），不得自行 stop 或启动 Step6。
 - 只有用户明确表示“验收通过，停止研究机”或等价意思后，才允许执行：
 
 ```bash
@@ -208,7 +215,7 @@ python3 scripts/factorforgectl.py proof --report-id <report_id>
 python3 scripts/factorforgectl.py run-local \
   --report-id <report_id> \
   --start-step 1 \
-  --end-step 3a
+  --end-step 1
 ```
 
 `run-local` 是严格本机状态机，只允许以下 step range：
@@ -216,7 +223,7 @@ python3 scripts/factorforgectl.py run-local \
 ```text
 1 -> 1
 2 -> 2
-2 -> 3a
+3a -> 3a
 ```
 
 `run-local` 禁止 `--end-step 6`。Step6 不是本机 prepare 阶段；它只能在
@@ -228,19 +235,27 @@ worker Step3B/4/5 真实完成、`factor_run_master` 与 `factor_case_master`
 Step1 task packet，并返回 `BLOCK_AGENT_TOOL_STEP1_REQUIRED`。这是正常的
 OpenClaw PDF 工具断点，不是失败。
 
-Step1 raw 写回并通过 `resume-step1` 后，继续本机 Step2/3A：
+Step1 raw 写回并通过 `resume-step1` 后，必须先汇报 Step1 结果并等待用户明确允许，再继续本机 Step2：
 
 ```bash
 python3 scripts/factorforgectl.py run-local \
   --report-id <report_id> \
   --start-step 2 \
-  --end-step 3a \
+  --end-step 2 \
   --formal-llm-provider command
 ```
 
 该命令只消费 active registry 指向的 artifact root 下的 Step1 raw，并调用
-formal Step2 bridge 与 Step3A。`--end-step 3a` 会写
-`objects/runtime_context/runtime_context__<report_id>.json`，但不会启动 worker。
+formal Step2 bridge。Step2 完成后必须汇报并等待用户明确允许，再继续 Step3A：
+
+```bash
+python3 scripts/factorforgectl.py run-local \
+  --report-id <report_id> \
+  --start-step 3a \
+  --end-step 3a
+```
+
+Step3A 会写 `objects/runtime_context/runtime_context__<report_id>.json`，但不会启动 worker。
 
 Step1 agent-tool 断点恢复：
 
@@ -334,6 +349,8 @@ python3 scripts/factorforgectl.py run-worker \
 成功后 registry 会进入 `WORKER_DONE/current_step=6`。如果 SSM 返回
 `Failed`、`TimedOut`、`Cancelled` 等状态，控制面必须返回
 `BLOCK_WORKER_COMMAND_FAILED`，不得把 worker 失败解释为 Step6 可用。
+worker 完成后必须向用户汇报 Step3B/4/5 证据并等待验收。只有用户明确允许
+Step6 后，才可以调用 `run-step6`。
 
 ## Step6 / 迭代研判
 

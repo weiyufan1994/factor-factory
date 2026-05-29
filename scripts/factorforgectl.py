@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -348,6 +349,13 @@ def run_prepare_command(cmd: list[str], *, env_overrides: dict[str, str]) -> sub
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
 
 
+def default_step2_llm_command() -> str:
+    existing = os.getenv("FACTORFORGE_STEP2_LLM_COMMAND")
+    if existing:
+        return existing
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(ROOT / 'scripts' / 'run_factorforge_humphrey_llm_provider.py'))}"
+
+
 def block_token_from_text(text: str) -> str:
     for line in text.splitlines():
         stripped = line.strip()
@@ -427,6 +435,8 @@ def cmd_run_local(args: argparse.Namespace) -> int:
         "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": str(step2_provider.get("provider") or "deepseek"),
         "FACTORFORGE_STEP2_LLM_MODEL": str(step2_provider.get("model") or "deepseek-chat"),
     }
+    if start != "1" and args.formal_llm_provider == "command":
+        env_overrides["FACTORFORGE_STEP2_LLM_COMMAND"] = default_step2_llm_command()
     proc = run_prepare_command(cmd, env_overrides=env_overrides)
     text = proc.stdout + proc.stderr
     if proc.returncode != 0:

@@ -37,6 +37,7 @@ from scripts.factorforge_run_registry import (
 
 BLOCK_WORKER_COMMAND_FAILED = "BLOCK_WORKER_COMMAND_FAILED"
 BLOCK_WORKER_SSM_TIMEOUT = "BLOCK_WORKER_SSM_TIMEOUT"
+BLOCK_WORKER_RUNTIME_CONTEXT_REQUIRED = "BLOCK_WORKER_RUNTIME_CONTEXT_REQUIRED"
 BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
 BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
 BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
@@ -469,15 +470,25 @@ def normalize_worker_step(step: str) -> str:
     return aliases[key]
 
 
-def worker_command(run: dict[str, Any], *, start_step: str, end_step: str) -> list[str]:
+def worker_command(run: dict[str, Any], *, start_step: str, end_step: str, worker_repo_root: str) -> list[str]:
+    report_id = str(run.get("report_id"))
+    runtime_context_check = (
+        "import json, os, pathlib; "
+        "root = pathlib.Path(os.environ['FACTORFORGE_ROOT']); "
+        "report_id = os.environ['FACTORFORGE_REPORT_ID']; "
+        "ctx = root / 'objects' / 'runtime_context' / f'runtime_context__{report_id}.json'; "
+        "print(json.loads(ctx.read_text()).get('report_id'))"
+    )
     return [
         "set -eu",
         f"export FACTORFORGE_ROOT={json.dumps(run['artifact_root'])}",
         f"export FACTORFORGE_ACTIVE_RUN_ID={json.dumps(run.get('run_id'))}",
         f"export FACTORFORGE_REPORT_ID={json.dumps(run.get('report_id'))}",
-        "cd /opt/factorforge/factor-factory-production",
+        f"cd {json.dumps(worker_repo_root)}",
         f'test "$(git rev-parse HEAD)" = {json.dumps(run.get("repo_sha"))}',
         "test -z \"$(git status --short)\"",
+        "test -d \"$FACTORFORGE_ROOT\"",
+        f"test \"$(python3 -c {json.dumps(runtime_context_check)})\" = {json.dumps(report_id)}",
         "python3 scripts/run_factorforge_ultimate.py "
         f"--report-id {json.dumps(run.get('report_id'))} "
         "\"--factorforge-root\" \"$FACTORFORGE_ROOT\" "
@@ -490,7 +501,38 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
     start = normalize_worker_step(args.start_step)
     end = normalize_worker_step(args.end_step)
     root = resolve_path(run["artifact_root"])
-    commands = worker_command(run, start_step=start, end_step=end)
+    if not run.get("runtime_context_written"):
+        raise FactorForgeBlock(BLOCK_WORKER_RUNTIME_CONTEXT_REQUIRED, "runtime_context_written=true is required before worker dispatch")
+    commands = worker_command(run, start_step=start, end_step=end, worker_repo_root=args.worker_repo_root)
+    if args.dry_run:
+        run["status"] = "WORKER_DRY_RUN_READY"
+        run["current_step"] = start
+        run.setdefault("worker_commands", []).append(
+            {
+                "instance_id": args.worker_instance_id,
+                "command_id": None,
+                "start_step": start,
+                "end_step": end,
+                "dry_run": True,
+                "worker_repo_root": args.worker_repo_root,
+            }
+        )
+        update_run(path, registry, args.report_id, run)
+        payload = pass_payload(
+            report_id=args.report_id,
+            run=run,
+            command="run-worker",
+            worker_instance_id=args.worker_instance_id,
+            ssm_command_id=None,
+            worker_command=commands,
+            worker_dry_run=True,
+            worker_started=False,
+            worker_repo_root=args.worker_repo_root,
+        )
+        proof = write_proof_ledger(root, args.report_id, payload)
+        payload["proof_ledger"] = str(proof)
+        print_json(payload)
+        return 0
     sent = send_worker_command(args.worker_instance_id, commands, comment=f"FactorForge {args.report_id} {start}-{end}")
     if not sent.get("ok"):
         raise FactorForgeBlock(BLOCK_WORKER_COMMAND_FAILED, "aws ssm send-command failed", payload=sent)
@@ -517,6 +559,10 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
         worker_instance_id=args.worker_instance_id,
         ssm_command_id=command_id,
         ssm_invocation=final_invocation,
+        worker_command=commands,
+        worker_dry_run=False,
+        worker_started=True,
+        worker_repo_root=args.worker_repo_root,
     )
     proof = write_proof_ledger(root, args.report_id, payload)
     payload["proof_ledger"] = str(proof)
@@ -581,6 +627,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_worker.add_argument("--worker-instance-id", required=True)
     run_worker.add_argument("--start-step", required=True)
     run_worker.add_argument("--end-step", required=True)
+    run_worker.add_argument("--worker-repo-root", default=os.getenv("FACTORFORGE_WORKER_REPO_ROOT", "/opt/factorforge/factor-factory-production"))
+    run_worker.add_argument("--dry-run", action="store_true")
     run_worker.add_argument("--poll", action="store_true")
     run_worker.add_argument("--timeout-seconds", type=int, default=7200)
     run_worker.add_argument("--poll-interval-seconds", type=int, default=10)

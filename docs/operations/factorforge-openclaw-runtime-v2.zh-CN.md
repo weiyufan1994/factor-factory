@@ -104,6 +104,21 @@ objects/raw_llm/<report_id>/step1/step1_chief_raw.json
 
 研究机步骤：
 
+先做 dry-run，只生成将要发给 worker 的命令、proof ledger 和 registry 状态，
+不调用 SSM、不启动 worker：
+
+```bash
+python3 scripts/factorforgectl.py run-worker \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --start-step 3b \
+  --end-step 5 \
+  --dry-run
+```
+
+dry-run 返回 `worker_dry_run=true`、`worker_started=false`、
+`ssm_command_id=null` 后，才允许去掉 `--dry-run` 执行真实 worker 调度：
+
 ```bash
 python3 scripts/factorforgectl.py run-worker \
   --report-id <report_id> \

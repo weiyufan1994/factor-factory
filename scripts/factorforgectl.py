@@ -60,6 +60,8 @@ BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
 BLOCK_STEP1_RAW_INVALID = "BLOCK_AGENT_TOOL_STEP1_RAW_INVALID"
 BLOCK_LOCAL_REPORT_PDF_REQUIRED = "BLOCK_LOCAL_REPORT_PDF_REQUIRED"
 BLOCK_LOCAL_PREPARE_FAILED = "BLOCK_FACTORFORGE_LOCAL_PREPARE_FAILED"
+BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH = "BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH"
+BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN = "BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN"
 AGENT_TOOL_TASK_VERSION = "factorforge_step1_agent_tool_task_packet_v1"
 AGENT_TOOL_PROVIDER = "openclaw_pdf_tool"
 AGENT_TOOL_MODEL = "google/gemini-3.1-pro-preview"
@@ -396,6 +398,20 @@ def cmd_run_local(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
     start = normalize_local_step(args.start_step)
     end = normalize_local_step(args.end_step)
+    registry_repo_sha = str(run.get("repo_sha") or "")
+    actual_repo_sha = current_repo_sha()
+    if registry_repo_sha and registry_repo_sha != actual_repo_sha:
+        raise FactorForgeBlock(
+            BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH,
+            f"active run repo_sha mismatch: registry={registry_repo_sha} current={actual_repo_sha}; start a fresh run",
+            payload={"registry_repo_sha": registry_repo_sha, "current_repo_sha": actual_repo_sha},
+        )
+    if args.formal_llm_provider == "fixture" and not args.allow_deterministic_debug:
+        raise FactorForgeBlock(
+            BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN,
+            "fixture Step2 provider requires --allow-deterministic-debug and is forbidden for factor-mining production runs",
+            payload={"formal_llm_provider": args.formal_llm_provider},
+        )
     root = resolve_path(run["artifact_root"])
     report_pdf = report_pdf_input(args, run)
     manifest = run.get("formal_run_manifest") or str(root / "formal_run_manifest.json")

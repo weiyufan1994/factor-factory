@@ -299,6 +299,6 @@ if __name__ == '__main__':
     for p in [prep_path, qlib_path, impl_path, handoff_path]:
         text = p.read_text(encoding='utf-8')
         for bad in ['TODO', 'TO_BE_FILLED', 'placeholder', 'PLACEHOLDER', '待补']:
-            assert bad not in text
+            assert bad not in text, f'forbidden token {bad!r} present in {p}'
 
     print('RESULT: PASS')

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ from factor_factory.run_control import (
     load_active_registry,
     pass_payload,
     resolve_path,
+    utc_now,
     write_active_registry,
     write_proof_ledger,
 )
@@ -35,6 +37,12 @@ from scripts.factorforge_run_registry import (
 BLOCK_WORKER_COMMAND_FAILED = "BLOCK_WORKER_COMMAND_FAILED"
 BLOCK_WORKER_SSM_TIMEOUT = "BLOCK_WORKER_SSM_TIMEOUT"
 BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
+BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
+BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
+BLOCK_STEP1_RAW_INVALID = "BLOCK_AGENT_TOOL_STEP1_RAW_INVALID"
+AGENT_TOOL_TASK_VERSION = "factorforge_step1_agent_tool_task_packet_v1"
+AGENT_TOOL_PROVIDER = "openclaw_pdf_tool"
+AGENT_TOOL_MODEL = "google/gemini-3.1-pro-preview"
 
 
 def print_json(payload: dict[str, Any]) -> None:
@@ -63,6 +71,22 @@ def update_run(path: Path, registry: dict[str, Any], report_id: str, run: dict[s
 def default_archive_root(report_id: str) -> Path:
     base = Path(os.getenv("FACTORFORGE_PRODUCTION_RUN_ARCHIVE_ROOT", "/var/lib/factorforge/artifacts")).expanduser()
     return base / report_id
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise FactorForgeBlock(BLOCK_STEP1_RAW_INVALID, f"missing JSON file: {path}", payload={"path": str(path)}) from exc
+    except json.JSONDecodeError as exc:
+        raise FactorForgeBlock(BLOCK_STEP1_RAW_INVALID, f"invalid JSON file: {path}: {exc}", payload={"path": str(path)}) from exc
+    if not isinstance(payload, dict):
+        raise FactorForgeBlock(BLOCK_STEP1_RAW_INVALID, f"JSON payload is not an object: {path}", payload={"path": str(path)})
+    return payload
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def cmd_init_run(args: argparse.Namespace) -> int:
@@ -98,6 +122,130 @@ def cmd_init_run(args: argparse.Namespace) -> int:
     registry.setdefault("active_runs", {})[args.report_id] = run
     write_active_registry(path, registry)
     payload = pass_payload(report_id=args.report_id, run=run, command="init-run", registry=str(path), formal_run_manifest=run["formal_run_manifest"])
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
+
+
+def agent_tool_task_packet_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "agent_tool_tasks" / report_id / "step1_openclaw_pdf_task_packet.json"
+
+
+def raw_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+    provenance = payload.get("_llm_bridge_provenance")
+    if isinstance(provenance, dict):
+        return provenance
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict):
+        return provenance
+    return payload
+
+
+def load_step1_task_packet(root: Path, report_id: str, run: dict[str, Any], explicit_path: str | None = None) -> tuple[Path, dict[str, Any]]:
+    path = resolve_path(explicit_path) if explicit_path else agent_tool_task_packet_path(root, report_id)
+    if not path.exists():
+        raise FactorForgeBlock(BLOCK_STEP1_TASK_PACKET_MISSING, f"missing Step1 agent-tool task packet: {path}", payload={"task_packet": str(path)})
+    packet = read_json(path)
+    mismatches: list[str] = []
+    if packet.get("version") != AGENT_TOOL_TASK_VERSION:
+        mismatches.append(f"version expected={AGENT_TOOL_TASK_VERSION} actual={packet.get('version')}")
+    if packet.get("report_id") != report_id:
+        mismatches.append(f"report_id expected={report_id} actual={packet.get('report_id')}")
+    packet_root = packet.get("factorforge_root")
+    if packet_root and resolve_path(packet_root) != root:
+        mismatches.append(f"factorforge_root expected={root} actual={resolve_path(packet_root)}")
+    run_pdf_sha = ((run.get("report_pdf") or {}).get("sha256") or "").strip()
+    packet_pdf_sha = str(packet.get("pdf_sha256") or "").strip()
+    if run_pdf_sha and packet_pdf_sha != run_pdf_sha:
+        mismatches.append(f"pdf_sha256 expected={run_pdf_sha} actual={packet_pdf_sha or 'MISSING'}")
+    agent_tool = packet.get("agent_tool") if isinstance(packet.get("agent_tool"), dict) else {}
+    if agent_tool.get("provider") != AGENT_TOOL_PROVIDER:
+        mismatches.append(f"agent_tool.provider expected={AGENT_TOOL_PROVIDER} actual={agent_tool.get('provider')}")
+    if agent_tool.get("model") != AGENT_TOOL_MODEL:
+        mismatches.append(f"agent_tool.model expected={AGENT_TOOL_MODEL} actual={agent_tool.get('model')}")
+    roles = packet.get("roles")
+    if not isinstance(roles, list) or len(roles) != 3:
+        mismatches.append("roles must contain primary/challenger/chief")
+    else:
+        role_names = {role.get("role") for role in roles if isinstance(role, dict)}
+        if role_names != {"primary", "challenger", "chief"}:
+            mismatches.append(f"roles expected=primary/challenger/chief actual={sorted(str(item) for item in role_names)}")
+        for role in roles:
+            if not isinstance(role, dict) or not str(role.get("prompt_hash") or "").strip():
+                mismatches.append(f"role prompt_hash missing: {role}")
+    if mismatches:
+        raise FactorForgeBlock(BLOCK_STEP1_TASK_PACKET_INVALID, "; ".join(mismatches[:8]), payload={"task_packet": str(path)})
+    return path, packet
+
+
+def validate_step1_raw_from_packet(root: Path, report_id: str, packet: dict[str, Any]) -> list[dict[str, Any]]:
+    pdf_hash = str(packet.get("pdf_sha256") or "").strip()
+    raw_records: list[dict[str, Any]] = []
+    for role_item in packet["roles"]:
+        role = str(role_item["role"])
+        path = resolve_path(role_item.get("target_raw_path") or (root / "objects" / "raw_llm" / report_id / "step1" / f"step1_{role}_raw.json"))
+        if not path.exists():
+            raise FactorForgeBlock(BLOCK_STEP1_RAW_INVALID, f"missing {role} raw: {path}", payload={"role": role, "path": str(path)})
+        if not (path == root or str(path).startswith(str(root) + os.sep)):
+            raise FactorForgeBlock(BLOCK_STEP1_RAW_INVALID, f"{role} raw path is outside artifact_root: {path}", payload={"role": role, "path": str(path)})
+        payload = read_json(path)
+        provenance = raw_provenance(payload)
+        required = {
+            "report_id": report_id,
+            "role": role,
+            "provider": AGENT_TOOL_PROVIDER,
+            "model": AGENT_TOOL_MODEL,
+            "pdf_sha256": pdf_hash,
+            "prompt_hash": str(role_item["prompt_hash"]),
+            "source_derivation": "agent_tool_formal_route",
+        }
+        mismatches = []
+        for key, expected in required.items():
+            actual = str(provenance.get(key) or "").strip()
+            if actual != expected:
+                mismatches.append(f"{key} expected={expected} actual={actual or 'MISSING'}")
+        if not str(provenance.get("created_at_utc") or "").strip():
+            mismatches.append("created_at_utc missing")
+        if mismatches:
+            raise FactorForgeBlock(BLOCK_STEP1_RAW_INVALID, f"role={role} raw provenance mismatch: {mismatches[:8]}", payload={"role": role, "path": str(path)})
+        raw_records.append(
+            {
+                "role": role,
+                "path": str(path),
+                "prompt_hash": str(role_item["prompt_hash"]),
+                "raw_response_sha256": sha256_file(path),
+            }
+        )
+    return raw_records
+
+
+def cmd_resume_step1(args: argparse.Namespace) -> int:
+    path, registry, run = load_run(args)
+    root = resolve_path(run["artifact_root"])
+    task_path, packet = load_step1_task_packet(root, args.report_id, run, args.task_packet)
+    raw_records = validate_step1_raw_from_packet(root, args.report_id, packet)
+    run["status"] = "STEP1_READY"
+    run["current_step"] = "step2"
+    run.setdefault("steps", {})["step1"] = {
+        "status": "PASS",
+        "provider": AGENT_TOOL_PROVIDER,
+        "model": AGENT_TOOL_MODEL,
+        "source_derivation": "agent_tool_formal_route",
+        "task_packet": str(task_path),
+        "raw_outputs": raw_records,
+        "completed_at_utc": utc_now(),
+    }
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="resume-step1",
+        step1_status="PASS",
+        current_step=run.get("current_step"),
+        task_packet=str(task_path),
+        raw_outputs=raw_records,
+    )
     proof = write_proof_ledger(root, args.report_id, payload)
     payload["proof_ledger"] = str(proof)
     print_json(payload)
@@ -254,6 +402,13 @@ def build_parser() -> argparse.ArgumentParser:
     proof.add_argument("--report-id", required=True)
     proof.add_argument("--artifact-root", default=None)
     proof.set_defaults(func=cmd_proof)
+
+    resume_step1 = sub.add_parser("resume-step1")
+    resume_step1.add_argument("--registry", dest="sub_registry", default=None)
+    resume_step1.add_argument("--report-id", required=True)
+    resume_step1.add_argument("--artifact-root", default=None)
+    resume_step1.add_argument("--task-packet", default=None)
+    resume_step1.set_defaults(func=cmd_resume_step1)
 
     run_local = sub.add_parser("run-local")
     run_local.add_argument("--registry", dest="sub_registry", default=None)

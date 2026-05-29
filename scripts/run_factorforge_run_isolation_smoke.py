@@ -575,6 +575,130 @@ def case_factorforgectl_root_mismatch_blocks(root: Path) -> dict[str, Any]:
     }
 
 
+def write_step1_task_packet(root: Path, report_id: str, pdf_hash: str) -> Path:
+    task = {
+        "version": "factorforge_step1_agent_tool_task_packet_v1",
+        "report_id": report_id,
+        "factorforge_root": str(root),
+        "pdf_sha256": pdf_hash,
+        "agent_tool": {
+            "provider": "openclaw_pdf_tool",
+            "model": "google/gemini-3.1-pro-preview",
+        },
+        "roles": [
+            {
+                "role": "primary",
+                "prompt_hash": "primary_prompt_hash",
+                "target_raw_path": str(root / "objects" / "raw_llm" / report_id / "step1" / "step1_primary_raw.json"),
+            },
+            {
+                "role": "challenger",
+                "prompt_hash": "challenger_prompt_hash",
+                "target_raw_path": str(root / "objects" / "raw_llm" / report_id / "step1" / "step1_challenger_raw.json"),
+            },
+            {
+                "role": "chief",
+                "prompt_hash": "chief_prompt_hash",
+                "target_raw_path": str(root / "objects" / "raw_llm" / report_id / "step1" / "step1_chief_raw.json"),
+            },
+        ],
+    }
+    return write_json(root / "objects" / "agent_tool_tasks" / report_id / "step1_openclaw_pdf_task_packet.json", task)
+
+
+def write_factorforgectl_registry(registry_path: Path, report_id: str, artifact_root: Path, *, pdf_hash: str) -> None:
+    write_json(
+        registry_path,
+        {
+            "registry_version": "factorforge_active_run_registry_v2",
+            "active_runs": {
+                report_id: {
+                    "report_id": report_id,
+                    "run_id": f"{report_id.lower()}_run",
+                    "artifact_root": str(artifact_root),
+                    "repo_sha": current_repo_sha(),
+                    "status": "BLOCK_AGENT_TOOL_STEP1_REQUIRED",
+                    "current_step": "step1",
+                    "report_pdf": {"sha256": pdf_hash, "s3_uri": "s3://example/report.pdf"},
+                    "steps": {"step1": {"status": "WAITING_FOR_AGENT_TOOL_RAW"}},
+                }
+            },
+        },
+    )
+
+
+def write_step1_raw(root: Path, report_id: str, *, role: str, pdf_hash: str, prompt_hash: str) -> Path:
+    path = root / "objects" / "raw_llm" / report_id / "step1" / f"step1_{role}_raw.json"
+    payload = {
+        "report_id": report_id,
+        "role": role,
+        "result": {"ok": True},
+        "_llm_bridge_provenance": {
+            "report_id": report_id,
+            "role": role,
+            "provider": "openclaw_pdf_tool",
+            "model": "google/gemini-3.1-pro-preview",
+            "pdf_sha256": pdf_hash,
+            "prompt_hash": prompt_hash,
+            "source_derivation": "agent_tool_formal_route",
+            "created_at_utc": "2026-05-29T00:00:00Z",
+        },
+    }
+    return write_json(path, payload)
+
+
+def case_factorforgectl_resume_step1_missing_raw_blocks(root: Path) -> dict[str, Any]:
+    report_id = "RESUME_STEP1_MISSING_RAW"
+    artifact_root = root / "archive" / "factorforge-runs" / "resume_step1_missing_raw"
+    pdf_hash = "a" * 64
+    registry_path = root / "factorforgectl_resume_missing" / "active_run_registry.json"
+    write_factorforgectl_registry(registry_path, report_id, artifact_root, pdf_hash=pdf_hash)
+    write_step1_task_packet(artifact_root, report_id, pdf_hash)
+    proc = run_factorforgectl(
+        ["resume-step1", "--report-id", report_id, "--registry", str(registry_path)],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    text = proc.stdout + proc.stderr
+    return {
+        "case": "factorforgectl_resume_step1_missing_raw_blocks",
+        "rc": proc.returncode,
+        "token_present": "BLOCK_AGENT_TOOL_STEP1_RAW_INVALID" in text,
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(proc.returncode != 0 and "BLOCK_AGENT_TOOL_STEP1_RAW_INVALID" in text),
+    }
+
+
+def case_factorforgectl_resume_step1_valid_raw_passes(root: Path) -> dict[str, Any]:
+    report_id = "RESUME_STEP1_VALID_RAW"
+    artifact_root = root / "archive" / "factorforge-runs" / "resume_step1_valid_raw"
+    pdf_hash = "b" * 64
+    registry_path = root / "factorforgectl_resume_valid" / "active_run_registry.json"
+    write_factorforgectl_registry(registry_path, report_id, artifact_root, pdf_hash=pdf_hash)
+    write_step1_task_packet(artifact_root, report_id, pdf_hash)
+    write_step1_raw(artifact_root, report_id, role="primary", pdf_hash=pdf_hash, prompt_hash="primary_prompt_hash")
+    write_step1_raw(artifact_root, report_id, role="challenger", pdf_hash=pdf_hash, prompt_hash="challenger_prompt_hash")
+    write_step1_raw(artifact_root, report_id, role="chief", pdf_hash=pdf_hash, prompt_hash="chief_prompt_hash")
+    proc = run_factorforgectl(
+        ["resume-step1", "--report-id", report_id, "--registry", str(registry_path)],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    registry = read_json(registry_path)
+    run = (registry.get("active_runs") or {}).get(report_id) or {}
+    step1 = (run.get("steps") or {}).get("step1") or {}
+    proof = artifact_root / "objects" / "proof" / f"proof_ledger__{report_id}.json"
+    return {
+        "case": "factorforgectl_resume_step1_valid_raw_passes",
+        "rc": proc.returncode,
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "step1_status": step1.get("status"),
+        "current_step": run.get("current_step"),
+        "proof_exists": proof.exists(),
+        "ok": bool(proc.returncode == 0 and step1.get("status") == "PASS" and run.get("current_step") == "step2" and proof.exists()),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(Path.home() / ".factorforge-smoke" / "run_isolation_smoke"))
@@ -604,6 +728,8 @@ def main() -> int:
         case_factorforgectl_missing_active_run_blocks(root),
         case_factorforgectl_proof_tmp_root_forbidden(root),
         case_factorforgectl_root_mismatch_blocks(root),
+        case_factorforgectl_resume_step1_missing_raw_blocks(root),
+        case_factorforgectl_resume_step1_valid_raw_passes(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"
     summary = {

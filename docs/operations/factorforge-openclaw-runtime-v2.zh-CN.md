@@ -60,6 +60,28 @@ python3 scripts/factorforgectl.py run-local \
   --end-step 3a
 ```
 
+Step1 agent-tool 断点恢复：
+
+```bash
+python3 scripts/factorforgectl.py resume-step1 \
+  --report-id <report_id>
+```
+
+`resume-step1` 只接受 active registry 绑定的 artifact root 下的：
+
+```text
+objects/agent_tool_tasks/<report_id>/step1_openclaw_pdf_task_packet.json
+objects/raw_llm/<report_id>/step1/step1_primary_raw.json
+objects/raw_llm/<report_id>/step1/step1_challenger_raw.json
+objects/raw_llm/<report_id>/step1/step1_chief_raw.json
+```
+
+三份 raw JSON 必须匹配 task packet 中的 `report_id`、`pdf_sha256`、
+`prompt_hash`、`role`，并且 provenance 必须包含
+`provider=openclaw_pdf_tool`、`model=google/gemini-3.1-pro-preview`、
+`source_derivation=agent_tool_formal_route`、`created_at_utc`。不匹配时返回
+`BLOCK_AGENT_TOOL_STEP1_RAW_INVALID`。
+
 研究机步骤：
 
 ```bash
@@ -92,4 +114,3 @@ Humphrey 必须停止。它只能回报 block token、reason、proof path，不�
 - `repo_sha`
 - `proof_ledger`
 - `block_token`（如有）
-

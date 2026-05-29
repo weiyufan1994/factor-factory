@@ -209,6 +209,18 @@ python3 scripts/factorforgectl.py run-local \
   --end-step 3a
 ```
 
+`run-local` 是严格本机状态机，只允许以下 step range：
+
+```text
+1 -> 1
+2 -> 2
+2 -> 3a
+```
+
+`run-local` 禁止 `--end-step 6`。Step6 不是本机 prepare 阶段；它只能在
+worker Step3B/4/5 真实完成、`factor_run_master` 与 `factor_case_master`
+存在、用户另行授权后，由后续专用 post-worker/Step6 控制入口触发。
+
 `run-local --start-step 1 --end-step 1` 会调用
 `prepare_factorforge_formal_artifacts.py` 的 agent-tool Step1 路径，生成
 Step1 task packet，并返回 `BLOCK_AGENT_TOOL_STEP1_REQUIRED`。这是正常的

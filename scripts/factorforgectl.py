@@ -66,6 +66,18 @@ BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN = "BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN"
 AGENT_TOOL_TASK_VERSION = "factorforge_step1_agent_tool_task_packet_v1"
 AGENT_TOOL_PROVIDER = "openclaw_pdf_tool"
 AGENT_TOOL_MODEL = "google/gemini-3.1-pro-preview"
+LOCAL_STEP_ALIASES = {
+    "1": "1",
+    "step1": "1",
+    "2": "2",
+    "step2": "2",
+    "3": "3a",
+    "3a": "3a",
+    "step3": "3a",
+    "step3a": "3a",
+}
+LOCAL_STEP_RANGES = {("1", "1"), ("2", "2"), ("2", "3a")}
+LOCAL_PREPARE_END_STEPS = {"1": "1", "2": "2", "3a": "3a"}
 
 
 def print_json(payload: dict[str, Any]) -> None:
@@ -475,10 +487,27 @@ def cmd_recover_block(args: argparse.Namespace) -> int:
 
 def normalize_local_step(step: str) -> str:
     key = step.strip().lower().replace("_", "").replace("-", "")
-    aliases = {"1": "1", "step1": "1", "2": "2", "step2": "2", "3": "3a", "3a": "3a", "step3": "3a", "step3a": "3a", "6": "6", "step6": "6"}
-    if key not in aliases:
+    if key not in LOCAL_STEP_ALIASES:
         raise FactorForgeBlock(BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP, f"unsupported local step: {step}")
-    return aliases[key]
+    return LOCAL_STEP_ALIASES[key]
+
+
+def validate_local_step_range(start: str, end: str) -> tuple[str, str]:
+    start = normalize_local_step(start)
+    end = normalize_local_step(end)
+    if (start, end) not in LOCAL_STEP_RANGES:
+        allowed = ", ".join(f"{item[0]}->{item[1]}" for item in sorted(LOCAL_STEP_RANGES))
+        raise FactorForgeBlock(
+            BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP,
+            f"unsupported local step range: {start}->{end}; allowed ranges: {allowed}",
+            payload={"start_step": start, "end_step": end, "allowed_ranges": sorted(f"{item[0]}->{item[1]}" for item in LOCAL_STEP_RANGES)},
+        )
+    return start, end
+
+
+def local_prepare_end_step(end: str) -> str:
+    end = normalize_local_step(end)
+    return LOCAL_PREPARE_END_STEPS[end]
 
 
 def prepare_report_path(root: Path, report_id: str) -> Path:
@@ -541,8 +570,7 @@ def update_run_after_prepare_accept(path: Path, registry: dict[str, Any], report
 
 def cmd_run_local(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
-    start = normalize_local_step(args.start_step)
-    end = normalize_local_step(args.end_step)
+    start, end = validate_local_step_range(args.start_step, args.end_step)
     registry_repo_sha = str(run.get("repo_sha") or "")
     actual_repo_sha = current_repo_sha()
     if registry_repo_sha and registry_repo_sha != actual_repo_sha:
@@ -572,7 +600,7 @@ def cmd_run_local(args: argparse.Namespace) -> int:
         "--run-manifest",
         str(manifest),
         "--end-step",
-        "1" if end == "1" else ("2" if end == "2" else "3a"),
+        local_prepare_end_step(end),
         "--write-report",
     ]
     if start == "1":

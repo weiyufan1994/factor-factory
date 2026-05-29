@@ -32,6 +32,9 @@ the "固定口令" section.
   failed step. Recovery must start with `factorforgectl.py recover-block`.
 - Step1 must use OpenClaw `tools.pdf` and then `resume-step1`.
 - Step2/3A must use `--formal-llm-provider command` by default, not `fixture`.
+- `run-local` may only run `1->1`, `2->2`, or `2->3a`. Never call
+  `run-local --end-step 6`; Step6 requires completed worker Step3B/4/5 evidence
+  and a separate post-worker authorization path.
 - Stop at worker dry-run unless the user separately authorizes real worker
   execution.
 

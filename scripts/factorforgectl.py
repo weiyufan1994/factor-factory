@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,8 @@ BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
 BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
 BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
 BLOCK_STEP1_RAW_INVALID = "BLOCK_AGENT_TOOL_STEP1_RAW_INVALID"
+BLOCK_LOCAL_REPORT_PDF_REQUIRED = "BLOCK_LOCAL_REPORT_PDF_REQUIRED"
+BLOCK_LOCAL_PREPARE_FAILED = "BLOCK_FACTORFORGE_LOCAL_PREPARE_FAILED"
 AGENT_TOOL_TASK_VERSION = "factorforge_step1_agent_tool_task_packet_v1"
 AGENT_TOOL_PROVIDER = "openclaw_pdf_tool"
 AGENT_TOOL_MODEL = "google/gemini-3.1-pro-preview"
@@ -89,6 +92,29 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def report_pdf_input(args: argparse.Namespace, run: dict[str, Any]) -> Path:
+    raw = getattr(args, "report_pdf", None)
+    report_pdf = run.get("report_pdf") if isinstance(run.get("report_pdf"), dict) else {}
+    if not raw:
+        for key in ("local_path", "local_pdf_path", "report_pdf", "pdf_path", "local_cache_path", "manifest_path"):
+            value = report_pdf.get(key)
+            if isinstance(value, str) and value.strip():
+                raw = value
+                break
+    if not raw:
+        raise FactorForgeBlock(
+            BLOCK_LOCAL_REPORT_PDF_REQUIRED,
+            "run-local requires an explicit local PDF path or local PDF manifest; S3 URI alone is not enough for local Step1/2/3A",
+            payload={"report_pdf": report_pdf},
+        )
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    if not path.exists():
+        raise FactorForgeBlock(BLOCK_LOCAL_REPORT_PDF_REQUIRED, f"local PDF path does not exist: {path}", payload={"report_pdf": str(path)})
+    return path
+
+
 def cmd_init_run(args: argparse.Namespace) -> int:
     path = registry_path(args)
     registry = load_active_registry(path)
@@ -114,6 +140,7 @@ def cmd_init_run(args: argparse.Namespace) -> int:
         "report_pdf": {
             "s3_uri": args.report_pdf_s3,
             "sha256": args.report_pdf_sha256,
+            "local_path": args.report_pdf_local,
         },
         "providers": manifest.get("steps", {}),
         "steps": {},
@@ -290,19 +317,144 @@ def normalize_local_step(step: str) -> str:
     return aliases[key]
 
 
+def prepare_report_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "validation" / f"formal_artifact_prepare_report__{report_id}.json"
+
+
+def default_step_raw_paths(root: Path, report_id: str, step: str) -> dict[str, Path]:
+    base = root / "objects" / "raw_llm" / report_id / step
+    if step == "step1":
+        return {
+            "primary": base / "step1_primary_raw.json",
+            "challenger": base / "step1_challenger_raw.json",
+            "chief": base / "step1_chief_raw.json",
+        }
+    return {
+        "primary": base / "step2_primary_raw.json",
+        "challenger": base / "step2_challenger_raw.json",
+        "auditor": base / "step2_auditor_raw.json",
+    }
+
+
+def run_prepare_command(cmd: list[str], *, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(env_overrides)
+    return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
+
+
+def block_token_from_text(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("BLOCK_"):
+            return stripped.split(":", 1)[0]
+    return BLOCK_LOCAL_PREPARE_FAILED
+
+
+def update_run_after_prepare_accept(path: Path, registry: dict[str, Any], report_id: str, run: dict[str, Any], *, end: str, report: dict[str, Any] | None) -> None:
+    run["status"] = "LOCAL_STEPS_READY"
+    run["current_step"] = "step3b" if end == "3a" else {"1": "step2", "2": "step3a"}.get(end, end)
+    steps = run.setdefault("steps", {})
+    if end in {"1", "2", "3a"}:
+        steps.setdefault("step1", {})["status"] = "PASS"
+    if end in {"2", "3a"}:
+        steps.setdefault("step2", {})["status"] = "PASS"
+    if end == "3a":
+        steps.setdefault("step3a", {})["status"] = "PASS"
+        run["runtime_context_written"] = bool((report or {}).get("runtime_context_written"))
+    if report:
+        run["last_prepare_report"] = str(prepare_report_path(resolve_path(run["artifact_root"]), report_id))
+        run["last_prepare_verdict"] = report.get("verdict")
+        run["validators"] = report.get("validators")
+    update_run(path, registry, report_id, run)
+
+
 def cmd_run_local(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
     start = normalize_local_step(args.start_step)
     end = normalize_local_step(args.end_step)
     root = resolve_path(run["artifact_root"])
-    requested = [start, end]
-    # V2 control-plane guard: local execution is wired explicitly; Step1 still
-    # requires OpenClaw runtime integration and must not be silently faked.
-    payload = pass_payload(report_id=args.report_id, run=run, command="run-local", requested_steps=requested)
-    run["status"] = "RUNNING"
-    run["current_step"] = start
-    run.setdefault("steps", {}).setdefault(start, {"status": "PENDING"})
-    update_run(path, registry, args.report_id, run)
+    report_pdf = report_pdf_input(args, run)
+    manifest = run.get("formal_run_manifest") or str(root / "formal_run_manifest.json")
+    cmd = [
+        sys.executable,
+        "scripts/prepare_factorforge_formal_artifacts.py",
+        "--factorforge-root",
+        str(root),
+        "--report-id",
+        args.report_id,
+        "--report-pdf",
+        str(report_pdf),
+        "--run-manifest",
+        str(manifest),
+        "--end-step",
+        "1" if end == "1" else ("2" if end == "2" else "3a"),
+        "--write-report",
+    ]
+    if start == "1":
+        cmd.extend(["--run-formal-llm-bridges", "--formal-llm-provider", "agent_tool"])
+    else:
+        step1 = default_step_raw_paths(root, args.report_id, "step1")
+        cmd.extend(
+            [
+                "--step1-primary-raw",
+                str(step1["primary"]),
+                "--step1-challenger-raw",
+                str(step1["challenger"]),
+                "--step1-chief-raw",
+                str(step1["chief"]),
+                "--run-formal-llm-bridges",
+                "--formal-llm-provider",
+                args.formal_llm_provider,
+            ]
+        )
+        if end == "3a":
+            cmd.append("--write-runtime-context")
+        if args.allow_deterministic_debug:
+            cmd.append("--allow-deterministic-debug")
+
+    providers = run.get("providers") if isinstance(run.get("providers"), dict) else {}
+    step1_provider = providers.get("step1") if isinstance(providers.get("step1"), dict) else {}
+    step2_provider = providers.get("step2") if isinstance(providers.get("step2"), dict) else {}
+    env_overrides = {
+        "FACTORFORGE_STEP1_FORMAL_LLM_PROVIDER": str(step1_provider.get("provider") or AGENT_TOOL_PROVIDER),
+        "FACTORFORGE_STEP1_LLM_MODEL": str(step1_provider.get("model") or AGENT_TOOL_MODEL),
+        "FACTORFORGE_STEP2_FORMAL_LLM_PROVIDER": str(step2_provider.get("provider") or "deepseek"),
+        "FACTORFORGE_STEP2_LLM_MODEL": str(step2_provider.get("model") or "deepseek-chat"),
+    }
+    proc = run_prepare_command(cmd, env_overrides=env_overrides)
+    text = proc.stdout + proc.stderr
+    if proc.returncode != 0:
+        token = block_token_from_text(text)
+        extra: dict[str, Any] = {"prepare_rc": proc.returncode, "stderr_tail": proc.stderr[-2000:], "stdout_tail": proc.stdout[-2000:]}
+        if token == "BLOCK_AGENT_TOOL_STEP1_REQUIRED":
+            task_path = agent_tool_task_packet_path(root, args.report_id)
+            run["status"] = token
+            run["current_step"] = "step1"
+            run.setdefault("steps", {})["step1"] = {
+                "status": "WAITING_FOR_AGENT_TOOL_RAW",
+                "task_packet": str(task_path),
+            }
+            update_run(path, registry, args.report_id, run)
+            extra["task_packet"] = str(task_path)
+        payload = block_payload(token, text.strip()[-2000:], report_id=args.report_id, **extra)
+        if token == "BLOCK_AGENT_TOOL_STEP1_REQUIRED":
+            proof = write_proof_ledger(root, args.report_id, payload)
+            payload["proof_ledger"] = str(proof)
+        print_json(payload)
+        return 1
+
+    report = read_json(prepare_report_path(root, args.report_id)) if prepare_report_path(root, args.report_id).exists() else None
+    update_run_after_prepare_accept(path, registry, args.report_id, run, end=end, report=report)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="run-local",
+        requested_steps=[start, end],
+        prepare_rc=proc.returncode,
+        prepare_report=str(prepare_report_path(root, args.report_id)),
+        prepare_verdict=(report or {}).get("verdict"),
+        runtime_context_written=bool((report or {}).get("runtime_context_written")),
+    )
     proof = write_proof_ledger(root, args.report_id, payload)
     payload["proof_ledger"] = str(proof)
     print_json(payload)
@@ -382,6 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--report-id", required=True)
     init.add_argument("--report-pdf-s3", default=None)
     init.add_argument("--report-pdf-sha256", required=True)
+    init.add_argument("--report-pdf-local", default=None)
     init.add_argument("--archive-root", default=None)
     init.add_argument("--repo-sha", default=None)
     init.add_argument("--step-scope", default="step1-step6")
@@ -414,8 +567,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_local.add_argument("--registry", dest="sub_registry", default=None)
     run_local.add_argument("--report-id", required=True)
     run_local.add_argument("--artifact-root", default=None)
+    run_local.add_argument("--report-pdf", default=None)
     run_local.add_argument("--start-step", required=True)
     run_local.add_argument("--end-step", required=True)
+    run_local.add_argument("--formal-llm-provider", default="command", choices=["command", "fixture"])
+    run_local.add_argument("--allow-deterministic-debug", action="store_true")
     run_local.set_defaults(func=cmd_run_local)
 
     run_worker = sub.add_parser("run-worker")

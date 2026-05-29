@@ -699,6 +699,175 @@ def case_factorforgectl_resume_step1_valid_raw_passes(root: Path) -> dict[str, A
     }
 
 
+def case_factorforgectl_run_local_step1_generates_task_packet(root: Path) -> dict[str, Any]:
+    report_id = "RUN_LOCAL_STEP1_AGENT_TASK"
+    archive = root / "archive" / "factorforge-runs"
+    artifact_root, manifest = allocate_formal_run_root(
+        report_id=report_id,
+        pdf_sha256=pdf_sha(),
+        step_scope="step1-step6",
+        archive_root=archive,
+        step1_provider="openclaw_pdf_tool",
+        step1_model="google/gemini-3.1-pro-preview",
+        step2_provider="deepseek",
+        step2_model="deepseek-chat",
+    )
+    registry_path = root / "factorforgectl_run_local_step1" / "active_run_registry.json"
+    write_json(
+        registry_path,
+        {
+            "registry_version": "factorforge_active_run_registry_v2",
+            "active_runs": {
+                report_id: {
+                    "report_id": report_id,
+                    "run_id": manifest["run_id"],
+                    "artifact_root": str(artifact_root),
+                    "repo_sha": current_repo_sha(),
+                    "status": "CREATED",
+                    "current_step": "step1",
+                    "report_pdf": {"sha256": pdf_sha(), "local_path": str(PDF)},
+                    "formal_run_manifest": str(artifact_root / "formal_run_manifest.json"),
+                    "steps": {},
+                }
+            },
+        },
+    )
+    proc = run_factorforgectl(
+        [
+            "run-local",
+            "--report-id",
+            report_id,
+            "--registry",
+            str(registry_path),
+            "--start-step",
+            "1",
+            "--end-step",
+            "1",
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    text = proc.stdout + proc.stderr
+    registry = read_json(registry_path)
+    run = (registry.get("active_runs") or {}).get(report_id) or {}
+    task_packet = artifact_root / "objects" / "agent_tool_tasks" / report_id / "step1_openclaw_pdf_task_packet.json"
+    return {
+        "case": "factorforgectl_run_local_step1_generates_task_packet",
+        "rc": proc.returncode,
+        "token_present": "BLOCK_AGENT_TOOL_STEP1_REQUIRED" in text,
+        "task_packet_exists": task_packet.exists(),
+        "registry_status": run.get("status"),
+        "step1_status": ((run.get("steps") or {}).get("step1") or {}).get("status"),
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(
+            proc.returncode != 0
+            and "BLOCK_AGENT_TOOL_STEP1_REQUIRED" in text
+            and task_packet.exists()
+            and run.get("status") == "BLOCK_AGENT_TOOL_STEP1_REQUIRED"
+            and ((run.get("steps") or {}).get("step1") or {}).get("status") == "WAITING_FOR_AGENT_TOOL_RAW"
+        ),
+    }
+
+
+def case_factorforgectl_run_local_step2_to_3a_fixture_passes(root: Path) -> dict[str, Any]:
+    report_id = "RUN_LOCAL_STEP23_FIXTURE"
+    archive = root / "archive" / "factorforge-runs"
+    artifact_root, manifest = allocate_formal_run_root(
+        report_id=report_id,
+        pdf_sha256=pdf_sha(),
+        step_scope="step1-step6",
+        archive_root=archive,
+        step1_provider="openclaw_pdf_tool",
+        step1_model="google/gemini-3.1-pro-preview",
+        step2_provider="deepseek",
+        step2_model="deepseek-chat",
+    )
+    registry_path = root / "factorforgectl_run_local_step23" / "active_run_registry.json"
+    write_json(
+        registry_path,
+        {
+            "registry_version": "factorforge_active_run_registry_v2",
+            "active_runs": {
+                report_id: {
+                    "report_id": report_id,
+                    "run_id": manifest["run_id"],
+                    "artifact_root": str(artifact_root),
+                    "repo_sha": current_repo_sha(),
+                    "status": "STEP1_READY",
+                    "current_step": "step2",
+                    "report_pdf": {"sha256": pdf_sha(), "local_path": str(PDF)},
+                    "formal_run_manifest": str(artifact_root / "formal_run_manifest.json"),
+                    "providers": manifest.get("steps", {}),
+                    "steps": {"step1": {"status": "PASS"}},
+                }
+            },
+        },
+    )
+    step1_out = artifact_root / "objects" / "raw_llm" / report_id / "step1"
+    bridge = run_cmd(
+        [
+            sys.executable,
+            "scripts/run_factorforge_step1_llm_bridge.py",
+            "--report-id",
+            report_id,
+            "--report-pdf",
+            str(PDF),
+            "--out-dir",
+            str(step1_out),
+            "--provider",
+            "fixture",
+            "--write-report",
+        ]
+    )
+    proc = run_factorforgectl(
+        [
+            "run-local",
+            "--report-id",
+            report_id,
+            "--registry",
+            str(registry_path),
+            "--start-step",
+            "2",
+            "--end-step",
+            "3a",
+            "--formal-llm-provider",
+            "fixture",
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    payload = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
+    registry = read_json(registry_path)
+    run = (registry.get("active_runs") or {}).get(report_id) or {}
+    runtime_context = artifact_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    return {
+        "case": "factorforgectl_run_local_step2_to_3a_fixture_passes",
+        "bridge_rc": bridge.returncode,
+        "rc": proc.returncode,
+        "status": payload.get("status"),
+        "prepare_verdict": payload.get("prepare_verdict"),
+        "runtime_context_written": payload.get("runtime_context_written"),
+        "runtime_context_exists": runtime_context.exists(),
+        "worker_started": False,
+        "registry_status": run.get("status"),
+        "current_step": run.get("current_step"),
+        "step2_status": ((run.get("steps") or {}).get("step2") or {}).get("status"),
+        "step3a_status": ((run.get("steps") or {}).get("step3a") or {}).get("status"),
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(
+            bridge.returncode == 0
+            and proc.returncode == 0
+            and payload.get("status") == "PASS"
+            and payload.get("prepare_verdict") == "ACCEPT"
+            and payload.get("runtime_context_written") is True
+            and runtime_context.exists()
+            and run.get("current_step") == "step3b"
+            and ((run.get("steps") or {}).get("step2") or {}).get("status") == "PASS"
+            and ((run.get("steps") or {}).get("step3a") or {}).get("status") == "PASS"
+        ),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(Path.home() / ".factorforge-smoke" / "run_isolation_smoke"))
@@ -730,6 +899,8 @@ def main() -> int:
         case_factorforgectl_root_mismatch_blocks(root),
         case_factorforgectl_resume_step1_missing_raw_blocks(root),
         case_factorforgectl_resume_step1_valid_raw_passes(root),
+        case_factorforgectl_run_local_step1_generates_task_packet(root),
+        case_factorforgectl_run_local_step2_to_3a_fixture_passes(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"
     summary = {

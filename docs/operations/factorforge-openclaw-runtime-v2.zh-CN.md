@@ -36,7 +36,8 @@ Humphrey 禁止：
 python3 scripts/factorforgectl.py init-run \
   --report-id <report_id> \
   --report-pdf-s3 <s3_uri> \
-  --report-pdf-sha256 <sha256>
+  --report-pdf-sha256 <sha256> \
+  --report-pdf-local <local_pdf_or_manifest>
 ```
 
 查询状态：
@@ -59,6 +60,25 @@ python3 scripts/factorforgectl.py run-local \
   --start-step 1 \
   --end-step 3a
 ```
+
+`run-local --start-step 1 --end-step 1` 会调用
+`prepare_factorforge_formal_artifacts.py` 的 agent-tool Step1 路径，生成
+Step1 task packet，并返回 `BLOCK_AGENT_TOOL_STEP1_REQUIRED`。这是正常的
+OpenClaw PDF 工具断点，不是失败。
+
+Step1 raw 写回并通过 `resume-step1` 后，继续本机 Step2/3A：
+
+```bash
+python3 scripts/factorforgectl.py run-local \
+  --report-id <report_id> \
+  --start-step 2 \
+  --end-step 3a \
+  --formal-llm-provider command
+```
+
+该命令只消费 active registry 指向的 artifact root 下的 Step1 raw，并调用
+formal Step2 bridge 与 Step3A。`--end-step 3a` 会写
+`objects/runtime_context/runtime_context__<report_id>.json`，但不会启动 worker。
 
 Step1 agent-tool 断点恢复：
 

@@ -30,6 +30,70 @@ Humphrey 禁止：
 
 ## 标准命令
 
+## 固定口令
+
+当用户说：
+
+```text
+FactorForge V2 dry-run: 使用附件 PDF
+```
+
+或等价表达如“按 Factor Forge V2 真实研报 dry-run 流程处理这篇附件研报”，
+Humphrey 必须按以下固定语义执行，不需要用户重复长规则：
+
+1. 只允许使用本次附件 PDF / 本次明确指定的新研报作为 source report。
+2. 必须先回报并绑定 PDF `local_path`、`sha256`、可用时的 `source_uri`。
+3. 必须生成全新的 `report_id`、`run_id`、`artifact_root`。
+4. 禁止使用 `fixtures/step1/kakushadze_101_formulas.pdf` 或任何 repo fixture，除非用户明确说这是 smoke test。
+5. 禁止使用旧 `/tmp` root、旧 artifact root、旧 report_id 或旧 SSM/S3 证据替代 active registry。
+6. Step1 必须走 OpenClaw `tools.pdf` agent-tool 路线，写入 primary/challenger/chief 三份 raw。
+7. Step1 raw/schema 禁止手工 patch；必须由 `resume-step1` 校验 provenance 后继续。
+8. Step2/3A 默认必须使用真实 provider 路线 `--formal-llm-provider command`；禁止使用 `fixture`，除非用户明确说这是 smoke test。
+9. 只允许执行到 worker dry-run：`check-worker`、`sync-worker-artifacts --dry-run`、`run-worker --dry-run`。
+10. 禁止真实 `sync-worker-artifacts --poll`、真实 `run-worker --poll`、Step3B/4/5、Step6、search/promotion，除非用户另行授权。
+11. 如果发现自己使用了 fixture、旧 root、旧 artifact 或无法确认 PDF 来源，必须立即返回 BLOCK，不得继续。
+
+该固定口令的标准流程是：
+
+```bash
+python3 scripts/factorforgectl.py init-run ...
+python3 scripts/factorforgectl.py run-local --report-id <report_id> --start-step 1 --end-step 1
+# Humphrey 使用 OpenClaw tools.pdf 生成 Step1 primary/challenger/chief raw
+python3 scripts/factorforgectl.py resume-step1 --report-id <report_id>
+python3 scripts/factorforgectl.py run-local --report-id <report_id> --start-step 2 --end-step 3a --formal-llm-provider command
+python3 scripts/factorforgectl.py check-worker --report-id <report_id> --start-step 3b --end-step 5
+python3 scripts/factorforgectl.py sync-worker-artifacts --report-id <report_id> --worker-instance-id <instance_id> --artifact-sync-s3-uri <s3_uri> --dry-run
+python3 scripts/factorforgectl.py run-worker --report-id <report_id> --worker-instance-id <instance_id> --start-step 3b --end-step 5 --dry-run
+```
+
+固定口令的回报必须包含：
+
+- `report_id`
+- `run_id`
+- `artifact_root`
+- `repo_sha`
+- PDF `local_path` / `sha256` / 是否为本次附件
+- Step1 task packet path
+- Step1 primary/challenger/chief raw path 与 provenance PASS/FAIL
+- `resume-step1` status
+- Step2/3A validator rc/verdict
+- `runtime_context_written`
+- `check-worker` verdict
+- `sync-worker-artifacts --dry-run` verdict
+- `run-worker --dry-run` verdict
+- proof ledger path
+- `BLOCK` token（如有）
+
+当用户说：
+
+```text
+FactorForge V2 worker: <report_id>
+```
+
+Humphrey 只能对已经通过上述 dry-run 的同一个 `report_id/run_id/artifact_root`
+执行真实 `sync-worker-artifacts --poll` 与 `run-worker --poll`，范围限定为
+Step3B/4/5。它不得启动 Step6、search/promotion，除非用户另行授权。
+
 初始化 run：
 
 ```bash

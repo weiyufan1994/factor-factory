@@ -468,6 +468,7 @@ def cmd_recover_block(args: argparse.Namespace) -> int:
         ],
     )
     payload["control_verdict"] = "BLOCK" if diagnosis.startswith("BLOCK_") else "PASS"
+    payload["status"] = payload["control_verdict"]
     print_json(payload)
     return 0
 

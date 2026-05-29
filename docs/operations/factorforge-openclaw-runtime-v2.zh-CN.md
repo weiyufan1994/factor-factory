@@ -132,7 +132,9 @@ FactorForge V2 worker: <report_id>
 Humphrey 只能对已经通过上述 dry-run 的同一个 `report_id/run_id/artifact_root`
 执行真实 worker 阶段。若研究机处于 stopped，Humphrey 可以先执行
 `start-worker --poll`，等待 EC2 running 且 SSM Online 后再继续。范围限定为
-Step3B/4/5。它不得启动 Step6、search/promotion，除非用户另行授权。
+Step3B/4/5。Step6 是合法的 post-worker 研判/迭代层，但必须在 worker
+Step3B/4/5 与 Step5 证据完成后，经 `run-step6` 专用入口触发；不得通过
+`run-local --end-step 6` 或手工扫描 artifact 触发。
 
 真实 worker 阶段标准流程：
 
@@ -219,7 +221,7 @@ python3 scripts/factorforgectl.py run-local \
 
 `run-local` 禁止 `--end-step 6`。Step6 不是本机 prepare 阶段；它只能在
 worker Step3B/4/5 真实完成、`factor_run_master` 与 `factor_case_master`
-存在、用户另行授权后，由后续专用 post-worker/Step6 控制入口触发。
+存在后，由 `run-step6` 专用 post-worker 控制入口触发。
 
 `run-local --start-step 1 --end-step 1` 会调用
 `prepare_factorforge_formal_artifacts.py` 的 agent-tool Step1 路径，生成
@@ -327,6 +329,56 @@ python3 scripts/factorforgectl.py run-worker \
   --end-step 5 \
   --poll
 ```
+
+`run-worker --poll` 只有在 SSM invocation `Status=Success` 时才算完成。
+成功后 registry 会进入 `WORKER_DONE/current_step=6`。如果 SSM 返回
+`Failed`、`TimedOut`、`Cancelled` 等状态，控制面必须返回
+`BLOCK_WORKER_COMMAND_FAILED`，不得把 worker 失败解释为 Step6 可用。
+
+## Step6 / 迭代研判
+
+Step6 是研究反思与 loop controller。它会读取 Step4/5 证据，更新
+economic hypothesis、math mechanism、research_iteration_master，并在
+`decision=iterate` 时生成指向 Step3B 的 revision proposal / handoff。
+但 Step6 的输出本身不是直接改代码的授权；Council/Step6 产生的修改必须经过
+后续 human approval / child report / approved revision contract，才能回到 Step3B。
+
+Step6 只能通过：
+
+```bash
+python3 scripts/factorforgectl.py run-step6 \
+  --report-id <report_id> \
+  --council-mode auto
+```
+
+或先 dry-run：
+
+```bash
+python3 scripts/factorforgectl.py run-step6 \
+  --report-id <report_id> \
+  --council-mode auto \
+  --dry-run
+```
+
+`run-step6` 的硬前置证据全部来自 active registry 指向的当前 artifact root：
+
+```text
+objects/runtime_context/runtime_context__<report_id>.json
+objects/factor_run_master/factor_run_master__<report_id>.json
+objects/factor_case_master/factor_case_master__<report_id>.json
+objects/validation/factor_evaluation__<report_id>.json
+objects/handoff/handoff_to_step6__<report_id>.json
+```
+
+任一文件缺失、JSON 不合法、`report_id` 不匹配、active run `repo_sha`
+不等于当前 HEAD，都必须返回 `BLOCK_STEP6_PRECONDITION_FAILED`。
+
+默认 `run-step6 --council-mode auto` 会走 official wrapper
+`scripts/run_factorforge_ultimate.py --start-step 6 --end-step 6`。如果 Step6
+要求当前 main agent 补写 mechanism memo，会返回
+`STEP6_AWAITING_MAIN_AGENT_MECHANISM_MEMO`；如果 Council 需要 agentic 结果，
+会返回 `STEP6_AWAITING_COUNCIL_RESULTS`。Humphrey 必须按这些机器状态继续，
+不得自行修改 Step3B、generated code、handoff 或 library。
 
 ## BLOCK 处理
 

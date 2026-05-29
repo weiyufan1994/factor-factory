@@ -63,6 +63,8 @@ BLOCK_LOCAL_REPORT_PDF_REQUIRED = "BLOCK_LOCAL_REPORT_PDF_REQUIRED"
 BLOCK_LOCAL_PREPARE_FAILED = "BLOCK_FACTORFORGE_LOCAL_PREPARE_FAILED"
 BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH = "BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH"
 BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN = "BLOCK_FORMAL_LLM_FIXTURE_FORBIDDEN"
+BLOCK_STEP6_PRECONDITION_FAILED = "BLOCK_STEP6_PRECONDITION_FAILED"
+BLOCK_STEP6_COMMAND_FAILED = "BLOCK_STEP6_COMMAND_FAILED"
 AGENT_TOOL_TASK_VERSION = "factorforge_step1_agent_tool_task_packet_v1"
 AGENT_TOOL_PROVIDER = "openclaw_pdf_tool"
 AGENT_TOOL_MODEL = "google/gemini-3.1-pro-preview"
@@ -688,6 +690,26 @@ def runtime_context_path(root: Path, report_id: str) -> Path:
     return root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
 
 
+def factor_run_master_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "factor_run_master" / f"factor_run_master__{report_id}.json"
+
+
+def factor_case_master_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "factor_case_master" / f"factor_case_master__{report_id}.json"
+
+
+def factor_evaluation_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "validation" / f"factor_evaluation__{report_id}.json"
+
+
+def handoff_to_step6_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "handoff" / f"handoff_to_step6__{report_id}.json"
+
+
+def ultimate_run_report_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "runtime_context" / f"ultimate_run_report__{report_id}.json"
+
+
 def worker_readiness_checks(run: dict[str, Any], *, report_id: str, start_step: str, end_step: str) -> list[dict[str, Any]]:
     root = resolve_path(run["artifact_root"])
     assert_formal_run_root_allowed(root)
@@ -732,6 +754,92 @@ def worker_readiness_checks(run: dict[str, Any], *, report_id: str, start_step: 
             payload={"failed_checks": failed, "readiness_checks": checks, "start_step": start_step, "end_step": end_step},
         )
     return checks
+
+
+def artifact_report_id(payload: dict[str, Any]) -> str | None:
+    direct = payload.get("report_id")
+    if isinstance(direct, str) and direct:
+        return direct
+    identity = payload.get("artifact_identity") if isinstance(payload.get("artifact_identity"), dict) else {}
+    value = identity.get("report_id")
+    return value if isinstance(value, str) and value else None
+
+
+def step6_readiness_checks(run: dict[str, Any], *, report_id: str) -> list[dict[str, Any]]:
+    root = resolve_path(run["artifact_root"])
+    assert_formal_run_root_allowed(root)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, **extra: Any) -> None:
+        item = {"name": name, "ok": ok}
+        item.update(extra)
+        checks.append(item)
+
+    expected_sha = str(run.get("repo_sha") or "")
+    actual_sha = current_repo_sha()
+    add("control_repo_sha_matches_run", actual_sha == expected_sha, expected=expected_sha, actual=actual_sha)
+    add("artifact_root_exists", root.exists(), artifact_root=str(root))
+
+    required_paths = {
+        "runtime_context": runtime_context_path(root, report_id),
+        "factor_run_master": factor_run_master_path(root, report_id),
+        "factor_case_master": factor_case_master_path(root, report_id),
+        "factor_evaluation": factor_evaluation_path(root, report_id),
+        "handoff_to_step6": handoff_to_step6_path(root, report_id),
+    }
+    for name, path in required_paths.items():
+        payload, info = read_optional_json(path)
+        add(f"{name}_exists", bool(info.get("exists")), path=str(path))
+        add(f"{name}_json_ok", bool(info.get("json_ok")), path=str(path), error=info.get("error"))
+        if payload is not None:
+            actual_report_id = artifact_report_id(payload)
+            add(f"{name}_report_id_matches", actual_report_id == report_id, expected=report_id, actual=actual_report_id, path=str(path))
+
+    failed = [item for item in checks if not item.get("ok")]
+    if failed:
+        raise FactorForgeBlock(
+            BLOCK_STEP6_PRECONDITION_FAILED,
+            "Step6 requires completed Step4/5 evidence from the active artifact root",
+            payload={"failed_checks": failed, "readiness_checks": checks},
+        )
+    return checks
+
+
+def step6_command(
+    run: dict[str, Any],
+    *,
+    council_mode: str,
+    auto_council_policy: str = "dispatch_manifest",
+    agentic_council_executor: str = "dispatch_manifest",
+    agentic_dispatch_adapter: str = "manual_file",
+    runtime_dispatch: str = "openclaw",
+) -> list[str]:
+    root = resolve_path(run["artifact_root"])
+    manifest = run.get("formal_run_manifest") or str(root / "formal_run_manifest.json")
+    return [
+        sys.executable,
+        "scripts/run_factorforge_ultimate.py",
+        "--report-id",
+        str(run.get("report_id")),
+        "--factorforge-root",
+        str(root),
+        "--manifest",
+        str(manifest),
+        "--start-step",
+        "6",
+        "--end-step",
+        "6",
+        "--council-mode",
+        council_mode,
+        "--auto-council-policy",
+        auto_council_policy,
+        "--agentic-council-executor",
+        agentic_council_executor,
+        "--agentic-dispatch-adapter",
+        agentic_dispatch_adapter,
+        "--runtime-dispatch",
+        runtime_dispatch,
+    ]
 
 
 def worker_command(run: dict[str, Any], *, start_step: str, end_step: str, worker_repo_root: str) -> list[str]:
@@ -1156,6 +1264,22 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
             time.sleep(args.poll_interval_seconds)
         if final_invocation is None or final_invocation.get("Status") not in {"Success", "Failed", "Cancelled", "TimedOut", "Cancelling"}:
             raise FactorForgeBlock(BLOCK_WORKER_SSM_TIMEOUT, f"worker command timed out: {command_id}", payload={"command_id": command_id})
+        if final_invocation.get("Status") != "Success":
+            raise FactorForgeBlock(
+                BLOCK_WORKER_COMMAND_FAILED,
+                "worker command finished without Success",
+                payload={"command_id": command_id, "ssm_invocation": final_invocation},
+            )
+        run["status"] = "WORKER_DONE"
+        run["current_step"] = "6"
+        steps = run.setdefault("steps", {})
+        for step in ("step3b", "step4", "step5"):
+            steps.setdefault(step, {})["status"] = "PASS"
+        last_worker = run.setdefault("worker_commands", [])[-1]
+        last_worker["status"] = final_invocation.get("Status")
+        last_worker["response_code"] = final_invocation.get("ResponseCode")
+        last_worker["completed_at_utc"] = utc_now()
+        update_run(path, registry, args.report_id, run)
     payload = pass_payload(
         report_id=args.report_id,
         run=run,
@@ -1168,6 +1292,94 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
         worker_started=True,
         worker_repo_root=args.worker_repo_root,
         readiness_checks=checks,
+    )
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
+
+
+def cmd_run_step6(args: argparse.Namespace) -> int:
+    path, registry, run = load_run(args)
+    root = resolve_path(run["artifact_root"])
+    checks = step6_readiness_checks(run, report_id=args.report_id)
+    command = step6_command(
+        run,
+        council_mode=args.council_mode,
+        auto_council_policy=args.auto_council_policy,
+        agentic_council_executor=args.agentic_council_executor,
+        agentic_dispatch_adapter=args.agentic_dispatch_adapter,
+        runtime_dispatch=args.runtime_dispatch,
+    )
+    if args.dry_run:
+        run["status"] = "STEP6_DRY_RUN_READY"
+        run["current_step"] = "6"
+        run["step6_dispatch"] = {
+            "status": "DRY_RUN_READY",
+            "dry_run": True,
+            "council_mode": args.council_mode,
+            "auto_council_policy": args.auto_council_policy,
+            "agentic_council_executor": args.agentic_council_executor,
+            "agentic_dispatch_adapter": args.agentic_dispatch_adapter,
+            "runtime_dispatch": args.runtime_dispatch,
+            "created_at_utc": utc_now(),
+        }
+        update_run(path, registry, args.report_id, run)
+        payload = pass_payload(
+            report_id=args.report_id,
+            run=run,
+            command="run-step6",
+            step6_dry_run=True,
+            step6_started=False,
+            step6_command=command,
+            readiness_checks=checks,
+        )
+        proof = write_proof_ledger(root, args.report_id, payload)
+        payload["proof_ledger"] = str(proof)
+        print_json(payload)
+        return 0
+
+    proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=args.timeout_seconds)
+    proof_report = read_optional_json(ultimate_run_report_path(root, args.report_id))[0]
+    if proc.returncode != 0:
+        raise FactorForgeBlock(
+            BLOCK_STEP6_COMMAND_FAILED,
+            "Step6 ultimate wrapper failed",
+            payload={"returncode": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:], "ultimate_run_report": str(ultimate_run_report_path(root, args.report_id))},
+        )
+    proof_status = (proof_report or {}).get("status")
+    revision_council = (proof_report or {}).get("revision_council") if isinstance((proof_report or {}).get("revision_council"), dict) else {}
+    if proof_status == "PAUSED":
+        run["status"] = "STEP6_AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+    elif revision_council.get("status") == "awaiting_agent_results":
+        run["status"] = "STEP6_AWAITING_COUNCIL_RESULTS"
+    else:
+        run["status"] = "STEP6_DONE"
+    run["current_step"] = "6"
+    run["step6_dispatch"] = {
+        "status": run["status"],
+        "dry_run": False,
+        "returncode": proc.returncode,
+        "ultimate_run_report": str(ultimate_run_report_path(root, args.report_id)),
+        "proof_status": proof_status,
+        "revision_council_status": revision_council.get("status"),
+        "created_at_utc": utc_now(),
+    }
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="run-step6",
+        step6_started=True,
+        step6_dry_run=False,
+        step6_command=command,
+        readiness_checks=checks,
+        returncode=proc.returncode,
+        stdout_tail=proc.stdout[-4000:],
+        stderr_tail=proc.stderr[-4000:],
+        ultimate_run_report=str(ultimate_run_report_path(root, args.report_id)),
+        ultimate_run_report_status=proof_status,
+        revision_council_status=revision_council.get("status"),
     )
     proof = write_proof_ledger(root, args.report_id, payload)
     payload["proof_ledger"] = str(proof)
@@ -1279,6 +1491,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_worker.add_argument("--timeout-seconds", type=int, default=7200)
     run_worker.add_argument("--poll-interval-seconds", type=int, default=10)
     run_worker.set_defaults(func=cmd_run_worker)
+
+    run_step6 = sub.add_parser("run-step6")
+    run_step6.add_argument("--registry", dest="sub_registry", default=None)
+    run_step6.add_argument("--report-id", required=True)
+    run_step6.add_argument("--artifact-root", default=None)
+    run_step6.add_argument("--dry-run", action="store_true")
+    run_step6.add_argument("--council-mode", choices=["off", "auto", "scaffold", "agentic"], default="auto")
+    run_step6.add_argument("--auto-council-policy", choices=["scaffold", "dispatch_manifest", "block_without_agentic"], default="dispatch_manifest")
+    run_step6.add_argument("--agentic-council-executor", choices=["none", "local_mock", "dispatch_manifest", "real_agent"], default="dispatch_manifest")
+    run_step6.add_argument("--agentic-dispatch-adapter", choices=["none", "manual_file", "openclaw", "codex", "remote_api"], default="manual_file")
+    run_step6.add_argument("--runtime-dispatch", choices=["codex", "openclaw", "manual_file", "unknown"], default="openclaw")
+    run_step6.add_argument("--timeout-seconds", type=int, default=7200)
+    run_step6.set_defaults(func=cmd_run_step6)
 
     stop_worker = sub.add_parser("stop-worker")
     stop_worker.add_argument("--registry", dest="sub_registry", default=None)

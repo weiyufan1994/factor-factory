@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import sys
+import shutil
+import contextlib
+import io
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,44 @@ def assert_blocks(fn, expected_token: str) -> None:
     raise AssertionError(f"expected {expected_token}")
 
 
+def smoke_root(name: str) -> Path:
+    root = Path.home() / ".factorforge-smoke" / name
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    return root
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(factorforgectl.json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def minimal_run(root: Path, report_id: str) -> dict:
+    return {
+        "report_id": report_id,
+        "run_id": f"smoke_{report_id}",
+        "artifact_root": str(root),
+        "repo_sha": factorforgectl.current_repo_sha(),
+        "status": "WORKER_DONE",
+        "current_step": "6",
+        "runtime_context_written": True,
+        "steps": {
+            "step1": {"status": "PASS"},
+            "step2": {"status": "PASS"},
+            "step3a": {"status": "PASS"},
+        },
+    }
+
+
+def seed_step6_inputs(root: Path, report_id: str) -> None:
+    write_json(root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json", {"report_id": report_id, "artifact_root": str(root)})
+    write_json(root / "objects" / "factor_run_master" / f"factor_run_master__{report_id}.json", {"report_id": report_id, "run_status": "success"})
+    write_json(root / "objects" / "factor_case_master" / f"factor_case_master__{report_id}.json", {"report_id": report_id, "final_status": "validated"})
+    write_json(root / "objects" / "validation" / f"factor_evaluation__{report_id}.json", {"report_id": report_id, "verdict": "PASS"})
+    write_json(root / "objects" / "handoff" / f"handoff_to_step6__{report_id}.json", {"report_id": report_id})
+
+
 def main() -> int:
     assert factorforgectl.normalize_local_step("1") == "1"
     assert factorforgectl.normalize_local_step("step2") == "2"
@@ -38,6 +79,34 @@ def main() -> int:
     assert factorforgectl.validate_local_step_range("2", "3a") == ("2", "3a")
     assert_blocks(lambda: factorforgectl.validate_local_step_range("1", "3a"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
     assert_blocks(lambda: factorforgectl.validate_local_step_range("3a", "2"), "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP")
+
+    report_id = "step6_smoke_report"
+    blocked_root = smoke_root("step6_missing_worker_evidence")
+    assert_blocks(
+        lambda: factorforgectl.step6_readiness_checks(minimal_run(blocked_root, report_id), report_id=report_id),
+        "BLOCK_STEP6_PRECONDITION_FAILED",
+    )
+
+    ready_root = smoke_root("step6_ready")
+    seed_step6_inputs(ready_root, report_id)
+    checks = factorforgectl.step6_readiness_checks(minimal_run(ready_root, report_id), report_id=report_id)
+    assert all(item["ok"] for item in checks), checks
+    command = factorforgectl.step6_command(minimal_run(ready_root, report_id), council_mode="auto")
+    assert "--start-step 6 --end-step 6" in " ".join(command), command
+    assert "--council-mode auto" in " ".join(command), command
+    parsed = factorforgectl.build_parser().parse_args(["run-step6", "--report-id", report_id, "--dry-run"])
+    assert parsed.command == "run-step6", parsed
+    assert parsed.dry_run is True, parsed
+    registry = ready_root / "registry.json"
+    write_json(registry, {"active_runs": {report_id: minimal_run(ready_root, report_id)}})
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = factorforgectl.main(["--registry", str(registry), "run-step6", "--report-id", report_id, "--dry-run"])
+    assert rc == 0, stdout.getvalue()
+    updated = factorforgectl.json.loads(registry.read_text(encoding="utf-8"))
+    active = updated["active_runs"][report_id]
+    assert active["status"] == "STEP6_DRY_RUN_READY", active
+    assert active["current_step"] == "6", active
 
     print("RESULT: PASS")
     return 0

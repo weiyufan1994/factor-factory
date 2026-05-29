@@ -37,6 +37,9 @@ the "固定口令" section.
   and a separate post-worker authorization path.
 - Stop at worker dry-run unless the user separately authorizes real worker
   execution.
+- Real Step6 must enter through `factorforgectl.py run-step6` after Step5
+  evidence exists in the active artifact root. Do not trigger Step6 by scanning
+  old artifacts or by calling `run-local --end-step 6`.
 
 ## Executor Mode
 
@@ -71,10 +74,26 @@ FactorForge V2 worker: <report_id>
 ```
 
 Only use the same `report_id/run_id/artifact_root` that passed dry-run, and only
-run Step3B/4/5 unless the user separately authorizes Step6 or promotion.
+run Step3B/4/5 on the worker. After worker Step5 finishes, Step6 may run locally
+through the controlled post-worker command below; it is not part of `run-local`.
 
 If the worker is stopped, the agent may start it with
 `factorforgectl.py start-worker --poll` before sync/run. After the worker run
 finishes, do not stop the worker automatically. Report proof and wait for the
 user to accept the result. Only after explicit user acceptance may the agent run
 `factorforgectl.py stop-worker --after-user-acceptance --poll`.
+
+## Post-Worker Step6
+
+When Step3B/4/5 has completed and the active artifact root contains
+`factor_run_master`, `factor_case_master`, `factor_evaluation`, and
+`handoff_to_step6`, use:
+
+```bash
+python3 scripts/factorforgectl.py run-step6 --report-id <report_id> --council-mode auto
+```
+
+Step6 is allowed to update economic hypothesis, math mechanism, and
+`research_iteration_master`. If it proposes a Step3B revision, treat that as an
+approval-gated revision proposal, not permission to edit generated code or
+handoffs directly. Continue only through the contracts emitted by Step6/Council.

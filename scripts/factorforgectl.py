@@ -31,7 +31,15 @@ from factor_factory.run_control import (
     write_active_registry,
     write_proof_ledger,
 )
-from factor_factory.ssm_control import get_command_invocation, send_worker_command
+from factor_factory.ssm_control import (
+    describe_ec2_instance,
+    describe_ssm_instance,
+    get_command_invocation,
+    send_worker_command,
+    start_ec2_instance,
+    stop_ec2_instance,
+    wait_ec2_instance_state,
+)
 from scripts.factorforge_run_registry import (
     allocate_formal_run_root,
     assert_formal_run_root_allowed,
@@ -44,6 +52,8 @@ BLOCK_WORKER_RUNTIME_CONTEXT_INVALID = "BLOCK_WORKER_RUNTIME_CONTEXT_INVALID"
 BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED = "BLOCK_WORKER_ARTIFACT_SYNC_REQUIRED"
 BLOCK_WORKER_ARTIFACT_SYNC_FAILED = "BLOCK_WORKER_ARTIFACT_SYNC_FAILED"
 BLOCK_WORKER_ARTIFACT_SYNC_S3_URI_REQUIRED = "BLOCK_WORKER_ARTIFACT_SYNC_S3_URI_REQUIRED"
+BLOCK_WORKER_LIFECYCLE_FAILED = "BLOCK_WORKER_LIFECYCLE_FAILED"
+BLOCK_WORKER_STOP_REQUIRES_USER_ACCEPTANCE = "BLOCK_WORKER_STOP_REQUIRES_USER_ACCEPTANCE"
 BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
 BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
 BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
@@ -612,6 +622,137 @@ def worker_sync_proof(run: dict[str, Any], *, worker_instance_id: str) -> dict[s
     return sync
 
 
+def wait_for_ssm_online(instance_id: str, *, timeout_seconds: int, poll_interval_seconds: int) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    last = describe_ssm_instance(instance_id)
+    while time.time() < deadline:
+        last = describe_ssm_instance(instance_id)
+        if last.get("ok") and last.get("ping_status") == "Online":
+            return last
+        time.sleep(poll_interval_seconds)
+    return {"ok": False, "instance_id": instance_id, "timeout_seconds": timeout_seconds, "last_ssm_status": last}
+
+
+def cmd_start_worker(args: argparse.Namespace) -> int:
+    path, registry, run = load_run(args)
+    root = resolve_path(run["artifact_root"])
+    before = describe_ec2_instance(args.worker_instance_id)
+    if not before.get("ok"):
+        raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "failed to describe worker instance before start", payload=before)
+    before_state = before.get("state")
+    start_response: dict[str, Any] | None = None
+    wait_response: dict[str, Any] | None = None
+    ssm_response: dict[str, Any] | None = None
+    if before_state == "running":
+        after = before
+        ssm_response = describe_ssm_instance(args.worker_instance_id)
+    elif args.dry_run:
+        after = before
+    else:
+        start_response = start_ec2_instance(args.worker_instance_id)
+        if not start_response.get("ok"):
+            raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "failed to start worker instance", payload=start_response)
+        if args.poll:
+            wait_response = wait_ec2_instance_state(args.worker_instance_id, "running")
+            if not wait_response.get("ok"):
+                raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "worker did not reach running state", payload=wait_response)
+            ssm_response = wait_for_ssm_online(
+                args.worker_instance_id,
+                timeout_seconds=args.timeout_seconds,
+                poll_interval_seconds=args.poll_interval_seconds,
+            )
+            if not ssm_response.get("ok"):
+                raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "worker SSM did not become Online", payload=ssm_response)
+        after = describe_ec2_instance(args.worker_instance_id)
+
+    lifecycle = {
+        "action": "start-worker",
+        "instance_id": args.worker_instance_id,
+        "before_state": before_state,
+        "after_state": after.get("state") if isinstance(after, dict) else None,
+        "dry_run": bool(args.dry_run),
+        "poll": bool(args.poll),
+        "ssm_ping_status": ssm_response.get("ping_status") if isinstance(ssm_response, dict) else None,
+        "created_at_utc": utc_now(),
+    }
+    run.setdefault("worker_lifecycle", []).append(lifecycle)
+    if not args.dry_run and lifecycle.get("after_state") == "running":
+        run["worker_instance_state"] = "running"
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="start-worker",
+        worker_instance_id=args.worker_instance_id,
+        worker_lifecycle=lifecycle,
+        worker_start_response=start_response,
+        worker_wait_response=wait_response,
+        worker_ssm_response=ssm_response,
+        worker_started=(not args.dry_run and lifecycle.get("after_state") == "running"),
+    )
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
+
+
+def cmd_stop_worker(args: argparse.Namespace) -> int:
+    if not args.after_user_acceptance and not args.dry_run:
+        raise FactorForgeBlock(
+            BLOCK_WORKER_STOP_REQUIRES_USER_ACCEPTANCE,
+            "real stop-worker requires --after-user-acceptance",
+            payload={"worker_instance_id": args.worker_instance_id},
+        )
+    path, registry, run = load_run(args)
+    root = resolve_path(run["artifact_root"])
+    before = describe_ec2_instance(args.worker_instance_id)
+    if not before.get("ok"):
+        raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "failed to describe worker instance before stop", payload=before)
+    before_state = before.get("state")
+    stop_response: dict[str, Any] | None = None
+    wait_response: dict[str, Any] | None = None
+    if before_state == "stopped" or args.dry_run:
+        after = before
+    else:
+        stop_response = stop_ec2_instance(args.worker_instance_id)
+        if not stop_response.get("ok"):
+            raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "failed to stop worker instance", payload=stop_response)
+        if args.poll:
+            wait_response = wait_ec2_instance_state(args.worker_instance_id, "stopped")
+            if not wait_response.get("ok"):
+                raise FactorForgeBlock(BLOCK_WORKER_LIFECYCLE_FAILED, "worker did not reach stopped state", payload=wait_response)
+        after = describe_ec2_instance(args.worker_instance_id)
+
+    lifecycle = {
+        "action": "stop-worker",
+        "instance_id": args.worker_instance_id,
+        "before_state": before_state,
+        "after_state": after.get("state") if isinstance(after, dict) else None,
+        "dry_run": bool(args.dry_run),
+        "poll": bool(args.poll),
+        "after_user_acceptance": bool(args.after_user_acceptance),
+        "created_at_utc": utc_now(),
+    }
+    run.setdefault("worker_lifecycle", []).append(lifecycle)
+    if not args.dry_run and lifecycle.get("after_state") == "stopped":
+        run["worker_instance_state"] = "stopped"
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="stop-worker",
+        worker_instance_id=args.worker_instance_id,
+        worker_lifecycle=lifecycle,
+        worker_stop_response=stop_response,
+        worker_wait_response=wait_response,
+        worker_stopped=(not args.dry_run and lifecycle.get("after_state") == "stopped"),
+    )
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
+
+
 def make_artifact_archive(root: Path, run_id: str) -> Path:
     archive = Path(tempfile.gettempdir()) / f"factorforge_artifact_sync__{run_id}.tgz"
     proc = subprocess.run(["tar", "-czf", str(archive), "-C", str(root), "."], cwd=ROOT, text=True, capture_output=True)
@@ -905,6 +1046,17 @@ def build_parser() -> argparse.ArgumentParser:
     check_worker.add_argument("--worker-repo-root", default=os.getenv("FACTORFORGE_WORKER_REPO_ROOT", "/opt/factorforge/factor-factory-production"))
     check_worker.set_defaults(func=cmd_check_worker)
 
+    start_worker = sub.add_parser("start-worker")
+    start_worker.add_argument("--registry", dest="sub_registry", default=None)
+    start_worker.add_argument("--report-id", required=True)
+    start_worker.add_argument("--artifact-root", default=None)
+    start_worker.add_argument("--worker-instance-id", required=True)
+    start_worker.add_argument("--dry-run", action="store_true")
+    start_worker.add_argument("--poll", action="store_true")
+    start_worker.add_argument("--timeout-seconds", type=int, default=900)
+    start_worker.add_argument("--poll-interval-seconds", type=int, default=10)
+    start_worker.set_defaults(func=cmd_start_worker)
+
     sync_worker = sub.add_parser("sync-worker-artifacts")
     sync_worker.add_argument("--registry", dest="sub_registry", default=None)
     sync_worker.add_argument("--report-id", required=True)
@@ -932,6 +1084,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_worker.add_argument("--timeout-seconds", type=int, default=7200)
     run_worker.add_argument("--poll-interval-seconds", type=int, default=10)
     run_worker.set_defaults(func=cmd_run_worker)
+
+    stop_worker = sub.add_parser("stop-worker")
+    stop_worker.add_argument("--registry", dest="sub_registry", default=None)
+    stop_worker.add_argument("--report-id", required=True)
+    stop_worker.add_argument("--artifact-root", default=None)
+    stop_worker.add_argument("--worker-instance-id", required=True)
+    stop_worker.add_argument("--dry-run", action="store_true")
+    stop_worker.add_argument("--poll", action="store_true")
+    stop_worker.add_argument("--after-user-acceptance", action="store_true")
+    stop_worker.set_defaults(func=cmd_stop_worker)
     return parser
 
 

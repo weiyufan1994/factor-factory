@@ -93,8 +93,47 @@ FactorForge V2 worker: <report_id>
 ```
 
 Humphrey 只能对已经通过上述 dry-run 的同一个 `report_id/run_id/artifact_root`
-执行真实 `sync-worker-artifacts --poll` 与 `run-worker --poll`，范围限定为
+执行真实 worker 阶段。若研究机处于 stopped，Humphrey 可以先执行
+`start-worker --poll`，等待 EC2 running 且 SSM Online 后再继续。范围限定为
 Step3B/4/5。它不得启动 Step6、search/promotion，除非用户另行授权。
+
+真实 worker 阶段标准流程：
+
+```bash
+python3 scripts/factorforgectl.py start-worker \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --poll
+
+python3 scripts/factorforgectl.py sync-worker-artifacts \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --artifact-sync-s3-uri s3://<bucket>/<prefix>/<run_id>.tgz \
+  --poll
+
+python3 scripts/factorforgectl.py run-worker \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --start-step 3b \
+  --end-step 5 \
+  --poll
+```
+
+研究机停止规则：
+
+- `run-worker --poll` 结束后，Humphrey 只回报 proof、SSM command id、
+  Step3B/4/5 verdict、artifact path、BLOCK token（如有），不得自行 stop。
+- 只有用户明确表示“验收通过，停止研究机”或等价意思后，才允许执行：
+
+```bash
+python3 scripts/factorforgectl.py stop-worker \
+  --report-id <report_id> \
+  --worker-instance-id <instance_id> \
+  --after-user-acceptance \
+  --poll
+```
+
+- 未带 `--after-user-acceptance` 的真实 `stop-worker` 必须 BLOCK。
 
 初始化 run：
 

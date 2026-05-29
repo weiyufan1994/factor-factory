@@ -49,3 +49,9 @@ FactorForge V2 worker: <report_id>
 
 Only use the same `report_id/run_id/artifact_root` that passed dry-run, and only
 run Step3B/4/5 unless the user separately authorizes Step6 or promotion.
+
+If the worker is stopped, the agent may start it with
+`factorforgectl.py start-worker --poll` before sync/run. After the worker run
+finishes, do not stop the worker automatically. Report proof and wait for the
+user to accept the result. Only after explicit user acceptance may the agent run
+`factorforgectl.py stop-worker --after-user-acceptance --poll`.

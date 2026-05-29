@@ -96,6 +96,10 @@ Humphrey 必须按以下固定语义执行，不需要用户重复长规则：
    Step1 raw JSON，`run-local --start-step 2` 必须返回
    `BLOCK_AGENT_TOOL_STEP1_RAW_TAMPERED`。
 8. Step2/3A 默认必须使用真实 provider 路线 `--formal-llm-provider command`；禁止使用 `fixture`，除非用户明确说这是 smoke test。
+   Step2 的 `direct_code` 不只检查 schema 和性能，也必须检查公式语义。若公式要求
+   `past N=20 valid trading days` / rolling lookback，则禁止用全历史
+   `rank().over('ts_code')`、`count().over('ts_code')`、重叠 top/bottom
+   阈值或 `(ts_code, trade_date)` 单点聚合冒充窗口内 `V_high/V_low`。
 9. 主机侧必须分步执行并逐步汇报：Step1 完成后停；用户确认后 Step2；Step2 完成后停；用户确认后 Step3A；Step3A 完成后停。
 10. 只允许执行到 worker dry-run：`check-worker`、`sync-worker-artifacts --dry-run`、`run-worker --dry-run`。
 11. 禁止真实 `sync-worker-artifacts --poll`、真实 `run-worker --poll`、Step3B/4/5、Step6、search/promotion，除非用户另行授权。

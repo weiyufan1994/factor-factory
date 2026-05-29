@@ -40,6 +40,10 @@ the "固定口令" section.
   If any Step1 raw JSON changes before Step2, `run-local --start-step 2` must
   block with `BLOCK_AGENT_TOOL_STEP1_RAW_TAMPERED`; start a fresh run instead.
 - Step2/3A must use `--formal-llm-provider command` by default, not `fixture`.
+- Step2 `direct_code` must be semantically faithful, not merely schema-valid.
+  If a formula says past `N=20` valid trading days / rolling lookback, full-history
+  `rank().over('ts_code')`, full-history `count().over('ts_code')`, overlapping
+  top/bottom buckets, or singleton `(ts_code, trade_date)` aggregation must block.
 - `run-local` may only run `1->1`, `2->2`, or `3a->3a`. Never call
   `2->3a` or any other combined host-side range. After each completed host-side
   step, report the proof/verdict and wait for explicit user approval before the

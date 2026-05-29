@@ -18,6 +18,7 @@ BLOCK_PROVIDER_FAILED = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED"
 BLOCK_PROVIDER_REQUEST_CONTRACT = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_REQUEST_CONTRACT_INVALID"
 BLOCK_UNSUPPORTED_API = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_UNSUPPORTED_API"
 BLOCK_DIRECT_CODE_PERFORMANCE_RISK = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK"
+BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH = "BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH"
 DEFAULT_CONFIG = Path("/home/ubuntu/.openclaw/openclaw.json")
 SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
@@ -511,6 +512,70 @@ def direct_code_performance_failure(source: str) -> str | None:
     return None
 
 
+def _compact_code_text(source: str) -> str:
+    return re.sub(r"\s+", "", source.lower())
+
+
+def _payload_requires_windowed_price_state_amplitude(payload: dict[str, Any]) -> bool:
+    parts = [
+        payload.get("raw_formula_text"),
+        payload.get("formula_text"),
+        payload.get("time_series_steps"),
+        payload.get("cross_sectional_steps"),
+        (payload.get("canonical_spec") or {}).get("formula_text") if isinstance(payload.get("canonical_spec"), dict) else None,
+    ]
+    text = json.dumps(parts, ensure_ascii=False).lower()
+    has_v_high_low = ("v_high" in text or "vhigh" in text) and ("v_low" in text or "vlow" in text)
+    has_window = any(token in text for token in ["n=20", "n = 20", "past n", "past 20", "valid trading days", "rolling window"])
+    has_price_state = any(token in text for token in ["closing price", "close", "收盘价"])
+    has_amplitude = any(token in text for token in ["amplitude", "high/low", "振幅"])
+    return bool(has_v_high_low and has_window and has_price_state and has_amplitude)
+
+
+def direct_code_semantic_failure(payload: dict[str, Any], source: str) -> str | None:
+    if not _payload_requires_windowed_price_state_amplitude(payload):
+        return None
+    lower = source.lower()
+    compact = _compact_code_text(source)
+    if not any(
+        token in lower
+        for token in [
+            "rolling",
+            "rolling_",
+            "group_by_dynamic",
+            "rolling_mean",
+            "rolling_map",
+            "lookback",
+            "past_n",
+            "window_size",
+            "window=20",
+            "n=20",
+            'period="20',
+            "period='20",
+        ]
+    ):
+        return f"{BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH}: formula requires past N valid-day window but direct_code has no rolling/window/lookback construct"
+    if re.search(r"\.rank\s*\([^)]*\)\s*\.over\s*\(\s*['\"]ts_code['\"]\s*\)", source):
+        return f"{BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH}: direct_code uses rank().over('ts_code'), ranking full history instead of the past N valid-day window"
+    if re.search(r"\.count\s*\(\s*\)\s*\.over\s*\(\s*['\"]ts_code['\"]\s*\)", source):
+        return f"{BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH}: direct_code uses count().over('ts_code'), counting full history instead of rolling valid days"
+    if (
+        "top_threshold" in compact
+        and "bottom_threshold" in compact
+        and "*0.25" in compact
+        and "*0.75" in compact
+        and ">=" in compact
+        and "<=" in compact
+    ):
+        return f"{BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH}: top/bottom lambda threshold logic appears overlapping rather than disjoint top/bottom buckets"
+    if (
+        re.search(r"v_high\s*=.*?group_by\s*\(\s*['\"]ts_code['\"]\s*,\s*['\"]trade_date['\"]", source, flags=re.DOTALL)
+        or re.search(r"v_low\s*=.*?group_by\s*\(\s*['\"]ts_code['\"]\s*,\s*['\"]trade_date['\"]", source, flags=re.DOTALL)
+    ):
+        return f"{BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH}: V_high/V_low aggregation groups by ts_code and trade_date instead of aggregating within the lookback window"
+    return None
+
+
 def normalize_step2_payload(payload: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     role = str(request.get("role") or "")
     if role not in {"primary", "challenger"}:
@@ -619,6 +684,9 @@ def _direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
     perf_failure = direct_code_performance_failure(source)
     if perf_failure:
         return perf_failure
+    semantic_failure = direct_code_semantic_failure(payload, source)
+    if semantic_failure:
+        return semantic_failure
     return None
 
 
@@ -682,6 +750,10 @@ def repair_step2_payload(
         "do not use for-loop iteration over pandas groupby objects, groupby.apply, row apply/apply(axis=1), iterrows, "
         "itertuples, nested Python loops over rows/tickers/dates/minutes, list append inside loops, or sort_values inside loops. "
         "Sort once globally or use vectorized group operations; never sort each group inside a Python loop. "
+        "Direct_code source_code must be semantically faithful to the formula. If the formula says past N=20 valid trading "
+        "days, implement an explicit rolling/lookback window per ts_code and per trade_date. Do not use full-history "
+        "rank().over('ts_code') or count().over('ts_code') as a substitute. Top and bottom lambda buckets must be disjoint "
+        "within the same lookback window, and V_high/V_low must be window aggregates, not singleton (ts_code, trade_date) aggregates. "
         "The direct_code output_schema must be exactly or at least {'columns': ['ts_code', 'trade_date', 'factor_value']}; "
         "do not return an empty output_schema, a dtype-only output_schema, or output_schema nested outside code_contract. "
         "Do not use direct_code without source_code. "
@@ -792,6 +864,11 @@ def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[st
             "do not use pandas groupby iteration, groupby.apply, row apply/apply(axis=1), iterrows, itertuples, nested Python "
             "loops over rows/tickers/dates/minutes, list append inside loops, or sort_values inside loops. Sort once globally "
             "or use vectorized group operations; never sort each group inside a Python loop. "
+            "Direct_code must also be semantically faithful to raw_formula_text. If the formula says past N=20 valid trading "
+            "days, implement an explicit rolling/lookback window per ts_code and per trade_date. Do not use full-history "
+            "rank().over('ts_code') or count().over('ts_code') as a substitute. Top and bottom lambda buckets must be "
+            "disjoint high-price and low-price subsets within the same lookback window, and V_high/V_low must aggregate "
+            "inside that window, not by singleton (ts_code, trade_date) groups. "
             "For the Kaiyuan smart-money factor preserve the PDF mechanics "
             "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract. "
             "The direct_code output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "

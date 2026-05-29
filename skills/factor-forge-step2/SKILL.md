@@ -361,6 +361,19 @@ Example: `RPT_pdf_fde3cba2_20200223-东吴证券-东吴证券_技术分析拥抱
 
 FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step2 must preserve the original formula/hypothesis, write auditable mode-decision context, and mark unsupported or ambiguous implementation as BLOCK/human-review instead of inventing a runnable substitute.
 
+## Direct Code Semantic Guard
+
+`implementation_mode=direct_code` is not accepted just because the JSON schema,
+hash, and performance profile pass. The source code must implement the
+`canonical_spec.formula_text` semantics. If the formula specifies a rolling
+lookback such as past `N=20` valid trading days, direct code must implement an
+explicit per-`ts_code`, per-`trade_date` lookback/window. Full-history
+`rank().over('ts_code')` or `count().over('ts_code')` is not a valid substitute.
+Top and bottom lambda buckets must be disjoint high-price and low-price subsets
+inside the same lookback window, and `V_high`/`V_low` must aggregate over that
+window rather than over singleton `(ts_code, trade_date)` groups. Violations
+must BLOCK as `BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH`.
+
 ## Operator Formula Contract
 
 For `implementation_mode=operator`, Step2 must parse `formula_text` into `formula_ir` using `factorforge_formula_ir_v1`. The spec must include `formula_hash`, `operator_set`, `required_fields`, `resolved_fields`, and `parse_status`. `paper_canonical_formula` sources require a successful `formula_ir`; unsupported syntax, unknown operators, negative windows, or missing field aliases must BLOCK rather than falling through to hybrid/direct_code.

@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,29 @@ def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame
     return out.dropna(subset=["factor_value"]).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 """
 
+BAD_WINDOW_DIRECT_CODE_SOURCE = """import polars as pl
+
+
+def compute_factor(df: pl.DataFrame) -> pl.DataFrame:
+    df = df.with_columns(((pl.col('high') / pl.col('low')) - 1.0).alias('amplitude'))
+    df = df.sort(['ts_code', 'trade_date'])
+    df = df.with_columns(pl.col('close').rank('ordinal').over('ts_code').alias('close_rank'))
+    df = df.with_columns(pl.col('amplitude').count().over('ts_code').alias('valid_days'))
+    df = df.filter(pl.col('valid_days') >= 10)
+    df = df.with_columns(
+        (pl.col('close_rank').max().over('ts_code') * 0.25).ceil().cast(pl.Int64).alias('top_threshold'),
+        (pl.col('close_rank').max().over('ts_code') * 0.75).floor().cast(pl.Int64).alias('bottom_threshold'),
+    )
+    v_high = df.filter(pl.col('close_rank') >= pl.col('top_threshold')).group_by('ts_code', 'trade_date').agg(
+        pl.col('amplitude').mean().alias('v_high')
+    )
+    v_low = df.filter(pl.col('close_rank') <= pl.col('bottom_threshold')).group_by('ts_code', 'trade_date').agg(
+        pl.col('amplitude').mean().alias('v_low')
+    )
+    result = v_high.join(v_low, on=['ts_code', 'trade_date'], how='inner')
+    return result.with_columns((pl.col('v_high') - pl.col('v_low')).alias('factor_value')).select(['ts_code', 'trade_date', 'factor_value'])
+"""
+
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
@@ -35,12 +59,14 @@ def read_json(path: Path) -> dict:
 def run_cmd(cmd: list[str], *, root: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env['FACTORFORGE_ROOT'] = str(root)
+    env['FACTORFORGE_CONTROL_PLANE_ENTRYPOINT'] = 'factorforgectl'
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
 
 
 def run_cmd_without_factorforge_root(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop('FACTORFORGE_ROOT', None)
+    env['FACTORFORGE_CONTROL_PLANE_ENTRYPOINT'] = 'factorforgectl'
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=env)
 
 
@@ -48,6 +74,16 @@ def stable_source_hash(source: str) -> str:
     import hashlib
 
     return hashlib.sha256(source.encode('utf-8')).hexdigest()
+
+
+def load_validate_step2_module():
+    path = ROOT / 'skills' / 'factor-forge-step2' / 'scripts' / 'validate_step2.py'
+    spec = importlib.util.spec_from_file_location('validate_step2_smoke', path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'failed to load {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def build_root(path: Path) -> Path:
@@ -346,6 +382,53 @@ def run_bad_artifact_schema_blocks_case(root: Path) -> dict:
     }
 
 
+def run_direct_code_window_semantics_blocks_case() -> dict:
+    validate_step2 = load_validate_step2_module()
+    code_hash = stable_source_hash(BAD_WINDOW_DIRECT_CODE_SOURCE)
+    master = {
+        'implementation_mode': 'direct_code',
+        'canonical_spec': {
+            'formula_text': (
+                'V(lambda) = V_high(lambda) - V_low(lambda), where V_high(lambda) '
+                'is the mean amplitude over top lambda percent of days by closing price '
+                'in the past N=20 valid trading days and V_low(lambda) uses the bottom '
+                'lambda percent in the same rolling window.'
+            ),
+            'required_inputs': ['high', 'low', 'close'],
+        },
+        'implementation_contract': {
+            'implementation_mode': 'direct_code',
+            'code_contract': {
+                'source_code': BAD_WINDOW_DIRECT_CODE_SOURCE,
+                'code_hash': code_hash,
+                'entrypoint': 'compute_factor',
+                'function_name': 'compute_factor',
+                'required_fields': ['ts_code', 'trade_date', 'high', 'low', 'close'],
+                'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+                'source_derivation': {
+                    'derivation': 'source_code_preserved_from_formal_step2_raw_direct_code_contract',
+                    'not_fallback': True,
+                },
+            },
+        },
+    }
+    checks = validate_step2.direct_code_contract_checks(master)
+    failed_names = {item['name'] for item in checks if item.get('status') == 'BLOCK'}
+    required = {
+        'direct_code_window_requires_rolling_context',
+        'direct_code_window_no_global_ts_rank',
+        'direct_code_window_no_global_ts_count',
+        'direct_code_window_no_overlapping_thresholds',
+        'direct_code_window_no_singleton_trade_date_aggregation',
+    }
+    return {
+        'case': 'direct_code_window_semantics_blocks_global_history_rank',
+        'failed_names': sorted(failed_names),
+        'required_names': sorted(required),
+        'ok': required.issubset(failed_names),
+    }
+
+
 def main() -> int:
     root = build_root(Path('/tmp/factorforge_formal_artifact_smoke'))
     cases = [
@@ -354,6 +437,7 @@ def main() -> int:
         run_prepare_formal_debug_chain_case(root),
         run_direct_code_missing_source_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_direct_code_source_smoke'))),
         run_bad_artifact_schema_blocks_case(build_root(Path('/tmp/factorforge_formal_artifact_bad_smoke'))),
+        run_direct_code_window_semantics_blocks_case(),
     ]
     verdict = 'ACCEPT' if all(case.get('ok') for case in cases) else 'BLOCK'
     summary = {'version': 'factorforge_formal_artifact_smoke_v1', 'verdict': verdict, 'cases': cases}

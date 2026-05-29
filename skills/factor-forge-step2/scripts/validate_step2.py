@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def direct_code_contract_checks(master):
         normalized_source = source_code if str(source_code).endswith('\n') else f'{source_code}\n'
         import hashlib
         expected_hash = hashlib.sha256(normalized_source.encode('utf-8')).hexdigest()
-    return [
+    checks = [
         check('direct_code_contract_present', isinstance(code_contract, dict) and bool(code_contract), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: implementation_contract.code_contract missing'),
         check('direct_code_source_code_present', nonempty_str(source_code), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: implementation_contract.code_contract.source_code missing'),
         check('direct_code_entrypoint_present', nonempty_str(code_contract.get('entrypoint') or code_contract.get('function_name')), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code entrypoint/function_name missing'),
@@ -81,6 +82,102 @@ def direct_code_contract_checks(master):
         check('direct_code_output_schema_present', isinstance(output_schema, dict) and nonempty_list(output_schema.get('columns')), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema.columns missing'),
         check('direct_code_source_derivation_present', isinstance(source_derivation, dict) and bool(source_derivation), 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_derivation missing'),
         check('direct_code_source_derivation_not_fallback', isinstance(source_derivation, dict) and source_derivation.get('not_fallback') is True, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_derivation.not_fallback=true required'),
+    ]
+    checks.extend(direct_code_window_semantic_checks(master, str(source_code or '')))
+    return checks
+
+
+def compact_code_text(source: str) -> str:
+    return re.sub(r'\s+', '', source.lower())
+
+
+def formula_requires_windowed_price_state_amplitude(master) -> bool:
+    canonical = master.get('canonical_spec') if isinstance(master.get('canonical_spec'), dict) else {}
+    parts = [
+        canonical.get('formula_text'),
+        canonical.get('time_series_steps'),
+        canonical.get('cross_sectional_steps'),
+        master.get('raw_formula_text'),
+    ]
+    text = json.dumps(parts, ensure_ascii=False).lower()
+    has_v_high_low = ('v_high' in text or 'vhigh' in text) and ('v_low' in text or 'vlow' in text)
+    has_window = any(token in text for token in ['n=20', 'n = 20', 'past n', 'past 20', 'valid trading days', 'rolling window'])
+    has_price_state = any(token in text for token in ['closing price', 'close', '收盘价'])
+    has_amplitude = any(token in text for token in ['amplitude', 'high/low', '振幅'])
+    return bool(has_v_high_low and has_window and has_price_state and has_amplitude)
+
+
+def direct_code_window_semantic_checks(master, source_code: str):
+    if not formula_requires_windowed_price_state_amplitude(master):
+        return []
+    compact = compact_code_text(source_code)
+    lower = source_code.lower()
+    has_rolling_context = any(
+        token in lower
+        for token in [
+            'rolling',
+            'rolling_',
+            'group_by_dynamic',
+            'rolling_mean',
+            'rolling_map',
+            'lookback',
+            'past_n',
+            'window_size',
+            'window=20',
+            'n=20',
+            'period="20',
+            "period='20",
+        ]
+    )
+    global_ts_rank = bool(re.search(r'\.rank\s*\([^)]*\)\s*\.over\s*\(\s*[\'"]ts_code[\'"]\s*\)', source_code))
+    global_ts_count = bool(re.search(r'\.count\s*\(\s*\)\s*\.over\s*\(\s*[\'"]ts_code[\'"]\s*\)', source_code))
+    overlapping_thresholds = (
+        'top_threshold' in compact
+        and 'bottom_threshold' in compact
+        and re.search(r'top_threshold[\'"]?\)?[,)]', compact)
+        and '*0.25' in compact
+        and '*0.75' in compact
+        and '>=' in compact
+        and '<=' in compact
+    )
+    singleton_trade_date_agg = bool(
+        re.search(
+            r'v_high\s*=.*?group_by\s*\(\s*[\'"]ts_code[\'"]\s*,\s*[\'"]trade_date[\'"]',
+            source_code,
+            flags=re.DOTALL,
+        )
+        or re.search(
+            r'v_low\s*=.*?group_by\s*\(\s*[\'"]ts_code[\'"]\s*,\s*[\'"]trade_date[\'"]',
+            source_code,
+            flags=re.DOTALL,
+        )
+    )
+    return [
+        check(
+            'direct_code_window_requires_rolling_context',
+            has_rolling_context,
+            'BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH: formula requires past N valid-day window but direct_code has no rolling/window/lookback construct',
+        ),
+        check(
+            'direct_code_window_no_global_ts_rank',
+            not global_ts_rank,
+            'BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH: direct_code uses rank().over("ts_code"), which ranks full history instead of the past N valid-day window',
+        ),
+        check(
+            'direct_code_window_no_global_ts_count',
+            not global_ts_count,
+            'BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH: direct_code uses count().over("ts_code"), which counts full history instead of rolling valid days',
+        ),
+        check(
+            'direct_code_window_no_overlapping_thresholds',
+            not overlapping_thresholds,
+            'BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH: top/bottom lambda threshold logic appears overlapping rather than disjoint top/bottom buckets',
+        ),
+        check(
+            'direct_code_window_no_singleton_trade_date_aggregation',
+            not singleton_trade_date_agg,
+            'BLOCK_DIRECT_CODE_SEMANTIC_MISMATCH: V_high/V_low aggregation groups by ts_code and trade_date instead of aggregating within the lookback window',
+        ),
     ]
 
 

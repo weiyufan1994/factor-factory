@@ -130,6 +130,25 @@ def main() -> int:
     assert proc.returncode == 1, proc
     assert "BLOCK_FACTORFORGE_CONTROL_PLANE_REQUIRED" in (proc.stdout + proc.stderr), proc.stderr
 
+    integrity_root = smoke_root("step1_raw_integrity")
+    raw_path = integrity_root / "objects" / "raw_llm" / "integrity_report" / "step1" / "step1_primary_raw.json"
+    write_json(raw_path, {"provenance": {"role": "primary"}, "payload": "original"})
+    raw_sha = factorforgectl.sha256_file(raw_path)
+    integrity_run = {
+        "artifact_root": str(integrity_root),
+        "steps": {
+            "step1": {
+                "status": "PASS",
+                "raw_outputs": [
+                    {"role": "primary", "path": str(raw_path), "raw_response_sha256": raw_sha}
+                ],
+            }
+        },
+    }
+    assert factorforgectl.verify_step1_raw_integrity(integrity_run) == []
+    write_json(raw_path, {"provenance": {"role": "primary"}, "payload": "tampered"})
+    assert_blocks(lambda: factorforgectl.verify_step1_raw_integrity(integrity_run), "BLOCK_AGENT_TOOL_STEP1_RAW_TAMPERED")
+
     report_id = "step6_smoke_report"
     blocked_root = smoke_root("step6_missing_worker_evidence")
     assert_blocks(

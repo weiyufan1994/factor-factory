@@ -36,6 +36,9 @@ the "固定口令" section.
   Raw artifacts must come from the controlled PDF tool / formal LLM bridge and
   pass provenance validation.
 - Step1 must use OpenClaw `tools.pdf` and then `resume-step1`.
+- After `resume-step1`, Step1 raw SHA records are immutable control evidence.
+  If any Step1 raw JSON changes before Step2, `run-local --start-step 2` must
+  block with `BLOCK_AGENT_TOOL_STEP1_RAW_TAMPERED`; start a fresh run instead.
 - Step2/3A must use `--formal-llm-provider command` by default, not `fixture`.
 - `run-local` may only run `1->1`, `2->2`, or `3a->3a`. Never call
   `2->3a` or any other combined host-side range. After each completed host-side

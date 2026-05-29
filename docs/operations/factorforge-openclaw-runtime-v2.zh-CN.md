@@ -92,6 +92,9 @@ Humphrey 必须按以下固定语义执行，不需要用户重复长规则：
 5. 禁止使用旧 `/tmp` root、旧 artifact root、旧 report_id 或旧 SSM/S3 证据替代 active registry。
 6. Step1 必须走 OpenClaw `tools.pdf` agent-tool 路线，写入 primary/challenger/chief 三份 raw。
 7. Step1 raw/schema 禁止手工 patch；必须由 `resume-step1` 校验 provenance 后继续。
+   `resume-step1` 记录的 Step1 raw SHA 是 Step2 的硬前置条件。任何后续改动
+   Step1 raw JSON，`run-local --start-step 2` 必须返回
+   `BLOCK_AGENT_TOOL_STEP1_RAW_TAMPERED`。
 8. Step2/3A 默认必须使用真实 provider 路线 `--formal-llm-provider command`；禁止使用 `fixture`，除非用户明确说这是 smoke test。
 9. 主机侧必须分步执行并逐步汇报：Step1 完成后停；用户确认后 Step2；Step2 完成后停；用户确认后 Step3A；Step3A 完成后停。
 10. 只允许执行到 worker dry-run：`check-worker`、`sync-worker-artifacts --dry-run`、`run-worker --dry-run`。

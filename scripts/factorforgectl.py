@@ -59,6 +59,7 @@ BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
 BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
 BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
 BLOCK_STEP1_RAW_INVALID = "BLOCK_AGENT_TOOL_STEP1_RAW_INVALID"
+BLOCK_STEP1_RAW_TAMPERED = "BLOCK_AGENT_TOOL_STEP1_RAW_TAMPERED"
 BLOCK_LOCAL_REPORT_PDF_REQUIRED = "BLOCK_LOCAL_REPORT_PDF_REQUIRED"
 BLOCK_LOCAL_PREPARE_FAILED = "BLOCK_FACTORFORGE_LOCAL_PREPARE_FAILED"
 BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH = "BLOCK_ACTIVE_RUN_REPO_SHA_MISMATCH"
@@ -280,6 +281,43 @@ def validate_step1_raw_from_packet(root: Path, report_id: str, packet: dict[str,
             }
         )
     return raw_records
+
+
+def verify_step1_raw_integrity(run: dict[str, Any]) -> list[dict[str, Any]]:
+    steps = run.get("steps") if isinstance(run.get("steps"), dict) else {}
+    step1 = steps.get("step1") if isinstance(steps.get("step1"), dict) else {}
+    raw_outputs = step1.get("raw_outputs")
+    if not isinstance(raw_outputs, list) or not raw_outputs:
+        raise FactorForgeBlock(
+            BLOCK_STEP1_RAW_TAMPERED,
+            "Step1 PASS is missing raw output hash records; rerun from a fresh Step1",
+            payload={"step1": step1},
+        )
+    mismatches: list[dict[str, Any]] = []
+    for item in raw_outputs:
+        if not isinstance(item, dict):
+            mismatches.append({"error": "raw_output_record_not_object", "record": item})
+            continue
+        role = item.get("role")
+        path_value = item.get("path")
+        expected_sha = item.get("raw_response_sha256")
+        if not path_value or not expected_sha:
+            mismatches.append({"role": role, "path": path_value, "error": "missing_path_or_sha"})
+            continue
+        path = resolve_path(path_value)
+        if not path.exists():
+            mismatches.append({"role": role, "path": str(path), "expected_sha256": expected_sha, "error": "missing_raw_file"})
+            continue
+        actual_sha = sha256_file(path)
+        if actual_sha != expected_sha:
+            mismatches.append({"role": role, "path": str(path), "expected_sha256": expected_sha, "actual_sha256": actual_sha})
+    if mismatches:
+        raise FactorForgeBlock(
+            BLOCK_STEP1_RAW_TAMPERED,
+            "Step1 raw artifact hash mismatch; raw JSON was modified after resume-step1 and this run is not admissible for Step2",
+            payload={"mismatches": mismatches},
+        )
+    return []
 
 
 def cmd_resume_step1(args: argparse.Namespace) -> int:
@@ -746,6 +784,8 @@ def cmd_run_local(args: argparse.Namespace) -> int:
             payload={"formal_llm_provider": args.formal_llm_provider},
         )
     root = resolve_path(run["artifact_root"])
+    if start != "1":
+        verify_step1_raw_integrity(run)
     if start == "3a":
         return cmd_run_local_step3a(args, path, registry, run, root)
     report_pdf = report_pdf_input(args, run)

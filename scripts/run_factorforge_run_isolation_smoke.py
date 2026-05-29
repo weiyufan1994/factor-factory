@@ -928,6 +928,7 @@ def case_factorforgectl_run_worker_dry_run_no_ssm(root: Path) -> dict[str, Any]:
         "command_has_root": str(artifact_root) in command_text,
         "command_has_repo_sha": current_repo_sha() in command_text,
         "command_has_step_range": "--start-step 3b --end-step 5" in command_text,
+        "readiness_checks_all_ok": all(item.get("ok") for item in payload.get("readiness_checks") or []),
         "stdout_tail": proc.stdout[-1200:],
         "stderr_tail": proc.stderr[-1200:],
         "ok": bool(
@@ -940,6 +941,135 @@ def case_factorforgectl_run_worker_dry_run_no_ssm(root: Path) -> dict[str, Any]:
             and str(artifact_root) in command_text
             and current_repo_sha() in command_text
             and "--start-step 3b --end-step 5" in command_text
+            and all(item.get("ok") for item in payload.get("readiness_checks") or [])
+        ),
+    }
+
+
+def case_factorforgectl_check_worker_preflight_passes(root: Path) -> dict[str, Any]:
+    report_id = "CHECK_WORKER_PREFLIGHT"
+    artifact_root = root / "archive" / "factorforge-runs" / "check_worker_preflight"
+    runtime_context = artifact_root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+    write_json(runtime_context, {"report_id": report_id, "artifact_root": str(artifact_root)})
+    registry_path = root / "factorforgectl_check_worker_preflight" / "active_run_registry.json"
+    write_json(
+        registry_path,
+        {
+            "registry_version": "factorforge_active_run_registry_v2",
+            "active_runs": {
+                report_id: {
+                    "report_id": report_id,
+                    "run_id": "check_worker_preflight",
+                    "artifact_root": str(artifact_root),
+                    "repo_sha": current_repo_sha(),
+                    "status": "LOCAL_STEPS_READY",
+                    "current_step": "step3b",
+                    "runtime_context_written": True,
+                    "steps": {
+                        "step1": {"status": "PASS"},
+                        "step2": {"status": "PASS"},
+                        "step3a": {"status": "PASS"},
+                    },
+                }
+            },
+        },
+    )
+    proc = run_factorforgectl(
+        [
+            "check-worker",
+            "--report-id",
+            report_id,
+            "--registry",
+            str(registry_path),
+            "--start-step",
+            "3b",
+            "--end-step",
+            "5",
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    payload = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
+    registry = read_json(registry_path)
+    run = (registry.get("active_runs") or {}).get(report_id) or {}
+    return {
+        "case": "factorforgectl_check_worker_preflight_passes",
+        "rc": proc.returncode,
+        "status": payload.get("status"),
+        "worker_preflight_ready": payload.get("worker_preflight_ready"),
+        "worker_started": payload.get("worker_started"),
+        "registry_status": run.get("status"),
+        "readiness_checks_all_ok": all(item.get("ok") for item in payload.get("readiness_checks") or []),
+        "proof_exists": Path(payload.get("proof_ledger") or "").exists(),
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(
+            proc.returncode == 0
+            and payload.get("status") == "PASS"
+            and payload.get("worker_preflight_ready") is True
+            and payload.get("worker_started") is False
+            and run.get("status") == "WORKER_PREFLIGHT_READY"
+            and all(item.get("ok") for item in payload.get("readiness_checks") or [])
+            and Path(payload.get("proof_ledger") or "").exists()
+        ),
+    }
+
+
+def case_factorforgectl_check_worker_blocks_without_runtime_context(root: Path) -> dict[str, Any]:
+    report_id = "CHECK_WORKER_NO_RUNTIME_CONTEXT"
+    artifact_root = root / "archive" / "factorforge-runs" / "check_worker_no_runtime_context"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    registry_path = root / "factorforgectl_check_worker_no_runtime_context" / "active_run_registry.json"
+    write_json(
+        registry_path,
+        {
+            "registry_version": "factorforge_active_run_registry_v2",
+            "active_runs": {
+                report_id: {
+                    "report_id": report_id,
+                    "run_id": "check_worker_no_runtime_context",
+                    "artifact_root": str(artifact_root),
+                    "repo_sha": current_repo_sha(),
+                    "status": "LOCAL_STEPS_READY",
+                    "current_step": "step3b",
+                    "runtime_context_written": False,
+                    "steps": {
+                        "step1": {"status": "PASS"},
+                        "step2": {"status": "PASS"},
+                        "step3a": {"status": "PASS"},
+                    },
+                }
+            },
+        },
+    )
+    proc = run_factorforgectl(
+        [
+            "check-worker",
+            "--report-id",
+            report_id,
+            "--registry",
+            str(registry_path),
+            "--start-step",
+            "3b",
+            "--end-step",
+            "5",
+        ],
+        env={"FACTORFORGE_ACTIVE_RUN_REGISTRY": str(registry_path)},
+    )
+    payload = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
+    failed_names = {item.get("name") for item in payload.get("failed_checks") or []}
+    return {
+        "case": "factorforgectl_check_worker_blocks_without_runtime_context",
+        "rc": proc.returncode,
+        "block_token": payload.get("block_token"),
+        "runtime_written_failed": "runtime_context_written" in failed_names,
+        "runtime_file_failed": "runtime_context_file_exists" in failed_names,
+        "stdout_tail": proc.stdout[-1200:],
+        "stderr_tail": proc.stderr[-1200:],
+        "ok": bool(
+            proc.returncode != 0
+            and payload.get("block_token") == "BLOCK_WORKER_READINESS_FAILED"
+            and "runtime_context_written" in failed_names
+            and "runtime_context_file_exists" in failed_names
         ),
     }
 
@@ -977,6 +1107,8 @@ def main() -> int:
         case_factorforgectl_resume_step1_valid_raw_passes(root),
         case_factorforgectl_run_local_step1_generates_task_packet(root),
         case_factorforgectl_run_local_step2_to_3a_fixture_passes(root),
+        case_factorforgectl_check_worker_preflight_passes(root),
+        case_factorforgectl_check_worker_blocks_without_runtime_context(root),
         case_factorforgectl_run_worker_dry_run_no_ssm(root),
     ]
     verdict = "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK"

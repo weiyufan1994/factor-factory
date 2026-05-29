@@ -104,6 +104,20 @@ objects/raw_llm/<report_id>/step1/step1_chief_raw.json
 
 研究机步骤：
 
+先做 worker readiness preflight，只读检查 active registry 与 artifact root 是否满足
+worker 调度前置条件：
+
+```bash
+python3 scripts/factorforgectl.py check-worker \
+  --report-id <report_id> \
+  --start-step 3b \
+  --end-step 5
+```
+
+`check-worker` 必须返回 `worker_preflight_ready=true`、
+`worker_started=false`，并且所有 `readiness_checks[].ok=true`。它会写
+proof ledger，但不会调用 SSM。
+
 先做 dry-run，只生成将要发给 worker 的命令、proof ledger 和 registry 状态，
 不调用 SSM、不启动 worker：
 

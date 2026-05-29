@@ -37,7 +37,8 @@ from scripts.factorforge_run_registry import (
 
 BLOCK_WORKER_COMMAND_FAILED = "BLOCK_WORKER_COMMAND_FAILED"
 BLOCK_WORKER_SSM_TIMEOUT = "BLOCK_WORKER_SSM_TIMEOUT"
-BLOCK_WORKER_RUNTIME_CONTEXT_REQUIRED = "BLOCK_WORKER_RUNTIME_CONTEXT_REQUIRED"
+BLOCK_WORKER_READINESS_FAILED = "BLOCK_WORKER_READINESS_FAILED"
+BLOCK_WORKER_RUNTIME_CONTEXT_INVALID = "BLOCK_WORKER_RUNTIME_CONTEXT_INVALID"
 BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP = "BLOCK_UNSUPPORTED_FACTORFORGECTL_STEP"
 BLOCK_STEP1_TASK_PACKET_MISSING = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_MISSING"
 BLOCK_STEP1_TASK_PACKET_INVALID = "BLOCK_AGENT_TOOL_STEP1_TASK_PACKET_INVALID"
@@ -470,6 +471,56 @@ def normalize_worker_step(step: str) -> str:
     return aliases[key]
 
 
+def runtime_context_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "runtime_context" / f"runtime_context__{report_id}.json"
+
+
+def worker_readiness_checks(run: dict[str, Any], *, report_id: str, start_step: str, end_step: str) -> list[dict[str, Any]]:
+    root = resolve_path(run["artifact_root"])
+    assert_formal_run_root_allowed(root)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, **extra: Any) -> None:
+        item = {"name": name, "ok": ok}
+        item.update(extra)
+        checks.append(item)
+
+    expected_sha = str(run.get("repo_sha") or "")
+    actual_sha = current_repo_sha()
+    add("control_repo_sha_matches_run", actual_sha == expected_sha, expected=expected_sha, actual=actual_sha)
+    add("artifact_root_exists", root.exists(), artifact_root=str(root))
+
+    steps = run.get("steps") if isinstance(run.get("steps"), dict) else {}
+    for step in ("step1", "step2", "step3a"):
+        status = (steps.get(step) if isinstance(steps.get(step), dict) else {}).get("status")
+        add(f"{step}_status_pass", status == "PASS", status=status)
+
+    current_step = str(run.get("current_step") or "")
+    add("current_step_allows_worker_start", current_step in {start_step, "step3b"}, current_step=current_step, start_step=start_step)
+
+    runtime_written = bool(run.get("runtime_context_written"))
+    add("runtime_context_written", runtime_written, runtime_context_written=runtime_written)
+    ctx_path = runtime_context_path(root, report_id)
+    add("runtime_context_file_exists", ctx_path.exists(), path=str(ctx_path))
+    if ctx_path.exists():
+        try:
+            ctx = read_json(ctx_path)
+        except FactorForgeBlock as exc:
+            raise FactorForgeBlock(BLOCK_WORKER_RUNTIME_CONTEXT_INVALID, str(exc), payload={"runtime_context": str(ctx_path)}) from exc
+        add("runtime_context_report_id_matches", ctx.get("report_id") == report_id, expected=report_id, actual=ctx.get("report_id"))
+        ctx_root = ctx.get("artifact_root")
+        add("runtime_context_artifact_root_matches", ctx_root in {None, "", str(root)}, expected=str(root), actual=ctx_root)
+
+    failed = [item for item in checks if not item.get("ok")]
+    if failed:
+        raise FactorForgeBlock(
+            BLOCK_WORKER_READINESS_FAILED,
+            "worker readiness checks failed",
+            payload={"failed_checks": failed, "readiness_checks": checks, "start_step": start_step, "end_step": end_step},
+        )
+    return checks
+
+
 def worker_command(run: dict[str, Any], *, start_step: str, end_step: str, worker_repo_root: str) -> list[str]:
     report_id = str(run.get("report_id"))
     runtime_context_check = (
@@ -496,13 +547,48 @@ def worker_command(run: dict[str, Any], *, start_step: str, end_step: str, worke
     ]
 
 
+def cmd_check_worker(args: argparse.Namespace) -> int:
+    path, registry, run = load_run(args)
+    start = normalize_worker_step(args.start_step)
+    end = normalize_worker_step(args.end_step)
+    root = resolve_path(run["artifact_root"])
+    checks = worker_readiness_checks(run, report_id=args.report_id, start_step=start, end_step=end)
+    commands = worker_command(run, start_step=start, end_step=end, worker_repo_root=args.worker_repo_root)
+    run["status"] = "WORKER_PREFLIGHT_READY"
+    run["current_step"] = start
+    run.setdefault("worker_preflights", []).append(
+        {
+            "checked_at_utc": utc_now(),
+            "start_step": start,
+            "end_step": end,
+            "worker_repo_root": args.worker_repo_root,
+            "readiness_checks": checks,
+        }
+    )
+    update_run(path, registry, args.report_id, run)
+    payload = pass_payload(
+        report_id=args.report_id,
+        run=run,
+        command="check-worker",
+        worker_preflight_ready=True,
+        worker_started=False,
+        worker_repo_root=args.worker_repo_root,
+        requested_steps=[start, end],
+        readiness_checks=checks,
+        worker_command=commands,
+    )
+    proof = write_proof_ledger(root, args.report_id, payload)
+    payload["proof_ledger"] = str(proof)
+    print_json(payload)
+    return 0
+
+
 def cmd_run_worker(args: argparse.Namespace) -> int:
     path, registry, run = load_run(args)
     start = normalize_worker_step(args.start_step)
     end = normalize_worker_step(args.end_step)
     root = resolve_path(run["artifact_root"])
-    if not run.get("runtime_context_written"):
-        raise FactorForgeBlock(BLOCK_WORKER_RUNTIME_CONTEXT_REQUIRED, "runtime_context_written=true is required before worker dispatch")
+    checks = worker_readiness_checks(run, report_id=args.report_id, start_step=start, end_step=end)
     commands = worker_command(run, start_step=start, end_step=end, worker_repo_root=args.worker_repo_root)
     if args.dry_run:
         run["status"] = "WORKER_DRY_RUN_READY"
@@ -528,6 +614,7 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
             worker_dry_run=True,
             worker_started=False,
             worker_repo_root=args.worker_repo_root,
+            readiness_checks=checks,
         )
         proof = write_proof_ledger(root, args.report_id, payload)
         payload["proof_ledger"] = str(proof)
@@ -563,6 +650,7 @@ def cmd_run_worker(args: argparse.Namespace) -> int:
         worker_dry_run=False,
         worker_started=True,
         worker_repo_root=args.worker_repo_root,
+        readiness_checks=checks,
     )
     proof = write_proof_ledger(root, args.report_id, payload)
     payload["proof_ledger"] = str(proof)
@@ -619,6 +707,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_local.add_argument("--formal-llm-provider", default="command", choices=["command", "fixture"])
     run_local.add_argument("--allow-deterministic-debug", action="store_true")
     run_local.set_defaults(func=cmd_run_local)
+
+    check_worker = sub.add_parser("check-worker")
+    check_worker.add_argument("--registry", dest="sub_registry", default=None)
+    check_worker.add_argument("--report-id", required=True)
+    check_worker.add_argument("--artifact-root", default=None)
+    check_worker.add_argument("--worker-instance-id", default=None)
+    check_worker.add_argument("--start-step", required=True)
+    check_worker.add_argument("--end-step", required=True)
+    check_worker.add_argument("--worker-repo-root", default=os.getenv("FACTORFORGE_WORKER_REPO_ROOT", "/opt/factorforge/factor-factory-production"))
+    check_worker.set_defaults(func=cmd_check_worker)
 
     run_worker = sub.add_parser("run-worker")
     run_worker.add_argument("--registry", dest="sub_registry", default=None)

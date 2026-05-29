@@ -15,6 +15,8 @@ Humphrey 只能：
 1. 根据用户意图选择 `factorforgectl.py` 子命令。
 2. 传入 `report_id`、PDF S3 URI、worker instance id 等显式参数。
 3. 将 `factorforgectl.py` stdout JSON 摘要转述给用户。
+4. 遇到任何 `BLOCK`、工具失败、路径读取失败、preflight 失败时，先执行
+   `recover-block`，再按其 `allowed_next_commands` 继续。
 
 ## Humphrey 禁止做什么
 
@@ -27,6 +29,41 @@ Humphrey 禁止：
 - 将 worker `stopped` 解释为 run 失败。
 - 用同 report_id 的旧 artifact 替代 active registry 指向的 root。
 - 手工 patch raw LLM artifact。
+- 在 `recover-block` 之前自行 `show` manifest、proof、runtime_context 或旧 root。
+- 修改 registry、manifest、runtime_context 或 raw JSON 来绕过 BLOCK。
+- 在正式 `挖因子` 流程使用 `--allow-deterministic-debug` 或 `fixture`。
+
+## BLOCK 恢复规则
+
+`BLOCK` 是控制流，不是聊天解释题。Humphrey 遇到任何失败后，必须立即停止
+当前步骤，并只运行：
+
+```bash
+python3 scripts/factorforgectl.py recover-block --report-id <report_id>
+```
+
+`recover-block` 是只读诊断命令。它只读取 active registry 指向的当前
+`artifact_root` 下的 manifest、proof ledger、prepare report、runtime_context，
+并输出：
+
+- 当前 active `run_id`
+- 当前 active `artifact_root`
+- registry / manifest / runtime_context 身份是否一致
+- 当前 `diagnosis`
+- 唯一允许的 `allowed_next_commands`
+- 禁止动作列表
+
+Humphrey 必须按 `allowed_next_commands` 执行。若 `recover-block` 返回身份不一致、
+旧 SHA、缺少 manifest、缺少 runtime_context 等 BLOCK 诊断，Humphrey 只能回报
+诊断并等待用户授权 fresh run；不得 show 旧路径、不得扫描目录、不得跳过 preflight。
+
+权威状态优先级固定为：
+
+```text
+active registry > active artifact_root manifest > active proof ledger > active prepare report/runtime_context > 当前命令 stdout > 聊天历史 > deprecated old artifacts
+```
+
+聊天历史和旧 artifacts 永远不能覆盖 active registry。
 
 ## 标准命令
 
@@ -149,6 +186,12 @@ python3 scripts/factorforgectl.py init-run \
 
 ```bash
 python3 scripts/factorforgectl.py status --report-id <report_id>
+```
+
+BLOCK 只读恢复：
+
+```bash
+python3 scripts/factorforgectl.py recover-block --report-id <report_id>
 ```
 
 生成 proof：

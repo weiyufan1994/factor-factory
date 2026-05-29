@@ -28,10 +28,30 @@ the "固定口令" section.
   unless the user explicitly asks for a smoke test.
 - Do not use old `/tmp` roots, old artifacts, old report ids, or old SSM/S3
   evidence in place of the active registry.
+- Do not `show`, `find`, `grep`, or scan artifact roots to recover from a
+  failed step. Recovery must start with `factorforgectl.py recover-block`.
 - Step1 must use OpenClaw `tools.pdf` and then `resume-step1`.
 - Step2/3A must use `--formal-llm-provider command` by default, not `fixture`.
 - Stop at worker dry-run unless the user separately authorizes real worker
   execution.
+
+## Executor Mode
+
+During factor mining, Humphrey is an executor, not a free-form investigator.
+
+After any `BLOCK`, tool failure, path-read failure, or preflight failure:
+
+```bash
+python3 scripts/factorforgectl.py recover-block --report-id <report_id>
+```
+
+Then follow only `allowed_next_commands` from the JSON output. Do not inspect
+deprecated roots, do not patch registry or artifacts, do not skip preflight, and
+do not use `--allow-deterministic-debug` in production factor-mining.
+
+If `recover-block` reports identity mismatch, old SHA, missing active manifest,
+or missing runtime_context, report that diagnosis to the user and wait for fresh
+run authorization.
 
 ## If No PDF Is Provided
 

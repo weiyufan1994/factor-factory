@@ -26,6 +26,7 @@ from factor_factory.run_control import (
     default_registry_path,
     load_active_registry,
     pass_payload,
+    proof_ledger_path,
     resolve_path,
     utc_now,
     write_active_registry,
@@ -324,6 +325,149 @@ def cmd_proof(args: argparse.Namespace) -> int:
         proof = write_proof_ledger(root, args.report_id, payload)
         payload["proof_ledger"] = str(proof)
         payload["proof_ledger_exists"] = True
+    print_json(payload)
+    return 0
+
+
+def read_optional_json(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    info: dict[str, Any] = {"path": str(path), "exists": path.exists(), "json_ok": False}
+    if not path.exists():
+        return None, info
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        info["error"] = f"{type(exc).__name__}: {exc}"
+        return None, info
+    if not isinstance(payload, dict):
+        info["error"] = f"JSON payload is {type(payload).__name__}, expected object"
+        return None, info
+    info["json_ok"] = True
+    return payload, info
+
+
+def summarize_prepare_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not report:
+        return None
+    validators = report.get("validators") if isinstance(report.get("validators"), dict) else {}
+    summary: dict[str, Any] = {}
+    for name in ("step1", "step2", "step3"):
+        item = validators.get(name) if isinstance(validators.get(name), dict) else {}
+        summary[name] = {
+            "rc": item.get("rc"),
+            "verdict": item.get("verdict") or item.get("result"),
+            "block_token": item.get("block_token"),
+        }
+    return {
+        "verdict": report.get("verdict"),
+        "runtime_context_written": report.get("runtime_context_written"),
+        "formal_artifacts_valid": report.get("formal_artifacts_valid"),
+        "canonical_report_id_preserved": report.get("canonical_report_id_preserved"),
+        "validators": summary,
+    }
+
+
+def recover_block_next_action(run: dict[str, Any], *, report_id: str, root: Path, mismatches: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    if mismatches:
+        return "BLOCK_ACTIVE_RUN_IDENTITY_UNSAFE", [
+            f"python3 scripts/factorforgectl.py init-run --report-id {report_id} ...",
+        ]
+    status = str(run.get("status") or "")
+    current_step = str(run.get("current_step") or "")
+    steps = run.get("steps") if isinstance(run.get("steps"), dict) else {}
+    step1_status = (steps.get("step1") if isinstance(steps.get("step1"), dict) else {}).get("status")
+    step2_status = (steps.get("step2") if isinstance(steps.get("step2"), dict) else {}).get("status")
+    step3a_status = (steps.get("step3a") if isinstance(steps.get("step3a"), dict) else {}).get("status")
+    if status == "CREATED" and current_step == "step1":
+        return "READY_FOR_STEP1_TASK_PACKET", [
+            f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 1 --end-step 1",
+        ]
+    if status == "BLOCK_AGENT_TOOL_STEP1_REQUIRED" or step1_status == "WAITING_FOR_AGENT_TOOL_RAW":
+        return "WAITING_FOR_AGENT_TOOL_STEP1_RAW", [
+            "Use OpenClaw tools.pdf against the current task packet only",
+            f"python3 scripts/factorforgectl.py resume-step1 --report-id {report_id}",
+        ]
+    if status == "STEP1_READY" or current_step == "step2":
+        return "READY_FOR_STEP2_3A", [
+            f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 2 --end-step 3a --formal-llm-provider command",
+        ]
+    if step1_status == "PASS" and step2_status == "PASS" and step3a_status == "PASS" and bool(run.get("runtime_context_written")):
+        return "READY_FOR_WORKER_PREFLIGHT", [
+            f"python3 scripts/factorforgectl.py check-worker --report-id {report_id} --start-step 3b --end-step 5",
+        ]
+    if status in {"WORKER_PREFLIGHT_READY", "WORKER_ARTIFACT_SYNC_DRY_RUN_READY", "WORKER_DRY_RUN_READY"}:
+        return "READY_FOR_USER_WORKER_AUTHORIZATION", [
+            f"python3 scripts/factorforgectl.py start-worker --report-id {report_id} --worker-instance-id <instance_id> --poll",
+            f"python3 scripts/factorforgectl.py sync-worker-artifacts --report-id {report_id} --worker-instance-id <instance_id> --artifact-sync-s3-uri <s3_uri> --poll",
+            f"python3 scripts/factorforgectl.py run-worker --report-id {report_id} --worker-instance-id <instance_id> --start-step 3b --end-step 5 --poll",
+        ]
+    return "BLOCK_LOCAL_STEPS_INCOMPLETE", [
+        f"python3 scripts/factorforgectl.py status --report-id {report_id}",
+        f"python3 scripts/factorforgectl.py run-local --report-id {report_id} --start-step 2 --end-step 3a --formal-llm-provider command",
+    ]
+
+
+def cmd_recover_block(args: argparse.Namespace) -> int:
+    path, _, run = load_run(args)
+    root = resolve_path(run["artifact_root"])
+    manifest_path = resolve_path(run.get("formal_run_manifest") or (root / "formal_run_manifest.json"))
+    prepare_path = prepare_report_path(root, args.report_id)
+    proof_path = proof_ledger_path(root, args.report_id)
+    ctx_path = runtime_context_path(root, args.report_id)
+    manifest, manifest_info = read_optional_json(manifest_path)
+    prepare_report, prepare_info = read_optional_json(prepare_path)
+    _, proof_info = read_optional_json(proof_path)
+    runtime_context, runtime_info = read_optional_json(ctx_path)
+
+    mismatches: list[dict[str, Any]] = []
+
+    def mismatch(name: str, expected: Any, actual: Any) -> None:
+        mismatches.append({"name": name, "expected": expected, "actual": actual})
+
+    current_sha = current_repo_sha()
+    registry_sha = str(run.get("repo_sha") or "")
+    if registry_sha and registry_sha != current_sha:
+        mismatch("registry_repo_sha_matches_current_head", registry_sha, current_sha)
+    if not root.exists():
+        mismatch("active_artifact_root_exists", True, False)
+    if not manifest:
+        mismatch("active_manifest_exists_and_parses", True, manifest_info)
+    else:
+        if manifest.get("report_id") != args.report_id:
+            mismatch("manifest_report_id_matches", args.report_id, manifest.get("report_id"))
+        if manifest.get("run_id") != run.get("run_id"):
+            mismatch("manifest_run_id_matches_registry", run.get("run_id"), manifest.get("run_id"))
+        if manifest.get("repo_sha") != run.get("repo_sha"):
+            mismatch("manifest_repo_sha_matches_registry", run.get("repo_sha"), manifest.get("repo_sha"))
+    if runtime_context and runtime_context.get("report_id") != args.report_id:
+        mismatch("runtime_context_report_id_matches", args.report_id, runtime_context.get("report_id"))
+    diagnosis, allowed_next_commands = recover_block_next_action(run, report_id=args.report_id, root=root, mismatches=mismatches)
+    payload = pass_payload(
+        report_id=args.report_id,
+        command="recover-block",
+        readonly=True,
+        active_registry=str(path),
+        run=run,
+        diagnosis=diagnosis,
+        active_artifact_root=str(root),
+        authoritative_sources={
+            "active_registry": str(path),
+            "formal_run_manifest": manifest_info,
+            "formal_artifact_prepare_report": prepare_info,
+            "proof_ledger": proof_info,
+            "runtime_context": runtime_info,
+        },
+        prepare_report_summary=summarize_prepare_report(prepare_report),
+        identity_mismatches=mismatches,
+        allowed_next_commands=allowed_next_commands,
+        forbidden_actions=[
+            "do not show/find/scan old artifact roots",
+            "do not read non-active roots unless the user explicitly asks for deprecated evidence",
+            "do not patch registry, manifest, raw LLM JSON, or runtime_context",
+            "do not skip preflight or use --allow-deterministic-debug for production factor-mining",
+            "do not start or stop worker from recover-block",
+        ],
+    )
+    payload["control_verdict"] = "BLOCK" if diagnosis.startswith("BLOCK_") else "PASS"
     print_json(payload)
     return 0
 
@@ -1033,6 +1177,12 @@ def build_parser() -> argparse.ArgumentParser:
     proof.add_argument("--report-id", required=True)
     proof.add_argument("--artifact-root", default=None)
     proof.set_defaults(func=cmd_proof)
+
+    recover_block = sub.add_parser("recover-block")
+    recover_block.add_argument("--registry", dest="sub_registry", default=None)
+    recover_block.add_argument("--report-id", required=True)
+    recover_block.add_argument("--artifact-root", default=None)
+    recover_block.set_defaults(func=cmd_recover_block)
 
     resume_step1 = sub.add_parser("resume-step1")
     resume_step1.add_argument("--registry", dest="sub_registry", default=None)

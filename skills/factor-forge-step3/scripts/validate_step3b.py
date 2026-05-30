@@ -839,24 +839,26 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     daily_input = maybe_polars_frame(daily_df, use_polars)
     minute_input = maybe_polars_frame(minute_df, use_polars)
     try:
-        params = list(inspect.signature(compute).parameters.values())
-    except (TypeError, ValueError):
-        params = []
-    positional = [
-        p for p in params
-        if p.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
-    ]
-    if len(positional) == 1:
-        first = positional[0].name.lower()
-        result = compute(daily_input if 'daily' in first else minute_input)
-    else:
-        try:
-            result = compute(daily_df=daily_input, minute_df=minute_input)
-        except TypeError:
-            if positional and 'minute' in positional[0].name.lower():
-                result = compute(minute_input, daily_input)
-            else:
-                result = compute(daily_input, minute_input)
+        signature = inspect.signature(compute)
+        params = list(signature.parameters.values())
+    except (TypeError, ValueError) as exc:
+        raise AssertionError(f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: cannot inspect compute_factor signature: {exc}') from exc
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+    accepts_daily_keyword = (
+        accepts_kwargs
+        or 'daily_df' in signature.parameters
+        or any(p.name == 'daily_df' and p.kind != inspect.Parameter.POSITIONAL_ONLY for p in params)
+    )
+    if not accepts_daily_keyword:
+        raise AssertionError(
+            'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: compute_factor must accept keyword argument daily_df'
+        )
+    try:
+        result = compute(daily_df=daily_input, minute_df=minute_input)
+    except TypeError as exc:
+        raise AssertionError(
+            f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: compute_factor keyword call failed: {exc}'
+        ) from exc
     result = normalize_direct_code_result(result)
     if not isinstance(result, pd.DataFrame):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor must return DataFrame')
@@ -871,6 +873,11 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     signal_candidates.extend(['factor_value', 'signal'])
     if not any(col in result.columns for col in signal_candidates):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing factor_value or declared signal column')
+    signal_column = next((col for col in signal_candidates if col in result.columns), None)
+    if signal_column and result[signal_column].isna().all():
+        raise AssertionError(
+            f'BLOCK_STEP3B_DIRECT_CODE_ALL_NULL_OUTPUT: output signal column {signal_column} is entirely null'
+        )
 
 
 def validate_direct_code_mode(

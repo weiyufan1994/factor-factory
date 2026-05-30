@@ -28,6 +28,7 @@ Required top-level sections:
 - `primary_mechanism_model`
 - `stochastic_price_process_projection`
 - `formula_implied_information`
+- `formula_implied_information_review`
 - `formula_component_mapping`
 - `expected_metric_signature`
 - `falsification_tests`
@@ -59,6 +60,31 @@ state variables, observable proxies, formula components, and falsification.
 They must also block formula-implied-information sections that merely restate
 raw fields or formula calls instead of naming a latent/model state.
 
+`formula_implied_information_review` is the Dirac-style anomaly review layer.
+It asks whether the formula structure or the evidence implies information that
+was not explicit in the original economic hypothesis. It must not discard
+unexpected or negative implications before classification. Each unexpected
+implication must include:
+
+- `implication`
+- `why_unexpected`
+- `source`: `formula_structure | metrics | implementation | data`
+- `classification`: one of `implementation_bug`, `data_artifact`,
+  `specification_ambiguity`, `economic_hypothesis_wrong`,
+  `primary_model_wrong`, `stochastic_projection_wrong`,
+  `observable_estimator_mismatch`, `tradable_anomaly`, `new_factor_seed`,
+  `regime_specific_solution`, or `capacity_or_friction_bound_solution`
+- `responsible_model_layer`
+- `discriminating_test`
+- `expected_signature_if_real`
+- `expected_signature_if_artifact`
+- `recommended_action`
+
+If classification is `tradable_anomaly` or `new_factor_seed`, the Council
+proposal must include a branch law, expected metric signature, and kill
+criteria. If classification is `implementation_bug` or `data_artifact`, the
+system must route to implementation/data audit rather than research promotion.
+
 Block tokens:
 
 - `BLOCK_MECHANISM_MATH_V2_MISSING_PRIMARY_MODEL`
@@ -68,6 +94,9 @@ Block tokens:
 - `BLOCK_MECHANISM_MATH_V2_RETURN_SOURCE_REVIEW_MISSING`
 - `BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_MISSING`
 - `BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_RESTATEMENT`
+- `BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING`
+- `BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION`
+- `BLOCK_COUNCIL_ANOMALY_BRANCH_LAW_MISSING`
 
 Legacy `factorforge_mechanism_math_contract_v1` remains accepted where older
 artifacts are explicitly being validated.

@@ -28,6 +28,7 @@ from factor_factory.data_access import (
     inspect_trade_date_csv_root,
     load_clean_daily_layer,
     resolve_clean_daily_layer_paths,
+    resolve_data_api_dataset,
     resolve_local_tushare_paths,
 )
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
@@ -62,12 +63,15 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     RUNS = FF / 'runs'
     REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
     os.environ['FACTORFORGE_ROOT'] = str(FF)
-    clean_root = Path(manifest.get('clean_data_root') or (FF / 'data' / 'clean'))
-    CLEAN_DAILY_LAYER = CleanDailyLayerPaths(
-        root=clean_root,
-        daily_parquet=clean_root / 'daily_clean.parquet',
-        metadata_json=clean_root / 'daily_clean.meta.json',
-    )
+    if manifest.get('clean_data_root'):
+        clean_root = Path(manifest['clean_data_root'])
+        CLEAN_DAILY_LAYER = CleanDailyLayerPaths(
+            root=clean_root,
+            daily_parquet=clean_root / 'daily_clean.parquet',
+            metadata_json=clean_root / 'daily_clean.meta.json',
+        )
+    elif os.getenv('FACTORFORGE_CLEAN_DAILY_DIR'):
+        CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
     return manifest, manifest_report_id(manifest)
 
 
@@ -563,8 +567,14 @@ def candidate_minute_roots() -> list[Path]:
 def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols: list[str] | None = None, csv_output_policy: str | None = None) -> dict:
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
+    daily_resolution = resolve_data_api_dataset(
+        'clean_daily_bar',
+        start=sample_window.get('start'),
+        end=sample_window.get('end'),
+        layer_paths=CLEAN_DAILY_LAYER,
+    )
 
-    if not clean_daily_layer_ready(CLEAN_DAILY_LAYER):
+    if daily_resolution.get('status') != 'ready' or not clean_daily_layer_ready(CLEAN_DAILY_LAYER):
         return {
             'snapshot_note': (
                 f'Shared clean daily layer is missing under {CLEAN_DAILY_LAYER.root}; '
@@ -572,6 +582,7 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
             ),
             'snapshot_source': 'missing_clean_daily_layer',
             'input_mode': 'daily_only',
+            'data_api_resolution': {'clean_daily_bar': daily_resolution},
         }
 
     policy = resolve_csv_policy(csv_output_policy)
@@ -613,9 +624,10 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         **audit_payload,
         'sample_window_actual': actual_window,
         'snapshot_note': f'Daily input sliced from shared clean daily layer at {CLEAN_DAILY_LAYER.daily_parquet}.',
-        'snapshot_source': 'shared_clean_daily_layer',
+        'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
         'clean_layer_root': str(CLEAN_DAILY_LAYER.root),
+        'data_api_resolution': {'clean_daily_bar': daily_resolution},
         'daily_filter_policy': clean_meta.get('policy'),
         'daily_filter_summary': (
             clean_meta.get('clean_meta', {}).get('counts', {})
@@ -894,7 +906,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             notes.append('Step 3A selected minute local inputs because the direct_code contract references minute-level fields.')
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
-        if snapshot_source in {'shared_clean_daily_layer', 'synthetic_fallback'}:
+        if snapshot_source in {'shared_clean_daily_layer', 'data_api_clean_daily_bar', 'synthetic_fallback'}:
             notes.append('Step 3A 已生成 Step 4 可直接消费的本地输入快照，供集成证明与样例执行使用')
         if snapshot_note:
             notes.append(str(snapshot_note))
@@ -933,6 +945,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'blocked_items': blocked,
         'local_input_paths': local_input_paths,
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
+        'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
     }
 
     qlib_adapter_config = {
@@ -975,6 +988,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         },
         'proxy_rules': proxy_rules,
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
+        'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
         'sample_window': sample_window,
         'local_input_paths': local_input_paths,
         'step4_access_rule': 'Step 4 should prefer Step 3A normalized local inputs / adapter config, not raw S3 paths directly.'

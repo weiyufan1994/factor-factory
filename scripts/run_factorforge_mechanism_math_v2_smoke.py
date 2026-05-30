@@ -186,6 +186,45 @@ def case_contract_validation() -> list[dict[str, Any]]:
     failures = validate_mechanism_math_contract(mutated)
     cases.append({"case": "formula_implied_information_raw_field_restatement_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_RESTATEMENT" for f in failures), "failures": failures})
 
+    mutated = json.loads(json.dumps(valid))
+    mutated.pop("formula_implied_information_review", None)
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "missing_formula_implied_information_review_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["formula_implied_information_review"]["unexpected_implications"] = [
+        {"implication": "negative solution may carry the real signal"}
+    ]
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "unclassified_unexpected_implication_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["formula_implied_information_review"]["unexpected_implications"] = [
+        {
+            "implication": "negative solution may carry the real signal",
+            "classification": "new_factor_seed",
+            "reasoning": "it implies a distinct latent state and payer",
+        }
+    ]
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "anomaly_without_branch_law_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["formula_implied_information_review"]["unexpected_implications"] = [
+        {
+            "implication": "negative solution may carry the real signal",
+            "classification": "new_factor_seed",
+            "reasoning": "it implies a distinct latent state and payer",
+            "branch_seed_if_any": {
+                "child_formula_or_law": "rank(-delta(close, 5)) conditioned on forced-flow state",
+                "expected_metric_signature": ["positive long-side return", "cost-survivable turnover"],
+                "kill_criteria": ["kill if long side is non-positive", "kill if payoff is only short-side loss"],
+            },
+        }
+    ]
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "valid_formula_implied_anomaly_branch_passes", "ok": not failures, "failures": failures})
+
     legacy = build_mechanism_math_contract(valid_spec())
     cases.append({"case": "legacy_v1_still_accepted", "ok": not validate_mechanism_math_contract(legacy), "failures": validate_mechanism_math_contract(legacy)})
     return cases
@@ -501,6 +540,22 @@ def case_step6_and_council() -> list[dict[str, Any]]:
     for item in (bad_proposal.get("derivation_record") or {}).get("revision_hypotheses") or []:
         item.pop("revision_model_layer", None)
     bad_reasons = validate_revision_council_proposal(bad_proposal)
+    unclassified_implication = json.loads(json.dumps(proposal))
+    unclassified_implication["formula_implied_information_review"] = {
+        "unexpected_implications": [{"implication": "negative solution"}]
+    }
+    unclassified_reasons = validate_revision_council_proposal(unclassified_implication)
+    anomaly_missing_branch = json.loads(json.dumps(proposal))
+    anomaly_missing_branch["formula_implied_information_review"] = {
+        "unexpected_implications": [
+            {
+                "implication": "negative solution",
+                "classification": "tradable_anomaly",
+                "reasoning": "distinct latent state",
+            }
+        ]
+    }
+    anomaly_missing_reasons = validate_revision_council_proposal(anomaly_missing_branch)
     return [
         {
             "case": "step6_revision_without_model_layer_attribution_blocks",
@@ -526,6 +581,16 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             "case": "council_proposal_without_model_layer_mapping_blocks",
             "ok": "BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING" in bad_reasons,
             "failures": bad_reasons,
+        },
+        {
+            "case": "council_unclassified_unexpected_implication_blocks",
+            "ok": "BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION" in unclassified_reasons,
+            "failures": unclassified_reasons,
+        },
+        {
+            "case": "council_anomaly_without_branch_law_blocks",
+            "ok": "BLOCK_COUNCIL_ANOMALY_BRANCH_LAW_MISSING" in anomaly_missing_reasons,
+            "failures": anomaly_missing_reasons,
         },
     ]
 

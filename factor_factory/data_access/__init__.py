@@ -11,6 +11,7 @@ from .clean_layer import (
 )
 from .daily import get_daily
 from .daily_policy import DailyFilterPolicy, get_clean_daily
+from .data_api import resolve_data_api_dataset
 from .daily_basic import get_daily_basic, list_daily_basic_trade_dates
 from .financials import (
     align_events_to_daily,
@@ -125,6 +126,7 @@ __all__ = [
     'normalize_qlib_instrument',
     'normalize_trade_date_series',
     'resolve_clean_daily_layer_paths',
+    'resolve_data_api_dataset',
     'resolve_daily_snapshot_path',
     'resolve_local_tushare_paths',
     'sanitize_factor_id',

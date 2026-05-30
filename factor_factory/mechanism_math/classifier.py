@@ -628,6 +628,29 @@ def _formula_implied_information(
     }
 
 
+def _formula_implied_information_review() -> dict[str, Any]:
+    return {
+        "reviewer_task": "formula_implied_information_reviewer",
+        "review_status": "no_unexpected_implication_detected",
+        "benchmark_tools": [
+            "primary_model_projection",
+            "stochastic_price_process_projection",
+            "information_set_check",
+            "dimensional_or_scale_check",
+        ],
+        "negative_solution_policy": "do_not_discard_until_classified",
+        "unexpected_implications": [],
+        "classification_schema": [
+            "bug",
+            "data_artifact",
+            "implementation_artifact",
+            "benign_model_implication",
+            "tradable_anomaly",
+            "new_factor_seed",
+        ],
+    }
+
+
 def _component_mapping_from_inputs(inputs: list[str], contract: dict[str, Any]) -> list[dict[str, Any]]:
     role = "state_variable"
     projection_role = "drift"
@@ -704,6 +727,7 @@ def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any
             "expected_return_distribution_change": str(v1.get("metric_signature_match") or "metrics should reveal whether the estimated state shifts next-horizon return distribution in the claimed direction"),
         },
         "formula_implied_information": _formula_implied_information(inputs, formula, v1, formula_estimator, conditional),
+        "formula_implied_information_review": _formula_implied_information_review(),
         "formula_component_mapping": _component_mapping_from_inputs(inputs, v1),
         "expected_metric_signature": v1.get("expected_metric_signature") or {
             "rank_ic": "positive after sign convention",

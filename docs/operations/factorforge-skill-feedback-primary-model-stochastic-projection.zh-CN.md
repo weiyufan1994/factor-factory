@@ -344,6 +344,135 @@ Council result 必须包含：
 }
 ```
 
+## Dirac-Style Formula-Implied Information And Anomaly Review
+
+本架构还需要补上一层 “公式倒逼信息” 审查。用户所谓 “像发现狄拉克方程那样” 不是要求把金融因子套物理方程，而是要求系统允许公式本身反推出研究者一开始没有显式写出的市场结构含义，并严肃处理反直觉解。
+
+类比关系：
+
+```text
+economic hypothesis gives a candidate market-process model
+formula/operator constraints imply latent states or invariances
+mathematical projection exposes unexpected implications
+metrics/evidence decide whether the implication is bug, artifact, or new research signal
+```
+
+因此 Step6/Council 不能只问 “metrics 好不好”。它还必须问：
+
+```text
+1. 公式结构是否强迫我们承认一个额外 latent state？
+2. 公式是否隐含对称性、边界条件、守恒/缩放关系、非线性项或符号约束？
+3. 公式推出的 implication 是否与原经济假设冲突？
+4. 冲突是错误，还是一个可交易 anomaly？
+5. 如果是 anomaly，应该开 branch 验证，而不是立即丢弃。
+```
+
+### Required reviewer role
+
+Council taskbook 应新增或等价包含：
+
+```text
+formula_implied_information_reviewer
+```
+
+职责：
+
+1. 读取 Step2 `formula_implied_information`、`formula_component_mapping` 和 Step4/5 evidence；
+2. 从公式结构反推 latent/model state，而不是复述 raw fields；
+3. 审查公式是否产生 unexpected implication；
+4. 对反直觉结果或异常解做分类；
+5. 给出是否需要 new branch / bug fix / data audit / implementation audit / kill 的建议。
+
+### Unexpected implication taxonomy
+
+任何反直觉解必须至少分类为以下之一：
+
+```text
+implementation_bug
+data_artifact
+specification_ambiguity
+economic_hypothesis_wrong
+primary_model_wrong
+stochastic_projection_wrong
+observable_estimator_mismatch
+tradable_anomaly
+new_factor_seed
+regime_specific_solution
+capacity_or_friction_bound_solution
+```
+
+解释：
+
+- `implementation_bug`: 代码、window、rank、lag、取整、输入过滤或符号方向错误；
+- `data_artifact`: 停牌、一字涨跌停、复权、缺失分钟、异常成交、样本污染；
+- `specification_ambiguity`: Step1/2 没有把公式定义、有效日、分位取整、排序方向写清楚；
+- `economic_hypothesis_wrong`: 谁付钱/为什么付钱的假设不成立；
+- `primary_model_wrong`: 选错数学模型，例如该用 constraint model 却套了 diffusion；
+- `stochastic_projection_wrong`: primary model 可能对，但投影到 `mu/sigma/jump/friction/regime/observation` 的项错了；
+- `observable_estimator_mismatch`: 公式估计的 latent state 与模型需要的 state 不一致；
+- `tradable_anomaly`: 反直觉解有经济可解释性，可能值得保留；
+- `new_factor_seed`: 公式推导出与原 report 不同但可验证的新因子方向；
+- `regime_specific_solution`: 只在特定市场状态成立；
+- `capacity_or_friction_bound_solution`: gross 有效但受交易摩擦、容量、冲击成本约束。
+
+### Negative solution handling
+
+如果公式或 metrics 推出 “负解” 或异常解，Council 不得直接 reject。它必须走如下流程：
+
+```text
+unexpected implication detected
+-> classify anomaly
+-> identify responsible model layer
+-> define discriminating test
+-> decide action:
+   - patch implementation/spec if bug
+   - block for data audit if data artifact
+   - revise economic hypothesis if payer story fails
+   - revise primary model or stochastic projection if model layer fails
+   - open child branch if tradable anomaly or new factor seed
+   - kill only when tests rule out bug/artifact/anomaly and economics fail
+```
+
+### Required artifact fields
+
+Step6 memo / Council proposal 应新增或强化：
+
+```json
+{
+  "formula_implied_information_review": {
+    "unexpected_implications": [
+      {
+        "implication": "...",
+        "why_unexpected": "...",
+        "source": "formula_structure | metrics | implementation | data",
+        "classification": "tradable_anomaly | implementation_bug | ...",
+        "responsible_model_layer": "economic_hypothesis | primary_mechanism_model | stochastic_projection | observable_estimator | implementation_contract | data_contract",
+        "discriminating_test": "...",
+        "expected_signature_if_real": "...",
+        "expected_signature_if_artifact": "...",
+        "recommended_action": "branch_test | implementation_fix | data_audit | model_revision | kill"
+      }
+    ],
+    "negative_solution_policy": "do_not_discard_until_classified",
+    "branch_seed_if_any": {
+      "child_formula_or_law": "...",
+      "model_layer_changed": "...",
+      "kill_criteria": "..."
+    }
+  }
+}
+```
+
+### Validator implications
+
+后续 validator/smoke 应覆盖：
+
+1. Council proposal 若出现 unexpected implication，但没有 classification，应 BLOCK；
+2. `classification=tradable_anomaly` 或 `new_factor_seed` 时，必须给 branch law、expected metric signature 和 kill criteria；
+3. `classification=implementation_bug` 时，不能生成 child research branch，必须回到 implementation/spec fix；
+4. `classification=data_artifact` 时，不能 promote，也不能把该 evidence 写入 official library；
+5. terminal reject 前必须证明 bug/data/spec/anomaly 路径都被排除或不适用。
+
 ## Council Operating Model
 
 建议 Council taskbook 固定包含以下角色或等价任务：
@@ -356,9 +485,11 @@ Council result 必须包含：
    - 将 primary model 投影到价格过程，明确影响 drift/diffusion/jump/friction/regime/observation；
 4. `formula_estimator_translator`
    - 把模型项翻译成可执行 formula / Step3B code；
-5. `metric_falsification_researcher`
+5. `formula_implied_information_reviewer`
+   - 审查公式结构倒逼出的 latent state、unexpected implication、negative solution / anomaly；
+6. `metric_falsification_researcher`
    - 用 Step4/5 evidence 判断哪些模型层被支持或证伪；
-6. `orchestration_synthesizer`
+7. `orchestration_synthesizer`
    - 主 agent 汇总 Council，选择 single-branch 或 multibranch，写 executable child formula。
 
 主 agent 不能简单选择多数意见。它必须说明：

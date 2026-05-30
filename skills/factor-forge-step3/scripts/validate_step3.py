@@ -195,6 +195,74 @@ def validate_daily_io_contract(local_inputs: dict, *, require_full_parity: bool 
             )
 
 
+def _data_api_resolution(prep: dict, qcfg: dict) -> dict:
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    for candidate in [
+        prep.get('data_api_resolution'),
+        local_inputs.get('data_api_resolution'),
+        qcfg.get('data_api_resolution'),
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def _daily_filter_policy(prep: dict, qcfg: dict) -> dict:
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    data_api = _data_api_resolution(prep, qcfg)
+    clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
+    for candidate in [
+        prep.get('daily_filter_policy'),
+        local_inputs.get('daily_filter_policy'),
+        qcfg.get('daily_filter_policy'),
+        clean_daily.get('daily_filter_policy'),
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def validate_step3_readiness_contract(
+    prep: dict,
+    qcfg: dict,
+    impl: dict,
+    handoff: dict,
+    *,
+    workspace: Path | None = None,
+) -> None:
+    del impl
+    workspace = workspace or WORKSPACE
+    feasibility = prep.get('feasibility')
+    expected_step3a_ready = feasibility in {'ready', 'proxy_ready'}
+    if handoff.get('step3a_ready') is not None:
+        assert handoff.get('step3a_ready') is expected_step3a_ready, (
+            f'handoff_to_step4.step3a_ready mismatch: expected {expected_step3a_ready}, '
+            f"got {handoff.get('step3a_ready')}"
+        )
+    if feasibility == 'blocked':
+        assert handoff.get('step3b_ready') is not True, (
+            'BLOCK_STEP3A_HANDOFF_CONTRADICTION: blocked Step3A cannot claim step3b_ready=true'
+        )
+        return
+
+    data_api = _data_api_resolution(prep, qcfg)
+    clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
+    assert clean_daily.get('status') == 'ready', (
+        'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready clean_daily_bar Data API resolution'
+    )
+
+    policy = _daily_filter_policy(prep, qcfg)
+    assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (
+        'BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING: clean daily policy must explicitly drop suspended and limit-event days'
+    )
+
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    if daily_rel:
+        daily_path = workspace / daily_rel
+        assert daily_path.exists(), f'BLOCK_STEP3A_LOCAL_SNAPSHOT_MISSING: {daily_path}'
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
@@ -242,13 +310,7 @@ if __name__ == '__main__':
     if 'step4_contract' in impl:
         assert impl['step4_contract'].get('execution_mode') == impl_mode
 
-    if handoff.get('step3a_ready') is not None:
-        assert handoff.get('step3a_ready') is expected_step3a_ready, (
-            f'handoff_to_step4.step3a_ready mismatch: expected {expected_step3a_ready}, '
-            f"got {handoff.get('step3a_ready')}"
-        )
-    if handoff.get('step3b_ready') is not None:
-        assert handoff.get('step3b_ready') is True
+    validate_step3_readiness_contract(prep, qcfg, impl, handoff, workspace=WORKSPACE)
     if handoff.get('execution_mode') is not None:
         assert handoff.get('execution_mode') == impl_mode
     assert isinstance(prep.get('local_input_paths'), dict)

@@ -187,6 +187,83 @@ def _validate_formula_implied_information(contract: dict[str, Any]) -> list[dict
     return failures
 
 
+def _validate_formula_implied_information_review(contract: dict[str, Any]) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    review = contract.get("formula_implied_information_review")
+    if not isinstance(review, dict) or not review:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+            "v2 contract requires formula_implied_information_review for unexpected implication and anomaly handling",
+        )
+        return failures
+    if not _meaningful_str(review.get("negative_solution_policy")):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+            "formula_implied_information_review.negative_solution_policy is required",
+        )
+    implications = review.get("unexpected_implications")
+    if implications is None:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+            "formula_implied_information_review.unexpected_implications must exist, even if empty",
+        )
+        return failures
+    if not isinstance(implications, list):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+            "formula_implied_information_review.unexpected_implications must be a list",
+        )
+        return failures
+
+    allowed = {
+        "bug",
+        "data_artifact",
+        "implementation_artifact",
+        "benign_model_implication",
+        "tradable_anomaly",
+        "new_factor_seed",
+    }
+    branch_required = {"tradable_anomaly", "new_factor_seed"}
+    for idx, item in enumerate(implications):
+        if not isinstance(item, dict):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+                f"unexpected_implications[{idx}] must be an object",
+            )
+            continue
+        classification = item.get("classification")
+        if (
+            not _meaningful_str(item.get("implication"))
+            or classification not in allowed
+            or not _meaningful_str(item.get("reasoning"))
+        ):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+                f"unexpected_implications[{idx}] requires implication, classification, and reasoning",
+            )
+            continue
+        if classification in branch_required:
+            branch = item.get("branch_seed_if_any")
+            if (
+                not isinstance(branch, dict)
+                or not _meaningful_str(branch.get("child_formula_or_law"))
+                or not _nonempty_meaningful_list(branch.get("expected_metric_signature"))
+                or not _nonempty_meaningful_list(branch.get("kill_criteria"))
+            ):
+                _failures_add(
+                    failures,
+                    "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING",
+                    f"unexpected_implications[{idx}] classified as {classification} requires child_formula_or_law, expected_metric_signature, and kill_criteria",
+                )
+    return failures
+
+
 def _validate_return_source_review(thesis: dict[str, Any]) -> list[dict[str, str]]:
     failures: list[dict[str, str]] = []
     source = str(thesis.get("return_source_family") or "")
@@ -311,6 +388,7 @@ def validate_mechanism_math_contract_v2(contract: Any) -> list[dict[str, str]]:
         failures.extend(_validate_return_source_review(thesis))
 
     failures.extend(_validate_formula_implied_information(contract))
+    failures.extend(_validate_formula_implied_information_review(contract))
 
     if _is_vague_sde(contract):
         _failures_add(

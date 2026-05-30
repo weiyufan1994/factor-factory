@@ -55,6 +55,15 @@ VALID_REVISION_MODEL_LAYERS = {
     "implementation_contract",
 }
 
+VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES = {
+    "bug",
+    "data_artifact",
+    "implementation_artifact",
+    "benign_model_implication",
+    "tradable_anomaly",
+    "new_factor_seed",
+}
+
 
 def _model_layer_attribution_present(proposal: dict[str, Any]) -> bool:
     layer = proposal.get("revision_model_layer") or proposal.get("revision_model_target")
@@ -181,6 +190,41 @@ def _validate_derivation_record(proposal: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def _validate_formula_implied_information_review(proposal: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    review = proposal.get("formula_implied_information_review")
+    if review is None:
+        return reasons
+    if not isinstance(review, dict):
+        return ["BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION"]
+    implications = review.get("unexpected_implications") or []
+    if not isinstance(implications, list):
+        return ["BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION"]
+    for item in implications:
+        if not isinstance(item, dict):
+            reasons.append("BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION")
+            continue
+        classification = item.get("classification")
+        if classification not in VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES or not _nonempty_str(item.get("reasoning")):
+            reasons.append("BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION")
+            continue
+        if classification in {"tradable_anomaly", "new_factor_seed"}:
+            branch = item.get("branch_seed_if_any")
+            branch_has_law = isinstance(branch, dict) and _nonempty_str(branch.get("child_formula_or_law"))
+            law_has_child = any(
+                isinstance(law, dict)
+                and (
+                    _nonempty_str(law.get("child_formula_or_law"))
+                    or _nonempty_str(law.get("candidate_formula"))
+                    or _nonempty_str(law.get("expression"))
+                )
+                for law in proposal.get("candidate_revision_laws") or []
+            )
+            if not (branch_has_law or law_has_child):
+                reasons.append("BLOCK_COUNCIL_ANOMALY_BRANCH_LAW_MISSING")
+    return list(dict.fromkeys(reasons))
+
+
 def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     """Return block reasons. Empty means valid."""
     reasons: list[str] = []
@@ -227,6 +271,7 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
         reasons.append("BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING")
 
     reasons.extend(_validate_derivation_record(proposal))
+    reasons.extend(_validate_formula_implied_information_review(proposal))
 
     guards = proposal.get("forbidden_changes_ack") or []
     missing_guards = [item for item in REQUIRED_GUARDS if item not in guards]

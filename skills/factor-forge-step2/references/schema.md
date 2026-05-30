@@ -74,9 +74,29 @@
   "research_contract": {
     "target_statistic": "string",
     "economic_mechanism": "string",
+    "economic_hypothesis": "object",
+    "math_hypothesis_candidates": ["object"],
     "expected_failure_modes": ["string"],
     "innovative_idea_seeds": ["string"],
     "reuse_instruction_for_future_agents": ["string"]
+  },
+  "mechanism_math_contract_v2": {
+    "market_process_thesis": {
+      "return_source_family": "risk_premium|information_advantage|market_structure_arbitrage|constraint_driven_arbitrage|mixed",
+      "alternative_return_source_tests": [{
+        "alternative_source": "string",
+        "why_not_primary": "string",
+        "discriminating_test": "string",
+        "expected_signature_if_alternative_true": "string"
+      }]
+    },
+    "formula_implied_information": {
+      "structural_constraints": ["string"],
+      "latent_state_inferred_by_formula": "string",
+      "estimator_interpretation": "string",
+      "why_not_raw_field_restatement": "string",
+      "price_process_connection": "string"
+    }
   },
   "ambiguities": ["string"],
   "human_review_required": false,

@@ -193,7 +193,15 @@ def step1_chief_prompt() -> str:
         'Output only JSON matching the chief decision structure required by merge_to_alpha_idea_master: '
         'final_factor, logic_provenance_summary, assembly_path, unresolved_ambiguities, '
         'chief_decision_summary, chief_confidence, chief_rationale, market_process_thesis, '
-        'what_must_be_true, and either economic_hypothesis or mechanism_assumptions. '
+        'what_must_be_true, economic_hypothesis_candidates, preferred_economic_hypothesis, '
+        'alternative_return_source_tests, primary_mathematical_model, formula_as_observable_estimator, '
+        'and either economic_hypothesis or mechanism_assumptions. '
+        'market_process_thesis must include market_phenomenon, economic_hypothesis, return_source_family, '
+        'payer_or_counterparty, why_they_pay, what_must_be_true, what_would_break_it, '
+        'and alternative_return_source_tests. '
+        'Do not default every factor to a stochastic process; choose the primary mathematical model from the economic hypothesis, '
+        'then use stochastic process, Ito calculus, linear algebra, optimization, information theory, or causal tests only as '
+        'benchmark tools for projection, diagnostic, derivation, or falsification when justified. '
         'Do not invent generic template assumptions; if the raw report does not support a field, leave it missing so validation blocks.'
     )
 
@@ -238,6 +246,11 @@ def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) ->
     ]
     ambiguities = dedupe((primary_intake.ambiguities or []) + (challenger_intake.ambiguities or []))
     what_would_break_it = final.get('key_implementation_risks', []) or ambiguities
+    payer = (
+        final.get('payer_or_counterparty')
+        or final.get('expected_counterparty_or_payer')
+        or 'counterparties implied by the report-specific mixed return-source hypothesis'
+    )
     return {
         'final_factor': {
             'name': final.get('name') or pff.get('name') or cff.get('name') or 'UNNAMED_FACTOR',
@@ -261,8 +274,16 @@ def build_default_chief_decision(primary_intake: Any, challenger_intake: Any) ->
             'market_phenomenon': ' ; '.join(str(x) for x in assembly_steps) if assembly_steps else '',
             'economic_hypothesis': economic_logic,
             'return_source_family': 'mixed',
-            'payer_or_counterparty': '',
+            'payer_or_counterparty': payer,
             'why_they_pay': behavioral_logic,
+            'alternative_return_source_tests': [
+                {
+                    'alternative_source': 'risk_premium',
+                    'why_not_primary': 'The deterministic fallback cannot prove a pure risk-premium story; it preserves mixed until Step1/Step2 LLM evidence separates systematic-risk compensation from mispricing or delayed adjustment.',
+                    'discriminating_test': 'Control beta, volatility, downside risk, size, and turnover exposures; a risk-premium explanation should remain as compensated risk rather than disappear as reversal or behavioral loss.',
+                    'expected_signature_if_alternative_true': 'High-score names carry higher compensated risk and the return survives risk controls without relying on counterparty error.',
+                }
+            ],
             'what_must_be_true': what_must_be_true,
             'what_would_break_it': what_would_break_it,
         },

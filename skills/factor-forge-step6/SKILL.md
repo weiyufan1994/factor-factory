@@ -96,6 +96,15 @@ metric signature and falsification. Generic mechanism text that contradicts
 formula fields or operators is invalid; for example, a formula with no volume
 input must not claim price-volume dependence unless a structured justification
 is present and validated.
+35a. Step6 analysis and Revision Council must keep the same research rigor as
+Step1/Step2: economic_hypothesis selects the primary mathematical model, and
+benchmark mathematical tools such as stochastic processes, Ito calculus, linear
+algebra, optimization, information theory, and causal/placebo tests are used for
+projection, diagnostic, derivation, or falsification. Do not default every
+failed factor to a stochastic-process story or a generic payer narrative.
+Council proposals must state which economic hypothesis, primary mathematical
+model, observable estimator, benchmark test, and falsification signature they
+are revising.
 36. Before any Revision Council packet or agentic dispatch is built, Step6 must
 write a current-agent mechanism questionnaire:
 `objects/research_iteration_master/main_agent_mechanism_questionnaire__<report_id>.json`

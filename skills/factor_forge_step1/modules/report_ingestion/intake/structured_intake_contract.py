@@ -17,6 +17,11 @@ class StructuredIntake:
     code_clues: List[Dict[str, Any]] = field(default_factory=list)
     implementation_clues: List[Dict[str, Any]] = field(default_factory=list)
     alpha_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    economic_hypothesis_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    preferred_economic_hypothesis: Dict[str, Any] = field(default_factory=dict)
+    alternative_return_source_tests: List[Dict[str, Any]] = field(default_factory=list)
+    primary_mathematical_model: Dict[str, Any] = field(default_factory=dict)
+    formula_as_observable_estimator: Dict[str, Any] = field(default_factory=dict)
     evidence_clues: List[Dict[str, Any]] = field(default_factory=list)
     ambiguities: List[str] = field(default_factory=list)
     raw_response: str = ""

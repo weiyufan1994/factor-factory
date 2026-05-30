@@ -82,7 +82,30 @@ def valid_market_process_thesis(value) -> bool:
     if not isinstance(value, dict) or not value:
         return False
     required = ['market_phenomenon', 'economic_hypothesis', 'return_source_family', 'payer_or_counterparty', 'why_they_pay']
-    return all(not_vague(value.get(key)) for key in required) and meaningful_list(value.get('what_must_be_true')) and meaningful_list(value.get('what_would_break_it'))
+    source = value.get('return_source_family')
+    alternatives = value.get('alternative_return_source_tests')
+    valid_sources = {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'constraint_driven_arbitrage', 'mixed'}
+    has_alternative_test = False
+    if isinstance(alternatives, list):
+        for item in alternatives:
+            if not isinstance(item, dict):
+                continue
+            if (
+                item.get('alternative_source') in valid_sources
+                and item.get('alternative_source') != source
+                and not_vague(item.get('why_not_primary'))
+                and not_vague(item.get('discriminating_test'))
+                and not_vague(item.get('expected_signature_if_alternative_true'))
+            ):
+                has_alternative_test = True
+                break
+    return (
+        all(not_vague(value.get(key)) for key in required)
+        and source in valid_sources
+        and meaningful_list(value.get('what_must_be_true'))
+        and meaningful_list(value.get('what_would_break_it'))
+        and has_alternative_test
+    )
 
 
 def valid_primary_model_candidates(value) -> bool:

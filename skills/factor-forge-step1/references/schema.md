@@ -107,6 +107,21 @@ class StructuredIntake:
       "why_suitable": "string",
       "falsification_tests": ["string"]
     }],
+    "market_process_thesis": {
+      "market_phenomenon": "string",
+      "economic_hypothesis": "string",
+      "return_source_family": "risk_premium|information_advantage|market_structure_arbitrage|constraint_driven_arbitrage|mixed",
+      "payer_or_counterparty": "string",
+      "why_they_pay": "string",
+      "alternative_return_source_tests": [{
+        "alternative_source": "risk_premium|information_advantage|market_structure_arbitrage|constraint_driven_arbitrage|mixed",
+        "why_not_primary": "string",
+        "discriminating_test": "string",
+        "expected_signature_if_alternative_true": "string"
+      }],
+      "what_must_be_true": ["string"],
+      "what_would_break_it": ["string"]
+    },
     "what_must_be_true": ["string"],
     "what_would_break_it": ["string"],
     "similar_case_lessons_imported": ["string"]

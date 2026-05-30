@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 from factor_factory.revision_council.validator import validate_revision_council_proposal
+from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_client import PdfSkillClient
 
 
 def load_module(name: str, path: Path):
@@ -35,6 +36,9 @@ def load_module(name: str, path: Path):
 STEP2 = load_module("rta18_step2", REPO_ROOT / "skills/factor-forge-step2/scripts/run_step2.py")
 STEP6_VALIDATE = load_module("rta18_validate_step6", REPO_ROOT / "skills/factor-forge-step6/scripts/validate_step6.py")
 RUN_COUNCIL = load_module("rta18_run_revision_council", REPO_ROOT / "skills/factor-forge-step6/scripts/run_revision_council.py")
+STEP1_PROMPTS = load_module("rta18_step1_prompts", REPO_ROOT / "skills/factor_forge_step1/modules/report_ingestion/intake/pdf_skill_prompts.py")
+STEP1_BRIDGE = load_module("rta18_step1_bridge", REPO_ROOT / "scripts/run_factorforge_step1_llm_bridge.py")
+FORMAL_PREP = load_module("rta18_formal_prep", REPO_ROOT / "scripts/prepare_factorforge_formal_artifacts.py")
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -160,9 +164,135 @@ def case_contract_validation() -> list[dict[str, Any]]:
     failures = validate_mechanism_math_contract(mutated)
     cases.append({"case": "formula_mapping_function_call_proxy_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_MAPPING_SELF_REFERENTIAL" for f in failures), "failures": failures})
 
+    mutated = json.loads(json.dumps(valid))
+    mutated["market_process_thesis"].pop("alternative_return_source_tests", None)
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "missing_return_source_alternative_review_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RETURN_SOURCE_REVIEW_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated.pop("formula_implied_information", None)
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "missing_formula_implied_information_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["formula_implied_information"] = {
+        "structural_constraints": ["formula uses close"],
+        "latent_state_inferred_by_formula": "close",
+        "estimator_interpretation": "close",
+        "why_not_raw_field_restatement": "close",
+        "price_process_connection": "close",
+    }
+    mutated["formula_implied_information"]["latent_state_inferred_by_formula"] = "close"
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "formula_implied_information_raw_field_restatement_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_RESTATEMENT" for f in failures), "failures": failures})
+
     legacy = build_mechanism_math_contract(valid_spec())
     cases.append({"case": "legacy_v1_still_accepted", "ok": not validate_mechanism_math_contract(legacy), "failures": validate_mechanism_math_contract(legacy)})
     return cases
+
+
+def case_prompt_contracts() -> list[dict[str, Any]]:
+    primary_prompt = STEP1_PROMPTS.build_step1_report_intake_prompt()
+    bridge_chief_prompt = STEP1_BRIDGE.chief_prompt()
+    prep_chief_prompt = FORMAL_PREP.step1_chief_prompt()
+    step2_prompt_reference = (REPO_ROOT / "skills/factor-forge-step2/references/prompts.md").read_text(encoding="utf-8")
+    step6_skill = (REPO_ROOT / "skills/factor-forge-step6/SKILL.md").read_text(encoding="utf-8")
+
+    def has_all(text: str, terms: list[str]) -> bool:
+        lowered = text.lower()
+        return all(term.lower() in lowered for term in terms)
+
+    sample_response = {
+        "report_meta": {"title": "Prompt Contract Smoke", "broker": "test", "topic": "mechanism"},
+        "economic_hypothesis_candidates": [{"candidate_id": "H1", "return_source_family": "information_advantage_or_delayed_diffusion"}],
+        "preferred_economic_hypothesis": {"candidate_id": "H1", "why_preferred_over_alternatives": "report evidence"},
+        "alternative_return_source_tests": [{"alternative_source": "risk_premium", "discriminating_test": "tail-state test"}],
+        "primary_mathematical_model": {"model_family": "signal_extraction", "benchmark_math_tools": ["stochastic_return_projection"]},
+        "formula_as_observable_estimator": {"latent_state_or_constraint": "delayed belief state"},
+    }
+    parsed = PdfSkillClient().parse_response("PROMPT_CONTRACT", json.dumps(sample_response))
+
+    return [
+        {
+            "case": "step1_intake_prompt_requires_economic_hypothesis_candidates",
+            "ok": has_all(
+                primary_prompt,
+                [
+                    "economic_hypothesis_candidates",
+                    "preferred_economic_hypothesis",
+                    "alternative_return_source_tests",
+                    "how_signal_changes_return_distribution",
+                ],
+            ),
+            "failures": [],
+        },
+        {
+            "case": "step1_intake_prompt_separates_primary_model_from_stochastic_projection",
+            "ok": has_all(
+                primary_prompt,
+                [
+                    "primary_mathematical_model",
+                    "do not default every factor to a stochastic process",
+                    "projection, diagnostic, derivation, or falsification",
+                ],
+            ),
+            "failures": [],
+        },
+        {
+            "case": "step1_chief_prompts_require_alternative_model_review",
+            "ok": all(
+                has_all(
+                    prompt,
+                    [
+                        "economic_hypothesis_candidates",
+                        "preferred_economic_hypothesis",
+                        "alternative_return_source_tests",
+                        "primary_mathematical_model",
+                    ],
+                )
+                for prompt in [bridge_chief_prompt, prep_chief_prompt]
+            ),
+            "failures": [],
+        },
+        {
+            "case": "step1_structured_intake_preserves_economic_hypothesis_prompt_fields",
+            "ok": bool(
+                getattr(parsed, "economic_hypothesis_candidates", None)
+                and getattr(parsed, "preferred_economic_hypothesis", None)
+                and getattr(parsed, "alternative_return_source_tests", None)
+                and getattr(parsed, "primary_mathematical_model", None)
+                and getattr(parsed, "formula_as_observable_estimator", None)
+            ),
+            "failures": [],
+        },
+        {
+            "case": "step2_prompt_preserves_modeling_tool_selection_boundary",
+            "ok": has_all(
+                step2_prompt_reference,
+                [
+                    "do not default every factor to a stochastic process",
+                    "choose the primary mathematical model from the economic hypothesis",
+                    "stochastic return projection",
+                    "benchmark_math_tools",
+                ],
+            ),
+            "failures": [],
+        },
+        {
+            "case": "step6_skill_preserves_research_rigor_for_analysis_and_council",
+            "ok": has_all(
+                step6_skill,
+                [
+                    "economic_hypothesis",
+                    "primary mathematical model",
+                    "benchmark mathematical tools",
+                    "council",
+                    "falsification",
+                ],
+            ),
+            "failures": [],
+        },
+    ]
 
 
 def alpha_idea_master(report_id: str) -> dict[str, Any]:
@@ -414,6 +544,7 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
 
     cases: list[dict[str, Any]] = []
+    cases.extend(case_prompt_contracts())
     cases.extend(case_contract_validation())
     cases.extend(case_step1_step2(root))
     cases.extend(case_step6_and_council())

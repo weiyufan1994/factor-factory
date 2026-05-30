@@ -9,6 +9,18 @@ Full prompt is embedded in SKILL.md. Key structural requirements:
 - Each final_factor needs: name, assembly_steps, component_subfactors, economic_logic + _source, behavioral_logic + _source, causal_chain + _source, ambiguities
 - formula_clues, code_clues, implementation_clues extracted separately
 - ambiguities field must list unresolved questions
+- economic_hypothesis_candidates must compare candidate return-source
+  mechanisms rather than hard-coding one taxonomy
+- preferred_economic_hypothesis must justify why it beats alternatives
+- alternative_return_source_tests must include at least one discriminating test
+- primary_mathematical_model must be selected from the economic hypothesis
+- Do not default every factor to a stochastic process; stochastic process,
+  Ito calculus, linear algebra, optimization, information theory, and causal
+  tests are benchmark tools for projection, diagnostic, derivation, or
+  falsification unless the report-specific hypothesis selects one as primary
+- formula_as_observable_estimator must state the latent state, constraint,
+  pressure, belief error, risk exposure, or information delay estimated by the
+  formula and why this is not a raw-field restatement
 
 ## Challenger Intake Prompt
 
@@ -28,6 +40,10 @@ Key decisions the chief must make:
 4. Assess alpha_strength (strong/medium/weak)
 5. Flag unresolved_ambiguities with recommended_handling
 6. Set chief_confidence (high/medium/low)
+7. Merge economic_hypothesis_candidates, preferred_economic_hypothesis,
+   alternative_return_source_tests, primary_mathematical_model, and
+   formula_as_observable_estimator without replacing unsupported gaps with a
+   generic stochastic-process story
 
 The chief must NOT:
 - Accept logic as native if it was inferred

@@ -17,6 +17,14 @@ mechanism cannot be responsibly formalized, Step 2 records
 `math_model_status=under_specified` with a human research question rather than
 inventing a mechanism.
 
+For `mechanism_math_contract_v2`, Step 2 must also formalize:
+- return-source discrimination: why the primary economic hypothesis is not
+  better explained by at least one non-primary source, with a concrete
+  discriminating test and expected metric signature;
+- formula-implied information: what structural constraints the formula imposes,
+  what latent/model state is inferred by the formula, why that state is not a
+  raw-field restatement, and how the estimator connects to the price process.
+
 Step 2 must preserve Step1's two-layer `economic_hypothesis` and
 `math_hypothesis_candidates`. These are upstream research hypotheses, not fixed
 rules. The deterministic mechanism math classifier is only a guardrail; it must
@@ -35,6 +43,9 @@ Step 2 is the canonical-spec guardrail. It must verify:
 - critical ambiguities trigger `human_review_required` instead of being silently guessed.
 - the Step1 random object and similar-case lessons are preserved instead of lost at spec extraction time,
 - the canonical spec states the target statistic, economic mechanism, expected failure modes, innovative idea seeds, and reuse instructions for future agents.
+- the mechanism math contract does not merely repeat formula text, raw fields,
+  or code. It must state the latent/model state recovered by the estimator and
+  the conditional return-distribution term it is expected to change.
 
 The output should be precise enough that two independent implementers would build the same kind of factor.
 
@@ -376,3 +387,27 @@ Custom blocks are not free-form unsafe code: they must declare `function_name`, 
 ## Mechanism Math Contract v2
 
 Step2 writes mechanism_math_contract_v2 at factor_spec_master, canonical_spec, and handoff_to_step3. The v2 contract maps formula components or direct-code observable estimators to model roles and stochastic price-process projection roles. Operator, direct_code, and hybrid modes all need an estimator mapping; unsupported or vague mappings should be under-specified or blocked rather than replaced with a generic model. Legacy v1 contracts remain readable for older artifacts.
+
+Step2 must not default every factor to a stochastic process. It must choose the
+primary mathematical model from the economic hypothesis, then use stochastic
+return projection, Ito calculus, linear algebra, optimization, information
+theory, causal/placebo tests, or other benchmark_math_tools only as justified
+projection, diagnostic, derivation, or falsification layers. If Step1's
+economic hypothesis is behavioral, microstructure, constrained-flow,
+information-diffusion, valuation, risk-premium, or artifact-focused, the
+selected model family must reflect that source rather than collapsing to a
+decorative generic SDE.
+
+The v2 contract must include:
+- `market_process_thesis.alternative_return_source_tests`: at least one
+  non-primary alternative return source with `why_not_primary`,
+  `discriminating_test`, and `expected_signature_if_alternative_true`;
+- `formula_implied_information.structural_constraints`;
+- `formula_implied_information.latent_state_inferred_by_formula`;
+- `formula_implied_information.estimator_interpretation`;
+- `formula_implied_information.why_not_raw_field_restatement`;
+- `formula_implied_information.price_process_connection`.
+
+Validators must block contracts that lack these fields, use generic SDE text,
+map formula components back to themselves, or claim a latent state that is only
+`close`, `volume`, a raw field, or a formula call such as `rank(close)`.

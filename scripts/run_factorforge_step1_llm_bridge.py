@@ -239,9 +239,15 @@ def chief_prompt() -> str:
         "Output only JSON matching the chief decision structure required by merge_to_alpha_idea_master: "
         "final_factor, logic_provenance_summary, assembly_path, unresolved_ambiguities, "
         "chief_decision_summary, chief_confidence, chief_rationale, market_process_thesis, "
-        "what_must_be_true, and either economic_hypothesis or mechanism_assumptions. "
+        "what_must_be_true, economic_hypothesis_candidates, preferred_economic_hypothesis, "
+        "alternative_return_source_tests, primary_mathematical_model, formula_as_observable_estimator, "
+        "and either economic_hypothesis or mechanism_assumptions. "
         "market_process_thesis must include market_phenomenon, economic_hypothesis, return_source_family, "
-        "payer_or_counterparty, why_they_pay, what_must_be_true, and what_would_break_it. "
+        "payer_or_counterparty, why_they_pay, what_must_be_true, what_would_break_it, "
+        "and alternative_return_source_tests. "
+        "Do not default every factor to a stochastic process; choose the primary mathematical model from the economic hypothesis, "
+        "then use stochastic process, Ito calculus, linear algebra, optimization, information theory, or causal tests only as "
+        "benchmark tools for projection, diagnostic, derivation, or falsification when justified. "
         "Do not invent generic template assumptions; if the raw report does not support a field, leave it missing so validation blocks."
     )
 

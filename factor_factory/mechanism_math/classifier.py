@@ -554,6 +554,80 @@ def _projection_terms_for_family(v1_family: str) -> list[str]:
     return ["drift", "observation_equation"]
 
 
+def _alternative_return_source_tests(primary_source: str, payer: str) -> list[dict[str, str]]:
+    candidates = [
+        "risk_premium",
+        "information_advantage",
+        "market_structure_arbitrage",
+        "constraint_driven_arbitrage",
+    ]
+    alternatives = [item for item in candidates if item != primary_source]
+    if primary_source == "mixed":
+        alternatives = candidates
+    out: list[dict[str, str]] = []
+    for alt in alternatives[:2]:
+        if alt == "risk_premium":
+            out.append(
+                {
+                    "alternative_source": alt,
+                    "why_not_primary": "Risk premium is not primary unless the signal earns compensation for bearing a persistent systematic risk exposure rather than exploiting mispricing or delayed adjustment.",
+                    "discriminating_test": "Control for volatility, beta, size, turnover, and downside-risk exposures; a risk-premium story should retain compensation through higher realized risk rather than reversal or payer losses.",
+                    "expected_signature_if_alternative_true": "High-score portfolios should show higher compensated risk exposure and not merely subsequent price correction from the named counterparty.",
+                }
+            )
+        elif alt == "information_advantage":
+            out.append(
+                {
+                    "alternative_source": alt,
+                    "why_not_primary": "Information advantage is secondary unless the signal timing is tied to slow information diffusion or informed-flow proxies.",
+                    "discriminating_test": "Test whether the effect strengthens around disclosure, attention, or informed-flow regimes and decays as information is incorporated.",
+                    "expected_signature_if_alternative_true": f"Losses should concentrate among slower processors rather than the declared payer group: {payer}.",
+                }
+            )
+        elif alt == "market_structure_arbitrage":
+            out.append(
+                {
+                    "alternative_source": alt,
+                    "why_not_primary": "Market-structure arbitrage is secondary unless institutional rules, liquidity frictions, or execution constraints mechanically create the return.",
+                    "discriminating_test": "Condition on liquidity, limits, trading constraints, and rebalance/event windows; the effect should concentrate where the structural friction binds.",
+                    "expected_signature_if_alternative_true": "Returns should cluster around friction or event states rather than broadly follow the formula-implied process state.",
+                }
+            )
+        elif alt == "constraint_driven_arbitrage":
+            out.append(
+                {
+                    "alternative_source": alt,
+                    "why_not_primary": "Constraint-driven arbitrage is secondary unless forced demand/supply, mandates, or capacity constraints explain the payer behavior.",
+                    "discriminating_test": "Split by constrained ownership, rebalance pressure, capacity, and forced-flow proxies.",
+                    "expected_signature_if_alternative_true": "Signal strength should be state/event dependent and weaken outside the constrained participant set.",
+                }
+            )
+    return out
+
+
+def _formula_implied_information(
+    inputs: list[str],
+    formula: str,
+    v1: dict[str, Any],
+    formula_estimator: str,
+    conditional: str,
+) -> dict[str, Any]:
+    structural_constraints = []
+    if formula:
+        structural_constraints.append(f"Formula expression constrains the estimator to the observable transformation: {formula}")
+    if inputs:
+        structural_constraints.append(f"Observable inputs constrain the latent state estimate to information in: {', '.join(inputs)}")
+    structural_constraints.append("The inferred state must explain a conditional return-distribution change rather than restate a raw field.")
+    latent_state = str(v1.get("latent_state") or v1.get("state_or_object") or "latent return-process state")
+    return {
+        "structural_constraints": structural_constraints,
+        "latent_state_inferred_by_formula": latent_state,
+        "estimator_interpretation": formula_estimator,
+        "why_not_raw_field_restatement": "The formula is treated as an observable estimator of the declared latent/model state; raw fields are only measurements, not the mechanism state itself.",
+        "price_process_connection": conditional,
+    }
+
+
 def _component_mapping_from_inputs(inputs: list[str], contract: dict[str, Any]) -> list[dict[str, Any]]:
     role = "state_variable"
     projection_role = "drift"
@@ -594,14 +668,16 @@ def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any
     projection_terms = _projection_terms_for_family(family)
     formula_estimator = str(v1.get("observable_estimator") or v1.get("factor_as_estimator") or "formula observable estimator")
     conditional = str(v1.get("conditional_distribution_hypothesis") or "r_{t+1} | F_t, estimated_state_t")
+    return_source = _return_source_family(research_contract)
     return {
         "contract_version": CONTRACT_VERSION_V2,
         "market_process_thesis": {
             "market_phenomenon": str(v1.get("economic_mechanism") or research_contract.get("economic_mechanism") or "report-specific market behavior"),
             "economic_hypothesis": str(research_contract.get("economic_mechanism") or v1.get("economic_mechanism") or "report-specific economic hypothesis"),
-            "return_source_family": _return_source_family(research_contract),
+            "return_source_family": return_source,
             "payer_or_counterparty": payer,
             "why_they_pay": why_pay,
+            "alternative_return_source_tests": _alternative_return_source_tests(return_source, payer),
             "what_must_be_true": research_contract.get("what_must_be_true") or [
                 "The formula must estimate a state that changes the conditional distribution of next-horizon return."
             ],
@@ -627,6 +703,7 @@ def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any
             "formula_should_estimate": formula_estimator,
             "expected_return_distribution_change": str(v1.get("metric_signature_match") or "metrics should reveal whether the estimated state shifts next-horizon return distribution in the claimed direction"),
         },
+        "formula_implied_information": _formula_implied_information(inputs, formula, v1, formula_estimator, conditional),
         "formula_component_mapping": _component_mapping_from_inputs(inputs, v1),
         "expected_metric_signature": v1.get("expected_metric_signature") or {
             "rank_ic": "positive after sign convention",

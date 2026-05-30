@@ -26,6 +26,11 @@ Step 1 must not stop at report summary. It must identify:
 - a two-layer economic hypothesis:
   - layer 1: whether the factor is expected to earn `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`,
   - layer 2: who plausibly pays the return and why: e.g. earnings/growth/discount-rate risk bearers, slower information processors, behavioral counterparties, liquidity demanders, forced rebalancers, or other constrained participants,
+- an explicit alternative-return-source review: the route must state why the
+  primary source is not better explained by at least one non-primary source
+  such as risk premium, information advantage, market-structure arbitrage, or
+  constraint-driven arbitrage, and must include a discriminating test plus the
+  metric signature that would support the alternative,
 - math hypothesis candidates that can plausibly model the author thesis. These are not fixed by asset class or input type; the reader must justify why tools such as DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, PDE/ODE, or dimensional/scaling analysis are appropriate for this specific report,
 - the initial return-source hypothesis: `risk_premium`, `information_advantage`, `constraint_driven_arbitrage`, or `mixed` for backward compatibility,
 - what must be true and what would break the thesis.
@@ -196,3 +201,28 @@ Structured object schemas are in `references/schema.md`.
 ## Mechanism Math Contract v2
 
 Step1 should add market_process_thesis, primary_mechanism_model_candidates, and stochastic_price_process_projection under research_discipline. These are early research hypotheses and may be under-specified, but they must not be empty or generic. Step1 may list multiple candidate primary models and should mark the preferred/ranked candidate plus why alternatives are less suitable.
+
+Step1 economic hypothesis is a candidate model contract, not a formula
+description or a narrative. It should produce `economic_hypothesis_candidates`,
+`preferred_economic_hypothesis`, `alternative_return_source_tests`,
+`primary_mathematical_model`, and `formula_as_observable_estimator`. Candidate
+lenses include risk premium, delayed information diffusion, liquidity/price
+pressure, institutional constraints, time option, behavioral/organizational
+bias, market microstructure, fundamental repricing, statistical artifact, and
+report-specific mixed/other mechanisms. Do not default every factor to a
+stochastic process; select the primary mathematical model from the economic
+hypothesis and use stochastic processes, Ito calculus, linear algebra,
+optimization, information theory, or causal tests as benchmark tools for
+projection, diagnostics, derivation, or falsification when justified.
+
+`market_process_thesis` must include `alternative_return_source_tests`, with
+at least one non-primary source and fields `why_not_primary`,
+`discriminating_test`, and `expected_signature_if_alternative_true`.
+This is the hard boundary between a real economic hypothesis and a narrative
+label such as "not risk premium".
+
+The preferred mechanism model must explain what latent/model state the formula
+is trying to recover. It is not enough to restate inputs such as `close`,
+`volume`, or the factor expression. Step2 will turn this into
+`formula_implied_information` and block if the result is just raw-field or
+formula-call restatement.

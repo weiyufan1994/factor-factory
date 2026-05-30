@@ -342,6 +342,8 @@ def build_market_process_thesis(economic_hypothesis: Dict[str, Any], what_must_b
         for key in ["market_phenomenon", "economic_hypothesis", "return_source_family", "payer_or_counterparty", "why_they_pay"]:
             if explicit.get(key):
                 thesis[key] = explicit[key]
+        if isinstance(explicit.get("alternative_return_source_tests"), list) and explicit.get("alternative_return_source_tests"):
+            thesis["alternative_return_source_tests"] = explicit["alternative_return_source_tests"]
         if _meaningful_list(explicit.get("what_must_be_true")):
             thesis["what_must_be_true"] = _meaningful_list(explicit.get("what_must_be_true"))
         if _meaningful_list(explicit.get("what_would_break_it")):
@@ -479,6 +481,11 @@ def build_step1_research_discipline(
         "information_set_hint": info_hint,
         "initial_return_source_hypothesis": return_source,
         "formula_understanding": formula_understanding,
+        "economic_hypothesis_candidates": alpha_idea_master.get("economic_hypothesis_candidates") or [],
+        "preferred_economic_hypothesis": alpha_idea_master.get("preferred_economic_hypothesis") or {},
+        "alternative_return_source_tests": alpha_idea_master.get("alternative_return_source_tests") or [],
+        "primary_mathematical_model": alpha_idea_master.get("primary_mathematical_model") or {},
+        "formula_as_observable_estimator": alpha_idea_master.get("formula_as_observable_estimator") or {},
         "economic_hypothesis": economic_hypothesis,
         "economic_to_math_modelling": economic_to_math,
         "math_hypothesis_candidates": math_hypothesis_candidates,

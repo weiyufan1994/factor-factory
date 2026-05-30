@@ -98,6 +98,130 @@ def _formula_mapping_is_self_referential(item: dict[str, Any]) -> bool:
     return False
 
 
+def _raw_formula_component_tokens(contract: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for item in contract.get("formula_component_mapping") or []:
+        if not isinstance(item, dict):
+            continue
+        component = str(item.get("formula_component") or "").strip().lower()
+        if component:
+            tokens.add(_canonical_expression_text(component))
+    for item in contract.get("primary_mechanism_model", {}).get("observable_proxies") or []:
+        text = str(item).strip().lower()
+        if text:
+            tokens.add(_canonical_expression_text(text))
+    return {item for item in tokens if item}
+
+
+def _formula_implied_text_is_restatement(value: Any, raw_tokens: set[str]) -> bool:
+    if not _meaningful_str(value):
+        return True
+    text = str(value).strip().lower()
+    canonical = _canonical_expression_text(text)
+    if canonical in raw_tokens:
+        return True
+    formula_call_pattern = re.compile(
+        r"(?<![a-z0-9_])(?:rank|ts_rank|delta|delay|corr|cov|sum|mean|std|argmin|argmax|close|open|high|low|volume|turnover)\s*\(",
+    )
+    if formula_call_pattern.search(text):
+        return True
+    field_only = {
+        "open",
+        "high",
+        "low",
+        "close",
+        "price",
+        "return",
+        "returns",
+        "pct_chg",
+        "volume",
+        "vol",
+        "amount",
+        "turnover",
+    }
+    return canonical in field_only
+
+
+def _validate_formula_implied_information(contract: dict[str, Any]) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    info = contract.get("formula_implied_information")
+    if not isinstance(info, dict) or not info:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_MISSING",
+            "v2 contract requires formula_implied_information explaining structural constraints, inferred latent state, estimator interpretation, and price-process connection",
+        )
+        return failures
+    required = [
+        "latent_state_inferred_by_formula",
+        "estimator_interpretation",
+        "why_not_raw_field_restatement",
+        "price_process_connection",
+    ]
+    if not _nonempty_meaningful_list(info.get("structural_constraints")):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_MISSING",
+            "formula_implied_information.structural_constraints must be nonempty and non-generic",
+        )
+    for field in required:
+        if not _meaningful_str(info.get(field)):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_MISSING",
+                f"formula_implied_information.{field} must be nonempty and non-generic",
+            )
+
+    raw_tokens = _raw_formula_component_tokens(contract)
+    restatement_fields = [
+        "latent_state_inferred_by_formula",
+        "estimator_interpretation",
+        "price_process_connection",
+    ]
+    if any(_formula_implied_text_is_restatement(info.get(field), raw_tokens) for field in restatement_fields):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_INFORMATION_RESTATEMENT",
+            "formula_implied_information must infer a latent/model state and price-process connection, not restate raw fields or formula calls",
+        )
+    return failures
+
+
+def _validate_return_source_review(thesis: dict[str, Any]) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    source = str(thesis.get("return_source_family") or "")
+    allowed = {"risk_premium", "information_advantage", "market_structure_arbitrage", "constraint_driven_arbitrage", "mixed"}
+    tests = thesis.get("alternative_return_source_tests")
+    if source not in allowed or not isinstance(tests, list) or not tests:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RETURN_SOURCE_REVIEW_MISSING",
+            "market_process_thesis must classify the primary return source and include alternative_return_source_tests",
+        )
+        return failures
+    has_discriminating_alternative = False
+    for item in tests:
+        if not isinstance(item, dict):
+            continue
+        alt = str(item.get("alternative_source") or "")
+        if (
+            alt in allowed
+            and alt != source
+            and _meaningful_str(item.get("why_not_primary"))
+            and _meaningful_str(item.get("discriminating_test"))
+            and _meaningful_str(item.get("expected_signature_if_alternative_true"))
+        ):
+            has_discriminating_alternative = True
+            break
+    if not has_discriminating_alternative:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RETURN_SOURCE_REVIEW_MISSING",
+            "alternative_return_source_tests must include at least one non-primary source with why_not_primary, discriminating_test, and expected signature",
+        )
+    return failures
+
+
 def validate_mechanism_math_contract_v2(contract: Any) -> list[dict[str, str]]:
     failures: list[dict[str, str]] = []
     if not isinstance(contract, dict) or not contract:
@@ -183,6 +307,10 @@ def validate_mechanism_math_contract_v2(contract: Any) -> list[dict[str, str]]:
         _failures_add(failures, "BLOCK_MECHANISM_MATH_V2_FALSIFICATION_TESTS_MISSING", "v2 contract requires falsification_tests")
     if not _nonempty_dict(thesis) or not _meaningful_str(thesis.get("economic_hypothesis")) or not _meaningful_str(thesis.get("payer_or_counterparty")):
         _failures_add(failures, "BLOCK_MECHANISM_MATH_V2_MARKET_PROCESS_THESIS_MISSING", "v2 contract requires market_process_thesis economic hypothesis and payer")
+    else:
+        failures.extend(_validate_return_source_review(thesis))
+
+    failures.extend(_validate_formula_implied_information(contract))
 
     if _is_vague_sde(contract):
         _failures_add(

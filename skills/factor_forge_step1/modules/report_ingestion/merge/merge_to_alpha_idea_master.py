@@ -99,6 +99,8 @@ def _derive_step1_market_process_fields(chief_decision: Dict[str, Any]) -> Dict[
         thesis['payer_or_counterparty'] = chief_decision.get('payer_or_counterparty')
     if not thesis.get('return_source_family') and chief_decision.get('return_source_family'):
         thesis['return_source_family'] = chief_decision.get('return_source_family')
+    if not thesis.get('alternative_return_source_tests') and chief_decision.get('alternative_return_source_tests'):
+        thesis['alternative_return_source_tests'] = chief_decision.get('alternative_return_source_tests')
 
     return {
         'market_process_thesis': thesis,
@@ -144,6 +146,31 @@ def merge_to_alpha_idea_master(
             'what_would_break_it': mechanism_fields['what_would_break_it'],
         },
         'market_process_thesis': mechanism_fields['market_process_thesis'],
+        'economic_hypothesis_candidates': (
+            chief_decision.get('economic_hypothesis_candidates')
+            or primary_intake.economic_hypothesis_candidates
+            or challenger_intake.economic_hypothesis_candidates
+        ),
+        'preferred_economic_hypothesis': (
+            chief_decision.get('preferred_economic_hypothesis')
+            or primary_intake.preferred_economic_hypothesis
+            or challenger_intake.preferred_economic_hypothesis
+        ),
+        'alternative_return_source_tests': (
+            chief_decision.get('alternative_return_source_tests')
+            or primary_intake.alternative_return_source_tests
+            or challenger_intake.alternative_return_source_tests
+        ),
+        'primary_mathematical_model': (
+            chief_decision.get('primary_mathematical_model')
+            or primary_intake.primary_mathematical_model
+            or challenger_intake.primary_mathematical_model
+        ),
+        'formula_as_observable_estimator': (
+            chief_decision.get('formula_as_observable_estimator')
+            or primary_intake.formula_as_observable_estimator
+            or challenger_intake.formula_as_observable_estimator
+        ),
         'market_process_thesis_provenance': mechanism_fields['provenance'],
         'rejected_subfactors': ff.get('rejected_subfactor_details', []),
         'logic_provenance_summary': chief_decision.get('logic_provenance_summary', {}),

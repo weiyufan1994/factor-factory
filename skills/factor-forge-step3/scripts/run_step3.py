@@ -26,11 +26,10 @@ from factor_factory.data_access import (
     CleanDailyLayerPaths,
     clean_daily_layer_ready,
     inspect_trade_date_csv_root,
-    load_clean_daily_layer,
     resolve_clean_daily_layer_paths,
-    resolve_data_api_dataset,
     resolve_local_tushare_paths,
 )
+from factor_factory.data_api import resolve_data_api_dataset
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
@@ -571,16 +570,15 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         'clean_daily_bar',
         start=sample_window.get('start'),
         end=sample_window.get('end'),
-        layer_paths=CLEAN_DAILY_LAYER,
     )
 
-    if daily_resolution.get('status') != 'ready' or not clean_daily_layer_ready(CLEAN_DAILY_LAYER):
+    if daily_resolution.get('status') != 'ready':
         return {
             'snapshot_note': (
-                f'Shared clean daily layer is missing under {CLEAN_DAILY_LAYER.root}; '
-                'run scripts/build_clean_daily_layer.py before Step 3A.'
+                'Data API could not resolve ready clean_daily_bar. Factor Forge Step3A only consumes '
+                'published clean data products; publish or sync the Data API catalog before Step3A.'
             ),
-            'snapshot_source': 'missing_clean_daily_layer',
+            'snapshot_source': 'missing_data_api_clean_daily_bar',
             'input_mode': 'daily_only',
             'data_api_resolution': {'clean_daily_bar': daily_resolution},
         }
@@ -594,13 +592,34 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         if path.exists() or path.is_symlink():
             path.unlink()
 
-    daily_df, clean_meta = load_clean_daily_layer(
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
-        symbols=symbols,
-        layer_paths=CLEAN_DAILY_LAYER,
-        return_metadata=True,
-    )
+    artifacts = daily_resolution.get('artifacts') if isinstance(daily_resolution.get('artifacts'), dict) else {}
+    source_parquet = Path(str(artifacts.get('daily_parquet') or artifacts.get('path') or '')).expanduser()
+    if not source_parquet.exists():
+        return {
+            'snapshot_note': f'Data API clean_daily_bar artifact is not local-readable: {source_parquet}',
+            'snapshot_source': 'missing_data_api_clean_daily_bar',
+            'input_mode': 'daily_only',
+            'data_api_resolution': {'clean_daily_bar': daily_resolution},
+        }
+
+    daily_df = pd.read_parquet(source_parquet)
+    if symbols:
+        daily_df = daily_df[daily_df['ts_code'].isin(symbols)]
+    start = _normalize_window_date(sample_window.get('start'))
+    end = _normalize_window_date(sample_window.get('end'))
+    trade_dates = daily_df['trade_date'].astype(str).str.replace(r'\.0$', '', regex=True).str.replace('-', '', regex=False)
+    if start and start != 'current':
+        daily_df = daily_df[trade_dates >= start]
+        trade_dates = trade_dates.loc[daily_df.index]
+    if end and end != 'current':
+        daily_df = daily_df[trade_dates <= end]
+
+    metadata_json = artifacts.get('metadata_json')
+    clean_meta = {}
+    if metadata_json:
+        meta_path = Path(str(metadata_json)).expanduser()
+        if meta_path.exists():
+            clean_meta = load_json(meta_path)
     daily_df = daily_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
     daily_df.to_parquet(daily_parquet, index=False)
     audit_payload = materialize_daily_audit_csv(
@@ -623,12 +642,11 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         'preferred_daily_format': 'parquet',
         **audit_payload,
         'sample_window_actual': actual_window,
-        'snapshot_note': f'Daily input sliced from shared clean daily layer at {CLEAN_DAILY_LAYER.daily_parquet}.',
+        'snapshot_note': f'Daily input sliced from Data API clean_daily_bar at {source_parquet}.',
         'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
-        'clean_layer_root': str(CLEAN_DAILY_LAYER.root),
         'data_api_resolution': {'clean_daily_bar': daily_resolution},
-        'daily_filter_policy': clean_meta.get('policy'),
+        'daily_filter_policy': daily_resolution.get('daily_filter_policy') or clean_meta.get('policy'),
         'daily_filter_summary': (
             clean_meta.get('clean_meta', {}).get('counts', {})
             | clean_meta.get('clean_meta', {}).get('drop_counts', {})
@@ -910,9 +928,15 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             notes.append('Step 3A 已生成 Step 4 可直接消费的本地输入快照，供集成证明与样例执行使用')
         if snapshot_note:
             notes.append(str(snapshot_note))
-        if snapshot_source in {'real_local_insufficient', 'missing_real_local_data', 'missing_clean_daily_layer'}:
+        if snapshot_source in {'real_local_insufficient', 'missing_real_local_data', 'missing_clean_daily_layer', 'missing_data_api_clean_daily_bar'}:
             blocked.append({
-                'code': 'SHARED_CLEAN_DAILY_LAYER_MISSING' if snapshot_source == 'missing_clean_daily_layer' else 'LOCAL_MINUTE_HISTORY_INSUFFICIENT',
+                'code': (
+                    'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE'
+                    if snapshot_source == 'missing_data_api_clean_daily_bar'
+                    else 'SHARED_CLEAN_DAILY_LAYER_MISSING'
+                    if snapshot_source == 'missing_clean_daily_layer'
+                    else 'LOCAL_MINUTE_HISTORY_INSUFFICIENT'
+                ),
                 'detail': snapshot_note,
             })
     else:
@@ -921,15 +945,17 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_note:
             notes.append(str(snapshot_note))
-        if snapshot_source == 'missing_clean_daily_layer':
+        if snapshot_source in {'missing_clean_daily_layer', 'missing_data_api_clean_daily_bar'}:
             blocked.append({
-                'code': 'SHARED_CLEAN_DAILY_LAYER_MISSING',
+                'code': 'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE'
+                if snapshot_source == 'missing_data_api_clean_daily_bar'
+                else 'SHARED_CLEAN_DAILY_LAYER_MISSING',
                 'detail': snapshot_note,
             })
 
     feasibility = 'blocked' if blocked else ('proxy_ready' if proxy_rules else 'ready')
     notes.append(
-        'Step 3A reads the shared clean daily layer and only materializes report-scoped slices. Heavy daily cleaning is owned by scripts/build_clean_daily_layer.py.'
+        'Step 3A consumes Data API clean data products and only materializes report-scoped slices. Heavy daily/minute cleaning is owned by data producer workflows, not per-factor Step3.'
     )
 
     data_prep_master = {

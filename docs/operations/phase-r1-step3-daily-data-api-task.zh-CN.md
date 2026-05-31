@@ -27,7 +27,7 @@
 必须修改：
 
 ```text
-factor_factory/data_access/*
+factor_factory/data_api/*
 skills/factor-forge-step3/scripts/run_step3.py
 skills/factor-forge-step3/scripts/validate_step3.py
 tests/test_step3a_data_api_integration.py
@@ -69,6 +69,11 @@ Data API 必须能返回：
 ```
 
 如果 catalog 缺失，返回 `catalog_missing`，不得 fallback 到 raw local path。
+
+Data API resolver 必须位于 `factor_factory.data_api`，不得位于
+`factor_factory.data_access.data_api`。`data_access` 可以继续服务 Step4
+本地读写、date normalization 和 qlib adapter helper，但不能作为 Step3A
+catalog resolver。
 
 ### Task B: Step3A daily-only path 使用 Data API
 
@@ -124,7 +129,7 @@ step3b_ready=false
 
 ```bash
 python3 -m py_compile \
-  factor_factory/data_access/*.py \
+factor_factory/data_api/*.py \
   skills/factor-forge-step3/scripts/run_step3.py \
   skills/factor-forge-step3/scripts/validate_step3.py
 ```

@@ -235,11 +235,37 @@ Data API 返回结构：
 ```text
 FACTORFORGE_DATA_CATALOG
 -> $FACTORFORGE_ROOT/data/catalog/data_catalog.json
--> repo-local safe catalog fixture
 -> blocked + data requirement artifact
 ```
 
 如果 catalog 缺失，不允许 Step3A 搜索本地 raw path 并伪装 ready。
+
+### 5.4 Package boundary
+
+Data API 是独立数据产品边界。Factor Forge 只能作为 consumer：
+
+```text
+from factor_factory.data_api import DataApiClient, resolve_data_api_dataset
+```
+
+允许：
+
+```text
+Step3A -> resolve clean_daily_bar / clean_minute_bar
+Step3A -> read Data API 返回的 published parquet path
+Step3A -> materialize report-scoped input slice
+```
+
+禁止：
+
+```text
+Step3A -> resolve_clean_daily_layer_paths()
+Step3A -> clean_daily_layer_ready() 后自行 fallback
+Step3A -> build_clean_daily_layer.py
+Step3A -> raw daily/minute path guessing and cleaning
+```
+
+`factor_factory.data_access` 仍可保留 Step4/qlib/legacy local reader helper，但不得承载 Data API catalog resolver。
 
 ## 6. Step3A contract
 

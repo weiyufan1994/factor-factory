@@ -75,6 +75,9 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
 ]
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
+STEP3B_SAMPLE_MAX_ROWS = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_ROWS') or '250000')
+STEP3B_SAMPLE_MAX_DATES = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_DATES') or '128')
+STEP3B_SAMPLE_MAX_TICKERS = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_TICKERS') or '512')
 EXECUTABLE_REVISION_SPEC_VERSION = 'factorforge_executable_revision_spec_v1'
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 HIGH_SPEED_CODE_PROFILE_VERSION = 'factorforge_high_speed_code_profile_v1'
@@ -309,6 +312,40 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     import pandas as pd
 
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
+
+
+def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+    profile = {
+        'label': label,
+        'input_rows': int(len(df)),
+        'sample_limited': False,
+        'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
+        'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
+        'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
+        'output_rows': int(len(df)),
+        'date_count': int(df['trade_date'].nunique()) if 'trade_date' in df.columns else None,
+        'ticker_count': int(df['ts_code'].nunique()) if 'ts_code' in df.columns else None,
+    }
+    if df is None or df.empty or len(df) <= STEP3B_SAMPLE_MAX_ROWS:
+        return df, profile
+    if {'ts_code', 'trade_date'}.issubset(df.columns):
+        work = df.copy()
+        normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
+        dates = sorted(normalized_dates.dropna().unique().tolist())
+        tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
+        mask = normalized_dates.isin(set(dates[-STEP3B_SAMPLE_MAX_DATES:])) & work['ts_code'].astype(str).isin(set(tickers[:STEP3B_SAMPLE_MAX_TICKERS]))
+        sampled = work.loc[mask].copy()
+        if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
+            sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
+    else:
+        sampled = df.head(STEP3B_SAMPLE_MAX_ROWS).copy()
+    profile.update({
+        'sample_limited': True,
+        'output_rows': int(len(sampled)),
+        'date_count': int(sampled['trade_date'].nunique()) if 'trade_date' in sampled.columns else None,
+        'ticker_count': int(sampled['ts_code'].nunique()) if 'ts_code' in sampled.columns else None,
+    })
+    return sampled, profile
 
 
 def sort_contract_key_hash(df: pd.DataFrame) -> str:
@@ -1343,11 +1380,20 @@ def generate_first_run_factor_values(
                 raise
         else:
             daily_df = read_df(daily_path)
+    daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+    minute_limit_profile = None
+    if minute_df is not None and len(minute_df) > 0:
+        minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
+    step3b_sample_limit_profile = {
+        'clean_daily_bar': daily_limit_profile,
+        **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
+    }
     minute_input_row_count = int(len(minute_df)) if minute_path is not None else 0
     daily_input_row_count = int(len(daily_df))
     input_row_count = int(minute_input_row_count + daily_input_row_count)
 
     formula_engine_profile = _default_formula_engine_profile()
+    formula_engine_profile['step3b_sample_limit_profile'] = step3b_sample_limit_profile
     with timer.phase('compute_factor'):
         try:
             profiled_result, formula_engine_profile = _run_formula_engine_with_profile(

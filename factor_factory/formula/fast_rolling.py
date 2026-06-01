@@ -53,10 +53,10 @@ def ts_rank_fast_numpy(
         return ts_rank_reference(series, window, frame)
 
     values = pd.to_numeric(series, errors='coerce').to_numpy(dtype='float64', copy=False)
-    codes = frame['ts_code'].to_numpy()
     result = np.full(len(values), np.nan, dtype='float64')
-    for code in pd.unique(frame['ts_code']):
-        positions = np.flatnonzero(codes == code)
+    grouped_positions = frame.groupby('ts_code', sort=False, observed=True).indices
+    for raw_positions in grouped_positions.values():
+        positions = np.asarray(raw_positions, dtype=np.intp)
         if len(positions) == 0:
             continue
         result[positions] = _ts_rank_one_array(values[positions], window)

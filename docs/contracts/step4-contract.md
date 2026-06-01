@@ -3,14 +3,15 @@
 # Step 4 contract
 
 ## Purpose
-Step 4 executes a generated factor on the shared clean daily layer and emits standard evaluation evidence for Step 5/6. It must not rely on ad hoc screenshots, notebook-only plots, or one-off temporary scripts as official evidence.
+Step 4 executes a generated factor on full formal data fetched through the independent `factorforge_data_api` contract and emits standard evaluation evidence for Step 5/6. It must not rely on ad hoc screenshots, notebook-only plots, or one-off temporary scripts as official evidence.
 
 ## Inputs
 - `factor_spec_master__{report_id}.json`
 - `data_prep_master__{report_id}.json`
 - `handoff_to_step4__{report_id}.json`
 - runnable factor implementation from Step 3B
-- shared clean daily data prepared by the authorized data steward workflow
+- `step4_data_contract.version=factorforge_step4_data_contract_v1` from Step3A/Step3B handoff when legacy local inputs are absent
+- published Data API catalog entries prepared by the authorized data steward workflow
 
 ## Mandatory outputs
 - `factor_run_master__{report_id}.json`
@@ -19,6 +20,11 @@ Step 4 executes a generated factor on the shared clean daily layer and emits sta
 - backend `evaluation_payload.json` files under `factorforge/evaluations/{report_id}/`
 - `runs/{report_id}/factor_values__{report_id}.parquet` or `.csv`
 - `runs/{report_id}/run_metadata__{report_id}.json`
+
+Step3B `step3b_sample_factor_values__{report_id}` artifacts are not formal
+inputs. If present, they prove code executability only; Step4 must recompute
+formal factor values from the Step4 Data API full query contract unless
+existing metadata proves the formal parquet was already written by Step4.
 
 ## Mandatory self-quant evidence pack
 `self_quant_analyzer` must emit all standard artifacts below before Step 4 can be treated as complete:

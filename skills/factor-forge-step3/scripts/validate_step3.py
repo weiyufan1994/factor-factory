@@ -207,6 +207,19 @@ def _data_api_resolution(prep: dict, qcfg: dict) -> dict:
     return {}
 
 
+def _step4_data_contract(prep: dict, qcfg: dict, handoff: dict) -> dict:
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    for candidate in [
+        prep.get('step4_data_contract'),
+        local_inputs.get('step4_data_contract'),
+        qcfg.get('step4_data_contract'),
+        handoff.get('step4_data_contract'),
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
 def _daily_filter_policy(prep: dict, qcfg: dict) -> dict:
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     data_api = _data_api_resolution(prep, qcfg)
@@ -249,6 +262,22 @@ def validate_step3_readiness_contract(
     clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
     assert clean_daily.get('status') == 'ready', (
         'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready clean_daily_bar Data API resolution'
+    )
+    contract = _step4_data_contract(prep, qcfg, handoff)
+    assert contract.get('version') == 'factorforge_step4_data_contract_v1', (
+        'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: Step3A must emit Step4-readable Data API query contract'
+    )
+    assert contract.get('data_api_package') == 'factorforge_data_api', (
+        'BLOCK_STEP3A_DATA_API_PACKAGE_BOUNDARY: Step3A must target independent factorforge_data_api package'
+    )
+    assert isinstance(contract.get('full_queries'), dict) and contract['full_queries'], (
+        'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: full_queries are required'
+    )
+    assert isinstance(contract.get('sample_queries'), dict) and contract['sample_queries'], (
+        'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: sample_queries are required for Step3B executability proof'
+    )
+    assert contract.get('formal_factor_values_owner') == 'Step4', (
+        'BLOCK_STEP3A_STEP4_OWNER_INVALID: formal factor_values owner must be Step4'
     )
 
     policy = _daily_filter_policy(prep, qcfg)

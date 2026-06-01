@@ -3,7 +3,7 @@
 # Step 3 contract
 
 ## Current judgment
-Step 3 now has a first tiny committed reproducibility substrate design, but it is more demanding than Step 1/2 because current validation requires local input snapshots and Step 3B must emit first-run outputs when they exist.
+Step 3 now uses the independent Data API boundary. Step3A resolves catalog contracts and emits a Step4 data contract; Step3B may emit only non-formal sample outputs to prove executability when sample queries exist.
 
 ## Current committed reproducibility inputs
 - `fixtures/step3/factor_spec_master__sample.json`
@@ -21,25 +21,27 @@ Step 3 now has a first tiny committed reproducibility substrate design, but it i
 - optional `handoff_to_step3__{report_id}.json`
 - Step2 research fields: `thesis`, `research_contract`, `math_discipline_review`, `learning_and_innovation`
 - `alpha_idea_master__{report_id}.json`
-- tiny local minute/daily sample inputs
-- runnable implementation file for Step 3B first-run generation
+- Data API sample queries emitted by Step3A
+- runnable implementation file for Step 3B sample executability proof
 
 ## Output class
 - `data_prep_master__{report_id}.json`
 - `qlib_adapter_config__{report_id}.json`
 - `implementation_plan_master__{report_id}.json`
 - generated/editable code artifacts
-- first-run factor-value outputs
+- non-formal Step3B sample factor-value outputs
 - `handoff_to_step4__{report_id}.json`
 
 ## Step3B / Step4 Boundary
-Step3B only proves that the implementation can produce first-run `factor_values` from the prepared local snapshot. Step3B must not run Step4 responsibilities:
+Step3B only proves that the implementation can produce non-formal `step3b_sample_factor_values` from the Step3A Data API sample contract. Step3B must not run Step4 responsibilities:
 - no IC report,
 - no quantile NAV,
 - no portfolio charts,
 - no backend evaluation.
+- no full-data fetch,
+- no formal `factor_values__{report_id}` or `run_metadata__{report_id}`.
 
-Those belong to the standard Step4 evaluator. If Step3B times out while computing quantile tables, backtest charts, or portfolio diagnostics, treat it as a workflow-boundary error rather than a factor-implementation failure.
+Those belong to the standard Step4 evaluator and execution layer. Step4 consumes `step4_data_contract`, fetches full data through `factorforge_data_api`, and owns formal factor values.
 
 ## Date-Key Standard
 Step3A / Step3B / Step4 boundaries must tolerate:
@@ -53,7 +55,7 @@ Step4 consumers must normalize dates with `factor_factory.data_access.normalize_
 ## Step 2 research context carry-through
 Step 3B directly consumes Step 2's factor spec and handoff. It must write a consistent
 `step2_research_context` into the implementation plan, qlib expression draft, hybrid scaffold,
-Step4 handoff, generated code review comments, and first-run metadata when generated. The
+Step4 handoff, generated code review comments, and sample-run metadata when generated. The
 context must preserve at least target statistic, economic mechanism, expected failure modes,
 reuse instructions, and implementation invariants so Step4/5/6 evaluate the implemented thesis
 rather than an isolated numeric column.
@@ -64,7 +66,7 @@ Formal Step3B must consume a runtime manifest with `manifest_identity` and expli
 Allowed implementation modes are `operator`, `direct_code`, and `hybrid`. A mode mismatch, stale `spec_hash`, wrong branch, copied factor-specific generated code, or missing manifest identity is a contract failure.
 
 ## Implementation mode decision audit trail
-Step3B must write `implementation_mode_decision` to `implementation_plan_master`, generated-code metadata, `handoff_to_step4`, first-run metadata when generated, and the ultimate proof summary. The decision record must use `factorforge_implementation_mode_decision_v1`, state the selected mode or `blocked`, record operator/hybrid/direct_code attempts or explicit not-applicable reasons, and preserve the final correctness reason. If the selected mode is `blocked`, Step3B must not write formal factor values.
+Step3B must write `implementation_mode_decision` to `implementation_plan_master`, generated-code metadata, `handoff_to_step4`, sample-run metadata when generated, and the ultimate proof summary. The decision record must use `factorforge_implementation_mode_decision_v1`, state the selected mode or `blocked`, record operator/hybrid/direct_code attempts or explicit not-applicable reasons, and preserve the final correctness reason. If the selected mode is `blocked`, Step3B must not write sample outputs or formal factor values.
 
 ## Correctness over completion
 Step3B must try `operator`, then `hybrid`, then `direct_code`, and BLOCK if correctness cannot be proven. UBL/CPV/shadow/candle/Williams logic is allowed only as an explicit family plugin or fixture. Unsupported operator parity, missing `formula_ir`, unsafe direct code, or ambiguous proxy rewrites are BLOCK conditions, not warnings.

@@ -19,6 +19,7 @@ DEFAULT_TESTS = [
     "tests/test_factorforge_data_api.py",
     "tests/test_step3_readiness_contract.py",
     "tests/test_step3b_direct_code_contract.py",
+    "tests/test_step4_data_api_contract.py",
     "tests/test_mechanism_math_dirac_review.py",
 ]
 

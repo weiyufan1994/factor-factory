@@ -52,6 +52,10 @@ def tail(text: str, limit: int = 4000) -> str:
     return text[-limit:] if len(text) > limit else text
 
 
+def forbidden_non_tmp_output(name: str) -> Path:
+    return Path.home() / f'.factorforge_non_tmp_smoke_{os.getpid()}_{name}'
+
+
 def snapshot_repo_files() -> set[str]:
     files: set[str] = set()
     for rel in CANONICAL_DIRS:
@@ -324,6 +328,115 @@ def attach_sort_contract(local_inputs: dict[str, Any], df: pd.DataFrame, *, muta
     return out
 
 
+def create_step3_daily_io_policy_fixture(root: Path, report_id: str, *, csv_output_policy: str) -> dict[str, Any]:
+    policy = csv_output_policy
+    if policy not in {'full_csv', 'sample_csv', 'no_csv'}:
+        raise ValueError(f'unsupported csv_output_policy={policy}')
+    run_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+    run_dir.mkdir(parents=True, exist_ok=True)
+    daily = pd.DataFrame([
+        {'ts_code': '000001.SZ', 'trade_date': '20160104', 'open': 10.0, 'high': 10.5, 'low': 9.8, 'close': 10.2, 'pct_chg': 0.1, 'vol': 1000.0, 'amount': 10200.0},
+        {'ts_code': '000002.SZ', 'trade_date': '20160104', 'open': 20.0, 'high': 20.5, 'low': 19.8, 'close': 20.2, 'pct_chg': 0.2, 'vol': 2000.0, 'amount': 40400.0},
+        {'ts_code': '000001.SZ', 'trade_date': '20160105', 'open': 10.1, 'high': 10.6, 'low': 9.9, 'close': 10.3, 'pct_chg': 0.3, 'vol': 1100.0, 'amount': 11330.0},
+    ]).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    parquet_path = run_dir / f'daily_input__{report_id}.parquet'
+    csv_path = run_dir / f'daily_input__{report_id}.csv'
+    sample_csv_path = run_dir / f'daily_input_sample__{report_id}.csv'
+    daily.to_parquet(parquet_path, index=False)
+
+    local_inputs: dict[str, Any] = {
+        'input_mode': 'daily_only',
+        'daily_df_parquet': str(parquet_path.relative_to(root.parent)),
+        'preferred_daily_format': 'parquet',
+        'audit_daily_format': 'none',
+        'sample_window_actual': {'start': '20160104', 'end': '20160105'},
+    }
+    audit_path = 'none'
+    csv_rows_written = 0
+    csv_sample_strategy = 'none'
+    full_csv_available = False
+    if policy == 'full_csv':
+        daily.to_csv(csv_path, index=False)
+        local_inputs['daily_df_csv'] = str(csv_path.relative_to(root.parent))
+        local_inputs['audit_daily_format'] = 'csv'
+        audit_path = 'csv'
+        csv_rows_written = int(len(daily))
+        csv_sample_strategy = 'full'
+        full_csv_available = True
+    elif policy == 'sample_csv':
+        daily.head(2).to_csv(sample_csv_path, index=False)
+        local_inputs['daily_df_csv_sample'] = str(sample_csv_path.relative_to(root.parent))
+        local_inputs['audit_daily_format'] = 'csv_sample'
+        audit_path = 'csv_sample'
+        csv_rows_written = 2
+        csv_sample_strategy = 'head_2'
+
+    local_inputs['daily_io_contract'] = {
+        'version': 'factorforge_step3a_daily_io_contract_v1',
+        'formal_evidence_format': 'parquet',
+        'performance_path': 'parquet',
+        'audit_path': audit_path,
+        'csv_output_policy': policy,
+        'csv_rows_written': csv_rows_written,
+        'parquet_rows_written': int(len(daily)),
+        'csv_sample_strategy': csv_sample_strategy,
+        'full_csv_available': full_csv_available,
+        'full_csv_absent_validated': policy != 'full_csv',
+        'schema_parity_required': policy != 'no_csv',
+        'value_parity_required': policy == 'full_csv',
+        'csv_required_for_audit': policy != 'no_csv',
+        'parquet_required_for_performance': True,
+    }
+    local_inputs['data_api_resolution'] = {
+        'clean_daily_bar': {
+            'dataset_id': 'clean_daily_bar',
+            'status': 'ready',
+            'access_mode': 'smoke_fixture',
+            'coverage': {
+                'row_count': int(len(daily)),
+                'date_count': int(daily['trade_date'].nunique()),
+                'ticker_count': int(daily['ts_code'].nunique()),
+            },
+            'schema': {'columns': list(daily.columns)},
+            'daily_filter_policy': {
+                'drop_suspended': True,
+                'drop_limit_events': True,
+                'invalid_days_excluded_from_window': True,
+                'source': 'performance_smoke_clean_daily_fixture',
+            },
+        }
+    }
+    local_inputs['daily_filter_policy'] = local_inputs['data_api_resolution']['clean_daily_bar']['daily_filter_policy']
+    local_inputs['step4_data_contract'] = {
+        'version': 'factorforge_step4_data_contract_v1',
+        'producer': 'step3a_smoke_fixture',
+        'data_api_package': 'factorforge_data_api',
+        'catalog_path': str(run_dir / 'smoke_data_catalog.json'),
+        'full_queries': {
+            'clean_daily_bar': {
+                'dataset': 'clean_daily_bar',
+                'start_date': '20160104',
+                'end_date': '20160105',
+                'universe': 'a_share_all',
+                'fields': ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg'],
+                'frequency': 'daily',
+            }
+        },
+        'sample_queries': {
+            'clean_daily_bar': {
+                'dataset': 'clean_daily_bar',
+                'start_date': '20160104',
+                'end_date': '20160105',
+                'universe': ['000001.SZ', '000002.SZ'],
+                'fields': ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg'],
+                'frequency': 'daily',
+            }
+        },
+        'formal_factor_values_owner': 'Step4',
+    }
+    return attach_sort_contract(local_inputs, daily)
+
+
 def create_step3b_sort_contract_fixture(
     root: Path,
     report_id: str,
@@ -436,8 +549,7 @@ def run_step3b_sort_contract_case(
 
 def run_sort_contract_written_by_step3a_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_SORT_CONTRACT'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
+    local_inputs = create_step3_daily_io_policy_fixture(root, report_id, csv_output_policy='full_csv')
     contract = (local_inputs.get('daily_io_contract') or {}).get('sort_contract') or local_inputs.get('sort_contract') or {}
     ok = (
         contract.get('version') == 'factorforge_sort_contract_v1'
@@ -748,8 +860,7 @@ def run_step3b_runtime_throughput_gate_uses_input_rows_for_minute_compression_ca
 
 def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_CONTRACT'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
+    local_inputs = create_step3_daily_io_policy_fixture(root, report_id, csv_output_policy='full_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     csv_path = root.parent / local_inputs.get('daily_df_csv', '')
     contract = local_inputs.get('daily_io_contract') or {}
@@ -785,8 +896,7 @@ def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
 
 def run_step3a_daily_sample_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SAMPLE_POLICY'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
+    local_inputs = create_step3_daily_io_policy_fixture(root, report_id, csv_output_policy='sample_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     full_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
     sample_csv_path = root.parent / local_inputs.get('daily_df_csv_sample', '')
@@ -826,8 +936,7 @@ def run_step3a_daily_sample_csv_policy_case(root: Path) -> dict[str, Any]:
 
 def run_step3a_daily_no_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_NO_CSV_POLICY'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
+    local_inputs = create_step3_daily_io_policy_fixture(root, report_id, csv_output_policy='no_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     full_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
     sample_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input_sample__{report_id}.csv'
@@ -933,6 +1042,34 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
         'feasibility': 'ready',
         'sample_window': {'start': '20200101', 'end': '20200103'},
         'data_sources': [{'name': 'synthetic_tmp_fixture'}],
+        'data_api_resolution': local_inputs.get('data_api_resolution') or {
+            'clean_daily_bar': {
+                'dataset_id': 'clean_daily_bar',
+                'status': 'ready',
+                'access_mode': 'smoke_fixture',
+                'coverage': {'row_count': 0},
+                'schema': {'columns': ['ts_code', 'trade_date', 'close']},
+                'daily_filter_policy': {
+                    'drop_suspended': True,
+                    'drop_limit_events': True,
+                    'invalid_days_excluded_from_window': True,
+                    'source': 'performance_smoke_clean_daily_fixture',
+                },
+            }
+        },
+        'daily_filter_policy': (
+            local_inputs.get('daily_filter_policy')
+            or ((local_inputs.get('data_api_resolution') or {}).get('clean_daily_bar') or {}).get('daily_filter_policy')
+            or {'drop_suspended': True, 'drop_limit_events': True, 'invalid_days_excluded_from_window': True}
+        ),
+        'step4_data_contract': local_inputs.get('step4_data_contract') or {
+            'version': 'factorforge_step4_data_contract_v1',
+            'producer': 'step3a_smoke_fixture',
+            'data_api_package': 'factorforge_data_api',
+            'full_queries': {'clean_daily_bar': {'dataset': 'clean_daily_bar', 'fields': ['close']}},
+            'sample_queries': {'clean_daily_bar': {'dataset': 'clean_daily_bar', 'fields': ['close'], 'universe': ['S001']}},
+            'formal_factor_values_owner': 'Step4',
+        },
         'field_mapping': {'ts_code': 'ts_code', 'trade_date': 'trade_date', 'close': 'close'},
         'proxy_rules': [],
         'coverage_checks': [{'name': 'fixture', 'status': 'pass'}],
@@ -945,6 +1082,8 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
         'factor_id': 'SMOKE',
         'logical_fields': {'close': 'close'},
         'qlib_field_map': {'$close': 'close'},
+        'data_api_resolution': local_inputs.get('data_api_resolution') or {},
+        'step4_data_contract': local_inputs.get('step4_data_contract') or {},
         'instrument_field': 'ts_code',
         'date_field': 'trade_date',
     })
@@ -973,6 +1112,7 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
         'step3b_ready': True,
         'execution_mode': 'direct_code',
         'local_input_paths': local_inputs,
+        'step4_data_contract': local_inputs.get('step4_data_contract') or {},
     })
 
 
@@ -1035,8 +1175,7 @@ def run_step3_daily_large_schema_mismatch_block_case(root: Path) -> dict[str, An
 
 def run_step3a_daily_sample_schema_mismatch_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SAMPLE_SCHEMA_MISMATCH'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
+    local_inputs = create_step3_daily_io_policy_fixture(root, report_id, csv_output_policy='sample_csv')
     sample_csv_path = root.parent / local_inputs.get('daily_df_csv_sample', '')
     if sample_csv_path.exists():
         lines = sample_csv_path.read_text(encoding='utf-8').splitlines()
@@ -1310,8 +1449,7 @@ def run_csv_policy_invalid_cli_blocks_case(root: Path) -> dict[str, Any]:
 
 def run_step3a_daily_no_csv_contract_stale_path_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_NO_CSV_STALE_PATH'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
+    local_inputs = create_step3_daily_io_policy_fixture(root, report_id, csv_output_policy='no_csv')
     contract = local_inputs.get('daily_io_contract') or {}
     contract['csv_path'] = f'runs/{report_id}/step3a_local_inputs/stale_full.csv'
     contract['csv_sample_path'] = f'runs/{report_id}/step3a_local_inputs/stale_sample.csv'
@@ -4375,7 +4513,7 @@ def run_polars_adaptive_replay_benchmark_contract_case(root: Path) -> dict[str, 
 
 
 def run_polars_adaptive_replay_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'polars_adaptive_replay_forbidden.json'
+    output = forbidden_non_tmp_output('polars_adaptive_replay_forbidden.json')
     if output.exists():
         output.unlink()
     proc = run_cmd([
@@ -4446,7 +4584,7 @@ def run_polars_parity_forensics_contract_case(root: Path) -> dict[str, Any]:
 
 
 def run_polars_parity_forensics_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'polars_parity_forensics_forbidden.json'
+    output = forbidden_non_tmp_output('polars_parity_forensics_forbidden.json')
     if output.exists():
         output.unlink()
     proc = run_cmd([
@@ -4804,7 +4942,7 @@ def run_throughput_profile_handles_missing_artifacts_case(root: Path) -> dict[st
 def run_throughput_profile_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_THROUGHPUT_NON_TMP_OUTPUT'
     create_throughput_profile_fixture(root, report_id)
-    output = REPO_ROOT / 'objects' / 'validation' / 'throughput_profile_non_tmp_block.json'
+    output = forbidden_non_tmp_output('throughput_profile_non_tmp_block.json')
     if output.exists():
         output.unlink()
     proc = run_cmd([
@@ -4997,7 +5135,7 @@ def run_operator_kernel_inventory_classifies_talib_case(root: Path) -> dict[str,
 
 
 def run_operator_kernel_inventory_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'docs' / f'.tmp_operator_kernel_inventory_should_block_{os.getpid()}.json'
+    output = forbidden_non_tmp_output('operator_kernel_inventory_should_block.json')
     proc = run_cmd([
         sys.executable,
         'scripts/run_factorforge_operator_kernel_inventory.py',
@@ -5253,7 +5391,7 @@ def run_operator_candidate_benchmark_corr_cov_edge_parity_case(root: Path) -> di
 
 
 def run_operator_candidate_benchmark_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'docs' / f'.tmp_operator_candidate_benchmark_should_block_{os.getpid()}.json'
+    output = forbidden_non_tmp_output('operator_candidate_benchmark_should_block.json')
     proc = run_cmd([
         sys.executable,
         'scripts/run_factorforge_operator_candidate_benchmark.py',
@@ -5384,7 +5522,7 @@ def run_formula_kernel_benchmark_contract_case(root: Path) -> dict[str, Any]:
 
 
 def run_formula_kernel_benchmark_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'docs' / f'.tmp_formula_kernel_benchmark_should_block_{os.getpid()}.json'
+    output = forbidden_non_tmp_output('formula_kernel_benchmark_should_block.json')
     proc = run_cmd([
         sys.executable,
         'scripts/run_factorforge_formula_kernel_benchmark.py',
@@ -5778,14 +5916,27 @@ def run_step4_reuses_step3b_factor_parquet_case(root: Path) -> dict[str, Any]:
         {'ts_code': 'S001', 'trade_date': '20200103', 'smoke_factor': 0.3},
         {'ts_code': 'S002', 'trade_date': '20200103', 'smoke_factor': 0.7},
     ])
-    factor_df.to_parquet(paths['factor_parquet'], index=False)
+    step3b_cache = paths['run_dir'] / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_cache_meta = paths['run_dir'] / f'step3b_sample_run_metadata__{report_id}.json'
+    factor_df.to_parquet(step3b_cache, index=False)
+    daily_df = pd.read_parquet(paths['run_dir'] / 'step3a_local_inputs' / f'daily_input__{report_id}.parquet')
+    normalized_dates = pd.to_datetime(daily_df['trade_date'].astype(str), errors='coerce').dt.strftime('%Y%m%d')
+    write_json(step3b_cache_meta, {
+        'producer': 'step3b_sample_proof',
+        'is_formal_factor_values': False,
+        'implementation_path': str(root / 'generated_code' / report_id / 'factor_impl.py'),
+        'row_count': int(len(daily_df)),
+        'date_count': int(normalized_dates.nunique()),
+        'ticker_count': int(daily_df['ts_code'].nunique()),
+        'actual_window': {'start': str(normalized_dates.min()), 'end': str(normalized_dates.max())},
+    })
     impl_path = root / 'generated_code' / report_id / 'factor_impl.py'
     impl_path.write_text(
         "def compute_factor(daily_df, minute_df=None):\n"
         "    raise RuntimeError('BLOCK_STEP4_RECOMPUTED_FACTOR')\n",
         encoding='utf-8',
     )
-    before_parquet_mtime = paths['factor_parquet'].stat().st_mtime_ns
+    before_cache_mtime = step3b_cache.stat().st_mtime_ns
     proc = run_step4_direct(root, report_id)
     after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
     factor_io_profile = after_meta.get('step4_factor_io_profile') or {}
@@ -5795,8 +5946,8 @@ def run_step4_reuses_step3b_factor_parquet_case(root: Path) -> dict[str, Any]:
     ok = (
         proc.returncode == 0
         and paths['factor_parquet'].exists()
-        and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime
-        and factor_io_profile.get('source') == 'step3b_factor_parquet'
+        and step3b_cache.stat().st_mtime_ns == before_cache_mtime
+        and factor_io_profile.get('source') == 'step3b_full_compute_cache'
         and factor_io_profile.get('recomputed_factor') is False
         and after_meta.get('row_count') == len(factor_df)
         and input_io_profile.get('factor_values_selected_format') == 'parquet'
@@ -5805,7 +5956,7 @@ def run_step4_reuses_step3b_factor_parquet_case(root: Path) -> dict[str, Any]:
         'case': 'step4_reuses_step3b_factor_parquet_without_recompute',
         'report_id': report_id,
         'rc': proc.returncode,
-        'factor_parquet_mtime_unchanged': paths['factor_parquet'].exists() and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime,
+        'factor_parquet_mtime_unchanged': step3b_cache.exists() and step3b_cache.stat().st_mtime_ns == before_cache_mtime,
         'step4_factor_io_profile': factor_io_profile,
         'row_count': after_meta.get('row_count'),
         'self_quant_input_io_profile': input_io_profile,

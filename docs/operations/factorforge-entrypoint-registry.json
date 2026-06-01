@@ -41,6 +41,7 @@
     "scripts/run_factorforge_multibranch_comparison_smoke.py",
     "scripts/run_factorforge_multibranch_materialization_smoke.py",
     "scripts/run_factorforge_multibranch_synthesis_smoke.py",
+    "scripts/run_factorforge_unit_tests.py",
     "scripts/run_factorforge_ultimate_loop_smoke.py",
     "scripts/run_main_agent_mechanism_memo_smoke.py",
     "scripts/run_mechanism_math_contract_smoke.py",

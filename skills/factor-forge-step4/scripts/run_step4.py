@@ -33,6 +33,7 @@ OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
+from factor_factory.data_api import fetch_data_api_dataset
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -162,11 +163,11 @@ def classify_existing_factor_parquet_source(existing_meta: dict[str, Any]) -> di
     producer = (existing_meta or {}).get('producer')
     if (
         performance_profile.get('version') == 'factorforge_step3b_performance_profile_v1'
-        or producer in {'step3b', 'step3b_first_run'}
+        or producer in {'step3b', 'step3b_first_run', 'step3b_sample_proof'}
         or prior_step4_profile.get('source') == 'step3b_factor_parquet'
     ):
         return {
-            'source': 'step3b_factor_parquet',
+            'source': 'step3b_sample_or_legacy_factor_parquet',
             'upstream_recomputed_factor': False,
             'provenance_basis': 'run_metadata.step3b_profile',
         }
@@ -896,6 +897,93 @@ def compute_factor_with_contract(module: Any, daily_df: Any, minute_df: Any) -> 
         return fn(daily_input, minute_input)
 
 
+def _step4_data_contract(dpm: dict[str, Any], handoff: dict[str, Any]) -> dict[str, Any]:
+    local_inputs = dpm.get('local_input_paths') if isinstance(dpm.get('local_input_paths'), dict) else {}
+    for candidate in (
+        handoff.get('step4_data_contract'),
+        dpm.get('step4_data_contract'),
+        local_inputs.get('step4_data_contract'),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def _contract_query(contract: dict[str, Any], query_set: str, dataset_id: str) -> dict[str, Any] | None:
+    queries = contract.get(query_set) if isinstance(contract, dict) else None
+    if not isinstance(queries, dict):
+        return None
+    query = queries.get(dataset_id)
+    if not isinstance(query, dict):
+        return None
+    if contract.get('catalog_path') and not query.get('catalog_path'):
+        return {**query, 'catalog_path': contract.get('catalog_path')}
+    return query
+
+
+def _fetch_contract_frame(query: dict[str, Any]):
+    result = fetch_data_api_dataset(
+        str(query.get('dataset')),
+        start=str(query.get('start_date')),
+        end=str(query.get('end_date')),
+        fields=list(query.get('fields') or []),
+        universe=query.get('universe') or 'a_share_all',
+        frequency=query.get('frequency'),
+        catalog_path=query.get('catalog_path'),
+    )
+    if result.status not in {'ready', 'proxy_ready'}:
+        raise SystemExit(
+            f"BLOCK_STEP4_DATA_API_FETCH_FAILED: {query.get('dataset')} "
+            f"status={result.status} reason={result.blocked_reason}"
+        )
+    return result.frame, result.to_metadata()
+
+
+def materialize_step4_data_inputs_from_contract(
+    report_id: str,
+    contract: dict[str, Any],
+    run_dir: Path,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    if contract.get('version') != 'factorforge_step4_data_contract_v1':
+        raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: Step4 requires factorforge_step4_data_contract_v1 when local inputs are absent')
+    if contract.get('formal_factor_values_owner') != 'Step4':
+        raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_OWNER_INVALID: formal factor_values owner must be Step4')
+    daily_query = _contract_query(contract, 'full_queries', 'clean_daily_bar')
+    if not daily_query:
+        raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: clean_daily_bar full query is required')
+
+    data_dir = run_dir / 'step4_data_inputs'
+    data_dir.mkdir(parents=True, exist_ok=True)
+    daily_df, daily_meta = _fetch_contract_frame(daily_query)
+    daily_path = data_dir / f'step4_daily_input__{report_id}.parquet'
+    daily_df.to_parquet(daily_path, index=False)
+
+    local_inputs = {
+        'input_mode': 'daily_only',
+        'daily_df_parquet': str(daily_path),
+        'data_source': 'factorforge_data_api_full_query',
+    }
+    meta = {'clean_daily_bar': daily_meta}
+
+    minute_query = _contract_query(contract, 'full_queries', 'minute_bar')
+    if minute_query:
+        minute_df, minute_meta = _fetch_contract_frame(minute_query)
+        minute_path = data_dir / f'step4_minute_input__{report_id}.parquet'
+        minute_df.to_parquet(minute_path, index=False)
+        local_inputs['input_mode'] = 'price_volume_minute'
+        local_inputs['minute_df_parquet'] = str(minute_path)
+        meta['minute_bar'] = minute_meta
+
+    return local_inputs, {
+        'source': 'factorforge_data_api_full_query',
+        'contract_version': contract.get('version'),
+        'data_api_package': contract.get('data_api_package'),
+        'catalog_path': contract.get('catalog_path'),
+        'queries': contract.get('full_queries') or {},
+        'result_metadata': meta,
+    }
+
+
 def build_failure_outputs(report_id: str, factor_id: str | None, implementation_path: str | None, sample_window: dict[str, Any], run_dir: Path, input_paths: dict[str, Path], issues: list[dict[str, Any]], warnings: list[str], failure_reason: str, failed_stage: str, start_utc: str, revision_of: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
     diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
@@ -1088,8 +1176,9 @@ def main() -> None:
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
 
-        # Frozen-schema execution: do not fabricate external data access. If no normalized local input snapshots
-        # are provided by Step 3A, Step 4 fails explicitly rather than pretending to have executed.
+        # Frozen-schema execution: Step4 consumes either legacy normalized local
+        # snapshots or the Step3 Data API contract. It must not guess raw paths or
+        # build clean layers itself.
         local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
         minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
         daily_path = (
@@ -1100,12 +1189,34 @@ def main() -> None:
         input_mode = str(local_inputs.get('input_mode') or '')
         minute_required = input_mode != 'daily_only'
         if (minute_required and (not minute_path or not daily_path)) or ((not minute_required) and not daily_path):
-            issues.append({'severity': 'error', 'code': 'LOCAL_EXECUTION_INPUTS_MISSING', 'message': 'no local normalized input snapshots provided for actual execution', 'evidence': {'local_input_paths': local_inputs}})
-            run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'LOCAL_EXECUTION_INPUTS_MISSING', 'execution_precheck', start_utc)
-            write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
-            write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
-            write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
-            return
+            try:
+                contract_inputs, data_api_profile = materialize_step4_data_inputs_from_contract(
+                    report_id,
+                    _step4_data_contract(dpm, handoff),
+                    run_dir,
+                )
+            except SystemExit as exc:
+                issues.append({
+                    'severity': 'error',
+                    'code': 'STEP4_DATA_INPUTS_MISSING',
+                    'message': str(exc),
+                    'evidence': {
+                        'local_input_paths': local_inputs,
+                        'step4_data_contract': _step4_data_contract(dpm, handoff),
+                    },
+                })
+                run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'STEP4_DATA_INPUTS_MISSING', 'execution_precheck', start_utc)
+                write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
+                write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
+                write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
+                return
+            local_inputs = {**local_inputs, **contract_inputs}
+            minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+            daily_path = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+            input_mode = str(local_inputs.get('input_mode') or '')
+            minute_required = input_mode != 'daily_only'
+        else:
+            data_api_profile = None
 
         import pandas as pd  # local import to keep hard dependency only for real execution path
         minute_file = Path(minute_path) if minute_path else None
@@ -1136,24 +1247,27 @@ def main() -> None:
         existing_meta = load_json(meta_path) if meta_path.exists() else {}
         factor_csv_policy_observed = step4_factor_csv_policy_from_step3b(existing_meta)
         parquet_existed_before_step4 = parquet_path.exists()
+        existing_factor_source = classify_existing_factor_parquet_source(existing_meta) if parquet_existed_before_step4 else {}
+        may_reuse_existing_factor = parquet_existed_before_step4 and existing_factor_source.get('source') == 'prior_step4_parquet'
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
         input_io_profile = {
+            'source': 'local_snapshot' if data_api_profile is None else 'factorforge_data_api_full_query',
             'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
             'daily_selected_path': str(daily_file),
             'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
             'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
+            'data_api_profile': data_api_profile,
         }
         step3b_cache_source = {}
-        if not parquet_existed_before_step4 and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
+        if not may_reuse_existing_factor and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
             step3b_cache_source = classify_step3b_compute_cache_source(load_json(step3b_cache_meta_path), daily_df, impl_path)
-        if parquet_existed_before_step4:
+        if may_reuse_existing_factor:
             result_df = read_df(parquet_path)
-            factor_parquet_source = classify_existing_factor_parquet_source(existing_meta)
             step4_factor_io_profile = {
                 'version': 'factorforge_step4_factor_io_profile_v1',
-                **factor_parquet_source,
+                **existing_factor_source,
                 'selected_factor_format': 'parquet',
                 'selected_factor_path': str(parquet_path),
                 'recomputed_factor': False,
@@ -1169,7 +1283,7 @@ def main() -> None:
                 'selected_factor_path': str(step3b_cache_path),
                 'formal_factor_path': str(parquet_path),
                 'recomputed_factor': False,
-                'parquet_existed_before_step4': False,
+                'parquet_existed_before_step4': bool(parquet_existed_before_step4),
                 'parquet_written_by_step4': True,
             }
         else:
@@ -1185,11 +1299,12 @@ def main() -> None:
             step4_factor_io_profile = {
                 'version': 'factorforge_step4_factor_io_profile_v1',
                 'source': 'step4_recompute_fallback',
+                'prior_factor_parquet_source': existing_factor_source.get('source') if parquet_existed_before_step4 else None,
                 'step3b_compute_cache_source': step3b_cache_source or None,
                 'selected_factor_format': 'computed',
                 'selected_factor_path': str(parquet_path),
                 'recomputed_factor': True,
-                'parquet_existed_before_step4': False,
+                'parquet_existed_before_step4': bool(parquet_existed_before_step4),
                 'parquet_written_by_step4': True,
             }
 
@@ -1202,7 +1317,7 @@ def main() -> None:
             return
 
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
-        if not parquet_existed_before_step4:
+        if not may_reuse_existing_factor:
             result_df.to_parquet(parquet_path, index=False)
         if factor_csv_policy_observed.get('factor_csv_write_allowed') and not csv_path.exists():
             result_df.to_csv(csv_path, index=False)

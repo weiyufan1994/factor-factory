@@ -96,9 +96,13 @@ run metadata.
 
 Step3B `step3b_sample_factor_values__{report_id}` artifacts are sample
 executability evidence only. Step4 must not treat them as formal factor values;
-if a legacy Step3B formal-looking parquet exists, Step4 must recompute from the
-Data API/full input contract unless the existing metadata proves it was already
-written by Step4.
+if a Step3B parquet was capped or produced from sample queries, Step4 must
+recompute from the Data API/full input contract. However, if metadata proves the
+Step3B parquet accidentally or deliberately covers the exact full Step4 window
+with matching implementation path/hash, row/date/ticker counts, and producer
+lineage, Step4 must reuse it as a compute cache and then write/own the formal
+Step4 factor_values artifact. Recompute only when code, data, identity, or
+formal-evidence ownership differs.
 
 ## factor_run_master schema
 

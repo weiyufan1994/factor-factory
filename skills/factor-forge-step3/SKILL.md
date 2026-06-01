@@ -94,7 +94,9 @@ Optional:
     kernels may run inside this `pandas_optimized` path for `min`, `max`,
     `delta`, `delay`, `argmin`, `argmax`, `ts_rank`, `corr`, `correlation`,
     and `covariance`; rollback must be available through
-    `FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL=1`. `sum`, `mean`, and
+    `FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL=1`. This default kernel subset
+    is production acceleration and must be active on Mac and EC2 unless a
+    rollback/debug run records the reason. `sum`, `mean`, and
     `std/stddev` remain pandas fallback in the default path because tiny
     floating-point accumulation differences can be amplified by downstream
     cross-sectional `rank`. The
@@ -128,11 +130,14 @@ Optional:
     marked `safe_to_make_default`, and must BLOCK on invalid engine, missing
     explicit enable gate, parity failure, dependency failure, or runtime guard
     failure.
-  - Production Step3B runs must not enable experimental Polars, experimental
-    `ts_rank`, or future experimental Formula-IR kernel engines unless the user
-    explicitly asks for a performance experiment. The production path is
-    Formula-IR `pandas_optimized` with pandas reference parity, default NumPy
-    time-series kernels, Parquet IO, and optional `sample_csv` audit output.
+  - Production Step3B runs must not enable experimental Polars, the independent
+    experimental `ts_rank` engine, or future experimental Formula-IR kernel
+    engines unless the user explicitly asks for a performance experiment. The
+    production path is Formula-IR `pandas_optimized` with pandas reference
+    parity, default NumPy time-series kernels, Parquet IO, and optional
+    `sample_csv` audit output. Step3B is an executability proof and must use
+    Data API sample queries or a capped deterministic local sample; it must not
+    run a full formal data window or write formal factor values.
   - For `direct_code` or `hybrid` custom blocks that cannot be represented as
     Formula-IR, generated implementations should prefer vectorized NumPy and/or
     Polars. Pandas remains acceptable as a reference or compatibility layer, but

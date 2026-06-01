@@ -44,8 +44,12 @@ Only use a mechanical/lightweight run if the user explicitly says this is a smok
 ## Production vs Experimental Performance Boundary
 
 This skill is production-ready for new factor research only on the default
-Factor Forge path. Production runs may use Parquet IO and `sample_csv` audit
-output, but they must not enable unfinished performance experiments.
+Factor Forge path. Production runs must use the reviewed default acceleration
+surface wherever the contract matches: Data API/catalog reads, Parquet IO,
+Formula-IR `pandas_optimized`, and the reviewed NumPy time-series kernel subset
+for supported operators. These reviewed accelerators are no longer optional
+experiments; Mac and EC2 must keep them enabled unless a named rollback/debug
+gate is being exercised and recorded.
 
 For production factor research, do not set these environment variables unless
 the user explicitly asks for a performance experiment or benchmark:
@@ -58,12 +62,18 @@ FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL=1
 FACTORFORGE_FORMULA_KERNEL_ENGINE=<experimental_engine>
 ```
 
-Experimental Polars, experimental `ts_rank`, and Phase N.5 operator-kernel work
-are not production defaults. They require explicit opt-in, pandas-reference
-parity, runtime guards, `/tmp` smoke evidence, reviewer acceptance, and separate
-user approval before any full canonical-factor benchmark. They must not alter
-Step6, Council, promotion gates, clean data, search workers, or official
-library writeback.
+Experimental Polars, the independent experimental `ts_rank` engine, and any
+kernel beyond the reviewed default NumPy subset are not production defaults.
+They require explicit opt-in, pandas-reference parity, runtime guards, `/tmp`
+smoke evidence, reviewer acceptance, and separate user approval before any full
+canonical-factor benchmark. They must not alter Step6, Council, promotion
+gates, clean data, search workers, or official library writeback.
+
+Reuse is mandatory: if a valid artifact with matching report/factor identity,
+implementation path/hash, data window, row/date/ticker counts, and producer
+lineage already exists, downstream steps must consume it as a cache or evidence
+source instead of recomputing. Recompute only when the implementation, data
+contract, identity, or required formal-evidence ownership differs.
 
 The current production/experimental split is documented in
 `docs/operations/factorforge-production-vs-experimental-performance.zh-CN.md`.

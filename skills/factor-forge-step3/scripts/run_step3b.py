@@ -76,6 +76,9 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
 ]
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
+STEP3B_SAMPLE_MAX_ROWS = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_ROWS') or '250000')
+STEP3B_SAMPLE_MAX_DATES = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_DATES') or '128')
+STEP3B_SAMPLE_MAX_TICKERS = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_TICKERS') or '512')
 EXECUTABLE_REVISION_SPEC_VERSION = 'factorforge_executable_revision_spec_v1'
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 HIGH_SPEED_CODE_PROFILE_VERSION = 'factorforge_high_speed_code_profile_v1'
@@ -1260,6 +1263,46 @@ def _fetch_data_api_frame(query: dict):
     return result.frame, result.to_metadata()
 
 
+def _limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+    profile = {
+        'label': label,
+        'input_rows': int(len(df)),
+        'sample_limited': False,
+        'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
+        'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
+        'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
+        'output_rows': int(len(df)),
+        'date_count': None,
+        'ticker_count': None,
+    }
+    if df is None or df.empty:
+        return df, profile
+    if len(df) <= STEP3B_SAMPLE_MAX_ROWS:
+        profile['date_count'] = int(df['trade_date'].nunique()) if 'trade_date' in df.columns else None
+        profile['ticker_count'] = int(df['ts_code'].nunique()) if 'ts_code' in df.columns else None
+        return df, profile
+    if {'ts_code', 'trade_date'}.issubset(df.columns):
+        work = df.copy()
+        normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
+        dates = sorted(normalized_dates.dropna().unique().tolist())
+        tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
+        keep_dates = set(dates[-STEP3B_SAMPLE_MAX_DATES:])
+        keep_tickers = set(tickers[:STEP3B_SAMPLE_MAX_TICKERS])
+        mask = normalized_dates.isin(keep_dates) & work['ts_code'].astype(str).isin(keep_tickers)
+        sampled = work.loc[mask].copy()
+        if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
+            sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
+    else:
+        sampled = df.head(STEP3B_SAMPLE_MAX_ROWS).copy()
+    profile.update({
+        'sample_limited': True,
+        'output_rows': int(len(sampled)),
+        'date_count': int(sampled['trade_date'].nunique()) if 'trade_date' in sampled.columns else None,
+        'ticker_count': int(sampled['ts_code'].nunique()) if 'ts_code' in sampled.columns else None,
+    })
+    return sampled, profile
+
+
 def _load_step3b_sample_inputs(local_inputs: dict, step4_data_contract: dict | None) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
     daily_parquet_rel = local_inputs.get('daily_df_parquet')
@@ -1272,47 +1315,62 @@ def _load_step3b_sample_inputs(local_inputs: dict, step4_data_contract: dict | N
     daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
     daily_csv_path = resolve_local_input_path(daily_csv_rel)
 
+    contract = step4_data_contract or local_inputs.get('step4_data_contract') or {}
+    daily_query = _query_payload(contract, 'sample_queries', 'clean_daily_bar')
+    minute_query = _query_payload(contract, 'sample_queries', 'minute_bar')
+    if daily_query:
+        if contract.get('catalog_path'):
+            daily_query = {**daily_query, 'catalog_path': contract.get('catalog_path')}
+            if minute_query:
+                minute_query = {**minute_query, 'catalog_path': contract.get('catalog_path')}
+        daily_df, daily_meta = _fetch_data_api_frame(daily_query)
+        daily_df, daily_limit_profile = _limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+        if minute_required and minute_query:
+            minute_df, minute_meta = _fetch_data_api_frame(minute_query)
+            minute_df, minute_limit_profile = _limit_step3b_sample_frame(minute_df, label='minute_bar')
+        else:
+            minute_df, minute_meta, minute_limit_profile = pd.DataFrame(), None, None
+        profile = {
+            'source': 'factorforge_data_api_sample',
+            'daily_selected_format': 'data_api_frame',
+            'daily_selected_path': None,
+            'daily_parquet_path': None,
+            'daily_csv_path': None,
+            'minute_selected_path': None,
+            'data_api_sample_metadata': {
+                'clean_daily_bar': daily_meta,
+                **({'minute_bar': minute_meta} if minute_meta else {}),
+            },
+            'sample_limit_profile': {
+                'clean_daily_bar': daily_limit_profile,
+                **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
+            },
+        }
+        return daily_df, minute_df, profile
+
     if daily_path is not None and daily_path.exists() and (not minute_required or (minute_path is not None and minute_path.exists())):
         minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
         daily_df = read_df(daily_path)
+        daily_df, daily_limit_profile = _limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+        minute_limit_profile = None
+        if not minute_df.empty:
+            minute_df, minute_limit_profile = _limit_step3b_sample_frame(minute_df, label='minute_bar')
         profile = {
-            'source': 'step3a_local_snapshot_compat',
+            'source': 'step3a_local_snapshot_sample_compat',
             'daily_selected_format': 'parquet' if daily_path.suffix.lower() == '.parquet' else 'csv',
             'daily_selected_path': str(daily_path),
             'daily_parquet_path': str(daily_parquet_path) if daily_parquet_path else None,
             'daily_csv_path': str(daily_csv_path) if daily_csv_path else None,
             'minute_selected_path': str(minute_path) if minute_path else None,
             'data_api_sample_metadata': {},
+            'sample_limit_profile': {
+                'clean_daily_bar': daily_limit_profile,
+                **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
+            },
         }
         return daily_df, minute_df, profile
 
-    contract = step4_data_contract or local_inputs.get('step4_data_contract') or {}
-    daily_query = _query_payload(contract, 'sample_queries', 'clean_daily_bar')
-    minute_query = _query_payload(contract, 'sample_queries', 'minute_bar')
-    if not daily_query:
-        raise SystemExit('BLOCK_STEP3B_SAMPLE_DATA_CONTRACT_MISSING: clean_daily_bar sample query is required')
-    if contract.get('catalog_path'):
-        daily_query = {**daily_query, 'catalog_path': contract.get('catalog_path')}
-        if minute_query:
-            minute_query = {**minute_query, 'catalog_path': contract.get('catalog_path')}
-    daily_df, daily_meta = _fetch_data_api_frame(daily_query)
-    if minute_required and minute_query:
-        minute_df, minute_meta = _fetch_data_api_frame(minute_query)
-    else:
-        minute_df, minute_meta = pd.DataFrame(), None
-    profile = {
-        'source': 'factorforge_data_api_sample',
-        'daily_selected_format': 'data_api_frame',
-        'daily_selected_path': None,
-        'daily_parquet_path': None,
-        'daily_csv_path': None,
-        'minute_selected_path': None,
-        'data_api_sample_metadata': {
-            'clean_daily_bar': daily_meta,
-            **({'minute_bar': minute_meta} if minute_meta else {}),
-        },
-    }
-    return daily_df, minute_df, profile
+    raise SystemExit('BLOCK_STEP3B_SAMPLE_DATA_CONTRACT_MISSING: clean_daily_bar sample query is required')
 
 
 def generate_first_run_factor_values(

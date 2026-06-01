@@ -179,6 +179,64 @@ def classify_existing_factor_parquet_source(existing_meta: dict[str, Any]) -> di
     }
 
 
+def _frame_key_stats(df: Any) -> dict[str, Any]:
+    if df is None or not {'ts_code', 'trade_date'}.issubset(df.columns):
+        return {
+            'row_count': int(len(df)) if df is not None else 0,
+            'date_count': None,
+            'ticker_count': None,
+            'start': None,
+            'end': None,
+        }
+    normalized_dates = normalize_trade_date_series(df['trade_date']).dt.strftime('%Y%m%d')
+    return {
+        'row_count': int(len(df)),
+        'date_count': int(normalized_dates.nunique()),
+        'ticker_count': int(df['ts_code'].nunique()),
+        'start': str(normalized_dates.min()),
+        'end': str(normalized_dates.max()),
+    }
+
+
+def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: Any, impl_path: Path) -> dict[str, Any]:
+    if not step3b_meta:
+        return {'source': 'no_step3b_compute_cache', 'reusable': False, 'reason': 'metadata_missing'}
+    if step3b_meta.get('producer') != 'step3b_sample_proof':
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'producer_not_step3b_sample_proof'}
+    if step3b_meta.get('is_formal_factor_values') is True:
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'unexpected_formal_step3b_owner'}
+    meta_impl = step3b_meta.get('implementation_path')
+    if meta_impl:
+        try:
+            if Path(str(meta_impl)).expanduser().resolve() != impl_path.expanduser().resolve():
+                return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_mismatch'}
+        except OSError:
+            return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_unresolvable'}
+    expected = _frame_key_stats(daily_df)
+    actual_window = step3b_meta.get('actual_window') if isinstance(step3b_meta.get('actual_window'), dict) else {}
+    if int(step3b_meta.get('row_count') or -1) != int(expected['row_count']):
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'row_count_mismatch', 'expected': expected}
+    if int(step3b_meta.get('date_count') or -1) != int(expected['date_count'] or -1):
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'date_count_mismatch', 'expected': expected}
+    if int(step3b_meta.get('ticker_count') or -1) != int(expected['ticker_count'] or -1):
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'ticker_count_mismatch', 'expected': expected}
+    if str(actual_window.get('start')) != str(expected['start']) or str(actual_window.get('end')) != str(expected['end']):
+        return {
+            'source': 'step3b_compute_cache_rejected',
+            'reusable': False,
+            'reason': 'window_mismatch',
+            'expected': expected,
+            'actual_window': actual_window,
+        }
+    return {
+        'source': 'step3b_full_compute_cache',
+        'reusable': True,
+        'upstream_recomputed_factor': True,
+        'provenance_basis': 'step3b_sample_run_metadata_full_coverage',
+        'expected': expected,
+    }
+
+
 def output_paths_for_policy(parquet_path: Path, csv_path: Path, sample_csv_path: Path, meta_path: Path, policy_observed: dict[str, Any]) -> list[str]:
     paths = [str(parquet_path)]
     policy = policy_observed.get('csv_output_policy')
@@ -1171,6 +1229,8 @@ def main() -> None:
         csv_path = run_dir / f'factor_values__{report_id}.csv'
         sample_csv_path = run_dir / f'factor_values_sample__{report_id}.csv'
         meta_path = run_dir / f'run_metadata__{report_id}.json'
+        step3b_cache_path = run_dir / f'step3b_sample_factor_values__{report_id}.parquet'
+        step3b_cache_meta_path = run_dir / f'step3b_sample_run_metadata__{report_id}.json'
         existing_meta = load_json(meta_path) if meta_path.exists() else {}
         factor_csv_policy_observed = step4_factor_csv_policy_from_step3b(existing_meta)
         parquet_existed_before_step4 = parquet_path.exists()
@@ -1187,6 +1247,9 @@ def main() -> None:
             'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
             'data_api_profile': data_api_profile,
         }
+        step3b_cache_source = {}
+        if not may_reuse_existing_factor and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
+            step3b_cache_source = classify_step3b_compute_cache_source(load_json(step3b_cache_meta_path), daily_df, impl_path)
         if may_reuse_existing_factor:
             result_df = read_df(parquet_path)
             step4_factor_io_profile = {
@@ -1197,6 +1260,18 @@ def main() -> None:
                 'recomputed_factor': False,
                 'parquet_existed_before_step4': True,
                 'parquet_written_by_step4': False,
+            }
+        elif step3b_cache_source.get('reusable') is True:
+            result_df = read_df(step3b_cache_path)
+            step4_factor_io_profile = {
+                'version': 'factorforge_step4_factor_io_profile_v1',
+                **step3b_cache_source,
+                'selected_factor_format': 'parquet',
+                'selected_factor_path': str(step3b_cache_path),
+                'formal_factor_path': str(parquet_path),
+                'recomputed_factor': False,
+                'parquet_existed_before_step4': bool(parquet_existed_before_step4),
+                'parquet_written_by_step4': True,
             }
         else:
             module = import_module_from_path(impl_path)
@@ -1212,6 +1287,7 @@ def main() -> None:
                 'version': 'factorforge_step4_factor_io_profile_v1',
                 'source': 'step4_recompute_fallback',
                 'prior_factor_parquet_source': existing_factor_source.get('source') if parquet_existed_before_step4 else None,
+                'step3b_compute_cache_source': step3b_cache_source or None,
                 'selected_factor_format': 'computed',
                 'selected_factor_path': str(parquet_path),
                 'recomputed_factor': True,

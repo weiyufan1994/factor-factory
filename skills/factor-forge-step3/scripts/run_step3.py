@@ -29,7 +29,7 @@ from factor_factory.data_access import (
     resolve_clean_daily_layer_paths,
     resolve_local_tushare_paths,
 )
-from factor_factory.data_api import resolve_data_api_dataset
+from factor_factory.data_api import fetch_data_api_dataset, resolve_data_api_dataset
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
@@ -563,13 +563,89 @@ def candidate_minute_roots() -> list[Path]:
     return deduped
 
 
+def data_api_query_payload(
+    dataset: str,
+    sample_window: dict,
+    fields: list[str],
+    *,
+    universe='a_share_all',
+    frequency: str = 'daily',
+) -> dict:
+    return {
+        'dataset': dataset,
+        'start_date': _normalize_window_date(sample_window.get('start')) or '19000101',
+        'end_date': _normalize_window_date(sample_window.get('end')) if _normalize_window_date(sample_window.get('end')) != 'current' else '29991231',
+        'universe': universe,
+        'fields': list(dict.fromkeys(fields)),
+        'frequency': frequency,
+    }
+
+
+def build_step4_data_contract(
+    *,
+    sample_window: dict,
+    daily_resolution: dict | None = None,
+    minute_resolution: dict | None = None,
+    daily_fields: list[str] | None = None,
+    minute_fields: list[str] | None = None,
+) -> dict:
+    full_queries = {}
+    sample_queries = {}
+    if daily_resolution:
+        fields = daily_fields or ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+        full_queries['clean_daily_bar'] = data_api_query_payload('clean_daily_bar', sample_window, fields)
+        sample_queries['clean_daily_bar'] = data_api_query_payload(
+            'clean_daily_bar',
+            sample_window,
+            fields,
+            universe=['000001.SZ', '000002.SZ'],
+        )
+    if minute_resolution:
+        fields = minute_fields or ['open', 'high', 'low', 'close', 'vol', 'amount']
+        full_queries['minute_bar'] = data_api_query_payload('minute_bar', sample_window, fields, frequency='1min')
+        sample_queries['minute_bar'] = data_api_query_payload(
+            'minute_bar',
+            sample_window,
+            fields,
+            universe=['000001.SZ', '000002.SZ'],
+            frequency='1min',
+        )
+    catalog_path = None
+    for resolution in [daily_resolution, minute_resolution]:
+        if isinstance(resolution, dict) and resolution.get('catalog_path'):
+            catalog_path = resolution.get('catalog_path')
+            break
+    return {
+        'version': 'factorforge_step4_data_contract_v1',
+        'producer': 'step3a',
+        'data_api_package': 'factorforge_data_api',
+        'catalog_path': catalog_path,
+        'full_queries': full_queries,
+        'sample_queries': sample_queries,
+        'formal_factor_values_owner': 'Step4',
+        'step3b_sample_policy': {
+            'is_formal_factor_values': False,
+            'purpose': 'step3_executability_proof',
+            'full_execution_owner': 'Step4',
+        },
+    }
+
+
 def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols: list[str] | None = None, csv_output_policy: str | None = None) -> dict:
+    del symbols, csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
+    daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
         start=sample_window.get('start'),
         end=sample_window.get('end'),
+        fields=daily_fields,
+    )
+    step4_data_contract = build_step4_data_contract(
+        sample_window=sample_window,
+        daily_resolution=daily_resolution,
+        daily_fields=daily_fields,
     )
 
     if daily_resolution.get('status') != 'ready':
@@ -581,84 +657,71 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
             'snapshot_source': 'missing_data_api_clean_daily_bar',
             'input_mode': 'daily_only',
             'data_api_resolution': {'clean_daily_bar': daily_resolution},
+            'step4_data_contract': step4_data_contract,
         }
 
-    policy = resolve_csv_policy(csv_output_policy)
-    daily_csv = local_dir / f'daily_input__{report_id}.csv'
-    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
-    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
-    daily_meta = local_dir / f'daily_input_meta__{report_id}.json'
-    for path in [daily_csv, daily_sample_csv, daily_parquet]:
-        if path.exists() or path.is_symlink():
-            path.unlink()
-
-    artifacts = daily_resolution.get('artifacts') if isinstance(daily_resolution.get('artifacts'), dict) else {}
-    source_parquet = Path(str(artifacts.get('daily_parquet') or artifacts.get('path') or '')).expanduser()
-    if not source_parquet.exists():
-        return {
-            'snapshot_note': f'Data API clean_daily_bar artifact is not local-readable: {source_parquet}',
-            'snapshot_source': 'missing_data_api_clean_daily_bar',
-            'input_mode': 'daily_only',
-            'data_api_resolution': {'clean_daily_bar': daily_resolution},
-        }
-
-    daily_df = pd.read_parquet(source_parquet)
-    if symbols:
-        daily_df = daily_df[daily_df['ts_code'].isin(symbols)]
-    start = _normalize_window_date(sample_window.get('start'))
-    end = _normalize_window_date(sample_window.get('end'))
-    trade_dates = daily_df['trade_date'].astype(str).str.replace(r'\.0$', '', regex=True).str.replace('-', '', regex=False)
-    if start and start != 'current':
-        daily_df = daily_df[trade_dates >= start]
-        trade_dates = trade_dates.loc[daily_df.index]
-    if end and end != 'current':
-        daily_df = daily_df[trade_dates <= end]
-
-    metadata_json = artifacts.get('metadata_json')
-    clean_meta = {}
-    if metadata_json:
-        meta_path = Path(str(metadata_json)).expanduser()
-        if meta_path.exists():
-            clean_meta = load_json(meta_path)
-    daily_df = daily_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-    daily_df.to_parquet(daily_parquet, index=False)
-    audit_payload = materialize_daily_audit_csv(
-        daily_df,
-        report_id=report_id,
-        full_csv_path=daily_csv,
-        sample_csv_path=daily_sample_csv,
-        policy=policy,
-    )
-    daily_meta.write_text(json.dumps(clean_meta, ensure_ascii=False, indent=2), encoding='utf-8')
-
-    actual_window = {
-        'start': str(daily_df['trade_date'].min()) if not daily_df.empty else sample_window.get('start'),
-        'end': str(daily_df['trade_date'].max()) if not daily_df.empty else sample_window.get('end'),
-        'calendar': sample_window.get('calendar'),
-    }
     return {
-        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
-        'daily_input_meta_json': str(daily_meta.relative_to(WORKSPACE)),
-        'preferred_daily_format': 'parquet',
-        **audit_payload,
-        'sample_window_actual': actual_window,
-        'snapshot_note': f'Daily input sliced from Data API clean_daily_bar at {source_parquet}.',
+        'sample_window_actual': sample_window,
+        'snapshot_note': 'Step3A resolved clean_daily_bar through Data API; Step3B may fetch a small non-formal sample and Step4 owns full data execution.',
         'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
         'data_api_resolution': {'clean_daily_bar': daily_resolution},
-        'daily_filter_policy': daily_resolution.get('daily_filter_policy') or clean_meta.get('policy'),
-        'daily_filter_summary': (
-            clean_meta.get('clean_meta', {}).get('counts', {})
-            | clean_meta.get('clean_meta', {}).get('drop_counts', {})
-        ),
+        'step4_data_contract': step4_data_contract,
+        'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
+        'daily_filter_summary': daily_resolution.get('coverage') or {},
     }
 
 
 def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
-    # Step 3A output must be executable by Step 4:
-    # produce local snapshot paths even when real historical data is unavailable.
+    del csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
+    daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
+    daily_resolution = resolve_data_api_dataset(
+        'clean_daily_bar',
+        start=sample_window.get('start'),
+        end=sample_window.get('end'),
+        fields=daily_fields,
+    )
+    minute_resolution = resolve_data_api_dataset(
+        'minute_bar',
+        start=sample_window.get('start'),
+        end=sample_window.get('end'),
+        fields=minute_fields,
+        frequency='1min',
+    )
+    step4_data_contract = build_step4_data_contract(
+        sample_window=sample_window,
+        daily_resolution=daily_resolution,
+        minute_resolution=minute_resolution,
+        daily_fields=daily_fields,
+        minute_fields=minute_fields,
+    )
+    if daily_resolution.get('status') != 'ready' or minute_resolution.get('status') not in {'ready', 'proxy_ready'}:
+        return {
+            'snapshot_note': 'Data API could not resolve required minute/daily datasets; Step3A will not guess raw minute paths or build clean layers.',
+            'snapshot_source': 'missing_data_api_minute_or_daily',
+            'input_mode': 'price_volume_minute',
+            'data_api_resolution': {
+                'clean_daily_bar': daily_resolution,
+                'minute_bar': minute_resolution,
+            },
+            'step4_data_contract': step4_data_contract,
+        }
+    return {
+        'sample_window_actual': sample_window,
+        'snapshot_note': 'Step3A resolved minute_bar and clean_daily_bar through Data API; Step3B may fetch a small non-formal sample and Step4 owns full data execution.',
+        'snapshot_source': 'data_api_minute_plus_daily',
+        'input_mode': 'price_volume_minute',
+        'data_api_resolution': {
+            'clean_daily_bar': daily_resolution,
+            'minute_bar': minute_resolution,
+        },
+        'step4_data_contract': step4_data_contract,
+        'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
+        'daily_filter_summary': daily_resolution.get('coverage') or {},
+    }
 
     minute_meta = next((meta for meta in (inspect_minute_root(p) for p in candidate_minute_roots()) if meta), None)
     real_minute_root = minute_meta['path'] if minute_meta else REAL_PRICE_VOLUME_BASE / 'stk_mins_1min'
@@ -799,7 +862,7 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
 
 
 def build_local_daily_snapshot(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
-    # Daily-only factors should read the shared clean layer and only materialize a report-scoped slice.
+    # Daily-only factors resolve the published clean_daily_bar Data API contract.
     return materialize_shared_daily_slice(report_id, sample_window, csv_output_policy=csv_output_policy)
 
 
@@ -924,15 +987,17 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             notes.append('Step 3A selected minute local inputs because the direct_code contract references minute-level fields.')
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
-        if snapshot_source in {'shared_clean_daily_layer', 'data_api_clean_daily_bar', 'synthetic_fallback'}:
-            notes.append('Step 3A 已生成 Step 4 可直接消费的本地输入快照，供集成证明与样例执行使用')
+        if snapshot_source in {'data_api_clean_daily_bar', 'data_api_minute_plus_daily'}:
+            notes.append('Step 3A 已生成 Step4 Data API contract；Step3B 只允许小样本 executability proof，Step4 负责全量正式数据执行')
+        elif snapshot_source in {'shared_clean_daily_layer', 'synthetic_fallback'}:
+            notes.append('Legacy local snapshot path retained only for compatibility; Data API contract path is preferred.')
         if snapshot_note:
             notes.append(str(snapshot_note))
-        if snapshot_source in {'real_local_insufficient', 'missing_real_local_data', 'missing_clean_daily_layer', 'missing_data_api_clean_daily_bar'}:
+        if snapshot_source in {'real_local_insufficient', 'missing_real_local_data', 'missing_clean_daily_layer', 'missing_data_api_clean_daily_bar', 'missing_data_api_minute_or_daily'}:
             blocked.append({
                 'code': (
                     'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE'
-                    if snapshot_source == 'missing_data_api_clean_daily_bar'
+                    if snapshot_source in {'missing_data_api_clean_daily_bar', 'missing_data_api_minute_or_daily'}
                     else 'SHARED_CLEAN_DAILY_LAYER_MISSING'
                     if snapshot_source == 'missing_clean_daily_layer'
                     else 'LOCAL_MINUTE_HISTORY_INSUFFICIENT'
@@ -955,7 +1020,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
 
     feasibility = 'blocked' if blocked else ('proxy_ready' if proxy_rules else 'ready')
     notes.append(
-        'Step 3A consumes Data API clean data products and only materializes report-scoped slices. Heavy daily/minute cleaning is owned by data producer workflows, not per-factor Step3.'
+        'Step 3A consumes Data API catalog contracts. Step3B may fetch a small non-formal sample; Step4 owns full formal data fetch and factor_values.'
     )
 
     data_prep_master = {
@@ -972,6 +1037,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'local_input_paths': local_input_paths,
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
+        'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
     }
 
     qlib_adapter_config = {
@@ -1015,9 +1081,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'proxy_rules': proxy_rules,
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
+        'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
         'sample_window': sample_window,
         'local_input_paths': local_input_paths,
-        'step4_access_rule': 'Step 4 should prefer Step 3A normalized local inputs / adapter config, not raw S3 paths directly.'
+        'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'
     }
 
     implementation_mode = declared_implementation_mode(fsm, price_volume_minute=price_volume_minute)
@@ -1034,7 +1101,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'candidate_paths': ['operator', 'hybrid', 'direct_code'],
         'current_decision': 'defer_to_step3b',
         'notes': [
-            'Step 3A 已完成数据/API层，并补齐本地输入快照用于 Step 4 集成执行',
+            'Step 3A 已完成 Data API contract；Step3B 只做小样本证明，Step4 负责全量正式执行',
             '正式实现顺序为 operator -> hybrid -> direct_code；无法保证正确时必须 BLOCK'
         ]
     }
@@ -1104,7 +1171,8 @@ def main():
         'qlib_adapter_config_ref': qlib_path.name,
         'implementation_plan_master_ref': impl_path.name,
         'factor_spec_master_ref': f'factor_spec_master__{report_id}.json',
-        'local_input_paths': data_prep_master['local_input_paths']
+        'local_input_paths': data_prep_master['local_input_paths'],
+        'step4_data_contract': data_prep_master.get('step4_data_contract') or {},
     })
     write_json(handoff_path, handoff_payload)
 

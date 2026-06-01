@@ -25,9 +25,33 @@ def _base_artifacts(tmp_path):
         "feasibility": "ready",
         "sample_window": {"start": "20260101", "end": "20260131"},
         "data_sources": [{"name": "clean_daily_bar"}],
+        "step4_data_contract": {
+            "version": "factorforge_step4_data_contract_v1",
+            "data_api_package": "factorforge_data_api",
+            "formal_factor_values_owner": "Step4",
+            "full_queries": {
+                "clean_daily_bar": {
+                    "dataset": "clean_daily_bar",
+                    "start_date": "20260101",
+                    "end_date": "20260131",
+                    "universe": "a_share_all",
+                    "fields": ["close"],
+                    "frequency": "daily",
+                }
+            },
+            "sample_queries": {
+                "clean_daily_bar": {
+                    "dataset": "clean_daily_bar",
+                    "start_date": "20260101",
+                    "end_date": "20260131",
+                    "universe": ["000001.SZ"],
+                    "fields": ["close"],
+                    "frequency": "daily",
+                }
+            },
+        },
         "local_input_paths": {
             "input_mode": "daily_only",
-            "daily_df_parquet": str(daily.relative_to(tmp_path)),
             "data_api_resolution": {
                 "clean_daily_bar": {
                     "status": "ready",
@@ -53,6 +77,7 @@ def _base_artifacts(tmp_path):
         "qlib_field_map": {"$close": "close"},
         "instrument_field": "ts_code",
         "date_field": "trade_date",
+        "step4_data_contract": prep["step4_data_contract"],
     }
     impl = {"report_id": "R", "implementation_mode": "operator"}
     handoff = {"report_id": "R", "step3a_ready": True, "step3b_ready": False}
@@ -100,6 +125,20 @@ def test_ready_daily_step3a_requires_effective_day_policy(tmp_path):
         assert "BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING" in str(exc)
     else:
         raise AssertionError("expected missing daily filter policy to fail")
+
+
+def test_ready_daily_step3a_requires_step4_data_contract(tmp_path):
+    validate_step3 = _load_validate_step3()
+    prep, qcfg, impl, handoff = _base_artifacts(tmp_path)
+    prep.pop("step4_data_contract")
+    qcfg.pop("step4_data_contract")
+
+    try:
+        validate_step3.validate_step3_readiness_contract(prep, qcfg, impl, handoff, workspace=tmp_path)
+    except AssertionError as exc:
+        assert "BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING" in str(exc)
+    else:
+        raise AssertionError("expected missing Step4 data contract to fail")
 
 
 def test_ready_daily_step3a_readiness_contract_passes(tmp_path):

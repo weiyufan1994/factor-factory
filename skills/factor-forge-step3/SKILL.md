@@ -14,32 +14,32 @@ It has two internal layers:
   - resolves real data sources
   - writes field mappings, proxy rules, coverage checks
   - emits `data_prep_master` and `qlib_adapter_config`
-  - prepares normalized local execution snapshots when available
+  - emits a Step4 Data API contract and does not resolve raw/local clean paths itself
   - should prefer a qlib-friendly contract so later evaluation can reuse qlib operator / strategy / backtest interfaces with minimal reshaping
   - raw aliases may remain (`ts_code`, `trade_date`, `trade_time`), but semantic mapping to qlib-facing keys (`instrument`, `datetime`) must be explicit
   - feature columns are append-only and extensible; later additions such as `pe`, `pb`, `market_cap`, `industry_code`, or custom alpha/risk columns should not require redesign
 
-- **Step 3B — Implementation Planning + Factor Code Generation + First Factor Value Run**
+- **Step 3B — Implementation Planning + Factor Code Generation + Sample Executability Proof**
   - consumes Step 2 products directly: `factor_spec_master__{report_id}.json` plus optional `handoff_to_step3__{report_id}.json`
   - inherits Step 2 research context (`thesis`, `research_contract`, `math_discipline_review`, `learning_and_innovation`)
   - chooses execution mode (`direct_code` / `operator` / `hybrid`)
   - writes `implementation_plan_master`
   - emits editable first-version factor code artifacts for IDE-side refinement
-  - embeds `step2_research_context` in implementation plan, code review comments, expression draft, scaffold, handoff, and first-run metadata
-  - when Step 3A local snapshots are present, must generate a first runnable factor value artifact (`factor_values`) rather than stopping at a pure planning document
+  - embeds `step2_research_context` in implementation plan, code review comments, expression draft, scaffold, handoff, and sample-run metadata
+  - when Step 3A Data API sample queries are present, may generate only non-formal `step3b_sample_*` artifacts to prove executability and schema completeness
 
-Step 3 does **not** perform the final backtest / evaluation itself. Step 4 remains the execution-diagnostics / run-master layer and Step 5 remains the evaluation / archival layer. But Step 3B must now be strong enough to hand over both code artifacts and a first factor-value output when local execution inputs are already prepared.
+Step 3 does **not** perform full data execution or final backtest / evaluation itself. Step 4 owns full Data API fetch, formal `factor_values__{report_id}` outputs, execution diagnostics, and run-master creation; Step 5 remains the evaluation / archival layer.
 
 ## Research Discipline
 
 Step 3 must protect the thesis during implementation:
 - Step 3A records the gap between theoretical variables and real data proxies.
-- Step 3A reuses the shared clean layer by default; full-history cleaning is not a per-factor task.
+- Step 3A consumes the independent `factorforge_data_api` catalog contract; full-history cleaning is not a per-factor task.
 - Step 3B records implementation invariants inherited from Step 2.
 - Step 3B must not silently reduce Step 2 into only a formula column; it must preserve the target statistic, economic mechanism, expected failure modes, and reuse instructions for future agents.
 - Step 3B must flag approximations that change economic meaning.
 - Boundary handling, missing values, extreme values, and numerical stability must be explicit.
-- First-run factor values prove executability, not research validity; Step4/5/6 still decide whether the signal is worth keeping.
+- Step3B sample factor values prove executability, not research validity; Step4/5/6 still decide whether the signal is worth keeping.
 
 ## Inputs
 
@@ -64,10 +64,11 @@ Optional:
 - `factorforge/generated_code/{report_id}/hybrid_execution_scaffold__{report_id}.json`
 - all Step 3B plan/code/scaffold/handoff artifacts must expose `step2_research_context`
 - all Step 3B plan/code/scaffold/handoff artifacts must expose `implementation_mode_decision`
-- first runnable factor values when Step 3A local snapshots are available:
-  - `factorforge/runs/{report_id}/factor_values__{report_id}.parquet`
-  - `factorforge/runs/{report_id}/factor_values__{report_id}.csv`
-  - `factorforge/runs/{report_id}/run_metadata__{report_id}.json`
+- non-formal sample factor values when Step 3A Data API sample queries are available:
+  - `factorforge/runs/{report_id}/step3b_sample_factor_values__{report_id}.parquet`
+  - optional `factorforge/runs/{report_id}/step3b_sample_factor_values__{report_id}.csv`
+  - `factorforge/runs/{report_id}/step3b_sample_run_metadata__{report_id}.json`
+  - metadata must set `is_formal_factor_values=false`, `purpose=step3_executability_proof`, and `formal_factor_values_owner=Step4`
   - `run_metadata.performance_profile` with contract version
     `factorforge_step3b_performance_profile_v1`, row count, phase timings for
     input read / factor compute / normalize-sort / parquet write / CSV write,
@@ -77,7 +78,7 @@ Optional:
     reference engine, memoization/cache stats, deterministic parity status,
     sample size, max absolute diff, rank correlation, and sortedness flags.
     The pandas reference evaluator remains the correctness oracle; optimized
-    execution must match it or block before formal factor values are written.
+    execution must match it or block before sample factor values are written.
     Operator-level profiling is observation-only and can be enabled with
     `FACTORFORGE_ENABLE_OPERATOR_PROFILE=1` or `--operator-profile`; it records
     `formula_engine_profile.operator_profile` and `parity_profile` without
@@ -162,16 +163,16 @@ Optional:
    - calculation steps
    - editable code artifact paths
 4. Step 3B must emit real code-related artifacts; a pure plan without code artifacts is not enough.
-5. If Step 3A has local execution snapshots, Step 3B must produce a first factor-value run artifact. A plan-only PASS is not enough for business acceptance.
-6. Step 3B must carry `step2_research_context` through implementation plan, generated code comments, qlib expression draft, hybrid scaffold, `handoff_to_step4`, and first-run metadata if generated.
+5. If Step 3A has a Data API sample query contract, Step 3B must produce a non-formal sample factor-value proof when executable code exists. A plan-only PASS is not enough for business acceptance.
+6. Step 3B must carry `step2_research_context` through implementation plan, generated code comments, qlib expression draft, hybrid scaffold, `handoff_to_step4`, and sample-run metadata if generated.
 7. Step 3B validation must reject `missing_*` Step2 research-context sentinels; rerun Step2 rather than letting old or incomplete specs pass.
 8. No silent guessing. Missing critical fields must be surfaced as `blocked` or `proxy_ready` with explicit rationale.
 9. Step 3 must reject mixed sample/full execution packages. If minute and daily snapshots have materially inconsistent ticker coverage or sample scope, validation must fail explicitly rather than producing a deceptively small successful run.
 10. `report_id` handling must be internally consistent. File naming, JSON internal `report_id`, and handoff artifact references must agree; alias shortcuts must not silently reuse long-id internals without explicit normalization.
 11. If a Step 3 or downstream Step 4 run depends on user choices not already fixed in artifacts — e.g. benchmark, topk, n_drop, holding horizon, deal price, account size, cost model, universe filter, or whether to run sample vs wider window — the skill must ask for confirmation before launching execution.
-12. Step 3B must not run Step4-style quantile NAV, IC analysis, portfolio charts, or evaluator loops. Step 3B's proof is first-run `factor_values` + metadata only; Step4 owns all metrics, quantile tables, NAV, and plots.
+12. Step 3B must not run Step4-style quantile NAV, IC analysis, portfolio charts, evaluator loops, full-data fetch, or formal factor-value generation. Step 3B's proof is non-formal sample `step3b_sample_factor_values` + metadata only; Step4 owns formal `factor_values`, metrics, quantile tables, NAV, and plots.
 13. Step 3B inputs and outputs must respect the shared data contract: `trade_date` may be read from `YYYYMMDD`, `YYYY-MM-DD`, or Timestamp sources, but outputs should be stable `YYYYMMDD`-compatible keys and Step4 must normalize via `factor_factory.data_access.normalize_trade_date_series`.
-14. Step 3B must write `implementation_mode_decision` with version `factorforge_implementation_mode_decision_v1` into implementation plan, generated-code metadata, handoff, first-run metadata when generated, and ultimate proof summary. The decision must record selected mode or `blocked`, mode attempts, failure/not-applicable reasons, correctness risk, and human-review status.
+14. Step 3B must write `implementation_mode_decision` with version `factorforge_implementation_mode_decision_v1` into implementation plan, generated-code metadata, handoff, sample-run metadata when generated, and ultimate proof summary. The decision must record selected mode or `blocked`, mode attempts, failure/not-applicable reasons, correctness risk, and human-review status.
 15. Child loop execution must be revision-aware. If a report id is a loop child,
 Step3B must require an executable revision spec, apply its child formula before
 identity validation/code generation, and reject missing or no-effect specs with
@@ -198,7 +199,7 @@ A Step 3 run is acceptable only if all of the following are true:
 - validators return PASS
 - no `TODO` / `TO_BE_FILLED` / placeholder residue remains in final artifacts
 - Step 4 can identify a real execution mode and real artifact paths from Step 3 outputs
-- when Step 3A local snapshots exist, Step 3B also emits first-run `factor_values` artifacts with non-trivial row count
+- when Step 3A Data API sample queries exist, Step 3B emits non-formal `step3b_sample_factor_values` artifacts with non-trivial row count and explicit Step4 ownership for formal outputs
 - minute/daily snapshot scope is internally consistent (no accidental full-minute + sample-daily mixed package)
 - object naming is internally consistent (`report_id` in filename, JSON payload, and handoff refs do not conflict)
 
@@ -245,7 +246,7 @@ Operator mode is Formula-IR based. Step3B may select `operator` only when `formu
 
 The pandas reference evaluator is the correctness oracle for operator mode. Qlib expressions are a bridge artifact with explicit `supported` or `unsupported` status; unsupported qlib operators are not approximated or rewritten. If parser, registry, alias resolution, code hash, or parity validation fails, Step3B must BLOCK and write no formal factor values.
 
-Field alias resolution must prefer actual Step3A schema columns, then local snapshot header columns, and use the default schema only for plan-only/no-snapshot mode. If local snapshots are absent, pending first-run outputs must record `no_first_run_reason=no_local_snapshots_available`.
+Field alias resolution must prefer actual Step3A Data API schema columns, then legacy local snapshot header columns, and use the default schema only for plan-only/no-sample mode. If sample queries are absent, pending sample outputs must record the reason explicitly.
 
 ## Hybrid Execution Engine
 

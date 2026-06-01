@@ -19,6 +19,7 @@ def _write_clean_daily_layer(root: Path) -> None:
                 "close": 10.2,
                 "vol": 1000.0,
                 "amount": 10200.0,
+                "pct_chg": 0.1,
             },
             {
                 "ts_code": "000001.SZ",
@@ -29,6 +30,7 @@ def _write_clean_daily_layer(root: Path) -> None:
                 "close": 10.4,
                 "vol": 1100.0,
                 "amount": 11440.0,
+                "pct_chg": 0.2,
             },
         ]
     ).to_parquet(root / "daily_clean.parquet", index=False)
@@ -61,11 +63,26 @@ def test_clean_daily_bar_resolution_reports_policy_schema_and_coverage(tmp_path)
             {
                 "datasets": {
                     "clean_daily_bar": {
-                        "dataset_id": "clean_daily_bar",
-                        "source_uri": "s3://example/clean_daily_bar/v1/daily_clean.parquet",
-                        "artifacts": {
-                            "daily_parquet": str(clean_root / "daily_clean.parquet"),
-                            "metadata_json": str(clean_root / "daily_clean.meta.json"),
+                        "uri": str(clean_root / "daily_clean.parquet"),
+                        "format": "parquet",
+                        "columns": ["ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount", "pct_chg"],
+                        "qlib_field_map": {
+                            "$open": "open",
+                            "$high": "high",
+                            "$low": "low",
+                            "$close": "close",
+                            "$volume": "vol",
+                            "$amount": "amount",
+                            "$ret": "pct_chg",
+                        },
+                        "metadata": {
+                            "producer": "unit_test",
+                            "policy": {
+                                "drop_suspended": True,
+                                "drop_limit_events": True,
+                                "invalid_days_do_not_enter_window": True,
+                                "minimum_effective_days": 10,
+                            },
                         },
                     }
                 }
@@ -85,11 +102,11 @@ def test_clean_daily_bar_resolution_reports_policy_schema_and_coverage(tmp_path)
     assert resolution["dataset_id"] == "clean_daily_bar"
     assert resolution["status"] == "ready"
     assert resolution["access_mode"] == "catalog"
-    assert resolution["artifacts"]["daily_parquet"] == str(clean_root / "daily_clean.parquet")
+    assert resolution["source_uri"] == str(clean_root / "daily_clean.parquet")
     assert resolution["daily_filter_policy"]["drop_suspended"] is True
     assert resolution["daily_filter_policy"]["invalid_days_do_not_enter_window"] is True
     assert "close" in resolution["schema"]["columns"]
-    assert resolution["coverage"]["rows"] == 2
+    assert resolution["coverage"]["row_count"] == 2
 
 
 def test_missing_clean_minute_bar_resolution_blocks_without_silent_fallback(tmp_path):

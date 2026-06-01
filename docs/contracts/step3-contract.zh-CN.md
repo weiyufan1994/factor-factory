@@ -3,7 +3,7 @@
 # Step 3 合约
 
 ## 当前判断
-Step 3 目前已有第一套极简提交的可复现性底层设计，但比 Step 1/2 要求更高，因为当前验证需要本地输入快照，且 Step 3B 在存在快照时必须发出首次运行输出。
+Step 3 现在以独立 Data API 为边界。Step3A 解析 catalog contract 并产出 Step4 data contract；Step3B 在存在 sample query 时只能产出非正式样本执行证明。
 
 ## 当前提交的可复现性输入
 - `fixtures/step3/factor_spec_master__sample.json`
@@ -21,25 +21,27 @@ Step 3 目前已有第一套极简提交的可复现性底层设计，但比 Ste
 - 可选 `handoff_to_step3__{report_id}.json`
 - Step2 研究字段：`thesis`、`research_contract`、`math_discipline_review`、`learning_and_innovation`
 - `alpha_idea_master__{report_id}.json`
-- 极简本地分钟/日线样本输入
-- 可运行的实现文件，供 Step 3B 首次生成输出
+- Step3A 产出的 Data API sample query
+- 可运行的实现文件，供 Step 3B 做样本可执行性证明
 
 ## 输出类
 - `data_prep_master__{report_id}.json`
 - `qlib_adapter_config__{report_id}.json`
 - `implementation_plan_master__{report_id}.json`
 - 生成/可编辑的代码产物
-- 首次运行因子值输出
+- Step3B 非正式样本因子值输出
 - `handoff_to_step4__{report_id}.json`
 
 ## Step3B / Step4 边界
-Step3B 只负责生成或执行首次 `factor_values`，证明代码和输入快照可运行。Step3B 不应执行 Step4 职责：
+Step3B 只负责用 Step3A 的 Data API sample contract 生成非正式 `step3b_sample_factor_values`，证明代码和 schema 可运行。Step3B 不应执行 Step4 职责：
 - 不生成 IC 报告；
 - 不生成 quantile NAV；
 - 不生成组合图表；
 - 不做 portfolio / backend evaluation。
+- 不做 full-data fetch；
+- 不写正式 `factor_values__{report_id}` 或 `run_metadata__{report_id}`。
 
-这些统一由 Step4 标准评估器负责。若 Step3B 因分位数计算、回测图表或 portfolio 逻辑超时，应视为流程边界错误，而不是因子实现本身失败。
+这些统一由 Step4 标准评估器和执行层负责。Step4 消费 `step4_data_contract`，通过 `factorforge_data_api` 拉取全量数据，并拥有正式 factor values。
 
 ## 日期键标准
 Step3A / Step3B / Step4 的 `trade_date` 边界必须兼容：
@@ -53,7 +55,7 @@ Step3A / Step3B / Step4 的 `trade_date` 边界必须兼容：
 ## Step 2 研究上下文传递
 Step 3B 直接消费 Step2 的 factor spec 和 handoff。它必须把一致的
 `step2_research_context` 写入 implementation plan、qlib expression draft、hybrid scaffold、
-Step4 handoff、生成代码审查注释，以及首跑 metadata（如果生成）。该上下文至少保留
+Step4 handoff、生成代码审查注释，以及样本运行 metadata（如果生成）。该上下文至少保留
 target statistic、economic mechanism、expected failure modes、reuse instructions 和
 implementation invariants，让 Step4/5/6 评价的是被实现的研究假设，而不是孤立的数值列。
 
@@ -63,7 +65,7 @@ implementation invariants，让 Step4/5/6 评价的是被实现的研究假设�
 允许的 implementation mode 只有 `operator`、`direct_code`、`hybrid`。mode 不一致、stale `spec_hash`、branch 错误、复制其他 factor 的 generated code、或缺失 manifest identity，都属于 contract failure。
 
 ## Implementation mode 决策审计
-Step3B 必须把 `implementation_mode_decision` 写入 `implementation_plan_master`、generated-code metadata、`handoff_to_step4`、首跑 metadata（如生成），以及 ultimate proof summary。决策记录必须使用 `factorforge_implementation_mode_decision_v1`，明确 selected mode 或 `blocked`，记录 operator/hybrid/direct_code 的尝试结果或 not-applicable 原因，并保留最终 correctness reason。如果 selected mode 是 `blocked`，Step3B 不得写正式 factor values。
+Step3B 必须把 `implementation_mode_decision` 写入 `implementation_plan_master`、generated-code metadata、`handoff_to_step4`、样本运行 metadata（如生成），以及 ultimate proof summary。决策记录必须使用 `factorforge_implementation_mode_decision_v1`，明确 selected mode 或 `blocked`，记录 operator/hybrid/direct_code 的尝试结果或 not-applicable 原因，并保留最终 correctness reason。如果 selected mode 是 `blocked`，Step3B 不得写样本输出或正式 factor values。
 
 ## 正确性优先于完成度
 Step3B 必须按 `operator -> hybrid -> direct_code` 尝试；如果无法证明正确性，就 BLOCK。UBL/CPV/shadow/candle/Williams 逻辑只能作为显式 family plugin 或 fixture。unsupported operator parity、缺失 `formula_ir`、不安全 direct code、或模糊 proxy 改写都必须 BLOCK，不能降级为 warning。

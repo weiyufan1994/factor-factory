@@ -11,7 +11,7 @@ Step 4 is the **execution + evaluation orchestration layer**.
 It keeps the existing execution shell (input validation, run-status discipline, artifact writeback), but upgrades the old single-path runner into a backend-driven evaluation framework.
 
 Concretely, Step 4 now does three things:
-1. executes or loads the factor-value result prepared by Step 3 / implementation code
+1. consumes the Step3 Data API contract, fetches full formal input data through `factorforge_data_api`, and executes the implementation code to write formal `factor_values`
 2. dispatches one or more evaluation backends
 3. writes a unified run envelope plus backend-specific result payloads
 
@@ -42,6 +42,12 @@ These distinctions must be visible enough for Step5/6 to judge whether the metri
 - `factorforge/objects/factor_spec_master/factor_spec_master__{report_id}.json`
 - `factorforge/objects/data_prep_master/data_prep_master__{report_id}.json`
 - `factorforge/objects/handoff/handoff_to_step4__{report_id}.json`
+
+`data_prep_master` or `handoff_to_step4` must expose
+`step4_data_contract.version=factorforge_step4_data_contract_v1` when legacy
+local input snapshots are absent. Step4 may materialize its own run-scoped input
+cache from that contract, but it must not discover raw S3/local paths or build
+clean data layers itself.
 
 ## Outputs
 
@@ -87,6 +93,12 @@ refresh the full factor CSV for compatibility. `sample_csv` and `no_csv` must
 not cause Step4 to generate or refresh `factor_values__{report_id}.csv`; Step4
 should continue to evaluate from parquet and record the observed policy in
 run metadata.
+
+Step3B `step3b_sample_factor_values__{report_id}` artifacts are sample
+executability evidence only. Step4 must not treat them as formal factor values;
+if a legacy Step3B formal-looking parquet exists, Step4 must recompute from the
+Data API/full input contract unless the existing metadata proves it was already
+written by Step4.
 
 ## factor_run_master schema
 

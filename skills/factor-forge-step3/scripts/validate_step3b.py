@@ -1207,8 +1207,14 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
             f'Step3B first_run_outputs contains Step4-only artifact path: {text}'
         )
     if meta:
-        assert meta.get('producer') == 'step3b_first_run', (
-            f'run_metadata.producer must be step3b_first_run, got {meta.get("producer")}'
+        assert meta.get('producer') in {'step3b_sample_proof', 'step3b_first_run'}, (
+            f'run_metadata.producer must be step3b_sample_proof, got {meta.get("producer")}'
+        )
+        assert meta.get('is_formal_factor_values') is not True, (
+            'Step3B metadata must not mark outputs as formal factor_values'
+        )
+        assert meta.get('formal_factor_values_owner') in {None, 'Step4'}, (
+            'Step3B metadata must preserve Step4 ownership for formal factor_values'
         )
         note = str(meta.get('boundary_note') or '')
         assert 'Step4 owns' in note, 'run_metadata must document Step3B/Step4 boundary'
@@ -1352,19 +1358,24 @@ if __name__ == '__main__':
     for bad in ['TODO', 'TO_BE_FILLED', 'placeholder']:
         assert bad not in txt
 
-    # Business acceptance upgrade: if Step 3A already prepared local execution snapshots,
-    # Step 3B should not stop at a plan-only pass.
+    # Step3B executability proof: if Step3A prepared local snapshots or a Data API
+    # sample contract, Step3B should emit non-formal sample outputs only.
     local_inputs = h.get('local_input_paths') or {}
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     input_mode = str(local_inputs.get('input_mode') or '')
-    if (minute_rel and daily_rel) or (input_mode == 'daily_only' and daily_rel):
+    step4_contract = h.get('step4_data_contract') or data.get('step4_data_contract') or prep.get('step4_data_contract') or local_inputs.get('step4_data_contract') or {}
+    sample_queries = step4_contract.get('sample_queries') if isinstance(step4_contract, dict) else {}
+    has_sample_contract = isinstance(sample_queries, dict) and bool(sample_queries.get('clean_daily_bar'))
+    if (minute_rel and daily_rel) or (input_mode == 'daily_only' and daily_rel) or has_sample_contract:
         run_dir = FF / 'runs' / rid
-        factor_parquet = run_dir / f'factor_values__{rid}.parquet'
-        factor_csv = run_dir / f'factor_values__{rid}.csv'
-        meta_json = run_dir / f'run_metadata__{rid}.json'
-        assert factor_parquet.exists() or factor_csv.exists(), 'Step 3B requires first-run factor_values when local snapshots exist'
-        assert meta_json.exists(), 'Step 3B requires run_metadata when local snapshots exist'
+        factor_parquet = run_dir / f'step3b_sample_factor_values__{rid}.parquet'
+        factor_csv = run_dir / f'step3b_sample_factor_values__{rid}.csv'
+        meta_json = run_dir / f'step3b_sample_run_metadata__{rid}.json'
+        assert factor_parquet.exists() or factor_csv.exists(), 'Step 3B requires non-formal sample factor values when sample data is available'
+        assert meta_json.exists(), 'Step 3B requires sample run_metadata when sample data is available'
+        assert not (run_dir / f'factor_values__{rid}.parquet').exists(), 'Step3B must not create formal factor_values parquet'
+        assert not (run_dir / f'run_metadata__{rid}.json').exists(), 'Step3B must not create formal Step4 run_metadata'
         run_meta = load(meta_json)
         assert_step3b_runtime_performance_policy(run_meta)
         assert_step2_context('run_metadata', run_meta.get('step2_research_context'))
@@ -1377,6 +1388,8 @@ if __name__ == '__main__':
         if first_run_outputs.get('status') == 'ready':
             assert first_run_outputs.get('output_paths'), 'ready first_run_outputs must carry output_paths'
             assert first_run_outputs.get('run_metadata_path'), 'ready first_run_outputs must carry run_metadata_path'
+            assert first_run_outputs.get('is_formal_factor_values') is False, 'Step3B ready outputs must be explicitly non-formal'
+            assert first_run_outputs.get('formal_factor_values_owner') == 'Step4', 'Step3B must preserve Step4 as formal factor_values owner'
             assert_no_step4_outputs_in_step3b(first_run_outputs, code_dir, run_meta)
     else:
         first_run_outputs = data.get('first_run_outputs') or h.get('first_run_outputs') or {}

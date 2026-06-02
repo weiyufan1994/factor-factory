@@ -35,7 +35,7 @@ This task did not have approval to start EC2 worker execution. I did not launch 
 
 ## Runtime Branch Reconciliation
 
-Status: `BLOCK_RUNTIME_RECONCILIATION_SMOKE_FAILED`
+Status: `LOCAL_RUNTIME_SMOKE_ACCEPTED`
 
 Read-only classification found remote runtime branch:
 
@@ -59,7 +59,14 @@ Following the plan, those conflicts were resolved by taking `origin/main` for St
 | `run_factorforge_run_isolation_smoke.py` | BLOCK | summary `/Users/humphrey/.factorforge-smoke/runtime_reconcile_isolation/objects/validation/factorforge_run_isolation_smoke_summary.json` |
 | `run_factorforge_formal_artifact_smoke.py` | ACCEPT | summary `/tmp/factorforge_formal_artifact_smoke_summary.json` |
 
-Because reconciliation smoke did not pass, I aborted the merge in `/tmp/factorforge-ec2-runtime-reconcile` and did not push a runtime reconciliation branch.
+Follow-up verification on the closeout branch showed the prior smoke failures are no longer current for the branch being reviewed:
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| `run_factorforge_entrypoint_hygiene_smoke.py` with staging root | ACCEPT | `/Users/humphrey/.factorforge-smoke/runtime_reconcile_hygiene_current` |
+| `run_factorforge_run_isolation_smoke.py` with staging root | ACCEPT | `/Users/humphrey/.factorforge-smoke/runtime_reconcile_isolation_current/objects/validation/factorforge_run_isolation_smoke_summary.json` |
+
+This closes the local runtime-smoke blocker for the branch. It does not by itself prove Humphrey production or research-worker execution, because no EC2 worker was started and no production runtime repo was synced in this closeout verification.
 
 ## Default Acceleration Evidence
 
@@ -124,6 +131,10 @@ The identity includes:
 - `window`
 - `universe_hash`
 - `frequency`
+- selected factor parquet `sha256`
+- selected factor parquet `row_count`
+- selected factor parquet `schema`
+- selected factor parquet key hash
 
 Step4 now computes its expected formal identity and records a `factorforge_reuse_gate_v1` profile. Allowed decisions:
 
@@ -131,7 +142,7 @@ Step4 now computes its expected formal identity and records a `factorforge_reuse
 - `recompute_required`
 - `block_invalid_formal_reuse`
 
-Smoke evidence from `/tmp/factorforge_performance_closeout_smoke/performance_smoke_summary.json`:
+Smoke evidence from `/tmp/factorforge_performance_closeout_release_hygiene/performance_smoke_summary.json`:
 
 | Case | Result |
 | --- | --- |
@@ -140,7 +151,10 @@ Smoke evidence from `/tmp/factorforge_performance_closeout_smoke/performance_smo
 | `step4_recomputes_when_data_window_differs` | `ok=true` |
 | `step4_recomputes_when_catalog_hash_differs` | `ok=true` |
 | `step4_blocks_sample_proof_as_formal_factor_values` | `ok=true` |
+| `step4_recomputes_when_cache_parquet_tampered` | `ok=true` |
 | `performance_profile_script_readonly` | `ok=true` |
+
+The tampered-cache case writes matching Step3B metadata, mutates the selected cache parquet bytes, and verifies Step4 rejects reuse with `reuse_gate.decision=recompute_required` before writing formal factor values.
 
 `performance_profile_script_readonly` diagnostic codes included:
 
@@ -176,10 +190,8 @@ Profiler diagnostic support:
 
 - `BLOCK_REAL_MAC_REPORT_NOT_PROVIDED`: no approved real report/run id was supplied.
 - `BLOCK_EC2_WORKER_NOT_APPROVED_OR_UNAVAILABLE`: EC2 worker start was not authorized.
-- `BLOCK_RUNTIME_RECONCILIATION_SMOKE_FAILED`: runtime branch merge attempt hit smoke failures and was not pushed.
 
 ## Review Questions
 
-1. Should runtime branch reconciliation be fixed in a separate RTA focused on OpenClaw control-plane smoke drift?
-2. Should the current baseline defaulting of `corr/cov` be retained, or should a separate rollback task move them back to opt-in despite current production constants?
-3. Should a human-approved small real report/run id be supplied for Mac and EC2 performance proof, or is synthetic closeout acceptable for code review only?
+1. Should the current baseline defaulting of `corr/cov` be retained, or should a separate rollback task move them back to opt-in despite current production constants?
+2. Should a human-approved small real report/run id be supplied for Mac and EC2 performance proof, or is synthetic closeout acceptable for code review only?

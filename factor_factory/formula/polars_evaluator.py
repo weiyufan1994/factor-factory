@@ -350,7 +350,6 @@ def assert_polars_result_parity(reference: pd.DataFrame, candidate: pd.DataFrame
         or not parity_fields.get('key_order_equal')
         or not parity_fields.get('nan_mask_equal')
         or max_abs_diff_value > tolerance
-        or (rank_corr is not None and float(rank_corr) < 0.999999)
     ):
         raise AssertionError(
             'BLOCK_POLARS_EXPERIMENTAL_PARITY_FAILED: '

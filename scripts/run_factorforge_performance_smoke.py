@@ -1989,6 +1989,39 @@ def run_polars_key_order_parity_ignores_key_dtype_case() -> dict[str, Any]:
     }
 
 
+def run_polars_parity_accepts_within_tolerance_rank_ties_case() -> dict[str, Any]:
+    reference = pd.DataFrame({
+        'ts_code': ['A'] * 4 + ['B'] * 4,
+        'trade_date': [f'2020010{i}' for i in range(1, 5)] * 2,
+        'factor_value': [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+    })
+    candidate = reference.copy()
+    candidate['factor_value'] = [
+        1.0 + 1e-12,
+        1.0 - 1e-12,
+        1.0 + 2e-12,
+        1.0 - 2e-12,
+        2.0 + 1e-12,
+        2.0 - 1e-12,
+        2.0 + 2e-12,
+        2.0 - 2e-12,
+    ]
+    parity = assert_polars_result_parity(reference, candidate, tolerance=1e-10)
+    ok = bool(
+        parity.get('row_count_equal') is True
+        and parity.get('key_order_equal') is True
+        and parity.get('nan_mask_equal') is True
+        and float(parity.get('max_abs_diff') or 0.0) <= 1e-10
+        and parity.get('rank_corr') is not None
+        and float(parity.get('rank_corr')) < 0.999999
+    )
+    return {
+        'case': 'polars_parity_accepts_within_tolerance_rank_ties',
+        **parity,
+        'ok': ok,
+    }
+
+
 def run_polars_parity_failure_diagnostics_present_case() -> dict[str, Any]:
     reference = pd.DataFrame({
         'ts_code': ['A', 'A', 'B', 'B'],
@@ -7074,6 +7107,7 @@ def main() -> int:
         run_polars_unsupported_operator_fallback_or_block_case(),
         run_polars_parity_failure_blocks_case(),
         run_polars_key_order_parity_ignores_key_dtype_case(),
+        run_polars_parity_accepts_within_tolerance_rank_ties_case(),
         run_polars_parity_failure_diagnostics_present_case(),
         run_ts_rank_default_disabled_large_case(),
         run_ts_rank_experimental_fast_parity_case(),

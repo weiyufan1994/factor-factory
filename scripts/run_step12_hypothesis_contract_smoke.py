@@ -69,6 +69,16 @@ def import_run_step3_module():
     return module
 
 
+def import_run_step3b_module():
+    path = REPO_ROOT / "skills" / "factor-forge-step3" / "scripts" / "run_step3b.py"
+    spec = importlib.util.spec_from_file_location("factorforge_step12_smoke_run_step3b", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to import {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def remove_mechanism_source_fields(payload: dict[str, Any]) -> None:
     contract = payload.get("mechanism_math_contract")
     if isinstance(contract, dict):
@@ -159,6 +169,55 @@ def run_step3a_blocked_handoff_clears_execution_state_case() -> dict[str, Any]:
         "stale_refs_absent": stale_refs_absent,
         "local_input_paths": local_inputs,
         "stale_local_inputs_absent": stale_local_inputs_absent,
+    }
+
+
+def run_step3b_cannot_upgrade_blocked_step3a_handoff_case() -> dict[str, Any]:
+    module = import_run_step3b_module()
+    existing = {
+        "report_id": "STEP12_BLOCKED_STEP3A",
+        "step3a_ready": False,
+        "step3b_ready": False,
+        "first_run_outputs": {
+            "status": "blocked",
+            "no_first_run_reason": "step3a_feasibility_blocked",
+            "output_paths": [],
+            "run_metadata_path": None,
+            "factor_values_path": None,
+        },
+        "local_input_paths": {
+            "input_mode": "blocked",
+            "snapshot_source": "step3a_feasibility_blocked",
+        },
+    }
+    merged = module.merge_handoff(existing, {
+        "report_id": "STEP12_BLOCKED_STEP3A",
+        "step3a_ready": False,
+        "step3b_ready": True,
+        "first_run_outputs": {
+            "status": "pending",
+            "no_first_run_reason": "no_local_snapshots_available",
+            "output_paths": [],
+            "run_metadata_path": None,
+            "factor_values_path": None,
+            "producer": "step3b",
+        },
+        "factor_impl_stub_ref": "generated_code/STEP12_BLOCKED_STEP3A/factor_impl_stub__STEP12_BLOCKED_STEP3A.py",
+    })
+    first_run = merged.get("first_run_outputs") or {}
+    ok = (
+        merged.get("step3a_ready") is False
+        and merged.get("step3b_ready") is False
+        and first_run.get("status") == "blocked"
+        and first_run.get("no_first_run_reason") == "step3a_feasibility_blocked"
+        and "factor_impl_stub_ref" not in merged
+    )
+    return {
+        "ok": bool(ok),
+        "step3a_ready": merged.get("step3a_ready"),
+        "step3b_ready": merged.get("step3b_ready"),
+        "first_run_outputs": first_run,
+        "factor_impl_stub_ref": merged.get("factor_impl_stub_ref"),
     }
 
 
@@ -359,6 +418,7 @@ def main() -> int:
         mutation_cases["missing_mechanism_source_hypotheses_blocks_step2"] = {"ok": False, "skipped": "positive Step2 wrapper failed"}
 
     mutation_cases["step3a_blocked_handoff_clears_execution_state"] = run_step3a_blocked_handoff_clears_execution_state_case()
+    mutation_cases["step3b_cannot_upgrade_blocked_step3a_handoff"] = run_step3b_cannot_upgrade_blocked_step3a_handoff_case()
 
     if commands["alpha019_run_step2_wrapper"]["rc"] == 0:
         proc = run([

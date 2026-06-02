@@ -590,6 +590,20 @@ def runtime_python() -> Path:
     return Path('/usr/bin/python3')
 
 
+def backend_runtime_python(backend: str, backend_cfg: dict[str, Any]) -> Path:
+    if backend == 'qlib_backtest':
+        raw_env = backend_cfg.get('env') if isinstance(backend_cfg.get('env'), dict) else {}
+        qlib_python = (
+            backend_cfg.get('qlib_python')
+            or backend_cfg.get('qlib_python_path')
+            or raw_env.get('FACTORFORGE_QLIB_PYTHON')
+            or os.getenv('FACTORFORGE_QLIB_PYTHON')
+        )
+        if qlib_python:
+            return Path(str(qlib_python)).expanduser()
+    return runtime_python()
+
+
 def resolve_backend_script_path(raw_path: str | None) -> Path | None:
     if not raw_path:
         return None
@@ -627,7 +641,7 @@ def run_backend_script(
 
     # Custom backends receive the same CLI envelope as built-in adapters.
     cmd = [
-        str(runtime_python()),
+        str(backend_runtime_python(backend, backend_cfg)),
         str(script_path),
         '--report-id',
         report_id,
@@ -711,15 +725,21 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
     status = 'ready'
     reason = None
 
+    qlib_python = backend_runtime_python('qlib_backtest', backend_cfg)
+    check_code = (
+        "import qlib; "
+        "assert hasattr(qlib, 'init'), f'imported non-Microsoft qlib package without init: {getattr(qlib, \"__file__\", None)}'; "
+        "from qlib.data import D"
+    )
     try:
-        import qlib  # noqa: F401
-        if not hasattr(qlib, 'init'):
-            raise ImportError(f'imported non-Microsoft qlib package without init: {getattr(qlib, "__file__", None)}')
-        from qlib.data import D  # noqa: F401
+        result = subprocess.run([str(qlib_python), '-c', check_code], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or '').strip()
+            raise ImportError(detail or f'{qlib_python} returned {result.returncode}')
         qlib_import_ok = True
     except Exception as exc:  # pragma: no cover - environment-specific dependency guard
         qlib_import_ok = False
-        qlib_import_reason = f'qlib import/config unavailable for native backend: {type(exc).__name__}: {exc}'
+        qlib_import_reason = f'qlib import/config unavailable for native backend via {qlib_python}: {type(exc).__name__}: {exc}'
 
     if not provider_present:
         status = 'skipped_native_missing_provider'
@@ -741,6 +761,7 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
         'provider_uri': str(provider_path) if provider_path is not None else (str(candidate_paths[0]) if candidate_paths else None),
         'provider_present': bool(provider_present),
         'qlib_import_checked': qlib_import_checked,
+        'qlib_python': str(qlib_python),
         'qlib_import_ok': qlib_import_ok,
         'native_attempted': False,
         'status': status,

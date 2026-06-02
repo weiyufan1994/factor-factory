@@ -295,6 +295,10 @@ def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, A
         'long_side_sharpe',
         'long_side_max_drawdown',
         'long_side_recovery_days',
+        'long_side_drawdown_area',
+        'long_side_normalized_drawdown_area',
+        'long_side_max_drawdown_episode_area',
+        'long_side_recovery_pain_area',
         'long_side_turnover_mean_daily',
         'turnover_mean',
         'trading_cogs_daily',
@@ -304,6 +308,10 @@ def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, A
         'cost_adjusted_long_side_sharpe',
         'cost_adjusted_long_side_max_drawdown',
         'cost_adjusted_long_side_recovery_days',
+        'cost_adjusted_long_side_drawdown_area',
+        'cost_adjusted_long_side_normalized_drawdown_area',
+        'cost_adjusted_long_side_max_drawdown_episode_area',
+        'cost_adjusted_long_side_recovery_pain_area',
     ]:
         if key in sq_long:
             metrics[key] = sq_long.get(key)
@@ -541,6 +549,31 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
     else:
         recovery_status = 'too_slow'
 
+    drawdown_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_drawdown_area',
+        'long_side_drawdown_area',
+    ])
+    normalized_drawdown_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_normalized_drawdown_area',
+        'long_side_normalized_drawdown_area',
+    ])
+    max_drawdown_episode_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_max_drawdown_episode_area',
+        'long_side_max_drawdown_episode_area',
+    ])
+    recovery_pain_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_recovery_pain_area',
+        'long_side_recovery_pain_area',
+    ])
+    if normalized_drawdown_area is None:
+        drawdown_area_status = 'missing'
+    elif normalized_drawdown_area < 0.03:
+        drawdown_area_status = 'acceptable'
+    elif normalized_drawdown_area <= 0.08:
+        drawdown_area_status = 'elevated'
+    else:
+        drawdown_area_status = 'high'
+
     return {
         'thresholds': thresholds,
         'metric_unit_policy': {
@@ -566,6 +599,14 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
             'value_at_risk': value_at_risk,
             'expected_shortfall': expected_shortfall,
             'capital_impairment': max_drawdown,
+            'drawdown_geometry': {
+                'drawdown_area': drawdown_area,
+                'normalized_drawdown_area': normalized_drawdown_area,
+                'max_drawdown_episode_area': max_drawdown_episode_area,
+                'recovery_pain_area': recovery_pain_area,
+                'status': drawdown_area_status,
+                'interpretation': 'area measures total underwater investor pain; smaller is better',
+            },
             'drawdown_provision': drawdown_provision,
             'payback_days': recovery_days,
             'economic_net_alpha': economic_net_alpha,
@@ -590,6 +631,17 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
         'sharpe_ratio': sharpe,
         'sharpe_status': sharpe_status,
         'capital_expenditure_proxy_max_drawdown': max_drawdown,
+        'drawdown_geometry': {
+            'drawdown_area': drawdown_area,
+            'normalized_drawdown_area': normalized_drawdown_area,
+            'max_drawdown_episode_area': max_drawdown_episode_area,
+            'recovery_pain_area': recovery_pain_area,
+            'status': drawdown_area_status,
+            'interpretation': (
+                'area measures total underwater investor pain; smaller is better. '
+                'If normalized_drawdown_area is elevated or high, holder experience remains poor even if max drawdown alone is acceptable.'
+            ),
+        },
         'drawdown_status': drawdown_status,
         'depreciation_or_payback_proxy_recovery_days': recovery_days,
         'recovery_status': recovery_status,
@@ -1350,6 +1402,24 @@ def build_mechanism_analysis(
         'similar_success_count': len(similar_success),
         'similar_failure_count': len(similar_failure),
     }
+    research_equation = (
+        mechanism_math_contract_v2.get('research_equation')
+        if isinstance(mechanism_math_contract_v2.get('research_equation'), dict)
+        else {}
+    )
+    equation_status = str(research_equation.get('equation_status') or 'research_conjecture')
+    equation_supported = 'supported' if fit in {'strong', 'partial'} and not cost_negative and not short_dominance else (
+        'challenged' if fit in {'weak', 'contradicted'} or cost_negative or short_dominance else 'under_specified'
+    )
+    failed_equation_component = 'none'
+    if evidence_verdict == 'blocked':
+        failed_equation_component = 'implementation_contract'
+    elif cost_negative:
+        failed_equation_component = 'trading_cost'
+    elif short_dominance or long_negative:
+        failed_equation_component = 'observable_estimator'
+    elif metrics.get('metric_verdict') in {'negative', 'inconclusive'}:
+        failed_equation_component = 'price_process_projection'
 
     return {
         'return_source': return_source,
@@ -1380,6 +1450,26 @@ def build_mechanism_analysis(
         'mechanism_math_contract': mechanism_math_contract,
         'mechanism_math_contract_v2': mechanism_math_contract_v2,
         'mechanism_math_summary': mechanism_math_summary,
+        'research_equation_review': {
+            'reviewer_task': 'research_equation_reviewer',
+            'equation_status': equation_status,
+            'equation_supported_by_metrics': equation_supported,
+            'metric_links': {
+                'rank_ic': f"rank_ic_direction={metrics.get('rank_ic_direction')}; rank_ic_mean={headline_metrics.get('rank_ic_mean')}",
+                'long_side_return': f"long_side_direction={metrics.get('long_side_direction')}; annual_return={headline_metrics.get('long_side_annual_return')}",
+                'cost_adjusted_return': f"cost_adjusted_status={long_quality.get('cost_adjusted_status')}; annual_return={headline_metrics.get('cost_adjusted_annual_return')}",
+                'turnover': f"turnover_risk={cost_risk.get('turnover_too_high')}; daily_turnover={headline_metrics.get('long_side_turnover_mean_daily') or headline_metrics.get('turnover_mean')}",
+                'volatility_drag': f"volatility_drag={headline_metrics.get('volatility_drag')}; annual_volatility={headline_metrics.get('long_side_annual_volatility')}",
+                'max_drawdown': f"max_drawdown={headline_metrics.get('long_side_max_drawdown') or headline_metrics.get('cost_adjusted_long_side_max_drawdown')}",
+                'recovery_days': f"recovery_days={headline_metrics.get('long_side_recovery_days') or headline_metrics.get('cost_adjusted_long_side_recovery_days')}",
+            },
+            'failed_equation_component': failed_equation_component,
+            'revision_implication': (
+                'No research-equation revision is indicated by current model-layer metrics.'
+                if failed_equation_component == 'none'
+                else f"Revise the {failed_equation_component} layer before promotion."
+            ),
+        },
         'mechanism_projection_diagnosis': {
             'economic_hypothesis': 'supported' if fit in {'strong', 'partial'} else 'challenged',
             'primary_mechanism_model': 'supported' if fit in {'strong', 'partial'} else 'challenged',

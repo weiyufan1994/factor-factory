@@ -14,6 +14,8 @@ Full prompt is embedded in SKILL.md. Key structural requirements:
 - preferred_economic_hypothesis must justify why it beats alternatives
 - alternative_return_source_tests must include at least one discriminating test
 - primary_mathematical_model must be selected from the economic hypothesis
+- research_equation must classify the equation as strict_identity, institutional_constraint, behavioral_feedback, empirical_invariance, or research_conjecture, and must include assumptions, validity_scope, latent_state, observable_estimator, expected_metric_signature, falsification_tests, and kill_criteria
+- t0_t1_stochastic_benchmark must explain whether the observable estimator affects drift, diffusion, jump, friction, regime transition, or observation equation over T+0/T+1 or report_horizon
 - Do not default every factor to a stochastic process; stochastic process,
   Ito calculus, linear algebra, optimization, information theory, and causal
   tests are benchmark tools for projection, diagnostic, derivation, or
@@ -21,6 +23,7 @@ Full prompt is embedded in SKILL.md. Key structural requirements:
 - formula_as_observable_estimator must state the latent state, constraint,
   pressure, belief error, risk exposure, or information delay estimated by the
   formula and why this is not a raw-field restatement
+- formula_implied_information, formula_implied_information_review, metric_signature_match by model layer, and drawdown geometry interpretation must be requested when Step4 metrics exist
 
 ## Challenger Intake Prompt
 

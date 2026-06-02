@@ -54,6 +54,15 @@ VALID_REVISION_MODEL_LAYERS = {
     "observable_estimator",
     "implementation_contract",
 }
+VALID_RESEARCH_EQUATION_REVISION_TARGETS = {
+    "assumptions",
+    "latent_state",
+    "observable_estimator",
+    "price_process_projection",
+    "implementation_contract",
+    "trading_cost",
+    "drawdown_geometry",
+}
 
 VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES = {
     "bug",
@@ -225,6 +234,20 @@ def _validate_formula_implied_information_review(proposal: dict[str, Any]) -> li
     return list(dict.fromkeys(reasons))
 
 
+def _validate_research_equation_revision(proposal: dict[str, Any]) -> list[str]:
+    revision = proposal.get("research_equation_revision")
+    if not isinstance(revision, dict):
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
+    if (
+        revision.get("equation_component_target") not in VALID_RESEARCH_EQUATION_REVISION_TARGETS
+        or not _nonempty_str(revision.get("equation_change"))
+        or not _nonempty_str_list(revision.get("expected_metric_signature_change"), min_count=1)
+        or not _nonempty_str_list(revision.get("falsification_tests"), min_count=1)
+    ):
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
+    return []
+
+
 def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     """Return block reasons. Empty means valid."""
     reasons: list[str] = []
@@ -272,6 +295,7 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
 
     reasons.extend(_validate_derivation_record(proposal))
     reasons.extend(_validate_formula_implied_information_review(proposal))
+    reasons.extend(_validate_research_equation_revision(proposal))
 
     guards = proposal.get("forbidden_changes_ack") or []
     missing_guards = [item for item in REQUIRED_GUARDS if item not in guards]

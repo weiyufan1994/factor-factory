@@ -38,11 +38,21 @@ them. `benchmark_math_tools` must explain what each tool rules in, rules out,
 or reveals about the model.
 
 The mechanism contract should state:
+- research_equation with classification, assumptions, validity_scope,
+  latent_state, observable_estimator, expected metric signature,
+  falsification tests, and kill criteria;
 - primary mathematical model and why it follows from the economic hypothesis;
 - formula observable estimator and why it is not a raw-field restatement;
+- t0_t1_stochastic_benchmark showing whether the estimator affects drift,
+  diffusion, jump, friction, regime transition, or observation equation;
 - stochastic return projection or other testable implication under `F_t`;
 - discriminating tests against alternative return sources;
 - expected metric signatures for Step4/Step5 falsification.
+
+Prompt outputs must include `research_equation`,
+`t0_t1_stochastic_benchmark`, `formula_implied_information`,
+`formula_implied_information_review`, `metric_signature_match` by model layer,
+and drawdown geometry interpretation when Step4 metrics exist.
 
 ## Challenger Route
 

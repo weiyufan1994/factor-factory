@@ -102,9 +102,15 @@ benchmark mathematical tools such as stochastic processes, Ito calculus, linear
 algebra, optimization, information theory, and causal/placebo tests are used for
 projection, diagnostic, derivation, or falsification. Do not default every
 failed factor to a stochastic-process story or a generic payer narrative.
+Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
 Council proposals must state which economic hypothesis, primary mathematical
 model, observable estimator, benchmark test, and falsification signature they
 are revising.
+Step6 `mechanism_analysis` must include `research_equation_review` with metric
+links for rank IC, long-side return, cost-adjusted return, turnover,
+volatility drag, max drawdown, recovery days, and drawdown geometry when
+available. Revision Council proposals must include
+`research_equation_revision` and target the failed equation component.
 36. Before any Revision Council packet or agentic dispatch is built, Step6 must
 write a current-agent mechanism questionnaire:
 `objects/research_iteration_master/main_agent_mechanism_questionnaire__<report_id>.json`

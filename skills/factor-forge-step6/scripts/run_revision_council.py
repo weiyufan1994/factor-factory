@@ -67,6 +67,18 @@ def base_proposal(packet: dict[str, Any], role: str) -> dict[str, Any]:
         "candidate_revision_laws": [],
         "return_source_hypothesis": mechanism.get("return_source") if mechanism.get("return_source") in {"risk_premium", "information_advantage", "constraint_driven_arbitrage", "mixed", "unknown"} else "unknown",
         "expression_change": "",
+        "research_equation_revision": {
+            "equation_component_target": "observable_estimator",
+            "equation_change": "Test whether the observable estimator or expression-level state better maps to the research equation.",
+            "expected_metric_signature_change": [
+                "long-side cost-adjusted return should improve if the research equation component is repaired",
+                "rank IC and turnover should remain consistent with the revised estimator horizon",
+            ],
+            "falsification_tests": [
+                "Reject if the revised equation component does not improve long-side cost-adjusted metrics.",
+                "Reject if improvement appears only in diagnostic spread metrics.",
+            ],
+        },
         "why_not_portfolio_fix": "The council is proposal-only and can only suggest expression-level or audit hypotheses; execution-wrapper changes, side-selection rescue, bucket-trading rescue, and shared-dataset mutation are forbidden.",
         "forbidden_changes_ack": list(REQUIRED_GUARDS),
         "confidence": "low",

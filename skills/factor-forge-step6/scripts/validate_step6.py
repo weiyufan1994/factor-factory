@@ -198,6 +198,33 @@ IMPLEMENTATION_MODEL_LINKAGE_KEYS = {
     'implementation_data_contract',
 }
 PLACEHOLDER_MODEL_LINKAGE_VALUES = {'', 'unknown', 'under_specified', 'n/a', 'none', 'todo', 'tbd'}
+REQUIRED_RESEARCH_EQUATION_METRIC_LINKS = {
+    'rank_ic',
+    'long_side_return',
+    'cost_adjusted_return',
+    'turnover',
+    'volatility_drag',
+    'max_drawdown',
+    'recovery_days',
+}
+VALID_RESEARCH_EQUATION_SUPPORT = {'supported', 'challenged', 'under_specified'}
+VALID_FAILED_EQUATION_COMPONENTS = {
+    'none',
+    'assumptions',
+    'latent_state',
+    'observable_estimator',
+    'price_process_projection',
+    'implementation_contract',
+    'trading_cost',
+    'drawdown_geometry',
+}
+GENERIC_RESEARCH_EQUATION_METRIC_TEXT = {
+    'metrics support the model',
+    'metrics support mechanism',
+    'supported by metrics',
+    'good',
+    'ok',
+}
 COUNCIL_FORBIDDEN_SKIP_KEYS = {
     'hard_guards',
     'forbidden_search',
@@ -352,6 +379,38 @@ def validate_step6_model_linkage(mechanism_analysis: dict, revision_strategy: di
     revision_hypotheses = revision_strategy.get('revision_hypotheses') or []
     if revision_hypotheses and not all(isinstance(item, dict) and item.get('revision_model_layer') in VALID_MODEL_LAYER_TARGETS - {'none'} for item in revision_hypotheses):
         failures.append('BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING')
+
+    research_equation_review = mechanism_analysis.get('research_equation_review')
+    mechanism_math_contract_v2 = mechanism_analysis.get('mechanism_math_contract_v2') if isinstance(mechanism_analysis.get('mechanism_math_contract_v2'), dict) else {}
+    research_equation = mechanism_math_contract_v2.get('research_equation') if isinstance(mechanism_math_contract_v2.get('research_equation'), dict) else {}
+    expected_equation_status = research_equation.get('equation_status')
+    if not isinstance(research_equation_review, dict):
+        failures.append('BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS')
+    else:
+        metric_links = research_equation_review.get('metric_links')
+        metric_link_values_ok = isinstance(metric_links, dict) and REQUIRED_RESEARCH_EQUATION_METRIC_LINKS.issubset(set(metric_links.keys()))
+        if metric_link_values_ok:
+            for key in REQUIRED_RESEARCH_EQUATION_METRIC_LINKS:
+                value = metric_links.get(key)
+                normalized = str(value or '').strip().lower()
+                if (
+                    not nonempty_str(value)
+                    or normalized in PLACEHOLDER_MODEL_LINKAGE_VALUES
+                    or normalized in GENERIC_RESEARCH_EQUATION_METRIC_TEXT
+                ):
+                    metric_link_values_ok = False
+                    break
+        review_ok = (
+            research_equation_review.get('reviewer_task') == 'research_equation_reviewer'
+            and research_equation_review.get('equation_supported_by_metrics') in VALID_RESEARCH_EQUATION_SUPPORT
+            and research_equation_review.get('failed_equation_component') in VALID_FAILED_EQUATION_COMPONENTS
+            and nonempty_str(research_equation_review.get('revision_implication'))
+            and metric_link_values_ok
+        )
+        if expected_equation_status:
+            review_ok = review_ok and research_equation_review.get('equation_status') == expected_equation_status
+        if not review_ok:
+            failures.append('BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS')
     return failures
 
 
@@ -998,6 +1057,20 @@ if __name__ == '__main__':
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL',
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL' not in model_linkage_failures,
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract',
+        ))
+        checks.append(check(
+            'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS',
+            'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS' not in model_linkage_failures,
+            'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS: Step6 metrics must explicitly link to research_equation_review and required metric links',
+        ))
+        research_equation = mechanism_math_contract_v2.get('research_equation') if isinstance(mechanism_math_contract_v2.get('research_equation'), dict) else {}
+        research_equation_review = mechanism_analysis.get('research_equation_review') if isinstance(mechanism_analysis.get('research_equation_review'), dict) else {}
+        checks.append(check(
+            'research_conjecture_promotion_requires_supported_equation',
+            decision != 'promote_official'
+            or research_equation.get('equation_status') != 'research_conjecture'
+            or research_equation_review.get('equation_supported_by_metrics') == 'supported',
+            'research_conjecture cannot promote unless research_equation_review.equation_supported_by_metrics=supported',
         ))
         factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
         factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}

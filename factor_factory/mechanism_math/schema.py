@@ -66,6 +66,68 @@ VALID_PRICE_PROCESS_PROJECTION_ROLES_V2 = {
     "observation",
 }
 
+VALID_RESEARCH_EQUATION_STATUSES = {
+    "strict_identity",
+    "institutional_constraint",
+    "behavioral_feedback",
+    "empirical_invariance",
+    "research_conjecture",
+}
+
+VALID_SYMMETRY_BREAKING_TYPES = {
+    "none",
+    "institutional_constraint",
+    "liquidity_constraint",
+    "behavioral_bias",
+    "information_delay",
+    "funding_pressure",
+    "inventory_pressure",
+    "market_microstructure_friction",
+    "capacity_or_crowding",
+    "regime_shift",
+    "other",
+}
+
+REQUIRED_RESEARCH_EQUATION_FIELDS = [
+    "equation_text",
+    "equation_status",
+    "assumptions",
+    "validity_scope",
+    "symmetry_or_constraint",
+    "symmetry_breaking_mechanism",
+    "latent_state",
+    "observable_estimator",
+    "expected_metric_signature",
+    "falsification_tests",
+    "kill_criteria",
+]
+
+VALID_T0_T1_PRICE_PROCESS_TERMS = {
+    "drift",
+    "diffusion",
+    "jump",
+    "friction",
+    "regime_transition",
+    "observation_equation",
+}
+
+REQUIRED_T0_T1_BENCHMARK_FIELDS = [
+    "benchmark_required",
+    "horizon",
+    "affected_terms",
+    "conditional_distribution_claim",
+    "benchmark_implication",
+    "when_primary_model_cannot_infer",
+    "falsification_tests",
+]
+
+DRAWDOWN_GEOMETRY_FIELDS = [
+    "drawdown_area",
+    "normalized_drawdown_area",
+    "max_drawdown_episode_area",
+    "recovery_pain_area",
+]
+
 VALID_TOOLKITS = {
     "probability_theory",
     "statistics",

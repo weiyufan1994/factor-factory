@@ -8,6 +8,7 @@ description: Step 2 of the Factor Factory pipeline — Factor Spec Extraction an
 ## What This Skill Does
 
 Step 2 converts an `alpha_idea_master` into a machine-readable `factor_spec_master` — the authoritative construction blueprint for implementing the factor in Step 3.
+Before generating factor_spec_master or direct_code, use the Dirac-Style Step2 Factor Spec Prompt in references/prompts.md.
 
 Step 2 also emits `mechanism_math_contract` as an incremental research
 discipline layer. The contract formalizes the intended mapping from economic

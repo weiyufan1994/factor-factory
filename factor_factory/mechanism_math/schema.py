@@ -102,6 +102,21 @@ REQUIRED_RESEARCH_EQUATION_FIELDS = [
     "kill_criteria",
 ]
 
+REQUIRED_EQUATION_QUALITY_FIELDS = [
+    "evidence_tier",
+    "audit_basis",
+    "participant_constraint_loop",
+    "demotion_triggers",
+    "quality_score",
+]
+
+# Quality rules:
+# strict_identity requires audit_basis.
+# institutional_constraint requires cited rule/mandate/constraint.
+# behavioral_feedback requires participant_constraint_loop.
+# empirical_invariance requires validity_scope and cross-sample test.
+# research_conjecture cannot authorize promotion before Step6 evidence.
+
 VALID_T0_T1_PRICE_PROCESS_TERMS = {
     "drift",
     "diffusion",

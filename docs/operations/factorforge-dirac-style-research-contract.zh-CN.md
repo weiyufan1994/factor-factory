@@ -411,7 +411,88 @@ recovery_pain_area = sum_{t = trough}^{recovery} underwater_t
 - validator 已要求 `formula_implied_information_review` 和 unexpected implication 分类；
 - Step6 validator 已要求 metrics 回扣模型层；
 - Step6 已有 turnover COGS、volatility drag、max drawdown、recovery days 的业务评价；
-- 尚未完整硬化：`research_equation` 分层字段、T+0/T+1 stochastic benchmark 字段、drawdown area / recovery pain area 指标、对应 validator 和 smoke。
+- 已硬化：`research_equation` 分层字段、T+0/T+1 stochastic benchmark 字段、drawdown area / recovery pain area 指标、equation quality rubric、discovery queue、prompt contract smoke、对应 validator 和 smoke。
+
+## Equation Quality Rubric
+
+`research_equation` 不只要分类，还要说明质量来源：
+
+```json
+{
+  "evidence_tier": "logical_identity|institutional_rule|documented_microstructure_law|cross_asset_empirical_invariance|single_market_empirical_regular|report_specific_hypothesis",
+  "audit_basis": [],
+  "participant_constraint_loop": {
+    "payer": "",
+    "constraint": "",
+    "repeat_mechanism": "",
+    "failure_condition": ""
+  },
+  "demotion_triggers": [],
+  "quality_score": 0
+}
+```
+
+Validator 规则：
+
+- `strict_identity` 必须有 `audit_basis`；
+- `behavioral_feedback` 必须有 `participant_constraint_loop.repeat_mechanism`；
+- `empirical_invariance` 必须有明确 `validity_scope`；
+- `research_conjecture` 不能在未证实前授权 promotion；
+- `demotion_triggers` 必须来自已知触发器，例如 participant structure change、liquidity regime change、metric signature mismatch 或 cross-sample failure。
+
+## Equation-To-Factor Discovery Queue
+
+类 Dirac 方法也用于发现因子，但 discovery candidate 只能是 review packet，不是自动执行任务。
+
+队列 JSON：
+
+```json
+{
+  "version": "factorforge_dirac_discovery_queue_v1",
+  "report_id": "",
+  "source": "step6_anomaly_review|explicit_discovery_request",
+  "auto_run_allowed": false,
+  "candidates": [],
+  "validation_blocks": {}
+}
+```
+
+候选项必须包含：
+
+- `source_equation_id`
+- `observable_inputs`
+- `measurement_equation`
+- `expected_metric_signature`
+- `expected_cost_risk_profile`
+- `stochastic_benchmark_terms`
+- `falsification_tests`
+- `branch_action=review_only|human_approval_required`
+- `auto_run_allowed=false`
+
+任何 equation-derived candidate 都不得自动启动 Step2/Step3/Step4。只有现有 run loop 或人工批准的 branch request 可以把候选项转为正式因子研究。
+
+## LLM Prompt Pack
+
+Repo prompt references 必须包含四个命名 prompt block：
+
+- `Dirac-Style Step1 Mechanism Extraction Prompt`
+- `Dirac-Style Step2 Factor Spec Prompt`
+- `Dirac-Style Step6 Council Prompt`
+- `Equation-To-Factor Discovery Prompt`
+
+Prompt smoke 检查这些 prompt 是否要求：
+
+- classified research equation；
+- `equation_status`、`assumptions`、`validity_scope`；
+- `primary_mathematical_model`；
+- `t0_t1_stochastic_benchmark`；
+- `observable_detector_contract`；
+- `formula_implied_information`；
+- `expected_metric_signature`；
+- `falsification_tests`；
+- `kill_criteria`。
+
+Prompt 不得诱导模型只解释公式、默认 stochastic process 是 primary model、用 IC alone 证明因子，或把 `formula_text` 当作 mechanism。
 
 ## 后续任务边界
 

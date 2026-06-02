@@ -10,6 +10,7 @@ from .schema import (
     FORBIDDEN_REPAIR_TERMS,
     FUNDAMENTAL_FIELDS,
     PRICE_FIELDS,
+    REQUIRED_EQUATION_QUALITY_FIELDS,
     REQUIRED_INFORMATION_SET_FIELDS,
     REQUIRED_REVISION_OPERATOR_FIELDS,
     REQUIRED_RESEARCH_EQUATION_FIELDS,
@@ -27,6 +28,7 @@ from .schema import (
     VALID_TOOLKITS,
     VOLUME_FIELDS,
 )
+from .equation_quality import score_research_equation
 
 
 def _nonempty_str(value: Any) -> bool:
@@ -318,6 +320,13 @@ def _validate_research_equation(contract: dict[str, Any]) -> list[dict[str, str]
             "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
             f"research_equation missing required fields: {missing}",
         )
+    missing_quality = [field for field in REQUIRED_EQUATION_QUALITY_FIELDS if field not in equation]
+    if missing_quality:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            f"research_equation missing equation quality fields: {missing_quality}",
+        )
 
     status = equation.get("equation_status")
     if status not in VALID_RESEARCH_EQUATION_STATUSES:
@@ -397,6 +406,14 @@ def _validate_research_equation(contract: dict[str, Any]) -> list[dict[str, str]
             "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
             "behavioral_feedback research_equation requires explicit assumptions and falsification tests",
         )
+    if status == "behavioral_feedback":
+        participant_loop = equation.get("participant_constraint_loop") or {}
+        if not isinstance(participant_loop, dict) or not _meaningful_str(participant_loop.get("repeat_mechanism")):
+            _failures_add(
+                failures,
+                "BLOCK_DIRAC_EQUATION_PARTICIPANT_LOOP_MISSING",
+                "behavioral_feedback research_equation requires participant_constraint_loop.repeat_mechanism",
+            )
 
     if status == "empirical_invariance" and (
         not isinstance(equation.get("validity_scope"), dict)
@@ -408,6 +425,21 @@ def _validate_research_equation(contract: dict[str, Any]) -> list[dict[str, str]
             "empirical_invariance research_equation requires validity_scope and falsification_tests",
         )
 
+    quality = score_research_equation(equation)
+    for code in quality.block_codes:
+        _failures_add(failures, code, f"research_equation quality rubric failed: {code}")
+    if status == "research_conjecture" and quality.quality_score < 40:
+        _failures_add(
+            failures,
+            "BLOCK_DIRAC_EQUATION_CONJECTURE_QUALITY_TOO_LOW",
+            "research_conjecture quality_score below 40 may remain a branch seed but cannot authorize promotion",
+        )
+    if status == "strict_identity" and quality.quality_score < 60:
+        _failures_add(
+            failures,
+            "BLOCK_DIRAC_EQUATION_STRICT_IDENTITY_QUALITY_TOO_LOW",
+            "strict_identity research_equation requires quality_score >= 60",
+        )
     return failures
 
 

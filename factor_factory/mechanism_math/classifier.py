@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from .schema import CONTRACT_VERSION, CONTRACT_VERSION_V2
+from .equation_quality import score_research_equation
 from .formula_specific import build_formula_understanding, select_math_model_from_economic_hypothesis
 
 
@@ -595,7 +596,7 @@ def _research_equation(v1: dict[str, Any], research_contract: dict[str, Any], fo
         v1.get("expected_metric_signature"),
         ["rank IC and long-side return should match the declared sign"],
     )
-    return {
+    equation = {
         "equation_text": str(
             v1.get("process_hypothesis")
             or "observable_factor_t = estimator(latent_state_t, F_t) + measurement_noise_t"
@@ -621,7 +622,32 @@ def _research_equation(v1: dict[str, Any], research_contract: dict[str, Any], fo
             v1.get("kill_criteria"),
             ["Kill if no formula-mappable latent state remains."],
         ),
+        "evidence_tier": (
+            "logical_identity"
+            if status == "strict_identity"
+            else "institutional_rule"
+            if status == "institutional_constraint"
+            else "report_specific_hypothesis"
+            if status == "research_conjecture"
+            else "single_market_empirical_regular"
+        ),
+        "audit_basis": _as_meaningful_text_list(
+            research_contract.get("audit_basis"),
+            ["Report text, formula structure, and Step4 metric signature must support this equation."],
+        ),
+        "participant_constraint_loop": {
+            "payer": str(research_contract.get("payer") or "report-specific constrained counterparty"),
+            "constraint": str(research_contract.get("constraint") or "cannot immediately eliminate the market relation"),
+            "repeat_mechanism": str(research_contract.get("repeat_mechanism") or "similar constraints regenerate across rebalance horizons"),
+            "failure_condition": str(research_contract.get("failure_condition") or "participant structure, liquidity regime, or metric signature changes"),
+        },
+        "demotion_triggers": _as_meaningful_text_list(
+            research_contract.get("demotion_triggers"),
+            ["participant_structure_change", "metric_signature_mismatch", "cross_sample_failure"],
+        ),
     }
+    equation["quality_score"] = score_research_equation(equation).quality_score
+    return equation
 
 
 def _t0_t1_stochastic_benchmark(v1: dict[str, Any], formula_estimator: str, conditional: str) -> dict[str, Any]:

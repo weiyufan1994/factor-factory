@@ -129,6 +129,22 @@ def valid_research_equation() -> dict[str, Any]:
         "kill_criteria": [
             "Kill if the formula cannot estimate a latent drift state without forward-looking information."
         ],
+        "evidence_tier": "single_market_empirical_regular",
+        "audit_basis": [
+            "The smoke formula and synthetic metric signature support a lag-safe drift estimator review."
+        ],
+        "participant_constraint_loop": {
+            "payer": "slow information processors",
+            "constraint": "cannot fully update before the next rebalance horizon",
+            "repeat_mechanism": "new information delays regenerate across daily observations",
+            "failure_condition": "participant structure or liquidity regime changes",
+        },
+        "demotion_triggers": [
+            "participant_structure_change",
+            "metric_signature_mismatch",
+            "cross_sample_failure",
+        ],
+        "quality_score": 44,
     }
 
 

@@ -44,6 +44,7 @@ from factor_factory.mechanism_math.main_agent_memo import (
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
+from factor_factory.mechanism_math.factor_discovery_queue import build_default_discovery_queue
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
@@ -3975,6 +3976,68 @@ def write_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     }
 
 
+def _contains_new_factor_seed(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get('classification') == 'new_factor_seed':
+            return True
+        return any(_contains_new_factor_seed(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_new_factor_seed(item) for item in value)
+    return False
+
+
+def should_write_dirac_discovery_queue(iteration: dict[str, Any]) -> tuple[bool, str]:
+    if os.getenv('FACTORFORGE_STEP6_DIRAC_DISCOVERY_REQUEST') == '1':
+        return True, 'explicit_discovery_request'
+    research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+    if _contains_new_factor_seed(mechanism_analysis):
+        return True, 'step6_anomaly_review'
+    return False, ''
+
+
+def render_dirac_discovery_queue_markdown(queue: dict[str, Any]) -> str:
+    rows = ['| Candidate | Source Equation | Branch Action | Auto Run |', '|---|---|---|---|']
+    for candidate in queue.get('candidates') or []:
+        rows.append(
+            '| {candidate_id} | {source_equation_id} | {branch_action} | {auto_run_allowed} |'.format(
+                candidate_id=candidate.get('candidate_id'),
+                source_equation_id=candidate.get('source_equation_id'),
+                branch_action=candidate.get('branch_action'),
+                auto_run_allowed=candidate.get('auto_run_allowed'),
+            )
+        )
+    return f"""# Dirac Discovery Queue: {queue.get('report_id')}
+
+Source: {queue.get('source')}
+
+No candidate may launch Step2, Step3, or Step4 automatically. Candidate packets are advisory until the existing loop or a human-approved branch request starts a formal factor run.
+
+{chr(10).join(rows)}
+"""
+
+
+def write_dirac_discovery_queue(report_id: str, source: str) -> dict[str, str]:
+    queue = build_default_discovery_queue()
+    queue.update({
+        'report_id': report_id,
+        'source': source,
+        'auto_run_allowed': False,
+    })
+    out_dir = OBJ / 'research_iteration_master' / 'revision_council' / report_id
+    json_path = out_dir / f'dirac_discovery_queue__{report_id}.json'
+    markdown_path = out_dir / f'dirac_discovery_queue__{report_id}.md'
+    write_json(json_path, queue)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(render_dirac_discovery_queue_markdown(queue), encoding='utf-8')
+    return {
+        'json_path': str(json_path),
+        'markdown_path': str(markdown_path),
+        'source': source,
+        'auto_run_allowed': False,
+    }
+
+
 def promotion_gate(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
     case = bundle['factor_case_master']
     evidence_quality = case.get('evidence_quality') or {}
@@ -4366,6 +4429,9 @@ def main() -> None:
         would_have_written.append('factor_library_official')
     if handoff_to_step3b is not None:
         would_have_written.append('handoff_to_step3b')
+    should_write_queue, queue_source = should_write_dirac_discovery_queue(iteration)
+    if should_write_queue:
+        would_have_written.append('dirac_discovery_queue')
     prewrite_failures = step6_prewrite_failures(
         iteration=iteration,
         all_record=all_record,
@@ -4387,6 +4453,10 @@ def main() -> None:
     iteration['loop_research_brief'] = write_loop_research_brief(iteration, bundle)
     print(f"[WRITE] {iteration['loop_research_brief']['json_path']}")
     print(f"[WRITE] {iteration['loop_research_brief']['markdown_path']}")
+    if should_write_queue:
+        iteration['dirac_discovery_queue'] = write_dirac_discovery_queue(str(report_id), queue_source)
+        print(f"[WRITE] {iteration['dirac_discovery_queue']['json_path']}")
+        print(f"[WRITE] {iteration['dirac_discovery_queue']['markdown_path']}")
     write_json(iteration_path, iteration)
     print(f'[WRITE] {iteration_path}')
     write_json(all_library_path, all_record)

@@ -173,6 +173,20 @@ def _resolve_provider_uri(report_id: str) -> str:
     )
 
 
+def _provider_instrument_style(provider_uri: str) -> str:
+    metadata_path = Path(provider_uri) / 'provider_metadata.json'
+    if not metadata_path.exists():
+        return 'ts_code'
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+    except Exception:
+        return 'ts_code'
+    style = metadata.get('instrument_style')
+    if style in {'ts_code', 'tushare', 'provider', 'legacy_qlib', 'qlib', 'raw'}:
+        return str(style)
+    return 'ts_code'
+
+
 def _resolve_native_benchmark() -> str | pd.Series:
     env_benchmark = os.getenv('QLIB_BENCHMARK')
     if env_benchmark:
@@ -358,10 +372,11 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         }
 
     provider_uri = _resolve_provider_uri(report_id)
+    provider_style = _provider_instrument_style(provider_uri)
     benchmark = _resolve_native_benchmark()
     try:
         qlib.init(provider_uri=provider_uri, region='cn')
-        qlib_signal_native = to_qlib_signal_frame(factor_df, signal_col=signal_col, instrument_style='ts_code')
+        qlib_signal_native = to_qlib_signal_frame(factor_df, signal_col=signal_col, instrument_style=provider_style)
         strategy = TopkDropoutStrategy(signal=qlib_signal_native, topk=50, n_drop=5)
         executor = SimulatorExecutor(time_per_step='day', generate_portfolio_metrics=True)
         trading_calendar = sorted(qlib_signal.index.get_level_values('datetime').unique())
@@ -390,6 +405,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
                 'qlib_import_ok': True,
                 'full_native_backtest_wired': False,
                 'provider_uri': provider_uri,
+                'instrument_style': provider_style,
                 'benchmark': benchmark,
                 'qlib_repo_root': str(qlib_repo_root) if qlib_repo_root else None,
             },
@@ -417,6 +433,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'qlib_import_ok': True,
             'full_native_backtest_wired': True,
             'provider_uri': provider_uri,
+            'instrument_style': provider_style,
             'benchmark': benchmark,
             'qlib_repo_root': str(qlib_repo_root) if qlib_repo_root else None,
         },

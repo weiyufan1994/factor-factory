@@ -273,12 +273,6 @@ def _validate_research_equation_revision(proposal: dict[str, Any]) -> list[str]:
         return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
     texts = [equation_change, *(signature_change or []), *(falsification_tests or [])]
     normalized_texts = [_normalized_words(text) for text in texts]
-    if any(
-        text in GENERIC_RESEARCH_EQUATION_REVISION_TEXT
-        or any(phrase in text for phrase in GENERIC_RESEARCH_EQUATION_REVISION_TEXT)
-        for text in normalized_texts
-    ):
-        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
     blob = " ".join(normalized_texts)
     target_terms = REVISION_TARGET_EVIDENCE_TERMS.get(str(target), set())
     metric_terms = {
@@ -291,7 +285,15 @@ def _validate_research_equation_revision(proposal: dict[str, Any]) -> list[str]:
         "drawdown",
         "recovery",
     }
-    if not any(term in blob for term in target_terms | metric_terms):
+    has_target_or_metric_evidence = any(term in blob for term in target_terms | metric_terms)
+    has_generic_revision_text = any(
+        text in GENERIC_RESEARCH_EQUATION_REVISION_TEXT
+        or any(phrase in text for phrase in GENERIC_RESEARCH_EQUATION_REVISION_TEXT)
+        for text in normalized_texts
+    )
+    if has_generic_revision_text and not has_target_or_metric_evidence:
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
+    if not has_target_or_metric_evidence:
         return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
     return []
 

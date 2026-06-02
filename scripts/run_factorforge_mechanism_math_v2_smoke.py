@@ -779,6 +779,23 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         "falsification_tests": ["test metrics."],
     }
     generic_research_equation_revision_reasons = validate_revision_council_proposal(generic_research_equation_revision)
+    specific_research_equation_revision = json.loads(json.dumps(proposal))
+    specific_research_equation_revision["research_equation_revision"] = {
+        "equation_component_target": "observable_estimator",
+        "equation_change": (
+            "Refit the observable_estimator measurement equation so rank_ic metrics improve "
+            "while turnover remains inside the cost budget."
+        ),
+        "expected_metric_signature_change": [
+            "rank_ic improves without higher turnover or worse cost_adjusted_return.",
+        ],
+        "falsification_tests": [
+            "Block if rank_ic does not improve or turnover breaches the cost budget.",
+        ],
+    }
+    specific_research_equation_revision_reasons = validate_revision_council_proposal(
+        specific_research_equation_revision
+    )
     return [
         {
             "case": "step6_missing_research_equation_review_blocks",
@@ -844,6 +861,11 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             "case": "council_research_equation_revision_generic_blocks",
             "ok": "BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC" in generic_research_equation_revision_reasons,
             "failures": generic_research_equation_revision_reasons,
+        },
+        {
+            "case": "council_research_equation_revision_specific_metric_language_passes",
+            "ok": not specific_research_equation_revision_reasons,
+            "failures": specific_research_equation_revision_reasons,
         },
     ]
 

@@ -1485,6 +1485,12 @@ def main() -> None:
                 expected_reuse_identity,
                 source_artifact=str(parquet_path),
             )
+            if existing_factor_source.get('source') == 'prior_step4_parquet':
+                existing_factor_reuse_gate, _ = apply_artifact_binding_to_reuse_gate(
+                    existing_factor_reuse_gate,
+                    existing_factor_identity,
+                    str(parquet_path),
+                )
             if existing_factor_source.get('source') == 'step3b_sample_or_legacy_factor_parquet':
                 existing_factor_reuse_gate['decision'] = 'block_invalid_formal_reuse'
                 existing_factor_reuse_gate['reason'] = 'step3b_sample_proof_not_formal_factor_values'

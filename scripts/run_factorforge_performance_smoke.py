@@ -6121,6 +6121,24 @@ def step4_fixture_formal_identity(paths: dict[str, Any], report_id: str) -> dict
     identity.pop('cache_row_count', None)
     identity['producer'] = 'step4_formal_compute'
     identity['is_formal_factor_values'] = True
+    factor_parquet = paths['factor_parquet']
+    if factor_parquet.exists():
+        factor_df = pd.read_parquet(factor_parquet)
+        factor_dates = pd.to_datetime(factor_df['trade_date'].astype(str), errors='coerce').dt.strftime('%Y%m%d') if 'trade_date' in factor_df.columns else pd.Series([], dtype=str)
+        factor_key_hash = None
+        if {'ts_code', 'trade_date'}.issubset(factor_df.columns):
+            factor_key_hash = stable_json_hash([
+                [str(code), str(date)]
+                for code, date in zip(factor_df['ts_code'].astype(str).tolist(), factor_dates.tolist(), strict=False)
+            ])
+        identity.update({
+            'selected_factor_format': 'parquet',
+            'selected_factor_path': str(factor_parquet),
+            'selected_factor_sha256': hashlib.sha256(factor_parquet.read_bytes()).hexdigest(),
+            'selected_factor_row_count': int(len(factor_df)),
+            'selected_factor_schema': [str(col) for col in factor_df.columns],
+            'selected_factor_key_hash': factor_key_hash,
+        })
     return identity
 
 
@@ -6407,6 +6425,60 @@ def run_step4_preserves_prior_step4_parquet_provenance_case(root: Path) -> dict[
         'factor_parquet_mtime_unchanged': paths['factor_parquet'].exists() and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime,
         'step4_factor_io_profile': factor_io_profile,
         'row_count': after_meta.get('row_count'),
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
+
+
+def run_step4_recomputes_when_prior_step4_parquet_tampered_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_PRIOR_STEP4_PARQUET_TAMPERED'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, None)
+    factor_df = pd.DataFrame([
+        {'ts_code': 'S001', 'trade_date': '20200101', 'smoke_factor': 0.25},
+        {'ts_code': 'S002', 'trade_date': '20200101', 'smoke_factor': 0.75},
+        {'ts_code': 'S001', 'trade_date': '20200102', 'smoke_factor': 0.35},
+        {'ts_code': 'S002', 'trade_date': '20200102', 'smoke_factor': 0.65},
+    ])
+    factor_df.to_parquet(paths['factor_parquet'], index=False)
+    write_json(paths['run_meta'], {
+        'report_id': report_id,
+        'producer': 'step4',
+        'step4_formal_factor_identity': step4_fixture_formal_identity(paths, report_id),
+        'step4_factor_io_profile': {
+            'version': 'factorforge_step4_factor_io_profile_v1',
+            'source': 'step4_recompute_fallback',
+            'recomputed_factor': True,
+            'parquet_written_by_step4': True,
+        },
+    })
+    pd.DataFrame([
+        {'ts_code': 'BAD', 'trade_date': '19990101', 'smoke_factor': 999.0},
+    ]).to_parquet(paths['factor_parquet'], index=False)
+    proc = run_step4_direct(root, report_id)
+    after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    factor_io_profile = after_meta.get('step4_factor_io_profile') or {}
+    reuse_gate = factor_io_profile.get('reuse_gate') or {}
+    formal_df = pd.read_parquet(paths['factor_parquet']) if paths['factor_parquet'].exists() else pd.DataFrame()
+    bad_promoted = bool(
+        not formal_df.empty
+        and 'ts_code' in formal_df.columns
+        and (formal_df['ts_code'].astype(str) == 'BAD').any()
+    )
+    ok = (
+        proc.returncode == 0
+        and factor_io_profile.get('source') == 'step4_recompute_fallback'
+        and factor_io_profile.get('recomputed_factor') is True
+        and reuse_gate.get('decision') == 'recompute_required'
+        and reuse_gate.get('reason') in {'selected_factor_sha256', 'selected_factor_row_count', 'selected_factor_key_hash'}
+        and bad_promoted is False
+    )
+    return {
+        'case': 'step4_recomputes_when_prior_step4_parquet_tampered',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'step4_factor_io_profile': factor_io_profile,
+        'bad_promoted': bad_promoted,
         'stdout_tail': tail(proc.stdout),
         'stderr_tail': tail(proc.stderr),
         'ok': bool(ok),
@@ -7202,6 +7274,7 @@ def main() -> int:
         run_step4_blocks_sample_proof_as_formal_factor_values_case(root),
         run_step4_recomputes_when_cache_parquet_tampered_case(root),
         run_step4_preserves_prior_step4_parquet_provenance_case(root),
+        run_step4_recomputes_when_prior_step4_parquet_tampered_case(root),
         run_step4_respects_step3b_sample_csv_policy_case(root),
         run_step4_respects_step3b_no_csv_policy_case(root),
         run_step4_legacy_missing_csv_policy_full_csv_compat_case(root),

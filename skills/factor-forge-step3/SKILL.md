@@ -183,6 +183,12 @@ Step3B must require an executable revision spec, apply its child formula before
 identity validation/code generation, and reject missing or no-effect specs with
 hard BLOCK tokens. Reusing the parent formula in a child loop is research-chain
 pollution, not a valid iteration.
+16. If Step3A `data_prep_master.feasibility` is `blocked`, the Step3A handoff
+must force `step3a_ready=false` and `step3b_ready=false`, and must clear or
+overwrite stale execution-state fields such as `first_run_outputs`, Step3B
+sample output references, generated implementation references, and run metadata
+paths. A blocked Step3A handoff must not preserve old `step3b_ready=true`
+state from a previous run.
 
 ## Recommended execution chain
 

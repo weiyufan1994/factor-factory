@@ -202,6 +202,15 @@ Structured object schemas are in `references/schema.md`.
 
 Step1 should add market_process_thesis, primary_mechanism_model_candidates, and stochastic_price_process_projection under research_discipline. These are early research hypotheses and may be under-specified, but they must not be empty or generic. Step1 may list multiple candidate primary models and should mark the preferred/ranked candidate plus why alternatives are less suitable.
 
+Canonical formula intake is not exempt from this contract. If Step1 is built
+from a formula-only source such as Alpha101/canonical formula intake,
+`build_canonical_formula_step1` must still translate the formula-specific
+economic hypothesis and math hypothesis candidates into
+`research_discipline.market_process_thesis`,
+`research_discipline.primary_mechanism_model_candidates`, and
+`research_discipline.stochastic_price_process_projection`. Missing these fields
+is a Step1 BLOCK, not a reason to continue to Step3 or worker execution.
+
 Step1 economic hypothesis is a candidate model contract, not a formula
 description or a narrative. It should produce `economic_hypothesis_candidates`,
 `preferred_economic_hypothesis`, `alternative_return_source_tests`,

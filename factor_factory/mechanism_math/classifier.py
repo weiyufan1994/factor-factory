@@ -619,10 +619,15 @@ def _formula_implied_information(
         structural_constraints.append(f"Observable inputs constrain the latent state estimate to information in: {', '.join(inputs)}")
     structural_constraints.append("The inferred state must explain a conditional return-distribution change rather than restate a raw field.")
     latent_state = str(v1.get("latent_state") or v1.get("state_or_object") or "latent return-process state")
+    estimator_interpretation = str(formula_estimator or "").strip()
+    if re.search(r"(?<![a-z0-9_])(?:rank|ts_rank|delta|delay|corr|cov|sum|mean|std|argmin|argmax)\s*\(", estimator_interpretation.lower()):
+        estimator_interpretation = (
+            f"the formula score is an observable estimator of {latent_state}; individual formula calls are measurement operations rather than the mechanism itself"
+        )
     return {
         "structural_constraints": structural_constraints,
         "latent_state_inferred_by_formula": latent_state,
-        "estimator_interpretation": formula_estimator,
+        "estimator_interpretation": estimator_interpretation,
         "why_not_raw_field_restatement": "The formula is treated as an observable estimator of the declared latent/model state; raw fields are only measurements, not the mechanism state itself.",
         "price_process_connection": conditional,
     }

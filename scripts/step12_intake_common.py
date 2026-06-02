@@ -125,6 +125,84 @@ def common_research_discipline(
     }
 
 
+def build_market_process_thesis_from_hypotheses(
+    economic_hypothesis: Dict[str, Any],
+    what_must_be_true: List[str],
+    what_would_break_it: List[str],
+) -> Dict[str, Any]:
+    second = economic_hypothesis.get('second_layer') if isinstance(economic_hypothesis.get('second_layer'), dict) else {}
+    payer = second.get('expected_counterparty_or_payer') or economic_hypothesis.get('counterparty_loss_hypothesis')
+    why_pay = second.get('why_they_may_pay') or economic_hypothesis.get('risk_or_behavioral_compensation')
+    phenomenon = second.get('subtype') or economic_hypothesis.get('macro_return_source') or 'canonical_formula_conditional_return_state'
+    return {
+        'market_phenomenon': str(phenomenon),
+        'economic_hypothesis': str(why_pay or 'canonical formula state changes the conditional return distribution through its declared market state'),
+        'return_source_family': economic_hypothesis.get('macro_return_source') or 'mixed',
+        'payer_or_counterparty': str(payer or 'counterparties exposed to the formula-defined conditional market state'),
+        'why_they_pay': str(why_pay or 'their observable behavior or constraint creates a conditional payoff for the formula-defined state'),
+        'what_must_be_true': [str(x) for x in what_must_be_true if str(x).strip()],
+        'what_would_break_it': [str(x) for x in what_would_break_it if str(x).strip()],
+        'alternative_return_source_tests': [
+            {
+                'alternative_source': 'risk_premium',
+                'why_not_primary': 'canonical formula intake does not assume systematic risk compensation unless Step4/Step6 links the payoff to a risk bearer',
+                'discriminating_test': 'control for beta, volatility, size, and liquidity style exposures and verify the mechanism-state metric remains supported',
+                'expected_signature_if_alternative_true': 'payoff should be explained by broad risk/style exposure rather than formula-state ablation',
+            },
+            {
+                'alternative_source': 'information_advantage',
+                'why_not_primary': 'canonical formula observables alone do not prove private information before metric attribution',
+                'discriminating_test': 'test whether return signature survives after removing price/volume state effects and event-timing proxies',
+                'expected_signature_if_alternative_true': 'payoff should concentrate around information events rather than the formula state',
+            },
+        ],
+    }
+
+
+def build_primary_mechanism_model_candidates_from_hypotheses(math_hypotheses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for idx, item in enumerate(math_hypotheses):
+        if not isinstance(item, dict):
+            continue
+        model_family = item.get('model_family') or 'canonical_formula_state_process'
+        candidates.append({
+            'candidate_id': item.get('hypothesis_id') or f'canonical_formula_model_{idx + 1}',
+            'rank': idx + 1,
+            'selected_model_family': model_family,
+            'why_this_model_fits': item.get('why_suitable') or (
+                'the canonical formula is an observable estimator of a conditional market state, so the primary model must explain the state before the formula'
+            ),
+            'why_alternatives_are_less_suitable': [
+                'Pure formula-expression explanations do not identify payer, state variables, or conditional return distribution changes.',
+                'Generic risk-premium framing is secondary unless Step4/Step6 evidence links metrics to a systematic risk bearer.',
+            ],
+            'state_variables': [item.get('state_or_object') or 'formula-defined latent market state'],
+            'observable_proxies': [item.get('observable_estimator') or 'canonical formula observable estimator'],
+            'target_functional': item.get('target_functional') or 'E[r_i,t+1 | formula_state_i,t]',
+            'preferred': idx == 0,
+        })
+    return candidates
+
+
+def build_stochastic_projection_from_hypotheses(math_hypotheses: List[Dict[str, Any]]) -> Dict[str, Any]:
+    preferred = math_hypotheses[0] if math_hypotheses else {}
+    process = preferred.get('process_or_distribution_hypothesis') or (
+        'future returns have a conditional distribution whose drift changes with the estimated canonical formula state'
+    )
+    target = preferred.get('target_functional') or 'E[r_i,t+1 | formula_state_i,t]'
+    estimator = preferred.get('observable_estimator') or 'canonical formula score'
+    return {
+        'projection_required': True,
+        'price_process_form': str(process),
+        'affected_price_process_terms': ['drift', 'observation_equation'],
+        'conditional_distribution_claim': str(target),
+        'formula_should_estimate': str(estimator),
+        'expected_return_distribution_change': (
+            'conditioning on the formula-estimated state should shift next-period cross-sectional return rank or conditional mean in the declared direction'
+        ),
+    }
+
+
 def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: List[str]) -> Dict[str, Any]:
     formula_spec = {
         "canonical_spec": {
@@ -358,6 +436,17 @@ def build_canonical_formula_step1(
     )
     hypotheses = canonical_formula_hypotheses(formula, inputs, operators)
     research.update(hypotheses)
+    research['market_process_thesis'] = build_market_process_thesis_from_hypotheses(
+        research.get('economic_hypothesis') or {},
+        research.get('what_must_be_true') or [],
+        research.get('what_would_break_it') or [],
+    )
+    research['primary_mechanism_model_candidates'] = build_primary_mechanism_model_candidates_from_hypotheses(
+        research.get('math_hypothesis_candidates') or []
+    )
+    research['stochastic_price_process_projection'] = build_stochastic_projection_from_hypotheses(
+        research.get('math_hypothesis_candidates') or []
+    )
     formula_headline = build_formula_specific_headline(
         research.get('economic_hypothesis') or {},
         (research.get('economic_to_math_modelling') or {}).get('selected_baseline_model') or {},

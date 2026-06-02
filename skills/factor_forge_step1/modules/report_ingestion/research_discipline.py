@@ -337,6 +337,20 @@ def build_market_process_thesis(economic_hypothesis: Dict[str, Any], what_must_b
         "why_they_pay": second.get("why_they_may_pay") or "under_specified_payment_reason",
         "what_must_be_true": what_must_be_true,
         "what_would_break_it": what_would_break_it,
+        "alternative_return_source_tests": [
+            {
+                "alternative_source": "risk_premium",
+                "why_not_primary": "Step1 does not assume systematic risk compensation unless later evidence links payoff to a risk bearer.",
+                "discriminating_test": "Control for beta, volatility, size, and liquidity style exposure before accepting the primary mechanism.",
+                "expected_signature_if_alternative_true": "Metric support should collapse into broad risk/style exposure rather than the declared market process.",
+            },
+            {
+                "alternative_source": "information_advantage",
+                "why_not_primary": "Step1 observables do not by themselves prove private information or disclosure timing advantage.",
+                "discriminating_test": "Test whether payoff concentrates around information events or survives component/state ablations.",
+                "expected_signature_if_alternative_true": "Returns should align with event-timing information rather than the declared state estimator.",
+            },
+        ],
     }
     if explicit:
         for key in ["market_phenomenon", "economic_hypothesis", "return_source_family", "payer_or_counterparty", "why_they_pay"]:
@@ -384,7 +398,9 @@ def build_stochastic_price_process_projection(math_hypothesis_candidates: List[D
         "affected_price_process_terms": ["drift", "observation_equation"],
         "conditional_distribution_claim": str(target),
         "formula_should_estimate": str(estimator),
-        "expected_return_distribution_change": "under_specified_until_step2_quantifies_metric_signature",
+        "expected_return_distribution_change": (
+            "conditioning on the Step1 state estimator should shift next-period return rank or conditional mean in the declared direction"
+        ),
     }
 
 
@@ -465,14 +481,17 @@ def build_step1_research_discipline(
     info_hint = infer_information_set_hint(alpha_idea_master, *context)
     similar_lessons = load_similar_case_lessons(repo, query_text)
     explicit_thesis = _explicit_market_process_thesis(alpha_idea_master)
+    existing_discipline = alpha_idea_master.get("research_discipline") if isinstance(alpha_idea_master.get("research_discipline"), dict) else {}
     what_must_be_true = (
         _meaningful_list(final_factor.get("what_must_be_true"))
         or _meaningful_list(explicit_thesis.get("what_must_be_true"))
+        or _meaningful_list(existing_discipline.get("what_must_be_true"))
         or _meaningful_list(final_factor.get("economic_logic"))[:1]
     )
     what_would_break_it = (
         _meaningful_list(final_factor.get("what_would_break_it"))
         or _meaningful_list(explicit_thesis.get("what_would_break_it"))
+        or _meaningful_list(existing_discipline.get("what_would_break_it"))
         or _meaningful_list(final_factor.get("key_implementation_risks"))
     )
     return {

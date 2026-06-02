@@ -2183,6 +2183,18 @@ _factorforge_user_compute_factor = compute_factor
 def compute_factor(daily_df=None, minute_df=None):
     import inspect as _factorforge_inspect
 
+    def _factorforge_frame_nonempty(_frame):
+        if _frame is None:
+            return False
+        if hasattr(_frame, "empty"):
+            return not bool(_frame.empty)
+        if hasattr(_frame, "is_empty") and callable(_frame.is_empty):
+            return not bool(_frame.is_empty())
+        try:
+            return len(_frame) > 0
+        except TypeError:
+            return True
+
     _fn = _factorforge_user_compute_factor
     try:
         _params = list(_factorforge_inspect.signature(_fn).parameters.values())
@@ -2213,7 +2225,9 @@ def compute_factor(daily_df=None, minute_df=None):
         _name = _positional[0].name.lower()
         if "minute" in _name or "intraday" in _name:
             return _fn(minute_df)
-        return _fn(daily_df)
+        if "daily" in _name:
+            return _fn(daily_df)
+        return _fn(minute_df if _factorforge_frame_nonempty(minute_df) else daily_df)
     if _positional:
         _first = _positional[0].name.lower()
         if "minute" in _first or "intraday" in _first:

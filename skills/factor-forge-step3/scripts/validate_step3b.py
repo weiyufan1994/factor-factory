@@ -873,11 +873,6 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     signal_candidates.extend(['factor_value', 'signal'])
     if not any(col in result.columns for col in signal_candidates):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing factor_value or declared signal column')
-    signal_column = next((col for col in signal_candidates if col in result.columns), None)
-    if signal_column and result[signal_column].isna().all():
-        raise AssertionError(
-            f'BLOCK_STEP3B_DIRECT_CODE_ALL_NULL_OUTPUT: output signal column {signal_column} is entirely null'
-        )
 
 
 def validate_direct_code_mode(
@@ -1229,6 +1224,27 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
             + ', '.join(str(path.name) for path in forbidden_files)
         )
 
+
+def assert_step3b_sample_signal_non_null(path: Path, output_schema: dict | None = None) -> None:
+    import pandas as pd
+
+    if path.suffix.lower() == '.parquet':
+        frame = pd.read_parquet(path)
+    else:
+        frame = pd.read_csv(path)
+    if frame.empty:
+        raise AssertionError(f'BLOCK_STEP3B_EMPTY_SAMPLE_OUTPUT: {path}')
+    declared = output_schema.get('columns') if isinstance(output_schema, dict) else None
+    signal_candidates = [col for col in (declared or []) if col not in {'ts_code', 'trade_date'}]
+    signal_candidates.extend(['factor_value', 'signal'])
+    signal_column = next((col for col in signal_candidates if col in frame.columns), None)
+    if not signal_column:
+        raise AssertionError(f'BLOCK_STEP3B_SAMPLE_SIGNAL_COLUMN_MISSING: {path}')
+    if frame[signal_column].isna().all():
+        raise AssertionError(
+            f'BLOCK_STEP3B_DIRECT_CODE_ALL_NULL_OUTPUT: sample signal column {signal_column} is entirely null in {path}'
+        )
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
@@ -1373,6 +1389,7 @@ if __name__ == '__main__':
         factor_csv = run_dir / f'step3b_sample_factor_values__{rid}.csv'
         meta_json = run_dir / f'step3b_sample_run_metadata__{rid}.json'
         assert factor_parquet.exists() or factor_csv.exists(), 'Step 3B requires non-formal sample factor values when sample data is available'
+        assert_step3b_sample_signal_non_null(factor_parquet if factor_parquet.exists() else factor_csv, data.get('output_schema') or {})
         assert meta_json.exists(), 'Step 3B requires sample run_metadata when sample data is available'
         assert not (run_dir / f'factor_values__{rid}.parquet').exists(), 'Step3B must not create formal factor_values parquet'
         assert not (run_dir / f'run_metadata__{rid}.json').exists(), 'Step3B must not create formal Step4 run_metadata'

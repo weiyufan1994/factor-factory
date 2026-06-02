@@ -263,6 +263,24 @@ def build_step4_reuse_identity(
     }
 
 
+def fill_runtime_implementation_identity(base_identity: dict[str, Any], fsm: dict[str, Any], impl_path: Path) -> dict[str, Any]:
+    effective = dict(base_identity or {})
+    effective['code_hash'] = (
+        effective.get('code_hash')
+        or effective.get('code_contract_hash')
+        or sha256_file(impl_path)
+    )
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    implementation_contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    effective['formula_hash'] = (
+        effective.get('formula_hash')
+        or fsm.get('formula_hash')
+        or canonical.get('formula_hash')
+        or implementation_contract.get('formula_hash')
+    )
+    return effective
+
+
 def evaluate_reuse_gate(source_identity: dict[str, Any], expected_identity: dict[str, Any], *, source_artifact: str | None) -> dict[str, Any]:
     required = [
         'report_id',
@@ -1432,6 +1450,7 @@ def main() -> None:
             write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
+        base_identity = fill_runtime_implementation_identity(base_identity, fsm, impl_path)
 
         # Frozen-schema execution: Step4 consumes either legacy normalized local
         # snapshots or the Step3 Data API contract. It must not guess raw paths or

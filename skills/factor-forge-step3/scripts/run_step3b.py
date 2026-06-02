@@ -366,21 +366,45 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
 
 
 def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+    if df is None:
+        return df, {
+            'label': label,
+            'input_rows': 0,
+            'sample_limited': False,
+            'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
+            'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
+            'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
+            'output_rows': 0,
+            'date_count': None,
+            'ticker_count': None,
+            'sampling_strategy': 'none',
+        }
+    small_enough = df.empty or len(df) <= STEP3B_SAMPLE_MAX_ROWS
     profile = {
         'label': label,
         'input_rows': int(len(df)),
-        'sample_limited': False,
+        'sample_limited': not small_enough,
         'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
         'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
         'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
         'output_rows': int(len(df)),
-        'date_count': int(df['trade_date'].nunique()) if 'trade_date' in df.columns else None,
-        'ticker_count': int(df['ts_code'].nunique()) if 'ts_code' in df.columns else None,
+        'date_count': None,
+        'ticker_count': None,
+        'sampling_strategy': 'unchanged',
     }
-    if df is None or df.empty or len(df) <= STEP3B_SAMPLE_MAX_ROWS:
+    if {'ts_code', 'trade_date'}.issubset(df.columns) and small_enough:
+        profile['date_count'] = int(df['trade_date'].nunique())
+        profile['ticker_count'] = int(df['ts_code'].nunique())
+    if small_enough:
         return df, profile
+
+    # Step3B sample proof is an executability/schema proof, not formal factor
+    # evidence. Avoid full-universe normalization on very large minute panels;
+    # Step4 owns the full formal recompute.
+    candidate_rows = min(len(df), max(STEP3B_SAMPLE_MAX_ROWS * 2, STEP3B_SAMPLE_MAX_ROWS))
+    candidate = df.tail(candidate_rows).copy()
     if {'ts_code', 'trade_date'}.issubset(df.columns):
-        work = df.copy()
+        work = candidate
         normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
         dates = sorted(normalized_dates.dropna().unique().tolist())
         tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
@@ -388,8 +412,12 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
         sampled = work.loc[mask].copy()
         if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
             sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
+        profile['sampling_strategy'] = 'tail_candidate_then_date_ticker_cap'
+        profile['candidate_rows'] = int(len(candidate))
     else:
-        sampled = df.head(STEP3B_SAMPLE_MAX_ROWS).copy()
+        sampled = candidate.head(STEP3B_SAMPLE_MAX_ROWS).copy()
+        profile['sampling_strategy'] = 'tail_candidate_head_cap'
+        profile['candidate_rows'] = int(len(candidate))
     profile.update({
         'sample_limited': True,
         'output_rows': int(len(sampled)),
@@ -1431,10 +1459,11 @@ def generate_first_run_factor_values(
                 raise
         else:
             daily_df = read_df(daily_path)
-    daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
-    minute_limit_profile = None
-    if minute_df is not None and len(minute_df) > 0:
-        minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
+    with timer.phase('sample_limit'):
+        daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+        minute_limit_profile = None
+        if minute_df is not None and len(minute_df) > 0:
+            minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
     step3b_sample_limit_profile = {
         'clean_daily_bar': daily_limit_profile,
         **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
@@ -2616,7 +2645,7 @@ def main():
             local_inputs=local_inputs,
             step2_research_context=step2_research_context,
             mode_decision=mode_decision,
-            artifact_identity=spec_identity,
+            artifact_identity=handoff_identity,
             csv_output_policy=csv_policy,
             formula_engine=formula_engine,
             operator_profile=operator_profile,

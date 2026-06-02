@@ -713,6 +713,9 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
 
     try:
         import qlib  # noqa: F401
+        if not hasattr(qlib, 'init'):
+            raise ImportError(f'imported non-Microsoft qlib package without init: {getattr(qlib, "__file__", None)}')
+        from qlib.data import D  # noqa: F401
         qlib_import_ok = True
     except Exception as exc:  # pragma: no cover - environment-specific dependency guard
         qlib_import_ok = False

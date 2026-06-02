@@ -291,6 +291,27 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+def stable_json_hash(payload) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+
+
+def reuse_data_catalog_hash_payload(report_id: str, local_inputs: dict | None) -> dict:
+    dpm_path = OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json'
+    dpm = load_json(dpm_path) if dpm_path.exists() else {}
+    return {
+        'local_input_paths': dpm.get('local_input_paths') or local_inputs or {},
+        'data_sources': dpm.get('data_sources') or [],
+        'field_mapping': dpm.get('field_mapping') or {},
+    }
+
+
+def universe_hash_from_frame(frame: pd.DataFrame) -> str | None:
+    if 'ts_code' not in frame.columns:
+        return None
+    values = sorted(str(value) for value in frame['ts_code'].dropna().unique())
+    return stable_json_hash(values)
+
+
 def resolve_csv_policy(explicit_policy: str | None = None) -> str:
     policy = explicit_policy or os.getenv('FACTORFORGE_CSV_OUTPUT_POLICY') or 'full_csv'
     if policy not in CSV_POLICY_VALUES:
@@ -1468,6 +1489,8 @@ def generate_first_run_factor_values(
     run_dir = RUNS / report_id
     run_dir.mkdir(parents=True, exist_ok=True)
     factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
+    step3b_cache_parquet = run_dir / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_cache_meta = run_dir / f'step3b_sample_run_metadata__{report_id}.json'
     factor_csv = run_dir / f'factor_values__{report_id}.csv'
     factor_csv_sample = run_dir / f'factor_values_sample__{report_id}.csv'
     run_meta = run_dir / f'run_metadata__{report_id}.json'
@@ -1476,6 +1499,7 @@ def generate_first_run_factor_values(
             stale_csv.unlink()
     with timer.phase('write_parquet'):
         result_df.to_parquet(factor_parquet, index=False)
+        result_df.to_parquet(step3b_cache_parquet, index=False)
     with timer.phase('write_csv'):
         if csv_policy == 'full_csv':
             result_df.to_csv(factor_csv, index=False)
@@ -1539,6 +1563,38 @@ def generate_first_run_factor_values(
         output_paths.append(str(csv_path.relative_to(FF)))
     if csv_sample_path:
         output_paths.append(str(csv_sample_path.relative_to(FF)))
+    actual_window = {
+        'start': str(result_df['trade_date'].min()),
+        'end': str(result_df['trade_date'].max()),
+    }
+    step3b_cache_identity = {
+        'producer': 'step3b_sample_proof',
+        'is_formal_factor_values': False,
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'implementation_mode': (artifact_identity or {}).get('implementation_mode'),
+        'spec_hash': (artifact_identity or {}).get('spec_hash'),
+        'formula_hash': (artifact_identity or {}).get('formula_hash'),
+        'code_hash': (artifact_identity or {}).get('code_hash'),
+        'data_catalog_hash': stable_json_hash(reuse_data_catalog_hash_payload(report_id, local_inputs)),
+        'data_api_contract_version': 'factorforge_step4_data_contract_v1',
+        'window': actual_window,
+        'universe_hash': universe_hash_from_frame(result_df),
+        'frequency': 'daily',
+    }
+    step3b_cache_metadata = {
+        **step3b_cache_identity,
+        'version': 'factorforge_step3b_compute_cache_identity_v1',
+        'implementation_path': str(implementation_path),
+        'selected_factor_format': 'parquet',
+        'selected_factor_path': str(step3b_cache_parquet),
+        'row_count': int(len(result_df)),
+        'date_count': int(result_df['trade_date'].nunique()),
+        'ticker_count': int(result_df['ts_code'].nunique()),
+        'actual_window': actual_window,
+        'created_at_utc': utc_now(),
+    }
+    write_json(step3b_cache_meta, step3b_cache_metadata)
 
     metadata = {
         'report_id': report_id,
@@ -1551,9 +1607,11 @@ def generate_first_run_factor_values(
         'date_count': int(result_df['trade_date'].nunique()),
         'ticker_count': int(result_df['ts_code'].nunique()),
         'actual_window': {
-            'start': str(result_df['trade_date'].min()),
-            'end': str(result_df['trade_date'].max()),
+            'start': actual_window['start'],
+            'end': actual_window['end'],
         },
+        'step3b_compute_cache_identity': step3b_cache_identity,
+        'step3b_compute_cache_path': str(step3b_cache_parquet),
         'input_paths': {
             'minute': str(minute_path) if minute_path else None,
             'daily': str(daily_path),
@@ -1585,12 +1643,15 @@ def generate_first_run_factor_values(
             'rows_per_second_compute': float(len(result_df) / phase_seconds['compute_factor']) if phase_seconds.get('compute_factor') else None,
             'rows_per_second_input_compute': float(input_row_count / phase_seconds['compute_factor']) if phase_seconds.get('compute_factor') else None,
             'formula_engine_profile': formula_engine_profile,
+            'formula_kernel_profile': formula_engine_profile.get('kernel_profile') or {},
             'output_bytes': {
                 'parquet': safe_file_size(factor_parquet),
                 'csv': safe_file_size(factor_csv),
                 'csv_sample': safe_file_size(factor_csv_sample),
             },
             'csv_output_profile': csv_output_profile,
+            'sample_cap': step3b_sample_limit_profile,
+            'step3b_compute_cache_identity': step3b_cache_identity,
         },
     }
     write_json(run_meta, metadata)

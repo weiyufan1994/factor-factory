@@ -32,6 +32,7 @@ def main() -> int:
     csv_path = ctx.factorforge_root / 'runs' / rid / f'factor_values__{rid}.csv'
     csv_sample_path = ctx.factorforge_root / 'runs' / rid / f'factor_values_sample__{rid}.csv'
     step3b_profile = run_meta.get('performance_profile') or {}
+    step4_factor_io_profile = run_meta.get('step4_factor_io_profile') or {}
     csv_output_profile = step3b_profile.get('csv_output_profile') or {}
     formula_engine_profile = step3b_profile.get('formula_engine_profile') or {}
     operator_profile = formula_engine_profile.get('operator_profile') or {}
@@ -53,9 +54,35 @@ def main() -> int:
             reverse=True,
         )[:5]
     ]
+    phase_seconds = step3b_profile.get('phase_seconds') or {}
+    diagnostics = []
+    if step3b_profile.get('version') == 'factorforge_step3b_performance_profile_v1':
+        diagnostics.append({'severity': 'info', 'code': 'STEP3B_PERFORMANCE_PROFILE_PRESENT', 'message': 'Step3B performance profile is present.'})
+    if (kernel_profile.get('default_numpy_ts_profile') or {}).get('enabled') is True:
+        diagnostics.append({'severity': 'info', 'code': 'DEFAULT_NUMPY_TS_KERNELS_ENABLED', 'message': 'Default NumPy TS kernels are enabled.'})
+    if step4_factor_io_profile.get('version') == 'factorforge_step4_factor_io_profile_v1':
+        diagnostics.append({'severity': 'info', 'code': 'STEP4_FACTOR_REUSE_PROFILE_PRESENT', 'message': 'Step4 factor IO/reuse profile is present.'})
+    if step4_factor_io_profile.get('recomputed_factor') is True or step4_factor_io_profile.get('source') == 'step4_recompute_fallback':
+        diagnostics.append({'severity': 'warning', 'code': 'STEP4_RECOMPUTE_FALLBACK', 'message': 'Step4 recomputed factor values.'})
+    if parquet_path.exists():
+        diagnostics.append({'severity': 'info', 'code': 'PARQUET_FORMAL_EVIDENCE_OK', 'message': 'Parquet factor evidence exists.'})
+    if csv_output_profile.get('full_csv_absent_validated') is True or (csv_output_profile.get('csv_output_policy') in {'sample_csv', 'no_csv'} and not csv_path.exists()):
+        diagnostics.append({'severity': 'info', 'code': 'FULL_CSV_ABSENT_BY_POLICY', 'message': 'Full CSV is absent by policy.'})
+    compute_seconds = phase_seconds.get('compute_factor')
+    normalize_seconds = phase_seconds.get('normalize_sort')
+    if compute_seconds is not None and normalize_seconds is not None and float(compute_seconds or 0.0) > 0 and float(normalize_seconds) > float(compute_seconds) * 0.8:
+        diagnostics.append({'severity': 'warning', 'code': 'NORMALIZE_SORT_DOMINANT', 'message': 'normalize/sort cost is high relative to compute_factor.'})
+    reuse_gate = step4_factor_io_profile.get('reuse_gate') or {}
+    if reuse_gate.get('decision') == 'reuse_allowed':
+        diagnostics.append({'severity': 'info', 'code': 'REUSE_GATE_ALLOWED', 'message': 'Step4 reuse gate allowed artifact reuse.'})
+    elif reuse_gate.get('decision') == 'recompute_required':
+        diagnostics.append({'severity': 'warning', 'code': 'REUSE_GATE_RECOMPUTE_REQUIRED', 'message': 'Step4 reuse gate required recompute.'})
+    elif reuse_gate.get('decision') == 'block_invalid_formal_reuse':
+        diagnostics.append({'severity': 'blocker_candidate', 'code': 'REUSE_GATE_BLOCKED_INVALID_FORMAL_REUSE', 'message': 'Step4 refused to treat a sample/proof artifact as formal factor values.'})
     report = {
         'report_id': rid,
         'step3b_performance_profile': step3b_profile,
+        'step4_factor_io_profile': step4_factor_io_profile,
         'step3b_csv_output_profile': csv_output_profile,
         'step3b_write_csv_seconds': (step3b_profile.get('phase_seconds') or {}).get('write_csv'),
         'step3b_factor_parquet_bytes': parquet_path.stat().st_size if parquet_path.exists() else 0,
@@ -81,6 +108,8 @@ def main() -> int:
             'factor_csv_bytes': csv_path.stat().st_size if csv_path.exists() else 0,
             'factor_csv_sample_bytes': csv_sample_path.stat().st_size if csv_sample_path.exists() else 0,
         },
+        'diagnostic_codes': [item['code'] for item in diagnostics],
+        'diagnostics': diagnostics,
     }
     if args.write_report:
         out = ctx.objects_root / 'validation' / f'performance_profile__{rid}.json'

@@ -12,8 +12,12 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 VERSION = 'factorforge_operator_kernel_inventory_v1'
 CANONICAL_DIRS = ['objects', 'runs', 'evaluations', 'generated_code', 'archive', 'factorforge', 'data/clean']
+
+from factor_factory.formula.kernels import DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS, DEFAULT_NUMPY_TS_OPERATORS, DEFAULT_NUMPY_TS_ROLLBACK_ENV
 
 OPTIONAL_DEPENDENCIES = {
     'talib': ('TA-Lib technical indicator library', 'factor_indicator_library', 'TA-Lib'),
@@ -30,6 +34,7 @@ OPERATOR_ORDER = [
     'ts_sum',
     'ts_mean',
     'ts_std',
+    'ts_stddev',
     'ts_rank',
     'ts_min',
     'ts_max',
@@ -39,21 +44,44 @@ OPERATOR_ORDER = [
     'ts_delay',
     'rolling_corr',
     'rolling_cov',
+    'polars_formula_engine',
+    'experimental_formula_kernel',
     'cs_scale',
     'signed_power',
 ]
 
-DEFAULT_NUMPY_TS_INVENTORY_OPERATORS = {
-    'ts_min',
-    'ts_max',
-    'ts_argmin',
-    'ts_argmax',
-    'ts_delta',
-    'ts_delay',
-    'ts_rank',
-    'rolling_corr',
-    'rolling_cov',
+OPERATOR_TO_KERNEL_NAMES = {
+    'ts_sum': {'sum'},
+    'ts_mean': {'mean'},
+    'ts_std': {'std'},
+    'ts_stddev': {'stddev'},
+    'ts_min': {'min'},
+    'ts_max': {'max'},
+    'ts_delta': {'delta'},
+    'ts_delay': {'delay'},
+    'ts_argmin': {'argmin'},
+    'ts_argmax': {'argmax'},
+    'ts_rank': {'ts_rank'},
+    'rolling_corr': {'correlation', 'corr'},
+    'rolling_cov': {'covariance'},
 }
+
+
+def operator_policy_class(operator: str) -> tuple[str, str | None]:
+    if operator in {'polars_formula_engine', 'experimental_formula_kernel'}:
+        return 'opt_in_only', 'experimental_backend_requires_explicit_enable'
+    kernel_names = OPERATOR_TO_KERNEL_NAMES.get(operator, {operator})
+    if kernel_names & set(DEFAULT_NUMPY_TS_OPERATORS):
+        return 'default_enabled', None
+    if kernel_names & set(DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS):
+        return 'blocked_by_edge_case', 'excluded_from_default_numpy_ts_kernel_policy'
+    if operator in {'ts_sum', 'ts_mean'}:
+        return 'opt_in_only', 'not_default_enabled_on_current_production_baseline'
+    if operator in {'cs_rank', 'cs_scale'}:
+        return 'not_reviewed', 'cross_sectional_kernel_policy_not_in_scope'
+    if operator == 'signed_power':
+        return 'not_applicable', 'elementwise_operator_not_time_series_kernel'
+    return 'not_reviewed', 'no_default_policy_recorded'
 
 
 def utc_now() -> str:
@@ -131,11 +159,46 @@ def qlib_support_from_registry(registry_text: str) -> dict[str, bool | None]:
 
 
 def classify_operator(operator: str, qlib_support: dict[str, bool | None], source_text: dict[str, str]) -> dict[str, Any]:
+    if operator == 'polars_formula_engine':
+        policy_class, blocking_reason = operator_policy_class(operator)
+        return {
+            'operator': operator,
+            'current_impl': 'experimental_polars_dataframe_backend',
+            'qlib_bridge_supported': None,
+            'performance_risk': 'medium',
+            'semantic_risk': 'high',
+            'reason': 'Polars formula execution is an alternate backend and remains explicit opt-in.',
+            'upgrade_candidates': ['polars_experimental'],
+            'default_kernel_enabled': False,
+            'default_safe_to_change': False,
+            'policy_class': policy_class,
+            'blocking_reason': blocking_reason,
+            'rollback_env': 'FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS',
+            'notes': [],
+        }
+    if operator == 'experimental_formula_kernel':
+        policy_class, blocking_reason = operator_policy_class(operator)
+        return {
+            'operator': operator,
+            'current_impl': 'experimental_formula_kernel_engine',
+            'qlib_bridge_supported': None,
+            'performance_risk': 'medium',
+            'semantic_risk': 'high',
+            'reason': 'Broad formula-kernel engines remain explicit opt-in and cannot replace production defaults as a single switch.',
+            'upgrade_candidates': ['numpy_rolling_experimental', 'numba_rolling_experimental'],
+            'default_kernel_enabled': False,
+            'default_safe_to_change': False,
+            'policy_class': policy_class,
+            'blocking_reason': blocking_reason,
+            'rollback_env': 'FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL',
+            'notes': [],
+        }
     qlib_alias = {
         'cs_rank': 'rank',
         'ts_sum': 'ts_sum',
         'ts_mean': 'ts_mean',
         'ts_std': 'ts_std',
+        'ts_stddev': 'stddev',
         'ts_rank': 'ts_rank',
         'ts_min': 'min',
         'ts_max': 'max',
@@ -150,7 +213,8 @@ def classify_operator(operator: str, qlib_support: dict[str, bool | None], sourc
     }.get(operator, operator)
     supported = qlib_support.get(qlib_alias)
     note = None if supported is not None else 'qlib bridge support not detected from registry aliases'
-    default_kernel_enabled = operator in DEFAULT_NUMPY_TS_INVENTORY_OPERATORS
+    policy_class, blocking_reason = operator_policy_class(operator)
+    default_kernel_enabled = policy_class == 'default_enabled'
     if operator in {'ts_argmin', 'ts_argmax'}:
         current_impl = 'pandas_groupby_rolling_apply_raw_lambda'
         performance_risk = 'high'
@@ -169,7 +233,7 @@ def classify_operator(operator: str, qlib_support: dict[str, bool | None], sourc
         semantic_risk = 'high'
         reason = 'pandas rolling rank semantics require careful ties and NaN parity; current default remains pandas reference'
         candidates = ['existing_numpy_sliding_window_experimental', 'pandas_rolling_rank_candidate', 'scipy_rankdata_candidate', 'numba_per_ticker_loop']
-    elif operator in {'ts_sum', 'ts_mean', 'ts_std', 'ts_min', 'ts_max'}:
+    elif operator in {'ts_sum', 'ts_mean', 'ts_std', 'ts_stddev', 'ts_min', 'ts_max'}:
         current_impl = 'pandas_groupby_transform_rolling_builtin'
         performance_risk = 'medium'
         semantic_risk = 'medium'
@@ -218,6 +282,9 @@ def classify_operator(operator: str, qlib_support: dict[str, bool | None], sourc
         'upgrade_candidates': candidates,
         'default_kernel_enabled': default_kernel_enabled,
         'default_safe_to_change': default_kernel_enabled,
+        'policy_class': policy_class,
+        'blocking_reason': blocking_reason,
+        'rollback_env': DEFAULT_NUMPY_TS_ROLLBACK_ENV if default_kernel_enabled else None,
         'notes': [note] if note else [],
     }
 
@@ -240,9 +307,9 @@ def current_execution_model() -> dict[str, Any]:
         'qlib_role': 'bridge_export_backtest_compatibility',
         'default_numpy_ts_kernel_policy': {
             'enabled': True,
-            'operators': ['argmax', 'argmin', 'corr', 'correlation', 'covariance', 'delay', 'delta', 'max', 'mean', 'min', 'sum', 'ts_rank'],
-            'excluded_operators': ['std', 'stddev'],
-            'rollback_env': 'FACTORFORGE_DISABLE_DEFAULT_NUMPY_TS_KERNEL',
+            'operators': sorted(DEFAULT_NUMPY_TS_OPERATORS),
+            'excluded_operators': sorted(DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS),
+            'rollback_env': DEFAULT_NUMPY_TS_ROLLBACK_ENV,
             'correctness_oracle': 'pandas_reference',
         },
         'custom_factor_code_policy': {

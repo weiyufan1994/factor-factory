@@ -6033,6 +6033,14 @@ def step4_fixture_cache_identity(paths: dict[str, Any], report_id: str, factor_d
     artifact_identity = paths['artifact_identity']
     daily_df = paths['daily_df']
     dates = pd.to_datetime(daily_df['trade_date'].astype(str), errors='coerce').dt.strftime('%Y%m%d')
+    factor_dates = pd.to_datetime(factor_df['trade_date'].astype(str), errors='coerce').dt.strftime('%Y%m%d') if 'trade_date' in factor_df.columns else pd.Series([], dtype=str)
+    factor_key_hash = None
+    if {'ts_code', 'trade_date'}.issubset(factor_df.columns):
+        factor_key_hash = stable_json_hash([
+            [str(code), str(date)]
+            for code, date in zip(factor_df['ts_code'].astype(str).tolist(), factor_dates.tolist(), strict=False)
+        ])
+    selected_factor_path = paths['run_dir'] / f'step3b_sample_factor_values__{report_id}.parquet'
     return {
         'version': 'factorforge_step3b_compute_cache_identity_v1',
         'producer': 'step3b_sample_proof',
@@ -6054,7 +6062,11 @@ def step4_fixture_cache_identity(paths: dict[str, Any], report_id: str, factor_d
         'frequency': 'daily',
         'implementation_path': str(paths['impl_path']),
         'selected_factor_format': 'parquet',
-        'selected_factor_path': str(paths['run_dir'] / f'step3b_sample_factor_values__{report_id}.parquet'),
+        'selected_factor_path': str(selected_factor_path),
+        'selected_factor_sha256': hashlib.sha256(selected_factor_path.read_bytes()).hexdigest() if selected_factor_path.exists() else None,
+        'selected_factor_row_count': int(len(factor_df)),
+        'selected_factor_schema': [str(col) for col in factor_df.columns],
+        'selected_factor_key_hash': factor_key_hash,
         'row_count': int(len(daily_df)),
         'date_count': int(dates.nunique()),
         'ticker_count': int(daily_df['ts_code'].nunique()),
@@ -6069,6 +6081,10 @@ def step4_fixture_formal_identity(paths: dict[str, Any], report_id: str) -> dict
     identity.pop('implementation_path', None)
     identity.pop('selected_factor_format', None)
     identity.pop('selected_factor_path', None)
+    identity.pop('selected_factor_sha256', None)
+    identity.pop('selected_factor_row_count', None)
+    identity.pop('selected_factor_schema', None)
+    identity.pop('selected_factor_key_hash', None)
     identity.pop('cache_row_count', None)
     identity['producer'] = 'step4_formal_compute'
     identity['is_formal_factor_values'] = True
@@ -6261,6 +6277,54 @@ def run_step4_recomputes_when_catalog_hash_differs_case(root: Path) -> dict[str,
 
 def run_step4_blocks_sample_proof_as_formal_factor_values_case(root: Path) -> dict[str, Any]:
     return run_step4_reuse_gate_case(root, 'step4_blocks_sample_proof_as_formal_factor_values', 'PERF_SMOKE_REUSE_GATE_FORMAL_SAMPLE', mutate='formal_sample')
+
+
+def run_step4_recomputes_when_cache_parquet_tampered_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_REUSE_GATE_TAMPERED_CACHE'
+    paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
+    factor_df = pd.DataFrame([
+        {'ts_code': 'S001', 'trade_date': '20200101', 'smoke_factor': 0.2},
+        {'ts_code': 'S002', 'trade_date': '20200101', 'smoke_factor': 0.8},
+        {'ts_code': 'S001', 'trade_date': '20200102', 'smoke_factor': 0.4},
+        {'ts_code': 'S002', 'trade_date': '20200102', 'smoke_factor': 0.6},
+        {'ts_code': 'S001', 'trade_date': '20200103', 'smoke_factor': 0.3},
+        {'ts_code': 'S002', 'trade_date': '20200103', 'smoke_factor': 0.7},
+    ])
+    step3b_cache = paths['run_dir'] / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_cache_meta = paths['run_dir'] / f'step3b_sample_run_metadata__{report_id}.json'
+    factor_df.to_parquet(step3b_cache, index=False)
+    write_json(step3b_cache_meta, step4_fixture_cache_identity(paths, report_id, factor_df))
+    pd.DataFrame([
+        {'ts_code': 'BAD', 'trade_date': '19990101', 'smoke_factor': 999.0},
+    ]).to_parquet(step3b_cache, index=False)
+    proc = run_step4_direct(root, report_id)
+    after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
+    factor_io_profile = after_meta.get('step4_factor_io_profile') or {}
+    reuse_gate = factor_io_profile.get('reuse_gate') or {}
+    formal_df = pd.read_parquet(paths['factor_parquet']) if paths['factor_parquet'].exists() else pd.DataFrame()
+    bad_promoted = bool(
+        not formal_df.empty
+        and 'ts_code' in formal_df.columns
+        and (formal_df['ts_code'].astype(str) == 'BAD').any()
+    )
+    ok = (
+        proc.returncode == 0
+        and factor_io_profile.get('source') == 'step4_recompute_fallback'
+        and factor_io_profile.get('recomputed_factor') is True
+        and reuse_gate.get('decision') == 'recompute_required'
+        and reuse_gate.get('reason') in {'selected_factor_sha256', 'selected_factor_row_count', 'selected_factor_key_hash'}
+        and bad_promoted is False
+    )
+    return {
+        'case': 'step4_recomputes_when_cache_parquet_tampered',
+        'report_id': report_id,
+        'rc': proc.returncode,
+        'step4_factor_io_profile': factor_io_profile,
+        'bad_promoted': bad_promoted,
+        'stdout_tail': tail(proc.stdout),
+        'stderr_tail': tail(proc.stderr),
+        'ok': bool(ok),
+    }
 
 
 def run_step4_preserves_prior_step4_parquet_provenance_case(root: Path) -> dict[str, Any]:
@@ -7102,6 +7166,7 @@ def main() -> int:
         run_step4_recomputes_when_data_window_differs_case(root),
         run_step4_recomputes_when_catalog_hash_differs_case(root),
         run_step4_blocks_sample_proof_as_formal_factor_values_case(root),
+        run_step4_recomputes_when_cache_parquet_tampered_case(root),
         run_step4_preserves_prior_step4_parquet_provenance_case(root),
         run_step4_respects_step3b_sample_csv_policy_case(root),
         run_step4_respects_step3b_no_csv_policy_case(root),

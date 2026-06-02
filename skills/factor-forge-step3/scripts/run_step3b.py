@@ -295,6 +295,16 @@ def stable_json_hash(payload) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')).hexdigest()
 
 
+def sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    h = hashlib.sha256()
+    with path.open('rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def reuse_data_catalog_hash_payload(report_id: str, local_inputs: dict | None) -> dict:
     dpm_path = OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json'
     dpm = load_json(dpm_path) if dpm_path.exists() else {}
@@ -310,6 +320,26 @@ def universe_hash_from_frame(frame: pd.DataFrame) -> str | None:
         return None
     values = sorted(str(value) for value in frame['ts_code'].dropna().unique())
     return stable_json_hash(values)
+
+
+def factor_key_hash_from_frame(frame: pd.DataFrame) -> str | None:
+    if not {'ts_code', 'trade_date'}.issubset(frame.columns):
+        return None
+    normalized_dates = normalize_trade_date_series(frame['trade_date']).dt.strftime('%Y%m%d')
+    keys = [
+        [str(code), str(date)]
+        for code, date in zip(frame['ts_code'].astype(str).tolist(), normalized_dates.tolist(), strict=False)
+    ]
+    return stable_json_hash(keys)
+
+
+def factor_artifact_binding_profile(path: Path, frame: pd.DataFrame) -> dict:
+    return {
+        'selected_factor_sha256': sha256_file(path),
+        'selected_factor_row_count': int(len(frame)),
+        'selected_factor_schema': [str(col) for col in frame.columns],
+        'selected_factor_key_hash': factor_key_hash_from_frame(frame),
+    }
 
 
 def resolve_csv_policy(explicit_policy: str | None = None) -> str:
@@ -1582,6 +1612,7 @@ def generate_first_run_factor_values(
         'universe_hash': universe_hash_from_frame(result_df),
         'frequency': 'daily',
     }
+    step3b_cache_identity.update(factor_artifact_binding_profile(step3b_cache_parquet, result_df))
     step3b_cache_metadata = {
         **step3b_cache_identity,
         'version': 'factorforge_step3b_compute_cache_identity_v1',

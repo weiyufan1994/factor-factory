@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 # Runtime root policy:
 # - prefer FACTORFORGE_ROOT when explicitly configured
 # - otherwise keep legacy EC2 compatibility
@@ -127,6 +129,26 @@ def universe_hash_from_frame(frame: Any) -> str | None:
         return None
     values = sorted(str(value) for value in frame['ts_code'].dropna().unique())
     return stable_json_hash(values)
+
+
+def factor_key_hash_from_frame(frame: Any) -> str | None:
+    if frame is None or not {'ts_code', 'trade_date'}.issubset(frame.columns):
+        return None
+    normalized_dates = normalize_trade_date_series(frame['trade_date']).dt.strftime('%Y%m%d')
+    keys = [
+        [str(code), str(date)]
+        for code, date in zip(frame['ts_code'].astype(str).tolist(), normalized_dates.tolist(), strict=False)
+    ]
+    return stable_json_hash(keys)
+
+
+def factor_artifact_binding_profile(path: Path, frame: Any) -> dict[str, Any]:
+    return {
+        'selected_factor_sha256': sha256_file(path),
+        'selected_factor_row_count': int(len(frame)) if frame is not None else 0,
+        'selected_factor_schema': [str(col) for col in frame.columns] if frame is not None else [],
+        'selected_factor_key_hash': factor_key_hash_from_frame(frame),
+    }
 
 
 def merge_run_metadata(existing_meta: dict[str, Any], step4_owned_fields: dict[str, Any]) -> dict[str, Any]:
@@ -304,6 +326,70 @@ def evaluate_reuse_gate(source_identity: dict[str, Any], expected_identity: dict
     }
 
 
+def apply_artifact_binding_to_reuse_gate(gate: dict[str, Any] | None, source_identity: dict[str, Any], source_artifact: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    gate = dict(gate or {
+        'version': 'factorforge_reuse_gate_v1',
+        'decision': 'recompute_required',
+        'matched_fields': [],
+        'mismatched_fields': [],
+        'missing_fields': [],
+        'source_artifact': source_artifact,
+        'reason': 'reuse_gate_missing',
+    })
+    required = [
+        'selected_factor_sha256',
+        'selected_factor_row_count',
+        'selected_factor_schema',
+        'selected_factor_key_hash',
+    ]
+    if not source_artifact:
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = 'source_artifact_missing'
+        gate.setdefault('missing_fields', []).append('source_artifact')
+        return gate, None
+    artifact_path = Path(source_artifact)
+    if not artifact_path.exists():
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = 'source_artifact_missing'
+        gate.setdefault('missing_fields', []).append('source_artifact')
+        return gate, None
+    try:
+        artifact_df = pd.read_parquet(artifact_path)
+    except Exception as exc:
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = 'source_artifact_read_failed'
+        gate['artifact_binding_error'] = str(exc)
+        return gate, None
+    actual = factor_artifact_binding_profile(artifact_path, artifact_df)
+    matched: list[str] = []
+    missing: list[str] = []
+    mismatched: list[str] = []
+    def is_missing(value: Any) -> bool:
+        return value is None or value == '' or value == []
+    for field in required:
+        expected_value = source_identity.get(field)
+        actual_value = actual.get(field)
+        if is_missing(expected_value) or is_missing(actual_value):
+            missing.append(field)
+        elif expected_value == actual_value:
+            matched.append(field)
+        else:
+            mismatched.append(field)
+    gate['artifact_binding'] = {
+        'version': 'factorforge_factor_artifact_binding_v1',
+        'actual': actual,
+        'matched_fields': matched,
+        'missing_fields': missing,
+        'mismatched_fields': mismatched,
+    }
+    if missing or mismatched:
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = (mismatched[0] if mismatched else missing[0])
+        gate.setdefault('missing_fields', []).extend(field for field in missing if field not in gate.get('missing_fields', []))
+        gate.setdefault('mismatched_fields', []).extend(field for field in mismatched if field not in gate.get('mismatched_fields', []))
+    return gate, artifact_df if not missing and not mismatched else None
+
+
 def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: Any, impl_path: Path, expected_identity: dict[str, Any] | None = None, source_artifact: str | None = None) -> dict[str, Any]:
     if not step3b_meta:
         gate = evaluate_reuse_gate({}, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
@@ -320,6 +406,14 @@ def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: 
             return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': gate.get('reason') or 'reuse_gate_rejected', 'reuse_gate': gate}
     else:
         gate = None
+    gate, bound_artifact_df = apply_artifact_binding_to_reuse_gate(gate, step3b_meta, source_artifact)
+    if gate.get('decision') != 'reuse_allowed':
+        return {
+            'source': 'step3b_compute_cache_rejected',
+            'reusable': False,
+            'reason': gate.get('reason') or 'artifact_binding_failed',
+            'reuse_gate': gate,
+        }
     meta_impl = step3b_meta.get('implementation_path')
     if meta_impl:
         try:

@@ -16,6 +16,15 @@ LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FACTORFORGE / 'objects'
 ALLOWED = {'success', 'partial', 'failed'}
+QLIB_NATIVE_STATUS_VALUES = {
+    'not_attempted',
+    'preflight_blocked',
+    'preflight_ready',
+    'partial_payload',
+    'native_minimal_success',
+    'native_backtest_success',
+    'failed',
+}
 
 from factor_factory.artifact_identity import assert_identity_matches_strict
 
@@ -46,6 +55,47 @@ def identity_or_issue(label: str, payload: dict[str, Any], issues: list[dict[str
     return identity
 
 
+def top_level_acceptance_fields(label: str, payload: dict[str, Any], issues: list[dict[str, Any]], *, require_verdict: bool = True) -> None:
+    for key in ['report_id', 'run_id', 'artifact_root', 'producer', 'status']:
+        if not payload.get(key):
+            issues.append({'severity': 'error', 'code': f'{label.upper()}_TOP_LEVEL_ACCEPTANCE_FIELD_MISSING', 'message': f'{label}.{key} missing'})
+    if require_verdict and not payload.get('verdict'):
+        issues.append({'severity': 'error', 'code': f'{label.upper()}_TOP_LEVEL_ACCEPTANCE_FIELD_MISSING', 'message': f'{label}.verdict missing'})
+
+
+def validate_acceptance_summary(run_master: dict[str, Any], issues: list[dict[str, Any]]) -> None:
+    summary = run_master.get('acceptance_summary')
+    if not isinstance(summary, dict) or not summary:
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_MISSING', 'message': 'factor_run_master.acceptance_summary missing'})
+        return
+    for key in ['report_id', 'run_id', 'artifact_root', 'repo_sha', 'wrapper_validation_status', 'step_status', 'step3b', 'step4', 'reuse', 'side_effects', 'financial_metrics']:
+        if key not in summary:
+            issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_MISSING', 'message': f'acceptance_summary.{key} missing'})
+    step4 = summary.get('step4') if isinstance(summary.get('step4'), dict) else {}
+    if not step4.get('self_quant_status') or not step4.get('qlib_native_status'):
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_BACKEND_SPLIT_MISSING', 'message': 'acceptance_summary.step4 backend split missing'})
+    reuse = summary.get('reuse') if isinstance(summary.get('reuse'), dict) else {}
+    if not reuse.get('reuse_gate_status'):
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_REUSE_STATUS_MISSING', 'message': 'acceptance_summary.reuse.reuse_gate_status missing'})
+
+
+def validate_qlib_taxonomy(item: dict[str, Any], payload: dict[str, Any], issues: list[dict[str, Any]]) -> None:
+    qlib_status = payload.get('qlib_native_status') or item.get('qlib_native_status')
+    if item.get('status') == 'partial' and not qlib_status:
+        issues.append({'severity': 'error', 'code': 'BLOCK_QLIB_NATIVE_STATUS_MISSING', 'message': 'qlib partial payload must carry qlib_native_status taxonomy'})
+        return
+    if qlib_status and qlib_status not in QLIB_NATIVE_STATUS_VALUES:
+        issues.append({'severity': 'error', 'code': 'BLOCK_QLIB_NATIVE_STATUS_INVALID', 'message': f'invalid qlib_native_status={qlib_status}'})
+    if qlib_status:
+        for key in ['qlib_native_attempted', 'qlib_preflight', 'native_minimal_status', 'native_backtest_status', 'blocking_for_acceptance']:
+            if key not in payload and key not in item:
+                issues.append({'severity': 'error', 'code': 'BLOCK_QLIB_NATIVE_STATUS_INCOMPLETE', 'message': f'qlib taxonomy field missing: {key}'})
+    backend_cfg = item.get('backend_config') if isinstance(item.get('backend_config'), dict) else {}
+    mandatory = bool(backend_cfg.get('mandatory_full_success') or backend_cfg.get('qlib_full_success_mandatory') or payload.get('blocking_for_acceptance'))
+    if mandatory and qlib_status not in {'native_minimal_success', 'native_backtest_success'}:
+        issues.append({'severity': 'error', 'code': 'BLOCK_QLIB_NATIVE_MANDATORY_NOT_SUCCESS', 'message': f'qlib full success mandatory but status={qlib_status}'})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -66,6 +116,9 @@ def main() -> None:
     handoff = load_json(handoff_path)
 
     issues: list[dict[str, Any]] = []
+    top_level_acceptance_fields('factor_run_master', run_master, issues)
+    top_level_acceptance_fields('handoff_to_step5', handoff, issues)
+    validate_acceptance_summary(run_master, issues)
     run_identity = identity_or_issue('factor_run_master', run_master, issues)
     handoff_identity = identity_or_issue('handoff_to_step5', handoff, issues)
     if run_identity and handoff_identity:
@@ -143,6 +196,8 @@ def main() -> None:
             if item.get('status') not in {'success', 'partial', 'failed', 'skipped'}:
                 issues.append({'severity': 'error', 'code': 'INVALID_BACKEND_STATUS', 'message': 'backend run status must be explicit', 'evidence': item})
                 proposed_status = 'failed'
+            if item.get('backend') == 'qlib_backtest' and item.get('payload_path') and Path(item.get('payload_path')).exists():
+                validate_qlib_taxonomy(item, load_json(Path(item.get('payload_path'))), issues)
             if item.get('status') in {'success', 'partial'}:
                 payload_path = item.get('payload_path')
                 if not payload_path or not Path(payload_path).exists():

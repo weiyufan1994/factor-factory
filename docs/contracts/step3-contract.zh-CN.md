@@ -43,6 +43,16 @@ Step3B 只负责用 Step3A 的 Data API sample contract 生成非正式 `step3b_
 
 这些统一由 Step4 标准评估器和执行层负责。Step4 消费 `step4_data_contract`，通过 `factorforge_data_api` 拉取全量数据，并拥有正式 factor values。
 
+Step3A 必须消费 Step2 的 `standard_formula_fields_contract`。`volume`、
+`returns`、`vwap`、`advN` 等字段必须在 report-local snapshot 中物化，或
+写明 Step4 Data API contract required / blocked status。Step3B 不得自行猜测
+这些 alias，也不得把未物化字段视为可运行。
+
+Step3B sample metadata 必须设置 `is_formal_factor_values=false`、
+`purpose=step3_executability_proof`、`formal_factor_values_owner=Step4`、
+`sample_cap`、`sample_window` 和 `lineage`。缺失 ownership 字段必须
+`BLOCK_STEP3B_SAMPLE_OWNERSHIP_MISSING`。
+
 ## 日期键标准
 Step3A / Step3B / Step4 的 `trade_date` 边界必须兼容：
 - `YYYYMMDD` 字符串；

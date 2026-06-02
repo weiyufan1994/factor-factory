@@ -98,6 +98,7 @@ def main() -> None:
             "runtime_dispatch_policy": runtime_dispatch_policy,
             "research_question": task.get("research_question"),
             "shared_context": taskbook.get("shared_context") or {},
+            "component_review_requirements": task.get("component_review_requirements") or (taskbook.get("shared_context") or {}).get("component_review_requirements") or [],
             "required_outputs": task.get("required_outputs") or [],
             "allowed_tools": task.get("allowed_tools") or [],
             "forbidden_changes": task.get("forbidden_changes") or [],

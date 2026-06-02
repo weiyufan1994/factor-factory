@@ -54,6 +54,35 @@ Prompt outputs must include `research_equation`,
 `formula_implied_information_review`, `metric_signature_match` by model layer,
 and drawdown geometry interpretation when Step4 metrics exist.
 
+## Standard Formula Fields Contract
+
+For Formula-IR/operator or hybrid formulas that reference Alpha101-style
+semantic fields, Step2 must write a concrete `standard_formula_fields_contract`
+instead of relying on Step3B/Step4 alias guessing.
+
+Required standard fields include `volume`, `returns`, `vwap`, and `advN`
+(`adv20`, `adv60`, etc.). The contract must state:
+
+- `required_standard_formula_fields`
+- per-field `source_candidates`
+- per-field derivation rules
+- per-field leakage policy
+- `block_if_unavailable=true`
+
+Minimum derivation rules:
+
+- `volume <- vol`
+- `returns <- pct_chg / 100`, or `close / pre_close - 1` when `pct_chg` is absent
+- `vwap <- amount / volume` with unit policy recorded
+- `advN <- rolling mean(volume, N)` with no-future-data window policy
+
+Invalid output:
+
+- vague text such as "derive if needed"
+- `advN` without a volume source
+- `vwap` without amount and volume sources
+- any standard field without leakage policy
+
 ## Challenger Route
 
 Read adversarially. Try to find what the primary route flattened, skipped, or over-assumed.
@@ -115,7 +144,18 @@ Required output additions:
   },
   "canonical_spec": {
     "formula_text": "",
-    "formula_text_must_reference_detector_contract": true
+    "formula_text_must_reference_detector_contract": true,
+    "standard_formula_fields_contract": {
+      "required_standard_formula_fields": ["volume", "returns", "vwap", "adv20"],
+      "source_field_candidates": {
+        "volume": ["vol"],
+        "returns": ["pct_chg", "close", "pre_close"],
+        "vwap": ["amount", "vol", "volume"],
+        "adv20": ["volume"]
+      },
+      "lookback_policy": "no future data; rolling fields may use data up to factor timestamp only",
+      "block_if_unavailable": true
+    }
   },
   "implementation_contract": {
     "code_contract": {

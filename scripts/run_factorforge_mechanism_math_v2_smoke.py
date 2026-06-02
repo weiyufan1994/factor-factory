@@ -587,6 +587,8 @@ def case_step1_step2(root: Path) -> list[dict[str, Any]]:
         "math_discipline_review": master["math_discipline_review"],
         "mechanism_math_contract": master["mechanism_math_contract"],
         "mechanism_math_contract_v2": master["mechanism_math_contract_v2"],
+        "standard_formula_fields_contract": master.get("standard_formula_fields_contract"),
+        "standard_formula_fields_contract_hash": master.get("standard_formula_fields_contract_hash"),
         "learning_and_innovation": master["learning_and_innovation"],
     }
     write_json(master_path, master)

@@ -33,6 +33,17 @@ OBJ = FF / 'objects'
 VALID_DECISIONS = {'promote_official', 'iterate', 'reject', 'needs_human_review'}
 VALID_METRIC_VERDICTS = {'supportive', 'mixed', 'negative', 'inconclusive'}
 VALID_EVIDENCE_VERDICTS = {'usable', 'usable_with_warnings', 'blocked'}
+VALID_WRAPPER_VALIDATION_STATUS = {'PASS', 'WARN', 'BLOCK', 'FAILED', 'UNKNOWN'}
+VALID_SELF_QUANT_EVIDENCE_STATUS = {'present_success', 'present_partial', 'missing', 'skipped', 'failed'}
+VALID_QLIB_NATIVE_STATUS = {
+    'not_attempted',
+    'preflight_blocked',
+    'preflight_ready',
+    'partial_payload',
+    'native_minimal_success',
+    'native_backtest_success',
+    'failed',
+}
 VALID_RETURN_SOURCES = {
     'risk_premium',
     'information_advantage',
@@ -430,6 +441,23 @@ def validate_step6_model_linkage(mechanism_analysis: dict, revision_strategy: di
             review_ok = review_ok and research_equation_review.get('equation_status') == expected_equation_status
         if not review_ok:
             failures.append('BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS')
+    return failures
+
+
+def validate_evidence_status_split(split: Any, decision: Any) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(split, dict) or not split:
+        return ['BLOCK_STEP6_BACKEND_EVIDENCE_STATUS_SPLIT_MISSING']
+    if split.get('wrapper_validation_status') not in VALID_WRAPPER_VALIDATION_STATUS:
+        failures.append('BLOCK_STEP6_WRAPPER_VALIDATION_STATUS_MISSING')
+    if split.get('self_quant_evidence_status') not in VALID_SELF_QUANT_EVIDENCE_STATUS:
+        failures.append('BLOCK_STEP6_SELF_QUANT_EVIDENCE_STATUS_MISSING')
+    if split.get('qlib_native_status') not in VALID_QLIB_NATIVE_STATUS:
+        failures.append('BLOCK_STEP6_QLIB_NATIVE_STATUS_MISSING')
+    if split.get('research_decision') not in VALID_DECISIONS:
+        failures.append('BLOCK_STEP6_RESEARCH_DECISION_STATUS_MISSING')
+    if decision in VALID_DECISIONS and split.get('research_decision') != decision:
+        failures.append('BLOCK_STEP6_RESEARCH_DECISION_STATUS_MISMATCH')
     return failures
 
 
@@ -1025,6 +1053,11 @@ if __name__ == '__main__':
         checks.append(check('evidence_audit_cost_turnover_present', isinstance(cost_turnover, dict) and bool(cost_turnover), 'evidence_audit.cost_and_turnover_risk missing'))
         checks.append(check('evidence_audit_suspicions_list', list_value(evidence_audit.get('data_or_implementation_suspicions')), 'evidence_audit.data_or_implementation_suspicions must be a list'))
         checks.append(check('evidence_audit_verdict_enum', evidence_audit.get('evidence_verdict') in VALID_EVIDENCE_VERDICTS, f"invalid evidence_verdict: {evidence_audit.get('evidence_verdict')}"))
+        evidence_status_failures = validate_evidence_status_split(evidence_audit.get('evidence_status_split'), decision)
+        for token in evidence_status_failures:
+            checks.append(check(token, False, token))
+        if not evidence_status_failures:
+            checks.append(check('evidence_status_split_valid', True))
         checks.append(check(
             'evidence_audit_not_blocked',
             evidence_audit.get('evidence_verdict') != 'blocked',

@@ -157,6 +157,22 @@ def validate_real_agent_derivation_contract(result: dict[str, Any]) -> list[str]
         if not nonempty_list(translation.get("mapping_from_model_terms_to_formula_components")):
             reasons.append("BLOCK_COUNCIL_NO_MODEL_TO_FORMULA_MAPPING:mapping_from_model_terms_to_formula_components")
 
+    component_response = result.get("component_level_taskbook_response")
+    if not nonempty_object_list(component_response):
+        reasons.append("BLOCK_COUNCIL_COMPONENT_TASKBOOK_RESPONSE_MISSING")
+    else:
+        for idx, item in enumerate(component_response):
+            required = [
+                "formula_component",
+                "formula_implied_information",
+                "economic_role",
+                "mathematical_object",
+                "expected_metric_signature",
+                "falsification_test",
+            ]
+            if not all(nonempty_str(item.get(key)) for key in required if key != "expected_metric_signature") or not nonempty_str_list(item.get("expected_metric_signature"), min_count=2):
+                reasons.append(f"BLOCK_COUNCIL_COMPONENT_TASKBOOK_RESPONSE_INVALID:{idx}")
+
     prior = result.get("prior_revision_outcome_review")
     prior_text = json.dumps(prior, ensure_ascii=False).lower() if isinstance(prior, dict) else ""
     prior_parameter_failed = "parameter_repair" in prior_text and ("falsified" in prior_text or "failed" in prior_text)

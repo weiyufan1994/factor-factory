@@ -256,7 +256,13 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
             {'path': str(qlib_path), 'status': qlib_payload.get('status'), 'mode': qlib_payload.get('mode')},
         ))
     qlib_native_timing = ((backend_timing_profile.get('backends') or {}).get('qlib_native') or {})
-    if qlib_native_timing.get('attempted') is False and str(qlib_native_timing.get('status') or '').startswith('skipped'):
+    qlib_native_status = str(qlib_native_timing.get('status') or '')
+    qlib_preflight_status = str(qlib_native_timing.get('preflight_status') or '')
+    if qlib_native_timing.get('attempted') is False and (
+        qlib_native_status.startswith('skipped')
+        or qlib_native_status == 'preflight_blocked'
+        or qlib_preflight_status.startswith('skipped')
+    ):
         diagnostics.append(diagnostic(
             'info',
             'QLIB_NATIVE_SKIPPED_PREFLIGHT',

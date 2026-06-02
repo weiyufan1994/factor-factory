@@ -51,6 +51,25 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
     gross = metrics.get("long_side_annual_return")
     net = metrics.get("cost_adjusted_annual_return")
     law_id = f"{role}_law_001"
+    component_requirements = task.get("component_review_requirements") or (shared.get("component_review_requirements") or [])
+    component_responses = []
+    for item in component_requirements if isinstance(component_requirements, list) else []:
+        if not isinstance(item, dict):
+            continue
+        component = item.get("formula_component") or "whole_formula"
+        component_responses.append(
+            {
+                "formula_component": component,
+                "formula_implied_information": "This component is reviewed as an observable estimator of a market state, not as formula text explaining itself.",
+                "economic_role": "Tests the payer/mechanism claim under the current evidence packet.",
+                "mathematical_object": "observable_estimator_component",
+                "expected_metric_signature": [
+                    "long-side risk-adjusted evidence should improve if this component is valid",
+                    "drawdown or turnover should not worsen materially",
+                ],
+                "falsification_test": "Remove or revise the component if it only improves diagnostic spread metrics without improving long-side evidence.",
+            }
+        )
     expression_direction = (
         "Challenge the estimator state, then test expression-level persistence confirmation or smoothing under human approval."
         if role in {"symbolic_law_discovery", "stochastic_process_modeler", "microstructure_cost_analyst"}
@@ -163,6 +182,7 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
             }
         ],
         "recommended_branch_templates": [],
+        "component_level_taskbook_response": component_responses,
         "blocked_reason": None,
         "mock_observed_context": {
             "gross_long_side_annual_return": gross,

@@ -53,6 +53,7 @@ from factor_factory.artifact_identity import (
 )
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
+from factor_factory.formula.field_aliases import standard_formula_fields_contract, standard_field_contract_hash
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 
 
@@ -910,6 +911,14 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     family_plugin_selection = explicit_family_plugin_selection(aim, primary)
     hybrid_contract = build_hybrid_contract(primary, aim) if implementation_mode == 'hybrid' else None
     direct_code_source_contract = explicit_direct_code_source_contract(primary, aim) if implementation_mode == 'direct_code' else {}
+    formula_required_fields = (
+        ((primary.get('formula_ir') or {}).get('required_fields') if isinstance(primary.get('formula_ir'), dict) else None)
+        or primary.get('required_inputs', [])
+    )
+    standard_fields_contract = standard_formula_fields_contract(
+        formula_required_fields,
+        formula_text=primary.get('raw_formula_text', ''),
+    ) if implementation_mode in {'operator', 'hybrid'} else {}
 
     master = {
         'contract_version': STEP2_SOURCE_CONTRACT_VERSION,
@@ -937,6 +946,8 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'operator_set': ((primary.get('formula_ir') or {}).get('operator_set') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('operators', []),
             'required_fields': ((primary.get('formula_ir') or {}).get('required_fields') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('required_inputs', []),
             'resolved_fields': ((primary.get('formula_ir') or {}).get('resolved_fields') if isinstance(primary.get('formula_ir'), dict) else None) or {},
+            'standard_formula_fields_contract': standard_fields_contract,
+            'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
             'required_inputs': primary.get('required_inputs', []),
             'operators': primary.get('operators', []),
             'time_series_steps': primary.get('time_series_steps', []),
@@ -1007,6 +1018,8 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'reuse_instruction_for_future_agents': research_contract['reuse_instruction_for_future_agents'],
         },
         'research_contract': research_contract,
+        'standard_formula_fields_contract': standard_fields_contract,
+        'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
         'ambiguities': list(dict.fromkeys(primary.get('ambiguities', []) + primary.get('inferred_items', []))),
         'human_review_required': human_review_required,
         'chief_decision': chief_decision,
@@ -1108,6 +1121,8 @@ def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> Non
         'math_discipline_review': master.get('math_discipline_review') or {},
         'mechanism_math_contract': master.get('mechanism_math_contract') or {},
         'mechanism_math_contract_v2': master.get('mechanism_math_contract_v2') or {},
+        'standard_formula_fields_contract': (master.get('canonical_spec') or {}).get('standard_formula_fields_contract') or master.get('standard_formula_fields_contract') or {},
+        'standard_formula_fields_contract_hash': (master.get('canonical_spec') or {}).get('standard_formula_fields_contract_hash') or master.get('standard_formula_fields_contract_hash'),
         'learning_and_innovation': master.get('learning_and_innovation') or {},
     }
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)

@@ -55,6 +55,13 @@ sample/debug runner 对 canonical 写入已 archived 或 debug-blocked。正式 
 
 qlib expression bridge 必须显式记录 supported/unsupported，不能把 unsupported qlib operator 静默替换成近似表达式。Step3B 的 operator codegen 以 pandas reference evaluator 作为 parity oracle。
 
+当公式引用 Alpha101 标准语义字段 `volume`、`returns`、`vwap` 或
+`advN` 时，Step2 必须写入 `standard_formula_fields_contract` 及 hash，并
+在 `factor_spec_master`、`canonical_spec`、`handoff_to_step3` 三处保持一致。
+合同必须记录 source candidates、derivation rules、lookback policy 和
+leakage policy。缺字段来源、缺 leakage policy 或只写“derive if needed”
+必须 BLOCK。
+
 ## Hybrid 合约
 
 `implementation_mode=hybrid` 必须使用 `factorforge_hybrid_contract_v1`。合约必须包含带 Formula IR 的 `operator_subgraph`、非空 `custom_blocks`、boundary schema，以及 `formula_hash`、`custom_block_hash`、`hybrid_hash`。字段缺失或 hash 不一致必须 `BLOCK_INVALID_HYBRID_CONTRACT`。

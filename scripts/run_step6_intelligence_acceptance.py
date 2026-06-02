@@ -470,6 +470,38 @@ def summarize_drawdown_geometry() -> dict[str, Any]:
     return phase([row])
 
 
+def summarize_backend_evidence_status_split(cases: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for name in ['valid_supportive_evidence', 'price_volume_correlation_mechanism', 'high_turnover_revision']:
+        row = cases.get(name) or {}
+        ri = row.get('research_intelligence') or {}
+        split = ri.get('evidence_status_split') or {}
+        decision = ri.get('decision')
+        rows.append({
+            'case': f'{name}_evidence_status_split',
+            'wrapper_validation_status': split.get('wrapper_validation_status'),
+            'self_quant_evidence_status': split.get('self_quant_evidence_status'),
+            'qlib_native_status': split.get('qlib_native_status'),
+            'research_decision': split.get('research_decision'),
+            'expected_decision': decision,
+            'ok': (
+                split.get('wrapper_validation_status') in {'PASS', 'WARN'}
+                and split.get('self_quant_evidence_status') in {'present_success', 'present_partial'}
+                and split.get('qlib_native_status') in {
+                    'not_attempted',
+                    'preflight_blocked',
+                    'preflight_ready',
+                    'partial_payload',
+                    'native_minimal_success',
+                    'native_backtest_success',
+                    'failed',
+                }
+                and split.get('research_decision') == decision
+            ),
+        })
+    return phase(rows)
+
+
 def installed_sync() -> dict[str, Any]:
     installed_root = os.environ.get('FACTORFORGE_INSTALLED_SKILLS_ROOT')
     if installed_root:
@@ -536,6 +568,7 @@ def main() -> int:
         'phase_e_search_policy': summarize_e(smoke, cases),
         'phase_f_branch_execution': summarize_f(smoke),
         'drawdown_geometry': summarize_drawdown_geometry(),
+        'backend_evidence_status_split': summarize_backend_evidence_status_split(cases),
     }
     sync = installed_sync()
     forbidden_checks = forbidden_writeback_checks(smoke, pollution)

@@ -35,6 +35,10 @@ Step 3 does **not** perform full data execution or final backtest / evaluation i
 Step 3 must protect the thesis during implementation:
 - Step 3A records the gap between theoretical variables and real data proxies.
 - Step 3A consumes the independent `factorforge_data_api` catalog contract; full-history cleaning is not a per-factor task.
+- Step 3A must materialize Step2 `standard_formula_fields_contract` fields such
+  as `volume`, `returns`, `vwap`, and `advN`, or write an explicit BLOCK/status
+  that Step4 can enforce. Step3B must consume these declared fields and must not
+  independently guess Alpha101 aliases.
 - Step 3B records implementation invariants inherited from Step 2.
 - Step 3B must not silently reduce Step 2 into only a formula column; it must preserve the target statistic, economic mechanism, expected failure modes, and reuse instructions for future agents.
 - Step 3B must flag approximations that change economic meaning.
@@ -69,6 +73,8 @@ Optional:
   - optional `factorforge/runs/{report_id}/step3b_sample_factor_values__{report_id}.csv`
   - `factorforge/runs/{report_id}/step3b_sample_run_metadata__{report_id}.json`
   - metadata must set `is_formal_factor_values=false`, `purpose=step3_executability_proof`, and `formal_factor_values_owner=Step4`
+  - metadata must include `sample_cap`, `sample_window`, and `lineage`; missing
+    ownership metadata is `BLOCK_STEP3B_SAMPLE_OWNERSHIP_MISSING`
   - `run_metadata.performance_profile` with contract version
     `factorforge_step3b_performance_profile_v1`, row count, phase timings for
     input read / factor compute / normalize-sort / parquet write / CSV write,
@@ -176,6 +182,10 @@ Optional:
 10. `report_id` handling must be internally consistent. File naming, JSON internal `report_id`, and handoff artifact references must agree; alias shortcuts must not silently reuse long-id internals without explicit normalization.
 11. If a Step 3 or downstream Step 4 run depends on user choices not already fixed in artifacts — e.g. benchmark, topk, n_drop, holding horizon, deal price, account size, cost model, universe filter, or whether to run sample vs wider window — the skill must ask for confirmation before launching execution.
 12. Step 3B must not run Step4-style quantile NAV, IC analysis, portfolio charts, evaluator loops, full-data fetch, or formal factor-value generation. Step 3B's proof is non-formal sample `step3b_sample_factor_values` + metadata only; Step4 owns formal `factor_values`, metrics, quantile tables, NAV, and plots.
+12a. Step 3B must never write `factor_values__{report_id}` or label its sample
+artifacts as formal factor values. The only allowed sample filenames are
+`step3b_sample_factor_values__{report_id}.parquet`, optional sample CSV, and
+`step3b_sample_run_metadata__{report_id}.json`.
 13. Step 3B inputs and outputs must respect the shared data contract: `trade_date` may be read from `YYYYMMDD`, `YYYY-MM-DD`, or Timestamp sources, but outputs should be stable `YYYYMMDD`-compatible keys and Step4 must normalize via `factor_factory.data_access.normalize_trade_date_series`.
 14. Step 3B must write `implementation_mode_decision` with version `factorforge_implementation_mode_decision_v1` into implementation plan, generated-code metadata, handoff, sample-run metadata when generated, and ultimate proof summary. The decision must record selected mode or `blocked`, mode attempts, failure/not-applicable reasons, correctness risk, and human-review status.
 15. Child loop execution must be revision-aware. If a report id is a loop child,

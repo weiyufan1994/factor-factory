@@ -30,6 +30,11 @@ from factor_factory.data_access import (
     resolve_local_tushare_paths,
 )
 from factor_factory.data_api import fetch_data_api_dataset, resolve_data_api_dataset
+from factor_factory.formula.field_aliases import (
+    materialize_standard_formula_fields,
+    standard_field_contract_hash,
+    standard_formula_fields_contract,
+)
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
@@ -588,6 +593,7 @@ def build_step4_data_contract(
     minute_resolution: dict | None = None,
     daily_fields: list[str] | None = None,
     minute_fields: list[str] | None = None,
+    standard_fields_contract: dict | None = None,
 ) -> dict:
     full_queries = {}
     sample_queries = {}
@@ -628,10 +634,18 @@ def build_step4_data_contract(
             'purpose': 'step3_executability_proof',
             'full_execution_owner': 'Step4',
         },
+        'standard_formula_fields_contract': standard_fields_contract or {},
+        'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
     }
 
 
-def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols: list[str] | None = None, csv_output_policy: str | None = None) -> dict:
+def materialize_shared_daily_slice(
+    report_id: str,
+    sample_window: dict,
+    symbols: list[str] | None = None,
+    csv_output_policy: str | None = None,
+    standard_fields_contract: dict | None = None,
+) -> dict:
     del symbols, csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -646,6 +660,7 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         sample_window=sample_window,
         daily_resolution=daily_resolution,
         daily_fields=daily_fields,
+        standard_fields_contract=standard_fields_contract,
     )
 
     if daily_resolution.get('status') != 'ready':
@@ -658,6 +673,12 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
             'input_mode': 'daily_only',
             'data_api_resolution': {'clean_daily_bar': daily_resolution},
             'step4_data_contract': step4_data_contract,
+            'standard_formula_fields_contract': standard_fields_contract or {},
+            'derived_field_contract': {
+                'version': 'factorforge_step3a_derived_field_contract_v1',
+                'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+                'materialization_status': 'blocked_data_api_resolution_missing',
+            },
         }
 
     return {
@@ -667,12 +688,24 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
         'input_mode': 'daily_only',
         'data_api_resolution': {'clean_daily_bar': daily_resolution},
         'step4_data_contract': step4_data_contract,
+        'standard_formula_fields_contract': standard_fields_contract or {},
+        'derived_field_contract': {
+            'version': 'factorforge_step3a_derived_field_contract_v1',
+            'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+            'materialization_status': 'step4_data_api_contract_required',
+            'materialization_owner': 'Step4',
+        },
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
     }
 
 
-def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
+def build_local_price_volume_snapshots(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+    standard_fields_contract: dict | None = None,
+):
     del csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -697,6 +730,7 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
         minute_resolution=minute_resolution,
         daily_fields=daily_fields,
         minute_fields=minute_fields,
+        standard_fields_contract=standard_fields_contract,
     )
     if daily_resolution.get('status') != 'ready' or minute_resolution.get('status') not in {'ready', 'proxy_ready'}:
         return {
@@ -708,6 +742,12 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
                 'minute_bar': minute_resolution,
             },
             'step4_data_contract': step4_data_contract,
+            'standard_formula_fields_contract': standard_fields_contract or {},
+            'derived_field_contract': {
+                'version': 'factorforge_step3a_derived_field_contract_v1',
+                'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+                'materialization_status': 'blocked_data_api_resolution_missing',
+            },
         }
     return {
         'sample_window_actual': sample_window,
@@ -719,6 +759,13 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
             'minute_bar': minute_resolution,
         },
         'step4_data_contract': step4_data_contract,
+        'standard_formula_fields_contract': standard_fields_contract or {},
+        'derived_field_contract': {
+            'version': 'factorforge_step3a_derived_field_contract_v1',
+            'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+            'materialization_status': 'step4_data_api_contract_required',
+            'materialization_owner': 'Step4',
+        },
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
     }
@@ -861,9 +908,19 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
     }
 
 
-def build_local_daily_snapshot(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
+def build_local_daily_snapshot(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+    standard_fields_contract: dict | None = None,
+):
     # Daily-only factors resolve the published clean_daily_bar Data API contract.
-    return materialize_shared_daily_slice(report_id, sample_window, csv_output_policy=csv_output_policy)
+    return materialize_shared_daily_slice(
+        report_id,
+        sample_window,
+        csv_output_policy=csv_output_policy,
+        standard_fields_contract=standard_fields_contract,
+    )
 
 
 def build_step3a(report_id: str, csv_output_policy: str | None = None):
@@ -873,6 +930,14 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
 
     factor_id = fsm.get('factor_id', report_id)
     canonical = fsm.get('canonical_spec', {})
+    standard_fields_contract = (
+        canonical.get('standard_formula_fields_contract')
+        or fsm.get('standard_formula_fields_contract')
+        or standard_formula_fields_contract(
+            canonical.get('required_fields') or canonical.get('required_inputs') or [],
+            formula_text=canonical.get('formula_text') or '',
+        )
+    )
     price_volume_minute = is_price_volume_minute_formula(canonical)
     direct_code_minute = direct_code_requires_minute_inputs(fsm)
     required = canonical.get('required_inputs', [])
@@ -980,7 +1045,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                     'risk': 'high'
                 }
             ])
-        local_input_paths = build_local_price_volume_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
+        local_input_paths = build_local_price_volume_snapshots(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+            standard_fields_contract=standard_fields_contract,
+        )
         if price_volume_minute:
             notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
         if direct_code_minute and not price_volume_minute:
@@ -1005,7 +1075,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                 'detail': snapshot_note,
             })
     else:
-        local_input_paths = build_local_daily_snapshot(report_id, sample_window, csv_output_policy=csv_output_policy)
+        local_input_paths = build_local_daily_snapshot(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+            standard_fields_contract=standard_fields_contract,
+        )
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_note:
@@ -1038,6 +1113,9 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
         'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
+        'standard_formula_fields_contract': standard_fields_contract,
+        'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+        'derived_field_contract': local_input_paths.get('derived_field_contract') or {},
     }
 
     qlib_adapter_config = {
@@ -1082,6 +1160,9 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
         'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
+        'standard_formula_fields_contract': standard_fields_contract,
+        'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+        'derived_field_contract': local_input_paths.get('derived_field_contract') or {},
         'sample_window': sample_window,
         'local_input_paths': local_input_paths,
         'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'
@@ -1173,6 +1254,9 @@ def main():
         'factor_spec_master_ref': f'factor_spec_master__{report_id}.json',
         'local_input_paths': data_prep_master['local_input_paths'],
         'step4_data_contract': data_prep_master.get('step4_data_contract') or {},
+        'standard_formula_fields_contract': data_prep_master.get('standard_formula_fields_contract') or {},
+        'standard_formula_fields_contract_hash': data_prep_master.get('standard_formula_fields_contract_hash'),
+        'derived_field_contract': data_prep_master.get('derived_field_contract') or {},
     })
     write_json(handoff_path, handoff_payload)
 

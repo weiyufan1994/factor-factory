@@ -38,6 +38,12 @@ REQUIRED_TERMS = {
         "null_state_behavior",
         "direct_code must implement the estimator only after the mechanism contract is coherent",
         "raw-field restatement is invalid",
+        "standard_formula_fields_contract",
+        "volume",
+        "returns",
+        "vwap",
+        "advn",
+        "derive if needed",
     ],
     "step6": [
         "research_equation_reviewer",
@@ -47,6 +53,11 @@ REQUIRED_TERMS = {
         "drawdown_recovery_area",
         "Dirac-style anomaly review",
         "equation-to-factor discovery queue",
+        "evidence_status_split",
+        "self_quant_evidence_status",
+        "qlib_native_status",
+        "partial_payload",
+        "component-level review",
     ],
 }
 

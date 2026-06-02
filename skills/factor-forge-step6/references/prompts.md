@@ -27,6 +27,15 @@ Required metric interpretation:
 - drawdown_recovery_days: time-option cost borne by capital provider
 - drawdown_recovery_area: NAV pain area; smaller area means better holder experience for equal return
 
+Backend evidence must be split before the research decision:
+
+- `wrapper_validation_status`: whether Step1-5 wrapper/validator evidence passed
+- `self_quant_evidence_status`: `present_success|present_partial|missing|skipped|failed`
+- `qlib_native_status`: `not_attempted|preflight_blocked|preflight_ready|partial_payload|native_minimal_success|native_backtest_success|failed`
+- `research_decision`: Step6 decision after evidence review
+
+Do not treat `qlib_native_status=partial_payload` as qlib success.
+
 Required output:
 {
   "research_equation_review": {
@@ -74,6 +83,12 @@ Required output:
     "expected_metric_signature": [],
     "falsification_tests": [],
     "kill_criteria": []
+  },
+  "evidence_status_split": {
+    "wrapper_validation_status": "PASS|WARN|BLOCK",
+    "self_quant_evidence_status": "present_success|present_partial|missing|skipped|failed",
+    "qlib_native_status": "not_attempted|preflight_blocked|preflight_ready|partial_payload|native_minimal_success|native_backtest_success|failed",
+    "research_decision": "promote_official|iterate|reject|needs_human_review"
   }
 }
 
@@ -82,6 +97,7 @@ Rules:
 - If a negative or unexpected implication appears, classify it. Do not discard it silently.
 - new_factor_seed and tradable_anomaly require branch_seed_if_any, but approved_for_branch_generation remains false unless the existing human approval gate approves it.
 - Maintain the equation-to-factor discovery queue as review_only until human approval.
+- Revision Council taskbooks for composite formulas must assign component-level review. Each agent result must map every material formula component to formula-implied information, economic role, mathematical object, expected metric signature, falsification test, and revision implication.
 ```
 
 ## Equation-To-Factor Discovery Prompt

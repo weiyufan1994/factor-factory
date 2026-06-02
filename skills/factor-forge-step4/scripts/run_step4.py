@@ -36,6 +36,7 @@ RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
 from factor_factory.data_api import fetch_data_api_dataset
+from factor_factory.formula.field_aliases import materialize_standard_formula_fields, standard_field_contract_hash
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -543,6 +544,14 @@ def file_info(path: Path) -> dict[str, Any]:
     }
 
 
+def current_repo_sha() -> str | None:
+    try:
+        result = subprocess.run(['git', '-C', str(REPO_ROOT), 'rev-parse', 'HEAD'], check=False, capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
 def build_evaluation_plan(handoff: dict[str, Any]) -> dict[str, Any]:
     # COMMENT_POLICY: backend_extensibility
     # Evaluation plan is user-extensible via handoff_to_step4.evaluation_plan.
@@ -770,6 +779,161 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
     }
 
 
+QLIB_NATIVE_STATUS_VALUES = {
+    'not_attempted',
+    'preflight_blocked',
+    'preflight_ready',
+    'partial_payload',
+    'native_minimal_success',
+    'native_backtest_success',
+    'failed',
+}
+
+
+def qlib_taxonomy_from_payload(payload: dict[str, Any], *, preflight: dict[str, Any] | None = None, mandatory: bool = False) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    preflight = preflight or payload.get('qlib_preflight') or {}
+    payload_status = str(payload.get('status') or '')
+    mode = str(payload.get('mode') or '')
+    native_status = payload.get('qlib_native_status')
+    if native_status not in QLIB_NATIVE_STATUS_VALUES:
+        if payload_status == 'skipped':
+            native_status = 'preflight_blocked' if preflight else 'not_attempted'
+        elif payload_status == 'failed':
+            native_status = 'failed'
+        elif payload_status == 'success' and mode == 'native_minimal':
+            native_status = 'native_minimal_success'
+        elif payload_status in {'success', 'partial'}:
+            native_status = 'partial_payload'
+        elif preflight.get('status') == 'ready':
+            native_status = 'preflight_ready'
+        else:
+            native_status = 'not_attempted'
+    return {
+        'qlib_native_status': native_status,
+        'qlib_native_attempted': bool(payload.get('qlib_native_attempted') if payload.get('qlib_native_attempted') is not None else payload_status in {'success', 'partial', 'failed'}),
+        'qlib_preflight': {
+            'provider_present': preflight.get('provider_present'),
+            'qlib_import_ok': preflight.get('qlib_import_ok'),
+            'qlib_python': preflight.get('qlib_python'),
+            **({k: v for k, v in preflight.items() if k not in {'provider_present', 'qlib_import_ok', 'qlib_python'}} if isinstance(preflight, dict) else {}),
+        } if preflight else {},
+        'native_minimal_status': (
+            'success' if native_status == 'native_minimal_success' else
+            'not_attempted' if native_status in {'not_attempted', 'preflight_blocked', 'preflight_ready', 'partial_payload'} else
+            'failed'
+        ),
+        'native_backtest_status': payload.get('native_backtest_status') or ('success' if native_status == 'native_backtest_success' else 'not_attempted'),
+        'failure_reason': payload.get('failure_reason') or ((payload.get('summary') or {}).get('reason') if isinstance(payload.get('summary'), dict) else None),
+        'blocking_for_acceptance': bool(mandatory and native_status not in {'native_minimal_success', 'native_backtest_success'}),
+    }
+
+
+def _payload_for_backend(backend_runs: list[dict[str, Any]], backend: str) -> dict[str, Any]:
+    item = next((run for run in backend_runs if run.get('backend') == backend or run.get('name') == backend), {})
+    path = item.get('payload_path')
+    if not path:
+        return {}
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _backend_status(backend_runs: list[dict[str, Any]], backend: str) -> str:
+    item = next((run for run in backend_runs if run.get('backend') == backend or run.get('name') == backend), {})
+    return str(item.get('status') or 'not_attempted')
+
+
+def build_acceptance_summary(
+    *,
+    report_id: str,
+    factor_id: str | None,
+    run_id: str | None,
+    artifact_root: Path,
+    repo_sha: str | None,
+    run_status: str,
+    implementation_mode: str | None,
+    step4_output_paths: list[str],
+    backend_runs: list[dict[str, Any]],
+    backend_timing_profile: dict[str, Any],
+    step4_factor_io_profile: dict[str, Any],
+    input_io_profile: dict[str, Any],
+) -> dict[str, Any]:
+    self_quant_payload = _payload_for_backend(backend_runs, 'self_quant_analyzer')
+    qlib_payload = _payload_for_backend(backend_runs, 'qlib_backtest')
+    qlib_status = (
+        qlib_payload.get('qlib_native_status')
+        or next((run.get('qlib_native_status') for run in backend_runs if run.get('backend') == 'qlib_backtest'), None)
+        or 'not_attempted'
+    )
+    long_side = self_quant_payload.get('long_side_performance') if isinstance(self_quant_payload.get('long_side_performance'), dict) else {}
+    ic_summary = self_quant_payload.get('ic_summary') if isinstance(self_quant_payload.get('ic_summary'), dict) else {}
+    reuse_gate = step4_factor_io_profile.get('reuse_gate') or {}
+    recomputed = step4_factor_io_profile.get('recomputed_factor')
+    if reuse_gate.get('decision') == 'reuse_allowed':
+        reuse_status = 'reused'
+    elif reuse_gate.get('decision') in {'block_invalid_formal_reuse'}:
+        reuse_status = 'blocked'
+    elif recomputed is True:
+        reuse_status = 'recomputed'
+    else:
+        reuse_status = str(reuse_gate.get('decision') or 'unknown')
+    return {
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'run_id': run_id,
+        'artifact_root': str(artifact_root),
+        'repo_sha': repo_sha,
+        'wrapper_validation_status': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+        'step_status': {
+            'step3': 'PASS',
+            'step3b': 'PASS',
+            'step4': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+            'step5': 'not_run',
+            'step6': 'not_run',
+        },
+        'step3b': {
+            'backend': implementation_mode,
+            'input_format': (input_io_profile or {}).get('daily_selected_format'),
+            'sample_only': True,
+            'phase_seconds': {},
+            'formula_engine_profile': {},
+            'cache': step4_factor_io_profile.get('step3b_compute_cache_source') or {},
+        },
+        'step4': {
+            'formal_factor_values_owner': 'Step4',
+            'formal_factor_values_path': next((path for path in step4_output_paths if path.endswith('.parquet')), None),
+            'input_format': (input_io_profile or {}).get('daily_selected_format'),
+            'self_quant_status': _backend_status(backend_runs, 'self_quant_analyzer'),
+            'qlib_native_status': qlib_status,
+            'phase_seconds': backend_timing_profile,
+        },
+        'reuse': {
+            'step3b_cache_reused_by_step4': step4_factor_io_profile.get('source') == 'step3b_full_compute_cache',
+            'reuse_gate_status': reuse_status,
+            'reuse_reason': reuse_gate.get('reason') or step4_factor_io_profile.get('reason'),
+        },
+        'side_effects': {
+            'generated_code_digest_changed': False,
+            'clean_data_digest_changed': False,
+            'official_record_written': False,
+            'search_worker_started': False,
+        },
+        'financial_metrics': {
+            'rank_ic_mean': ic_summary.get('rank_ic_mean'),
+            'long_side_annual_return': long_side.get('long_side_annual_return'),
+            'turnover_mean': long_side.get('turnover') or long_side.get('long_side_turnover_mean_daily'),
+            'cost_adjusted_annual_return': long_side.get('cost_adjusted_long_side_annual_return'),
+            'volatility_drag': long_side.get('volatility_drag'),
+            'max_drawdown': long_side.get('long_side_max_drawdown') or long_side.get('max_drawdown'),
+            'recovery_days': long_side.get('long_side_recovery_days') or long_side.get('recovery_days'),
+            'drawdown_recovery_area': long_side.get('drawdown_recovery_area') or long_side.get('long_side_recovery_pain_area'),
+        },
+    }
+
+
 def write_backend_payloads(
     report_id: str,
     backend_runs: list[dict[str, Any]],
@@ -803,6 +967,11 @@ def write_backend_payloads(
             if backend == 'qlib_backtest':
                 preflight = preflight_qlib_native(report_id, backend_cfg)
                 if preflight.get('status') != 'ready':
+                    qlib_taxonomy = qlib_taxonomy_from_payload(
+                        {'backend': backend, 'status': 'skipped', 'mode': backend_cfg.get('mode', 'native'), 'summary': {'reason': preflight.get('reason')}},
+                        preflight=preflight,
+                        mandatory=bool(backend_cfg.get('mandatory_full_success') or backend_cfg.get('qlib_full_success_mandatory')),
+                    )
                     payload = {
                         'backend': backend,
                         'report_id': report_id,
@@ -810,6 +979,7 @@ def write_backend_payloads(
                         'mode': backend_cfg.get('mode', 'native'),
                         'summary': {'reason': preflight.get('reason')},
                         'qlib_preflight': preflight,
+                        **qlib_taxonomy,
                         'shared_evaluation_context': {
                             'available': bool(shared_context_path),
                             'used': False,
@@ -823,11 +993,15 @@ def write_backend_payloads(
                     new_item = dict(item)
                     new_item['status'] = 'skipped'
                     new_item['summary'] = payload['summary']
+                    new_item['qlib_native_status'] = qlib_taxonomy.get('qlib_native_status')
+                    new_item['qlib_native_attempted'] = qlib_taxonomy.get('qlib_native_attempted')
+                    new_item['blocking_for_acceptance'] = qlib_taxonomy.get('blocking_for_acceptance')
                     new_item['artifact_paths'] = [str(p)]
                     new_item['payload_path'] = str(p)
                     timing_profile['backends']['qlib_native'] = {
                         'attempted': False,
-                        'status': preflight.get('status'),
+                        'status': qlib_taxonomy.get('qlib_native_status'),
+                        'preflight_status': preflight.get('status'),
                         'preflight_seconds': preflight.get('preflight_seconds'),
                         'wall_seconds': 0.0,
                         'reason': preflight.get('reason'),
@@ -864,6 +1038,15 @@ def write_backend_payloads(
                     new_item['summary'] = payload.get('native_backtest_metrics') or payload.get('stub_backtest_metrics', payload)
                     if preflight is not None:
                         payload.setdefault('qlib_preflight', {**preflight, 'native_attempted': True})
+                        qlib_taxonomy = qlib_taxonomy_from_payload(
+                            payload,
+                            preflight=payload.get('qlib_preflight') or preflight,
+                            mandatory=bool(backend_cfg.get('mandatory_full_success') or backend_cfg.get('qlib_full_success_mandatory')),
+                        )
+                        payload.update(qlib_taxonomy)
+                        new_item['qlib_native_status'] = qlib_taxonomy.get('qlib_native_status')
+                        new_item['qlib_native_attempted'] = qlib_taxonomy.get('qlib_native_attempted')
+                        new_item['blocking_for_acceptance'] = qlib_taxonomy.get('blocking_for_acceptance')
                         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
             timing_entry = {
                 'attempted': True,
@@ -872,6 +1055,9 @@ def write_backend_payloads(
             }
             if preflight is not None:
                 timing_entry['preflight_seconds'] = preflight.get('preflight_seconds')
+                if backend == 'qlib_backtest':
+                    timing_entry['status'] = new_item.get('qlib_native_status') or timing_entry['status']
+                    timing_entry['payload_status'] = new_item.get('status')
             timing_profile['backends'][_backend_timing_key(backend)] = timing_entry
             updated.append(new_item)
             continue
@@ -1208,6 +1394,23 @@ def _step4_data_contract(dpm: dict[str, Any], handoff: dict[str, Any]) -> dict[s
     return {}
 
 
+def _standard_formula_fields_contract(dpm: dict[str, Any], handoff: dict[str, Any], fsm: dict[str, Any] | None = None) -> dict[str, Any]:
+    local_inputs = dpm.get('local_input_paths') if isinstance(dpm.get('local_input_paths'), dict) else {}
+    contract = _step4_data_contract(dpm, handoff)
+    canonical = (fsm or {}).get('canonical_spec') if isinstance((fsm or {}).get('canonical_spec'), dict) else {}
+    for candidate in (
+        handoff.get('standard_formula_fields_contract'),
+        dpm.get('standard_formula_fields_contract'),
+        local_inputs.get('standard_formula_fields_contract'),
+        contract.get('standard_formula_fields_contract') if isinstance(contract, dict) else {},
+        canonical.get('standard_formula_fields_contract') if isinstance(canonical, dict) else {},
+        (fsm or {}).get('standard_formula_fields_contract') if isinstance(fsm, dict) else {},
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
 def _contract_query(contract: dict[str, Any], query_set: str, dataset_id: str) -> dict[str, Any] | None:
     queries = contract.get(query_set) if isinstance(contract, dict) else None
     if not isinstance(queries, dict):
@@ -1254,6 +1457,7 @@ def materialize_step4_data_inputs_from_contract(
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
     daily_df, daily_meta = _fetch_contract_frame(daily_query)
+    daily_df, standard_profile = materialize_standard_formula_fields(daily_df, contract.get('standard_formula_fields_contract') or {})
     daily_path = data_dir / f'step4_daily_input__{report_id}.parquet'
     daily_df.to_parquet(daily_path, index=False)
 
@@ -1263,6 +1467,12 @@ def materialize_step4_data_inputs_from_contract(
         'data_source': 'factorforge_data_api_full_query',
     }
     meta = {'clean_daily_bar': daily_meta}
+    if standard_profile.get('materialized_fields') or standard_profile.get('missing_fields'):
+        meta['standard_formula_fields'] = standard_profile
+        meta['standard_formula_fields_contract_hash'] = contract.get('standard_formula_fields_contract_hash') or (
+            standard_field_contract_hash(contract.get('standard_formula_fields_contract'))
+            if contract.get('standard_formula_fields_contract') else None
+        )
 
     minute_query = _contract_query(contract, 'full_queries', 'minute_bar')
     if minute_query:
@@ -1300,6 +1510,11 @@ def build_failure_outputs(report_id: str, factor_id: str | None, implementation_
     run_master = {
         'report_id': report_id,
         'factor_id': factor_id,
+        'run_id': report_id,
+        'artifact_root': str(FACTORFORGE),
+        'producer': 'step4',
+        'status': 'failed',
+        'verdict': 'BLOCK',
         'run_status': 'failed',
         'implementation_path': implementation_path,
         'output_paths': [],
@@ -1321,6 +1536,11 @@ def build_failure_outputs(report_id: str, factor_id: str | None, implementation_
     diagnostics = {
         'report_id': report_id,
         'factor_id': factor_id,
+        'run_id': report_id,
+        'artifact_root': str(FACTORFORGE),
+        'producer': 'step4',
+        'status': 'failed',
+        'verdict': 'BLOCK',
         'run_status': 'failed',
         'diagnostic_generated_at_utc': utc_now(),
         'evaluation_plan': evaluation_plan,
@@ -1369,6 +1589,11 @@ def build_failure_outputs(report_id: str, factor_id: str | None, implementation_
     handoff = {
         'report_id': report_id,
         'factor_id': factor_id,
+        'run_id': report_id,
+        'artifact_root': str(FACTORFORGE),
+        'producer': 'step4',
+        'status': 'failed',
+        'verdict': 'BLOCK',
         'run_status': 'failed',
         'factor_run_master_path': str(run_master_path),
         'diagnostics_path': str(diag_path),
@@ -1552,6 +1777,20 @@ def main() -> None:
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
+        standard_fields_contract = _standard_formula_fields_contract(dpm, handoff, fsm)
+        daily_df, standard_materialization_profile = materialize_standard_formula_fields(daily_df, standard_fields_contract)
+        if standard_materialization_profile.get('missing_fields'):
+            issues.append({
+                'severity': 'error',
+                'code': 'STANDARD_FORMULA_FIELDS_MISSING',
+                'message': 'standard formula fields could not be materialized before Step4 execution',
+                'evidence': standard_materialization_profile,
+            })
+            run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'STANDARD_FORMULA_FIELDS_MISSING', 'execution_precheck', start_utc)
+            write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
+            write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
+            write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
+            return
         expected_reuse_identity = build_step4_reuse_identity(
             report_id=report_id,
             factor_id=factor_id,
@@ -1585,6 +1824,8 @@ def main() -> None:
             'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
             'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
             'data_api_profile': data_api_profile,
+            'standard_formula_fields_contract_hash': standard_field_contract_hash(standard_fields_contract) if standard_fields_contract else None,
+            'standard_formula_field_materialization': standard_materialization_profile,
         }
         step3b_cache_source = {}
         if not may_reuse_existing_factor and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
@@ -1779,10 +2020,32 @@ def main() -> None:
         run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
         diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
         handoff_path = OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json'
+        run_id = str(base_identity.get('run_id') or dpm.get('run_id') or report_id)
+        repo_sha = current_repo_sha()
+        acceptance_summary = build_acceptance_summary(
+            report_id=report_id,
+            factor_id=factor_id,
+            run_id=run_id,
+            artifact_root=FACTORFORGE,
+            repo_sha=repo_sha,
+            run_status=run_status,
+            implementation_mode=base_identity.get('implementation_mode') or (implementation_mode_decision or {}).get('selected_mode'),
+            step4_output_paths=step4_output_paths,
+            backend_runs=backend_runs,
+            backend_timing_profile=backend_timing_profile,
+            step4_factor_io_profile=step4_factor_io_profile,
+            input_io_profile=input_io_profile,
+        )
 
         run_master = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+            'acceptance_summary': acceptance_summary,
             'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
             'run_status': run_status,
             'implementation_path': str(impl_path),
@@ -1832,6 +2095,12 @@ def main() -> None:
         diagnostics = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+            'acceptance_summary': acceptance_summary,
             'run_status': run_status,
             'diagnostic_generated_at_utc': utc_now(),
             'evaluation_plan': evaluation_plan,
@@ -1896,6 +2165,12 @@ def main() -> None:
         handoff_out = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+            'acceptance_summary': acceptance_summary,
             'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
             'run_status': run_status,
             'factor_run_master_path': str(run_master_path),

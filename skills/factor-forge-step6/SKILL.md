@@ -112,6 +112,14 @@ volatility drag, max drawdown, recovery days, and drawdown geometry when
 available. Revision Council proposals must include
 `research_equation_revision` and target the failed equation component.
 Before writing Step6 final recommendations, use the Dirac-Style Step6 Council Prompt in references/prompts.md. When asked for new ideas, use the Equation-To-Factor Discovery Prompt.
+35b. Step6 evidence must split wrapper validation, self_quant evidence, qlib
+native status, and research decision. A qlib `partial_payload` is not native
+backtest success. Step6 may use partial qlib context as a warning, but it must
+not present it as qlib success or hide self_quant evidence status.
+35c. Composite-formula Council taskbooks must require component-level review:
+each material formula component must map to formula-implied information,
+economic role, mathematical object, expected metric signature, falsification
+test, and revision implication.
 When a report suggests a market structure relation, first identify the research equation or quasi-equation, then derive one or more observable detector candidates. A detector candidate is not an approved factor. It must state source_equation_id, observable_inputs, measurement_equation, expected_metric_signature, expected_cost_risk_profile, stochastic_benchmark_terms, falsification_tests, and branch_action=review_only or human_approval_required.
 No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
 36. Before any Revision Council packet or agentic dispatch is built, Step6 must

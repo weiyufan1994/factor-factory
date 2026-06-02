@@ -1211,6 +1211,18 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
         assert meta.get('formal_factor_values_owner') in {None, 'Step4'}, (
             'Step3B metadata must preserve Step4 ownership for formal factor_values'
         )
+        assert meta.get('purpose') == 'step3_executability_proof', (
+            'BLOCK_STEP3B_SAMPLE_OWNERSHIP_MISSING: run_metadata.purpose must be step3_executability_proof'
+        )
+        assert isinstance(meta.get('sample_cap'), dict) and meta.get('sample_cap'), (
+            'BLOCK_STEP3B_SAMPLE_OWNERSHIP_MISSING: run_metadata.sample_cap missing'
+        )
+        assert isinstance(meta.get('sample_window'), dict) and meta.get('sample_window'), (
+            'BLOCK_STEP3B_SAMPLE_OWNERSHIP_MISSING: run_metadata.sample_window missing'
+        )
+        assert isinstance(meta.get('lineage'), dict) and meta.get('lineage'), (
+            'BLOCK_STEP3B_SAMPLE_OWNERSHIP_MISSING: run_metadata.lineage missing'
+        )
         note = str(meta.get('boundary_note') or '')
         assert 'Step4 owns' in note, 'run_metadata must document Step3B/Step4 boundary'
 

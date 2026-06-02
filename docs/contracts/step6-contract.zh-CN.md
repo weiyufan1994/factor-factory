@@ -121,6 +121,19 @@ Step 6 必须把每条因子尝试归入以下状态之一：
 注意：
 这些状态不同于 Step 4 的 `run_status` 和 Step 5 的 `final_status`。
 
+Step6 还必须显式拆分 evidence status：
+- `wrapper_validation_status`
+- `self_quant_evidence_status`
+- `qlib_native_status`
+- `research_decision`
+
+这些状态必须落在 `research_memo.evidence_audit.evidence_status_split`。`qlib_native_status=partial_payload`
+不得解释为 qlib native success。
+
+Revision Council taskbook 必须对 composite formula 做 component-level review：
+每个重要 formula component 都要映射到 formula-implied information、经济角色、
+数学对象、预期指标签名、falsification test 和 revision implication。
+
 ## research_iteration_master 结构
 
 ```json

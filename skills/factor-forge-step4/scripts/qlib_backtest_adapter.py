@@ -196,6 +196,30 @@ def _resolve_native_benchmark() -> str | pd.Series:
     return pd.Series(dtype='float64')
 
 
+def _taxonomy(
+    status: str,
+    *,
+    native_status: str,
+    provider_present: bool | None = None,
+    qlib_import_ok: bool | None = None,
+    qlib_python: str | None = None,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        'qlib_native_status': native_status,
+        'qlib_native_attempted': status in {'success', 'partial', 'failed'},
+        'qlib_preflight': {
+            'provider_present': provider_present,
+            'qlib_import_ok': qlib_import_ok,
+            'qlib_python': qlib_python or sys.executable,
+        },
+        'native_minimal_status': 'success' if native_status == 'native_minimal_success' else ('failed' if native_status == 'failed' else 'not_attempted'),
+        'native_backtest_status': 'success' if native_status == 'native_backtest_success' else 'not_attempted',
+        'failure_reason': failure_reason,
+        'blocking_for_acceptance': False,
+    }
+
+
 def _build_quantile_nav(
     merged: pd.DataFrame,
     signal_col: str,
@@ -254,6 +278,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'failure_reason': 'missing required qlib inputs',
             'missing_paths': missing,
             'extensible_metrics': True,
+            **_taxonomy('failed', native_status='failed', failure_reason='missing required qlib inputs'),
         }
 
     cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
@@ -361,6 +386,14 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'status': 'partial',
             'engine': 'qlib_backtest_adapter_signal_diagnostics_only',
             'failure_reason': f'native qlib backtest unavailable: {type(exc).__name__}: {exc}',
+            **_taxonomy(
+                'partial',
+                native_status='partial_payload',
+                provider_present=None,
+                qlib_import_ok=False,
+                qlib_python=sys.executable,
+                failure_reason=f'native qlib backtest unavailable: {type(exc).__name__}: {exc}',
+            ),
             'readiness': {
                 **base_payload['readiness'],
                 'qlib_import_ok': False,
@@ -400,6 +433,14 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'status': 'partial',
             'engine': 'qlib_backtest_adapter_signal_diagnostics_only',
             'failure_reason': f'native qlib runtime unavailable: {type(exc).__name__}: {exc}',
+            **_taxonomy(
+                'partial',
+                native_status='partial_payload',
+                provider_present=True,
+                qlib_import_ok=True,
+                qlib_python=sys.executable,
+                failure_reason=f'native qlib runtime unavailable: {type(exc).__name__}: {exc}',
+            ),
             'readiness': {
                 **base_payload['readiness'],
                 'qlib_import_ok': True,
@@ -427,6 +468,13 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         'status': 'success',
         'mode': 'native_minimal',
         'engine': 'qlib_backtest_adapter_native_minimal',
+        **_taxonomy(
+            'success',
+            native_status='native_minimal_success',
+            provider_present=True,
+            qlib_import_ok=True,
+            qlib_python=sys.executable,
+        ),
         'qlib_version': getattr(qlib, '__version__', 'unknown'),
         'readiness': {
             **base_payload['readiness'],

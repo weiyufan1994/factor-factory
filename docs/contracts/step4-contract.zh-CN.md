@@ -23,6 +23,20 @@ Step 4 负责通过独立 `factorforge_data_api` 合约拉取全量正式数据�
 
 Step3B 的 `step3b_sample_factor_values__{report_id}` 只是样本可执行性证据，不是正式输入。Step4 必须基于 Step4 Data API full query contract 重新计算正式 factor values；只有 metadata 能证明 parquet 已由 Step4 写出时才可复用。
 
+如果 Step4 复用 Step3B/既有 Step4 cache，必须在复用前重新计算实际 parquet
+的 sha256、row_count、schema 和 key_hash，并与 metadata identity 绑定。metadata
+匹配但 parquet bytes 被篡改时必须 recompute 或 BLOCK。
+
+正式 Step4 成功 artifact 必须暴露顶层验收字段：`report_id`、`run_id`、
+`artifact_root`、`producer`、`status`、`verdict`。`factor_run_master` 必须写入
+`acceptance_summary`，包括 Step3B sample/cache 状态、Step4 owner/path、
+backend split、reuse gate、side effects 和 long-side financial metrics。
+
+qlib native status 只能使用：
+`not_attempted|preflight_blocked|preflight_ready|partial_payload|native_minimal_success|native_backtest_success|failed`。
+`partial_payload` 不是 qlib success；如果要求 full native qlib success，则必须
+BLOCK。
+
 ## self-quant 强制证据包
 `self_quant_analyzer` 必须输出以下全部标准 artifacts，Step 4 才能视为完整：
 

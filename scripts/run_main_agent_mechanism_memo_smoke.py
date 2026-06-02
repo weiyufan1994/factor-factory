@@ -514,13 +514,18 @@ def main() -> None:
     taskbook_path = root / "objects" / "research_iteration_master" / "revision_council" / RID / f"agentic_taskbook__{RID}.json"
     taskbook_payload = load_json(taskbook_path) if taskbook_path.exists() else {}
     tasks = taskbook_payload.get("agent_tasks") or []
+    shared_context = taskbook_payload.get("shared_context") or {}
     cases.append({
         "case": "taskbook_requires_memo_critique",
         "ok": taskbook["rc"] == 0
         and tasks
         and all(task.get("main_agent_mechanism_memo_ref") for task in tasks)
         and all("main_agent_memo_agreement" in (task.get("required_outputs") or []) for task in tasks)
-        and "main_agent_mechanism_memo_ref" in (taskbook_payload.get("shared_context") or {}),
+        and all("component_level_taskbook_response" in (task.get("required_outputs") or []) for task in tasks)
+        and all(isinstance(task.get("component_review_requirements"), list) and task.get("component_review_requirements") for task in tasks)
+        and "main_agent_mechanism_memo_ref" in shared_context
+        and isinstance(shared_context.get("component_review_requirements"), list)
+        and bool(shared_context.get("component_review_requirements")),
         "command": taskbook,
     })
 

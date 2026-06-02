@@ -622,6 +622,7 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
     forbidden_absent = not any(forbidden_exists.values())
     iteration = read_json(iteration_path) if iteration_path.exists() else {}
     research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    evidence_status_split = ((research_memo.get('evidence_audit') or {}).get('evidence_status_split') or {})
     loop_brief_ref = iteration.get('loop_research_brief') or {}
     loop_brief_json_path = Path(loop_brief_ref.get('json_path')) if loop_brief_ref.get('json_path') else root / '__missing_loop_brief.json'
     loop_brief_md_path = Path(loop_brief_ref.get('markdown_path')) if loop_brief_ref.get('markdown_path') else root / '__missing_loop_brief.md'
@@ -871,6 +872,11 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
         },
         'research_intelligence': {
             'evidence_verdict': (research_memo.get('evidence_audit') or {}).get('evidence_verdict'),
+            'evidence_status_split': evidence_status_split,
+            'wrapper_validation_status': evidence_status_split.get('wrapper_validation_status'),
+            'self_quant_evidence_status': evidence_status_split.get('self_quant_evidence_status'),
+            'qlib_native_status': evidence_status_split.get('qlib_native_status'),
+            'research_decision_status': evidence_status_split.get('research_decision'),
             'short_side_dominance_suspected': ((research_memo.get('evidence_audit') or {}).get('metric_consistency') or {}).get('short_side_dominance_suspected'),
             'cost_adjusted_status': ((research_memo.get('evidence_audit') or {}).get('long_side_evidence_quality') or {}).get('cost_adjusted_status'),
             'factor_family': (research_memo.get('mechanism_analysis') or {}).get('factor_family'),

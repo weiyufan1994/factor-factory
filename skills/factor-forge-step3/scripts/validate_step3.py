@@ -22,6 +22,8 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_generated_by_step3a_llm_provider',
 }
 
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
+
 
 def validate_sort_contract(contract: dict) -> None:
     if not contract:
@@ -235,6 +237,51 @@ def _daily_filter_policy(prep: dict, qcfg: dict) -> dict:
     return {}
 
 
+def _standard_formula_fields_contract(prep: dict, qcfg: dict, handoff: dict) -> dict:
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    contract = _step4_data_contract(prep, qcfg, handoff)
+    for candidate in [
+        prep.get('standard_formula_fields_contract'),
+        local_inputs.get('standard_formula_fields_contract'),
+        qcfg.get('standard_formula_fields_contract'),
+        handoff.get('standard_formula_fields_contract'),
+        contract.get('standard_formula_fields_contract') if isinstance(contract, dict) else {},
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def validate_standard_formula_fields_ready(prep: dict, qcfg: dict, handoff: dict, *, workspace: Path) -> None:
+    contract = _standard_formula_fields_contract(prep, qcfg, handoff)
+    failures = validate_standard_formula_fields_contract(contract)
+    assert not failures, f'standard formula fields contract invalid: {failures}'
+    requested = list((contract.get('required_standard_formula_fields') or []) if isinstance(contract, dict) else [])
+    if not requested:
+        return
+    derived = prep.get('derived_field_contract') or ((prep.get('local_input_paths') or {}).get('derived_field_contract') if isinstance(prep.get('local_input_paths'), dict) else {}) or {}
+    assert isinstance(derived, dict) and derived.get('version') == 'factorforge_step3a_derived_field_contract_v1', (
+        'BLOCK_STEP3A_STANDARD_FIELD_NOT_MATERIALIZED: derived_field_contract missing'
+    )
+    status = str(derived.get('materialization_status') or '')
+    assert status in {'materialized_local_snapshot', 'step4_data_api_contract_required', 'blocked_data_api_resolution_missing'}, (
+        f'BLOCK_STEP3A_STANDARD_FIELD_NOT_MATERIALIZED: invalid materialization_status={status}'
+    )
+    if prep.get('feasibility') == 'blocked':
+        return
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    if daily_rel:
+        daily_path = workspace / daily_rel
+        columns = parquet_schema_columns(daily_path) if daily_path.suffix.lower() == '.parquet' else list(__import__('pandas').read_csv(daily_path, nrows=0).columns)
+        missing = [field for field in requested if field not in columns]
+        assert not missing, f'BLOCK_STEP3A_STANDARD_FIELD_NOT_MATERIALIZED: missing materialized fields {missing}'
+    else:
+        assert status == 'step4_data_api_contract_required', (
+            'BLOCK_STEP3A_STANDARD_FIELD_NOT_MATERIALIZED: no daily snapshot and no Step4 Data API materialization contract'
+        )
+
+
 def validate_step3_readiness_contract(
     prep: dict,
     qcfg: dict,
@@ -279,6 +326,7 @@ def validate_step3_readiness_contract(
     assert contract.get('formal_factor_values_owner') == 'Step4', (
         'BLOCK_STEP3A_STEP4_OWNER_INVALID: formal factor_values owner must be Step4'
     )
+    validate_standard_formula_fields_ready(prep, qcfg, handoff, workspace=workspace)
 
     policy = _daily_filter_policy(prep, qcfg)
     assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (

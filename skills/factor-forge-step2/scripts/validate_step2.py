@@ -40,6 +40,7 @@ ALLOWED_IMPLEMENTATION_MODES = {'operator', 'direct_code', 'hybrid'}
 from factor_factory.artifact_identity import build_spec_hash
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.factor_families.registry import FamilyPluginContractError, get_family_plugin_contract
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 
 
@@ -305,6 +306,16 @@ def main() -> None:
         master_mechanism_math_contract_v2 = master.get('mechanism_math_contract_v2')
         canonical_mechanism_math_contract_v2 = canonical.get('mechanism_math_contract_v2')
         handoff_mechanism_math_contract_v2 = handoff.get('mechanism_math_contract_v2') if isinstance(handoff, dict) else None
+        standard_contract = canonical.get('standard_formula_fields_contract') or master.get('standard_formula_fields_contract')
+        handoff_standard_contract = handoff.get('standard_formula_fields_contract') if isinstance(handoff, dict) else None
+        standard_contract_failures = validate_standard_formula_fields_contract(standard_contract)
+        standard_hashes = [
+            value for value in [
+                canonical.get('standard_formula_fields_contract_hash'),
+                master.get('standard_formula_fields_contract_hash'),
+                handoff.get('standard_formula_fields_contract_hash') if isinstance(handoff, dict) else None,
+            ] if value
+        ]
         mechanism_math_contract = master_mechanism_math_contract or canonical_mechanism_math_contract
         mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
         has_any_mechanism_math_v2 = any(isinstance(item, dict) and bool(item) for item in [master_mechanism_math_contract_v2, canonical_mechanism_math_contract_v2, handoff_mechanism_math_contract_v2])
@@ -335,6 +346,10 @@ def main() -> None:
             check('operator_formula_hash_identity_match', implementation_mode != 'operator' or formula_ir.get('formula_hash') == ((master.get('artifact_identity') or {}).get('formula_hash')), 'operator formula_ir.formula_hash must match artifact_identity.formula_hash'),
             check('operator_set_present', implementation_mode != 'operator' or nonempty_list(formula_ir.get('operator_set')), 'operator formula_ir.operator_set missing'),
             check('operator_required_fields_present', implementation_mode != 'operator' or nonempty_list(formula_ir.get('required_fields')), 'operator formula_ir.required_fields missing'),
+            check('standard_formula_fields_contract_present', implementation_mode not in {'operator', 'hybrid'} or isinstance(standard_contract, dict), 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING: standard_formula_fields_contract missing'),
+            check('standard_formula_fields_contract_valid', not standard_contract_failures, f'standard_formula_fields_contract invalid: {standard_contract_failures}'),
+            check('standard_formula_fields_contract_handoff_present', implementation_mode not in {'operator', 'hybrid'} or not handoff or isinstance(handoff_standard_contract, dict), 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING: handoff standard_formula_fields_contract missing'),
+            check('standard_formula_fields_contract_hash_consistent', len(set(standard_hashes)) <= 1, f'BLOCK_STANDARD_FORMULA_FIELDS_MISSING: standard field contract hash mismatch {standard_hashes}'),
             check('paper_canonical_formula_ir_required', source_type != 'paper_canonical_formula' or bool(formula_ir), 'paper_canonical_formula requires formula_ir'),
             check('thesis_alpha_thesis_present', nonempty_str(thesis.get('alpha_thesis')), 'thesis.alpha_thesis missing'),
             check('thesis_target_prediction_present', nonempty_str(thesis.get('target_prediction')), 'thesis.target_prediction missing'),

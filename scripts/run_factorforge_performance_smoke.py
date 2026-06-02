@@ -6766,11 +6766,17 @@ def run_step4_backend_timing_profile_records_qlib_skipped_case(root: Path) -> di
     ctx = ensure_step4_qlib_preflight_fixture(root)
     timing = ctx['run_metadata'].get('backend_timing_profile') or {}
     qlib = ((timing.get('backends') or {}).get('qlib_native') or {})
+    qlib_status = qlib.get('status')
+    qlib_preflight_status = qlib.get('preflight_status')
     ok = (
         ctx['proc'].returncode == 0
         and timing.get('version') == 'factorforge_step4_backend_timing_profile_v1'
         and qlib.get('attempted') is False
-        and qlib.get('status') == 'skipped_native_missing_provider'
+        and qlib_status in {'skipped_native_missing_provider', 'preflight_blocked'}
+        and (
+            qlib_preflight_status in {None, 'skipped_native_missing_provider'}
+            or str(qlib_preflight_status).startswith('skipped')
+        )
         and isinstance(qlib.get('preflight_seconds'), (int, float))
     )
     return {
@@ -7122,12 +7128,18 @@ def run_throughput_profile_reads_backend_timing_profile_case(root: Path) -> dict
     timing = ((payload.get('step4') or {}).get('backend_timing_profile') or {})
     qlib = ((timing.get('backends') or {}).get('qlib_native') or {})
     self_quant = ((timing.get('backends') or {}).get('self_quant_analyzer') or {})
+    qlib_status = qlib.get('status')
+    qlib_preflight_status = qlib.get('preflight_status')
     ok = (
         proc.returncode == 0
         and timing.get('version') == 'factorforge_step4_backend_timing_profile_v1'
         and self_quant.get('attempted') is True
         and qlib.get('attempted') is False
-        and qlib.get('status') == 'skipped_native_missing_provider'
+        and qlib_status in {'skipped_native_missing_provider', 'preflight_blocked'}
+        and (
+            qlib_preflight_status in {None, 'skipped_native_missing_provider'}
+            or str(qlib_preflight_status).startswith('skipped')
+        )
         and (payload.get('step4') or {}).get('qlib_native_attempted') is False
     )
     return {

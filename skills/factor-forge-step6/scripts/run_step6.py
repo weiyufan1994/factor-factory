@@ -88,6 +88,15 @@ CHART_ARTIFACT_FILENAMES = {
     'long_short_nav_diagnostic_only': 'long_short_nav_10groups.png',
     'coverage_by_day': 'coverage_by_day.png',
 }
+QLIB_NATIVE_STATUS_VALUES = {
+    'not_attempted',
+    'preflight_blocked',
+    'preflight_ready',
+    'partial_payload',
+    'native_minimal_success',
+    'native_backtest_success',
+    'failed',
+}
 
 
 def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step6') -> dict[str, Any]:
@@ -869,6 +878,71 @@ def _backend_bucket(backend_runs: list[dict[str, Any]], statuses: set[str]) -> l
     ]
 
 
+def _backend_run(backend_runs: list[dict[str, Any]], backend: str) -> dict[str, Any]:
+    for item in backend_runs:
+        if str(item.get('backend')) == backend:
+            return item if isinstance(item, dict) else {}
+    return {}
+
+
+def _qlib_native_status(run_item: dict[str, Any], payload: dict[str, Any]) -> str:
+    status = str(
+        payload.get('qlib_native_status')
+        or run_item.get('qlib_native_status')
+        or ''
+    )
+    if status in QLIB_NATIVE_STATUS_VALUES:
+        return status
+    payload_status = str(payload.get('status') or run_item.get('status') or '')
+    if payload_status in {'success'} and payload.get('native_backtest_metrics'):
+        return 'native_backtest_success'
+    if payload_status in {'success'} and payload.get('native_minimal_status') == 'success':
+        return 'native_minimal_success'
+    if payload_status in {'partial'}:
+        return 'partial_payload'
+    if payload_status in {'failed'}:
+        return 'failed'
+    if payload_status in {'skipped'}:
+        return 'not_attempted'
+    return 'not_attempted'
+
+
+def build_evidence_status_split(
+    run_master: dict[str, Any],
+    payloads: dict[str, dict[str, Any]],
+    evidence_verdict: str,
+    research_decision: str | None = None,
+) -> dict[str, Any]:
+    backend_runs = (((run_master.get('evaluation_results') or {}).get('backend_runs')) or [])
+    self_quant_item = _backend_run(backend_runs, 'self_quant_analyzer')
+    qlib_item = _backend_run(backend_runs, 'qlib_backtest')
+    self_quant_payload = payloads.get('self_quant_analyzer') or {}
+    qlib_payload = payloads.get('qlib_backtest') or {}
+    self_quant_status = str(self_quant_item.get('status') or self_quant_payload.get('status') or 'missing')
+    qlib_status = _qlib_native_status(qlib_item, qlib_payload)
+    if self_quant_status == 'success' and self_quant_payload:
+        self_quant_evidence_status = 'present_success'
+    elif self_quant_status == 'partial' and self_quant_payload:
+        self_quant_evidence_status = 'present_partial'
+    elif self_quant_status in {'failed', 'skipped'}:
+        self_quant_evidence_status = self_quant_status
+    else:
+        self_quant_evidence_status = 'missing'
+    acceptance_summary = run_master.get('acceptance_summary') if isinstance(run_master.get('acceptance_summary'), dict) else {}
+    wrapper_validation_status = str(
+        acceptance_summary.get('wrapper_validation_status')
+        or ('PASS' if run_master.get('run_status') in {'success', 'partial'} else 'BLOCK')
+    )
+    return {
+        'wrapper_validation_status': wrapper_validation_status,
+        'self_quant_evidence_status': self_quant_evidence_status,
+        'qlib_native_status': qlib_status,
+        'research_decision': research_decision or 'pending_step6_decision',
+        'evidence_verdict': evidence_verdict,
+        'source': 'step6_backend_evidence_status_split_v1',
+    }
+
+
 def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]], headline_metrics: dict[str, Any]) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -1050,6 +1124,7 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     else:
         evidence_verdict = 'usable'
 
+    evidence_status_split = build_evidence_status_split(run_master, payloads, evidence_verdict)
     return {
         'backend_integrity': {
             'run_status': run_master.get('run_status'),
@@ -1103,6 +1178,7 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
             'high_revenue_bad_business_factor': cogs_destroy_alpha,
         },
         'data_or_implementation_suspicions': suspicions,
+        'evidence_status_split': evidence_status_split,
         'evidence_verdict': evidence_verdict,
     }
 
@@ -3265,6 +3341,9 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     )
     diversity_position = build_diversity_position(framework, retrieval_context, decision)
     evidence_audit = build_evidence_audit(bundle, payloads, metrics)
+    evidence_status_split = evidence_audit.get('evidence_status_split') if isinstance(evidence_audit.get('evidence_status_split'), dict) else {}
+    evidence_status_split['research_decision'] = decision
+    evidence_audit['evidence_status_split'] = evidence_status_split
     mechanism_analysis = build_mechanism_analysis(bundle, payloads, metrics, evidence_audit, retrieval_context)
     formula_specific_derivation = build_formula_specific_derivation(
         bundle.get('factor_spec_master') or {},
@@ -3286,6 +3365,8 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     ):
         decision = 'iterate'
         thesis = 'Factor has usable evidence but needs mechanism support before official promotion.'
+        evidence_status_split['research_decision'] = decision
+        evidence_audit['evidence_status_split'] = evidence_status_split
         experience_chain = build_experience_chain(
             str(report_id),
             str(factor_id),
@@ -3377,6 +3458,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         'research_judgment': {
             'decision': decision,
             'thesis': thesis,
+            'evidence_status_split': evidence_status_split,
             'strengths': strengths,
             'weaknesses': weaknesses,
             'risks': risks,

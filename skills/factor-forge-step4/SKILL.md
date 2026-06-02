@@ -25,6 +25,10 @@ Current practical backend maturity:
 - `qlib_backtest` now has both a sample-stub layer and a native minimal backtest path; native execution depends on qlib-friendly signal formatting, especially `instrument` / `datetime` semantics
 - Qlib native requires the Microsoft Qlib package and a provider/store. A Python package named `qlib` is not sufficient; preflight must verify `qlib.init` plus `qlib.data.D`, and must skip native execution if a non-Microsoft `qlib` package is imported.
 - Standard Step4 evidence is mandatory. Agents must not fill missing Step4 evidence with ad hoc plotting scripts or one-off notebooks.
+- qlib native status must use the taxonomy
+  `not_attempted|preflight_blocked|preflight_ready|partial_payload|native_minimal_success|native_backtest_success|failed`.
+  A `partial` qlib payload is not qlib success. If full qlib success is mandatory,
+  partial/minimal/not-attempted statuses must BLOCK.
 
 ## Research Discipline
 
@@ -104,6 +108,13 @@ with matching implementation path/hash, row/date/ticker counts, and producer
 lineage, Step4 must reuse it as a compute cache and then write/own the formal
 Step4 factor_values artifact. Recompute only when code, data, identity, or
 formal-evidence ownership differs.
+
+Every formal Step4 success artifact must expose top-level acceptance fields:
+`report_id`, `run_id`, `artifact_root`, `producer`, `status`, and `verdict`.
+`factor_run_master` must also include `acceptance_summary` with wrapper
+validation status, Step3B sample/cache status, Step4 owner/path, backend split,
+reuse gate status, side-effect status, and long-side financial metrics including
+volatility drag and drawdown recovery area when available.
 
 ## factor_run_master schema
 

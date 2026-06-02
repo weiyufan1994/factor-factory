@@ -51,7 +51,43 @@ def nested(data: dict[str, Any], *keys: str) -> Any:
     return cur
 
 
-def agent_task(role: str, question: str, tools: list[str], report_id: str) -> dict[str, Any]:
+def component_review_requirements(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    component_map = packet.get("main_agent_formula_component_map") or []
+    requirements: list[dict[str, Any]] = []
+    if isinstance(component_map, list):
+        for idx, item in enumerate(component_map):
+            if not isinstance(item, dict):
+                continue
+            component = item.get("formula_component") or item.get("component") or item.get("name") or f"component_{idx}"
+            requirements.append(
+                {
+                    "formula_component": component,
+                    "required_questions": [
+                        "What information about the market state does this component imply?",
+                        "Which economic hypothesis or payer mechanism does this component test?",
+                        "Which mathematical object, latent state, or estimator does this component represent?",
+                        "Which metric signature should improve if this component is correct?",
+                        "What falsification would force revision or removal of this component?",
+                    ],
+                    "source_mapping": item,
+                }
+            )
+    if requirements:
+        return requirements
+    return [
+        {
+            "formula_component": "whole_formula",
+            "required_questions": [
+                "Decompose the composite expression into economically meaningful terms before proposing a revision.",
+                "State the formula-implied information that is not already explicit in the main-agent memo.",
+                "Map each proposed term to a mathematical object and falsification metric.",
+            ],
+            "source_mapping": {},
+        }
+    ]
+
+
+def agent_task(role: str, question: str, tools: list[str], report_id: str, component_requirements: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "agent_role": role,
         "task_id": f"agent_{role}",
@@ -66,6 +102,7 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
             "main_agent_memo_agreement",
             "model_selection_critique",
             "component_mapping_critique",
+            "component_level_taskbook_response",
             "payer_derivation_critique",
             "evidence_contradiction_review",
             "prior_revision_outcome_review",
@@ -82,6 +119,7 @@ def agent_task(role: str, question: str, tools: list[str], report_id: str) -> di
             "overclaim_guard",
         ],
         "allowed_tools": tools,
+        "component_review_requirements": component_requirements,
         "forbidden_changes": [
             "portfolio expression",
             "short-leg adoption",
@@ -144,6 +182,7 @@ def main() -> None:
     revision = nested(packet, "research_memo", "revision_strategy")
     mechanism = nested(packet, "research_memo", "mechanism_analysis")
     brief_ref = (packet.get("loop_research_brief") or {}).get("reference") or iteration.get("loop_research_brief") or {}
+    component_requirements = component_review_requirements(packet)
 
     common_tools = [
         "dimensional_analysis",
@@ -160,30 +199,35 @@ def main() -> None:
             "What symbolic or mathematical law should be challenged before any expression revision is approved?",
             common_tools,
             rid,
+            component_requirements,
         ),
         agent_task(
             "dimensional_scaling_critic",
             "Do formula units, scale invariance, and natural time scale support the claimed factor state?",
             ["dimensional_analysis", "linear_algebra", "statistical_inference"],
             rid,
+            component_requirements,
         ),
         agent_task(
             "stochastic_process_modeler",
             "What latent stochastic state and target functional could this expression estimate?",
             ["stochastic_process_modeling", "functional_analysis", "statistical_inference"],
             rid,
+            component_requirements,
         ),
         agent_task(
             "microstructure_cost_analyst",
             "Why might gross signal exist while cost-adjusted long-side alpha fails?",
             ["microstructure_reasoning", "statistical_inference", "stochastic_process_modeling"],
             rid,
+            component_requirements,
         ),
         agent_task(
             "statistical_falsification_agent",
             "Which falsification, stability, regime, and overfit tests should kill or preserve this direction?",
             ["statistical_inference", "fourier_analysis", "linear_algebra"],
             rid,
+            component_requirements,
         ),
     ]
     taskbook = {
@@ -218,6 +262,7 @@ def main() -> None:
             "mechanism_formula_consistency": packet.get("mechanism_formula_consistency") or {},
             "main_agent_mechanism_memo_ref": packet.get("main_agent_mechanism_memo_ref"),
             "main_agent_formula_component_map": packet.get("main_agent_formula_component_map") or [],
+            "component_review_requirements": component_requirements,
             "main_agent_math_hypothesis": packet.get("main_agent_math_hypothesis") or {},
             "main_agent_evidence_comparison": packet.get("main_agent_evidence_comparison") or {},
             "prior_revision_memory": packet.get("prior_revision_memory") or {},

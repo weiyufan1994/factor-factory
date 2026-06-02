@@ -740,3 +740,21 @@ outcome（`falsified` / `improved` / `inconclusive`）。如果 child 让关键�
 agentic task packet 必须要求 `prior_revision_outcome_review` 和
 `repeated_revision_guard`，并禁止重复已证伪 derivation rule 或重建祖先 formula
 hash。
+
+## evidence_status
+
+Step6 必须写出 `factorforge_step6_evidence_status_v1`，不得用单一 `partial`
+概括整条研究链。字段包括：
+
+- `wrapper_validation_status`
+- `self_quant_evidence_status`
+- `qlib_native_status`
+- `long_side_evidence_status`
+- `cost_model_status`
+- `drawdown_geometry_status`
+- `research_decision`
+- `promotion_gate_status`
+
+Step6 报告必须把 wrapper、self-quant、qlib、long-side、cost、drawdown 和
+research decision 分层说明。若 qlib 是 `partial_payload`，只能称为 qlib partial
+payload，不得称为 qlib success。

@@ -30,6 +30,7 @@ from factor_factory.formula.pandas_codegen import generate_pandas_formula_code
 from factor_factory.formula.polars_evaluator import assert_polars_result_parity, polars_dependency_available
 from factor_factory.formula.ts_rank_candidates import available_candidates, compare_candidate_to_reference, prepare_ts_rank_frame
 from factor_factory.formula.kernels import DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS, DEFAULT_NUMPY_TS_OPERATORS, resolve_formula_kernel_engine
+from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
 from factor_factory.factor_families.price_volume import PLUGIN as PRICE_VOLUME_PLUGIN
 
 CANONICAL_DIRS = ['objects', 'runs', 'evaluations', 'generated_code', 'archive', 'factorforge', 'data/clean']
@@ -77,6 +78,8 @@ def snapshot_repo_files() -> set[str]:
 
 def run_cmd(cmd: list[str], *, root: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    existing_pythonpath = env.get('PYTHONPATH')
+    env['PYTHONPATH'] = str(REPO_ROOT) if not existing_pythonpath else str(REPO_ROOT) + os.pathsep + existing_pythonpath
     if root is not None:
         env['FACTORFORGE_ROOT'] = str(root)
     return subprocess.run(cmd, cwd=REPO_ROOT, env=env, text=True, capture_output=True)
@@ -1053,6 +1056,27 @@ def run_step3_daily_parquet_csv_schema_parity_case(root: Path) -> dict[str, Any]
 
 def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: dict[str, Any]) -> None:
     objects = root / 'objects'
+    local_inputs = dict(local_inputs)
+    daily_columns = list(
+        (((local_inputs.get('data_api_resolution') or {}).get('clean_daily_bar') or {}).get('schema') or {}).get('columns')
+        or ['ts_code', 'trade_date', 'close']
+    )
+    local_inputs.setdefault('derived_field_contract', {
+        'version': 'factorforge_derived_field_contract_v1',
+        'report_local_only': True,
+        'clean_data_mutation': False,
+        'required_fields': [],
+        'source_fields': daily_columns,
+        'derived_fields': {},
+        'standard_formula_fields_added': [],
+        'validation_result': 'PASS',
+        'blocked_items': [],
+    })
+    standard_contract = build_standard_formula_fields_contract(
+        formula_text='close',
+        required_fields=['close'],
+        available_source_fields=daily_columns,
+    )
     source_code = (
         "import pandas as pd\n\n"
         "def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:\n"
@@ -1088,6 +1112,17 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
             r'\blookahead\b',
         ],
     }
+    write_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'standard_formula_fields_contract': standard_contract,
+        'canonical_spec': {
+            'formula_text': 'close',
+            'required_fields': ['close'],
+            'formula_ir': {'required_fields': ['close']},
+            'standard_formula_fields_contract': standard_contract,
+        },
+    })
     write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',

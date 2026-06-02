@@ -38,6 +38,30 @@ them. `benchmark_math_tools` must explain what each tool rules in, rules out,
 or reveals about the model.
 
 The mechanism contract should state:
+
+## Long-Term Production Contract Fields
+
+For every canonical formula, list all formula-required standard fields. If the
+formula contains Alpha101 conventions such as `volume`, `returns`, `vwap`, or
+`advN`, emit `standard_formula_fields_contract` with explicit source fields,
+derivation rules, unit policy, lookback policy, and leakage policy. Do not write
+"derive if needed" without source fields. If a field cannot be derived from the
+data contract, BLOCK instead of guessing.
+
+Prompt vocabulary must stay aligned with downstream contracts:
+`derived_field_contract`, `acceptance_summary`, `qlib_native_status`,
+`evidence_status`, `formula_implied_information`, `metric_anomaly_review`,
+`model_linked_metric_signature`, `volatility_drag`,
+`drawdown_recovery_area`, `component_ablation`, and
+`direction_losing_transform_review`.
+
+Explicit bans: do not claim "qlib partial success"; do not describe Step3B
+formal factor values; do not say "partial run without layer"; do not use raw
+formula restatement as mechanism; do not use generic stochastic process as
+explanation.
+
+Required literal bans for validator coverage: derive if needed without source fields; Step3B formal factor values; raw formula restatement as mechanism;
+generic stochastic process as explanation.
 - research_equation with classification, assumptions, validity_scope,
   latent_state, observable_estimator, expected metric signature,
   falsification tests, and kill criteria;

@@ -88,3 +88,59 @@ UBL、CPV、shadow candlestick、candle、Williams 等 family-specific 代码必
 
 ## 可复现性警告
 Step 3 的极小复现目前依赖一个薄封装层，将 fixture 文件安装到 runner 期望的对象和本地输入路径，因为现有 Step 3 脚本围绕该对象合约构建。
+
+## derived_field_contract
+
+Step3A 必须消费 Step2 `standard_formula_fields_contract`，在 report-local snapshot
+中 materialize 所有 required standard fields，并写入
+`local_input_paths.derived_field_contract`。
+
+合同版本为 `factorforge_derived_field_contract_v1`，且必须声明：
+
+- `report_local_only=true`
+- `clean_data_mutation=false`
+- `required_fields`
+- `source_fields`
+- `derived_fields`
+- 每个 derived field 的 sources、rule、source_units、output_unit、
+  lookback_window、include_current_day、leakage_policy、null_policy
+
+Step3A 不允许修改 clean data 或 Data API。缺失 unit/lookback/leakage 或 snapshot
+未包含 required standard fields 时，validator 必须 BLOCK。
+
+`derived_field_contract` 不只覆盖 `vwap/advN/returns/volume` 这类 standard
+field materialization，也必须覆盖 Formula IR 中的算子派生节点。validator 必须从
+`formula_ir.root` 反推 expected operator contracts，并拒绝 producer 漏写算子节点或
+写出与 Formula IR 语义不一致的 stale/wrong 节点。
+例如 Alpha037 公式中的 `delay(..., 1)`、`correlation(..., 200)`、`rank(...)`
+必须分别写出：
+
+- operator 类型；
+- source fields；
+- source/output unit；
+- lookback_window（窗口类算子必须非空）；
+- `leakage_policy=no future data`；
+- `rank_scope=cross_sectional_per_trade_date`（rank 类算子）。
+
+validator 侧的 expected operator contract 必须绑定：
+
+- operator 类型；
+- expected source field set；
+- expected output_unit；
+- expected lookback_window；
+- rank_scope requirement。
+
+只匹配 operator/lookback 不够。若 `correlation(open, close, 200)` 被写成
+`sources=["volume"]`，或 `rank(...)` 被写成 `output_unit="price"`，必须 BLOCK：
+`BLOCK_STANDARD_FORMULA_OPERATOR_CONTRACT_MISMATCH`。
+
+当 Data API catalog 缺失、`feasibility=blocked` 时，Step3A 仍必须写出 planned
+operator contract；blocked 只表示不能写可执行 snapshot，不表示可以省略公式派生合同。
+
+`returns` 标准字段必须使用确定性单位合同：
+
+- 若来源是 `pct_chg`，Step3A 必须写入 `returns = pct_chg / 100`，并声明
+  `source_units.pct_chg=percent`、`output_unit=decimal_return`。
+- 若来源是已有 `return` 字段，只能作为 decimal return passthrough，并声明
+  `source_units.return=decimal_return`。
+- `percent_or_decimal_from_catalog` 这类模糊单位必须被 validator BLOCK。

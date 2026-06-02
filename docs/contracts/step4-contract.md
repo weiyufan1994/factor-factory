@@ -50,3 +50,27 @@ Manual or temporary plotting is not official Step 4 evidence. If a plot/table is
 
 ## Reproducibility warning
 Tiny fixtures may still exist for smoke testing, but official research cases require the full standard evidence pack above.
+
+## Production Acceptance Summary And Qlib Taxonomy
+
+Step4 formal artifacts must expose top-level `run_id`, `artifact_root`,
+`producer`, `status`, and `verdict` in addition to `artifact_identity`.
+
+`factor_run_master` must include `acceptance_summary` with version
+`factorforge_production_acceptance_summary_v1`. The summary separates wrapper
+status, validator verdicts, Step3B sample-only evidence, Step4 formal ownership,
+reuse gate decision, side effects, and metrics.
+
+Qlib evidence must use `qlib_native_status`:
+
+- `not_attempted`
+- `preflight_blocked`
+- `preflight_ready`
+- `partial_payload`
+- `native_minimal_success`
+- `native_backtest_success`
+- `failed`
+
+`partial_payload` is not qlib success. `sample_stub` is not native success.
+If qlib native evidence is mandatory, `partial_payload` blocks formal
+acceptance.

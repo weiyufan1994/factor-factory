@@ -53,6 +53,7 @@ from factor_factory.artifact_identity import (
 )
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
+from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 
 
@@ -910,6 +911,13 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     family_plugin_selection = explicit_family_plugin_selection(aim, primary)
     hybrid_contract = build_hybrid_contract(primary, aim) if implementation_mode == 'hybrid' else None
     direct_code_source_contract = explicit_direct_code_source_contract(primary, aim) if implementation_mode == 'direct_code' else {}
+    formula_text = primary.get('raw_formula_text', '')
+    formula_required_fields = ((primary.get('formula_ir') or {}).get('required_fields') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('required_inputs', [])
+    standard_formula_fields_contract = build_standard_formula_fields_contract(
+        formula_text=formula_text,
+        required_fields=formula_required_fields,
+        available_source_fields=['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg', 'volume', 'returns', 'vwap'],
+    )
 
     master = {
         'contract_version': STEP2_SOURCE_CONTRACT_VERSION,
@@ -920,6 +928,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         'implementation_mode': implementation_mode,
         'producer': producer,
         'upstream_producer': upstream_producer,
+        'standard_formula_fields_contract': standard_formula_fields_contract,
         'source_metadata': {
             'factor_id': aim.get('factor_id'),
             'source_name': aim.get('source_name'),
@@ -929,13 +938,13 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'window_end': aim.get('window_end'),
         },
         'canonical_spec': {
-            'formula_text': primary.get('raw_formula_text', ''),
+            'formula_text': formula_text,
             'formula_ir': primary.get('formula_ir'),
             'formula_parse_error': primary.get('formula_parse_error'),
             'parse_status': ((primary.get('formula_ir') or {}).get('parse_status') if isinstance(primary.get('formula_ir'), dict) else None),
             'qlib_expression': primary.get('qlib_expression'),
             'operator_set': ((primary.get('formula_ir') or {}).get('operator_set') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('operators', []),
-            'required_fields': ((primary.get('formula_ir') or {}).get('required_fields') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('required_inputs', []),
+            'required_fields': formula_required_fields,
             'resolved_fields': ((primary.get('formula_ir') or {}).get('resolved_fields') if isinstance(primary.get('formula_ir'), dict) else None) or {},
             'required_inputs': primary.get('required_inputs', []),
             'operators': primary.get('operators', []),
@@ -949,6 +958,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'operator_subgraph': (hybrid_contract or {}).get('operator_subgraph'),
             'custom_blocks': (hybrid_contract or {}).get('custom_blocks') or primary.get('custom_blocks') or [],
             'boundary': (hybrid_contract or {}).get('boundary'),
+            'standard_formula_fields_contract': standard_formula_fields_contract,
         },
         'implementation_contract': {
             'implementation_mode': implementation_mode,
@@ -1109,6 +1119,7 @@ def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> Non
         'mechanism_math_contract': master.get('mechanism_math_contract') or {},
         'mechanism_math_contract_v2': master.get('mechanism_math_contract_v2') or {},
         'learning_and_innovation': master.get('learning_and_innovation') or {},
+        'standard_formula_fields_contract': master.get('standard_formula_fields_contract') or {},
     }
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)
 

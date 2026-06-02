@@ -22,6 +22,7 @@ REPO_ROOT = LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).re
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
 from factor_factory.data_access import (
     CleanDailyLayerPaths,
     clean_daily_layer_ready,
@@ -685,6 +686,13 @@ def _adv_window(field: str) -> int | None:
 
 
 def formula_required_daily_fields(fsm: dict) -> list[str]:
+    contract = fsm.get('standard_formula_fields_contract')
+    if not isinstance(contract, dict):
+        canonical_contract = (fsm.get('canonical_spec') or {}).get('standard_formula_fields_contract') if isinstance(fsm.get('canonical_spec'), dict) else None
+        contract = canonical_contract if isinstance(canonical_contract, dict) else {}
+    required_standard = contract.get('required_standard_formula_fields') if isinstance(contract, dict) else None
+    if isinstance(required_standard, list) and required_standard:
+        return list(dict.fromkeys(str(field).strip().lower() for field in required_standard if str(field).strip()))
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
     formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     candidates = (
@@ -704,7 +712,8 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
     needs_vwap = 'vwap' in required
 
     added: list[str] = []
-    sources: dict[str, str] = {}
+    sources: dict[str, list[str]] = {}
+    derived_fields: dict[str, dict] = {}
     working = daily_df
     if needs_volume or needs_returns or needs_vwap or adv_fields:
         working = daily_df.copy()
@@ -715,16 +724,44 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
             raise SystemExit('BLOCK_FACTORFORGE_STEP3A_DERIVED_FIELD_MISSING_SOURCE: volume requires vol source')
         working['volume'] = pd.to_numeric(working[volume_col], errors='coerce')
         added.append('volume')
-        sources['volume'] = volume_col
+        sources['volume'] = [volume_col]
+        derived_fields['volume'] = {
+            'sources': [volume_col],
+            'rule': f'{volume_col} after catalog unit normalization',
+            'source_units': {volume_col: 'shares_or_lots_from_catalog'},
+            'output_unit': 'documented_volume_unit',
+            'lookback_window': None,
+            'include_current_day': True,
+            'leakage_policy': 'no future data',
+            'null_policy': 'preserve source nulls',
+        }
         volume_col = 'volume'
 
     if needs_returns and 'returns' not in working.columns:
         return_col = 'return' if 'return' in working.columns else 'pct_chg' if 'pct_chg' in working.columns else None
         if return_col is None:
             raise SystemExit('BLOCK_FACTORFORGE_STEP3A_DERIVED_FIELD_MISSING_SOURCE: returns requires pct_chg/return source')
-        working['returns'] = pd.to_numeric(working[return_col], errors='coerce')
+        raw_return = pd.to_numeric(working[return_col], errors='coerce')
+        if return_col == 'pct_chg':
+            working['returns'] = raw_return / 100.0
+            return_rule = 'pct_chg / 100'
+            return_source_unit = 'percent'
+        else:
+            working['returns'] = raw_return
+            return_rule = f'{return_col} decimal return passthrough'
+            return_source_unit = 'decimal_return'
         added.append('returns')
-        sources['returns'] = return_col
+        sources['returns'] = [return_col]
+        derived_fields['returns'] = {
+            'sources': [return_col],
+            'rule': return_rule,
+            'source_units': {return_col: return_source_unit},
+            'output_unit': 'decimal_return',
+            'lookback_window': None,
+            'include_current_day': True,
+            'leakage_policy': 'no future data',
+            'null_policy': 'preserve source nulls',
+        }
 
     if needs_vwap and 'vwap' not in working.columns:
         volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
@@ -734,7 +771,17 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
         amount = pd.to_numeric(working['amount'], errors='coerce')
         working['vwap'] = amount / volume
         added.append('vwap')
-        sources['vwap'] = f'amount/{volume_col}'
+        sources['vwap'] = ['amount', volume_col]
+        derived_fields['vwap'] = {
+            'sources': ['amount', volume_col],
+            'rule': 'amount / normalized_volume',
+            'source_units': {'amount': 'amount_unit_from_catalog', volume_col: 'shares_or_lots_from_catalog'},
+            'output_unit': 'price',
+            'lookback_window': None,
+            'include_current_day': True,
+            'leakage_policy': 'no future data',
+            'null_policy': 'null when amount or volume is null/zero',
+        }
 
     missing_adv = [field for field, _window in adv_fields if field not in working.columns]
     if missing_adv:
@@ -751,15 +798,206 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
                 continue
             working[field] = grouped_volume.transform(lambda s, window=window: s.rolling(window, min_periods=window).mean())
             added.append(field)
-            sources[field] = f'rolling_mean({volume_col},{window})'
+            sources[field] = [volume_col]
+            derived_fields[field] = {
+                'sources': [volume_col],
+                'rule': f'rolling_mean({volume_col}, {window})',
+                'source_units': {volume_col: 'documented_volume_unit'},
+                'output_unit': 'documented_volume_unit',
+                'lookback_window': window,
+                'include_current_day': True,
+                'leakage_policy': 'no future data',
+                'null_policy': 'null until lookback_window observations are available',
+            }
 
     return working, {
+        'version': 'factorforge_derived_field_contract_v1',
         'standard_formula_fields_added': added,
         'standard_formula_field_sources': sources,
-        'required_formula_fields': sorted(required),
+        'required_fields': sorted(required),
+        'source_fields': sorted({source for values in sources.values() for source in values}),
+        'derived_fields': derived_fields,
         'report_local_only': True,
         'clean_data_mutation': False,
+        'validation_result': 'PASS',
+        'blocked_items': [],
     }
+
+
+def _formula_ir_fields(node) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'field':
+        field = node.get('resolved_field') or node.get('name')
+        return [str(field).strip().lower()] if str(field or '').strip() else []
+    fields: list[str] = []
+    for child in node.get('args') or []:
+        fields.extend(_formula_ir_fields(child))
+    return list(dict.fromkeys(fields))
+
+
+def _formula_ir_constants(node) -> list[int | float]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'constant':
+        value = node.get('value')
+        if isinstance(value, (int, float)):
+            return [value]
+        try:
+            return [int(str(value))]
+        except Exception:
+            return []
+    constants: list[int | float] = []
+    for child in node.get('args') or []:
+        constants.extend(_formula_ir_constants(child))
+    return constants
+
+
+def _field_unit(field: str) -> str:
+    field = str(field or '').strip().lower()
+    if field in {'open', 'high', 'low', 'close', 'pre_close', 'vwap'}:
+        return 'price'
+    if field in {'volume', 'vol'} or _adv_window(field):
+        return 'documented_volume_unit'
+    if field == 'amount':
+        return 'documented_amount_unit'
+    if field in {'returns', 'return', 'ret', 'pct_chg'}:
+        return 'decimal_return'
+    return 'numeric'
+
+
+def _operator_output_unit(operator: str, child_units: list[str]) -> str:
+    operator = str(operator or '').lower()
+    if operator in {'rank', 'ts_rank'}:
+        return 'rank_score'
+    if operator in {'correlation', 'corr'}:
+        return 'dimensionless_correlation'
+    if operator == 'covariance':
+        return 'source_unit_product'
+    if operator in {'argmax', 'argmin'}:
+        return 'window_position'
+    if operator == 'delay':
+        return child_units[0] if child_units else 'numeric'
+    units = {str(unit) for unit in child_units if str(unit)}
+    if operator in {'plus', 'minus'} and units == {'rank_score'}:
+        return 'composite_rank_score'
+    if len(units) == 1:
+        return next(iter(units))
+    return 'numeric'
+
+
+def _formula_ir_output_unit(node) -> str:
+    if not isinstance(node, dict):
+        return 'numeric'
+    if node.get('type') == 'field':
+        return _field_unit(str(node.get('resolved_field') or node.get('name') or ''))
+    if node.get('type') == 'constant':
+        return 'numeric'
+    if node.get('type') != 'operator':
+        return 'numeric'
+    operator = str(node.get('operator') or '').strip().lower()
+    child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+    return _operator_output_unit(operator, child_units)
+
+
+def _operator_lookback(operator: str, constants: list[int | float]) -> int | None:
+    operator = str(operator or '').lower()
+    if operator in {
+        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+    } and constants:
+        last = constants[-1]
+        if isinstance(last, float) and not last.is_integer():
+            return None
+        value = int(last)
+        return value if value > 0 else None
+    return None
+
+
+def build_formula_operator_derived_field_contract(fsm: dict, required_fields: list[str]) -> dict:
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    derived_fields: dict[str, dict] = {}
+    source_fields = sorted(set(_formula_ir_fields(root)) | {str(field).strip().lower() for field in required_fields if str(field).strip()})
+    counter = 0
+
+    def visit(node) -> None:
+        nonlocal counter
+        if not isinstance(node, dict):
+            return
+        for child in node.get('args') or []:
+            visit(child)
+        if node.get('type') != 'operator':
+            return
+        operator = str(node.get('operator') or '').strip().lower()
+        if not operator:
+            return
+        fields = _formula_ir_fields(node)
+        constants = _formula_ir_constants(node)
+        child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+        lookback = _operator_lookback(operator, constants)
+        counter += 1
+        name = f'formula_op_{counter}_{operator}'
+        derived_fields[name] = {
+            'operator': operator,
+            'sources': fields or source_fields,
+            'rule': f'{operator}({", ".join(fields)})' if fields else operator,
+            'source_units': {field: _field_unit(field) for field in (fields or source_fields)},
+            'output_unit': _operator_output_unit(operator, child_units),
+            'lookback_window': lookback,
+            'include_current_day': False if operator == 'delay' and lookback else True,
+            'leakage_policy': 'no future data',
+            'null_policy': 'preserve operator nulls according to lookback/window availability',
+        }
+        if operator == 'rank':
+            derived_fields[name]['rank_scope'] = 'cross_sectional_per_trade_date'
+        if operator in {'correlation', 'corr', 'covariance'}:
+            derived_fields[name]['window_policy'] = 'rolling per ts_code in trade_date order'
+
+    visit(root)
+    return {
+        'version': 'factorforge_derived_field_contract_v1',
+        'standard_formula_fields_added': [],
+        'standard_formula_field_sources': {},
+        'required_fields': sorted(set(source_fields)),
+        'source_fields': source_fields,
+        'derived_fields': derived_fields,
+        'report_local_only': True,
+        'clean_data_mutation': False,
+        'materialization_status': 'planned_by_formula_contract',
+        'validation_result': 'PASS',
+        'blocked_items': [],
+    }
+
+
+def merge_derived_field_contracts(base: dict | None, overlay: dict | None) -> dict:
+    if not isinstance(base, dict):
+        base = {}
+    if not isinstance(overlay, dict):
+        overlay = {}
+    merged = {
+        'version': 'factorforge_derived_field_contract_v1',
+        'standard_formula_fields_added': list(dict.fromkeys(
+            list(base.get('standard_formula_fields_added') or []) + list(overlay.get('standard_formula_fields_added') or [])
+        )),
+        'standard_formula_field_sources': {
+            **(base.get('standard_formula_field_sources') if isinstance(base.get('standard_formula_field_sources'), dict) else {}),
+            **(overlay.get('standard_formula_field_sources') if isinstance(overlay.get('standard_formula_field_sources'), dict) else {}),
+        },
+        'required_fields': sorted(set(list(base.get('required_fields') or []) + list(overlay.get('required_fields') or []))),
+        'source_fields': sorted(set(list(base.get('source_fields') or []) + list(overlay.get('source_fields') or []))),
+        'derived_fields': {
+            **(base.get('derived_fields') if isinstance(base.get('derived_fields'), dict) else {}),
+            **(overlay.get('derived_fields') if isinstance(overlay.get('derived_fields'), dict) else {}),
+        },
+        'report_local_only': True,
+        'clean_data_mutation': False,
+        'materialization_status': overlay.get('materialization_status') or base.get('materialization_status') or 'planned_by_formula_contract',
+        'validation_result': 'PASS',
+        'blocked_items': list(base.get('blocked_items') or []) + list(overlay.get('blocked_items') or []),
+    }
+    return merged
 
 
 def materialize_shared_daily_slice(
@@ -1209,6 +1447,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                 else 'SHARED_CLEAN_DAILY_LAYER_MISSING',
                 'detail': snapshot_note,
             })
+
+    formula_derived_contract = build_formula_operator_derived_field_contract(fsm, required_fields)
+    local_input_paths['derived_field_contract'] = merge_derived_field_contracts(
+        formula_derived_contract,
+        local_input_paths.get('derived_field_contract'),
+    )
 
     feasibility = 'blocked' if blocked else ('proxy_ready' if proxy_rules else 'ready')
     notes.append(

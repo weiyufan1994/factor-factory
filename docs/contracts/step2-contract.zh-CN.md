@@ -98,3 +98,22 @@ source 与 producer 严格一一对应：
 
 ## 可复现性警告
 Step 2 的极小复现目前依赖将 fixture 对象拷贝至 runner 期望的对象路径，因为现有 Step 2 runner 围绕该对象合约构建。
+
+## standard_formula_fields_contract
+
+Step2 必须为每个正式 `factor_spec_master` 写入
+`standard_formula_fields_contract`。如果 canonical formula 使用 Alpha101 标准字段
+`volume`、`returns`、`vwap`、`advN`，合同必须列出：
+
+- `required_standard_formula_fields`
+- `formula_fields_detected`
+- `source_field_candidates`
+- `derivation_rules`
+- unit policy
+- lookback policy
+- leakage policy
+- `block_if_unavailable=true`
+
+缺失合同、source fields、unit policy、lookback policy 或 leakage policy 时必须
+BLOCK。`vwap` 必须同时证明 `amount` 与 `volume/vol` 来源；`advN` 必须证明
+volume 来源和 N 日 lookback。

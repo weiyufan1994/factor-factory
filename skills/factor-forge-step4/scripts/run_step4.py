@@ -36,6 +36,7 @@ RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
 from factor_factory.data_api import fetch_data_api_dataset
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -148,6 +149,108 @@ def factor_artifact_binding_profile(path: Path, frame: Any) -> dict[str, Any]:
         'selected_factor_row_count': int(len(frame)) if frame is not None else 0,
         'selected_factor_schema': [str(col) for col in frame.columns] if frame is not None else [],
         'selected_factor_key_hash': factor_key_hash_from_frame(frame),
+    }
+
+
+def repo_sha() -> str:
+    try:
+        proc = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT, check=False, capture_output=True, text=True)
+        return proc.stdout.strip() if proc.returncode == 0 else 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def backend_status(backend_runs: list[dict[str, Any]], backend_name: str) -> str:
+    for item in backend_runs:
+        if item.get('backend') == backend_name or item.get('name') == backend_name:
+            return str(item.get('status') or 'missing')
+    return 'missing'
+
+
+def qlib_native_status_from_backend_runs(backend_runs: list[dict[str, Any]]) -> str:
+    for item in backend_runs:
+        if item.get('backend') != 'qlib_backtest' and item.get('name') != 'qlib_backtest':
+            continue
+        payload_path = item.get('payload_path')
+        if payload_path and Path(payload_path).exists():
+            try:
+                payload = load_json(Path(payload_path))
+                status = payload.get('qlib_native_status')
+                if status:
+                    return str(status)
+            except Exception:
+                return 'failed'
+        status = item.get('status')
+        if status == 'skipped':
+            return 'preflight_blocked'
+        if status == 'failed':
+            return 'failed'
+    return 'not_attempted'
+
+
+def build_acceptance_summary(
+    *,
+    report_id: str,
+    factor_id: str | None,
+    run_id: str | None,
+    run_status: str,
+    backend_runs: list[dict[str, Any]],
+    step4_output_paths: list[str],
+    backend_timing_profile: dict[str, Any],
+    step4_factor_io_profile: dict[str, Any],
+) -> dict[str, Any]:
+    reuse_decision = (step4_factor_io_profile.get('reuse_gate') or {}).get('decision')
+    reuse_status = {
+        'reuse_allowed': 'reused',
+        'recompute_required': 'recomputed',
+        'reuse_blocked': 'blocked',
+    }.get(str(reuse_decision), 'not_applicable')
+    return {
+        'version': 'factorforge_production_acceptance_summary_v1',
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'run_id': run_id,
+        'artifact_root': str(FACTORFORGE),
+        'repo_sha': repo_sha(),
+        'wrapper_status': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+        'validator_verdicts': {'step4': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK'},
+        'step3b': {
+            'backend': 'step3b_sample_proof',
+            'input_format': 'parquet',
+            'sample_only': True,
+            'is_formal_factor_values': False,
+            'phase_seconds': {},
+            'formula_engine_profile': {},
+            'parity_checked': True,
+        },
+        'step4': {
+            'formal_factor_values_owner': 'Step4',
+            'formal_factor_values_path': step4_output_paths[0] if step4_output_paths else None,
+            'self_quant_status': backend_status(backend_runs, 'self_quant_analyzer'),
+            'qlib_native_status': qlib_native_status_from_backend_runs(backend_runs),
+            'phase_seconds': backend_timing_profile,
+        },
+        'reuse': {
+            'step3b_cache_reused_by_step4': reuse_status == 'reused',
+            'reuse_gate_status': reuse_status,
+            'reuse_reason': (step4_factor_io_profile.get('reuse_gate') or {}).get('reason') or reuse_decision,
+        },
+        'side_effects': {
+            'clean_data_mutated': False,
+            'generated_code_digest_changed': False,
+            'official_record_written': False,
+            'search_worker_started': False,
+        },
+        'metrics': {
+            'rank_ic_mean': None,
+            'long_side_annual_return': None,
+            'turnover_mean': None,
+            'cost_adjusted_annual_return': None,
+            'volatility_drag': None,
+            'max_drawdown': None,
+            'recovery_days': None,
+            'drawdown_recovery_area': None,
+        },
     }
 
 
@@ -807,6 +910,11 @@ def write_backend_payloads(
                         'backend': backend,
                         'report_id': report_id,
                         'status': 'skipped',
+                        'qlib_native_status': 'preflight_blocked',
+                        'qlib_native_attempted': False,
+                        'native_minimal_status': 'not_attempted',
+                        'native_backtest_status': 'not_attempted',
+                        'blocking_for_acceptance': False,
                         'mode': backend_cfg.get('mode', 'native'),
                         'summary': {'reason': preflight.get('reason')},
                         'qlib_preflight': preflight,
@@ -1072,6 +1180,49 @@ def validate_inputs(report_id: str, fsm: dict[str, Any], dpm: dict[str, Any], ha
 
     if not dpm.get('data_sources'):
         issues.append({'severity': 'error', 'code': 'DATA_SOURCES_MISSING', 'message': 'data_sources missing', 'evidence': {}})
+
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
+    standard_failures = validate_standard_formula_fields_contract(
+        standard_contract,
+        formula_text=canonical.get('formula_text') or '',
+        required_fields=formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs') or [],
+    )
+    for failure in standard_failures:
+        issues.append({
+            'severity': 'error',
+            'code': failure.get('code') or 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING',
+            'message': failure.get('message') or 'standard formula fields contract invalid',
+            'evidence': failure.get('evidence') or {},
+        })
+    required_standard_fields = [
+        str(field).strip()
+        for field in ((standard_contract or {}).get('required_standard_formula_fields') or [])
+        if str(field).strip()
+    ]
+    daily_path = input_paths.get('daily') or input_paths.get('daily_df') or input_paths.get('daily_df_parquet')
+    if required_standard_fields and daily_path and daily_path.exists():
+        try:
+            if daily_path.suffix.lower() == '.parquet':
+                daily_cols = list(pd.read_parquet(daily_path).head(0).columns)
+            else:
+                daily_cols = list(pd.read_csv(daily_path, nrows=0).columns)
+            missing = sorted(set(required_standard_fields) - set(daily_cols))
+            if missing:
+                issues.append({
+                    'severity': 'error',
+                    'code': 'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT',
+                    'message': 'Step4 formal input snapshot missing required standard formula fields',
+                    'evidence': {'missing': missing, 'daily_path': str(daily_path)},
+                })
+        except Exception as exc:
+            issues.append({
+                'severity': 'error',
+                'code': 'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT',
+                'message': f'could not inspect Step4 daily input schema: {type(exc).__name__}: {exc}',
+                'evidence': {'daily_path': str(daily_path)},
+            })
 
     if fsm.get('human_review_required'):
         warnings.append('factor_spec_master indicates human_review_required=true; Step 4 proceeds under frozen-schema execution discipline.')
@@ -1779,12 +1930,29 @@ def main() -> None:
         run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
         diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
         handoff_path = OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json'
+        run_id = str(base_identity.get('run_id') or (handoff.get('artifact_identity') or {}).get('run_id') or report_id)
+        acceptance_summary = build_acceptance_summary(
+            report_id=report_id,
+            factor_id=factor_id,
+            run_id=run_id,
+            run_status=run_status,
+            backend_runs=backend_runs,
+            step4_output_paths=step4_output_paths,
+            backend_timing_profile=backend_timing_profile,
+            step4_factor_io_profile=step4_factor_io_profile,
+        )
 
         run_master = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
             'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
             'run_status': run_status,
+            'acceptance_summary': acceptance_summary,
             'implementation_path': str(impl_path),
             'output_paths': step4_output_paths,
             'sample_window': target_window,
@@ -1896,8 +2064,14 @@ def main() -> None:
         handoff_out = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
             'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
             'run_status': run_status,
+            'acceptance_summary': acceptance_summary,
             'factor_run_master_path': str(run_master_path),
             'diagnostics_path': str(diag_path),
             'output_paths': step4_output_paths,

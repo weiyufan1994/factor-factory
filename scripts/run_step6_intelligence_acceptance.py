@@ -547,7 +547,6 @@ def main() -> int:
         smoke_run.get('rc') == 0
         and smoke.get('verdict') == 'ACCEPT'
         and all_phases_pass
-        and sync_pass
         and forbidden_pass
         and loop_research_brief.get('status') == 'PASS'
         and not pollution.get('polluted')
@@ -567,6 +566,11 @@ def main() -> int:
         },
         'phase_results': phase_results,
         'installed_sync': sync,
+        'installed_sync_policy': {
+            'required_for_repo_side_review': False,
+            'all_installed_skills_in_sync': sync_pass,
+            'reason': 'Do not sync installed skills until reviewer accepts repo-side changes.',
+        },
         'canonical_pollution': pollution,
         'forbidden_writeback_checks': forbidden_checks,
         'loop_research_brief': loop_research_brief,

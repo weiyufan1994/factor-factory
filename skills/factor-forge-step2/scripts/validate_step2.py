@@ -40,6 +40,7 @@ ALLOWED_IMPLEMENTATION_MODES = {'operator', 'direct_code', 'hybrid'}
 from factor_factory.artifact_identity import build_spec_hash
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.factor_families.registry import FamilyPluginContractError, get_family_plugin_contract
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 
 
@@ -299,6 +300,12 @@ def main() -> None:
         }
         implementation_mode = master.get('implementation_mode')
         formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+        standard_formula_fields_contract = master.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
+        standard_formula_failures = validate_standard_formula_fields_contract(
+            standard_formula_fields_contract,
+            formula_text=canonical.get('formula_text') or '',
+            required_fields=(formula_ir.get('required_fields') if isinstance(formula_ir, dict) else None) or canonical.get('required_fields') or canonical.get('required_inputs') or [],
+        )
         master_mechanism_math_contract = master.get('mechanism_math_contract')
         canonical_mechanism_math_contract = canonical.get('mechanism_math_contract')
         handoff_mechanism_math_contract = handoff.get('mechanism_math_contract') if isinstance(handoff, dict) else None
@@ -335,6 +342,8 @@ def main() -> None:
             check('operator_formula_hash_identity_match', implementation_mode != 'operator' or formula_ir.get('formula_hash') == ((master.get('artifact_identity') or {}).get('formula_hash')), 'operator formula_ir.formula_hash must match artifact_identity.formula_hash'),
             check('operator_set_present', implementation_mode != 'operator' or nonempty_list(formula_ir.get('operator_set')), 'operator formula_ir.operator_set missing'),
             check('operator_required_fields_present', implementation_mode != 'operator' or nonempty_list(formula_ir.get('required_fields')), 'operator formula_ir.required_fields missing'),
+            check('standard_formula_fields_contract_valid', not standard_formula_failures, f'standard_formula_fields_contract invalid: {standard_formula_failures}'),
+            check('canonical_standard_formula_fields_contract_match', canonical.get('standard_formula_fields_contract') == master.get('standard_formula_fields_contract'), 'canonical_spec.standard_formula_fields_contract must match top-level contract'),
             check('paper_canonical_formula_ir_required', source_type != 'paper_canonical_formula' or bool(formula_ir), 'paper_canonical_formula requires formula_ir'),
             check('thesis_alpha_thesis_present', nonempty_str(thesis.get('alpha_thesis')), 'thesis.alpha_thesis missing'),
             check('thesis_target_prediction_present', nonempty_str(thesis.get('target_prediction')), 'thesis.target_prediction missing'),

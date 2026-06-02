@@ -1107,6 +1107,49 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     }
 
 
+def _payload_status(payloads: dict[str, dict[str, Any]], backend: str) -> str:
+    payload = payloads.get(backend) if isinstance(payloads, dict) else None
+    if not isinstance(payload, dict) or not payload:
+        return 'missing'
+    status = str(payload.get('status') or 'missing')
+    if status == 'success':
+        return 'complete'
+    if status == 'partial':
+        return 'partial'
+    if status == 'failed':
+        return 'failed'
+    return 'missing'
+
+
+def build_evidence_status(
+    *,
+    run_master: dict[str, Any],
+    payloads: dict[str, dict[str, Any]],
+    metrics: dict[str, Any],
+    decision: str,
+    promotion_gate_status: str,
+) -> dict[str, Any]:
+    qlib_payload = payloads.get('qlib_backtest') if isinstance(payloads.get('qlib_backtest'), dict) else {}
+    qlib_status = qlib_payload.get('qlib_native_status')
+    if not qlib_status:
+        qlib_status = 'not_attempted' if not qlib_payload else 'failed'
+    long_side_fields = ['long_side_annual_return', 'long_side_sharpe', 'long_side_max_drawdown']
+    long_side_present = [field for field in long_side_fields if metrics.get(field) is not None]
+    cost_present = metrics.get('cost_adjusted_annual_return') is not None or metrics.get('trading_cogs_annual') is not None
+    drawdown_present = metrics.get('long_side_max_drawdown') is not None or metrics.get('drawdown_recovery_area') is not None
+    return {
+        'version': 'factorforge_step6_evidence_status_v1',
+        'wrapper_validation_status': 'PASS' if run_master.get('run_status') in {'success', 'partial'} else 'BLOCK',
+        'self_quant_evidence_status': _payload_status(payloads, 'self_quant_analyzer'),
+        'qlib_native_status': str(qlib_status),
+        'long_side_evidence_status': 'complete' if len(long_side_present) == len(long_side_fields) else 'partial' if long_side_present else 'missing',
+        'cost_model_status': 'complete' if cost_present else 'missing',
+        'drawdown_geometry_status': 'complete' if drawdown_present else 'missing',
+        'research_decision': 'promote' if decision == 'promote_official' else decision,
+        'promotion_gate_status': promotion_gate_status,
+    }
+
+
 def _step6_spec_text(bundle: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     spec = bundle.get('factor_spec_master') or {}
     idea = bundle.get('alpha_idea_master') or {}
@@ -3361,6 +3404,13 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
             'External Step6 researcher-agent memo was loaded and preserved under research_memo.researcher_agent_memo.'
         )
+    evidence_status = build_evidence_status(
+        run_master=run_master,
+        payloads=payloads,
+        metrics=metrics,
+        decision=decision,
+        promotion_gate_status='not_applicable' if decision != 'promote_official' else 'open',
+    )
 
     return {
         'report_id': report_id,
@@ -3371,9 +3421,11 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'run_status': run_master.get('run_status'),
             'backend_statuses': backend_statuses,
             'headline_metrics': metrics,
+            'evidence_status': evidence_status,
             'step5_lessons': case.get('lessons') or handoff.get('lessons') or [],
             'step5_next_actions': case.get('next_actions') or handoff.get('next_actions') or [],
         },
+        'evidence_status': evidence_status,
         'research_judgment': {
             'decision': decision,
             'thesis': thesis,

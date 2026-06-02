@@ -94,6 +94,117 @@ VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES = {
     "tradable_anomaly",
     "new_factor_seed",
 }
+DIRAC_REPORT_REQUIRED_SECTIONS = {
+    "research_equation_or_soft_law",
+    "formula_implied_information",
+    "metric_anomaly_review",
+    "model_linked_metric_signature",
+    "stochastic_projection_consistency_check",
+    "volatility_drag_review",
+    "drawdown_recovery_area_review",
+    "component_level_revision_axes",
+    "direction_losing_transform_review",
+    "dimensional_or_unit_consistency_review",
+}
+DIRAC_ANOMALY_CLASSES = {
+    "bug",
+    "data_artifact",
+    "implementation_artifact",
+    "direction_or_sign_error",
+    "formula_measures_avoid_state",
+    "tradable_anomaly",
+    "new_factor_seed",
+    "kill_signal",
+    "under_specified",
+}
+
+
+def validate_dirac_research_report_contract(report: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if not isinstance(report, dict):
+        return ["BLOCK_DIRAC_RESEARCH_REPORT_NOT_OBJECT"]
+    missing = sorted(section for section in DIRAC_REPORT_REQUIRED_SECTIONS if not report.get(section))
+    if missing:
+        reasons.append("BLOCK_DIRAC_RESEARCH_REPORT_SECTION_MISSING:" + ",".join(missing))
+    info = report.get("formula_implied_information")
+    if not _nonempty_object_list(info):
+        reasons.append("BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING")
+    else:
+        for idx, item in enumerate(info):
+            required = [
+                "formula_component",
+                "observable",
+                "implied_latent_state",
+                "payer_or_constraint",
+                "expected_sign",
+                "falsification_metric",
+            ]
+            if any(not _has_nonempty_text(item, key) for key in required):
+                reasons.append(f"BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING:{idx}")
+                continue
+            latent = _normalized_words(item.get("implied_latent_state"))
+            if latent in {"close", "volume", "vwap", "returns", "formula", "raw field", "raw fields"}:
+                reasons.append(f"BLOCK_DIRAC_FORMULA_RAW_RESTATEMENT:{idx}")
+    anomaly = report.get("metric_anomaly_review")
+    if not isinstance(anomaly, dict):
+        reasons.append("BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING")
+    else:
+        classifications = anomaly.get("classifications")
+        if not isinstance(classifications, list) or not classifications:
+            reasons.append("BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING")
+        else:
+            for item in classifications:
+                if not isinstance(item, dict) or item.get("classification") not in DIRAC_ANOMALY_CLASSES:
+                    reasons.append("BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING")
+                    break
+        signature = anomaly.get("positive_ic_negative_long_side")
+        if signature is True and not any(
+            isinstance(item, dict) and item.get("classification") in {"direction_or_sign_error", "formula_measures_avoid_state", "tradable_anomaly", "under_specified"}
+            for item in classifications or []
+        ):
+            reasons.append("BLOCK_DIRAC_POSITIVE_IC_NEGATIVE_LONG_WITHOUT_ANOMALY")
+    for section, token in [
+        ("model_linked_metric_signature", "BLOCK_DIRAC_MODEL_LINKED_METRICS_MISSING"),
+        ("stochastic_projection_consistency_check", "BLOCK_DIRAC_STOCHASTIC_PROJECTION_CHECK_MISSING"),
+        ("volatility_drag_review", "BLOCK_DIRAC_VOLATILITY_DRAG_REVIEW_MISSING"),
+        ("drawdown_recovery_area_review", "BLOCK_DIRAC_DRAWDOWN_RECOVERY_AREA_REVIEW_MISSING"),
+    ]:
+        if not isinstance(report.get(section), dict) or not report.get(section):
+            reasons.append(token)
+    return list(dict.fromkeys(reasons))
+
+
+def validate_component_council_packet(packet: dict[str, Any], *, formula_text: str = "", metrics: dict[str, Any] | None = None) -> list[str]:
+    reasons: list[str] = []
+    if not isinstance(packet, dict):
+        return ["BLOCK_COUNCIL_COMPONENT_PACKET_MISSING"]
+    required = [
+        "component_revision_axes",
+        "component_ablation_plan",
+        "direction_losing_transform_review",
+        "dimensional_consistency_review",
+        "latent_state_independence_review",
+        "stochastic_projection_falsification",
+        "branch_kill_criteria",
+    ]
+    missing = [key for key in required if key not in packet]
+    if missing:
+        reasons.append("BLOCK_COUNCIL_COMPONENT_PACKET_MISSING:" + ",".join(missing))
+    text = str(formula_text or "").lower()
+    if ("+" in text or "add(" in text or "weighted" in text) and not _nonempty_list(packet.get("component_ablation_plan")):
+        reasons.append("BLOCK_COUNCIL_COMPONENT_ABLATION_MISSING")
+    if "abs(" in text and "corr" in text and not _nonempty_dict(packet.get("direction_losing_transform_review")):
+        reasons.append("BLOCK_COUNCIL_DIRECTION_LOSS_REVIEW_MISSING")
+    horizons = []
+    for func in re.finditer(r"\b(?:delay|delta|sum|mean|corr|correlation|adv|ts_rank)\s*\(([^)]*)\)", text):
+        horizons.extend(int(item) for item in re.findall(r"\b([1-9][0-9]*)\b", func.group(1)))
+    horizons.extend(int(item) for item in re.findall(r"\badv([1-9][0-9]*)\b", text))
+    if horizons and (max(horizons) / max(1, min(horizons)) >= 5) and not packet.get("time_scale_consistency_review"):
+        reasons.append("BLOCK_COUNCIL_TIME_SCALE_REVIEW_MISSING")
+    metrics = metrics or {}
+    if metrics.get("rank_ic_mean", 0) > 0 and metrics.get("long_side_annual_return", 0) < 0 and not packet.get("positive_ic_negative_long_branch"):
+        reasons.append("BLOCK_COUNCIL_POSITIVE_IC_NEGATIVE_LONG_BRANCH_MISSING")
+    return list(dict.fromkeys(reasons))
 
 
 def _model_layer_attribution_present(proposal: dict[str, Any]) -> bool:

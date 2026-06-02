@@ -123,3 +123,24 @@ Output candidate shape:
 ```
 
 No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
+
+## Long-Term Production Contract Discipline
+
+Start production acceptance reports from `acceptance_summary` when present.
+State wrapper validation separately from backend evidence. State self-quant
+separately from qlib. State long-side evidence separately from long-short
+diagnostics. State research decision separately from backend status. Emit
+`evidence_status`; never use "partial run without layer".
+
+Dirac-style report requirements: `formula_implied_information`,
+`metric_anomaly_review`, `model_linked_metric_signature`, `volatility_drag`,
+`drawdown_recovery_area`, `component_ablation`, and
+`direction_losing_transform_review`. Raw formula restatement as mechanism is
+banned; generic stochastic process as explanation is banned.
+
+Carry forward `standard_formula_fields_contract`, `derived_field_contract`,
+unit policy, lookback policy, leakage policy, source fields, and
+`qlib_native_status`. Do not write "derive if needed" without source fields. Do
+not call qlib partial success. Do not describe Step3B formal factor values.
+
+Required literal bans for validator coverage: derive if needed without source fields.

@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from .schema import CONTRACT_VERSION, CONTRACT_VERSION_V2
+from .equation_quality import score_research_equation
 from .formula_specific import build_formula_understanding, select_math_model_from_economic_hypothesis
 
 
@@ -554,6 +555,119 @@ def _projection_terms_for_family(v1_family: str) -> list[str]:
     return ["drift", "observation_equation"]
 
 
+def _t0_t1_terms_for_family(v1_family: str) -> list[str]:
+    if v1_family in {"constraint_model"}:
+        return ["drift", "friction", "regime_transition"]
+    if v1_family in {"price_volume_microstructure"}:
+        return ["friction", "observation_equation", "jump"]
+    if v1_family in {"valuation_identity"}:
+        return ["drift"]
+    if v1_family in {"stochastic_process"}:
+        return ["drift", "diffusion"]
+    return ["drift", "friction"]
+
+
+def _as_meaningful_text_list(value: Any, fallback: list[str]) -> list[str]:
+    items = _as_list(value)
+    out = [str(item).strip() for item in items if str(item).strip()]
+    return out or fallback
+
+
+def _research_equation(v1: dict[str, Any], research_contract: dict[str, Any], formula_estimator: str) -> dict[str, Any]:
+    family = str(v1.get("model_family") or "")
+    if family == "valuation_identity":
+        status = "strict_identity"
+        symmetry = "cash-flow or valuation identity"
+    elif family == "price_volume_microstructure":
+        status = "empirical_invariance"
+        symmetry = "market-impact or liquidity response relation"
+    elif family == "constraint_model":
+        status = "institutional_constraint"
+        symmetry = "participant or institutional constraint"
+    else:
+        status = "research_conjecture" if family == "other" else "empirical_invariance"
+        symmetry = "report-specific conditional return relation"
+
+    assumptions = _as_meaningful_text_list(
+        research_contract.get("assumptions"),
+        ["The estimated latent state changes the conditional distribution of next-horizon returns."],
+    )
+    metric_signature = _as_meaningful_text_list(
+        v1.get("expected_metric_signature"),
+        ["rank IC and long-side return should match the declared sign"],
+    )
+    equation = {
+        "equation_text": str(
+            v1.get("process_hypothesis")
+            or "observable_factor_t = estimator(latent_state_t, F_t) + measurement_noise_t"
+        ),
+        "equation_status": status,
+        "assumptions": assumptions,
+        "validity_scope": {
+            "market": str(research_contract.get("market") or "report_scope"),
+            "frequency": str(research_contract.get("frequency") or "report_horizon"),
+            "regime": str(research_contract.get("regime") or "under_research_review"),
+            "participant_structure": str(research_contract.get("participant_structure") or "report_specific_counterparty_structure"),
+        },
+        "symmetry_or_constraint": symmetry,
+        "symmetry_breaking_mechanism": str(v1.get("economic_mechanism") or "report-specific mechanism"),
+        "latent_state": str(v1.get("latent_state") or v1.get("state_or_object") or "latent return-process state"),
+        "observable_estimator": formula_estimator,
+        "expected_metric_signature": metric_signature,
+        "falsification_tests": _as_meaningful_text_list(
+            v1.get("falsification_tests"),
+            ["Falsify if metrics do not support the estimated latent state."],
+        ),
+        "kill_criteria": _as_meaningful_text_list(
+            v1.get("kill_criteria"),
+            ["Kill if no formula-mappable latent state remains."],
+        ),
+        "evidence_tier": (
+            "logical_identity"
+            if status == "strict_identity"
+            else "institutional_rule"
+            if status == "institutional_constraint"
+            else "report_specific_hypothesis"
+            if status == "research_conjecture"
+            else "single_market_empirical_regular"
+        ),
+        "audit_basis": _as_meaningful_text_list(
+            research_contract.get("audit_basis"),
+            ["Report text, formula structure, and Step4 metric signature must support this equation."],
+        ),
+        "participant_constraint_loop": {
+            "payer": str(research_contract.get("payer") or "report-specific constrained counterparty"),
+            "constraint": str(research_contract.get("constraint") or "cannot immediately eliminate the market relation"),
+            "repeat_mechanism": str(research_contract.get("repeat_mechanism") or "similar constraints regenerate across rebalance horizons"),
+            "failure_condition": str(research_contract.get("failure_condition") or "participant structure, liquidity regime, or metric signature changes"),
+        },
+        "demotion_triggers": _as_meaningful_text_list(
+            research_contract.get("demotion_triggers"),
+            ["participant_structure_change", "metric_signature_mismatch", "cross_sample_failure"],
+        ),
+    }
+    equation["quality_score"] = score_research_equation(equation).quality_score
+    return equation
+
+
+def _t0_t1_stochastic_benchmark(v1: dict[str, Any], formula_estimator: str, conditional: str) -> dict[str, Any]:
+    family = str(v1.get("model_family") or "")
+    return {
+        "benchmark_required": True,
+        "horizon": "T+0/T+1 or report_horizon",
+        "affected_terms": _t0_t1_terms_for_family(family),
+        "conditional_distribution_claim": conditional,
+        "benchmark_implication": (
+            "The estimated state must shift next-horizon return distribution enough to survive "
+            "turnover, volatility drag, drawdown capital cost, and implementation frictions."
+        ),
+        "when_primary_model_cannot_infer": "Use this stochastic projection as a benchmark diagnostic, not as the primary model.",
+        "falsification_tests": [
+            f"Falsify if {formula_estimator} does not change T+0/T+1 or report-horizon conditional return distribution after implementation and turnover controls."
+        ],
+    }
+
+
 def _alternative_return_source_tests(primary_source: str, payer: str) -> list[dict[str, str]]:
     candidates = [
         "risk_premium",
@@ -726,6 +840,8 @@ def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any
             "formula_should_estimate": formula_estimator,
             "expected_return_distribution_change": str(v1.get("metric_signature_match") or "metrics should reveal whether the estimated state shifts next-horizon return distribution in the claimed direction"),
         },
+        "research_equation": _research_equation(v1, research_contract, formula_estimator),
+        "t0_t1_stochastic_benchmark": _t0_t1_stochastic_benchmark(v1, formula_estimator, conditional),
         "formula_implied_information": _formula_implied_information(inputs, formula, v1, formula_estimator, conditional),
         "formula_implied_information_review": _formula_implied_information_review(),
         "formula_component_mapping": _component_mapping_from_inputs(inputs, v1),

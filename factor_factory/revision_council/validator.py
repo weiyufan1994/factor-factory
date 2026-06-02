@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .guards import FORBIDDEN_TEXT_TOKEN, scan_forbidden_text
@@ -47,12 +48,42 @@ def _nonempty_str_list(value: Any, *, min_count: int = 1) -> bool:
     )
 
 
+def _normalized_words(value: Any) -> str:
+    return " ".join(re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+", str(value or "").lower()))
+
+
 VALID_REVISION_MODEL_LAYERS = {
     "economic_hypothesis",
     "primary_mechanism_model",
     "stochastic_projection",
     "observable_estimator",
     "implementation_contract",
+}
+VALID_RESEARCH_EQUATION_REVISION_TARGETS = {
+    "assumptions",
+    "latent_state",
+    "observable_estimator",
+    "price_process_projection",
+    "implementation_contract",
+    "trading_cost",
+    "drawdown_geometry",
+}
+GENERIC_RESEARCH_EQUATION_REVISION_TEXT = {
+    "improve the model",
+    "improve model",
+    "metrics improve",
+    "test metrics",
+    "make it better",
+    "fix the model",
+}
+REVISION_TARGET_EVIDENCE_TERMS = {
+    "assumptions": {"assumption", "assumptions", "validity", "scope", "regime"},
+    "latent_state": {"latent", "state"},
+    "observable_estimator": {"observable", "estimator", "measurement", "equation", "detector", "rank_ic"},
+    "price_process_projection": {"drift", "diffusion", "jump", "friction", "regime_transition", "projection"},
+    "implementation_contract": {"implementation", "contract", "direct_code", "operator", "hybrid"},
+    "trading_cost": {"turnover", "cost", "cogs", "slippage", "fee"},
+    "drawdown_geometry": {"drawdown", "recovery", "area", "pain"},
 }
 
 VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES = {
@@ -225,6 +256,48 @@ def _validate_formula_implied_information_review(proposal: dict[str, Any]) -> li
     return list(dict.fromkeys(reasons))
 
 
+def _validate_research_equation_revision(proposal: dict[str, Any]) -> list[str]:
+    revision = proposal.get("research_equation_revision")
+    if not isinstance(revision, dict):
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
+    target = revision.get("equation_component_target")
+    equation_change = revision.get("equation_change")
+    signature_change = revision.get("expected_metric_signature_change")
+    falsification_tests = revision.get("falsification_tests")
+    if (
+        target not in VALID_RESEARCH_EQUATION_REVISION_TARGETS
+        or not _nonempty_str(revision.get("equation_change"))
+        or not _nonempty_str_list(revision.get("expected_metric_signature_change"), min_count=1)
+        or not _nonempty_str_list(revision.get("falsification_tests"), min_count=1)
+    ):
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
+    texts = [equation_change, *(signature_change or []), *(falsification_tests or [])]
+    normalized_texts = [_normalized_words(text) for text in texts]
+    blob = " ".join(normalized_texts)
+    target_terms = REVISION_TARGET_EVIDENCE_TERMS.get(str(target), set())
+    metric_terms = {
+        "rank_ic",
+        "long_side_return",
+        "cost_adjusted_return",
+        "turnover",
+        "volatility_drag",
+        "max_drawdown",
+        "drawdown",
+        "recovery",
+    }
+    has_target_or_metric_evidence = any(term in blob for term in target_terms | metric_terms)
+    has_generic_revision_text = any(
+        text in GENERIC_RESEARCH_EQUATION_REVISION_TEXT
+        or any(phrase in text for phrase in GENERIC_RESEARCH_EQUATION_REVISION_TEXT)
+        for text in normalized_texts
+    )
+    if has_generic_revision_text and not has_target_or_metric_evidence:
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
+    if not has_target_or_metric_evidence:
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
+    return []
+
+
 def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     """Return block reasons. Empty means valid."""
     reasons: list[str] = []
@@ -272,6 +345,7 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
 
     reasons.extend(_validate_derivation_record(proposal))
     reasons.extend(_validate_formula_implied_information_review(proposal))
+    reasons.extend(_validate_research_equation_revision(proposal))
 
     guards = proposal.get("forbidden_changes_ack") or []
     missing_guards = [item for item in REQUIRED_GUARDS if item not in guards]

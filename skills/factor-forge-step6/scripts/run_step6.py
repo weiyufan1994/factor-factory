@@ -44,6 +44,7 @@ from factor_factory.mechanism_math.main_agent_memo import (
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
+from factor_factory.mechanism_math.factor_discovery_queue import build_default_discovery_queue
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
@@ -295,6 +296,10 @@ def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, A
         'long_side_sharpe',
         'long_side_max_drawdown',
         'long_side_recovery_days',
+        'long_side_drawdown_area',
+        'long_side_normalized_drawdown_area',
+        'long_side_max_drawdown_episode_area',
+        'long_side_recovery_pain_area',
         'long_side_turnover_mean_daily',
         'turnover_mean',
         'trading_cogs_daily',
@@ -304,6 +309,10 @@ def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, A
         'cost_adjusted_long_side_sharpe',
         'cost_adjusted_long_side_max_drawdown',
         'cost_adjusted_long_side_recovery_days',
+        'cost_adjusted_long_side_drawdown_area',
+        'cost_adjusted_long_side_normalized_drawdown_area',
+        'cost_adjusted_long_side_max_drawdown_episode_area',
+        'cost_adjusted_long_side_recovery_pain_area',
     ]:
         if key in sq_long:
             metrics[key] = sq_long.get(key)
@@ -541,6 +550,31 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
     else:
         recovery_status = 'too_slow'
 
+    drawdown_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_drawdown_area',
+        'long_side_drawdown_area',
+    ])
+    normalized_drawdown_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_normalized_drawdown_area',
+        'long_side_normalized_drawdown_area',
+    ])
+    max_drawdown_episode_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_max_drawdown_episode_area',
+        'long_side_max_drawdown_episode_area',
+    ])
+    recovery_pain_area = _first_metric(metrics, [
+        'cost_adjusted_long_side_recovery_pain_area',
+        'long_side_recovery_pain_area',
+    ])
+    if normalized_drawdown_area is None:
+        drawdown_area_status = 'missing'
+    elif normalized_drawdown_area < 0.03:
+        drawdown_area_status = 'acceptable'
+    elif normalized_drawdown_area <= 0.08:
+        drawdown_area_status = 'elevated'
+    else:
+        drawdown_area_status = 'high'
+
     return {
         'thresholds': thresholds,
         'metric_unit_policy': {
@@ -566,6 +600,14 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
             'value_at_risk': value_at_risk,
             'expected_shortfall': expected_shortfall,
             'capital_impairment': max_drawdown,
+            'drawdown_geometry': {
+                'drawdown_area': drawdown_area,
+                'normalized_drawdown_area': normalized_drawdown_area,
+                'max_drawdown_episode_area': max_drawdown_episode_area,
+                'recovery_pain_area': recovery_pain_area,
+                'status': drawdown_area_status,
+                'interpretation': 'area measures total underwater investor pain; smaller is better',
+            },
             'drawdown_provision': drawdown_provision,
             'payback_days': recovery_days,
             'economic_net_alpha': economic_net_alpha,
@@ -590,6 +632,17 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
         'sharpe_ratio': sharpe,
         'sharpe_status': sharpe_status,
         'capital_expenditure_proxy_max_drawdown': max_drawdown,
+        'drawdown_geometry': {
+            'drawdown_area': drawdown_area,
+            'normalized_drawdown_area': normalized_drawdown_area,
+            'max_drawdown_episode_area': max_drawdown_episode_area,
+            'recovery_pain_area': recovery_pain_area,
+            'status': drawdown_area_status,
+            'interpretation': (
+                'area measures total underwater investor pain; smaller is better. '
+                'If normalized_drawdown_area is elevated or high, holder experience remains poor even if max drawdown alone is acceptable.'
+            ),
+        },
         'drawdown_status': drawdown_status,
         'depreciation_or_payback_proxy_recovery_days': recovery_days,
         'recovery_status': recovery_status,
@@ -1350,6 +1403,24 @@ def build_mechanism_analysis(
         'similar_success_count': len(similar_success),
         'similar_failure_count': len(similar_failure),
     }
+    research_equation = (
+        mechanism_math_contract_v2.get('research_equation')
+        if isinstance(mechanism_math_contract_v2.get('research_equation'), dict)
+        else {}
+    )
+    equation_status = str(research_equation.get('equation_status') or 'research_conjecture')
+    equation_supported = 'supported' if fit in {'strong', 'partial'} and not cost_negative and not short_dominance else (
+        'challenged' if fit in {'weak', 'contradicted'} or cost_negative or short_dominance else 'under_specified'
+    )
+    failed_equation_component = 'none'
+    if evidence_verdict == 'blocked':
+        failed_equation_component = 'implementation_contract'
+    elif cost_negative:
+        failed_equation_component = 'trading_cost'
+    elif short_dominance or long_negative:
+        failed_equation_component = 'observable_estimator'
+    elif metrics.get('metric_verdict') in {'negative', 'inconclusive'}:
+        failed_equation_component = 'price_process_projection'
 
     return {
         'return_source': return_source,
@@ -1380,6 +1451,26 @@ def build_mechanism_analysis(
         'mechanism_math_contract': mechanism_math_contract,
         'mechanism_math_contract_v2': mechanism_math_contract_v2,
         'mechanism_math_summary': mechanism_math_summary,
+        'research_equation_review': {
+            'reviewer_task': 'research_equation_reviewer',
+            'equation_status': equation_status,
+            'equation_supported_by_metrics': equation_supported,
+            'metric_links': {
+                'rank_ic': f"rank_ic_direction={metrics.get('rank_ic_direction')}; rank_ic_mean={headline_metrics.get('rank_ic_mean')}",
+                'long_side_return': f"long_side_direction={metrics.get('long_side_direction')}; annual_return={headline_metrics.get('long_side_annual_return')}",
+                'cost_adjusted_return': f"cost_adjusted_status={long_quality.get('cost_adjusted_status')}; annual_return={headline_metrics.get('cost_adjusted_annual_return')}",
+                'turnover': f"turnover_risk={cost_risk.get('turnover_too_high')}; daily_turnover={headline_metrics.get('long_side_turnover_mean_daily') or headline_metrics.get('turnover_mean')}",
+                'volatility_drag': f"volatility_drag={headline_metrics.get('volatility_drag')}; annual_volatility={headline_metrics.get('long_side_annual_volatility')}",
+                'max_drawdown': f"max_drawdown={headline_metrics.get('long_side_max_drawdown') or headline_metrics.get('cost_adjusted_long_side_max_drawdown')}",
+                'recovery_days': f"recovery_days={headline_metrics.get('long_side_recovery_days') or headline_metrics.get('cost_adjusted_long_side_recovery_days')}",
+            },
+            'failed_equation_component': failed_equation_component,
+            'revision_implication': (
+                'No research-equation revision is indicated by current model-layer metrics.'
+                if failed_equation_component == 'none'
+                else f"Revise the {failed_equation_component} layer before promotion."
+            ),
+        },
         'mechanism_projection_diagnosis': {
             'economic_hypothesis': 'supported' if fit in {'strong', 'partial'} else 'challenged',
             'primary_mechanism_model': 'supported' if fit in {'strong', 'partial'} else 'challenged',
@@ -3885,6 +3976,68 @@ def write_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     }
 
 
+def _contains_new_factor_seed(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get('classification') == 'new_factor_seed':
+            return True
+        return any(_contains_new_factor_seed(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_new_factor_seed(item) for item in value)
+    return False
+
+
+def should_write_dirac_discovery_queue(iteration: dict[str, Any]) -> tuple[bool, str]:
+    if os.getenv('FACTORFORGE_STEP6_DIRAC_DISCOVERY_REQUEST') == '1':
+        return True, 'explicit_discovery_request'
+    research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+    if _contains_new_factor_seed(mechanism_analysis):
+        return True, 'step6_anomaly_review'
+    return False, ''
+
+
+def render_dirac_discovery_queue_markdown(queue: dict[str, Any]) -> str:
+    rows = ['| Candidate | Source Equation | Branch Action | Auto Run |', '|---|---|---|---|']
+    for candidate in queue.get('candidates') or []:
+        rows.append(
+            '| {candidate_id} | {source_equation_id} | {branch_action} | {auto_run_allowed} |'.format(
+                candidate_id=candidate.get('candidate_id'),
+                source_equation_id=candidate.get('source_equation_id'),
+                branch_action=candidate.get('branch_action'),
+                auto_run_allowed=candidate.get('auto_run_allowed'),
+            )
+        )
+    return f"""# Dirac Discovery Queue: {queue.get('report_id')}
+
+Source: {queue.get('source')}
+
+No candidate may launch Step2, Step3, or Step4 automatically. Candidate packets are advisory until the existing loop or a human-approved branch request starts a formal factor run.
+
+{chr(10).join(rows)}
+"""
+
+
+def write_dirac_discovery_queue(report_id: str, source: str) -> dict[str, str]:
+    queue = build_default_discovery_queue()
+    queue.update({
+        'report_id': report_id,
+        'source': source,
+        'auto_run_allowed': False,
+    })
+    out_dir = OBJ / 'research_iteration_master' / 'revision_council' / report_id
+    json_path = out_dir / f'dirac_discovery_queue__{report_id}.json'
+    markdown_path = out_dir / f'dirac_discovery_queue__{report_id}.md'
+    write_json(json_path, queue)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(render_dirac_discovery_queue_markdown(queue), encoding='utf-8')
+    return {
+        'json_path': str(json_path),
+        'markdown_path': str(markdown_path),
+        'source': source,
+        'auto_run_allowed': False,
+    }
+
+
 def promotion_gate(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
     case = bundle['factor_case_master']
     evidence_quality = case.get('evidence_quality') or {}
@@ -4276,6 +4429,9 @@ def main() -> None:
         would_have_written.append('factor_library_official')
     if handoff_to_step3b is not None:
         would_have_written.append('handoff_to_step3b')
+    should_write_queue, queue_source = should_write_dirac_discovery_queue(iteration)
+    if should_write_queue:
+        would_have_written.append('dirac_discovery_queue')
     prewrite_failures = step6_prewrite_failures(
         iteration=iteration,
         all_record=all_record,
@@ -4297,6 +4453,10 @@ def main() -> None:
     iteration['loop_research_brief'] = write_loop_research_brief(iteration, bundle)
     print(f"[WRITE] {iteration['loop_research_brief']['json_path']}")
     print(f"[WRITE] {iteration['loop_research_brief']['markdown_path']}")
+    if should_write_queue:
+        iteration['dirac_discovery_queue'] = write_dirac_discovery_queue(str(report_id), queue_source)
+        print(f"[WRITE] {iteration['dirac_discovery_queue']['json_path']}")
+        print(f"[WRITE] {iteration['dirac_discovery_queue']['markdown_path']}")
     write_json(iteration_path, iteration)
     print(f'[WRITE] {iteration_path}')
     write_json(all_library_path, all_record)

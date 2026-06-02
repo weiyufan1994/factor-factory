@@ -184,6 +184,9 @@ See `references/architecture.md` for the full module map and data flow diagram.
 ## Prompt Templates
 
 Core prompts are in `references/prompts.md`.
+Before generating alpha_idea_master, use the Dirac-Style Step1 Mechanism Extraction Prompt in references/prompts.md.
+When a report suggests a market structure relation, first identify the research equation or quasi-equation, then derive one or more observable detector candidates. A detector candidate is not an approved factor. It must state source_equation_id, observable_inputs, measurement_equation, expected_metric_signature, expected_cost_risk_profile, stochastic_benchmark_terms, falsification_tests, and branch_action=review_only or human_approval_required.
+No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
 
 ## Data Schemas
 
@@ -199,6 +202,8 @@ Structured object schemas are in `references/schema.md`.
 - Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
 
 ## Mechanism Math Contract v2
+
+Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
 
 Step1 should add market_process_thesis, primary_mechanism_model_candidates, and stochastic_price_process_projection under research_discipline. These are early research hypotheses and may be under-specified, but they must not be empty or generic. Step1 may list multiple candidate primary models and should mark the preferred/ranked candidate plus why alternatives are less suitable.
 

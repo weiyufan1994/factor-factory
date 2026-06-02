@@ -102,10 +102,155 @@ def valid_v2_contract() -> dict[str, Any]:
     return build_mechanism_math_contract_v2(valid_spec())
 
 
+def valid_research_equation() -> dict[str, Any]:
+    return {
+        "equation_text": "observable_factor_t = estimator(latent_drift_state_t, F_t) + measurement_noise_t",
+        "equation_status": "empirical_invariance",
+        "assumptions": [
+            "The ranked lagged close delta estimates a persistent drift state under the current information set."
+        ],
+        "validity_scope": {
+            "market": "A-share equity cross-section",
+            "frequency": "daily close to T+1 return horizon",
+            "regime": "normal liquidity regime",
+            "participant_structure": "slow information processors update after the signal observer",
+        },
+        "symmetry_or_constraint": "delayed information diffusion relation",
+        "symmetry_breaking_mechanism": "heterogeneous belief updating breaks immediate price incorporation",
+        "latent_state": "latent drift continuation state",
+        "observable_estimator": "ranked lagged close delta",
+        "expected_metric_signature": [
+            "rank IC should be positive after the declared sign convention",
+            "long-side return should be positive after costs",
+        ],
+        "falsification_tests": [
+            "Falsify if rank IC sign is non-positive after controlling for turnover."
+        ],
+        "kill_criteria": [
+            "Kill if the formula cannot estimate a latent drift state without forward-looking information."
+        ],
+        "evidence_tier": "single_market_empirical_regular",
+        "audit_basis": [
+            "The smoke formula and synthetic metric signature support a lag-safe drift estimator review."
+        ],
+        "participant_constraint_loop": {
+            "payer": "slow information processors",
+            "constraint": "cannot fully update before the next rebalance horizon",
+            "repeat_mechanism": "new information delays regenerate across daily observations",
+            "failure_condition": "participant structure or liquidity regime changes",
+        },
+        "demotion_triggers": [
+            "participant_structure_change",
+            "metric_signature_mismatch",
+            "cross_sample_failure",
+        ],
+        "quality_score": 44,
+    }
+
+
+def valid_t0_t1_stochastic_benchmark() -> dict[str, Any]:
+    return {
+        "benchmark_required": True,
+        "horizon": "T+1 report_horizon",
+        "affected_terms": ["drift", "friction"],
+        "conditional_distribution_claim": "r_{t+1} | F_t, estimated_drift_state_t shifts in the declared long-side direction",
+        "benchmark_implication": "The estimated state must shift the next-horizon return distribution enough to survive turnover and risk drag.",
+        "when_primary_model_cannot_infer": "Use this stochastic projection as a benchmark diagnostic rather than the primary model.",
+        "falsification_tests": [
+            "Falsify if conditional long-side return does not improve after implementation and turnover controls."
+        ],
+    }
+
+
+def valid_research_equation_review() -> dict[str, Any]:
+    return {
+        "reviewer_task": "research_equation_reviewer",
+        "equation_status": "empirical_invariance",
+        "equation_supported_by_metrics": "supported",
+        "metric_links": {
+            "rank_ic": "rank IC is positive and supports the declared estimator direction",
+            "long_side_return": "high-score long side earns positive annual return",
+            "cost_adjusted_return": "cost-adjusted annual return remains positive",
+            "turnover": "turnover is consistent with the daily estimator horizon",
+            "volatility_drag": "volatility drag does not consume the expected payoff",
+            "max_drawdown": "max drawdown is inside the research risk budget",
+            "recovery_days": "recovery days are acceptable for capital lockup",
+        },
+        "failed_equation_component": "none",
+        "revision_implication": "No research-equation component requires revision under the current smoke metrics.",
+    }
+
+
 def case_contract_validation() -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     valid = valid_v2_contract()
     cases.append({"case": "valid_v2_contract_pass", "ok": not validate_mechanism_math_contract(valid), "failures": validate_mechanism_math_contract(valid)})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated.pop("research_equation", None)
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "missing_research_equation_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["research_equation"] = valid_research_equation()
+    mutated["research_equation"]["equation_status"] = "astrology"
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "research_equation_unknown_status_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["research_equation"] = valid_research_equation()
+    mutated["research_equation"]["validity_scope"].pop("regime", None)
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "research_equation_missing_validity_scope_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["research_equation"] = valid_research_equation()
+    mutated["research_equation"]["equation_text"] = "observable_factor_t = estimator(latent_state_t, F_t) + measurement_noise_t"
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "research_equation_generic_text_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["research_equation"] = valid_research_equation()
+    mutated["research_equation"]["equation_status"] = "strict_identity"
+    mutated["research_equation"]["equation_text"] = "factor_t = f(state_t)"
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "strict_identity_without_identity_language_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["research_equation"] = valid_research_equation()
+    mutated["research_equation"]["equation_status"] = "behavioral_feedback"
+    mutated["research_equation"]["assumptions"] = []
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "behavioral_feedback_without_assumptions_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["research_equation"] = valid_research_equation()
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "valid_research_equation_passes", "ok": not failures, "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated.pop("t0_t1_stochastic_benchmark", None)
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "missing_t0_t1_stochastic_benchmark_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_MISSING" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["t0_t1_stochastic_benchmark"] = valid_t0_t1_stochastic_benchmark()
+    mutated["t0_t1_stochastic_benchmark"]["affected_terms"] = []
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "t0_t1_benchmark_without_affected_terms_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["t0_t1_stochastic_benchmark"] = valid_t0_t1_stochastic_benchmark()
+    mutated["t0_t1_stochastic_benchmark"]["conditional_distribution_claim"] = "dS = mu S dt + sigma S dW"
+    mutated["t0_t1_stochastic_benchmark"]["benchmark_implication"] = "generic stochastic process"
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "t0_t1_generic_benchmark_blocks", "ok": any(f["code"] == "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID" for f in failures), "failures": failures})
+
+    mutated = json.loads(json.dumps(valid))
+    mutated["primary_mechanism_model"]["selected_model_family"] = "behavioral_constraint_model"
+    mutated["t0_t1_stochastic_benchmark"] = valid_t0_t1_stochastic_benchmark()
+    failures = validate_mechanism_math_contract(mutated)
+    cases.append({"case": "primary_non_stochastic_with_valid_benchmark_passes", "ok": not failures, "failures": failures})
 
     mutated = json.loads(json.dumps(valid))
     mutated["primary_mechanism_model"]["selected_model_family"] = ""
@@ -278,6 +423,18 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
             "failures": [],
         },
         {
+            "case": "step1_prompt_requires_research_equation_and_benchmark_fields",
+            "ok": has_all(
+                primary_prompt + "\n" + (REPO_ROOT / "skills/factor-forge-step1/references/prompts.md").read_text(encoding="utf-8"),
+                [
+                    "research_equation",
+                    "t0_t1_stochastic_benchmark",
+                    "formula_implied_information_review",
+                ],
+            ),
+            "failures": [],
+        },
+        {
             "case": "step1_chief_prompts_require_alternative_model_review",
             "ok": all(
                 has_all(
@@ -318,6 +475,20 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
             "failures": [],
         },
         {
+            "case": "step2_prompt_requires_research_equation_and_t0_t1_benchmark",
+            "ok": has_all(
+                step2_prompt_reference,
+                [
+                    "research_equation",
+                    "t0_t1_stochastic_benchmark",
+                    "formula_implied_information_review",
+                    "metric_signature_match",
+                    "drawdown geometry",
+                ],
+            ),
+            "failures": [],
+        },
+        {
             "case": "step6_skill_preserves_research_rigor_for_analysis_and_council",
             "ok": has_all(
                 step6_skill,
@@ -327,6 +498,20 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
                     "benchmark mathematical tools",
                     "council",
                     "falsification",
+                ],
+            ),
+            "failures": [],
+        },
+        {
+            "case": "step6_skill_requires_research_equation_review",
+            "ok": has_all(
+                step6_skill,
+                [
+                    "Dirac-style research discipline",
+                    "research_equation_review",
+                    "research_equation_revision",
+                    "drawdown geometry",
+                    "T+0/T+1 stochastic benchmark projection",
                 ],
             ),
             "failures": [],
@@ -474,6 +659,7 @@ def case_step1_step2(root: Path) -> list[dict[str, Any]]:
 
 def case_step6_and_council() -> list[dict[str, Any]]:
     valid_mechanism = {
+        "mechanism_math_contract_v2": valid_v2_contract(),
         "mechanism_projection_diagnosis": {
             "economic_hypothesis": "supported",
             "primary_mechanism_model": "supported",
@@ -490,11 +676,37 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         },
         "model_layer_failure_attribution": ["observable_estimator"],
         "revision_model_target": "observable_estimator",
+        "research_equation_review": valid_research_equation_review(),
     }
     valid_revision = {"revision_hypotheses": [{"revision_model_layer": "observable_estimator"}]}
     bad_mechanism = dict(valid_mechanism)
     bad_mechanism.pop("mechanism_projection_diagnosis")
     step6_failures = STEP6_VALIDATE.validate_step6_model_linkage(bad_mechanism, valid_revision)
+    missing_research_equation_review = json.loads(json.dumps(valid_mechanism))
+    missing_research_equation_review.pop("research_equation_review", None)
+    missing_research_equation_failures = STEP6_VALIDATE.validate_step6_model_linkage(
+        missing_research_equation_review,
+        valid_revision,
+    )
+    generic_research_equation_review = json.loads(json.dumps(valid_mechanism))
+    generic_research_equation_review["research_equation_review"]["metric_links"] = {
+        key: "metrics support the model"
+        for key in generic_research_equation_review["research_equation_review"]["metric_links"]
+    }
+    generic_research_equation_failures = STEP6_VALIDATE.validate_step6_model_linkage(
+        generic_research_equation_review,
+        valid_revision,
+    )
+    punctuated_generic_research_equation_review = json.loads(json.dumps(valid_mechanism))
+    punctuated_generic_research_equation_review["research_equation_review"]["metric_links"] = {
+        key: "metrics support the model."
+        for key in punctuated_generic_research_equation_review["research_equation_review"]["metric_links"]
+    }
+    punctuated_generic_research_equation_failures = STEP6_VALIDATE.validate_step6_model_linkage(
+        punctuated_generic_research_equation_review,
+        valid_revision,
+    )
+    valid_research_equation_failures = STEP6_VALIDATE.validate_step6_model_linkage(valid_mechanism, valid_revision)
     missing_metric_implementation = json.loads(json.dumps(valid_mechanism))
     missing_metric_implementation["metric_signature_match"].pop("implementation_contract", None)
     metric_implementation_failures = STEP6_VALIDATE.validate_step6_model_linkage(
@@ -556,7 +768,55 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         ]
     }
     anomaly_missing_reasons = validate_revision_council_proposal(anomaly_missing_branch)
+    missing_research_equation_revision = json.loads(json.dumps(proposal))
+    missing_research_equation_revision.pop("research_equation_revision", None)
+    missing_research_equation_revision_reasons = validate_revision_council_proposal(missing_research_equation_revision)
+    generic_research_equation_revision = json.loads(json.dumps(proposal))
+    generic_research_equation_revision["research_equation_revision"] = {
+        "equation_component_target": "observable_estimator",
+        "equation_change": "improve the model.",
+        "expected_metric_signature_change": ["metrics improve."],
+        "falsification_tests": ["test metrics."],
+    }
+    generic_research_equation_revision_reasons = validate_revision_council_proposal(generic_research_equation_revision)
+    specific_research_equation_revision = json.loads(json.dumps(proposal))
+    specific_research_equation_revision["research_equation_revision"] = {
+        "equation_component_target": "observable_estimator",
+        "equation_change": (
+            "Refit the observable_estimator measurement equation so rank_ic metrics improve "
+            "while turnover remains inside the cost budget."
+        ),
+        "expected_metric_signature_change": [
+            "rank_ic improves without higher turnover or worse cost_adjusted_return.",
+        ],
+        "falsification_tests": [
+            "Block if rank_ic does not improve or turnover breaches the cost budget.",
+        ],
+    }
+    specific_research_equation_revision_reasons = validate_revision_council_proposal(
+        specific_research_equation_revision
+    )
     return [
+        {
+            "case": "step6_missing_research_equation_review_blocks",
+            "ok": "BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS" in missing_research_equation_failures,
+            "failures": missing_research_equation_failures,
+        },
+        {
+            "case": "step6_research_equation_metrics_generic_blocks",
+            "ok": "BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS" in generic_research_equation_failures,
+            "failures": generic_research_equation_failures,
+        },
+        {
+            "case": "step6_research_equation_metrics_punctuated_generic_blocks",
+            "ok": "BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS" in punctuated_generic_research_equation_failures,
+            "failures": punctuated_generic_research_equation_failures,
+        },
+        {
+            "case": "step6_research_equation_valid_linkage_passes",
+            "ok": not valid_research_equation_failures,
+            "failures": valid_research_equation_failures,
+        },
         {
             "case": "step6_revision_without_model_layer_attribution_blocks",
             "ok": "BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL" in step6_failures,
@@ -591,6 +851,21 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             "case": "council_anomaly_without_branch_law_blocks",
             "ok": "BLOCK_COUNCIL_ANOMALY_BRANCH_LAW_MISSING" in anomaly_missing_reasons,
             "failures": anomaly_missing_reasons,
+        },
+        {
+            "case": "council_research_equation_revision_missing_blocks",
+            "ok": "BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING" in missing_research_equation_revision_reasons,
+            "failures": missing_research_equation_revision_reasons,
+        },
+        {
+            "case": "council_research_equation_revision_generic_blocks",
+            "ok": "BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC" in generic_research_equation_revision_reasons,
+            "failures": generic_research_equation_revision_reasons,
+        },
+        {
+            "case": "council_research_equation_revision_specific_metric_language_passes",
+            "ok": not specific_research_equation_revision_reasons,
+            "failures": specific_research_equation_revision_reasons,
         },
     ]
 

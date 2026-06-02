@@ -102,9 +102,18 @@ benchmark mathematical tools such as stochastic processes, Ito calculus, linear
 algebra, optimization, information theory, and causal/placebo tests are used for
 projection, diagnostic, derivation, or falsification. Do not default every
 failed factor to a stochastic-process story or a generic payer narrative.
+Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
 Council proposals must state which economic hypothesis, primary mathematical
 model, observable estimator, benchmark test, and falsification signature they
 are revising.
+Step6 `mechanism_analysis` must include `research_equation_review` with metric
+links for rank IC, long-side return, cost-adjusted return, turnover,
+volatility drag, max drawdown, recovery days, and drawdown geometry when
+available. Revision Council proposals must include
+`research_equation_revision` and target the failed equation component.
+Before writing Step6 final recommendations, use the Dirac-Style Step6 Council Prompt in references/prompts.md. When asked for new ideas, use the Equation-To-Factor Discovery Prompt.
+When a report suggests a market structure relation, first identify the research equation or quasi-equation, then derive one or more observable detector candidates. A detector candidate is not an approved factor. It must state source_equation_id, observable_inputs, measurement_equation, expected_metric_signature, expected_cost_risk_profile, stochastic_benchmark_terms, falsification_tests, and branch_action=review_only or human_approval_required.
+No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
 36. Before any Revision Council packet or agentic dispatch is built, Step6 must
 write a current-agent mechanism questionnaire:
 `objects/research_iteration_master/main_agent_mechanism_questionnaire__<report_id>.json`

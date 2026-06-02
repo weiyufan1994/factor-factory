@@ -8,6 +8,7 @@ description: Step 2 of the Factor Factory pipeline — Factor Spec Extraction an
 ## What This Skill Does
 
 Step 2 converts an `alpha_idea_master` into a machine-readable `factor_spec_master` — the authoritative construction blueprint for implementing the factor in Step 3.
+Before generating factor_spec_master or direct_code, use the Dirac-Style Step2 Factor Spec Prompt in references/prompts.md.
 
 Step 2 also emits `mechanism_math_contract` as an incremental research
 discipline layer. The contract formalizes the intended mapping from economic
@@ -386,6 +387,8 @@ Custom blocks are not free-form unsafe code: they must declare `function_name`, 
 
 ## Mechanism Math Contract v2
 
+Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
+
 Step2 writes mechanism_math_contract_v2 at factor_spec_master, canonical_spec, and handoff_to_step3. The v2 contract maps formula components or direct-code observable estimators to model roles and stochastic price-process projection roles. Operator, direct_code, and hybrid modes all need an estimator mapping; unsupported or vague mappings should be under-specified or blocked rather than replaced with a generic model. Legacy v1 contracts remain readable for older artifacts.
 
 Step2 must not default every factor to a stochastic process. It must choose the
@@ -399,6 +402,12 @@ selected model family must reflect that source rather than collapsing to a
 decorative generic SDE.
 
 The v2 contract must include:
+- `research_equation`: classified equation text, status, assumptions,
+  validity_scope, symmetry/constraint, latent_state, observable_estimator,
+  expected_metric_signature, falsification_tests, and kill_criteria;
+- `t0_t1_stochastic_benchmark`: benchmark_required, horizon, affected_terms,
+  conditional_distribution_claim, benchmark_implication,
+  when_primary_model_cannot_infer, and falsification_tests;
 - `market_process_thesis.alternative_return_source_tests`: at least one
   non-primary alternative return source with `why_not_primary`,
   `discriminating_test`, and `expected_signature_if_alternative_true`;

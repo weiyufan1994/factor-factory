@@ -13,6 +13,10 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from factor_factory.risk.drawdown_geometry import drawdown_geometry
 
 
 def utc_now() -> str:
@@ -446,6 +450,26 @@ def summarize_loop_research_brief(smoke: dict[str, Any], cases: dict[str, dict[s
     }
 
 
+def summarize_drawdown_geometry() -> dict[str, Any]:
+    geometry = drawdown_geometry([1.0, 1.1, 1.0, 0.9, 1.1, 1.2])
+    row = {
+        'case': 'drawdown_geometry_area_computes_expected_values',
+        'geometry': geometry,
+        'ok': bool(
+            geometry.get('drawdown_area') is not None
+            and geometry.get('drawdown_area') > 0
+            and geometry.get('normalized_drawdown_area') is not None
+            and geometry.get('normalized_drawdown_area') > 0
+            and geometry.get('max_drawdown_episode_area') is not None
+            and geometry.get('max_drawdown_episode_area') > 0
+            and geometry.get('recovery_pain_area') is not None
+            and geometry.get('recovery_pain_area') > 0
+            and geometry.get('episode_count') == 1
+        ),
+    }
+    return phase([row])
+
+
 def installed_sync() -> dict[str, Any]:
     installed_root = os.environ.get('FACTORFORGE_INSTALLED_SKILLS_ROOT')
     if installed_root:
@@ -511,6 +535,7 @@ def main() -> int:
         'phase_d_revision_loop': summarize_d(cases),
         'phase_e_search_policy': summarize_e(smoke, cases),
         'phase_f_branch_execution': summarize_f(smoke),
+        'drawdown_geometry': summarize_drawdown_geometry(),
     }
     sync = installed_sync()
     forbidden_checks = forbidden_writeback_checks(smoke, pollution)

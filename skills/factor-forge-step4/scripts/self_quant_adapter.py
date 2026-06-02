@@ -27,6 +27,7 @@ from factor_factory.data_access import (
     resolve_daily_snapshot_path,
 )
 from factor_factory.performance import PhaseTimer
+from factor_factory.risk.drawdown_geometry import drawdown_geometry
 
 import matplotlib
 matplotlib.use('Agg')
@@ -381,6 +382,8 @@ def _build_long_side_evidence_from_assigned(
     gross_nav.name = 'long_side_nav'
     net_nav = _normalize_nav_to_one((1.0 + cost_adjusted_returns.fillna(0.0)).cumprod())
     net_nav.name = 'cost_adjusted_long_side_nav'
+    gross_drawdown_geometry = drawdown_geometry(gross_nav.tolist())
+    net_drawdown_geometry = drawdown_geometry(net_nav.tolist())
 
     long_returns_csv = eval_dir / 'long_side_returns.csv'
     long_nav_csv = eval_dir / 'long_side_nav.csv'
@@ -411,6 +414,10 @@ def _build_long_side_evidence_from_assigned(
         'long_side_final_nav': _safe_float(gross_nav.iloc[-1]) if not gross_nav.empty else None,
         'long_side_max_drawdown': _max_drawdown(gross_nav),
         'long_side_recovery_days': _max_recovery_days(gross_nav),
+        'long_side_drawdown_area': gross_drawdown_geometry['drawdown_area'],
+        'long_side_normalized_drawdown_area': gross_drawdown_geometry['normalized_drawdown_area'],
+        'long_side_max_drawdown_episode_area': gross_drawdown_geometry['max_drawdown_episode_area'],
+        'long_side_recovery_pain_area': gross_drawdown_geometry['recovery_pain_area'],
         'long_side_turnover_mean_daily': turnover_mean,
         'turnover_mean': turnover_mean,
         'trading_cogs_model': 'turnover * 0.003',
@@ -425,6 +432,10 @@ def _build_long_side_evidence_from_assigned(
         'cost_adjusted_long_side_final_nav': _safe_float(net_nav.iloc[-1]) if not net_nav.empty else None,
         'cost_adjusted_long_side_max_drawdown': _max_drawdown(net_nav),
         'cost_adjusted_long_side_recovery_days': _max_recovery_days(net_nav),
+        'cost_adjusted_long_side_drawdown_area': net_drawdown_geometry['drawdown_area'],
+        'cost_adjusted_long_side_normalized_drawdown_area': net_drawdown_geometry['normalized_drawdown_area'],
+        'cost_adjusted_long_side_max_drawdown_episode_area': net_drawdown_geometry['max_drawdown_episode_area'],
+        'cost_adjusted_long_side_recovery_pain_area': net_drawdown_geometry['recovery_pain_area'],
     }
     artifacts = {
         'long_side_returns_csv': str(long_returns_csv),
@@ -815,9 +826,17 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
                 'long_side_sharpe',
                 'long_side_max_drawdown',
                 'long_side_recovery_days',
+                'long_side_drawdown_area',
+                'long_side_normalized_drawdown_area',
+                'long_side_max_drawdown_episode_area',
+                'long_side_recovery_pain_area',
                 'long_side_turnover_mean_daily',
                 'trading_cogs_daily',
                 'cost_adjusted_long_side_sharpe',
+                'cost_adjusted_long_side_drawdown_area',
+                'cost_adjusted_long_side_normalized_drawdown_area',
+                'cost_adjusted_long_side_max_drawdown_episode_area',
+                'cost_adjusted_long_side_recovery_pain_area',
             ],
             'checks': standard_checks,
             'blocking_issue_count': len(blocking_checks),

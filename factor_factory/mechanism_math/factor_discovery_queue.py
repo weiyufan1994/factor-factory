@@ -32,6 +32,12 @@ def validate_discovery_candidate(candidate: DiscoveryCandidate) -> tuple[str, ..
         block_codes.append("BLOCK_DIRAC_DISCOVERY_METRIC_SIGNATURE_MISSING")
     if not candidate.expected_cost_risk_profile:
         block_codes.append("BLOCK_DIRAC_DISCOVERY_COST_RISK_MISSING")
+    if not str(candidate.measurement_equation or "").strip():
+        block_codes.append("BLOCK_DIRAC_DISCOVERY_MEASUREMENT_EQUATION_MISSING")
+    if not candidate.stochastic_benchmark_terms:
+        block_codes.append("BLOCK_DIRAC_DISCOVERY_BENCHMARK_TERMS_MISSING")
+    if not candidate.falsification_tests:
+        block_codes.append("BLOCK_DIRAC_DISCOVERY_FALSIFICATION_TESTS_MISSING")
     if candidate.auto_run_allowed:
         block_codes.append("BLOCK_DIRAC_DISCOVERY_AUTORUN_FORBIDDEN")
     if candidate.branch_action not in {"review_only", "human_approval_required"}:

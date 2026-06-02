@@ -697,6 +697,15 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         generic_research_equation_review,
         valid_revision,
     )
+    punctuated_generic_research_equation_review = json.loads(json.dumps(valid_mechanism))
+    punctuated_generic_research_equation_review["research_equation_review"]["metric_links"] = {
+        key: "metrics support the model."
+        for key in punctuated_generic_research_equation_review["research_equation_review"]["metric_links"]
+    }
+    punctuated_generic_research_equation_failures = STEP6_VALIDATE.validate_step6_model_linkage(
+        punctuated_generic_research_equation_review,
+        valid_revision,
+    )
     valid_research_equation_failures = STEP6_VALIDATE.validate_step6_model_linkage(valid_mechanism, valid_revision)
     missing_metric_implementation = json.loads(json.dumps(valid_mechanism))
     missing_metric_implementation["metric_signature_match"].pop("implementation_contract", None)
@@ -762,6 +771,14 @@ def case_step6_and_council() -> list[dict[str, Any]]:
     missing_research_equation_revision = json.loads(json.dumps(proposal))
     missing_research_equation_revision.pop("research_equation_revision", None)
     missing_research_equation_revision_reasons = validate_revision_council_proposal(missing_research_equation_revision)
+    generic_research_equation_revision = json.loads(json.dumps(proposal))
+    generic_research_equation_revision["research_equation_revision"] = {
+        "equation_component_target": "observable_estimator",
+        "equation_change": "improve the model.",
+        "expected_metric_signature_change": ["metrics improve."],
+        "falsification_tests": ["test metrics."],
+    }
+    generic_research_equation_revision_reasons = validate_revision_council_proposal(generic_research_equation_revision)
     return [
         {
             "case": "step6_missing_research_equation_review_blocks",
@@ -772,6 +789,11 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             "case": "step6_research_equation_metrics_generic_blocks",
             "ok": "BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS" in generic_research_equation_failures,
             "failures": generic_research_equation_failures,
+        },
+        {
+            "case": "step6_research_equation_metrics_punctuated_generic_blocks",
+            "ok": "BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS" in punctuated_generic_research_equation_failures,
+            "failures": punctuated_generic_research_equation_failures,
         },
         {
             "case": "step6_research_equation_valid_linkage_passes",
@@ -817,6 +839,11 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             "case": "council_research_equation_revision_missing_blocks",
             "ok": "BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING" in missing_research_equation_revision_reasons,
             "failures": missing_research_equation_revision_reasons,
+        },
+        {
+            "case": "council_research_equation_revision_generic_blocks",
+            "ok": "BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC" in generic_research_equation_revision_reasons,
+            "failures": generic_research_equation_revision_reasons,
         },
     ]
 

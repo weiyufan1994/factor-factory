@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -250,6 +251,24 @@ def nonempty_str(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def normalized_words(value: Any) -> str:
+    return ' '.join(re.findall(r'[a-zA-Z0-9_]+|[\u4e00-\u9fff]+', str(value or '').lower()))
+
+
+def generic_research_equation_metric_text(value: Any) -> bool:
+    normalized = normalized_words(value)
+    if normalized in GENERIC_RESEARCH_EQUATION_METRIC_TEXT:
+        return True
+    generic_phrases = [
+        'metrics support the model',
+        'metrics support mechanism',
+        'supported by metrics',
+        'metrics improve',
+        'test metrics',
+    ]
+    return any(phrase in normalized for phrase in generic_phrases)
+
+
 def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
@@ -396,7 +415,7 @@ def validate_step6_model_linkage(mechanism_analysis: dict, revision_strategy: di
                 if (
                     not nonempty_str(value)
                     or normalized in PLACEHOLDER_MODEL_LINKAGE_VALUES
-                    or normalized in GENERIC_RESEARCH_EQUATION_METRIC_TEXT
+                    or generic_research_equation_metric_text(value)
                 ):
                     metric_link_values_ok = False
                     break

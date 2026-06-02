@@ -70,6 +70,12 @@ def main() -> None:
         in validate_discovery_candidate(replace(square_root, expected_metric_signature=())),
         "queue_candidate_missing_cost_risk_hypothesis_blocks": "BLOCK_DIRAC_DISCOVERY_COST_RISK_MISSING"
         in validate_discovery_candidate(replace(square_root, expected_cost_risk_profile=())),
+        "queue_candidate_missing_measurement_equation_blocks": "BLOCK_DIRAC_DISCOVERY_MEASUREMENT_EQUATION_MISSING"
+        in validate_discovery_candidate(replace(square_root, measurement_equation="")),
+        "queue_candidate_missing_benchmark_terms_blocks": "BLOCK_DIRAC_DISCOVERY_BENCHMARK_TERMS_MISSING"
+        in validate_discovery_candidate(replace(square_root, stochastic_benchmark_terms=())),
+        "queue_candidate_missing_falsification_tests_blocks": "BLOCK_DIRAC_DISCOVERY_FALSIFICATION_TESTS_MISSING"
+        in validate_discovery_candidate(replace(square_root, falsification_tests=())),
         "queue_candidate_autorun_blocks": "BLOCK_DIRAC_DISCOVERY_AUTORUN_FORBIDDEN"
         in validate_discovery_candidate(replace(square_root, auto_run_allowed=True)),
         "queue_candidate_unknown_source_blocks": "BLOCK_DIRAC_DISCOVERY_SOURCE_EQUATION_UNKNOWN"

@@ -1637,7 +1637,7 @@ def generate_first_run_factor_values(
         'implementation_mode': (artifact_identity or {}).get('implementation_mode'),
         'spec_hash': (artifact_identity or {}).get('spec_hash'),
         'formula_hash': (artifact_identity or {}).get('formula_hash'),
-        'code_hash': (artifact_identity or {}).get('code_hash'),
+        'code_hash': (artifact_identity or {}).get('code_hash') or sha256_file(implementation_path),
         'data_catalog_hash': stable_json_hash(reuse_data_catalog_hash_payload(report_id, local_inputs)),
         'data_api_contract_version': 'factorforge_step4_data_contract_v1',
         'window': actual_window,

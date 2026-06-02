@@ -848,7 +848,63 @@ def merge_handoff(existing: dict, updates: dict) -> dict:
             merged[key] = existing[key]
 
     merged['report_id'] = updates.get('report_id') or existing.get('report_id')
+    if existing.get('step3a_ready') is False or updates.get('step3a_ready') is False:
+        merged['step3a_ready'] = False
+        merged['step3b_ready'] = False
+        merged['first_run_outputs'] = {
+            'status': 'blocked',
+            'no_first_run_reason': 'step3a_feasibility_blocked',
+            'output_paths': [],
+            'run_metadata_path': None,
+            'factor_values_path': None,
+        }
+        executable_local_input_keys = {
+            'daily_df_path',
+            'daily_df_parquet',
+            'daily_df_csv',
+            'daily_df_csv_sample',
+            'minute_df_path',
+            'minute_df_parquet',
+            'minute_df_csv',
+            'minute_df_csv_sample',
+            'local_daily_path',
+            'local_minute_path',
+        }
+        local_inputs = merged.get('local_input_paths') if isinstance(merged.get('local_input_paths'), dict) else {}
+        if not local_inputs:
+            local_inputs = {
+                'input_mode': 'blocked',
+                'snapshot_source': 'step3a_feasibility_blocked',
+                'snapshot_note': 'Step3A feasibility blocked; Step3B did not produce executable snapshots.',
+            }
+        for key in executable_local_input_keys:
+            local_inputs.pop(key, None)
+        merged['local_input_paths'] = local_inputs
+        for key in [
+            'factor_impl_ref',
+            'factor_impl_stub_ref',
+            'qlib_expression_draft_ref',
+            'hybrid_execution_scaffold_ref',
+            'step3b_sample_run_metadata_ref',
+            'step3b_sample_factor_values_ref',
+            'implementation_path',
+            'factor_values_path',
+            'execution_mode',
+        ]:
+            merged.pop(key, None)
     return merged
+
+
+def assert_step3a_ready_for_step3b(prep: dict, existing_handoff: dict) -> None:
+    feasibility = prep.get('feasibility')
+    step3a_ready = feasibility in {'ready', 'proxy_ready'}
+    if step3a_ready and existing_handoff.get('step3a_ready') is not False:
+        return
+    raise SystemExit(
+        'BLOCK_STEP3B_REQUIRES_READY_STEP3A: '
+        f'data_prep_master.feasibility={feasibility!r}, '
+        f'handoff.step3a_ready={existing_handoff.get("step3a_ready")!r}'
+    )
 
 
 def load_step2_handoff(report_id: str) -> dict:
@@ -2417,6 +2473,8 @@ def main():
 
     prep = load_json(prep_path)
     step3a_ready = prep.get('feasibility') in {'ready', 'proxy_ready'}
+    existing_handoff_for_gate = read_existing_json(handoff_path)
+    assert_step3a_ready_for_step3b(prep, existing_handoff_for_gate)
     real_impl_rel = f'generated_code/{report_id}/factor_impl__{report_id}.py'
     real_impl_abs = FF / real_impl_rel
     stub_impl_rel = str(stub_path.relative_to(FF))

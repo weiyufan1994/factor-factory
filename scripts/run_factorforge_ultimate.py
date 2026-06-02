@@ -484,13 +484,10 @@ def main() -> int:
     if args.manifest:
         manifest_path = Path(args.manifest).expanduser()
         manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
-    elif args.dry_run:
-        manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
-        manifest_path = Path(tempfile.gettempdir()) / f'factorforge_dry_run_manifest__{args.report_id}.json'
-        write_json_atomic(manifest_path, manifest)
     else:
-        manifest_path = ctx.write_manifest(args.report_id, branch_id=args.branch_id)
-        manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
+        manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
+        manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
+        write_json_atomic(manifest_path, manifest)
 
     if args.proof_output:
         proof_path = Path(args.proof_output).expanduser()
@@ -523,11 +520,8 @@ def main() -> int:
         commands.append(('validate_step2', [py, 'skills/factor-forge-step2/scripts/validate_step2.py', '--report-id', args.report_id]))
 
     if '3' in steps and not args.skip_step3a:
-        commands.append(('build_runtime_manifest', [py, 'scripts/build_factorforge_runtime_context.py', '--report-id', args.report_id, '--write']))
         commands.append(('run_step3', [py, 'skills/factor-forge-step3/scripts/run_step3.py', '--manifest', str(manifest_path)]))
         commands.append(('validate_step3', [py, 'skills/factor-forge-step3/scripts/validate_step3.py', '--manifest', str(manifest_path)]))
-    elif '3' in steps:
-        commands.append(('build_runtime_manifest', [py, 'scripts/build_factorforge_runtime_context.py', '--report-id', args.report_id, '--write']))
 
     if '3b' in steps or ('3' in steps):
         commands.append(('run_step3b', [py, 'skills/factor-forge-step3/scripts/run_step3b.py', '--manifest', str(manifest_path)]))

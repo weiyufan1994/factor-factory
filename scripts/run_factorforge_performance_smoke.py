@@ -737,10 +737,12 @@ def run_real_run_performance_metadata_contract_case(root: Path) -> dict[str, Any
     step4_proc = run_step4_direct(root, report_id)
     meta_path = root / outputs['run_metadata_path']
     metadata = read_json(meta_path) if meta_path.exists() else {}
+    step4_metadata_path = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+    step4_metadata = read_json(step4_metadata_path) if step4_metadata_path.exists() else {}
     profile = metadata.get('performance_profile') or {}
     kernel_profile = profile.get('formula_kernel_profile') or {}
     input_io = profile.get('input_io_profile') or {}
-    step4_io = metadata.get('step4_factor_io_profile') or {}
+    step4_io = step4_metadata.get('step4_factor_io_profile') or {}
     phase_seconds = profile.get('phase_seconds') or {}
     ok = (
         step4_proc.returncode == 0
@@ -1269,11 +1271,13 @@ def run_step3b_factor_sample_csv_policy_case(root: Path) -> dict[str, Any]:
     csv_output_profile = profile.get('csv_output_profile') or {}
     factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
     factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    step3b_cache = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_sample = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
-        factor_parquet.exists()
+        step3b_cache.exists()
+        and not factor_parquet.exists()
         and not factor_csv.exists()
-        and factor_sample.exists()
+        and step3b_sample.exists()
         and csv_output_profile.get('csv_output_policy') == 'sample_csv'
         and csv_output_profile.get('csv_sample_strategy') == 'head_tail'
         and 'write_csv' in (profile.get('phase_seconds') or {})
@@ -1284,8 +1288,9 @@ def run_step3b_factor_sample_csv_policy_case(root: Path) -> dict[str, Any]:
         'csv_output_profile': csv_output_profile,
         'phase_seconds': profile.get('phase_seconds'),
         'factor_parquet_exists': factor_parquet.exists(),
+        'step3b_cache_exists': step3b_cache.exists(),
         'factor_csv_exists': factor_csv.exists(),
-        'factor_sample_exists': factor_sample.exists(),
+        'factor_sample_exists': step3b_sample.exists(),
         'ok': bool(ok),
     }
 
@@ -1309,11 +1314,13 @@ def run_step3b_factor_no_csv_policy_case(root: Path) -> dict[str, Any]:
     csv_output_profile = profile.get('csv_output_profile') or {}
     factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
     factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    step3b_cache = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_sample = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
-        factor_parquet.exists()
+        step3b_cache.exists()
+        and not factor_parquet.exists()
         and not factor_csv.exists()
-        and not factor_sample.exists()
+        and not step3b_sample.exists()
         and csv_output_profile.get('csv_output_policy') == 'no_csv'
         and int(csv_output_profile.get('csv_rows_written') if csv_output_profile.get('csv_rows_written') is not None else -1) == 0
         and 'write_csv' in (profile.get('phase_seconds') or {})
@@ -1324,14 +1331,15 @@ def run_step3b_factor_no_csv_policy_case(root: Path) -> dict[str, Any]:
         'csv_output_profile': csv_output_profile,
         'phase_seconds': profile.get('phase_seconds'),
         'factor_parquet_exists': factor_parquet.exists(),
+        'step3b_cache_exists': step3b_cache.exists(),
         'factor_csv_exists': factor_csv.exists(),
-        'factor_sample_exists': factor_sample.exists(),
+        'factor_sample_exists': step3b_sample.exists(),
         'ok': bool(ok),
     }
 
 
 def _read_step3b_csv_profile(root: Path, report_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    meta_path = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+    meta_path = root / 'runs' / report_id / f'step3b_sample_run_metadata__{report_id}.json'
     metadata = read_json(meta_path) if meta_path.exists() else {}
     profile = metadata.get('performance_profile') or {}
     return metadata, profile.get('csv_output_profile') or {}
@@ -1342,18 +1350,21 @@ def run_csv_policy_sample_csv_parquet_formal_evidence_case(root: Path) -> dict[s
     metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
     factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
     factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    step3b_cache = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_sample = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
         bool(metadata)
-        and factor_parquet.exists()
+        and step3b_cache.exists()
+        and not factor_parquet.exists()
         and not factor_csv.exists()
-        and factor_sample.exists()
+        and step3b_sample.exists()
         and csv_profile.get('version') == 'factorforge_csv_output_profile_v1'
         and csv_profile.get('formal_evidence_format') == 'parquet'
+        and csv_profile.get('formal_factor_values_owner') == 'Step4'
         and csv_profile.get('csv_output_policy') == 'sample_csv'
-        and csv_profile.get('factor_parquet_path') == str(factor_parquet)
+        and csv_profile.get('factor_parquet_path') == str(step3b_cache)
         and csv_profile.get('factor_csv_path') is None
-        and csv_profile.get('factor_sample_csv_path') == str(factor_sample)
+        and csv_profile.get('factor_sample_csv_path') == str(step3b_sample)
         and csv_profile.get('sample_schema_parity') is True
         and csv_profile.get('full_csv_absent_validated') is True
     )
@@ -1362,8 +1373,9 @@ def run_csv_policy_sample_csv_parquet_formal_evidence_case(root: Path) -> dict[s
         'report_id': report_id,
         'csv_output_profile': csv_profile,
         'factor_parquet_exists': factor_parquet.exists(),
+        'step3b_cache_exists': step3b_cache.exists(),
         'factor_csv_exists': factor_csv.exists(),
-        'factor_sample_exists': factor_sample.exists(),
+        'factor_sample_exists': step3b_sample.exists(),
         'ok': bool(ok),
     }
 
@@ -1373,16 +1385,19 @@ def run_csv_policy_no_csv_parquet_formal_evidence_case(root: Path) -> dict[str, 
     metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
     factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
     factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    step3b_cache = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_sample = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
         bool(metadata)
-        and factor_parquet.exists()
+        and step3b_cache.exists()
+        and not factor_parquet.exists()
         and not factor_csv.exists()
-        and not factor_sample.exists()
+        and not step3b_sample.exists()
         and csv_profile.get('version') == 'factorforge_csv_output_profile_v1'
         and csv_profile.get('formal_evidence_format') == 'parquet'
+        and csv_profile.get('formal_factor_values_owner') == 'Step4'
         and csv_profile.get('csv_output_policy') == 'no_csv'
-        and csv_profile.get('factor_parquet_path') == str(factor_parquet)
+        and csv_profile.get('factor_parquet_path') == str(step3b_cache)
         and csv_profile.get('factor_csv_path') is None
         and csv_profile.get('factor_sample_csv_path') is None
         and csv_profile.get('sample_schema_parity') is None
@@ -1393,8 +1408,9 @@ def run_csv_policy_no_csv_parquet_formal_evidence_case(root: Path) -> dict[str, 
         'report_id': report_id,
         'csv_output_profile': csv_profile,
         'factor_parquet_exists': factor_parquet.exists(),
+        'step3b_cache_exists': step3b_cache.exists(),
         'factor_csv_exists': factor_csv.exists(),
-        'factor_sample_exists': factor_sample.exists(),
+        'factor_sample_exists': step3b_sample.exists(),
         'ok': bool(ok),
     }
 
@@ -1404,15 +1420,20 @@ def run_csv_policy_full_csv_legacy_compat_case(root: Path) -> dict[str, Any]:
     metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
     factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
     factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
+    step3b_cache = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
         bool(metadata)
-        and factor_parquet.exists()
-        and factor_csv.exists()
+        and step3b_cache.exists()
+        and step3b_csv.exists()
+        and not factor_parquet.exists()
+        and not factor_csv.exists()
         and csv_profile.get('version') == 'factorforge_csv_output_profile_v1'
         and csv_profile.get('formal_evidence_format') == 'parquet'
+        and csv_profile.get('formal_factor_values_owner') == 'Step4'
         and csv_profile.get('csv_output_policy') == 'full_csv'
-        and csv_profile.get('factor_parquet_path') == str(factor_parquet)
-        and csv_profile.get('factor_csv_path') == str(factor_csv)
+        and csv_profile.get('factor_parquet_path') == str(step3b_cache)
+        and csv_profile.get('factor_csv_path') == str(step3b_csv)
         and csv_profile.get('full_csv_available') is True
         and csv_profile.get('full_csv_absent_validated') is False
     )
@@ -1421,7 +1442,9 @@ def run_csv_policy_full_csv_legacy_compat_case(root: Path) -> dict[str, Any]:
         'report_id': report_id,
         'csv_output_profile': csv_profile,
         'factor_parquet_exists': factor_parquet.exists(),
+        'step3b_cache_exists': step3b_cache.exists(),
         'factor_csv_exists': factor_csv.exists(),
+        'step3b_csv_exists': step3b_csv.exists(),
         'ok': bool(ok),
     }
 
@@ -5111,10 +5134,12 @@ def run_throughput_profile_reports_csv_policy_case(root: Path) -> dict[str, Any]
         proc.returncode == 0
         and step3b.get('csv_output_policy') == 'sample_csv'
         and step3b.get('formal_evidence_format') == 'parquet'
-        and step3b.get('parquet_formal_evidence_ok') is True
+        and step3b.get('parquet_formal_evidence_ok') is False
+        and step3b.get('step3b_cache_parquet_ok') is True
         and step3b.get('full_csv_absent_by_policy') is True
+        and step3b.get('step3b_cache_parquet_bytes') is not None
         and step3b.get('factor_csv_sample_bytes') is not None
-        and 'PARQUET_FORMAL_EVIDENCE_OK' in codes
+        and 'STEP3B_SAMPLE_CACHE_OK' in codes
         and 'FULL_CSV_ABSENT_BY_POLICY' in codes
         and 'SAMPLE_CSV_PRESENT' in codes
     )
@@ -5126,7 +5151,9 @@ def run_throughput_profile_reports_csv_policy_case(root: Path) -> dict[str, Any]
             'csv_output_policy',
             'formal_evidence_format',
             'parquet_formal_evidence_ok',
+            'step3b_cache_parquet_ok',
             'full_csv_absent_by_policy',
+            'step3b_cache_parquet_bytes',
             'factor_csv_sample_bytes',
         ]},
         'diagnostic_codes': sorted(codes),

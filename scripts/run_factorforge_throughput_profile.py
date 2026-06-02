@@ -125,27 +125,33 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
     eval_dir = root / 'evaluations' / report_id
     obj_dir = root / 'objects'
     run_meta_path = run_dir / f'run_metadata__{report_id}.json'
+    step3b_meta_path = run_dir / f'step3b_sample_run_metadata__{report_id}.json'
     factor_run_master_path = obj_dir / 'factor_run_master' / f'factor_run_master__{report_id}.json'
     self_quant_path = eval_dir / 'self_quant_analyzer' / 'evaluation_payload.json'
     qlib_path = eval_dir / 'qlib_backtest' / 'evaluation_payload.json'
     factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
     factor_csv = run_dir / f'factor_values__{report_id}.csv'
     factor_csv_sample = run_dir / f'factor_values_sample__{report_id}.csv'
+    step3b_cache_parquet = run_dir / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_cache_csv = run_dir / f'step3b_sample_factor_values__{report_id}.csv'
 
     run_meta = load_json(run_meta_path)
+    step3b_meta = load_json(step3b_meta_path)
     factor_run_master = load_json(factor_run_master_path)
     self_quant_payload = load_json(self_quant_path)
     qlib_payload = load_json(qlib_path)
     diagnostics: list[dict[str, Any]] = []
 
-    if not run_meta_path.exists():
-        diagnostics.append(diagnostic('warning', 'ARTIFACT_MISSING', 'Step3B/Step4 run metadata is missing.', {'path': str(run_meta_path)}))
+    if not run_meta_path.exists() and not step3b_meta_path.exists():
+        diagnostics.append(diagnostic('warning', 'ARTIFACT_MISSING', 'Step3B/Step4 run metadata is missing.', {'path': str(run_meta_path), 'step3b_sample_path': str(step3b_meta_path)}))
     if not self_quant_path.exists():
         diagnostics.append(diagnostic('info', 'ARTIFACT_MISSING', 'self_quant payload is missing.', {'path': str(self_quant_path)}))
     if not qlib_path.exists():
         diagnostics.append(diagnostic('info', 'ARTIFACT_MISSING', 'qlib payload is missing.', {'path': str(qlib_path)}))
 
     perf = run_meta.get('performance_profile') if isinstance(run_meta.get('performance_profile'), dict) else {}
+    if not perf and isinstance(step3b_meta.get('performance_profile'), dict):
+        perf = step3b_meta.get('performance_profile') or {}
     phase = perf.get('phase_seconds') if isinstance(perf.get('phase_seconds'), dict) else {}
     csv_output_profile = perf.get('csv_output_profile') if isinstance(perf.get('csv_output_profile'), dict) else {}
     normalize_sort_profile = perf.get('normalize_sort_profile') if isinstance(perf.get('normalize_sort_profile'), dict) else {}
@@ -161,16 +167,23 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
     normalize_seconds = as_float(phase.get('normalize_sort'))
     factor_parquet_bytes = safe_file_size(factor_parquet)
     factor_csv_bytes = safe_file_size(factor_csv)
-    factor_csv_sample_bytes = safe_file_size(factor_csv_sample)
+    step3b_cache_parquet_bytes = safe_file_size(step3b_cache_parquet)
+    factor_csv_sample_path = factor_csv_sample if factor_csv_sample.exists() else step3b_cache_csv
+    factor_csv_sample_bytes = safe_file_size(factor_csv_sample_path)
     csv_output_policy = csv_output_profile.get('csv_output_policy')
     formal_evidence_format = csv_output_profile.get('formal_evidence_format')
     if formal_evidence_format is None and factor_parquet_bytes is not None:
         formal_evidence_format = 'parquet'
-    row_count = run_meta.get('row_count')
+    row_count = run_meta.get('row_count') if run_meta.get('row_count') is not None else step3b_meta.get('row_count')
     parquet_formal_evidence_ok = bool(
         formal_evidence_format == 'parquet'
         and factor_parquet_bytes is not None
         and row_count is not None
+    )
+    step3b_cache_parquet_ok = bool(
+        step3b_cache_parquet_bytes is not None
+        and step3b_meta.get('producer') == 'step3b_sample_proof'
+        and step3b_meta.get('is_formal_factor_values') is not True
     )
     full_csv_absent_by_policy = bool(
         csv_output_policy in {'sample_csv', 'no_csv'}
@@ -184,7 +197,9 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
     self_quant_seconds = as_float(self_quant_phase.get('total'))
 
     artifacts_found = {
-        'step3b_run_metadata': bool(run_meta_path.exists() and perf),
+        'step3b_run_metadata': bool((run_meta_path.exists() or step3b_meta_path.exists()) and perf),
+        'step3b_sample_metadata': bool(step3b_meta_path.exists() and step3b_meta),
+        'step3b_sample_factor_parquet': bool(step3b_cache_parquet.exists()),
         'step4_run_metadata': bool(run_meta_path.exists() and (step4_factor_io or step4_input_io)),
         'factor_run_master': factor_run_master_path.exists(),
         'self_quant_payload': self_quant_path.exists(),
@@ -262,6 +277,13 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
             'Factor parquet exists and run metadata declares row_count.',
             {'path': str(factor_parquet), 'bytes': factor_parquet_bytes, 'row_count': row_count},
         ))
+    if step3b_cache_parquet_ok:
+        diagnostics.append(diagnostic(
+            'info',
+            'STEP3B_SAMPLE_CACHE_OK',
+            'Step3B sample/cache parquet exists and is explicitly non-formal.',
+            {'path': str(step3b_cache_parquet), 'bytes': step3b_cache_parquet_bytes, 'row_count': step3b_meta.get('row_count')},
+        ))
     if full_csv_absent_by_policy:
         diagnostics.append(diagnostic(
             'info',
@@ -274,7 +296,7 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
             'info',
             'SAMPLE_CSV_PRESENT',
             'Sample factor CSV exists for audit while parquet remains formal evidence.',
-            {'path': str(factor_csv_sample), 'bytes': factor_csv_sample_bytes},
+            {'path': str(factor_csv_sample_path), 'bytes': factor_csv_sample_bytes},
         ))
     if csv_output_policy == 'no_csv' and full_csv_absent_by_policy and not sample_csv_present:
         diagnostics.append(diagnostic(
@@ -340,15 +362,19 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
             'csv_output_policy': csv_output_policy,
             'formal_evidence_format': formal_evidence_format,
             'parquet_formal_evidence_ok': parquet_formal_evidence_ok,
+            'step3b_cache_parquet_ok': step3b_cache_parquet_ok,
             'full_csv_absent_by_policy': full_csv_absent_by_policy,
             'full_csv_absence_reason': full_csv_absence_reason,
             'sample_csv_present': sample_csv_present,
             'factor_parquet_path': str(factor_parquet),
+            'step3b_cache_parquet_path': str(step3b_cache_parquet) if step3b_cache_parquet_bytes is not None else None,
             'factor_csv_path': str(factor_csv) if factor_csv_bytes is not None else None,
-            'factor_csv_sample_path': str(factor_csv_sample) if factor_csv_sample_bytes is not None else None,
+            'factor_csv_sample_path': str(factor_csv_sample_path) if factor_csv_sample_bytes is not None else None,
             'factor_parquet_bytes': factor_parquet_bytes,
+            'step3b_cache_parquet_bytes': step3b_cache_parquet_bytes,
             'factor_csv_bytes': factor_csv_bytes,
             'factor_csv_sample_bytes': factor_csv_sample_bytes,
+            'metadata_path': str(run_meta_path) if run_meta_path.exists() else str(step3b_meta_path) if step3b_meta_path.exists() else None,
         },
         'step4': {
             'total_seconds': None,

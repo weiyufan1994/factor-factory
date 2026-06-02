@@ -1520,29 +1520,32 @@ def generate_first_run_factor_values(
     run_dir.mkdir(parents=True, exist_ok=True)
     factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
     step3b_cache_parquet = run_dir / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_cache_csv = run_dir / f'step3b_sample_factor_values__{report_id}.csv'
     step3b_cache_meta = run_dir / f'step3b_sample_run_metadata__{report_id}.json'
     factor_csv = run_dir / f'factor_values__{report_id}.csv'
     factor_csv_sample = run_dir / f'factor_values_sample__{report_id}.csv'
     run_meta = run_dir / f'run_metadata__{report_id}.json'
-    for stale_csv in [factor_csv, factor_csv_sample]:
+    for stale_csv in [factor_csv, factor_csv_sample, step3b_cache_csv]:
         if stale_csv.exists() or stale_csv.is_symlink():
             stale_csv.unlink()
+    for stale_formal in [factor_parquet, run_meta]:
+        if stale_formal.exists() or stale_formal.is_symlink():
+            stale_formal.unlink()
     with timer.phase('write_parquet'):
-        result_df.to_parquet(factor_parquet, index=False)
         result_df.to_parquet(step3b_cache_parquet, index=False)
     with timer.phase('write_csv'):
         if csv_policy == 'full_csv':
-            result_df.to_csv(factor_csv, index=False)
-            csv_path = factor_csv
+            result_df.to_csv(step3b_cache_csv, index=False)
+            csv_path = step3b_cache_csv
             csv_sample_path = None
             csv_rows_written = int(len(result_df))
             csv_sample_strategy = 'full'
             full_csv_available = True
         elif csv_policy == 'sample_csv':
             sample_df = deterministic_csv_sample(result_df)
-            sample_df.to_csv(factor_csv_sample, index=False)
+            sample_df.to_csv(step3b_cache_csv, index=False)
             csv_path = None
-            csv_sample_path = factor_csv_sample
+            csv_sample_path = step3b_cache_csv
             csv_rows_written = int(len(sample_df))
             csv_sample_strategy = 'head_tail'
             full_csv_available = False
@@ -1573,7 +1576,9 @@ def generate_first_run_factor_values(
         'version': 'factorforge_csv_output_profile_v1',
         'formal_evidence_format': 'parquet',
         'csv_output_policy': csv_policy,
-        'factor_parquet_path': str(factor_parquet),
+        'formal_factor_values_owner': 'Step4',
+        'factor_parquet_path': str(step3b_cache_parquet),
+        'step3b_cache_parquet_path': str(step3b_cache_parquet),
         'factor_csv_path': str(csv_path) if csv_path else None,
         'factor_sample_csv_path': str(csv_sample_path) if csv_sample_path else None,
         'sample_schema_parity': sample_schema_parity,
@@ -1588,9 +1593,7 @@ def generate_first_run_factor_values(
         'csv_sample_path': str(csv_sample_path) if csv_sample_path else None,
         'write_csv_seconds': float(phase_seconds.get('write_csv') or 0.0),
     }
-    output_paths = [str(factor_parquet.relative_to(FF))]
-    if csv_path:
-        output_paths.append(str(csv_path.relative_to(FF)))
+    output_paths = [str(step3b_cache_parquet.relative_to(FF))]
     if csv_sample_path:
         output_paths.append(str(csv_sample_path.relative_to(FF)))
     actual_window = {
@@ -1613,27 +1616,19 @@ def generate_first_run_factor_values(
         'frequency': 'daily',
     }
     step3b_cache_identity.update(factor_artifact_binding_profile(step3b_cache_parquet, result_df))
-    step3b_cache_metadata = {
-        **step3b_cache_identity,
-        'version': 'factorforge_step3b_compute_cache_identity_v1',
-        'implementation_path': str(implementation_path),
-        'selected_factor_format': 'parquet',
-        'selected_factor_path': str(step3b_cache_parquet),
-        'row_count': int(len(result_df)),
-        'date_count': int(result_df['trade_date'].nunique()),
-        'ticker_count': int(result_df['ts_code'].nunique()),
-        'actual_window': actual_window,
-        'created_at_utc': utc_now(),
-    }
-    write_json(step3b_cache_meta, step3b_cache_metadata)
-
     metadata = {
         'report_id': report_id,
         'factor_id': factor_id,
         'artifact_identity': derive_child_identity(artifact_identity or {}, artifact_role='step3b_first_run_metadata', producer='step3b_first_run') if artifact_identity else None,
-        'producer': 'step3b_first_run',
+        **step3b_cache_identity,
+        'version': 'factorforge_step3b_compute_cache_identity_v1',
+        'producer': 'step3b_sample_proof',
         'implementation_path': str(implementation_path),
+        'selected_factor_format': 'parquet',
+        'selected_factor_path': str(step3b_cache_parquet),
         'signal_column': signal_col,
+        'is_formal_factor_values': False,
+        'formal_factor_values_owner': 'Step4',
         'row_count': int(len(result_df)),
         'date_count': int(result_df['trade_date'].nunique()),
         'ticker_count': int(result_df['ts_code'].nunique()),
@@ -1650,7 +1645,7 @@ def generate_first_run_factor_values(
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
-        'boundary_note': 'Step3B first-run produced factor values only; Step4 owns IC/NAV/backtest evaluation.',
+        'boundary_note': 'Step3B produced a non-formal sample/cache proof only; Step4 owns formal factor_values and IC/NAV/backtest evaluation.',
         'performance_profile': {
             'version': 'factorforge_step3b_performance_profile_v1',
             'row_count': int(len(result_df)),
@@ -1676,23 +1671,25 @@ def generate_first_run_factor_values(
             'formula_engine_profile': formula_engine_profile,
             'formula_kernel_profile': formula_engine_profile.get('kernel_profile') or {},
             'output_bytes': {
-                'parquet': safe_file_size(factor_parquet),
-                'csv': safe_file_size(factor_csv),
-                'csv_sample': safe_file_size(factor_csv_sample),
+                'parquet': safe_file_size(step3b_cache_parquet),
+                'csv': safe_file_size(csv_path) if csv_path else 0,
+                'csv_sample': safe_file_size(csv_sample_path) if csv_sample_path else 0,
             },
             'csv_output_profile': csv_output_profile,
             'sample_cap': step3b_sample_limit_profile,
             'step3b_compute_cache_identity': step3b_cache_identity,
         },
     }
-    write_json(run_meta, metadata)
+    write_json(step3b_cache_meta, metadata)
 
     return {
         'status': 'ready',
         'output_paths': output_paths,
         'csv_output_profile': csv_output_profile,
-        'run_metadata_path': str(run_meta.relative_to(FF)),
-        'producer': 'step3b',
+        'run_metadata_path': str(step3b_cache_meta.relative_to(FF)),
+        'producer': 'step3b_sample_proof',
+        'is_formal_factor_values': False,
+        'formal_factor_values_owner': 'Step4',
         'signal_column': signal_col,
         'row_count': int(len(result_df)),
         'date_count': int(result_df['trade_date'].nunique()),

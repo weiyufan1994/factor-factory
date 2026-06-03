@@ -167,13 +167,15 @@ def validate_standard_formula_fields_contract(
                 'evidence': {'implied': sorted(implied)},
             })
         return failures
-    if contract.get('version') != STANDARD_FORMULA_FIELDS_CONTRACT_VERSION:
-        failures.append({'code': 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING', 'message': 'invalid standard_formula_fields_contract.version'})
     required = contract.get('required_standard_formula_fields')
     if not isinstance(required, list):
         failures.append({'code': 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING', 'message': 'required_standard_formula_fields must be a list'})
         required = []
     normalized_required = [(_adv_token(str(item)) or str(item).strip().lower()) for item in required]
+    if not implied and not normalized_required:
+        return []
+    if contract.get('version') != STANDARD_FORMULA_FIELDS_CONTRACT_VERSION:
+        failures.append({'code': 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING', 'message': 'invalid standard_formula_fields_contract.version'})
     missing_from_contract = sorted(implied - set(normalized_required))
     if missing_from_contract:
         failures.append({

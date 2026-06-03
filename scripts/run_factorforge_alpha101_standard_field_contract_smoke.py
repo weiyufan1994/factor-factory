@@ -49,6 +49,27 @@ def main() -> None:
         'failures': failures,
     }
 
+    legacy_price_only_contract = {
+        'version': 'factorforge_standard_formula_fields_contract_v1',
+        'required_standard_formula_fields': [],
+        'formula_text_standard_fields': [],
+        'formula_text': 'rank(correlation(delay((open-close),1),close,200))+rank((open - close))',
+        'required_fields': ['close', 'open'],
+        'fields': {},
+        'leakage_policy': 'no future rows; derived fields are computed per ts_code in trade_date order',
+        'materialization_owner': 'Step3A_or_Step4_data_contract',
+    }
+    failures = validate_standard_formula_fields_contract(
+        legacy_price_only_contract,
+        formula_text=legacy_price_only_contract['formula_text'],
+        required_fields=['close', 'open'],
+        available_columns=['open', 'close'],
+    )
+    cases['legacy_price_only_empty_standard_contract_passes'] = {
+        'ok': not failures,
+        'failures': failures,
+    }
+
     contract = build_standard_formula_fields_contract(formula_text='rank(adv20)', available_source_fields=['close'])
     failures = validate_standard_formula_fields_contract(contract, formula_text='rank(adv20)', available_columns=['close'])
     cases['adv20_without_volume_source_blocks'] = {

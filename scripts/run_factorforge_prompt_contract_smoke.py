@@ -24,7 +24,15 @@ REQUIRED_TERMS = {
         "source fields",
     ],
     "step3": ["derived_field_contract", "Step3B formal factor values"],
-    "step4": ["acceptance_summary", "qlib_native_status", "qlib partial success"],
+    "step4": [
+        "acceptance_summary",
+        "qlib_native_status",
+        "backtest_base_dataset_contract",
+        "backtest_base_reuse_hit",
+        "full factor CSV disabled",
+        "shared_evaluation_context",
+        "qlib partial success",
+    ],
     "step6": [
         "evidence_status",
         "formula_implied_information",
@@ -49,6 +57,13 @@ FORBIDDEN_PATTERNS = [
     "generic stochastic process as explanation",
 ]
 
+FORBIDDEN_PATTERNS_BY_KEY = {
+    "step4": [
+        "Step4 rebuilds labels/masks/calendar/cost for every factor",
+        "full factor CSV as default production output",
+    ],
+}
+
 
 def _read(path: Path) -> str:
     if not path.exists():
@@ -64,6 +79,8 @@ def main() -> None:
         for term in REQUIRED_TERMS["all"] + REQUIRED_TERMS[key]:
             results[f"{key}_contains_{term}"] = term.lower() in lower
         for pattern in FORBIDDEN_PATTERNS:
+            results[f"{key}_mentions_ban_{pattern}"] = pattern.lower() in lower
+        for pattern in FORBIDDEN_PATTERNS_BY_KEY.get(key, []):
             results[f"{key}_mentions_ban_{pattern}"] = pattern.lower() in lower
     failed = [name for name, ok in results.items() if not ok]
     print({"verdict": "ACCEPT" if not failed else "BLOCK", "failed": failed})

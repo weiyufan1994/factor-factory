@@ -12,6 +12,9 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FACTORFORGE / 'objects'
@@ -27,6 +30,7 @@ QLIB_NATIVE_STATUS_VALUES = {
 }
 
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from backtest_base_dataset import validate_backtest_base_dataset_contract
 
 
 def utc_now() -> str:
@@ -97,6 +101,30 @@ def validate_acceptance_summary(summary: dict[str, Any] | None, issues: list[dic
             issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_SIDE_EFFECTS_MISSING', 'message': f'acceptance_summary.side_effects.{field}=false required'})
 
 
+def validate_factor_output_policy(policy: dict[str, Any] | None, issues: list[dict[str, Any]]) -> None:
+    if not isinstance(policy, dict) or not policy:
+        issues.append({'severity': 'error', 'code': 'BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN', 'message': 'factor_output_policy missing'})
+        return
+    if policy.get('formal_format') != 'parquet':
+        issues.append({'severity': 'error', 'code': 'BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN', 'message': 'formal factor output must be parquet'})
+    if policy.get('full_factor_csv_written') is True and policy.get('full_csv_non_default_opt_in') is not True:
+        issues.append({'severity': 'error', 'code': 'BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN', 'message': 'full factor CSV written without explicit non-default opt-in'})
+    if policy.get('sample_csv_required') is True and policy.get('sample_csv_written') is not True:
+        issues.append({'severity': 'error', 'code': 'BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN', 'message': 'sample CSV proof must be written while full CSV is disabled'})
+
+
+def validate_backtest_base_profile(profile: dict[str, Any] | None, issues: list[dict[str, Any]]) -> None:
+    if not isinstance(profile, dict) or not profile:
+        issues.append({'severity': 'error', 'code': 'BLOCK_BACKTEST_BASE_DATASET_MISSING', 'message': 'backtest_base_profile missing'})
+        return
+    if profile.get('version') != 'factorforge_backtest_base_profile_v1':
+        issues.append({'severity': 'error', 'code': 'BLOCK_BACKTEST_BASE_DATASET_MISSING', 'message': 'invalid backtest_base_profile.version'})
+    if not profile.get('backtest_base_dataset_id'):
+        issues.append({'severity': 'error', 'code': 'BLOCK_STEP4_REUSE_GATE_AMBIGUOUS', 'message': 'backtest_base_profile missing dataset id'})
+    if profile.get('backtest_base_reuse_reason') == 'ambiguous_identity':
+        issues.append({'severity': 'error', 'code': 'BLOCK_STEP4_REUSE_GATE_AMBIGUOUS', 'message': 'backtest base reuse identity is ambiguous'})
+
+
 def validate_qlib_taxonomy(payload: dict[str, Any], *, mandatory: bool, issues: list[dict[str, Any]]) -> None:
     status = payload.get('qlib_native_status')
     if status not in QLIB_NATIVE_STATUS_VALUES:
@@ -135,6 +163,9 @@ def main() -> None:
     validate_top_level_acceptance_fields('factor_run_master', run_master, issues)
     validate_top_level_acceptance_fields('handoff_to_step5', handoff, issues)
     validate_acceptance_summary(run_master.get('acceptance_summary'), issues)
+    issues.extend(validate_backtest_base_dataset_contract(run_master.get('backtest_base_dataset_contract')))
+    validate_backtest_base_profile(run_master.get('backtest_base_profile'), issues)
+    validate_factor_output_policy(run_master.get('factor_output_policy'), issues)
     if run_identity and handoff_identity:
         try:
             assert_identity_matches_strict(

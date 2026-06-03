@@ -89,11 +89,30 @@ Same-day returns must not be used as IC or NAV labels.
 
 When Step3B run metadata declares
 `performance_profile.csv_output_profile.csv_output_policy`, Step4 must respect
-it for factor CSV writeback. `full_csv` and legacy missing metadata may write or
-refresh the full factor CSV for compatibility. `sample_csv` and `no_csv` must
-not cause Step4 to generate or refresh `factor_values__{report_id}.csv`; Step4
-should continue to evaluate from parquet and record the observed policy in
-run metadata.
+it for factor CSV writeback. Production Step4 must default missing metadata to
+`sample_csv`: formal factor evidence remains parquet, a bounded
+`factor_values_sample__{report_id}.csv` proof may be written, and full
+`factor_values__{report_id}.csv` must stay absent unless an explicit audited
+non-default opt-in is present. A requested `full_csv` without that opt-in must
+block with `BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN`. `sample_csv` and `no_csv`
+must not cause Step4 to generate or refresh the full CSV; Step4 should continue
+to evaluate from parquet and record `factor_output_policy` plus the observed
+policy in run metadata.
+
+Step4 should split factor-specific computation from reusable backtest base
+materialization. It must build or reuse a stable
+`backtest_base_dataset_contract` for labels, tradable mask, calendar, and cost
+inputs, keyed by label policy, universe, source data version, tradable policy,
+cost policy, and artifact hashes. Reuse must block rather than guess on
+ambiguous identity or hash mismatches. `self_quant_analyzer` and `qlib_backtest`
+should consume the same `shared_evaluation_context` / backtest-base references
+instead of each backend rebuilding equivalent large tables independently. Step4
+profiles must expose `factor_io`, `backtest_base`, `evaluation`, and `output`
+sections.
+
+Prompt/agent bans for Step4: never treat "full factor CSV as default production output"; write "full factor CSV disabled" unless an explicit audited opt-in is
+present. Never allow "Step4 rebuilds labels/masks/calendar/cost for every factor"; reuse `backtest_base_dataset_contract` when identity matches and report
+`backtest_base_reuse_hit` in profile evidence.
 
 Step3B `step3b_sample_factor_values__{report_id}` artifacts are sample
 executability evidence only. Step4 must not treat them as formal factor values;

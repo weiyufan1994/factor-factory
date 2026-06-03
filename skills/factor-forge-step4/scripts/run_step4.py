@@ -29,6 +29,9 @@ LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
 REPO_ROOT = LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FACTORFORGE.parent
 OBJ = FACTORFORGE / 'objects'
@@ -43,6 +46,7 @@ from factor_factory.runtime_context import (
     manifest_path,
     manifest_report_id,
 )
+from backtest_base_dataset import build_or_reuse_backtest_base_dataset, validate_backtest_base_dataset_contract
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
 
@@ -65,6 +69,10 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'step4_factor_io_profile',
     'step4_formal_factor_identity',
     'step4_factor_csv_policy_observed',
+    'factor_output_policy',
+    'backtest_base_dataset_contract',
+    'backtest_base_profile',
+    'step4_phase_profile',
     'shared_evaluation_context',
     'backend_timing_profile',
 }
@@ -198,6 +206,8 @@ def build_acceptance_summary(
     step4_output_paths: list[str],
     backend_timing_profile: dict[str, Any],
     step4_factor_io_profile: dict[str, Any],
+    backtest_base_profile: dict[str, Any] | None = None,
+    factor_output_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reuse_decision = (step4_factor_io_profile.get('reuse_gate') or {}).get('decision')
     reuse_status = {
@@ -229,6 +239,8 @@ def build_acceptance_summary(
             'self_quant_status': backend_status(backend_runs, 'self_quant_analyzer'),
             'qlib_native_status': qlib_native_status_from_backend_runs(backend_runs),
             'phase_seconds': backend_timing_profile,
+            'backtest_base_profile': backtest_base_profile or {},
+            'factor_output_policy': factor_output_policy or {},
         },
         'reuse': {
             'step3b_cache_reused_by_step4': reuse_status == 'reused',
@@ -240,6 +252,7 @@ def build_acceptance_summary(
             'generated_code_digest_changed': False,
             'official_record_written': False,
             'search_worker_started': False,
+            'full_factor_csv_written': bool((factor_output_policy or {}).get('full_factor_csv_written')),
         },
         'metrics': {
             'rank_ic_mean': None,
@@ -267,22 +280,25 @@ def step4_factor_csv_policy_from_step3b(existing_meta: dict[str, Any]) -> dict[s
     csv_profile = ((existing_meta or {}).get('performance_profile') or {}).get('csv_output_profile') or {}
     raw_policy = csv_profile.get('csv_output_policy')
     if raw_policy is None:
-        policy = 'legacy_missing'
-        allowed = True
-        written = True
-        reason = None
+        policy = 'sample_csv'
+        allowed = False
+        reason = 'production_default'
     else:
         policy = str(raw_policy)
         if policy not in FACTOR_CSV_POLICY_VALUES:
             raise SystemExit(f'BLOCK_STEP4_INVALID_FACTOR_CSV_POLICY:{policy}')
+        if policy == 'full_csv' and os.getenv('FACTORFORGE_ALLOW_FULL_FACTOR_CSV', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+            raise SystemExit('BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN: full factor CSV requires explicit debug/audit opt-in')
         allowed = policy == 'full_csv'
-        written = allowed
         reason = None if allowed else f'step3b_{policy}_policy'
     return {
         'source': 'step3b_run_metadata',
         'csv_output_policy': policy,
         'factor_csv_write_allowed': bool(allowed),
-        'factor_csv_written_by_step4': bool(written),
+        'factor_csv_written_by_step4': False,
+        'sample_csv_write_allowed': policy == 'sample_csv',
+        'sample_csv_written_by_step4': False,
+        'full_csv_default_disabled': policy == 'sample_csv',
         'factor_csv_write_skipped_reason': reason,
     }
 
@@ -1045,6 +1061,7 @@ def build_shared_evaluation_context(
     daily_input_path: Path,
     target_window: dict[str, Any],
     effective_target_window: dict[str, Any],
+    backtest_base_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     factor_signal_path = run_dir / f'factor_signal__{report_id}.parquet'
@@ -1098,6 +1115,7 @@ def build_shared_evaluation_context(
         'enabled': True,
         'report_id': report_id,
         'factor_id': factor_id,
+        'backtest_base_dataset_id': (backtest_base_contract or {}).get('backtest_base_dataset_id'),
         'implementation_mode': (
             implementation_mode_decision.get('implementation_mode')
             or implementation_mode_decision.get('mode')
@@ -1112,6 +1130,10 @@ def build_shared_evaluation_context(
             'daily_forward_returns_parquet': str(daily_forward_returns_path),
             'merged_signal_return_parquet': str(merged_path),
             'quantile_assignment_parquet': None,
+            'label_table_path': ((backtest_base_contract or {}).get('artifact_paths') or {}).get('labels'),
+            'tradable_mask_path': ((backtest_base_contract or {}).get('artifact_paths') or {}).get('tradable_mask'),
+            'calendar_path': ((backtest_base_contract or {}).get('artifact_paths') or {}).get('calendar'),
+            'cost_inputs_path': ((backtest_base_contract or {}).get('artifact_paths') or {}).get('cost_inputs'),
         },
         'artifacts': {
             'factor_signal': artifact_contract(factor_signal_path, factor_signal),
@@ -1124,6 +1146,7 @@ def build_shared_evaluation_context(
             'merged_signal_return': int(len(merged)),
         },
         'cache_hit': False,
+        'used_by': ['self_quant_analyzer', 'qlib_backtest'],
         'invalidated_reason': None,
         'build_seconds': time.perf_counter() - started,
     }
@@ -1703,6 +1726,25 @@ def main() -> None:
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
+        backtest_base_contract, backtest_base_profile = build_or_reuse_backtest_base_dataset(
+            report_id=report_id,
+            factor_id=factor_id,
+            daily_df=daily_df,
+            daily_input_path=daily_file,
+            run_root=RUNS,
+            window_start=str((dpm.get('sample_window') or {}).get('start') or ''),
+            window_end=str((dpm.get('sample_window') or {}).get('end') or ''),
+            producer_repo_sha=repo_sha(),
+            universe_id='a_share_all',
+        )
+        backtest_base_issues = validate_backtest_base_dataset_contract(backtest_base_contract)
+        if backtest_base_issues:
+            issues.extend(backtest_base_issues)
+            run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'BLOCK_BACKTEST_BASE_DATASET_MISSING', 'backtest_base', start_utc)
+            write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
+            write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
+            write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
+            return
         expected_reuse_identity = build_step4_reuse_identity(
             report_id=report_id,
             factor_id=factor_id,
@@ -1822,6 +1864,12 @@ def main() -> None:
             step4_factor_io_profile['csv_written_by_step4'] = True
         else:
             step4_factor_io_profile['csv_written_by_step4'] = False
+        if factor_csv_policy_observed.get('sample_csv_write_allowed') and not sample_csv_path.exists():
+            sample_df = pd.concat([result_df.head(100), result_df.tail(100)]).drop_duplicates()
+            sample_df.to_csv(sample_csv_path, index=False)
+            factor_csv_policy_observed['sample_csv_written_by_step4'] = True
+        else:
+            factor_csv_policy_observed['sample_csv_written_by_step4'] = bool(sample_csv_path.exists())
         factor_csv_policy_observed['factor_csv_written_by_step4'] = bool(
             step4_factor_io_profile['csv_written_by_step4']
         )
@@ -1875,6 +1923,7 @@ def main() -> None:
                 daily_input_path=daily_file,
                 target_window=target_window,
                 effective_target_window={'start': effective_target_start, 'end': effective_target_end},
+                backtest_base_contract=backtest_base_contract,
             )
             shared_context_profile = {
                 'version': 'factorforge_shared_evaluation_context_v1',
@@ -1899,6 +1948,42 @@ def main() -> None:
             'built': bool(shared_context),
             'build_seconds': shared_context_profile.get('build_seconds') if shared_context else 0.0,
             'context_path': shared_context_profile.get('context_path') if shared_context else None,
+            'backtest_base_dataset_id': backtest_base_contract.get('backtest_base_dataset_id'),
+        }
+        factor_output_policy = {
+            'version': 'factorforge_factor_output_policy_v1',
+            'formal_format': 'parquet',
+            'csv_output_policy': factor_csv_policy_observed.get('csv_output_policy'),
+            'full_factor_csv_written': bool(factor_csv_policy_observed.get('factor_csv_written_by_step4')),
+            'full_factor_csv_write_allowed': bool(factor_csv_policy_observed.get('factor_csv_write_allowed')),
+            'sample_csv_written': bool(factor_csv_policy_observed.get('sample_csv_written_by_step4')),
+            'sample_csv_required': bool(factor_csv_policy_observed.get('sample_csv_write_allowed')),
+            'full_csv_disabled_reason': factor_csv_policy_observed.get('factor_csv_write_skipped_reason') or 'production_default',
+            'full_csv_non_default_opt_in': bool(factor_csv_policy_observed.get('factor_csv_write_allowed')),
+        }
+        if factor_output_policy['full_factor_csv_written'] and not factor_output_policy['full_csv_non_default_opt_in']:
+            raise SystemExit('BLOCK_STEP4_FULL_FACTOR_CSV_FORBIDDEN: full factor CSV written without explicit opt-in')
+        step4_phase_profile = {
+            'version': 'factorforge_step4_phase_profile_v1',
+            'factor_io': {
+                'load_factor_values': 0.0,
+                'normalize_align_factor_index': 0.0,
+            },
+            'backtest_base': {
+                'resolve_base_dataset': backtest_base_profile.get('backtest_base_load_seconds'),
+                'validate_identity': backtest_base_profile.get('backtest_base_validate_seconds'),
+                'load_labels': 0.0,
+                'load_mask': 0.0,
+                'load_calendar': 0.0,
+                'load_cost_inputs': 0.0,
+            },
+            'evaluation': backend_timing_profile.get('backends') or {},
+            'output': {
+                'write_parquet_evidence': bool(step4_factor_io_profile.get('parquet_written_by_step4')),
+                'write_csv_sample': bool(factor_csv_policy_observed.get('sample_csv_written_by_step4')),
+                'write_plots': True,
+                'write_profile': True,
+            },
         }
 
         step4_owned_meta = {
@@ -1920,6 +2005,10 @@ def main() -> None:
             'step4_factor_io_profile': step4_factor_io_profile,
             'step4_formal_factor_identity': expected_reuse_identity,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
+            'factor_output_policy': factor_output_policy,
+            'backtest_base_dataset_contract': backtest_base_contract,
+            'backtest_base_profile': backtest_base_profile,
+            'step4_phase_profile': step4_phase_profile,
             'shared_evaluation_context': shared_context_profile,
             'backend_timing_profile': backend_timing_profile,
         }
@@ -1940,6 +2029,8 @@ def main() -> None:
             step4_output_paths=step4_output_paths,
             backend_timing_profile=backend_timing_profile,
             step4_factor_io_profile=step4_factor_io_profile,
+            backtest_base_profile=backtest_base_profile,
+            factor_output_policy=factor_output_policy,
         )
 
         run_master = {
@@ -1953,6 +2044,10 @@ def main() -> None:
             'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
             'run_status': run_status,
             'acceptance_summary': acceptance_summary,
+            'backtest_base_dataset_contract': backtest_base_contract,
+            'backtest_base_profile': backtest_base_profile,
+            'factor_output_policy': factor_output_policy,
+            'step4_phase_profile': step4_phase_profile,
             'implementation_path': str(impl_path),
             'output_paths': step4_output_paths,
             'sample_window': target_window,
@@ -2072,6 +2167,10 @@ def main() -> None:
             'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
             'run_status': run_status,
             'acceptance_summary': acceptance_summary,
+            'backtest_base_dataset_contract': backtest_base_contract,
+            'backtest_base_profile': backtest_base_profile,
+            'factor_output_policy': factor_output_policy,
+            'step4_phase_profile': step4_phase_profile,
             'factor_run_master_path': str(run_master_path),
             'diagnostics_path': str(diag_path),
             'output_paths': step4_output_paths,

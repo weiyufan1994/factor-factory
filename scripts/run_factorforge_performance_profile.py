@@ -35,6 +35,9 @@ def main() -> int:
     csv_sample_path = ctx.factorforge_root / 'runs' / rid / f'factor_values_sample__{rid}.csv'
     step3b_profile = run_meta.get('performance_profile') or {}
     step4_factor_io_profile = run_meta.get('step4_factor_io_profile') or {}
+    backtest_base_profile = run_meta.get('backtest_base_profile') or {}
+    step4_phase_profile = run_meta.get('step4_phase_profile') or {}
+    factor_output_policy = run_meta.get('factor_output_policy') or {}
     csv_output_profile = step3b_profile.get('csv_output_profile') or {}
     formula_engine_profile = step3b_profile.get('formula_engine_profile') or {}
     operator_profile = formula_engine_profile.get('operator_profile') or {}
@@ -68,6 +71,10 @@ def main() -> int:
         diagnostics.append({'severity': 'info', 'code': 'PRODUCTION_ACCEPTANCE_SUMMARY_PRESENT', 'message': 'Step4 production acceptance summary is present.'})
     else:
         diagnostics.append({'severity': 'warning', 'code': 'PRODUCTION_ACCEPTANCE_SUMMARY_MISSING', 'message': 'Step4 production acceptance summary is absent from factor_run_master.'})
+    if backtest_base_profile.get('version') == 'factorforge_backtest_base_profile_v1':
+        diagnostics.append({'severity': 'info', 'code': 'BACKTEST_BASE_PROFILE_PRESENT', 'message': 'Step4 backtest-base profile is present.'})
+    if factor_output_policy.get('full_factor_csv_written') is False:
+        diagnostics.append({'severity': 'info', 'code': 'FULL_FACTOR_CSV_DISABLED', 'message': 'Full factor CSV is disabled by Step4 output policy.'})
     if step4_factor_io_profile.get('recomputed_factor') is True or step4_factor_io_profile.get('source') == 'step4_recompute_fallback':
         diagnostics.append({'severity': 'warning', 'code': 'STEP4_RECOMPUTE_FALLBACK', 'message': 'Step4 recomputed factor values.'})
     if parquet_path.exists():
@@ -90,6 +97,15 @@ def main() -> int:
         'acceptance_summary': acceptance_summary,
         'step3b_performance_profile': step3b_profile,
         'step4_factor_io_profile': step4_factor_io_profile,
+        'backtest_base_profile': backtest_base_profile,
+        'factor_output_policy': factor_output_policy,
+        'step4_phase_profile': step4_phase_profile,
+        'step4_profile_sections': {
+            'factor_io': step4_phase_profile.get('factor_io') or {},
+            'backtest_base': step4_phase_profile.get('backtest_base') or backtest_base_profile,
+            'evaluation': step4_phase_profile.get('evaluation') or {},
+            'output': step4_phase_profile.get('output') or {},
+        },
         'step3b_csv_output_profile': csv_output_profile,
         'step3b_write_csv_seconds': (step3b_profile.get('phase_seconds') or {}).get('write_csv'),
         'step3b_factor_parquet_bytes': parquet_path.stat().st_size if parquet_path.exists() else 0,

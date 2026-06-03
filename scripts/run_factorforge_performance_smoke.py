@@ -6584,24 +6584,33 @@ def run_step4_respects_step3b_no_csv_policy_case(root: Path) -> dict[str, Any]:
     }
 
 
-def run_step4_legacy_missing_csv_policy_full_csv_compat_case(root: Path) -> dict[str, Any]:
+def run_step4_missing_csv_policy_defaults_to_sample_csv_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP4_LEGACY_CSV_POLICY'
     paths = create_step4_factor_csv_policy_fixture(root, report_id, None)
     proc = run_step4_direct(root, report_id)
     after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
     observed = after_meta.get('step4_factor_csv_policy_observed') or {}
+    factor_output_policy = after_meta.get('factor_output_policy') or {}
     ok = (
         proc.returncode == 0
-        and paths['factor_csv'].exists()
-        and observed.get('csv_output_policy') == 'legacy_missing'
-        and observed.get('factor_csv_written_by_step4') is True
+        and not paths['factor_csv'].exists()
+        and paths['factor_sample'].exists()
+        and observed.get('csv_output_policy') == 'sample_csv'
+        and observed.get('factor_csv_written_by_step4') is False
+        and observed.get('sample_csv_written_by_step4') is True
+        and observed.get('full_csv_default_disabled') is True
+        and observed.get('factor_csv_write_skipped_reason') == 'production_default'
+        and factor_output_policy.get('full_factor_csv_written') is False
+        and factor_output_policy.get('sample_csv_written') is True
     )
     return {
-        'case': 'step4_legacy_missing_csv_policy_full_csv_compat',
+        'case': 'step4_missing_csv_policy_defaults_to_sample_csv',
         'report_id': report_id,
         'rc': proc.returncode,
         'full_csv_exists': paths['factor_csv'].exists(),
+        'sample_csv_exists': paths['factor_sample'].exists(),
         'step4_factor_csv_policy_observed': observed,
+        'factor_output_policy': factor_output_policy,
         'stdout_tail': tail(proc.stdout),
         'stderr_tail': tail(proc.stderr),
         'ok': bool(ok),
@@ -7349,7 +7358,7 @@ def main() -> int:
         run_step4_recomputes_when_prior_step4_parquet_tampered_case(root),
         run_step4_respects_step3b_sample_csv_policy_case(root),
         run_step4_respects_step3b_no_csv_policy_case(root),
-        run_step4_legacy_missing_csv_policy_full_csv_compat_case(root),
+        run_step4_missing_csv_policy_defaults_to_sample_csv_case(root),
         run_step4_invalid_factor_csv_policy_blocks_case(root),
         run_step4_uses_parquet_when_full_csv_absent_case(root),
         run_validate_step4_accepts_no_csv_with_parquet_case(root),

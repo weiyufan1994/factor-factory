@@ -28,6 +28,8 @@ def main() -> int:
     run_meta = load(ctx.factorforge_root / 'runs' / rid / f'run_metadata__{rid}.json')
     self_quant = load(ctx.factorforge_root / 'evaluations' / rid / 'self_quant_analyzer' / 'evaluation_payload.json')
     wrapper = load(ctx.objects_root / 'runtime_context' / f'ultimate_run_report__{rid}.json')
+    factor_run_master = load(ctx.objects_root / 'factor_run_master' / f'factor_run_master__{rid}.json')
+    acceptance_summary = factor_run_master.get('acceptance_summary') if isinstance(factor_run_master.get('acceptance_summary'), dict) else {}
     parquet_path = ctx.factorforge_root / 'runs' / rid / f'factor_values__{rid}.parquet'
     csv_path = ctx.factorforge_root / 'runs' / rid / f'factor_values__{rid}.csv'
     csv_sample_path = ctx.factorforge_root / 'runs' / rid / f'factor_values_sample__{rid}.csv'
@@ -62,6 +64,10 @@ def main() -> int:
         diagnostics.append({'severity': 'info', 'code': 'DEFAULT_NUMPY_TS_KERNELS_ENABLED', 'message': 'Default NumPy TS kernels are enabled.'})
     if step4_factor_io_profile.get('version') == 'factorforge_step4_factor_io_profile_v1':
         diagnostics.append({'severity': 'info', 'code': 'STEP4_FACTOR_REUSE_PROFILE_PRESENT', 'message': 'Step4 factor IO/reuse profile is present.'})
+    if acceptance_summary.get('version') == 'factorforge_production_acceptance_summary_v1':
+        diagnostics.append({'severity': 'info', 'code': 'PRODUCTION_ACCEPTANCE_SUMMARY_PRESENT', 'message': 'Step4 production acceptance summary is present.'})
+    else:
+        diagnostics.append({'severity': 'warning', 'code': 'PRODUCTION_ACCEPTANCE_SUMMARY_MISSING', 'message': 'Step4 production acceptance summary is absent from factor_run_master.'})
     if step4_factor_io_profile.get('recomputed_factor') is True or step4_factor_io_profile.get('source') == 'step4_recompute_fallback':
         diagnostics.append({'severity': 'warning', 'code': 'STEP4_RECOMPUTE_FALLBACK', 'message': 'Step4 recomputed factor values.'})
     if parquet_path.exists():
@@ -81,6 +87,7 @@ def main() -> int:
         diagnostics.append({'severity': 'blocker_candidate', 'code': 'REUSE_GATE_BLOCKED_INVALID_FORMAL_REUSE', 'message': 'Step4 refused to treat a sample/proof artifact as formal factor values.'})
     report = {
         'report_id': rid,
+        'acceptance_summary': acceptance_summary,
         'step3b_performance_profile': step3b_profile,
         'step4_factor_io_profile': step4_factor_io_profile,
         'step3b_csv_output_profile': csv_output_profile,

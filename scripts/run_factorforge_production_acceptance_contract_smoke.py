@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +74,30 @@ def has(issues: list[dict], code: str) -> bool:
     return any(item.get('code') == code for item in issues)
 
 
+def run_performance_profile(root: Path, report_id: str) -> dict:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / 'scripts/run_factorforge_performance_profile.py'),
+            '--report-id',
+            report_id,
+            '--factorforge-root',
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    payload = {}
+    if proc.stdout.strip():
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            payload = {'stdout': proc.stdout}
+    return {'rc': proc.returncode, 'stdout': payload, 'stderr': proc.stderr}
+
+
 def main() -> None:
     module = load_validator()
     cases: dict[str, dict] = {}
@@ -101,6 +127,25 @@ def main() -> None:
 
     issues = validate(module, base_summary())
     cases['valid_acceptance_summary_passes'] = {'ok': not issues, 'issues': issues}
+
+    with tempfile.TemporaryDirectory(prefix='factorforge_acceptance_summary_smoke_') as tmp:
+        root = Path(tmp)
+        report_id = 'SMOKE_ACCEPTANCE_PROFILE'
+        factor_run_master_path = root / 'objects/factor_run_master' / f'factor_run_master__{report_id}.json'
+        factor_run_master_path.parent.mkdir(parents=True, exist_ok=True)
+        factor_run_master_path.write_text(
+            json.dumps({'acceptance_summary': base_summary()}, ensure_ascii=False),
+            encoding='utf-8',
+        )
+        result = run_performance_profile(root, report_id)
+        profile = result.get('stdout') if isinstance(result.get('stdout'), dict) else {}
+        acceptance = profile.get('acceptance_summary') if isinstance(profile.get('acceptance_summary'), dict) else {}
+        cases['performance_profile_exposes_acceptance_summary'] = {
+            'ok': result.get('rc') == 0 and acceptance.get('version') == 'factorforge_production_acceptance_summary_v1',
+            'rc': result.get('rc'),
+            'diagnostic_codes': profile.get('diagnostic_codes'),
+            'acceptance_summary_version': acceptance.get('version'),
+        }
 
     failed = [name for name, item in cases.items() if not item.get('ok')]
     summary = {'verdict': 'ACCEPT' if not failed else 'BLOCK', 'cases': cases, 'failed': failed}

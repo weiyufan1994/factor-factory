@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,116 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    h = hashlib.sha256()
+    with path.open('rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def _shared_context_env_path() -> Path | None:
+    raw = os.getenv('FACTORFORGE_SHARED_EVALUATION_CONTEXT_PATH')
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def _validate_shared_context_identity(report_id: str, context: dict[str, Any]) -> tuple[bool, str | None]:
+    if context.get('version') != 'factorforge_shared_evaluation_context_v1':
+        return False, 'version_mismatch'
+    if context.get('report_id') != report_id:
+        return False, 'report_id_mismatch'
+    paths = context.get('paths') if isinstance(context.get('paths'), dict) else {}
+    artifacts = context.get('artifacts') if isinstance(context.get('artifacts'), dict) else {}
+    factor_path = RUNS / report_id / f'factor_values__{report_id}.parquet'
+    daily_path_raw = context.get('daily_input_path')
+    daily_path = Path(daily_path_raw).expanduser() if daily_path_raw else None
+    if not factor_path.exists():
+        return False, 'factor_values_path_missing'
+    if not daily_path or not daily_path.exists():
+        return False, 'daily_input_path_missing'
+    if context.get('factor_values_hash') != _sha256_file(factor_path):
+        return False, 'factor_values_hash_mismatch'
+    if context.get('daily_input_hash') != _sha256_file(daily_path):
+        return False, 'daily_input_hash_mismatch'
+    if context.get('label_policy') != {'horizon': 'T+1', 'return_type': 'simple', 'price_field': 'close'}:
+        return False, 'label_policy_mismatch'
+
+    required = {
+        'factor_signal': 'factor_signal_parquet',
+        'daily_forward_returns': 'daily_forward_returns_parquet',
+        'merged_signal_return': 'merged_signal_return_parquet',
+    }
+    for artifact_name, path_key in required.items():
+        raw = paths.get(path_key)
+        if not raw:
+            return False, f'{path_key}_missing'
+        path = Path(str(raw)).expanduser()
+        if not path.exists():
+            return False, f'{path_key}_missing'
+        declared = artifacts.get(artifact_name) if isinstance(artifacts.get(artifact_name), dict) else None
+        if not declared:
+            return False, f'{artifact_name}_artifact_contract_missing'
+        if str(path) != str(Path(str(declared.get('path') or '')).expanduser()):
+            return False, f'{artifact_name}_artifact_path_mismatch'
+        if declared.get('sha256') != _sha256_file(path):
+            return False, f'{artifact_name}_artifact_hash_mismatch'
+    return True, None
+
+
+def _try_load_shared_context(report_id: str, performance_profile: dict[str, Any]) -> tuple[pd.DataFrame | None, pd.DataFrame | None, str | None, str | None, int | None, dict[str, Any]]:
+    context_path = _shared_context_env_path()
+    profile = {
+        'available': bool(context_path),
+        'used': False,
+        'source': None,
+        'identity_validated': False,
+        'fallback_reason': None,
+        'context_path': str(context_path) if context_path else None,
+    }
+    if context_path is None:
+        profile['fallback_reason'] = 'not_configured'
+        return None, None, None, None, None, profile
+    if not context_path.exists():
+        profile['fallback_reason'] = 'context_json_missing'
+        return None, None, None, None, None, profile
+    try:
+        context = _read_json(context_path)
+        ok, reason = _validate_shared_context_identity(report_id, context)
+        if not ok:
+            profile['fallback_reason'] = reason
+            return None, None, None, None, None, profile
+        paths = context.get('paths') or {}
+        signal_col = str(context.get('signal_column') or '')
+        phase_started = time.perf_counter()
+        factor_df = pd.read_parquet(paths['factor_signal_parquet'])
+        factor_df = factor_df.rename(columns={'code': 'ts_code'}).copy()
+        performance_profile['phase_seconds']['load_factor_values'] = round(time.perf_counter() - phase_started, 6)
+        performance_profile['phase_seconds']['load_daily_snapshot'] = 0.0
+        phase_started = time.perf_counter()
+        merged = pd.read_parquet(paths['merged_signal_return_parquet'])
+        performance_profile['phase_seconds']['merge_forward_returns'] = round(time.perf_counter() - phase_started, 6)
+        row_counts = context.get('row_counts') if isinstance(context.get('row_counts'), dict) else {}
+        profile.update({
+            'used': True,
+            'source': 'merged_signal_return_parquet',
+            'identity_validated': True,
+            'fallback_reason': None,
+            'daily_forward_returns_path': paths.get('daily_forward_returns_parquet'),
+        })
+        return factor_df, merged, signal_col, context.get('factor_id'), int(row_counts.get('daily_forward_returns') or 0), profile
+    except Exception as exc:
+        profile['fallback_reason'] = f'{type(exc).__name__}: {exc}'
+        return None, None, None, None, None, profile
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -316,38 +427,50 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
     performance_profile['phase_seconds']['read_config'] = round(time.perf_counter() - phase_started, 6)
 
-    phase_started = time.perf_counter()
-    factor_df, signal_col, factor_id = load_factor_values_with_signal(report_id)
-    factor_df = factor_df[['ts_code', 'trade_date', signal_col]].copy()
-    performance_profile['phase_seconds']['load_factor_values'] = round(time.perf_counter() - phase_started, 6)
-
-    phase_started = time.perf_counter()
-    daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
-    performance_profile['phase_seconds']['load_daily_snapshot'] = round(time.perf_counter() - phase_started, 6)
-
-    phase_started = time.perf_counter()
-    factor_df['trade_date'] = factor_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
-    daily_df['trade_date'] = daily_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
-    factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
-    daily_df = build_forward_return_frame(
-        daily_df,
-        instrument_col='ts_code',
-        date_col='trade_date',
-        price_col='close',
-        horizon=1,
+    factor_df, merged, signal_col, factor_id, shared_daily_rows, shared_context_profile = _try_load_shared_context(
+        report_id,
+        performance_profile,
     )
+    daily_df = None
+    if shared_context_profile.get('used') is not True or factor_df is None or merged is None or not signal_col:
+        phase_started = time.perf_counter()
+        factor_df, signal_col, factor_id = load_factor_values_with_signal(report_id)
+        factor_df = factor_df[['ts_code', 'trade_date', signal_col]].copy()
+        performance_profile['phase_seconds']['load_factor_values'] = round(time.perf_counter() - phase_started, 6)
 
-    merged = factor_df.merge(
-        daily_df[['ts_code', 'trade_date', 'future_return_1d']],
-        on=['ts_code', 'trade_date'],
-        how='left'
-    ).dropna(subset=[signal_col, 'future_return_1d'])
-    performance_profile['phase_seconds']['merge_forward_returns'] = round(time.perf_counter() - phase_started, 6)
+        phase_started = time.perf_counter()
+        daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
+        performance_profile['phase_seconds']['load_daily_snapshot'] = round(time.perf_counter() - phase_started, 6)
+
+        phase_started = time.perf_counter()
+        factor_df['trade_date'] = factor_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
+        daily_df['trade_date'] = daily_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
+        factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
+        daily_df = build_forward_return_frame(
+            daily_df,
+            instrument_col='ts_code',
+            date_col='trade_date',
+            price_col='close',
+            horizon=1,
+        )
+
+        merged = factor_df.merge(
+            daily_df[['ts_code', 'trade_date', 'future_return_1d']],
+            on=['ts_code', 'trade_date'],
+            how='left'
+        ).dropna(subset=[signal_col, 'future_return_1d'])
+        performance_profile['phase_seconds']['merge_forward_returns'] = round(time.perf_counter() - phase_started, 6)
+    else:
+        factor_df['trade_date'] = factor_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
+        if 'datetime' not in factor_df.columns:
+            factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
+    performance_profile['shared_evaluation_context'] = shared_context_profile
     performance_profile['row_counts'] = {
         'factor_rows': int(len(factor_df)),
-        'daily_rows': int(len(daily_df)),
+        'daily_rows': int(shared_daily_rows or (len(daily_df) if daily_df is not None else 0)),
         'merged_rows': int(len(merged)),
     }
+    daily_row_count = int(performance_profile['row_counts']['daily_rows'])
 
     phase_started = time.perf_counter()
     top = merged.groupby('trade_date')[[signal_col, 'future_return_1d']].apply(
@@ -384,7 +507,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         'input_summary': {
             'sample_window': cfg.get('sample_window', {}),
             'factor_rows': int(len(factor_df)),
-            'daily_rows': int(len(daily_df)),
+            'daily_rows': daily_row_count,
             'qlib_daily_feature_rows': None,
             'merged_rows': int(len(merged)),
             'ticker_count': int(factor_df['ts_code'].nunique()),
@@ -433,7 +556,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     resource_guard = _native_resource_guard(
         merged_rows=len(merged),
         factor_rows=len(factor_df),
-        daily_rows=len(daily_df),
+        daily_rows=daily_row_count,
     )
     performance_profile['phase_seconds']['native_resource_guard'] = round(time.perf_counter() - phase_started, 6)
     if resource_guard.get('native_backtest_skipped'):
@@ -484,6 +607,9 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     benchmark = _resolve_native_benchmark()
     try:
         phase_started = time.perf_counter()
+        if daily_df is None:
+            daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
+            daily_df['trade_date'] = daily_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
         qlib_signal_native = to_qlib_signal_frame(factor_df, signal_col=signal_col, instrument_style=provider_style)
         qlib_daily_features = daily_to_qlib_features(daily_df, value_columns=['close'], rename_fields={'close': '$close'})
         base_payload['input_summary']['qlib_daily_feature_rows'] = int(len(qlib_daily_features))

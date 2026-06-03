@@ -30,6 +30,7 @@ QLIB_NATIVE_STATUS_VALUES = {
 }
 
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from backtest_base_dataset import validate_backtest_base_dataset_contract
 
 
@@ -45,6 +46,17 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'[WRITE] {path}')
+
+
+def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict[str, Any] | None, str | None]:
+    global FACTORFORGE, OBJ
+    if not manifest_path:
+        return None, None
+    manifest = load_runtime_manifest(manifest_path)
+    FACTORFORGE = manifest_factorforge_root(manifest)
+    OBJ = FACTORFORGE / 'objects'
+    os.environ['FACTORFORGE_ROOT'] = str(FACTORFORGE)
+    return manifest, manifest_report_id(manifest)
 
 
 def identity_or_issue(label: str, payload: dict[str, Any], issues: list[dict[str, Any]]) -> dict[str, Any]:
@@ -140,9 +152,13 @@ def validate_qlib_taxonomy(payload: dict[str, Any], *, mandatory: bool, issues: 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--report-id', required=True)
+    ap.add_argument('--report-id')
+    ap.add_argument('--manifest')
     args = ap.parse_args()
-    rid = args.report_id
+    _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
+    rid = args.report_id or manifest_rid
+    if not rid:
+        raise SystemExit('validate_step4 requires --report-id or --manifest')
 
     run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{rid}.json'
     diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{rid}.json'

@@ -529,7 +529,7 @@ def main() -> int:
 
     if '4' in steps:
         commands.append(('run_step4', [py, 'skills/factor-forge-step4/scripts/run_step4.py', '--manifest', str(manifest_path)]))
-        commands.append(('validate_step4', [py, 'skills/factor-forge-step4/scripts/validate_step4.py', '--report-id', args.report_id]))
+        commands.append(('validate_step4', [py, 'skills/factor-forge-step4/scripts/validate_step4.py', '--manifest', str(manifest_path)]))
 
     if '5' in steps:
         commands.append(('run_step5', [py, 'skills/factor-forge-step5/scripts/run_step5.py', '--manifest', str(manifest_path)]))

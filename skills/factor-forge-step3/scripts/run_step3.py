@@ -389,6 +389,42 @@ def _normalize_window_date(value):
     return digits if len(digits) == 8 else text
 
 
+def clean_daily_latest_trade_date() -> str | None:
+    candidates = []
+    if os.getenv('FACTORFORGE_DATA_CATALOG'):
+        candidates.append(Path(os.environ['FACTORFORGE_DATA_CATALOG']).expanduser())
+    candidates.append(FF / 'data' / 'catalog' / 'data_catalog.json')
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        datasets = payload.get('datasets', payload)
+        clean_daily = datasets.get('clean_daily_bar') if isinstance(datasets, dict) else None
+        if not isinstance(clean_daily, dict):
+            continue
+        freshness = clean_daily.get('freshness') if isinstance(clean_daily.get('freshness'), dict) else {}
+        latest = freshness.get('latest_trade_date') or clean_daily.get('latest_trade_date')
+        normalized = _normalize_window_date(latest)
+        if normalized and re.fullmatch(r'\d{8}', str(normalized)):
+            return str(normalized)
+    return None
+
+
+def normalize_data_api_window(sample_window: dict) -> dict:
+    start = _normalize_window_date(sample_window.get('start')) or '19000101'
+    end = _normalize_window_date(sample_window.get('end')) or '29991231'
+    if str(end).strip().lower() in {'current', 'latest', 'today', 'now'}:
+        end = clean_daily_latest_trade_date() or '29991231'
+    return {
+        **sample_window,
+        'start': start,
+        'end': end,
+    }
+
+
 def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
     canonical = fsm.get('canonical_spec') or {}
     source_metadata = fsm.get('source_metadata') or {}
@@ -1011,14 +1047,15 @@ def materialize_shared_daily_slice(
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    data_api_window = normalize_data_api_window(sample_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=data_api_window.get('start'),
+        end=data_api_window.get('end'),
         fields=daily_fields,
     )
     step4_data_contract = build_step4_data_contract(
-        sample_window=sample_window,
+        sample_window=data_api_window,
         daily_resolution=daily_resolution,
         daily_fields=daily_fields,
     )
@@ -1037,8 +1074,8 @@ def materialize_shared_daily_slice(
 
     daily_result = fetch_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=data_api_window.get('start'),
+        end=data_api_window.get('end'),
         fields=daily_fields,
         universe='a_share_all',
         frequency='daily',
@@ -1071,7 +1108,8 @@ def materialize_shared_daily_slice(
     )
 
     return {
-        'sample_window_actual': sample_window,
+        'sample_window_actual': data_api_window,
+        'sample_window_requested': sample_window,
         'snapshot_note': 'Step3A resolved clean_daily_bar through Data API and wrote a report-local daily snapshot for Step3B/Step4.',
         'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
@@ -1092,21 +1130,22 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
     local_dir.mkdir(parents=True, exist_ok=True)
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
+    data_api_window = normalize_data_api_window(sample_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=data_api_window.get('start'),
+        end=data_api_window.get('end'),
         fields=daily_fields,
     )
     minute_resolution = resolve_data_api_dataset(
         'minute_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=data_api_window.get('start'),
+        end=data_api_window.get('end'),
         fields=minute_fields,
         frequency='1min',
     )
     step4_data_contract = build_step4_data_contract(
-        sample_window=sample_window,
+        sample_window=data_api_window,
         daily_resolution=daily_resolution,
         minute_resolution=minute_resolution,
         daily_fields=daily_fields,
@@ -1124,7 +1163,8 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
             'step4_data_contract': step4_data_contract,
         }
     return {
-        'sample_window_actual': sample_window,
+        'sample_window_actual': data_api_window,
+        'sample_window_requested': sample_window,
         'snapshot_note': 'Step3A resolved minute_bar and clean_daily_bar through Data API; Step3B may fetch a small non-formal sample and Step4 owns full data execution.',
         'snapshot_source': 'data_api_minute_plus_daily',
         'input_mode': 'price_volume_minute',

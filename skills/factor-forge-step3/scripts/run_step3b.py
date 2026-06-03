@@ -365,14 +365,51 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
-def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+def max_formula_lookback(formula_ir: dict | None) -> int:
+    max_lookback = 0
+
+    def walk(node: dict | list | None) -> None:
+        nonlocal max_lookback
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        operator = str(node.get('operator') or '').lower()
+        args = node.get('args') if isinstance(node.get('args'), list) else []
+        if operator in {'delay', 'correlation', 'covariance', 'ts_rank', 'ts_sum', 'ts_mean', 'stddev', 'decay_linear'}:
+            for arg in reversed(args):
+                if isinstance(arg, dict) and arg.get('type') == 'constant':
+                    try:
+                        value = int(float(arg.get('value')))
+                    except (TypeError, ValueError):
+                        continue
+                    max_lookback = max(max_lookback, value)
+                    break
+        walk(args)
+
+    if isinstance(formula_ir, dict):
+        walk(formula_ir.get('root') or formula_ir)
+    return int(max_lookback)
+
+
+def step3b_sample_max_dates_for_formula(formula_ir: dict | None) -> int:
+    lookback = max_formula_lookback(formula_ir)
+    if lookback <= 0:
+        return int(STEP3B_SAMPLE_MAX_DATES)
+    return int(max(STEP3B_SAMPLE_MAX_DATES, lookback + 32))
+
+
+def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str, max_dates: int | None = None) -> tuple[pd.DataFrame, dict]:
+    effective_max_dates = int(max_dates or STEP3B_SAMPLE_MAX_DATES)
     if df is None:
         return df, {
             'label': label,
             'input_rows': 0,
             'sample_limited': False,
             'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
-            'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
+            'max_dates': effective_max_dates,
             'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
             'output_rows': 0,
             'date_count': None,
@@ -385,7 +422,7 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
         'input_rows': int(len(df)),
         'sample_limited': not small_enough,
         'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
-        'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
+        'max_dates': effective_max_dates,
         'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
         'output_rows': int(len(df)),
         'date_count': None,
@@ -408,7 +445,7 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
         normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
         dates = sorted(normalized_dates.dropna().unique().tolist())
         tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
-        mask = normalized_dates.isin(set(dates[-STEP3B_SAMPLE_MAX_DATES:])) & work['ts_code'].astype(str).isin(set(tickers[:STEP3B_SAMPLE_MAX_TICKERS]))
+        mask = normalized_dates.isin(set(dates[-effective_max_dates:])) & work['ts_code'].astype(str).isin(set(tickers[:STEP3B_SAMPLE_MAX_TICKERS]))
         sampled = work.loc[mask].copy()
         if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
             sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
@@ -1516,10 +1553,19 @@ def generate_first_run_factor_values(
         else:
             daily_df = read_df(daily_path)
     with timer.phase('sample_limit'):
-        daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+        sample_max_dates = step3b_sample_max_dates_for_formula(module_formula_ir if isinstance(module_formula_ir, dict) else None)
+        daily_df, daily_limit_profile = limit_step3b_sample_frame(
+            daily_df,
+            label='clean_daily_bar',
+            max_dates=sample_max_dates,
+        )
         minute_limit_profile = None
         if minute_df is not None and len(minute_df) > 0:
-            minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
+            minute_df, minute_limit_profile = limit_step3b_sample_frame(
+                minute_df,
+                label='minute_bar',
+                max_dates=sample_max_dates,
+            )
     step3b_sample_limit_profile = {
         'clean_daily_bar': daily_limit_profile,
         **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),

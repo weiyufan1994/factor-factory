@@ -1459,6 +1459,10 @@ def run_csv_policy_full_csv_legacy_compat_case(root: Path) -> dict[str, Any]:
     step3b_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
         bool(metadata)
+        and metadata.get('purpose') == 'step3_executability_proof'
+        and isinstance(metadata.get('sample_cap'), dict) and bool(metadata.get('sample_cap'))
+        and isinstance(metadata.get('sample_window'), dict) and bool(metadata.get('sample_window'))
+        and isinstance(metadata.get('lineage'), dict) and bool(metadata.get('lineage'))
         and step3b_cache.exists()
         and step3b_csv.exists()
         and not factor_parquet.exists()
@@ -1475,6 +1479,12 @@ def run_csv_policy_full_csv_legacy_compat_case(root: Path) -> dict[str, Any]:
     return {
         'case': 'csv_policy_full_csv_legacy_compat',
         'report_id': report_id,
+        'sample_ownership': {
+            'purpose': metadata.get('purpose'),
+            'sample_cap': metadata.get('sample_cap'),
+            'sample_window': metadata.get('sample_window'),
+            'lineage': metadata.get('lineage'),
+        },
         'csv_output_profile': csv_profile,
         'factor_parquet_exists': factor_parquet.exists(),
         'step3b_cache_exists': step3b_cache.exists(),

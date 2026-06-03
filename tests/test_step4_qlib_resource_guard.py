@@ -64,6 +64,7 @@ def test_qlib_native_resource_guard_skips_large_full_native_backtest(monkeypatch
 
     assert payload["status"] == "partial"
     assert payload["mode"] == "sample_stub"
+    assert payload["qlib_native_status"] == "partial_payload"
     assert payload["resource_guard"]["native_backtest_skipped"] is True
     assert payload["resource_guard"]["reason"] == "merged_rows_exceeds_limit"
     assert payload["input_summary"]["merged_rows"] == 3

@@ -786,6 +786,7 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
             sources[field] = f'rolling_mean({volume_col},{window})'
 
     return working, {
+        'version': 'factorforge_derived_field_contract_v1',
         'standard_formula_fields_added': added,
         'standard_formula_field_sources': sources,
         'required_formula_fields': sorted(required),

@@ -71,6 +71,30 @@ def test_declared_sample_window_honors_source_window_start_only():
     }
 
 
+def test_enrich_report_local_daily_fields_emits_versioned_contract():
+    run_step3 = _load_run_step3()
+    frame = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20160104",
+                "open": 10.0,
+                "close": 10.1,
+                "vol": 100.0,
+                "amount": 1010.0,
+                "pct_chg": 0.1,
+            }
+        ]
+    )
+
+    _enriched, contract = run_step3.enrich_report_local_daily_fields(frame, ["open", "close"])
+
+    assert contract["version"] == "factorforge_derived_field_contract_v1"
+    assert contract["standard_formula_fields_added"] == []
+    assert contract["required_formula_fields"] == ["close", "open"]
+    assert contract["clean_data_mutation"] is False
+
+
 def test_daily_step3a_snapshot_uses_query_safe_current_end(monkeypatch, tmp_path):
     run_step3 = _load_run_step3()
     monkeypatch.setenv("FACTORFORGE_DATA_API_CURRENT_END_DATE", "20260603")

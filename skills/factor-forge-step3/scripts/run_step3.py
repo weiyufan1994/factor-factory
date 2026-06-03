@@ -727,7 +727,152 @@ def formula_required_daily_fields(fsm: dict) -> list[str]:
     return list(dict.fromkeys(str(field).strip().lower() for field in candidates if str(field).strip()))
 
 
-def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: list[str]) -> tuple[pd.DataFrame, dict]:
+def _formula_ir_constants(node) -> list[float]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'constant':
+        try:
+            return [float(node.get('value'))]
+        except (TypeError, ValueError):
+            return []
+    constants: list[float] = []
+    for child in node.get('args') or []:
+        constants.extend(_formula_ir_constants(child))
+    return constants
+
+
+def _operator_lookback(operator: str, constants: list[float]) -> int | None:
+    operator = str(operator or '').strip().lower()
+    if operator in {
+        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+    } and constants:
+        last = constants[-1]
+        if isinstance(last, float) and not last.is_integer():
+            return None
+        value = int(last)
+        return value if value > 0 else None
+    return None
+
+
+def _formula_ir_fields(node) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'field':
+        field = node.get('resolved_field') or node.get('name')
+        return [str(field).strip().lower()] if str(field or '').strip() else []
+    fields: list[str] = []
+    for child in node.get('args') or []:
+        fields.extend(_formula_ir_fields(child))
+    return list(dict.fromkeys(fields))
+
+
+def _field_unit(field: str) -> str:
+    field = str(field or '').strip().lower()
+    if field in {'open', 'high', 'low', 'close', 'pre_close', 'vwap'}:
+        return 'price'
+    if field in {'volume', 'vol'} or field.startswith('adv'):
+        return 'documented_volume_unit'
+    if field == 'amount':
+        return 'documented_amount_unit'
+    if field in {'returns', 'return', 'ret', 'pct_chg'}:
+        return 'documented_return_unit'
+    return 'numeric'
+
+
+def _operator_output_unit(operator: str, child_units: list[str]) -> str:
+    operator = str(operator or '').lower()
+    if operator in {'rank', 'ts_rank'}:
+        return 'rank_score'
+    if operator in {'correlation', 'corr'}:
+        return 'dimensionless_correlation'
+    if operator == 'covariance':
+        return 'source_unit_product'
+    if operator in {'argmax', 'argmin'}:
+        return 'window_position'
+    if operator == 'delay':
+        return child_units[0] if child_units else 'numeric'
+    units = {str(unit) for unit in child_units if str(unit)}
+    if operator in {'plus', 'minus'} and units == {'rank_score'}:
+        return 'composite_rank_score'
+    if len(units) == 1:
+        return next(iter(units))
+    return 'numeric'
+
+
+def _formula_ir_output_unit(node) -> str:
+    if not isinstance(node, dict):
+        return 'numeric'
+    if node.get('type') == 'field':
+        return _field_unit(str(node.get('resolved_field') or node.get('name') or ''))
+    if node.get('type') == 'constant':
+        return 'numeric'
+    if node.get('type') != 'operator':
+        return 'numeric'
+    operator = str(node.get('operator') or '').strip().lower()
+    child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+    return _operator_output_unit(operator, child_units)
+
+
+def formula_operator_contract_specs(formula_ir: dict | None) -> dict[str, dict]:
+    if not isinstance(formula_ir, dict):
+        return {}
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    contracts: dict[str, dict] = {}
+    counter = 0
+
+    def visit(node) -> None:
+        nonlocal counter
+        if not isinstance(node, dict):
+            return
+        for child in node.get('args') or []:
+            visit(child)
+        if node.get('type') != 'operator':
+            return
+        operator = str(node.get('operator') or '').strip().lower()
+        if not operator:
+            return
+        sources = _formula_ir_fields(node) or ['constant']
+        child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+        spec = {
+            'operator': operator,
+            'sources': sources,
+            'rule': 'formula_ir_operator_semantics',
+            'source_units': {source: _field_unit(source) for source in sources},
+            'output_unit': _operator_output_unit(operator, child_units),
+            'leakage_policy': 'no future data',
+        }
+        lookback = _operator_lookback(operator, _formula_ir_constants(node))
+        if lookback is not None:
+            spec['lookback_window'] = lookback
+        if operator == 'rank':
+            spec['rank_scope'] = 'cross_sectional_by_trade_date'
+        contracts[f'operator_{counter:03d}_{operator}'] = spec
+        counter += 1
+
+    visit(root)
+    return contracts
+
+
+def _derived_alias_spec(field: str, sources: list[str], rule: str, output_unit: str, *, operator: str = 'alias', lookback_window: int | None = None) -> dict:
+    spec = {
+        'operator': operator,
+        'sources': sources,
+        'rule': rule,
+        'source_units': {source: _field_unit(source) for source in sources},
+        'output_unit': output_unit,
+        'leakage_policy': 'no future data',
+    }
+    if lookback_window is not None:
+        spec['lookback_window'] = lookback_window
+    return spec
+
+
+def enrich_report_local_daily_fields(
+    daily_df: pd.DataFrame,
+    required_fields: list[str],
+    formula_ir: dict | None = None,
+) -> tuple[pd.DataFrame, dict]:
     """Materialize standard formula aliases in the report-local snapshot only."""
     required = {str(field).strip().lower() for field in (required_fields or [])}
     adv_fields = sorted((field, _adv_window(field)) for field in required if _adv_window(field) is not None)
@@ -737,6 +882,7 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
 
     added: list[str] = []
     sources: dict[str, str] = {}
+    derived_fields: dict[str, dict] = {}
     working = daily_df
     if needs_volume or needs_returns or needs_vwap or adv_fields:
         working = daily_df.copy()
@@ -748,6 +894,12 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
         working['volume'] = pd.to_numeric(working[volume_col], errors='coerce')
         added.append('volume')
         sources['volume'] = volume_col
+        derived_fields['volume'] = _derived_alias_spec(
+            'volume',
+            [volume_col],
+            f'alias(volume <- {volume_col})',
+            'documented_volume_unit',
+        )
         volume_col = 'volume'
 
     if needs_returns and 'returns' not in working.columns:
@@ -757,6 +909,12 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
         working['returns'] = pd.to_numeric(working[return_col], errors='coerce')
         added.append('returns')
         sources['returns'] = return_col
+        derived_fields['returns'] = _derived_alias_spec(
+            'returns',
+            [return_col],
+            f'alias(returns <- {return_col})',
+            _field_unit(return_col),
+        )
 
     if needs_vwap and 'vwap' not in working.columns:
         volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
@@ -767,6 +925,13 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
         working['vwap'] = amount / volume
         added.append('vwap')
         sources['vwap'] = f'amount/{volume_col}'
+        derived_fields['vwap'] = _derived_alias_spec(
+            'vwap',
+            ['amount', volume_col],
+            f'amount / {volume_col}',
+            'price_proxy',
+            operator='divide',
+        )
 
     missing_adv = [field for field, _window in adv_fields if field not in working.columns]
     if missing_adv:
@@ -784,12 +949,30 @@ def enrich_report_local_daily_fields(daily_df: pd.DataFrame, required_fields: li
             working[field] = grouped_volume.transform(lambda s, window=window: s.rolling(window, min_periods=window).mean())
             added.append(field)
             sources[field] = f'rolling_mean({volume_col},{window})'
+            derived_fields[field] = _derived_alias_spec(
+                field,
+                [volume_col],
+                f'rolling_mean({volume_col},{window})',
+                'documented_volume_unit',
+                operator='mean',
+                lookback_window=window,
+            )
+
+    source_fields = sorted(
+        field
+        for field in required
+        if field in working.columns and field not in derived_fields and field not in added
+    )
+    derived_fields.update(formula_operator_contract_specs(formula_ir))
 
     return working, {
         'version': 'factorforge_derived_field_contract_v1',
+        'validation_result': 'PASS',
         'standard_formula_fields_added': added,
         'standard_formula_field_sources': sources,
         'required_formula_fields': sorted(required),
+        'source_fields': source_fields,
+        'derived_fields': derived_fields,
         'report_local_only': True,
         'clean_data_mutation': False,
     }
@@ -801,6 +984,7 @@ def materialize_shared_daily_slice(
     symbols: list[str] | None = None,
     csv_output_policy: str | None = None,
     required_fields: list[str] | None = None,
+    formula_ir: dict | None = None,
 ) -> dict:
     del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
@@ -852,7 +1036,11 @@ def materialize_shared_daily_slice(
         }
 
     daily_df = daily_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-    daily_df, derived_field_contract = enrich_report_local_daily_fields(daily_df, required_fields or [])
+    daily_df, derived_field_contract = enrich_report_local_daily_fields(
+        daily_df,
+        required_fields or [],
+        formula_ir=formula_ir,
+    )
     policy = resolve_csv_policy(csv_output_policy)
     daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
     daily_csv = local_dir / f'daily_input__{report_id}.csv'
@@ -882,7 +1070,13 @@ def materialize_shared_daily_slice(
     }
 
 
-def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
+def build_local_price_volume_snapshots(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+    required_fields: list[str] | None = None,
+    formula_ir: dict | None = None,
+):
     del csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -955,7 +1149,13 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
             if minute_parquet.exists() or minute_parquet.is_symlink():
                 minute_parquet.unlink()
             minute_df.to_parquet(minute_parquet, index=False)
-            daily_slice = materialize_shared_daily_slice(report_id, sample_window, symbols=tickers)
+            daily_slice = materialize_shared_daily_slice(
+                report_id,
+                sample_window,
+                symbols=tickers,
+                required_fields=required_fields,
+                formula_ir=formula_ir,
+            )
             sample_actual = {
                 'start': str(minute_df['trade_date'].min()),
                 'end': str(minute_df['trade_date'].max())
@@ -1040,6 +1240,11 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
                 'amount': close * (100000 + ticker_i * 1000),
             })
     daily_df = pd.DataFrame(daily_rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    daily_df, derived_field_contract = enrich_report_local_daily_fields(
+        daily_df,
+        required_fields or [],
+        formula_ir=formula_ir,
+    )
 
     policy = resolve_csv_policy(csv_output_policy)
     minute_csv = local_dir / f'minute_input__{report_id}.csv'
@@ -1069,6 +1274,7 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
         'sample_window_actual': sample_actual,
         'snapshot_note': 'Synthetic fallback snapshot; use only when real local data layer is unavailable.',
         'snapshot_source': 'synthetic_fallback',
+        'derived_field_contract': derived_field_contract,
     }
 
 
@@ -1077,6 +1283,7 @@ def build_local_daily_snapshot(
     sample_window: dict,
     csv_output_policy: str | None = None,
     required_fields: list[str] | None = None,
+    formula_ir: dict | None = None,
 ):
     # Daily-only factors resolve the published clean_daily_bar Data API contract.
     return materialize_shared_daily_slice(
@@ -1084,6 +1291,7 @@ def build_local_daily_snapshot(
         sample_window,
         csv_output_policy=csv_output_policy,
         required_fields=required_fields,
+        formula_ir=formula_ir,
     )
 
 
@@ -1094,6 +1302,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
 
     factor_id = fsm.get('factor_id', report_id)
     canonical = fsm.get('canonical_spec', {})
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     required_fields = formula_required_daily_fields(fsm)
     price_volume_minute = is_price_volume_minute_formula(canonical)
     direct_code_minute = direct_code_requires_minute_inputs(fsm)
@@ -1202,7 +1411,13 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                     'risk': 'high'
                 }
             ])
-        local_input_paths = build_local_price_volume_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
+        local_input_paths = build_local_price_volume_snapshots(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+            required_fields=required_fields,
+            formula_ir=formula_ir,
+        )
         if price_volume_minute:
             notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
         if direct_code_minute and not price_volume_minute:
@@ -1232,6 +1447,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             sample_window,
             csv_output_policy=csv_output_policy,
             required_fields=required_fields,
+            formula_ir=formula_ir,
         )
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')

@@ -90,9 +90,62 @@ def test_enrich_report_local_daily_fields_emits_versioned_contract():
     _enriched, contract = run_step3.enrich_report_local_daily_fields(frame, ["open", "close"])
 
     assert contract["version"] == "factorforge_derived_field_contract_v1"
+    assert contract["validation_result"] == "PASS"
     assert contract["standard_formula_fields_added"] == []
     assert contract["required_formula_fields"] == ["close", "open"]
+    assert contract["source_fields"] == ["close", "open"]
+    assert contract["derived_fields"] == {}
     assert contract["clean_data_mutation"] is False
+
+
+def test_enrich_report_local_daily_fields_emits_formula_operator_contracts():
+    run_step3 = _load_run_step3()
+    frame = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20160104",
+                "open": 10.0,
+                "close": 10.1,
+                "vol": 100.0,
+                "amount": 1010.0,
+                "pct_chg": 0.1,
+            }
+        ]
+    )
+    formula_ir = {
+        "root": {
+            "type": "operator",
+            "operator": "rank",
+            "args": [
+                {
+                    "type": "operator",
+                    "operator": "ts_rank",
+                    "args": [
+                        {"type": "field", "name": "close", "resolved_field": "close"},
+                        {"type": "constant", "value": 10},
+                    ],
+                }
+            ],
+        }
+    }
+
+    _enriched, contract = run_step3.enrich_report_local_daily_fields(
+        frame,
+        ["close"],
+        formula_ir=formula_ir,
+    )
+
+    derived = contract["derived_fields"]
+    ts_rank_specs = [spec for spec in derived.values() if spec["operator"] == "ts_rank"]
+    rank_specs = [spec for spec in derived.values() if spec["operator"] == "rank"]
+    assert contract["validation_result"] == "PASS"
+    assert contract["source_fields"] == ["close"]
+    assert ts_rank_specs and ts_rank_specs[0]["lookback_window"] == 10
+    assert ts_rank_specs[0]["sources"] == ["close"]
+    assert ts_rank_specs[0]["output_unit"] == "rank_score"
+    assert rank_specs and rank_specs[0]["rank_scope"] == "cross_sectional_by_trade_date"
+    assert rank_specs[0]["output_unit"] == "rank_score"
 
 
 def test_daily_step3a_snapshot_uses_query_safe_current_end(monkeypatch, tmp_path):

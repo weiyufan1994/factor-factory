@@ -429,6 +429,7 @@ def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
             'start': source_metadata.get('window_start'),
             'end': source_metadata.get('window_end'),
             'calendar': source_metadata.get('calendar'),
+            '_allow_partial_window': True,
         })
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -439,6 +440,12 @@ def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
             return {
                 'start': start,
                 'end': end,
+                'calendar': candidate.get('calendar') or fallback.get('calendar') or 'A-share trading days',
+            }
+        if candidate.get('_allow_partial_window') and (start or end):
+            return {
+                'start': start or fallback.get('start') or '20100104',
+                'end': end or fallback.get('end') or 'current',
                 'calendar': candidate.get('calendar') or fallback.get('calendar') or 'A-share trading days',
             }
     return fallback

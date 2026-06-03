@@ -49,6 +49,28 @@ def test_data_api_query_payload_normalizes_current_end_date(monkeypatch):
     assert payload["end_date"] == "20260603"
 
 
+def test_declared_sample_window_honors_source_window_start_only():
+    run_step3 = _load_run_step3()
+
+    result = run_step3.declared_sample_window(
+        {
+            "canonical_spec": {},
+            "source_metadata": {
+                "window_start": "2016-01-01",
+                "calendar": "A-share trading days",
+            },
+        },
+        {},
+        {"start": "20100104", "end": "current", "calendar": "A-share trading days"},
+    )
+
+    assert result == {
+        "start": "20160101",
+        "end": "current",
+        "calendar": "A-share trading days",
+    }
+
+
 def test_daily_step3a_snapshot_uses_query_safe_current_end(monkeypatch, tmp_path):
     run_step3 = _load_run_step3()
     monkeypatch.setenv("FACTORFORGE_DATA_API_CURRENT_END_DATE", "20260603")

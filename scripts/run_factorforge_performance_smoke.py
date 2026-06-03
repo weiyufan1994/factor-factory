@@ -222,6 +222,31 @@ def import_run_step3b(root: Path):
     return module
 
 
+def run_step3b_formula_lookback_operator_coverage_case(root: Path) -> dict[str, Any]:
+    module = import_run_step3b(root)
+    formulas = {
+        'sum(close, 200)': 200,
+        'mean(close, 200)': 200,
+        'min(close, 200)': 200,
+        'max(close, 200)': 200,
+        'argmin(close, 200)': 200,
+        'argmax(close, 200)': 200,
+    }
+    observed: dict[str, dict[str, int]] = {}
+    ok = True
+    for formula, expected_lookback in formulas.items():
+        formula_ir = parse_formula(formula, available_columns=['close', 'volume'], raise_on_error=True)
+        lookback = int(module.max_formula_lookback(formula_ir))
+        max_dates = int(module.step3b_sample_max_dates_for_formula(formula_ir))
+        observed[formula] = {'lookback': lookback, 'sample_max_dates': max_dates}
+        ok = bool(ok and lookback == expected_lookback and max_dates >= expected_lookback + 32)
+    return {
+        'case': 'step3b_formula_lookback_operator_coverage',
+        'observed': observed,
+        'ok': ok,
+    }
+
+
 def import_run_step3(root: Path):
     os.environ['FACTORFORGE_ROOT'] = str(root)
     os.environ['ALLOW_SYNTHETIC_FALLBACK'] = '1'
@@ -7248,6 +7273,7 @@ def main() -> int:
         run_step3b_sort_contract_fallback_on_duplicate_key_case(root),
         run_step3b_sort_contract_fallback_on_unsorted_unsampled_inversion_case(root),
         run_step3b_sort_contract_output_parity_with_full_sort_case(root),
+        run_step3b_formula_lookback_operator_coverage_case(root),
         run_operator_profile_basic_present_case(),
         run_operator_profile_alpha017_like_breakdown_case(),
         run_operator_profile_cache_hit_recorded_case(),

@@ -78,6 +78,26 @@ CSV_SAMPLE_MAX_ROWS = 10_000
 STEP3B_SAMPLE_MAX_ROWS = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_ROWS') or '250000')
 STEP3B_SAMPLE_MAX_DATES = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_DATES') or '128')
 STEP3B_SAMPLE_MAX_TICKERS = int(os.getenv('FACTORFORGE_STEP3B_SAMPLE_MAX_TICKERS') or '512')
+FORMULA_LOOKBACK_OPERATORS = {
+    'delay',
+    'delta',
+    'correlation',
+    'corr',
+    'covariance',
+    'cov',
+    'sum',
+    'ts_sum',
+    'mean',
+    'ts_mean',
+    'std',
+    'stddev',
+    'ts_rank',
+    'min',
+    'max',
+    'argmax',
+    'argmin',
+    'decay_linear',
+}
 EXECUTABLE_REVISION_SPEC_VERSION = 'factorforge_executable_revision_spec_v1'
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 HIGH_SPEED_CODE_PROFILE_VERSION = 'factorforge_high_speed_code_profile_v1'
@@ -368,6 +388,16 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
 def max_formula_lookback(formula_ir: dict | None) -> int:
     max_lookback = 0
 
+    def positive_integer_constant(value) -> int | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not number.is_integer():
+            return None
+        integer = int(number)
+        return integer if integer > 0 else None
+
     def walk(node: dict | list | None) -> None:
         nonlocal max_lookback
         if isinstance(node, list):
@@ -378,12 +408,11 @@ def max_formula_lookback(formula_ir: dict | None) -> int:
             return
         operator = str(node.get('operator') or '').lower()
         args = node.get('args') if isinstance(node.get('args'), list) else []
-        if operator in {'delay', 'correlation', 'covariance', 'ts_rank', 'ts_sum', 'ts_mean', 'stddev', 'decay_linear'}:
+        if operator in FORMULA_LOOKBACK_OPERATORS:
             for arg in reversed(args):
                 if isinstance(arg, dict) and arg.get('type') == 'constant':
-                    try:
-                        value = int(float(arg.get('value')))
-                    except (TypeError, ValueError):
+                    value = positive_integer_constant(arg.get('value'))
+                    if value is None:
                         continue
                     max_lookback = max(max_lookback, value)
                     break

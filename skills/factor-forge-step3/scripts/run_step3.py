@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -388,6 +389,29 @@ def _normalize_window_date(value):
     return digits if len(digits) == 8 else text
 
 
+def current_data_api_end_date() -> str:
+    override = _normalize_window_date(os.getenv('FACTORFORGE_DATA_API_CURRENT_END_DATE'))
+    if override and override != 'current':
+        return override
+    return datetime.now(timezone.utc).strftime('%Y%m%d')
+
+
+def _data_api_window_bound(value, *, default: str, current_sentinel: str | None = None) -> str:
+    normalized = _normalize_window_date(value)
+    if not normalized:
+        return default
+    if normalized == 'current':
+        return current_sentinel or default
+    return normalized
+
+
+def data_api_window_bounds(sample_window: dict) -> dict:
+    return {
+        'start': _data_api_window_bound(sample_window.get('start'), default='19000101'),
+        'end': _data_api_window_bound(sample_window.get('end'), default=current_data_api_end_date(), current_sentinel=current_data_api_end_date()),
+    }
+
+
 def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
     canonical = fsm.get('canonical_spec') or {}
     source_metadata = fsm.get('source_metadata') or {}
@@ -617,10 +641,11 @@ def data_api_query_payload(
     universe='a_share_all',
     frequency: str = 'daily',
 ) -> dict:
+    query_window = data_api_window_bounds(sample_window)
     return {
         'dataset': dataset,
-        'start_date': _normalize_window_date(sample_window.get('start')) or '19000101',
-        'end_date': _normalize_window_date(sample_window.get('end')) if _normalize_window_date(sample_window.get('end')) != 'current' else '29991231',
+        'start_date': query_window['start'],
+        'end_date': query_window['end'],
         'universe': universe,
         'fields': list(dict.fromkeys(fields)),
         'frequency': frequency,
@@ -773,10 +798,11 @@ def materialize_shared_daily_slice(
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    query_window = data_api_window_bounds(sample_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=daily_fields,
     )
     step4_data_contract = build_step4_data_contract(
@@ -799,8 +825,8 @@ def materialize_shared_daily_slice(
 
     daily_result = fetch_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=daily_fields,
         universe='a_share_all',
         frequency='daily',
@@ -854,16 +880,17 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
     local_dir.mkdir(parents=True, exist_ok=True)
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
+    query_window = data_api_window_bounds(sample_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=daily_fields,
     )
     minute_resolution = resolve_data_api_dataset(
         'minute_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=minute_fields,
         frequency='1min',
     )

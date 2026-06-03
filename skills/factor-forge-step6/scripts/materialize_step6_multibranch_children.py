@@ -197,12 +197,81 @@ def run_child_materializer(root: Path, parent: str, branch: dict[str, Any], appr
     }
 
 
+def existing_materialization_reusable(root: Path, report_id: str, approval: dict[str, Any], *, loop_index: int) -> dict[str, Any] | None:
+    path = aggregate_report_path(root, report_id, loop_index)
+    if not path.exists():
+        return None
+    report = load_json(path)
+    if (
+        report.get("contract_version") != MATERIALIZATION_VERSION
+        or report.get("status") != "PASS"
+        or report.get("parent_report_id") != report_id
+        or int(report.get("loop_index") or -1) != loop_index
+        or str(report.get("source_multibranch_synthesis_sha256") or "") != str(approval.get("source_multibranch_synthesis_sha256") or "")
+        or int(report.get("selected_branch_count") or -1) != int(approval.get("selected_branch_count") or -2)
+    ):
+        return None
+    children = report.get("children") if isinstance(report.get("children"), list) else []
+    branches = approval.get("selected_branches") if isinstance(approval.get("selected_branches"), list) else []
+    if len(children) != len(branches):
+        return None
+    by_child = {str(child.get("child_report_id") or ""): child for child in children if isinstance(child, dict)}
+    for branch in branches:
+        child_id = str(branch.get("child_report_id") or "")
+        child = by_child.get(child_id)
+        if not child:
+            return None
+        expected = {
+            "branch_role": str(branch.get("branch_role") or ""),
+            "branch_index": int(branch.get("branch_index") or -1),
+            "law_id": str(branch.get("law_id") or ""),
+            "child_formula_hash": str(branch.get("child_formula_hash") or ""),
+        }
+        actual = {
+            "branch_role": str(child.get("branch_role") or ""),
+            "branch_index": int(child.get("branch_index") or -1),
+            "law_id": str(child.get("law_id") or ""),
+            "child_formula_hash": str(child.get("child_formula_hash") or ""),
+        }
+        if actual != expected:
+            return None
+        report_path_raw = str(child.get("materialization_report_path") or "")
+        spec_path_raw = str(child.get("executable_revision_spec_path") or "")
+        if not report_path_raw or not spec_path_raw:
+            return None
+        report_path = Path(report_path_raw)
+        spec_path = Path(spec_path_raw)
+        if not report_path.is_absolute():
+            report_path = root / report_path
+        if not spec_path.is_absolute():
+            spec_path = root / spec_path
+        if not report_path.exists() or not spec_path.exists():
+            return None
+        child_report = load_json(report_path)
+        child_spec = load_json(spec_path)
+        if (
+            str(child_report.get("child_report_id") or "") != child_id
+            or str(child_report.get("child_formula_hash") or "") != expected["child_formula_hash"]
+            or str(child_spec.get("child_report_id") or "") != child_id
+            or str(child_spec.get("child_formula_hash") or "") != expected["child_formula_hash"]
+        ):
+            return None
+    reused = dict(report)
+    reused["materialization_reused"] = True
+    reused["reused_existing_report_path"] = str(path)
+    return reused
+
+
 def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any]:
     path = approval_path(root, report_id)
     if not path.exists():
         raise ValueError(TOKEN_APPROVAL_MISSING)
     approval = load_json(path)
     validate_approval(root, report_id, approval)
+    existing = existing_materialization_reusable(root, report_id, approval, loop_index=loop_index)
+    if existing is not None:
+        print(f"SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION: {aggregate_report_path(root, report_id, loop_index)}")
+        return existing
     children: list[dict[str, Any]] = []
     for branch in approval["selected_branches"]:
         result = run_child_materializer(root, report_id, branch, approval)
@@ -259,6 +328,8 @@ def main() -> int:
         print(str(exc))
         return 1
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    if report.get("materialization_reused") is True:
+        print("SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION")
     return 0
 
 

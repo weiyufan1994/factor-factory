@@ -337,6 +337,43 @@ def case_happy(root: Path) -> dict[str, Any]:
     }
 
 
+def case_existing_materialization_reused(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    first = materialize(root)
+    aggregate = aggregate_path(root)
+    before_sha = sha256_file(aggregate) if aggregate.exists() else ""
+    before_report = load_json(aggregate)
+    second = materialize(root)
+    after_sha = sha256_file(aggregate) if aggregate.exists() else ""
+    after_report = load_json(aggregate)
+    children = after_report.get("children") if isinstance(after_report.get("children"), list) else []
+    return {
+        "case": "multibranch_existing_materialization_reused_without_rewrite",
+        "ok": (
+            approval["rc"] == 0
+            and first["rc"] == 0
+            and second["rc"] == 0
+            and before_report.get("status") == "PASS"
+            and after_report.get("status") == "PASS"
+            and before_sha == after_sha
+            and len(children) == 2
+            and "SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION" in second["stdout_tail"]
+        ),
+        "approval": approval,
+        "first_materialize": first,
+        "second_materialize": second,
+        "before_sha": before_sha,
+        "after_sha": after_sha,
+        "before_status": before_report.get("status"),
+        "after_status": after_report.get("status"),
+        "skip_token_present": "SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION" in second["stdout_tail"],
+        "child_count": len(children),
+        "aggregate_report": str(aggregate),
+    }
+
+
 def case_source_mutation(root: Path) -> dict[str, Any]:
     setup_parent(root)
     write_synthesis(root, valid_synthesis())
@@ -430,6 +467,7 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     cases = [
         run_case(root, "happy_path", case_happy),
+        run_case(root, "existing_materialization_reused", case_existing_materialization_reused),
         run_case(root, "source_mutation", case_source_mutation),
         run_case(root, "adapter_synthesis_mutation", case_adapter_synthesis_mutation),
         run_case(root, "duplicate_approval_hash", case_duplicate_approval_hash),

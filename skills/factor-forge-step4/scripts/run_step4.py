@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 # Runtime root policy:
 # - prefer FACTORFORGE_ROOT when explicitly configured
 # - otherwise keep legacy EC2 compatibility
@@ -34,6 +36,7 @@ RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
 from factor_factory.data_api import fetch_data_api_dataset
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -60,11 +63,13 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'run_status_candidate',
     'input_io_profile',
     'step4_factor_io_profile',
+    'step4_formal_factor_identity',
     'step4_factor_csv_policy_observed',
     'shared_evaluation_context',
     'backend_timing_profile',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+FACTOR_CSV_SAMPLE_MAX_ROWS = 10_000
 
 
 def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step4') -> dict[str, Any]:
@@ -117,6 +122,139 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     print(f'[WRITE] {path}')
 
 
+def stable_json_hash(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+
+
+def universe_hash_from_frame(frame: Any) -> str | None:
+    if frame is None or 'ts_code' not in frame.columns:
+        return None
+    values = sorted(str(value) for value in frame['ts_code'].dropna().unique())
+    return stable_json_hash(values)
+
+
+def factor_key_hash_from_frame(frame: Any) -> str | None:
+    if frame is None or not {'ts_code', 'trade_date'}.issubset(frame.columns):
+        return None
+    normalized_dates = normalize_trade_date_series(frame['trade_date']).dt.strftime('%Y%m%d')
+    keys = [
+        [str(code), str(date)]
+        for code, date in zip(frame['ts_code'].astype(str).tolist(), normalized_dates.tolist(), strict=False)
+    ]
+    return stable_json_hash(keys)
+
+
+def factor_artifact_binding_profile(path: Path, frame: Any) -> dict[str, Any]:
+    return {
+        'selected_factor_sha256': sha256_file(path),
+        'selected_factor_row_count': int(len(frame)) if frame is not None else 0,
+        'selected_factor_schema': [str(col) for col in frame.columns] if frame is not None else [],
+        'selected_factor_key_hash': factor_key_hash_from_frame(frame),
+    }
+
+
+def repo_sha() -> str:
+    try:
+        proc = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=REPO_ROOT, check=False, capture_output=True, text=True)
+        return proc.stdout.strip() if proc.returncode == 0 else 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def backend_status(backend_runs: list[dict[str, Any]], backend_name: str) -> str:
+    for item in backend_runs:
+        if item.get('backend') == backend_name or item.get('name') == backend_name:
+            return str(item.get('status') or 'missing')
+    return 'missing'
+
+
+def qlib_native_status_from_backend_runs(backend_runs: list[dict[str, Any]]) -> str:
+    for item in backend_runs:
+        if item.get('backend') != 'qlib_backtest' and item.get('name') != 'qlib_backtest':
+            continue
+        payload_path = item.get('payload_path')
+        if payload_path and Path(payload_path).exists():
+            try:
+                payload = load_json(Path(payload_path))
+                status = payload.get('qlib_native_status')
+                if status:
+                    return str(status)
+            except Exception:
+                return 'failed'
+        status = item.get('status')
+        if status == 'skipped':
+            return 'preflight_blocked'
+        if status == 'failed':
+            return 'failed'
+    return 'not_attempted'
+
+
+def build_acceptance_summary(
+    *,
+    report_id: str,
+    factor_id: str | None,
+    run_id: str | None,
+    run_status: str,
+    backend_runs: list[dict[str, Any]],
+    step4_output_paths: list[str],
+    backend_timing_profile: dict[str, Any],
+    step4_factor_io_profile: dict[str, Any],
+) -> dict[str, Any]:
+    reuse_decision = (step4_factor_io_profile.get('reuse_gate') or {}).get('decision')
+    reuse_status = {
+        'reuse_allowed': 'reused',
+        'recompute_required': 'recomputed',
+        'reuse_blocked': 'blocked',
+    }.get(str(reuse_decision), 'not_applicable')
+    return {
+        'version': 'factorforge_production_acceptance_summary_v1',
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'run_id': run_id,
+        'artifact_root': str(FACTORFORGE),
+        'repo_sha': repo_sha(),
+        'wrapper_status': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
+        'validator_verdicts': {'step4': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK'},
+        'step3b': {
+            'backend': 'step3b_sample_proof',
+            'input_format': 'parquet',
+            'sample_only': True,
+            'is_formal_factor_values': False,
+            'phase_seconds': {},
+            'formula_engine_profile': {},
+            'parity_checked': True,
+        },
+        'step4': {
+            'formal_factor_values_owner': 'Step4',
+            'formal_factor_values_path': step4_output_paths[0] if step4_output_paths else None,
+            'self_quant_status': backend_status(backend_runs, 'self_quant_analyzer'),
+            'qlib_native_status': qlib_native_status_from_backend_runs(backend_runs),
+            'phase_seconds': backend_timing_profile,
+        },
+        'reuse': {
+            'step3b_cache_reused_by_step4': reuse_status == 'reused',
+            'reuse_gate_status': reuse_status,
+            'reuse_reason': (step4_factor_io_profile.get('reuse_gate') or {}).get('reason') or reuse_decision,
+        },
+        'side_effects': {
+            'clean_data_mutated': False,
+            'generated_code_digest_changed': False,
+            'official_record_written': False,
+            'search_worker_started': False,
+        },
+        'metrics': {
+            'rank_ic_mean': None,
+            'long_side_annual_return': None,
+            'turnover_mean': None,
+            'cost_adjusted_annual_return': None,
+            'volatility_drag': None,
+            'max_drawdown': None,
+            'recovery_days': None,
+            'drawdown_recovery_area': None,
+        },
+    }
+
+
 def merge_run_metadata(existing_meta: dict[str, Any], step4_owned_fields: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(existing_meta or {})
     for key, value in step4_owned_fields.items():
@@ -126,26 +264,39 @@ def merge_run_metadata(existing_meta: dict[str, Any], step4_owned_fields: dict[s
     return metadata
 
 
+def _step4_factor_csv_policy_env() -> tuple[str | None, str | None]:
+    for name in [
+        'FACTORFORGE_STEP4_FACTOR_CSV_POLICY',
+        'FACTORFORGE_FACTOR_CSV_OUTPUT_POLICY',
+        'FACTORFORGE_CSV_OUTPUT_POLICY',
+    ]:
+        raw = os.getenv(name)
+        if raw:
+            return raw.strip(), name
+    return None, None
+
+
 def step4_factor_csv_policy_from_step3b(existing_meta: dict[str, Any]) -> dict[str, Any]:
     csv_profile = ((existing_meta or {}).get('performance_profile') or {}).get('csv_output_profile') or {}
-    raw_policy = csv_profile.get('csv_output_policy')
-    if raw_policy is None:
-        policy = 'legacy_missing'
-        allowed = True
-        written = True
-        reason = None
+    env_policy, env_source = _step4_factor_csv_policy_env()
+    raw_policy = env_policy or csv_profile.get('csv_output_policy') or 'sample_csv'
+    policy = str(raw_policy)
+    if policy not in FACTOR_CSV_POLICY_VALUES:
+        raise SystemExit(f'BLOCK_STEP4_INVALID_FACTOR_CSV_POLICY:{policy}')
+    if env_source:
+        source = env_source
+    elif csv_profile.get('csv_output_policy'):
+        source = 'step3b_run_metadata'
     else:
-        policy = str(raw_policy)
-        if policy not in FACTOR_CSV_POLICY_VALUES:
-            raise SystemExit(f'BLOCK_STEP4_INVALID_FACTOR_CSV_POLICY:{policy}')
-        allowed = policy == 'full_csv'
-        written = allowed
-        reason = None if allowed else f'step3b_{policy}_policy'
+        source = 'step4_default_sample_csv'
+    allowed = policy == 'full_csv'
+    reason = None if allowed else f'step4_{policy}_policy'
     return {
-        'source': 'step3b_run_metadata',
+        'source': source,
         'csv_output_policy': policy,
         'factor_csv_write_allowed': bool(allowed),
-        'factor_csv_written_by_step4': bool(written),
+        'factor_csv_written_by_step4': False,
+        'factor_sample_csv_written_by_step4': False,
         'factor_csv_write_skipped_reason': reason,
     }
 
@@ -179,6 +330,7 @@ def classify_existing_factor_parquet_source(existing_meta: dict[str, Any]) -> di
     }
 
 
+
 def _frame_key_stats(df: Any) -> dict[str, Any]:
     if df is None or not {'ts_code', 'trade_date'}.issubset(df.columns):
         return {
@@ -198,28 +350,220 @@ def _frame_key_stats(df: Any) -> dict[str, Any]:
     }
 
 
-def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: Any, impl_path: Path) -> dict[str, Any]:
+def build_step4_reuse_identity(
+    *,
+    report_id: str,
+    factor_id: str | None,
+    base_identity: dict[str, Any],
+    dpm: dict[str, Any],
+    daily_df: Any,
+) -> dict[str, Any]:
+    stats = _frame_key_stats(daily_df)
+    return {
+        'producer': 'step4_formal_compute',
+        'is_formal_factor_values': True,
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'implementation_mode': base_identity.get('implementation_mode'),
+        'spec_hash': base_identity.get('spec_hash'),
+        'formula_hash': base_identity.get('formula_hash'),
+        'code_hash': base_identity.get('code_hash'),
+        'data_catalog_hash': stable_json_hash({
+            'local_input_paths': dpm.get('local_input_paths') or {},
+            'data_sources': dpm.get('data_sources') or [],
+            'field_mapping': dpm.get('field_mapping') or {},
+        }),
+        'data_api_contract_version': 'factorforge_step4_data_contract_v1',
+        'window': {'start': stats.get('start'), 'end': stats.get('end')},
+        'universe_hash': universe_hash_from_frame(daily_df),
+        'frequency': 'daily',
+    }
+
+
+def fill_runtime_implementation_identity(base_identity: dict[str, Any], fsm: dict[str, Any], impl_path: Path) -> dict[str, Any]:
+    effective = dict(base_identity or {})
+    effective['code_hash'] = (
+        effective.get('code_hash')
+        or effective.get('code_contract_hash')
+        or sha256_file(impl_path)
+    )
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    implementation_contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    effective['formula_hash'] = (
+        effective.get('formula_hash')
+        or fsm.get('formula_hash')
+        or canonical.get('formula_hash')
+        or implementation_contract.get('formula_hash')
+    )
+    return effective
+
+
+def evaluate_reuse_gate(source_identity: dict[str, Any], expected_identity: dict[str, Any], *, source_artifact: str | None) -> dict[str, Any]:
+    required = [
+        'report_id',
+        'factor_id',
+        'implementation_mode',
+        'spec_hash',
+        'data_catalog_hash',
+        'data_api_contract_version',
+        'universe_hash',
+        'frequency',
+    ]
+    source_window = source_identity.get('window') if isinstance(source_identity.get('window'), dict) else {}
+    expected_window = expected_identity.get('window') if isinstance(expected_identity.get('window'), dict) else {}
+    comparable = [*required, 'window.start', 'window.end']
+    implementation_mode = expected_identity.get('implementation_mode')
+    if implementation_mode == 'operator':
+        comparable.append('formula_hash')
+    elif implementation_mode in {'direct_code', 'hybrid'}:
+        comparable.append('code_hash')
+    else:
+        comparable.extend(['formula_hash', 'code_hash'])
+    matched_fields: list[str] = []
+    mismatched_fields: list[str] = []
+    missing_fields: list[str] = []
+    for field in comparable:
+        if field == 'window.start':
+            source_value = source_window.get('start')
+            expected_value = expected_window.get('start')
+        elif field == 'window.end':
+            source_value = source_window.get('end')
+            expected_value = expected_window.get('end')
+        else:
+            source_value = source_identity.get(field)
+            expected_value = expected_identity.get(field)
+        if source_value in {None, ''} or expected_value in {None, ''}:
+            missing_fields.append(field)
+        elif str(source_value) == str(expected_value):
+            matched_fields.append(field)
+        else:
+            mismatched_fields.append(field)
+    producer = source_identity.get('producer')
+    if source_identity.get('is_formal_factor_values') is True and producer == 'step3b_sample_proof':
+        decision = 'block_invalid_formal_reuse'
+        reason = 'step3b_sample_proof_marked_formal'
+    elif mismatched_fields or missing_fields:
+        decision = 'recompute_required'
+        reason = (mismatched_fields[0] if mismatched_fields else missing_fields[0])
+    else:
+        decision = 'reuse_allowed'
+        reason = 'identity_match'
+    return {
+        'version': 'factorforge_reuse_gate_v1',
+        'decision': decision,
+        'matched_fields': matched_fields,
+        'mismatched_fields': mismatched_fields,
+        'missing_fields': missing_fields,
+        'source_artifact': source_artifact,
+        'reason': reason,
+        'source_producer': producer,
+        'source_is_formal_factor_values': source_identity.get('is_formal_factor_values'),
+    }
+
+
+def apply_artifact_binding_to_reuse_gate(gate: dict[str, Any] | None, source_identity: dict[str, Any], source_artifact: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    gate = dict(gate or {
+        'version': 'factorforge_reuse_gate_v1',
+        'decision': 'recompute_required',
+        'matched_fields': [],
+        'mismatched_fields': [],
+        'missing_fields': [],
+        'source_artifact': source_artifact,
+        'reason': 'reuse_gate_missing',
+    })
+    required = [
+        'selected_factor_sha256',
+        'selected_factor_row_count',
+        'selected_factor_schema',
+        'selected_factor_key_hash',
+    ]
+    if not source_artifact:
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = 'source_artifact_missing'
+        gate.setdefault('missing_fields', []).append('source_artifact')
+        return gate, None
+    artifact_path = Path(source_artifact)
+    if not artifact_path.exists():
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = 'source_artifact_missing'
+        gate.setdefault('missing_fields', []).append('source_artifact')
+        return gate, None
+    try:
+        artifact_df = pd.read_parquet(artifact_path)
+    except Exception as exc:
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = 'source_artifact_read_failed'
+        gate['artifact_binding_error'] = str(exc)
+        return gate, None
+    actual = factor_artifact_binding_profile(artifact_path, artifact_df)
+    matched: list[str] = []
+    missing: list[str] = []
+    mismatched: list[str] = []
+    def is_missing(value: Any) -> bool:
+        return value is None or value == '' or value == []
+    for field in required:
+        expected_value = source_identity.get(field)
+        actual_value = actual.get(field)
+        if is_missing(expected_value) or is_missing(actual_value):
+            missing.append(field)
+        elif expected_value == actual_value:
+            matched.append(field)
+        else:
+            mismatched.append(field)
+    gate['artifact_binding'] = {
+        'version': 'factorforge_factor_artifact_binding_v1',
+        'actual': actual,
+        'matched_fields': matched,
+        'missing_fields': missing,
+        'mismatched_fields': mismatched,
+    }
+    if missing or mismatched:
+        gate['decision'] = 'recompute_required'
+        gate['reason'] = (mismatched[0] if mismatched else missing[0])
+        gate.setdefault('missing_fields', []).extend(field for field in missing if field not in gate.get('missing_fields', []))
+        gate.setdefault('mismatched_fields', []).extend(field for field in mismatched if field not in gate.get('mismatched_fields', []))
+    return gate, artifact_df if not missing and not mismatched else None
+
+
+def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: Any, impl_path: Path, expected_identity: dict[str, Any] | None = None, source_artifact: str | None = None) -> dict[str, Any]:
     if not step3b_meta:
-        return {'source': 'no_step3b_compute_cache', 'reusable': False, 'reason': 'metadata_missing'}
+        gate = evaluate_reuse_gate({}, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
+        return {'source': 'no_step3b_compute_cache', 'reusable': False, 'reason': 'metadata_missing', 'reuse_gate': gate}
     if step3b_meta.get('producer') != 'step3b_sample_proof':
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'producer_not_step3b_sample_proof'}
+        gate = evaluate_reuse_gate(step3b_meta, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'producer_not_step3b_sample_proof', 'reuse_gate': gate}
     if step3b_meta.get('is_formal_factor_values') is True:
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'unexpected_formal_step3b_owner'}
+        gate = evaluate_reuse_gate(step3b_meta, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'unexpected_formal_step3b_owner', 'reuse_gate': gate}
+    if expected_identity:
+        gate = evaluate_reuse_gate(step3b_meta, expected_identity, source_artifact=source_artifact)
+        if gate.get('decision') != 'reuse_allowed':
+            return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': gate.get('reason') or 'reuse_gate_rejected', 'reuse_gate': gate}
+    else:
+        gate = None
+    gate, bound_artifact_df = apply_artifact_binding_to_reuse_gate(gate, step3b_meta, source_artifact)
+    if gate.get('decision') != 'reuse_allowed':
+        return {
+            'source': 'step3b_compute_cache_rejected',
+            'reusable': False,
+            'reason': gate.get('reason') or 'artifact_binding_failed',
+            'reuse_gate': gate,
+        }
     meta_impl = step3b_meta.get('implementation_path')
     if meta_impl:
         try:
             if Path(str(meta_impl)).expanduser().resolve() != impl_path.expanduser().resolve():
-                return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_mismatch'}
+                return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_mismatch', 'reuse_gate': gate}
         except OSError:
-            return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_unresolvable'}
+            return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_unresolvable', 'reuse_gate': gate}
     expected = _frame_key_stats(daily_df)
     actual_window = step3b_meta.get('actual_window') if isinstance(step3b_meta.get('actual_window'), dict) else {}
     if int(step3b_meta.get('row_count') or -1) != int(expected['row_count']):
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'row_count_mismatch', 'expected': expected}
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'row_count_mismatch', 'expected': expected, 'reuse_gate': gate}
     if int(step3b_meta.get('date_count') or -1) != int(expected['date_count'] or -1):
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'date_count_mismatch', 'expected': expected}
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'date_count_mismatch', 'expected': expected, 'reuse_gate': gate}
     if int(step3b_meta.get('ticker_count') or -1) != int(expected['ticker_count'] or -1):
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'ticker_count_mismatch', 'expected': expected}
+        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'ticker_count_mismatch', 'expected': expected, 'reuse_gate': gate}
     if str(actual_window.get('start')) != str(expected['start']) or str(actual_window.get('end')) != str(expected['end']):
         return {
             'source': 'step3b_compute_cache_rejected',
@@ -227,6 +571,7 @@ def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: 
             'reason': 'window_mismatch',
             'expected': expected,
             'actual_window': actual_window,
+            'reuse_gate': gate,
         }
     return {
         'source': 'step3b_full_compute_cache',
@@ -234,8 +579,16 @@ def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: 
         'upstream_recomputed_factor': True,
         'provenance_basis': 'step3b_sample_run_metadata_full_coverage',
         'expected': expected,
+        'reuse_gate': gate or {
+            'version': 'factorforge_reuse_gate_v1',
+            'decision': 'reuse_allowed',
+            'matched_fields': [],
+            'mismatched_fields': [],
+            'missing_fields': [],
+            'source_artifact': source_artifact,
+            'reason': 'legacy_count_window_match',
+        },
     }
-
 
 def output_paths_for_policy(parquet_path: Path, csv_path: Path, sample_csv_path: Path, meta_path: Path, policy_observed: dict[str, Any]) -> list[str]:
     paths = [str(parquet_path)]
@@ -246,6 +599,14 @@ def output_paths_for_policy(parquet_path: Path, csv_path: Path, sample_csv_path:
         paths.append(str(sample_csv_path))
     paths.append(str(meta_path))
     return paths
+
+
+def deterministic_factor_csv_sample(df: pd.DataFrame, *, max_rows: int = FACTOR_CSV_SAMPLE_MAX_ROWS) -> pd.DataFrame:
+    if len(df) <= max_rows:
+        return df.copy()
+    head_n = max_rows // 2
+    tail_n = max_rows - head_n
+    return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
 def file_sizes_for_paths(paths: list[str]) -> dict[str, int]:
@@ -354,6 +715,20 @@ def runtime_python() -> Path:
     return Path('/usr/bin/python3')
 
 
+def backend_runtime_python(backend: str, backend_cfg: dict[str, Any]) -> Path:
+    if backend == 'qlib_backtest':
+        raw_env = backend_cfg.get('env') if isinstance(backend_cfg.get('env'), dict) else {}
+        qlib_python = (
+            backend_cfg.get('qlib_python')
+            or backend_cfg.get('qlib_python_path')
+            or raw_env.get('FACTORFORGE_QLIB_PYTHON')
+            or os.getenv('FACTORFORGE_QLIB_PYTHON')
+        )
+        if qlib_python:
+            return Path(str(qlib_python)).expanduser()
+    return runtime_python()
+
+
 def resolve_backend_script_path(raw_path: str | None) -> Path | None:
     if not raw_path:
         return None
@@ -391,7 +766,7 @@ def run_backend_script(
 
     # Custom backends receive the same CLI envelope as built-in adapters.
     cmd = [
-        str(runtime_python()),
+        str(backend_runtime_python(backend, backend_cfg)),
         str(script_path),
         '--report-id',
         report_id,
@@ -475,12 +850,21 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
     status = 'ready'
     reason = None
 
+    qlib_python = backend_runtime_python('qlib_backtest', backend_cfg)
+    check_code = (
+        "import qlib; "
+        "assert hasattr(qlib, 'init'), f'imported non-Microsoft qlib package without init: {getattr(qlib, \"__file__\", None)}'; "
+        "from qlib.data import D"
+    )
     try:
-        import qlib  # noqa: F401
+        result = subprocess.run([str(qlib_python), '-c', check_code], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or '').strip()
+            raise ImportError(detail or f'{qlib_python} returned {result.returncode}')
         qlib_import_ok = True
     except Exception as exc:  # pragma: no cover - environment-specific dependency guard
         qlib_import_ok = False
-        qlib_import_reason = f'qlib import/config unavailable for native backend: {type(exc).__name__}: {exc}'
+        qlib_import_reason = f'qlib import/config unavailable for native backend via {qlib_python}: {type(exc).__name__}: {exc}'
 
     if not provider_present:
         status = 'skipped_native_missing_provider'
@@ -502,6 +886,7 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
         'provider_uri': str(provider_path) if provider_path is not None else (str(candidate_paths[0]) if candidate_paths else None),
         'provider_present': bool(provider_present),
         'qlib_import_checked': qlib_import_checked,
+        'qlib_python': str(qlib_python),
         'qlib_import_ok': qlib_import_ok,
         'native_attempted': False,
         'status': status,
@@ -547,6 +932,11 @@ def write_backend_payloads(
                         'backend': backend,
                         'report_id': report_id,
                         'status': 'skipped',
+                        'qlib_native_status': 'preflight_blocked',
+                        'qlib_native_attempted': False,
+                        'native_minimal_status': 'not_attempted',
+                        'native_backtest_status': 'not_attempted',
+                        'blocking_for_acceptance': False,
                         'mode': backend_cfg.get('mode', 'native'),
                         'summary': {'reason': preflight.get('reason')},
                         'qlib_preflight': preflight,
@@ -813,6 +1203,49 @@ def validate_inputs(report_id: str, fsm: dict[str, Any], dpm: dict[str, Any], ha
     if not dpm.get('data_sources'):
         issues.append({'severity': 'error', 'code': 'DATA_SOURCES_MISSING', 'message': 'data_sources missing', 'evidence': {}})
 
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
+    standard_failures = validate_standard_formula_fields_contract(
+        standard_contract,
+        formula_text=canonical.get('formula_text') or '',
+        required_fields=formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs') or [],
+    )
+    for failure in standard_failures:
+        issues.append({
+            'severity': 'error',
+            'code': failure.get('code') or 'BLOCK_STANDARD_FORMULA_FIELDS_MISSING',
+            'message': failure.get('message') or 'standard formula fields contract invalid',
+            'evidence': failure.get('evidence') or {},
+        })
+    required_standard_fields = [
+        str(field).strip()
+        for field in ((standard_contract or {}).get('required_standard_formula_fields') or [])
+        if str(field).strip()
+    ]
+    daily_path = input_paths.get('daily') or input_paths.get('daily_df') or input_paths.get('daily_df_parquet')
+    if required_standard_fields and daily_path and daily_path.exists():
+        try:
+            if daily_path.suffix.lower() == '.parquet':
+                daily_cols = list(pd.read_parquet(daily_path).head(0).columns)
+            else:
+                daily_cols = list(pd.read_csv(daily_path, nrows=0).columns)
+            missing = sorted(set(required_standard_fields) - set(daily_cols))
+            if missing:
+                issues.append({
+                    'severity': 'error',
+                    'code': 'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT',
+                    'message': 'Step4 formal input snapshot missing required standard formula fields',
+                    'evidence': {'missing': missing, 'daily_path': str(daily_path)},
+                })
+        except Exception as exc:
+            issues.append({
+                'severity': 'error',
+                'code': 'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT',
+                'message': f'could not inspect Step4 daily input schema: {type(exc).__name__}: {exc}',
+                'evidence': {'daily_path': str(daily_path)},
+            })
+
     if fsm.get('human_review_required'):
         warnings.append('factor_spec_master indicates human_review_required=true; Step 4 proceeds under frozen-schema execution discipline.')
 
@@ -865,11 +1298,50 @@ def add_direct_code_alias_columns(df: Any) -> Any:
     return out
 
 
+def direct_code_expects_polars(module: Any) -> bool:
+    path = Path(getattr(module, '__file__', '') or '')
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        text = ''
+    polars_api_markers = [
+        '.with_columns(',
+        '.select(',
+        '.lazy(',
+        'pl.col(',
+        'polars.col(',
+    ]
+    return any(marker in text for marker in polars_api_markers)
+
+
+def maybe_polars_frame(df: Any, use_polars: bool) -> Any:
+    if not use_polars:
+        return df
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise SystemExit(f'BLOCK_STEP4_DIRECT_CODE_DEPENDENCY_MISSING: polars dependency missing: {exc}') from exc
+    return pl.from_pandas(df)
+
+
+def normalize_direct_code_result(result: Any) -> Any:
+    if isinstance(result, pd.DataFrame):
+        return result
+    if hasattr(result, 'to_pandas') and callable(result.to_pandas):
+        return result.to_pandas()
+    if hasattr(result, 'to_dicts') and callable(result.to_dicts):
+        return pd.DataFrame(result.to_dicts())
+    return result
+
+
 def compute_factor_with_contract(module: Any, daily_df: Any, minute_df: Any) -> Any:
     """Call factor implementations without assuming legacy argument order."""
     fn = getattr(module, 'compute_factor')
     daily_input = add_direct_code_alias_columns(daily_df)
     minute_input = add_direct_code_alias_columns(minute_df)
+    use_polars = direct_code_expects_polars(module)
+    daily_call_input = maybe_polars_frame(daily_input, use_polars)
+    minute_call_input = maybe_polars_frame(minute_input, use_polars)
     try:
         params = list(inspect.signature(fn).parameters.values())
     except (TypeError, ValueError):
@@ -882,28 +1354,28 @@ def compute_factor_with_contract(module: Any, daily_df: Any, minute_df: Any) -> 
     if len(positional) == 1:
         first = positional[0].name.lower()
         if 'daily' in first:
-            return fn(daily_input)
+            return normalize_direct_code_result(fn(daily_call_input))
         if 'minute' in first or 'intraday' in first:
-            return fn(minute_input)
-        return fn(minute_input if not minute_input.empty else daily_input)
+            return normalize_direct_code_result(fn(minute_call_input))
+        return normalize_direct_code_result(fn(minute_call_input if not minute_input.empty else daily_call_input))
 
     try:
-        return fn(daily_df=daily_input, minute_df=minute_input)
+        return normalize_direct_code_result(fn(daily_df=daily_call_input, minute_df=minute_call_input))
     except TypeError:
         if positional:
             first = positional[0].name.lower()
             if 'minute' in first:
-                return fn(minute_input, daily_input)
-        return fn(daily_input, minute_input)
+                return normalize_direct_code_result(fn(minute_call_input, daily_call_input))
+        return normalize_direct_code_result(fn(daily_call_input, minute_call_input))
 
 
 def _step4_data_contract(dpm: dict[str, Any], handoff: dict[str, Any]) -> dict[str, Any]:
     local_inputs = dpm.get('local_input_paths') if isinstance(dpm.get('local_input_paths'), dict) else {}
-    for candidate in [
+    for candidate in (
         handoff.get('step4_data_contract'),
         dpm.get('step4_data_contract'),
         local_inputs.get('step4_data_contract'),
-    ]:
+    ):
         if isinstance(candidate, dict) and candidate:
             return candidate
     return {}
@@ -939,7 +1411,11 @@ def _fetch_contract_frame(query: dict[str, Any]):
     return result.frame, result.to_metadata()
 
 
-def materialize_step4_data_inputs_from_contract(report_id: str, contract: dict[str, Any], run_dir: Path) -> tuple[dict[str, str], dict[str, Any]]:
+def materialize_step4_data_inputs_from_contract(
+    report_id: str,
+    contract: dict[str, Any],
+    run_dir: Path,
+) -> tuple[dict[str, str], dict[str, Any]]:
     if contract.get('version') != 'factorforge_step4_data_contract_v1':
         raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: Step4 requires factorforge_step4_data_contract_v1 when local inputs are absent')
     if contract.get('formal_factor_values_owner') != 'Step4':
@@ -947,6 +1423,7 @@ def materialize_step4_data_inputs_from_contract(report_id: str, contract: dict[s
     daily_query = _contract_query(contract, 'full_queries', 'clean_daily_bar')
     if not daily_query:
         raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: clean_daily_bar full query is required')
+
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
     daily_df, daily_meta = _fetch_contract_frame(daily_query)
@@ -1170,6 +1647,7 @@ def main() -> None:
             write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
+        base_identity = fill_runtime_implementation_identity(base_identity, fsm, impl_path)
 
         # Frozen-schema execution: Step4 consumes either legacy normalized local
         # snapshots or the Step3 Data API contract. It must not guess raw paths or
@@ -1191,7 +1669,15 @@ def main() -> None:
                     run_dir,
                 )
             except SystemExit as exc:
-                issues.append({'severity': 'error', 'code': 'STEP4_DATA_INPUTS_MISSING', 'message': str(exc), 'evidence': {'local_input_paths': local_inputs, 'step4_data_contract': _step4_data_contract(dpm, handoff)}})
+                issues.append({
+                    'severity': 'error',
+                    'code': 'STEP4_DATA_INPUTS_MISSING',
+                    'message': str(exc),
+                    'evidence': {
+                        'local_input_paths': local_inputs,
+                        'step4_data_contract': _step4_data_contract(dpm, handoff),
+                    },
+                })
                 run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'STEP4_DATA_INPUTS_MISSING', 'execution_precheck', start_utc)
                 write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
                 write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
@@ -1239,6 +1725,32 @@ def main() -> None:
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
         daily_df = read_df(daily_file)
+        expected_reuse_identity = build_step4_reuse_identity(
+            report_id=report_id,
+            factor_id=factor_id,
+            base_identity=base_identity,
+            dpm=dpm,
+            daily_df=daily_df,
+        )
+        existing_factor_reuse_gate = None
+        if parquet_existed_before_step4:
+            existing_factor_identity = (existing_meta.get('step4_formal_factor_identity') or existing_meta.get('step3b_compute_cache_identity') or existing_meta)
+            existing_factor_reuse_gate = evaluate_reuse_gate(
+                existing_factor_identity,
+                expected_reuse_identity,
+                source_artifact=str(parquet_path),
+            )
+            if existing_factor_source.get('source') == 'prior_step4_parquet':
+                existing_factor_reuse_gate, _ = apply_artifact_binding_to_reuse_gate(
+                    existing_factor_reuse_gate,
+                    existing_factor_identity,
+                    str(parquet_path),
+                )
+            if existing_factor_source.get('source') == 'step3b_sample_or_legacy_factor_parquet':
+                existing_factor_reuse_gate['decision'] = 'block_invalid_formal_reuse'
+                existing_factor_reuse_gate['reason'] = 'step3b_sample_proof_not_formal_factor_values'
+        if may_reuse_existing_factor and existing_factor_reuse_gate and existing_factor_reuse_gate.get('decision') != 'reuse_allowed':
+            may_reuse_existing_factor = False
         input_io_profile = {
             'source': 'local_snapshot' if data_api_profile is None else 'factorforge_data_api_full_query',
             'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
@@ -1249,7 +1761,13 @@ def main() -> None:
         }
         step3b_cache_source = {}
         if not may_reuse_existing_factor and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
-            step3b_cache_source = classify_step3b_compute_cache_source(load_json(step3b_cache_meta_path), daily_df, impl_path)
+            step3b_cache_source = classify_step3b_compute_cache_source(
+                load_json(step3b_cache_meta_path),
+                daily_df,
+                impl_path,
+                expected_identity=expected_reuse_identity,
+                source_artifact=str(step3b_cache_path),
+            )
         if may_reuse_existing_factor:
             result_df = read_df(parquet_path)
             step4_factor_io_profile = {
@@ -1260,6 +1778,7 @@ def main() -> None:
                 'recomputed_factor': False,
                 'parquet_existed_before_step4': True,
                 'parquet_written_by_step4': False,
+                'reuse_gate': existing_factor_reuse_gate,
             }
         elif step3b_cache_source.get('reusable') is True:
             result_df = read_df(step3b_cache_path)
@@ -1272,6 +1791,7 @@ def main() -> None:
                 'recomputed_factor': False,
                 'parquet_existed_before_step4': bool(parquet_existed_before_step4),
                 'parquet_written_by_step4': True,
+                'reuse_gate': step3b_cache_source.get('reuse_gate'),
             }
         else:
             module = import_module_from_path(impl_path)
@@ -1293,6 +1813,19 @@ def main() -> None:
                 'recomputed_factor': True,
                 'parquet_existed_before_step4': bool(parquet_existed_before_step4),
                 'parquet_written_by_step4': True,
+                'reuse_gate': (
+                    (step3b_cache_source or {}).get('reuse_gate')
+                    or existing_factor_reuse_gate
+                    or {
+                        'version': 'factorforge_reuse_gate_v1',
+                        'decision': 'recompute_required',
+                        'matched_fields': [],
+                        'mismatched_fields': [],
+                        'missing_fields': [],
+                        'source_artifact': str(parquet_path) if parquet_existed_before_step4 else None,
+                        'reason': 'no_reusable_identity_matched',
+                    }
+                ),
             }
 
         if result_df is None or len(result_df) == 0:
@@ -1306,16 +1839,35 @@ def main() -> None:
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
         if not may_reuse_existing_factor:
             result_df.to_parquet(parquet_path, index=False)
-        if factor_csv_policy_observed.get('factor_csv_write_allowed') and not csv_path.exists():
-            result_df.to_csv(csv_path, index=False)
-            step4_factor_io_profile['csv_written_by_step4'] = True
-        else:
+        factor_csv_policy = str(factor_csv_policy_observed.get('csv_output_policy') or 'sample_csv')
+        if factor_csv_policy == 'full_csv':
+            if sample_csv_path.exists() or sample_csv_path.is_symlink():
+                sample_csv_path.unlink()
+            if not csv_path.exists():
+                result_df.to_csv(csv_path, index=False)
+                step4_factor_io_profile['csv_written_by_step4'] = True
+            else:
+                step4_factor_io_profile['csv_written_by_step4'] = False
+                factor_csv_policy_observed['factor_csv_write_skipped_reason'] = 'step4_csv_already_available'
+        elif factor_csv_policy == 'sample_csv':
+            if csv_path.exists() or csv_path.is_symlink():
+                csv_path.unlink()
+            deterministic_factor_csv_sample(result_df).to_csv(sample_csv_path, index=False)
             step4_factor_io_profile['csv_written_by_step4'] = False
+            step4_factor_io_profile['sample_csv_written_by_step4'] = True
+            factor_csv_policy_observed['factor_sample_csv_written_by_step4'] = True
+            factor_csv_policy_observed['factor_sample_csv_path'] = str(sample_csv_path)
+        else:
+            for stale_csv in [csv_path, sample_csv_path]:
+                if stale_csv.exists() or stale_csv.is_symlink():
+                    stale_csv.unlink()
+            step4_factor_io_profile['csv_written_by_step4'] = False
+            step4_factor_io_profile['sample_csv_written_by_step4'] = False
         factor_csv_policy_observed['factor_csv_written_by_step4'] = bool(
             step4_factor_io_profile['csv_written_by_step4']
         )
-        if factor_csv_policy_observed.get('factor_csv_write_allowed') and not step4_factor_io_profile['csv_written_by_step4']:
-            factor_csv_policy_observed['factor_csv_write_skipped_reason'] = 'step3b_csv_already_available'
+        factor_csv_policy_observed['factor_csv_path'] = str(csv_path) if csv_path.exists() else None
+        factor_csv_policy_observed['factor_sample_csv_path'] = str(sample_csv_path) if sample_csv_path.exists() else None
 
         row_count = int(len(result_df))
         date_count = int(result_df['trade_date'].nunique()) if 'trade_date' in result_df.columns else 0
@@ -1407,6 +1959,7 @@ def main() -> None:
             'run_status_candidate': run_status,
             'input_io_profile': input_io_profile,
             'step4_factor_io_profile': step4_factor_io_profile,
+            'step4_formal_factor_identity': expected_reuse_identity,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
             'shared_evaluation_context': shared_context_profile,
             'backend_timing_profile': backend_timing_profile,
@@ -1418,12 +1971,29 @@ def main() -> None:
         run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
         diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
         handoff_path = OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json'
+        run_id = str(base_identity.get('run_id') or (handoff.get('artifact_identity') or {}).get('run_id') or report_id)
+        acceptance_summary = build_acceptance_summary(
+            report_id=report_id,
+            factor_id=factor_id,
+            run_id=run_id,
+            run_status=run_status,
+            backend_runs=backend_runs,
+            step4_output_paths=step4_output_paths,
+            backend_timing_profile=backend_timing_profile,
+            step4_factor_io_profile=step4_factor_io_profile,
+        )
 
         run_master = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
             'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
             'run_status': run_status,
+            'acceptance_summary': acceptance_summary,
             'implementation_path': str(impl_path),
             'output_paths': step4_output_paths,
             'sample_window': target_window,
@@ -1535,8 +2105,14 @@ def main() -> None:
         handoff_out = {
             'report_id': report_id,
             'factor_id': factor_id,
+            'run_id': run_id,
+            'artifact_root': str(FACTORFORGE),
+            'producer': 'step4',
+            'status': run_status,
+            'verdict': 'PASS' if run_status in {'success', 'partial'} else 'BLOCK',
             'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
             'run_status': run_status,
+            'acceptance_summary': acceptance_summary,
             'factor_run_master_path': str(run_master_path),
             'diagnostics_path': str(diag_path),
             'output_paths': step4_output_paths,

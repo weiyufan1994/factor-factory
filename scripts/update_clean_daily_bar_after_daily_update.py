@@ -27,6 +27,8 @@ DEFAULT_DAILY_BASIC_PREFIX = "tushares/行情数据/daily_basic_incremental"
 DEFAULT_S3_URI = "s3://yufan-data-lake/factorforge/datamart/clean_daily_bar/v1/daily_clean.parquet"
 DEFAULT_FACTORFORGE_ROOT = Path(os.getenv("FACTORFORGE_ROOT", "/home/ubuntu/.openclaw/workspace/factorforge")).expanduser()
 DEFAULT_RUN_ROOT = Path(os.getenv("FACTORFORGE_RUN_ROOT", "/home/ubuntu/.openclaw/workspace/runs")).expanduser()
+DEFAULT_QLIB_PROVIDER_DIR = Path(os.getenv("QLIB_PROVIDER_URI") or (Path.home() / ".qlib" / "qlib_data" / "cn_data")).expanduser()
+DEFAULT_QLIB_PROVIDER_ENV = Path(os.getenv("FACTORFORGE_QLIB_PROVIDER_ENV") or (Path.home() / ".factorforge" / "qlib_provider.env")).expanduser()
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -113,6 +115,43 @@ def resolve_publisher_script() -> Path:
     raise FileNotFoundError("factorforge_data_api.py not found; cannot publish clean_daily_bar catalog entry")
 
 
+def publish_qlib_provider(args: argparse.Namespace, effective_end_date: str, env: dict[str, str]) -> dict[str, Any]:
+    provider_dir = args.qlib_provider_dir.expanduser()
+    cmd = [
+        sys.executable,
+        "scripts/publish_qlib_daily_provider.py",
+        "--data-api",
+        "--catalog-path",
+        str(args.catalog),
+        "--dataset-id",
+        "clean_daily_bar",
+        "--start-date",
+        args.qlib_provider_start_date,
+        "--end-date",
+        effective_end_date,
+        "--provider-dir",
+        str(provider_dir),
+        "--instrument-style",
+        args.qlib_provider_instrument_style,
+        "--raw-smoke",
+        "--write-env-file",
+        str(args.qlib_provider_env_file.expanduser()),
+    ]
+    if args.qlib_provider_qlib_smoke:
+        cmd.append("--qlib-smoke")
+    proc = run(cmd, env={**env, "QLIB_PROVIDER_URI": str(provider_dir)})
+    payload = read_json_from_stdout(proc)
+    return {
+        "skipped": False,
+        "command": cmd,
+        "provider_dir": str(provider_dir),
+        "env_file": str(args.qlib_provider_env_file.expanduser()),
+        "stdout_tail": proc.stdout[-4000:],
+        "stderr_tail": proc.stderr[-2000:],
+        "publish_report": payload,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Refresh and publish clean_daily_bar after daily_incremental and daily_basic_incremental are updated."
@@ -132,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-core-sync", action="store_true", help="Do not sync daily.csv/adj_factor/core CSVs from S3 before refreshing.")
     parser.add_argument("--publish", action="store_true", help="Explicitly upload parquet/meta and upsert the catalog after refresh.")
     parser.add_argument("--skip-publish", action="store_true", help="Compatibility no-op; publish is skipped unless --publish is provided.")
+    parser.add_argument("--skip-qlib-provider-publish", action="store_true", help="Do not publish the global Microsoft Qlib provider after clean_daily_bar refresh.")
+    parser.add_argument("--qlib-provider-dir", type=Path, default=DEFAULT_QLIB_PROVIDER_DIR)
+    parser.add_argument("--qlib-provider-env-file", type=Path, default=DEFAULT_QLIB_PROVIDER_ENV)
+    parser.add_argument("--qlib-provider-start-date", default="20100104")
+    parser.add_argument("--qlib-provider-instrument-style", default="legacy_qlib", choices=["ts_code", "tushare", "provider", "legacy_qlib", "qlib", "raw"])
+    parser.add_argument("--qlib-provider-qlib-smoke", action="store_true", help="Also run Microsoft Qlib read smoke after publishing the provider.")
     return parser
 
 
@@ -142,6 +187,8 @@ def main() -> int:
     args.clean_dir = args.clean_dir.expanduser()
     args.catalog = args.catalog.expanduser()
     args.run_root = args.run_root.expanduser()
+    args.qlib_provider_dir = args.qlib_provider_dir.expanduser()
+    args.qlib_provider_env_file = args.qlib_provider_env_file.expanduser()
     args.run_root.mkdir(parents=True, exist_ok=True)
     if args.publish and args.skip_publish:
         raise SystemExit("BLOCK_CLEAN_DAILY_PUBLISH_CONFLICT: use either --publish or --skip-publish, not both")
@@ -164,6 +211,8 @@ def main() -> int:
             "clean_dir": str(args.clean_dir),
             "catalog": str(args.catalog),
             "s3_uri": args.s3_uri,
+            "qlib_provider_dir": str(args.qlib_provider_dir),
+            "qlib_provider_env_file": str(args.qlib_provider_env_file),
         },
     }
 
@@ -231,6 +280,11 @@ def main() -> int:
             env=env,
         )
         summary["publish"] = read_json_from_stdout(proc)
+
+    if args.skip_qlib_provider_publish:
+        summary["qlib_provider_publish"] = {"skipped": True, "reason": "skip_qlib_provider_publish"}
+    else:
+        summary["qlib_provider_publish"] = publish_qlib_provider(args, effective_end_date, env)
 
     final_max = summary["after_refresh"]["clean_trade_date_max"]
     summary["status"] = "ok" if final_max and final_max >= effective_end_date else "stale_after_refresh"

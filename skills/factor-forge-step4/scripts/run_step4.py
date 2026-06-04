@@ -232,7 +232,11 @@ def build_acceptance_summary(
             'phase_seconds': backend_timing_profile,
         },
         'reuse': {
-            'step3b_cache_reused_by_step4': reuse_status == 'reused',
+            'step3b_cache_reused_by_step4': False,
+            'formal_factor_reused_by_step4': (
+                reuse_status == 'reused'
+                and step4_factor_io_profile.get('source') == 'prior_step4_parquet'
+            ),
             'reuse_gate_status': reuse_status,
             'reuse_reason': (step4_factor_io_profile.get('reuse_gate') or {}).get('reason') or reuse_decision,
         },
@@ -529,65 +533,14 @@ def classify_step3b_compute_cache_source(step3b_meta: dict[str, Any], daily_df: 
     if not step3b_meta:
         gate = evaluate_reuse_gate({}, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
         return {'source': 'no_step3b_compute_cache', 'reusable': False, 'reason': 'metadata_missing', 'reuse_gate': gate}
-    if step3b_meta.get('producer') != 'step3b_sample_proof':
-        gate = evaluate_reuse_gate(step3b_meta, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'producer_not_step3b_sample_proof', 'reuse_gate': gate}
-    if step3b_meta.get('is_formal_factor_values') is True:
-        gate = evaluate_reuse_gate(step3b_meta, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'unexpected_formal_step3b_owner', 'reuse_gate': gate}
-    if expected_identity:
-        gate = evaluate_reuse_gate(step3b_meta, expected_identity, source_artifact=source_artifact)
-        if gate.get('decision') != 'reuse_allowed':
-            return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': gate.get('reason') or 'reuse_gate_rejected', 'reuse_gate': gate}
-    else:
-        gate = None
-    gate, bound_artifact_df = apply_artifact_binding_to_reuse_gate(gate, step3b_meta, source_artifact)
-    if gate.get('decision') != 'reuse_allowed':
-        return {
-            'source': 'step3b_compute_cache_rejected',
-            'reusable': False,
-            'reason': gate.get('reason') or 'artifact_binding_failed',
-            'reuse_gate': gate,
-        }
-    meta_impl = step3b_meta.get('implementation_path')
-    if meta_impl:
-        try:
-            if Path(str(meta_impl)).expanduser().resolve() != impl_path.expanduser().resolve():
-                return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_mismatch', 'reuse_gate': gate}
-        except OSError:
-            return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'implementation_path_unresolvable', 'reuse_gate': gate}
-    expected = _frame_key_stats(daily_df)
-    actual_window = step3b_meta.get('actual_window') if isinstance(step3b_meta.get('actual_window'), dict) else {}
-    if int(step3b_meta.get('row_count') or -1) != int(expected['row_count']):
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'row_count_mismatch', 'expected': expected, 'reuse_gate': gate}
-    if int(step3b_meta.get('date_count') or -1) != int(expected['date_count'] or -1):
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'date_count_mismatch', 'expected': expected, 'reuse_gate': gate}
-    if int(step3b_meta.get('ticker_count') or -1) != int(expected['ticker_count'] or -1):
-        return {'source': 'step3b_compute_cache_rejected', 'reusable': False, 'reason': 'ticker_count_mismatch', 'expected': expected, 'reuse_gate': gate}
-    if str(actual_window.get('start')) != str(expected['start']) or str(actual_window.get('end')) != str(expected['end']):
-        return {
-            'source': 'step3b_compute_cache_rejected',
-            'reusable': False,
-            'reason': 'window_mismatch',
-            'expected': expected,
-            'actual_window': actual_window,
-            'reuse_gate': gate,
-        }
+    gate = evaluate_reuse_gate(step3b_meta, expected_identity or {}, source_artifact=source_artifact) if expected_identity else None
     return {
-        'source': 'step3b_full_compute_cache',
-        'reusable': True,
-        'upstream_recomputed_factor': True,
-        'provenance_basis': 'step3b_sample_run_metadata_full_coverage',
-        'expected': expected,
-        'reuse_gate': gate or {
-            'version': 'factorforge_reuse_gate_v1',
-            'decision': 'reuse_allowed',
-            'matched_fields': [],
-            'mismatched_fields': [],
-            'missing_fields': [],
-            'source_artifact': source_artifact,
-            'reason': 'legacy_count_window_match',
-        },
+        'source': 'step3b_sample_proof_not_reusable_for_formal_values',
+        'reusable': False,
+        'reason': 'step3b_sample_proof_never_full_compute_cache',
+        'reuse_gate': gate,
+        'formal_factor_values_owner': 'Step4',
+        'step3b_scope': 'sample_executability_proof_only',
     }
 
 def output_paths_for_policy(parquet_path: Path, csv_path: Path, sample_csv_path: Path, meta_path: Path, policy_observed: dict[str, Any]) -> list[str]:
@@ -1780,19 +1733,6 @@ def main() -> None:
                 'parquet_written_by_step4': False,
                 'reuse_gate': existing_factor_reuse_gate,
             }
-        elif step3b_cache_source.get('reusable') is True:
-            result_df = read_df(step3b_cache_path)
-            step4_factor_io_profile = {
-                'version': 'factorforge_step4_factor_io_profile_v1',
-                **step3b_cache_source,
-                'selected_factor_format': 'parquet',
-                'selected_factor_path': str(step3b_cache_path),
-                'formal_factor_path': str(parquet_path),
-                'recomputed_factor': False,
-                'parquet_existed_before_step4': bool(parquet_existed_before_step4),
-                'parquet_written_by_step4': True,
-                'reuse_gate': step3b_cache_source.get('reuse_gate'),
-            }
         else:
             module = import_module_from_path(impl_path)
             if not hasattr(module, 'compute_factor'):
@@ -1839,6 +1779,23 @@ def main() -> None:
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
         if not may_reuse_existing_factor:
             result_df.to_parquet(parquet_path, index=False)
+            expected_reuse_identity = {
+                **expected_reuse_identity,
+                **factor_artifact_binding_profile(parquet_path, result_df),
+            }
+            step4_factor_io_profile['artifact_binding_written_by_step4'] = True
+        else:
+            existing_binding_fields = {
+                key: existing_factor_identity.get(key)
+                for key in [
+                    'selected_factor_sha256',
+                    'selected_factor_row_count',
+                    'selected_factor_schema',
+                    'selected_factor_key_hash',
+                ]
+                if existing_factor_identity.get(key) is not None
+            }
+            expected_reuse_identity = {**expected_reuse_identity, **existing_binding_fields}
         factor_csv_policy = str(factor_csv_policy_observed.get('csv_output_policy') or 'sample_csv')
         if factor_csv_policy == 'full_csv':
             if sample_csv_path.exists() or sample_csv_path.is_symlink():

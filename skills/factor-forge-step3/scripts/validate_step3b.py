@@ -1207,7 +1207,7 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
             f'Step3B first_run_outputs contains Step4-only artifact path: {text}'
         )
     if meta:
-        assert meta.get('producer') in {'step3b_sample_proof', 'step3b_first_run'}, (
+        assert meta.get('producer') == 'step3b_sample_proof', (
             f'run_metadata.producer must be step3b_sample_proof, got {meta.get("producer")}'
         )
         assert meta.get('is_formal_factor_values') is not True, (
@@ -1216,8 +1216,12 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
         assert meta.get('formal_factor_values_owner') in {None, 'Step4'}, (
             'Step3B metadata must preserve Step4 ownership for formal factor_values'
         )
+        assert meta.get('sample_only') is True, 'Step3B metadata must set sample_only=true'
+        assert meta.get('step3b_scope') == 'sample_executability_proof_only', (
+            'Step3B metadata must declare sample_executability_proof_only scope'
+        )
         note = str(meta.get('boundary_note') or '')
-        assert 'Step4 owns' in note, 'run_metadata must document Step3B/Step4 boundary'
+        assert 'Step4 owns full-data factor_values' in note, 'run_metadata must document Step3B/Step4 boundary'
 
     if code_dir.exists():
         forbidden_files = [

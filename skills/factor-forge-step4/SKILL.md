@@ -23,6 +23,7 @@ Current intended backend structure:
 Current practical backend maturity:
 - `self_quant_analyzer` quick mode is production-usable on the current EC2 resource envelope
 - `qlib_backtest` now has both a sample-stub layer and a native minimal backtest path; native execution depends on qlib-friendly signal formatting, especially `instrument` / `datetime` semantics
+- Qlib native requires the Microsoft Qlib package and a provider/store. A Python package named `qlib` is not sufficient; preflight must verify `qlib.init` plus `qlib.data.D`, and must skip native execution if a non-Microsoft `qlib` package is imported.
 - Standard Step4 evidence is mandatory. Agents must not fill missing Step4 evidence with ad hoc plotting scripts or one-off notebooks.
 
 ## Research Discipline
@@ -96,13 +97,12 @@ run metadata.
 
 Step3B `step3b_sample_factor_values__{report_id}` artifacts are sample
 executability evidence only. Step4 must not treat them as formal factor values;
-if a Step3B parquet was capped or produced from sample queries, Step4 must
-recompute from the Data API/full input contract. However, if metadata proves the
-Step3B parquet accidentally or deliberately covers the exact full Step4 window
-with matching implementation path/hash, row/date/ticker counts, and producer
-lineage, Step4 must reuse it as a compute cache and then write/own the formal
-Step4 factor_values artifact. Recompute only when code, data, identity, or
-formal-evidence ownership differs.
+Step3B must not run full formal data or produce a full compute cache. Step4 must
+always compute full-data formal `factor_values__{report_id}` itself, except when
+reusing a prior Step4-owned formal factor parquet whose identity/hash lineage
+matches. Step3B metadata may be used for implementation audit and CSV policy,
+but Step4 must not consume `step3b_sample_factor_values` as a formal compute
+cache even if row/date/ticker counts appear to match.
 
 ## factor_run_master schema
 
@@ -151,6 +151,8 @@ formal-evidence ownership differs.
 8. No polished prose counts as completion.
 9. If execution depends on user-selectable run parameters not already frozen in handoff/artifacts — e.g. benchmark, account size, topk, n_drop, deal price, cost model, universe, sample vs wider window, or whether to run quick-only vs deeper/native backtest — the skill must ask and confirm before launching the run.
 10. qlib-native evaluators must treat signal formatting as a first-class contract item; if `instrument` / `datetime` naming or market-code normalization is unresolved, the run should be marked blocked rather than silently coercing inconsistent semantics.
+10a. qlib-native evaluators must consume an explicit provider URI when available. Prefer `QLIB_PROVIDER_URI` or backend `provider_uri`, then fall back to `/home/ubuntu/.qlib/qlib_data/cn_data`, `~/.qlib/qlib_data/cn_data`, and finally `runs/<report_id>/qlib_provider`. The provider publisher is `scripts/publish_qlib_daily_provider.py`; it only converts already-clean daily data into a Qlib provider and must not clean raw data or compute factor values.
+10b. If the default Step4 Python cannot import Microsoft Qlib, set `FACTORFORGE_QLIB_PYTHON` or backend `qlib_python` to a dedicated qlib-native interpreter. Step4 preflight must verify that interpreter with `qlib.init` and `qlib.data.D`, then run the qlib backend with the same interpreter.
 11. Manual/temporary plotting is forbidden for official evidence. If a plot/table is needed, add it to the Step4 backend contract and rerun Step4.
 12. Decile NAV and long-short NAV must be computed from daily group returns/spreads and normalized to start at `1.0`; subtracting NAV levels is invalid.
 

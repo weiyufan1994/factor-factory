@@ -284,6 +284,134 @@ def create_step3b_fixture(root: Path, report_id: str) -> tuple[Path, dict[str, s
     }
 
 
+def create_step3a_daily_io_fixture(root: Path, report_id: str, *, csv_output_policy: str) -> dict[str, Any]:
+    run_dir = root / 'runs' / report_id / 'step3a_local_inputs'
+    run_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for code_idx in range(1, 4):
+        for day in range(1, 8):
+            rows.append({
+                'ts_code': f'S{code_idx:03d}',
+                'trade_date': f'202001{day:02d}',
+                'open': 10.0 + code_idx + day * 0.01,
+                'high': 10.2 + code_idx + day * 0.01,
+                'low': 9.8 + code_idx + day * 0.01,
+                'close': 10.1 + code_idx + day * 0.01,
+                'pct_chg': float((code_idx - 2) * 0.1 + day * 0.01),
+                'vol': 1000.0 + code_idx * 10 + day,
+                'amount': 10000.0 + code_idx * 100 + day,
+            })
+    daily = pd.DataFrame(rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    parquet_path = run_dir / f'daily_input__{report_id}.parquet'
+    csv_path = run_dir / f'daily_input__{report_id}.csv'
+    sample_csv_path = run_dir / f'daily_input_sample__{report_id}.csv'
+    daily.to_parquet(parquet_path, index=False)
+
+    local_inputs: dict[str, Any] = {
+        'input_mode': 'daily_only',
+        'daily_df_parquet': str(parquet_path.relative_to(root.parent)),
+        'preferred_daily_format': 'parquet',
+        'audit_daily_format': 'none',
+        'data_api_resolution': {
+            'clean_daily_bar': {
+                'dataset_id': 'clean_daily_bar',
+                'status': 'ready',
+                'schema': {'columns': list(daily.columns)},
+                'coverage': {
+                    'row_count': int(len(daily)),
+                    'date_count': int(daily['trade_date'].nunique()),
+                    'ticker_count': int(daily['ts_code'].nunique()),
+                },
+                'daily_filter_policy': {
+                    'drop_suspended': True,
+                    'drop_limit_events': True,
+                    'min_effective_days': 10,
+                },
+            },
+        },
+        'step4_data_contract': {
+            'version': 'factorforge_step4_data_contract_v1',
+            'producer': 'step3a',
+            'data_api_package': 'factorforge_data_api',
+            'catalog_path': str(root / 'data' / 'catalog' / 'data_catalog.json'),
+            'full_queries': {
+                'clean_daily_bar': {
+                    'dataset': 'clean_daily_bar',
+                    'start_date': '20200101',
+                    'end_date': '20200107',
+                    'universe': 'a_share_all',
+                    'fields': ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg'],
+                    'frequency': 'daily',
+                },
+            },
+            'sample_queries': {
+                'clean_daily_bar': {
+                    'dataset': 'clean_daily_bar',
+                    'start_date': '20200101',
+                    'end_date': '20200107',
+                    'universe': ['S001', 'S002'],
+                    'fields': ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg'],
+                    'frequency': 'daily',
+                },
+            },
+            'formal_factor_values_owner': 'Step4',
+            'step3b_sample_policy': {
+                'is_formal_factor_values': False,
+                'purpose': 'step3_executability_proof',
+                'full_execution_owner': 'Step4',
+            },
+        },
+        'daily_filter_policy': {
+            'drop_suspended': True,
+            'drop_limit_events': True,
+            'min_effective_days': 10,
+        },
+        'daily_io_contract': {
+            'version': 'factorforge_step3a_daily_io_contract_v1',
+            'performance_path': 'parquet',
+            'audit_path': 'none',
+            'csv_output_policy': csv_output_policy,
+            'csv_rows_written': 0,
+            'parquet_rows_written': int(len(daily)),
+            'csv_sample_strategy': 'none',
+            'full_csv_available': False,
+            'schema_parity_required': csv_output_policy != 'no_csv',
+            'value_parity_required': csv_output_policy == 'full_csv',
+            'csv_required_for_audit': csv_output_policy != 'no_csv',
+            'parquet_required_for_performance': True,
+        },
+    }
+    if csv_output_policy == 'full_csv':
+        daily.to_csv(csv_path, index=False)
+        local_inputs['daily_df_csv'] = str(csv_path.relative_to(root.parent))
+        local_inputs['audit_daily_format'] = 'csv'
+        local_inputs['daily_io_contract'].update({
+            'audit_path': 'csv',
+            'csv_rows_written': int(len(daily)),
+            'csv_sample_strategy': 'full',
+            'full_csv_available': True,
+        })
+    elif csv_output_policy == 'sample_csv':
+        sample = pd.concat([daily.head(3), daily.tail(3)], ignore_index=True).drop_duplicates(
+            subset=['ts_code', 'trade_date'],
+            keep='first',
+        )
+        sample.to_csv(sample_csv_path, index=False)
+        local_inputs['daily_df_csv_sample'] = str(sample_csv_path.relative_to(root.parent))
+        local_inputs['audit_daily_format'] = 'csv_sample'
+        local_inputs['daily_io_contract'].update({
+            'audit_path': 'csv_sample',
+            'csv_rows_written': int(len(sample)),
+            'csv_sample_strategy': 'head_tail',
+            'full_csv_available': False,
+        })
+    elif csv_output_policy != 'no_csv':
+        raise ValueError(f'unsupported csv_output_policy: {csv_output_policy}')
+
+    daily_with_contract = attach_sort_contract(local_inputs, daily)
+    return daily_with_contract
+
+
 def sort_contract_key_hash(df: pd.DataFrame) -> str:
     key_frame = df[['ts_code', 'trade_date']].astype(str).reset_index(drop=True)
     payload = key_frame.to_csv(index=False).encode('utf-8')
@@ -296,6 +424,19 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b''):
             h.update(chunk)
     return h.hexdigest()
+
+
+def factor_key_hash(df: pd.DataFrame) -> str:
+    keys = [
+        [str(row.ts_code), str(row.trade_date)]
+        for row in df[['ts_code', 'trade_date']].astype(str).itertuples(index=False)
+    ]
+    return hashlib.sha256(json.dumps(keys, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def universe_hash(df: pd.DataFrame) -> str:
+    values = sorted(str(value) for value in df['ts_code'].dropna().unique())
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
 
 
 def attach_sort_contract(local_inputs: dict[str, Any], df: pd.DataFrame, *, mutate: str | None = None) -> dict[str, Any]:
@@ -439,6 +580,8 @@ def run_sort_contract_written_by_step3a_case(root: Path) -> dict[str, Any]:
     module = import_run_step3(root)
     local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
     contract = (local_inputs.get('daily_io_contract') or {}).get('sort_contract') or local_inputs.get('sort_contract') or {}
+    data_api = local_inputs.get('data_api_resolution') if isinstance(local_inputs.get('data_api_resolution'), dict) else {}
+    missing_data_api = local_inputs.get('snapshot_source') == 'missing_data_api_minute_or_daily'
     ok = (
         contract.get('version') == 'factorforge_sort_contract_v1'
         and contract.get('sorted_by') == ['ts_code', 'trade_date']
@@ -447,8 +590,20 @@ def run_sort_contract_written_by_step3a_case(root: Path) -> dict[str, Any]:
         and len(contract.get('data_hash') or '') >= 32
         and contract.get('duplicate_key_check') is True
         and contract.get('sample_sortedness_check') is True
+    ) or (
+        missing_data_api
+        and data_api.get('clean_daily_bar', {}).get('status') != 'ready'
+        and data_api.get('minute_bar', {}).get('status') not in {'ready', 'proxy_ready'}
+        and bool(local_inputs.get('step4_data_contract'))
     )
-    return {'case': 'sort_contract_written_by_step3a', 'report_id': report_id, 'sort_contract': contract, 'ok': bool(ok)}
+    return {
+        'case': 'sort_contract_written_by_step3a_or_data_api_blocked',
+        'report_id': report_id,
+        'snapshot_source': local_inputs.get('snapshot_source'),
+        'sort_contract': contract,
+        'data_api_resolution': data_api,
+        'ok': bool(ok),
+    }
 
 
 def run_step3b_trusted_sort_contract_skips_full_sort_opt_in_case(root: Path) -> dict[str, Any]:
@@ -748,8 +903,7 @@ def run_step3b_runtime_throughput_gate_uses_input_rows_for_minute_compression_ca
 
 def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_CONTRACT'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'})
+    local_inputs = create_step3a_daily_io_fixture(root, report_id, csv_output_policy='full_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     csv_path = root.parent / local_inputs.get('daily_df_csv', '')
     contract = local_inputs.get('daily_io_contract') or {}
@@ -785,8 +939,7 @@ def run_step3a_daily_parquet_contract_case(root: Path) -> dict[str, Any]:
 
 def run_step3a_daily_sample_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SAMPLE_POLICY'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
+    local_inputs = create_step3a_daily_io_fixture(root, report_id, csv_output_policy='sample_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     full_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
     sample_csv_path = root.parent / local_inputs.get('daily_df_csv_sample', '')
@@ -826,8 +979,7 @@ def run_step3a_daily_sample_csv_policy_case(root: Path) -> dict[str, Any]:
 
 def run_step3a_daily_no_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_NO_CSV_POLICY'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
+    local_inputs = create_step3a_daily_io_fixture(root, report_id, csv_output_policy='no_csv')
     parquet_path = root.parent / local_inputs.get('daily_df_parquet', '')
     full_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input__{report_id}.csv'
     sample_csv_path = root / 'runs' / report_id / 'step3a_local_inputs' / f'daily_input_sample__{report_id}.csv'
@@ -892,6 +1044,14 @@ def run_step3_daily_parquet_csv_schema_parity_case(root: Path) -> dict[str, Any]
 
 def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: dict[str, Any]) -> None:
     objects = root / 'objects'
+    minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+    daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    executable_inputs = bool(daily_rel and (local_inputs.get('input_mode') == 'daily_only' or minute_rel))
+    feasibility = 'ready' if executable_inputs else 'blocked'
+    blocked_items = [] if executable_inputs else [{
+        'block_code': 'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE',
+        'detail': 'performance smoke fixture intentionally preserves Step3A blocked data-api contract when no executable local snapshots exist',
+    }]
     source_code = (
         "import pandas as pd\n\n"
         "def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:\n"
@@ -930,14 +1090,14 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
     write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
-        'feasibility': 'ready',
+        'feasibility': feasibility,
         'sample_window': {'start': '20200101', 'end': '20200103'},
         'data_sources': [{'name': 'synthetic_tmp_fixture'}],
         'field_mapping': {'ts_code': 'ts_code', 'trade_date': 'trade_date', 'close': 'close'},
         'proxy_rules': [],
         'coverage_checks': [{'name': 'fixture', 'status': 'pass'}],
         'implementation_notes': ['tmp fixture'],
-        'blocked_items': [],
+        'blocked_items': blocked_items,
         'local_input_paths': local_inputs,
     })
     write_json(objects / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json', {
@@ -969,8 +1129,8 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
     write_json(objects / 'handoff' / f'handoff_to_step4__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
-        'step3a_ready': True,
-        'step3b_ready': True,
+        'step3a_ready': executable_inputs,
+        'step3b_ready': executable_inputs,
         'execution_mode': 'direct_code',
         'local_input_paths': local_inputs,
     })
@@ -978,40 +1138,13 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
 
 def run_step3_daily_large_schema_mismatch_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SCHEMA_MISMATCH'
-    run_dir = root / 'runs' / report_id / 'step3a_local_inputs'
-    run_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = run_dir / f'daily_input__{report_id}.parquet'
-    csv_path = run_dir / f'daily_input__{report_id}.csv'
-    frame = pd.DataFrame([
-        {'ts_code': 'S001', 'trade_date': '20200101', 'close': 10.0, 'pct_chg': 0.1, 'amount': 1000.0},
-        {'ts_code': 'S002', 'trade_date': '20200101', 'close': 11.0, 'pct_chg': 0.2, 'amount': 1200.0},
-    ])
-    frame.to_parquet(parquet_path, index=False)
+    local_inputs = create_step3a_daily_io_fixture(root, report_id, csv_output_policy='full_csv')
+    parquet_path = root.parent / local_inputs['daily_df_parquet']
+    csv_path = root.parent / local_inputs['daily_df_csv']
     with csv_path.open('wb') as handle:
         handle.write(b'ts_code,trade_date,close,pct_chg\n')
         handle.write(b'S001,20200101,10.0,0.1\n')
         handle.truncate(110_000_000)
-    local_inputs = {
-        'input_mode': 'daily_only',
-        'daily_df_parquet': str(parquet_path.relative_to(root.parent)),
-        'daily_df_csv': str(csv_path.relative_to(root.parent)),
-        'preferred_daily_format': 'parquet',
-        'audit_daily_format': 'csv',
-        'daily_io_contract': {
-            'version': 'factorforge_step3a_daily_io_contract_v1',
-            'performance_path': 'parquet',
-            'audit_path': 'csv',
-            'csv_output_policy': 'full_csv',
-            'csv_rows_written': 1,
-            'parquet_rows_written': int(len(frame)),
-            'csv_sample_strategy': 'full',
-            'full_csv_available': True,
-            'schema_parity_required': True,
-            'value_parity_required': True,
-            'csv_required_for_audit': True,
-            'parquet_required_for_performance': True,
-        },
-    }
     write_step3_validation_artifacts(root, report_id, local_inputs)
     proc = run_cmd([
         sys.executable,
@@ -1035,8 +1168,7 @@ def run_step3_daily_large_schema_mismatch_block_case(root: Path) -> dict[str, An
 
 def run_step3a_daily_sample_schema_mismatch_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_SAMPLE_SCHEMA_MISMATCH'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='sample_csv')
+    local_inputs = create_step3a_daily_io_fixture(root, report_id, csv_output_policy='sample_csv')
     sample_csv_path = root.parent / local_inputs.get('daily_df_csv_sample', '')
     if sample_csv_path.exists():
         lines = sample_csv_path.read_text(encoding='utf-8').splitlines()
@@ -1078,9 +1210,9 @@ def run_step3b_factor_sample_csv_policy_case(root: Path) -> dict[str, Any]:
     metadata = read_json(root / outputs['run_metadata_path'])
     profile = metadata.get('performance_profile') or {}
     csv_output_profile = profile.get('csv_output_profile') or {}
-    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
-    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    factor_parquet = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
+    factor_sample = root / 'runs' / report_id / f'step3b_sample_factor_values_sample__{report_id}.csv'
     ok = (
         factor_parquet.exists()
         and not factor_csv.exists()
@@ -1118,9 +1250,9 @@ def run_step3b_factor_no_csv_policy_case(root: Path) -> dict[str, Any]:
     metadata = read_json(root / outputs['run_metadata_path'])
     profile = metadata.get('performance_profile') or {}
     csv_output_profile = profile.get('csv_output_profile') or {}
-    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
-    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    factor_parquet = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
+    factor_sample = root / 'runs' / report_id / f'step3b_sample_factor_values_sample__{report_id}.csv'
     ok = (
         factor_parquet.exists()
         and not factor_csv.exists()
@@ -1143,6 +1275,8 @@ def run_step3b_factor_no_csv_policy_case(root: Path) -> dict[str, Any]:
 
 def _read_step3b_csv_profile(root: Path, report_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     meta_path = root / 'runs' / report_id / f'run_metadata__{report_id}.json'
+    if not meta_path.exists():
+        meta_path = root / 'runs' / report_id / f'step3b_sample_run_metadata__{report_id}.json'
     metadata = read_json(meta_path) if meta_path.exists() else {}
     profile = metadata.get('performance_profile') or {}
     return metadata, profile.get('csv_output_profile') or {}
@@ -1151,9 +1285,9 @@ def _read_step3b_csv_profile(root: Path, report_id: str) -> tuple[dict[str, Any]
 def run_csv_policy_sample_csv_parquet_formal_evidence_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP3B_SAMPLE_CSV'
     metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
-    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
-    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    factor_parquet = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
+    factor_sample = root / 'runs' / report_id / f'step3b_sample_factor_values_sample__{report_id}.csv'
     ok = (
         bool(metadata)
         and factor_parquet.exists()
@@ -1182,9 +1316,9 @@ def run_csv_policy_sample_csv_parquet_formal_evidence_case(root: Path) -> dict[s
 def run_csv_policy_no_csv_parquet_formal_evidence_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP3B_NO_CSV'
     metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
-    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
-    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
-    factor_sample = root / 'runs' / report_id / f'factor_values_sample__{report_id}.csv'
+    factor_parquet = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
+    factor_sample = root / 'runs' / report_id / f'step3b_sample_factor_values_sample__{report_id}.csv'
     ok = (
         bool(metadata)
         and factor_parquet.exists()
@@ -1213,8 +1347,8 @@ def run_csv_policy_no_csv_parquet_formal_evidence_case(root: Path) -> dict[str, 
 def run_csv_policy_full_csv_legacy_compat_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP3B'
     metadata, csv_profile = _read_step3b_csv_profile(root, report_id)
-    factor_parquet = root / 'runs' / report_id / f'factor_values__{report_id}.parquet'
-    factor_csv = root / 'runs' / report_id / f'factor_values__{report_id}.csv'
+    factor_parquet = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    factor_csv = root / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.csv'
     ok = (
         bool(metadata)
         and factor_parquet.exists()
@@ -1310,8 +1444,7 @@ def run_csv_policy_invalid_cli_blocks_case(root: Path) -> dict[str, Any]:
 
 def run_step3a_daily_no_csv_contract_stale_path_block_case(root: Path) -> dict[str, Any]:
     report_id = 'STEP_PERF_IO_NO_CSV_STALE_PATH'
-    module = import_run_step3(root)
-    local_inputs = module.build_local_price_volume_snapshots(report_id, {'start': '20160104', 'end': '20160329'}, csv_output_policy='no_csv')
+    local_inputs = create_step3a_daily_io_fixture(root, report_id, csv_output_policy='no_csv')
     contract = local_inputs.get('daily_io_contract') or {}
     contract['csv_path'] = f'runs/{report_id}/step3a_local_inputs/stale_full.csv'
     contract['csv_sample_path'] = f'runs/{report_id}/step3a_local_inputs/stale_sample.csv'
@@ -4668,22 +4801,52 @@ def run_profile_script_readonly_case(root: Path) -> dict[str, Any]:
     return {'case': 'performance_profile_script_readonly', 'rc': proc.returncode, 'wrote_report': after_exists, 'ok': bool(ok)}
 
 
-def create_throughput_profile_fixture(root: Path, report_id: str, *, large_csv: bool = False, recompute_fallback: bool = False, qlib_missing_provider: bool = False) -> dict[str, Path]:
+def create_throughput_profile_fixture(
+    root: Path,
+    report_id: str,
+    *,
+    large_csv: bool = False,
+    recompute_fallback: bool = False,
+    qlib_missing_provider: bool = False,
+    csv_output_policy: str = 'full_csv',
+    trusted_sort_contract: bool = False,
+) -> dict[str, Path]:
     run_dir = root / 'runs' / report_id
     eval_dir = root / 'evaluations' / report_id
     run_dir.mkdir(parents=True, exist_ok=True)
     factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
     factor_csv = run_dir / f'factor_values__{report_id}.csv'
+    factor_csv_sample = run_dir / f'factor_values_sample__{report_id}.csv'
     pd.DataFrame({
         'ts_code': ['S001', 'S002', 'S001', 'S002'],
         'trade_date': ['20200101', '20200101', '20200102', '20200102'],
         'smoke_factor': [0.1, 0.2, 0.3, 0.4],
     }).to_parquet(factor_parquet, index=False)
-    if large_csv:
+    if csv_output_policy == 'full_csv' and large_csv:
         with factor_csv.open('wb') as handle:
             handle.truncate(101 * 1024 * 1024)
-    else:
+    elif csv_output_policy == 'full_csv':
         factor_csv.write_text('ts_code,trade_date,smoke_factor\nS001,20200101,0.1\n', encoding='utf-8')
+    elif csv_output_policy == 'sample_csv':
+        factor_csv_sample.write_text('ts_code,trade_date,smoke_factor\nS001,20200101,0.1\n', encoding='utf-8')
+    elif csv_output_policy != 'no_csv':
+        raise ValueError(f'unsupported csv_output_policy: {csv_output_policy}')
+    csv_output_profile = {
+        'csv_output_policy': csv_output_policy,
+        'formal_evidence_format': 'parquet',
+        'csv_rows_written': 1 if csv_output_policy in {'full_csv', 'sample_csv'} else 0,
+        'full_csv_available': csv_output_policy == 'full_csv',
+        'full_csv_absence_reason': None if csv_output_policy == 'full_csv' else f'step3b_{csv_output_policy}_policy',
+    }
+    normalize_sort_profile = {
+        'version': 'factorforge_normalize_sort_profile_v1',
+        'sort_contract_present': bool(trusted_sort_contract),
+        'sort_contract_trusted': bool(trusted_sort_contract),
+        'opt_in_enabled': bool(trusted_sort_contract),
+        'full_sort_skipped': bool(trusted_sort_contract),
+        'full_sort_skipped_reason': 'trusted_step3a_sort_contract' if trusted_sort_contract else None,
+        'fallback_reason': None if trusted_sort_contract else 'opt_in_disabled',
+    }
     meta = {
         'report_id': report_id,
         'row_count': 4,
@@ -4698,7 +4861,8 @@ def create_throughput_profile_fixture(root: Path, report_id: str, *, large_csv: 
                 'write_metadata': 0.1,
                 'total': 23.0,
             },
-            'csv_output_profile': {'csv_output_policy': 'full_csv'},
+            'csv_output_profile': csv_output_profile,
+            'normalize_sort_profile': normalize_sort_profile,
         },
         'step4_factor_io_profile': {
             'version': 'factorforge_step4_factor_io_profile_v1',
@@ -4736,6 +4900,7 @@ def create_throughput_profile_fixture(root: Path, report_id: str, *, large_csv: 
         'run_metadata': run_meta,
         'factor_parquet': factor_parquet,
         'factor_csv': factor_csv,
+        'factor_csv_sample': factor_csv_sample,
         'self_quant': self_quant_path,
         'qlib': qlib_path,
     }
@@ -4823,6 +4988,7 @@ def run_throughput_profile_blocks_non_tmp_output_case(root: Path) -> dict[str, A
 
 def run_throughput_profile_reports_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP3B_SAMPLE_CSV'
+    create_throughput_profile_fixture(root, report_id, csv_output_policy='sample_csv')
     output = root / 'throughput_profile_csv_policy.json'
     proc = run_cmd([
         sys.executable,
@@ -4866,6 +5032,7 @@ def run_throughput_profile_reports_csv_policy_case(root: Path) -> dict[str, Any]
 
 def run_throughput_profile_reports_sort_contract_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_SORT_CONTRACT_TRUSTED'
+    create_throughput_profile_fixture(root, report_id, trusted_sort_contract=True)
     output = root / 'throughput_profile_sort_contract.json'
     proc = run_cmd([
         sys.executable,
@@ -5709,7 +5876,84 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
         'factor_csv': factor_csv,
         'factor_sample': factor_sample,
         'run_meta': run_meta,
+        'daily_parquet': daily_parquet,
+        'impl_path': impl_path,
     }
+
+
+def bind_step4_formal_factor_identity(
+    paths: dict[str, Path],
+    report_id: str,
+    *,
+    producer: str,
+    factor_path: Path | None = None,
+    meta_path: Path | None = None,
+    identity_key: str | None = None,
+) -> None:
+    factor_path = factor_path or paths['factor_parquet']
+    meta_path = meta_path or paths['run_meta']
+    factor_df = pd.read_parquet(factor_path)
+    daily_df = pd.read_parquet(paths['daily_parquet'])
+    local_inputs = {
+        'input_mode': 'daily_only',
+        'daily_df_parquet': str(paths['daily_parquet']),
+        'daily_df_csv': str(paths['daily_parquet'].with_suffix('.csv')),
+        'preferred_daily_format': 'parquet',
+        'audit_daily_format': 'csv',
+        'sample_window_actual': {'start': '20200101', 'end': '20200107'},
+    }
+    data_catalog_hash = hashlib.sha256(json.dumps({
+        'local_input_paths': local_inputs,
+        'data_sources': [{'name': 'synthetic_tmp_fixture'}],
+        'field_mapping': {'ts_code': 'ts_code', 'trade_date': 'trade_date', 'close': 'close'},
+    }, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+    identity = {
+        'producer': producer,
+        'is_formal_factor_values': producer != 'step3b_sample_proof',
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'implementation_mode': 'direct_code',
+        'spec_hash': 'smoke_spec_hash',
+        'formula_hash': None,
+        'code_hash': 'smoke_code_contract_hash',
+        'data_catalog_hash': data_catalog_hash,
+        'data_api_contract_version': 'factorforge_step4_data_contract_v1',
+        'window': {
+            'start': str(daily_df['trade_date'].astype(str).min()),
+            'end': str(daily_df['trade_date'].astype(str).max()),
+        },
+        'universe_hash': universe_hash(daily_df),
+        'frequency': 'daily',
+        'selected_factor_sha256': file_sha256(factor_path),
+        'selected_factor_row_count': int(len(factor_df)),
+        'selected_factor_schema': [str(col) for col in factor_df.columns],
+        'selected_factor_key_hash': factor_key_hash(factor_df),
+    }
+    meta = read_json(meta_path) if meta_path.exists() else {'report_id': report_id}
+    key = identity_key or ('step4_formal_factor_identity' if producer == 'step4_formal_compute' else 'step3b_compute_cache_identity')
+    meta[key] = identity
+    if key == 'step3b_compute_cache_identity':
+        meta.update(identity)
+        meta.update({
+            'producer': 'step3b_sample_proof',
+            'is_formal_factor_values': False,
+            'row_count': int(len(daily_df)),
+            'date_count': int(daily_df['trade_date'].astype(str).nunique()),
+            'ticker_count': int(daily_df['ts_code'].astype(str).nunique()),
+            'actual_window': {
+                'start': str(daily_df['trade_date'].astype(str).min()),
+                'end': str(daily_df['trade_date'].astype(str).max()),
+            },
+            'implementation_path': str(paths['impl_path']),
+        })
+    if key == 'step4_formal_factor_identity':
+        meta['step4_factor_io_profile'] = {
+            'version': 'factorforge_step4_factor_io_profile_v1',
+            'source': 'step4_recompute_fallback',
+            'recomputed_factor': True,
+            'parquet_written_by_step4': True,
+        }
+    write_json(meta_path, meta)
 
 
 def run_step4_direct(root: Path, report_id: str, *, extra_args: list[str] | None = None, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -5731,8 +5975,6 @@ def run_step4_direct(root: Path, report_id: str, *, extra_args: list[str] | None
 def run_step4_respects_step3b_sample_csv_policy_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP4_SAMPLE_CSV_POLICY'
     paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
-    before_sample = paths['factor_sample'].read_bytes()
-    before_mtime = paths['factor_sample'].stat().st_mtime_ns
     before_full_exists = paths['factor_csv'].exists()
     proc = run_step4_direct(root, report_id)
     after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
@@ -5745,11 +5987,10 @@ def run_step4_respects_step3b_sample_csv_policy_case(root: Path) -> dict[str, An
         and before_full_exists is False
         and not paths['factor_csv'].exists()
         and paths['factor_sample'].exists()
-        and paths['factor_sample'].read_bytes() == before_sample
-        and paths['factor_sample'].stat().st_mtime_ns == before_mtime
         and observed.get('csv_output_policy') == 'sample_csv'
         and observed.get('factor_csv_written_by_step4') is False
-        and observed.get('factor_csv_write_skipped_reason') == 'step3b_sample_csv_policy'
+        and observed.get('factor_sample_csv_written_by_step4') is True
+        and observed.get('factor_csv_write_skipped_reason') == 'step4_sample_csv_policy'
         and input_io_profile.get('factor_values_selected_format') == 'parquet'
     )
     return {
@@ -5758,7 +5999,6 @@ def run_step4_respects_step3b_sample_csv_policy_case(root: Path) -> dict[str, An
         'rc': proc.returncode,
         'full_csv_exists': paths['factor_csv'].exists(),
         'sample_csv_exists': paths['factor_sample'].exists(),
-        'sample_mtime_unchanged': paths['factor_sample'].exists() and paths['factor_sample'].stat().st_mtime_ns == before_mtime,
         'step4_factor_csv_policy_observed': observed,
         'self_quant_input_io_profile': input_io_profile,
         'stdout_tail': tail(proc.stdout),
@@ -5767,46 +6007,53 @@ def run_step4_respects_step3b_sample_csv_policy_case(root: Path) -> dict[str, An
     }
 
 
-def run_step4_reuses_step3b_factor_parquet_case(root: Path) -> dict[str, Any]:
-    report_id = 'PERF_SMOKE_STEP4_REUSES_STEP3B_FACTOR_PARQUET'
+def run_step4_rejects_step3b_factor_parquet_as_formal_cache_case(root: Path) -> dict[str, Any]:
+    report_id = 'PERF_SMOKE_STEP4_REJECTS_STEP3B_FACTOR_PARQUET'
     paths = create_step4_factor_csv_policy_fixture(root, report_id, 'sample_csv')
-    factor_df = pd.DataFrame([
-        {'ts_code': 'S001', 'trade_date': '20200101', 'smoke_factor': 0.2},
-        {'ts_code': 'S002', 'trade_date': '20200101', 'smoke_factor': 0.8},
-        {'ts_code': 'S001', 'trade_date': '20200102', 'smoke_factor': 0.4},
-        {'ts_code': 'S002', 'trade_date': '20200102', 'smoke_factor': 0.6},
-        {'ts_code': 'S001', 'trade_date': '20200103', 'smoke_factor': 0.3},
-        {'ts_code': 'S002', 'trade_date': '20200103', 'smoke_factor': 0.7},
-    ])
-    factor_df.to_parquet(paths['factor_parquet'], index=False)
-    impl_path = root / 'generated_code' / report_id / 'factor_impl.py'
-    impl_path.write_text(
-        "def compute_factor(daily_df, minute_df=None):\n"
-        "    raise RuntimeError('BLOCK_STEP4_RECOMPUTED_FACTOR')\n",
-        encoding='utf-8',
+    daily_keys = pd.read_parquet(paths['daily_parquet'])[['ts_code', 'trade_date']].copy()
+    factor_df = daily_keys.assign(smoke_factor=np.linspace(0.0, 1.0, len(daily_keys)))
+    step3b_cache_parquet = paths['run_dir'] / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_cache_meta = paths['run_dir'] / f'step3b_sample_run_metadata__{report_id}.json'
+    factor_df.to_parquet(step3b_cache_parquet, index=False)
+    write_json(step3b_cache_meta, {
+        'report_id': report_id,
+        'producer': 'step3b',
+        'performance_profile': {'version': 'factorforge_step3b_performance_profile_v1'},
+    })
+    bind_step4_formal_factor_identity(
+        paths,
+        report_id,
+        producer='step3b_sample_proof',
+        factor_path=step3b_cache_parquet,
+        meta_path=step3b_cache_meta,
+        identity_key='step3b_compute_cache_identity',
     )
-    before_parquet_mtime = paths['factor_parquet'].stat().st_mtime_ns
+    before_cache_mtime = step3b_cache_parquet.stat().st_mtime_ns
     proc = run_step4_direct(root, report_id)
     after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
     factor_io_profile = after_meta.get('step4_factor_io_profile') or {}
+    cache_source = factor_io_profile.get('step3b_compute_cache_source') or {}
     payload_path = root / 'evaluations' / report_id / 'self_quant_analyzer' / 'evaluation_payload.json'
     payload = read_json(payload_path) if payload_path.exists() else {}
     input_io_profile = ((payload.get('performance_profile') or {}).get('input_io_profile') or {})
     ok = (
         proc.returncode == 0
         and paths['factor_parquet'].exists()
-        and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime
-        and factor_io_profile.get('source') == 'step3b_factor_parquet'
-        and factor_io_profile.get('recomputed_factor') is False
+        and step3b_cache_parquet.stat().st_mtime_ns == before_cache_mtime
+        and factor_io_profile.get('source') == 'step4_recompute_fallback'
+        and factor_io_profile.get('recomputed_factor') is True
+        and cache_source.get('source') == 'step3b_sample_proof_not_reusable_for_formal_values'
+        and cache_source.get('reason') == 'step3b_sample_proof_never_full_compute_cache'
         and after_meta.get('row_count') == len(factor_df)
         and input_io_profile.get('factor_values_selected_format') == 'parquet'
     )
     return {
-        'case': 'step4_reuses_step3b_factor_parquet_without_recompute',
+        'case': 'step4_rejects_step3b_factor_parquet_as_formal_cache',
         'report_id': report_id,
         'rc': proc.returncode,
-        'factor_parquet_mtime_unchanged': paths['factor_parquet'].exists() and paths['factor_parquet'].stat().st_mtime_ns == before_parquet_mtime,
+        'step3b_sample_parquet_mtime_unchanged': step3b_cache_parquet.exists() and step3b_cache_parquet.stat().st_mtime_ns == before_cache_mtime,
         'step4_factor_io_profile': factor_io_profile,
+        'step3b_compute_cache_source': cache_source,
         'row_count': after_meta.get('row_count'),
         'self_quant_input_io_profile': input_io_profile,
         'stdout_tail': tail(proc.stdout),
@@ -5825,22 +6072,14 @@ def run_step4_preserves_prior_step4_parquet_provenance_case(root: Path) -> dict[
         {'ts_code': 'S002', 'trade_date': '20200102', 'smoke_factor': 0.65},
     ])
     factor_df.to_parquet(paths['factor_parquet'], index=False)
-    write_json(paths['run_meta'], {
-        'report_id': report_id,
-        'producer': 'step4',
-        'step4_factor_io_profile': {
-            'version': 'factorforge_step4_factor_io_profile_v1',
-            'source': 'step4_recompute_fallback',
-            'recomputed_factor': True,
-            'parquet_written_by_step4': True,
-        },
-    })
+    bind_step4_formal_factor_identity(paths, report_id, producer='step4_formal_compute')
     impl_path = root / 'generated_code' / report_id / 'factor_impl.py'
     impl_path.write_text(
         "def compute_factor(daily_df, minute_df=None):\n"
         "    raise RuntimeError('BLOCK_STEP4_RECOMPUTED_FACTOR')\n",
         encoding='utf-8',
     )
+    bind_step4_formal_factor_identity(paths, report_id, producer='step4_formal_compute')
     before_parquet_mtime = paths['factor_parquet'].stat().st_mtime_ns
     proc = run_step4_direct(root, report_id)
     after_meta = read_json(paths['run_meta']) if paths['run_meta'].exists() else {}
@@ -5879,7 +6118,7 @@ def run_step4_respects_step3b_no_csv_policy_case(root: Path) -> dict[str, Any]:
         and not paths['factor_sample'].exists()
         and observed.get('csv_output_policy') == 'no_csv'
         and observed.get('factor_csv_written_by_step4') is False
-        and observed.get('factor_csv_write_skipped_reason') == 'step3b_no_csv_policy'
+        and observed.get('factor_csv_write_skipped_reason') == 'step4_no_csv_policy'
     )
     return {
         'case': 'step4_respects_step3b_no_csv_policy',
@@ -5894,7 +6133,7 @@ def run_step4_respects_step3b_no_csv_policy_case(root: Path) -> dict[str, Any]:
     }
 
 
-def run_step4_legacy_missing_csv_policy_full_csv_compat_case(root: Path) -> dict[str, Any]:
+def run_step4_legacy_missing_csv_policy_defaults_sample_csv_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_STEP4_LEGACY_CSV_POLICY'
     paths = create_step4_factor_csv_policy_fixture(root, report_id, None)
     proc = run_step4_direct(root, report_id)
@@ -5902,15 +6141,19 @@ def run_step4_legacy_missing_csv_policy_full_csv_compat_case(root: Path) -> dict
     observed = after_meta.get('step4_factor_csv_policy_observed') or {}
     ok = (
         proc.returncode == 0
-        and paths['factor_csv'].exists()
-        and observed.get('csv_output_policy') == 'legacy_missing'
-        and observed.get('factor_csv_written_by_step4') is True
+        and not paths['factor_csv'].exists()
+        and paths['factor_sample'].exists()
+        and observed.get('csv_output_policy') == 'sample_csv'
+        and observed.get('factor_csv_written_by_step4') is False
+        and observed.get('factor_sample_csv_written_by_step4') is True
+        and observed.get('factor_csv_write_skipped_reason') == 'step4_sample_csv_policy'
     )
     return {
-        'case': 'step4_legacy_missing_csv_policy_full_csv_compat',
+        'case': 'step4_legacy_missing_csv_policy_defaults_sample_csv',
         'report_id': report_id,
         'rc': proc.returncode,
         'full_csv_exists': paths['factor_csv'].exists(),
+        'sample_csv_exists': paths['factor_sample'].exists(),
         'step4_factor_csv_policy_observed': observed,
         'stdout_tail': tail(proc.stdout),
         'stderr_tail': tail(proc.stderr),
@@ -6646,11 +6889,11 @@ def main() -> int:
         run_self_quant_profile_case(root),
         run_step4_self_quant_prefers_daily_parquet_case(root),
         run_step4_daily_csv_fallback_case(root),
-        run_step4_reuses_step3b_factor_parquet_case(root),
+        run_step4_rejects_step3b_factor_parquet_as_formal_cache_case(root),
         run_step4_preserves_prior_step4_parquet_provenance_case(root),
         run_step4_respects_step3b_sample_csv_policy_case(root),
         run_step4_respects_step3b_no_csv_policy_case(root),
-        run_step4_legacy_missing_csv_policy_full_csv_compat_case(root),
+        run_step4_legacy_missing_csv_policy_defaults_sample_csv_case(root),
         run_step4_invalid_factor_csv_policy_blocks_case(root),
         run_step4_uses_parquet_when_full_csv_absent_case(root),
         run_validate_step4_accepts_no_csv_with_parquet_case(root),

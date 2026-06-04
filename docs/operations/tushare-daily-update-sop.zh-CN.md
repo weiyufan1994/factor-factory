@@ -181,6 +181,23 @@ FACTORFORGE_DATA_MUTATION_APPROVED=codex-approved python3 scripts/refresh_clean_
 FACTORFORGE_DATA_MUTATION_APPROVED=codex-approved python3 scripts/build_daily_clean_enhanced.py --operator codex --replace
 ```
 
+`scripts/update_clean_daily_bar_after_daily_update.py` 作为日更收尾入口还会默认从 Data API 的
+`clean_daily_bar` 发布 Microsoft Qlib provider：
+
+```text
+~/.qlib/qlib_data/cn_data
+```
+
+并写入：
+
+```text
+~/.factorforge/qlib_provider.env
+```
+
+如果是只修 clean layer、不希望刷新 qlib provider 的维护场景，必须显式传入
+`--skip-qlib-provider-publish`。否则 Step4 qlib native backtest 会依赖这个全局
+provider，而不是每个 report 临时构建 `runs/<report_id>/qlib_provider`。
+
 最终 `data/clean/daily_clean.parquet` 应包含：
 
 - `daily_basic_close`

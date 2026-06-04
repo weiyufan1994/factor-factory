@@ -228,9 +228,9 @@ def build_profile(root: Path, report_id: str) -> dict[str, Any]:
         ))
     if step4_factor_io.get('source') == 'step4_recompute_fallback' or step4_factor_io.get('recomputed_factor') is True:
         diagnostics.append(diagnostic(
-            'blocker_candidate',
+            'info',
             'STEP4_RECOMPUTE_FALLBACK',
-            'Step4 appears to recompute factor values instead of reusing Step3B parquet.',
+            'Step4 computed formal full-data factor values; Step3B sample parquet is not a formal compute cache.',
             step4_factor_io,
         ))
     if has_qlib_provider_missing_native_attempt(qlib_payload):

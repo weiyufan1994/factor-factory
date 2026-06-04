@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -11,6 +12,7 @@ import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FIELD_COLUMNS = ['open', 'high', 'low', 'close', 'volume', 'factor', 'change', 'amount', 'pre_close']
 
 
 def load_json(path: Path) -> dict:
@@ -57,9 +59,21 @@ def load_daily_source(source_path: Path) -> pd.DataFrame:
     return df
 
 
-def normalize_source(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_qlib_symbol(ts_code: str, style: str = 'ts_code') -> str:
+    value = str(ts_code)
+    if style in {'ts_code', 'tushare', 'provider'}:
+        return value
+    if style in {'legacy_qlib', 'qlib'} and '.' in value:
+        code, market = value.split('.', 1)
+        return f'{market.upper()}{code}'
+    if style == 'raw':
+        return value
+    raise SystemExit(f'unsupported qlib instrument style: {style}')
+
+
+def normalize_source(df: pd.DataFrame, instrument_style: str = 'ts_code') -> pd.DataFrame:
     out = df.copy()
-    out['symbol'] = out['ts_code'].astype(str)
+    out['symbol'] = out['ts_code'].map(lambda value: normalize_qlib_symbol(value, style=instrument_style))
     out['date'] = pd.to_datetime(
         out['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8),
         format='%Y%m%d',
@@ -108,7 +122,7 @@ def write_feature_bin(path: Path, start_index: int, values: pd.Series) -> None:
     np.hstack([[float(start_index)], data]).astype('<f4').tofile(path)
 
 
-def build_provider(df: pd.DataFrame, provider_dir: Path) -> dict:
+def build_provider(df: pd.DataFrame, provider_dir: Path, *, instrument_style: str = 'ts_code', source_path: Path | None = None) -> dict:
     if provider_dir.exists():
         shutil.rmtree(provider_dir)
     calendars_dir = provider_dir / 'calendars'
@@ -125,7 +139,7 @@ def build_provider(df: pd.DataFrame, provider_dir: Path) -> dict:
     (calendars_dir / 'day.txt').write_text('\n'.join(calendar_strings.tolist()) + '\n', encoding='utf-8')
 
     calendar_pos = {pd.Timestamp(value): idx for idx, value in enumerate(calendar)}
-    field_columns = ['open', 'high', 'low', 'close', 'volume', 'factor', 'change', 'amount', 'pre_close']
+    field_columns = DEFAULT_FIELD_COLUMNS
     instrument_lines: list[str] = []
     feature_files = 0
 
@@ -148,7 +162,8 @@ def build_provider(df: pd.DataFrame, provider_dir: Path) -> dict:
     if not instrument_lines:
         raise SystemExit('cannot build qlib provider without instruments')
     (instruments_dir / 'all.txt').write_text('\n'.join(instrument_lines) + '\n', encoding='utf-8')
-    return {
+    stats = {
+        'version': 'factorforge_qlib_provider_v1',
         'rows': int(len(df)),
         'symbols': int(df['symbol'].nunique()),
         'dates': int(len(calendar)),
@@ -156,7 +171,15 @@ def build_provider(df: pd.DataFrame, provider_dir: Path) -> dict:
         'calendar_end': calendar_strings.iloc[-1],
         'feature_files': feature_files,
         'provider_dir': str(provider_dir),
+        'instrument_style': instrument_style,
+        'field_columns': field_columns,
     }
+    if source_path is not None:
+        stats['source_path'] = str(source_path)
+        if source_path.exists() and source_path.is_file():
+            stats['source_sha256'] = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    (provider_dir / 'provider_metadata.json').write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding='utf-8')
+    return stats
 
 
 def dump_provider(source_dir: Path, provider_dir: Path) -> None:
@@ -170,6 +193,48 @@ def dump_provider(source_dir: Path, provider_dir: Path) -> None:
     build_provider(df, provider_dir)
 
 
+def raw_format_smoke(provider_dir: Path) -> dict:
+    calendar_path = provider_dir / 'calendars' / 'day.txt'
+    instrument_path = provider_dir / 'instruments' / 'all.txt'
+    features_dir = provider_dir / 'features'
+    if not calendar_path.exists():
+        raise SystemExit(f'missing qlib calendar: {calendar_path}')
+    if not instrument_path.exists():
+        raise SystemExit(f'missing qlib instruments: {instrument_path}')
+    if not features_dir.exists():
+        raise SystemExit(f'missing qlib features dir: {features_dir}')
+    calendar = [line.strip() for line in calendar_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    instruments = [line.split('\t')[0] for line in instrument_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    if not calendar:
+        raise SystemExit('empty qlib calendar')
+    if not instruments:
+        raise SystemExit('empty qlib instruments')
+    first = instruments[0]
+    first_feature = features_dir / first.lower() / 'close.day.bin'
+    if not first_feature.exists():
+        raise SystemExit(f'missing first close feature: {first_feature}')
+    raw = np.fromfile(first_feature, dtype='<f4')
+    if len(raw) < 2:
+        raise SystemExit(f'close feature is too short: {first_feature}')
+    start_index = int(raw[0])
+    values = raw[1:]
+    if start_index < 0 or start_index >= len(calendar):
+        raise SystemExit(f'invalid qlib feature start_index={start_index} for calendar length={len(calendar)}')
+    if start_index + len(values) > len(calendar):
+        raise SystemExit(
+            f'qlib feature overflows calendar: start_index={start_index}, values={len(values)}, calendar={len(calendar)}'
+        )
+    return {
+        'status': 'PASS',
+        'calendar_count': len(calendar),
+        'instrument_count': len(instruments),
+        'first_instrument': first,
+        'first_close_feature': str(first_feature),
+        'first_start_index': start_index,
+        'first_value_count': int(len(values)),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
@@ -178,6 +243,8 @@ def main() -> None:
     ap.add_argument('--source-csv', help='Backward-compatible alias for --source.')
     ap.add_argument('--source-parquet', help='Backward-compatible alias for --source.')
     ap.add_argument('--provider-dir')
+    ap.add_argument('--instrument-style', default='ts_code', choices=['ts_code', 'tushare', 'provider', 'legacy_qlib', 'qlib', 'raw'])
+    ap.add_argument('--raw-smoke', action='store_true')
     args = ap.parse_args()
 
     factorforge_root = resolve_factorforge_root(args.factorforge_root)
@@ -189,12 +256,14 @@ def main() -> None:
         else factorforge_root / 'runs' / args.report_id / 'qlib_provider'
     )
 
-    df = normalize_source(load_daily_source(source_path))
-    stats = build_provider(df, provider_dir)
+    df = normalize_source(load_daily_source(source_path), instrument_style=args.instrument_style)
+    stats = build_provider(df, provider_dir, instrument_style=args.instrument_style, source_path=source_path)
     print(f'[OK] report_id={args.report_id}')
     print(f'[SOURCE] {source_path}')
     print(f'[PROVIDER] {provider_dir}')
     print('[STATS] ' + json.dumps(stats, ensure_ascii=False, sort_keys=True))
+    if args.raw_smoke:
+        print('[RAW_SMOKE] ' + json.dumps(raw_format_smoke(provider_dir), ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == '__main__':

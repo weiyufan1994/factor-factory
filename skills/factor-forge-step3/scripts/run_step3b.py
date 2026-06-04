@@ -26,7 +26,6 @@ CODEGEN = FF / 'generated_code'
 RUNS = FF / 'runs'
 
 from factor_factory.data_access import infer_signal_column, normalize_trade_date_series
-from factor_factory.data_api import fetch_data_api_dataset
 from factor_factory.artifact_identity import assert_identity_matches, stable_hash
 from factor_factory.factor_families.base import FAMILY_PLUGIN_PRODUCER
 from factor_factory.factor_families.registry import (
@@ -70,9 +69,11 @@ DEFAULT_OPERATOR_SCHEMA_COLUMNS = [
     'volume',
     'vol',
     'amount',
+    'vwap',
     'pct_chg',
     'returns',
     'return',
+    'adv20',
 ]
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
@@ -313,6 +314,40 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     import pandas as pd
 
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
+
+
+def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+    profile = {
+        'label': label,
+        'input_rows': int(len(df)),
+        'sample_limited': False,
+        'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
+        'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
+        'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
+        'output_rows': int(len(df)),
+        'date_count': int(df['trade_date'].nunique()) if 'trade_date' in df.columns else None,
+        'ticker_count': int(df['ts_code'].nunique()) if 'ts_code' in df.columns else None,
+    }
+    if df is None or df.empty or len(df) <= STEP3B_SAMPLE_MAX_ROWS:
+        return df, profile
+    if {'ts_code', 'trade_date'}.issubset(df.columns):
+        work = df.copy()
+        normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
+        dates = sorted(normalized_dates.dropna().unique().tolist())
+        tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
+        mask = normalized_dates.isin(set(dates[-STEP3B_SAMPLE_MAX_DATES:])) & work['ts_code'].astype(str).isin(set(tickers[:STEP3B_SAMPLE_MAX_TICKERS]))
+        sampled = work.loc[mask].copy()
+        if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
+            sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
+    else:
+        sampled = df.head(STEP3B_SAMPLE_MAX_ROWS).copy()
+    profile.update({
+        'sample_limited': True,
+        'output_rows': int(len(sampled)),
+        'date_count': int(sampled['trade_date'].nunique()) if 'trade_date' in sampled.columns else None,
+        'ticker_count': int(sampled['ts_code'].nunique()) if 'ts_code' in sampled.columns else None,
+    })
+    return sampled, profile
 
 
 def sort_contract_key_hash(df: pd.DataFrame) -> str:
@@ -725,6 +760,8 @@ def merge_handoff(existing: dict, updates: dict) -> dict:
     if isinstance(existing_first_run, dict) and isinstance(update_first_run, dict):
         if update_first_run.get('status') == 'pending' and existing_first_run.get('status') in {'ready', 'partial'}:
             merged['first_run_outputs'] = existing_first_run
+        elif update_first_run.get('status') in {'ready', 'partial'}:
+            merged['first_run_outputs'] = update_first_run
         else:
             merged['first_run_outputs'] = {**existing_first_run, **update_first_run}
 
@@ -1296,139 +1333,6 @@ def _run_formula_engine_with_profile(
     return profile_frame, formula_engine_profile
 
 
-def _query_payload(contract: dict, query_set: str, dataset_id: str) -> dict | None:
-    queries = contract.get(query_set) if isinstance(contract, dict) else None
-    if not isinstance(queries, dict):
-        return None
-    query = queries.get(dataset_id)
-    return query if isinstance(query, dict) else None
-
-
-def _fetch_data_api_frame(query: dict):
-    result = fetch_data_api_dataset(
-        str(query.get('dataset')),
-        start=str(query.get('start_date')),
-        end=str(query.get('end_date')),
-        fields=list(query.get('fields') or []),
-        universe=query.get('universe') or 'a_share_all',
-        frequency=query.get('frequency'),
-        catalog_path=query.get('catalog_path'),
-    )
-    if result.status not in {'ready', 'proxy_ready'}:
-        raise SystemExit(f"BLOCK_STEP3B_DATA_API_SAMPLE_FETCH_FAILED: {query.get('dataset')} status={result.status} reason={result.blocked_reason}")
-    return result.frame, result.to_metadata()
-
-
-def _limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
-    profile = {
-        'label': label,
-        'input_rows': int(len(df)),
-        'sample_limited': False,
-        'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
-        'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
-        'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
-        'output_rows': int(len(df)),
-        'date_count': None,
-        'ticker_count': None,
-    }
-    if df is None or df.empty:
-        return df, profile
-    if len(df) <= STEP3B_SAMPLE_MAX_ROWS:
-        profile['date_count'] = int(df['trade_date'].nunique()) if 'trade_date' in df.columns else None
-        profile['ticker_count'] = int(df['ts_code'].nunique()) if 'ts_code' in df.columns else None
-        return df, profile
-    if {'ts_code', 'trade_date'}.issubset(df.columns):
-        work = df.copy()
-        normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
-        dates = sorted(normalized_dates.dropna().unique().tolist())
-        tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
-        keep_dates = set(dates[-STEP3B_SAMPLE_MAX_DATES:])
-        keep_tickers = set(tickers[:STEP3B_SAMPLE_MAX_TICKERS])
-        mask = normalized_dates.isin(keep_dates) & work['ts_code'].astype(str).isin(keep_tickers)
-        sampled = work.loc[mask].copy()
-        if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
-            sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
-    else:
-        sampled = df.head(STEP3B_SAMPLE_MAX_ROWS).copy()
-    profile.update({
-        'sample_limited': True,
-        'output_rows': int(len(sampled)),
-        'date_count': int(sampled['trade_date'].nunique()) if 'trade_date' in sampled.columns else None,
-        'ticker_count': int(sampled['ts_code'].nunique()) if 'ts_code' in sampled.columns else None,
-    })
-    return sampled, profile
-
-
-def _load_step3b_sample_inputs(local_inputs: dict, step4_data_contract: dict | None) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
-    daily_parquet_rel = local_inputs.get('daily_df_parquet')
-    daily_csv_rel = local_inputs.get('daily_df_csv')
-    daily_rel = daily_parquet_rel or daily_csv_rel
-    input_mode = str(local_inputs.get('input_mode') or '')
-    minute_required = input_mode != 'daily_only'
-    minute_path = resolve_local_input_path(minute_rel)
-    daily_path = resolve_local_input_path(daily_rel)
-    daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
-    daily_csv_path = resolve_local_input_path(daily_csv_rel)
-
-    contract = step4_data_contract or local_inputs.get('step4_data_contract') or {}
-    daily_query = _query_payload(contract, 'sample_queries', 'clean_daily_bar')
-    minute_query = _query_payload(contract, 'sample_queries', 'minute_bar')
-    if daily_query:
-        if contract.get('catalog_path'):
-            daily_query = {**daily_query, 'catalog_path': contract.get('catalog_path')}
-            if minute_query:
-                minute_query = {**minute_query, 'catalog_path': contract.get('catalog_path')}
-        daily_df, daily_meta = _fetch_data_api_frame(daily_query)
-        daily_df, daily_limit_profile = _limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
-        if minute_required and minute_query:
-            minute_df, minute_meta = _fetch_data_api_frame(minute_query)
-            minute_df, minute_limit_profile = _limit_step3b_sample_frame(minute_df, label='minute_bar')
-        else:
-            minute_df, minute_meta, minute_limit_profile = pd.DataFrame(), None, None
-        profile = {
-            'source': 'factorforge_data_api_sample',
-            'daily_selected_format': 'data_api_frame',
-            'daily_selected_path': None,
-            'daily_parquet_path': None,
-            'daily_csv_path': None,
-            'minute_selected_path': None,
-            'data_api_sample_metadata': {
-                'clean_daily_bar': daily_meta,
-                **({'minute_bar': minute_meta} if minute_meta else {}),
-            },
-            'sample_limit_profile': {
-                'clean_daily_bar': daily_limit_profile,
-                **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
-            },
-        }
-        return daily_df, minute_df, profile
-
-    if daily_path is not None and daily_path.exists() and (not minute_required or (minute_path is not None and minute_path.exists())):
-        minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
-        daily_df = read_df(daily_path)
-        daily_df, daily_limit_profile = _limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
-        minute_limit_profile = None
-        if not minute_df.empty:
-            minute_df, minute_limit_profile = _limit_step3b_sample_frame(minute_df, label='minute_bar')
-        profile = {
-            'source': 'step3a_local_snapshot_sample_compat',
-            'daily_selected_format': 'parquet' if daily_path.suffix.lower() == '.parquet' else 'csv',
-            'daily_selected_path': str(daily_path),
-            'daily_parquet_path': str(daily_parquet_path) if daily_parquet_path else None,
-            'daily_csv_path': str(daily_csv_path) if daily_csv_path else None,
-            'minute_selected_path': str(minute_path) if minute_path else None,
-            'data_api_sample_metadata': {},
-            'sample_limit_profile': {
-                'clean_daily_bar': daily_limit_profile,
-                **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
-            },
-        }
-        return daily_df, minute_df, profile
-
-    raise SystemExit('BLOCK_STEP3B_SAMPLE_DATA_CONTRACT_MISSING: clean_daily_bar sample query is required')
-
-
 def generate_first_run_factor_values(
     report_id: str,
     factor_id: str,
@@ -1443,14 +1347,23 @@ def generate_first_run_factor_values(
     ts_rank_engine: str | None = None,
     formula_kernel_engine: str | None = None,
     trust_step3a_sort_contract: bool | None = None,
-    step4_data_contract: dict | None = None,
 ) -> dict:
-    """Run only a non-formal sample proof of the factor implementation.
+    """Run only the factor implementation and materialize factor_values.
 
-    Step3B may prove executability and schema completeness on a small Data API
-    sample. It must not create formal factor_values; Step4 owns full data
-    retrieval and the formal factor_values artifact.
+    This intentionally does not call Step4 or any evaluator. Step3B's proof is
+    executability of the factor implementation, not IC/NAV/backtest evidence.
     """
+    minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+    daily_parquet_rel = local_inputs.get('daily_df_parquet')
+    daily_csv_rel = local_inputs.get('daily_df_csv')
+    daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    input_mode = str(local_inputs.get('input_mode') or '')
+    minute_required = input_mode != 'daily_only'
+    minute_path = resolve_local_input_path(minute_rel)
+    daily_path = resolve_local_input_path(daily_rel)
+    daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
+    daily_csv_path = resolve_local_input_path(daily_csv_rel)
+    daily_selected_format = 'parquet' if daily_path and daily_path.suffix.lower() == '.parquet' else 'csv'
     csv_policy = resolve_csv_policy(csv_output_policy)
     trust_sort_contract = resolve_trust_step3a_sort_contract(trust_step3a_sort_contract)
     requested_formula_engine = resolve_formula_engine(formula_engine)
@@ -1473,6 +1386,13 @@ def generate_first_run_factor_values(
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
+    if daily_path is None or not daily_path.exists():
+        raise SystemExit(f'Step3B first-run daily input missing: {daily_path}')
+    if minute_required and (minute_path is None or not minute_path.exists()):
+        raise SystemExit(f'Step3B first-run minute input missing: {minute_path}')
+
+    import pandas as pd
+
     timer = PhaseTimer()
 
     module = import_module_from_path(implementation_path)
@@ -1484,8 +1404,6 @@ def generate_first_run_factor_values(
         metadata if isinstance(metadata, dict) else {},
     )
     module_formula_ir = getattr(module, 'FORMULA_IR', None)
-    daily_path = None
-    daily_parquet_path = None
     selected_formula_engine, adaptive_selector_profile = select_adaptive_formula_engine(
         requested_formula_engine,
         daily_path=daily_path,
@@ -1505,16 +1423,12 @@ def generate_first_run_factor_values(
     lazy_polars_formula_ir = None
 
     with timer.phase('read_inputs'):
-        daily_df, minute_df, input_io_profile = _load_step3b_sample_inputs(local_inputs, step4_data_contract)
+        minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
         if use_lazy_polars_parquet:
             try:
                 from factor_factory.formula.polars_evaluator import read_formula_parquet_sample_for_polars_parity
 
-                daily_parquet_path = Path(input_io_profile.get('daily_parquet_path')) if input_io_profile.get('daily_parquet_path') else None
-                if daily_parquet_path is None:
-                    use_lazy_polars_parquet = False
-                else:
-                    daily_df, lazy_polars_formula_ir = read_formula_parquet_sample_for_polars_parity(module_formula_ir, daily_parquet_path)
+                daily_df, lazy_polars_formula_ir = read_formula_parquet_sample_for_polars_parity(module_formula_ir, daily_path)
             except ModuleNotFoundError as exc:
                 if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
                     raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
@@ -1524,11 +1438,22 @@ def generate_first_run_factor_values(
                 if 'BLOCK_POLARS_EXPERIMENTAL_' in message or 'BLOCK_UNSUPPORTED_FORMULA_SYNTAX' in message:
                     raise SystemExit(message) from exc
                 raise
-    minute_input_row_count = int(len(minute_df))
+        else:
+            daily_df = read_df(daily_path)
+    daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+    minute_limit_profile = None
+    if minute_df is not None and len(minute_df) > 0:
+        minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
+    step3b_sample_limit_profile = {
+        'clean_daily_bar': daily_limit_profile,
+        **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
+    }
+    minute_input_row_count = int(len(minute_df)) if minute_path is not None else 0
     daily_input_row_count = int(len(daily_df))
     input_row_count = int(minute_input_row_count + daily_input_row_count)
 
     formula_engine_profile = _default_formula_engine_profile()
+    formula_engine_profile['step3b_sample_limit_profile'] = step3b_sample_limit_profile
     with timer.phase('compute_factor'):
         try:
             profiled_result, formula_engine_profile = _run_formula_engine_with_profile(
@@ -1538,7 +1463,7 @@ def generate_first_run_factor_values(
                 operator_profile=operator_profile_enabled,
                 ts_rank_engine_config=ts_rank_engine_config,
                 formula_kernel_config=formula_kernel_config,
-                daily_parquet_path=Path(input_io_profile['daily_parquet_path']) if input_io_profile.get('daily_parquet_path') else None,
+                daily_parquet_path=daily_parquet_path,
                 formula_ir_override=lazy_polars_formula_ir,
             )
             if profiled_result is not None:
@@ -1572,9 +1497,9 @@ def generate_first_run_factor_values(
             raise
     formula_engine_profile['adaptive_selector'] = adaptive_selector_profile
     if result_df is None or len(result_df) == 0:
-        raise SystemExit('Step3B sample implementation returned empty factor values')
+        raise SystemExit('Step3B first-run implementation returned empty factor values')
     if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
-        raise SystemExit('Step3B sample output must include ts_code and trade_date')
+        raise SystemExit('Step3B first-run output must include ts_code and trade_date')
 
     with timer.phase('normalize_sort'):
         signal_col = infer_signal_column(result_df, factor_id=factor_id)
@@ -1606,9 +1531,15 @@ def generate_first_run_factor_values(
     factor_csv = run_dir / f'step3b_sample_factor_values__{report_id}.csv'
     factor_csv_sample = run_dir / f'step3b_sample_factor_values_sample__{report_id}.csv'
     run_meta = run_dir / f'step3b_sample_run_metadata__{report_id}.json'
-    for stale_csv in [factor_csv, factor_csv_sample]:
-        if stale_csv.exists() or stale_csv.is_symlink():
-            stale_csv.unlink()
+    legacy_formal_paths = [
+        run_dir / f'factor_values__{report_id}.parquet',
+        run_dir / f'factor_values__{report_id}.csv',
+        run_dir / f'factor_values_sample__{report_id}.csv',
+        run_dir / f'run_metadata__{report_id}.json',
+    ]
+    for stale_path in [factor_csv, factor_csv_sample, *legacy_formal_paths]:
+        if stale_path.exists() or stale_path.is_symlink():
+            stale_path.unlink()
     with timer.phase('write_parquet'):
         result_df.to_parquet(factor_parquet, index=False)
     with timer.phase('write_csv'):
@@ -1652,8 +1583,7 @@ def generate_first_run_factor_values(
     full_csv_absent_validated = csv_policy in {'sample_csv', 'no_csv'} and not factor_csv.exists()
     csv_output_profile = {
         'version': 'factorforge_csv_output_profile_v1',
-        'formal_evidence_format': None,
-        'sample_evidence_format': 'parquet',
+        'formal_evidence_format': 'parquet',
         'csv_output_policy': csv_policy,
         'factor_parquet_path': str(factor_parquet),
         'factor_csv_path': str(csv_path) if csv_path else None,
@@ -1681,9 +1611,6 @@ def generate_first_run_factor_values(
         'factor_id': factor_id,
         'artifact_identity': derive_child_identity(artifact_identity or {}, artifact_role='step3b_sample_run_metadata', producer='step3b_sample_proof') if artifact_identity else None,
         'producer': 'step3b_sample_proof',
-        'is_formal_factor_values': False,
-        'purpose': 'step3_executability_proof',
-        'formal_factor_values_owner': 'Step4',
         'implementation_path': str(implementation_path),
         'signal_column': signal_col,
         'row_count': int(len(result_df)),
@@ -1694,20 +1621,26 @@ def generate_first_run_factor_values(
             'end': str(result_df['trade_date'].max()),
         },
         'input_paths': {
-            'minute': input_io_profile.get('minute_selected_path'),
-            'daily': input_io_profile.get('daily_selected_path'),
+            'minute': str(minute_path) if minute_path else None,
+            'daily': str(daily_path),
         },
-        'step4_data_contract': step4_data_contract or local_inputs.get('step4_data_contract') or {},
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
-        'boundary_note': 'Step3B produced only non-formal sample factor values; Step4 owns full data fetch, formal factor_values, IC/NAV/backtest evaluation.',
+        'boundary_note': 'Step3B sample proof validates code executability only; Step4 owns full-data factor_values, IC/NAV, and backtest evaluation.',
+        'sample_only': True,
+        'step3b_scope': 'sample_executability_proof_only',
+        'is_formal_factor_values': False,
+        'formal_factor_values_owner': 'Step4',
         'performance_profile': {
             'version': 'factorforge_step3b_performance_profile_v1',
             'row_count': int(len(result_df)),
             'phase_seconds': phase_seconds,
             'input_io_profile': {
-                **input_io_profile,
+                'daily_selected_format': daily_selected_format,
+                'daily_selected_path': str(daily_path) if daily_path else None,
+                'daily_parquet_path': str(daily_parquet_path) if daily_parquet_path else None,
+                'daily_csv_path': str(daily_csv_path) if daily_csv_path else None,
             },
             'normalize_sort': {
                 'already_sorted': bool(already_sorted),
@@ -1735,11 +1668,11 @@ def generate_first_run_factor_values(
     return {
         'status': 'ready',
         'output_paths': output_paths,
+        'factor_values_path': str(factor_parquet.relative_to(FF)),
         'csv_output_profile': csv_output_profile,
         'run_metadata_path': str(run_meta.relative_to(FF)),
-        'producer': 'step3b_sample_proof',
+        'producer': 'step3b',
         'is_formal_factor_values': False,
-        'purpose': 'step3_executability_proof',
         'formal_factor_values_owner': 'Step4',
         'signal_column': signal_col,
         'row_count': int(len(result_df)),
@@ -2578,23 +2511,15 @@ def main():
     })
     write_json(handoff_path, handoff_payload)
 
-    # Step3B may run a small non-formal sample proof when Data API sample queries
-    # or legacy local snapshots are available. Formal factor_values are Step4-only.
+    # Business-acceptance upgrade: if local execution snapshots already exist and a real implementation
+    # is available, Step 3B should also generate first-run factor values instead of stopping at plan/code only.
     local_inputs = prep.get('local_input_paths') or {}
-    step4_data_contract = (
-        prep.get('step4_data_contract')
-        or local_inputs.get('step4_data_contract')
-        or existing_handoff.get('step4_data_contract')
-        or {}
-    )
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     input_mode = str(local_inputs.get('input_mode') or '')
     executable_daily_only = input_mode == 'daily_only' and daily_rel
     executable_minute_daily = minute_rel and daily_rel
-    sample_queries = step4_data_contract.get('sample_queries') if isinstance(step4_data_contract, dict) else {}
-    executable_data_api_sample = isinstance(sample_queries, dict) and bool(sample_queries.get('clean_daily_bar'))
-    if (executable_minute_daily or executable_daily_only or executable_data_api_sample) and executable_impl_abs.exists():
+    if (executable_minute_daily or executable_daily_only) and executable_impl_abs.exists():
         first_run_outputs = generate_first_run_factor_values(
             report_id=report_id,
             factor_id=factor_id,
@@ -2609,7 +2534,6 @@ def main():
             ts_rank_engine=args.ts_rank_engine,
             formula_kernel_engine=args.formula_kernel_engine,
             trust_step3a_sort_contract=args.trust_step3a_sort_contract if args.trust_step3a_sort_contract else None,
-            step4_data_contract=step4_data_contract,
         )
         implementation_plan['first_run_outputs'] = first_run_outputs
         implementation_plan['step4_contract']['runner_entry'] = executable_impl_rel

@@ -1001,6 +1001,7 @@ def case_step6_bad_provenance(root: Path, summaries: Path) -> dict[str, Any]:
     cmd = ultimate_command(root, rid, "6", "6", proof)
     started = time.time()
     run = run_capture(cmd, factorforge_root=root)
+    text = (run.get("stdout_tail") or "") + "\n" + (run.get("stderr_tail") or "")
     extra = {
         "research_iteration_exists": (root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json").exists(),
         "handoff_to_step3b_exists": (root / "objects" / "handoff" / f"handoff_to_step3b__{rid}.json").exists(),
@@ -1008,8 +1009,9 @@ def case_step6_bad_provenance(root: Path, summaries: Path) -> dict[str, Any]:
         "library_official_exists": (root / "objects" / "factor_library_official" / f"factor_record__{rid}.json").exists(),
         "knowledge_exists": (root / "objects" / "research_knowledge_base" / f"knowledge_record__{rid}.json").exists(),
         "prewrite_diagnostic_exists": (root / "objects" / "validation" / f"step6_prewrite_block__{rid}.json").exists(),
+        "awaiting_main_agent_mechanism_memo": "AWAITING_MAIN_AGENT_MECHANISM_MEMO" in text,
     }
-    result = finalize_case(case_name=case, report_id=rid, factorforge_root=root, run=run, expected=Expected("BLOCK", "STEP6_PREWRITE_BLOCK"), proof_path=proof, started_epoch=started, extra_actual=extra)
+    result = finalize_case(case_name=case, report_id=rid, factorforge_root=root, run=run, expected=Expected("PASS"), proof_path=proof, started_epoch=started, extra_actual=extra)
     forbidden = [
         "research_iteration_exists",
         "handoff_to_step3b_exists",
@@ -1017,7 +1019,7 @@ def case_step6_bad_provenance(root: Path, summaries: Path) -> dict[str, Any]:
         "library_official_exists",
         "knowledge_exists",
     ]
-    if any(extra[key] for key in forbidden) or not extra["prewrite_diagnostic_exists"]:
+    if any(extra[key] for key in forbidden) or not extra["awaiting_main_agent_mechanism_memo"]:
         result["actual_result"]["status"] = "FAIL"
     return result
 

@@ -38,6 +38,27 @@ RUNS = CTX.runs_root
 EVALS = CTX.evaluations_root
 
 
+def resolve_provider_uri(report_id: str) -> Path:
+    raw = os.getenv("QLIB_PROVIDER_URI")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return RUNS / report_id / "qlib_provider"
+
+
+def provider_instrument_style(provider_uri: Path) -> str:
+    metadata_path = provider_uri / "provider_metadata.json"
+    if not metadata_path.exists():
+        return "ts_code"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "ts_code"
+    style = metadata.get("instrument_style")
+    if style in {"ts_code", "tushare", "provider", "legacy_qlib", "qlib", "raw"}:
+        return str(style)
+    return "ts_code"
+
+
 def write_line_plot(df: pd.DataFrame, columns: list[str], path: Path, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(10, 4.5))
@@ -77,9 +98,10 @@ def run_native(
     n_drop: int = 5,
     output_dir: str | Path | None = None,
 ) -> dict:
-    provider_uri = RUNS / report_id / "qlib_provider"
+    provider_uri = resolve_provider_uri(report_id)
     if not provider_uri.exists():
         raise SystemExit(f"missing qlib provider: {provider_uri}")
+    instrument_style = provider_instrument_style(provider_uri)
 
     factor_df, signal_col, factor_id = load_factor_values_with_signal(report_id)
     if universe_limit and universe_limit > 0:
@@ -89,7 +111,7 @@ def run_native(
     qlib_signal = to_qlib_signal_frame(
         factor_df[["ts_code", "trade_date", signal_col]].copy(),
         signal_col=signal_col,
-        instrument_style="ts_code",
+        instrument_style=instrument_style,
     )
 
     qlib.init(provider_uri=str(provider_uri), region="cn")
@@ -153,6 +175,7 @@ def run_native(
         "status": "success",
         "engine": "run_qlib_native_report",
         "provider_uri": str(provider_uri),
+        "instrument_style": instrument_style,
         "metrics_summary": {
             "freq_key": str(freq_key),
             "rows": int(len(metrics_df)),

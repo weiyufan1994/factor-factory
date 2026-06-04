@@ -32,6 +32,11 @@
 - `daily_to_qlib_features(...)`
 - `daily_basic_to_qlib_features(...)`
 
+4. qlib provider 发布层
+- `scripts/publish_qlib_daily_provider.py`
+- 输入只能是 clean daily parquet/csv 或独立 Data API catalog 的 `clean_daily_bar`
+- 输出是 Microsoft Qlib provider/store 目录，不负责清洗数据或计算因子值
+
 额外地，Step4 公共输入逻辑也已经抽出：
 
 - `load_factor_values(...)`
@@ -144,13 +149,14 @@ Step4 的两个核心 backend 现在都已经收口：
 这套设计还没有做两件事：
 
 1. 还没有把 `daily_basic_incremental` 大规模同步到本地 Mac 缓存
-2. 还没有做 qlib provider/store 的正式落盘转换
+2. qlib provider/store 已有正式发布入口，但需要在研究机上按日频更新流程定时运行并把 provider 同步到 S3
 
 所以当前阶段的正确理解是：
 
 - 已经有统一访问层
 - 已经有 qlib-friendly frame 适配层
-- 还没有正式 qlib bundle builder
+- 已经有正式 qlib provider publisher
+- Mac 需要 provider 时从 S3 同步，正式重计算优先派发到研究机
 
 ## 推荐协作约定
 
@@ -160,9 +166,10 @@ Step4 的两个核心 backend 现在都已经收口：
 2. 没有再补到共享层，不要直接在业务脚本里临时写死
 3. 如果是 qlib 相关，优先补 `to_qlib_*` 这类轻适配函数
 4. 如果以后真要落 qlib provider/store，再单独建 `bundle` / `store` 模块，不污染当前访问层
+5. qlib provider publisher 只消费 clean daily / Data API，不能自行解析 raw Tushare 或执行清洗逻辑
 
 ## 一句话版
 
 一句话讲给 Bernard 和 Humphrey：
 
-> 以后先用 `factor_factory.data_access` 拿日频数据；要喂 qlib，就再走 `to_qlib_*`；不要在业务脚本里自己猜路径、自己转 instrument、自己算 forward return。
+> 以后先用 `factor_factory.data_access` 或独立 Data API 拿日频数据；要喂 qlib，就用 `scripts/publish_qlib_daily_provider.py` 发布 provider；不要在业务脚本里自己猜路径、自己转 instrument、自己算 forward return。

@@ -241,7 +241,11 @@ def _assign_quantile_labels(series: pd.Series, groups: int) -> pd.Series:
     if valid.empty or len(valid) < 20:
         return pd.Series(index=series.index, dtype='float64')
 
-    bucket_count = min(groups, int(valid.nunique()), len(valid))
+    # rank(method='first') intentionally gives deterministic tie-breaking so
+    # diagnostic decile tables keep the formal 10-group contract even on tied
+    # factor days. Using nunique here can silently collapse a single date into
+    # fewer groups and poison the full table with NaNs.
+    bucket_count = min(groups, len(valid))
     if bucket_count < 2:
         return pd.Series(index=series.index, dtype='float64')
 

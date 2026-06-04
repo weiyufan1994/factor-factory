@@ -53,6 +53,7 @@ from factor_factory.artifact_identity import (
 )
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
+from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 
 
@@ -910,6 +911,30 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     family_plugin_selection = explicit_family_plugin_selection(aim, primary)
     hybrid_contract = build_hybrid_contract(primary, aim) if implementation_mode == 'hybrid' else None
     direct_code_source_contract = explicit_direct_code_source_contract(primary, aim) if implementation_mode == 'direct_code' else {}
+    formula_text = str(primary.get('raw_formula_text') or '')
+    formula_ir = primary.get('formula_ir') if isinstance(primary.get('formula_ir'), dict) else {}
+    canonical_required_fields = (
+        formula_ir.get('required_fields')
+        if isinstance(formula_ir, dict) and formula_ir.get('required_fields')
+        else primary.get('required_inputs', [])
+    )
+    standard_formula_fields_contract = build_standard_formula_fields_contract(
+        formula_text=formula_text,
+        required_fields=canonical_required_fields,
+        available_source_fields=[
+            'amount',
+            'close',
+            'high',
+            'low',
+            'open',
+            'pct_chg',
+            'pre_close',
+            'returns',
+            'vol',
+            'volume',
+            'vwap',
+        ],
+    )
 
     master = {
         'contract_version': STEP2_SOURCE_CONTRACT_VERSION,
@@ -929,16 +954,17 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'window_end': aim.get('window_end'),
         },
         'canonical_spec': {
-            'formula_text': primary.get('raw_formula_text', ''),
+            'formula_text': formula_text,
             'formula_ir': primary.get('formula_ir'),
             'formula_parse_error': primary.get('formula_parse_error'),
             'parse_status': ((primary.get('formula_ir') or {}).get('parse_status') if isinstance(primary.get('formula_ir'), dict) else None),
             'qlib_expression': primary.get('qlib_expression'),
             'operator_set': ((primary.get('formula_ir') or {}).get('operator_set') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('operators', []),
-            'required_fields': ((primary.get('formula_ir') or {}).get('required_fields') if isinstance(primary.get('formula_ir'), dict) else None) or primary.get('required_inputs', []),
+            'required_fields': canonical_required_fields,
             'resolved_fields': ((primary.get('formula_ir') or {}).get('resolved_fields') if isinstance(primary.get('formula_ir'), dict) else None) or {},
             'required_inputs': primary.get('required_inputs', []),
             'operators': primary.get('operators', []),
+            'standard_formula_fields_contract': standard_formula_fields_contract,
             'time_series_steps': primary.get('time_series_steps', []),
             'cross_sectional_steps': primary.get('cross_sectional_steps', []),
             'preprocessing': primary.get('preprocessing', []),
@@ -1007,6 +1033,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'reuse_instruction_for_future_agents': research_contract['reuse_instruction_for_future_agents'],
         },
         'research_contract': research_contract,
+        'standard_formula_fields_contract': standard_formula_fields_contract,
         'ambiguities': list(dict.fromkeys(primary.get('ambiguities', []) + primary.get('inferred_items', []))),
         'human_review_required': human_review_required,
         'chief_decision': chief_decision,

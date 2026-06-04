@@ -36,6 +36,7 @@
     "scripts/run_factorforge_formal_artifact_smoke.py",
     "scripts/run_factorforge_formal_llm_bridge_smoke.py",
     "scripts/run_factorforge_run_isolation_smoke.py",
+    "scripts/run_factorforge_standard_formula_fields_contract_smoke.py",
     "scripts/run_factorforge_knowledge_sync_smoke.py",
     "scripts/run_factorforge_mechanism_math_v2_smoke.py",
     "scripts/run_factorforge_multibranch_comparison_smoke.py",

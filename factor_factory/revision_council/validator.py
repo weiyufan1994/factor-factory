@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .guards import FORBIDDEN_TEXT_TOKEN, scan_forbidden_text
@@ -47,12 +48,42 @@ def _nonempty_str_list(value: Any, *, min_count: int = 1) -> bool:
     )
 
 
+def _normalized_words(value: Any) -> str:
+    return " ".join(re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+", str(value or "").lower()))
+
+
 VALID_REVISION_MODEL_LAYERS = {
     "economic_hypothesis",
     "primary_mechanism_model",
     "stochastic_projection",
     "observable_estimator",
     "implementation_contract",
+}
+VALID_RESEARCH_EQUATION_REVISION_TARGETS = {
+    "assumptions",
+    "latent_state",
+    "observable_estimator",
+    "price_process_projection",
+    "implementation_contract",
+    "trading_cost",
+    "drawdown_geometry",
+}
+GENERIC_RESEARCH_EQUATION_REVISION_TEXT = {
+    "improve the model",
+    "improve model",
+    "metrics improve",
+    "test metrics",
+    "make it better",
+    "fix the model",
+}
+REVISION_TARGET_EVIDENCE_TERMS = {
+    "assumptions": {"assumption", "assumptions", "validity", "scope", "regime"},
+    "latent_state": {"latent", "state"},
+    "observable_estimator": {"observable", "estimator", "measurement", "equation", "detector", "rank_ic"},
+    "price_process_projection": {"drift", "diffusion", "jump", "friction", "regime_transition", "projection"},
+    "implementation_contract": {"implementation", "contract", "direct_code", "operator", "hybrid"},
+    "trading_cost": {"turnover", "cost", "cogs", "slippage", "fee"},
+    "drawdown_geometry": {"drawdown", "recovery", "area", "pain"},
 }
 
 VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES = {
@@ -63,6 +94,117 @@ VALID_FORMULA_IMPLIED_IMPLICATION_CLASSES = {
     "tradable_anomaly",
     "new_factor_seed",
 }
+DIRAC_REPORT_REQUIRED_SECTIONS = {
+    "research_equation_or_soft_law",
+    "formula_implied_information",
+    "metric_anomaly_review",
+    "model_linked_metric_signature",
+    "stochastic_projection_consistency_check",
+    "volatility_drag_review",
+    "drawdown_recovery_area_review",
+    "component_level_revision_axes",
+    "direction_losing_transform_review",
+    "dimensional_or_unit_consistency_review",
+}
+DIRAC_ANOMALY_CLASSES = {
+    "bug",
+    "data_artifact",
+    "implementation_artifact",
+    "direction_or_sign_error",
+    "formula_measures_avoid_state",
+    "tradable_anomaly",
+    "new_factor_seed",
+    "kill_signal",
+    "under_specified",
+}
+
+
+def validate_dirac_research_report_contract(report: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if not isinstance(report, dict):
+        return ["BLOCK_DIRAC_RESEARCH_REPORT_NOT_OBJECT"]
+    missing = sorted(section for section in DIRAC_REPORT_REQUIRED_SECTIONS if not report.get(section))
+    if missing:
+        reasons.append("BLOCK_DIRAC_RESEARCH_REPORT_SECTION_MISSING:" + ",".join(missing))
+    info = report.get("formula_implied_information")
+    if not _nonempty_object_list(info):
+        reasons.append("BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING")
+    else:
+        for idx, item in enumerate(info):
+            required = [
+                "formula_component",
+                "observable",
+                "implied_latent_state",
+                "payer_or_constraint",
+                "expected_sign",
+                "falsification_metric",
+            ]
+            if any(not _has_nonempty_text(item, key) for key in required):
+                reasons.append(f"BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING:{idx}")
+                continue
+            latent = _normalized_words(item.get("implied_latent_state"))
+            if latent in {"close", "volume", "vwap", "returns", "formula", "raw field", "raw fields"}:
+                reasons.append(f"BLOCK_DIRAC_FORMULA_RAW_RESTATEMENT:{idx}")
+    anomaly = report.get("metric_anomaly_review")
+    if not isinstance(anomaly, dict):
+        reasons.append("BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING")
+    else:
+        classifications = anomaly.get("classifications")
+        if not isinstance(classifications, list) or not classifications:
+            reasons.append("BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING")
+        else:
+            for item in classifications:
+                if not isinstance(item, dict) or item.get("classification") not in DIRAC_ANOMALY_CLASSES:
+                    reasons.append("BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING")
+                    break
+        signature = anomaly.get("positive_ic_negative_long_side")
+        if signature is True and not any(
+            isinstance(item, dict) and item.get("classification") in {"direction_or_sign_error", "formula_measures_avoid_state", "tradable_anomaly", "under_specified"}
+            for item in classifications or []
+        ):
+            reasons.append("BLOCK_DIRAC_POSITIVE_IC_NEGATIVE_LONG_WITHOUT_ANOMALY")
+    for section, token in [
+        ("model_linked_metric_signature", "BLOCK_DIRAC_MODEL_LINKED_METRICS_MISSING"),
+        ("stochastic_projection_consistency_check", "BLOCK_DIRAC_STOCHASTIC_PROJECTION_CHECK_MISSING"),
+        ("volatility_drag_review", "BLOCK_DIRAC_VOLATILITY_DRAG_REVIEW_MISSING"),
+        ("drawdown_recovery_area_review", "BLOCK_DIRAC_DRAWDOWN_RECOVERY_AREA_REVIEW_MISSING"),
+    ]:
+        if not isinstance(report.get(section), dict) or not report.get(section):
+            reasons.append(token)
+    return list(dict.fromkeys(reasons))
+
+
+def validate_component_council_packet(packet: dict[str, Any], *, formula_text: str = "", metrics: dict[str, Any] | None = None) -> list[str]:
+    reasons: list[str] = []
+    if not isinstance(packet, dict):
+        return ["BLOCK_COUNCIL_COMPONENT_PACKET_MISSING"]
+    required = [
+        "component_revision_axes",
+        "component_ablation_plan",
+        "direction_losing_transform_review",
+        "dimensional_consistency_review",
+        "latent_state_independence_review",
+        "stochastic_projection_falsification",
+        "branch_kill_criteria",
+    ]
+    missing = [key for key in required if key not in packet]
+    if missing:
+        reasons.append("BLOCK_COUNCIL_COMPONENT_PACKET_MISSING:" + ",".join(missing))
+    text = str(formula_text or "").lower()
+    if ("+" in text or "add(" in text or "weighted" in text) and not _nonempty_list(packet.get("component_ablation_plan")):
+        reasons.append("BLOCK_COUNCIL_COMPONENT_ABLATION_MISSING")
+    if "abs(" in text and "corr" in text and not _nonempty_dict(packet.get("direction_losing_transform_review")):
+        reasons.append("BLOCK_COUNCIL_DIRECTION_LOSS_REVIEW_MISSING")
+    horizons = []
+    for func in re.finditer(r"\b(?:delay|delta|sum|mean|corr|correlation|adv|ts_rank)\s*\(([^)]*)\)", text):
+        horizons.extend(int(item) for item in re.findall(r"\b([1-9][0-9]*)\b", func.group(1)))
+    horizons.extend(int(item) for item in re.findall(r"\badv([1-9][0-9]*)\b", text))
+    if horizons and (max(horizons) / max(1, min(horizons)) >= 5) and not packet.get("time_scale_consistency_review"):
+        reasons.append("BLOCK_COUNCIL_TIME_SCALE_REVIEW_MISSING")
+    metrics = metrics or {}
+    if metrics.get("rank_ic_mean", 0) > 0 and metrics.get("long_side_annual_return", 0) < 0 and not packet.get("positive_ic_negative_long_branch"):
+        reasons.append("BLOCK_COUNCIL_POSITIVE_IC_NEGATIVE_LONG_BRANCH_MISSING")
+    return list(dict.fromkeys(reasons))
 
 
 def _model_layer_attribution_present(proposal: dict[str, Any]) -> bool:
@@ -225,6 +367,48 @@ def _validate_formula_implied_information_review(proposal: dict[str, Any]) -> li
     return list(dict.fromkeys(reasons))
 
 
+def _validate_research_equation_revision(proposal: dict[str, Any]) -> list[str]:
+    revision = proposal.get("research_equation_revision")
+    if not isinstance(revision, dict):
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
+    target = revision.get("equation_component_target")
+    equation_change = revision.get("equation_change")
+    signature_change = revision.get("expected_metric_signature_change")
+    falsification_tests = revision.get("falsification_tests")
+    if (
+        target not in VALID_RESEARCH_EQUATION_REVISION_TARGETS
+        or not _nonempty_str(revision.get("equation_change"))
+        or not _nonempty_str_list(revision.get("expected_metric_signature_change"), min_count=1)
+        or not _nonempty_str_list(revision.get("falsification_tests"), min_count=1)
+    ):
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_MISSING"]
+    texts = [equation_change, *(signature_change or []), *(falsification_tests or [])]
+    normalized_texts = [_normalized_words(text) for text in texts]
+    blob = " ".join(normalized_texts)
+    target_terms = REVISION_TARGET_EVIDENCE_TERMS.get(str(target), set())
+    metric_terms = {
+        "rank_ic",
+        "long_side_return",
+        "cost_adjusted_return",
+        "turnover",
+        "volatility_drag",
+        "max_drawdown",
+        "drawdown",
+        "recovery",
+    }
+    has_target_or_metric_evidence = any(term in blob for term in target_terms | metric_terms)
+    has_generic_revision_text = any(
+        text in GENERIC_RESEARCH_EQUATION_REVISION_TEXT
+        or any(phrase in text for phrase in GENERIC_RESEARCH_EQUATION_REVISION_TEXT)
+        for text in normalized_texts
+    )
+    if has_generic_revision_text and not has_target_or_metric_evidence:
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
+    if not has_target_or_metric_evidence:
+        return ["BLOCK_COUNCIL_RESEARCH_EQUATION_REVISION_GENERIC"]
+    return []
+
+
 def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     """Return block reasons. Empty means valid."""
     reasons: list[str] = []
@@ -272,6 +456,7 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
 
     reasons.extend(_validate_derivation_record(proposal))
     reasons.extend(_validate_formula_implied_information_review(proposal))
+    reasons.extend(_validate_research_equation_revision(proposal))
 
     guards = proposal.get("forbidden_changes_ack") or []
     missing_guards = [item for item in REQUIRED_GUARDS if item not in guards]

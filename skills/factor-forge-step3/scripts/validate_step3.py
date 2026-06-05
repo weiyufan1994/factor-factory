@@ -22,6 +22,8 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_generated_by_step3a_llm_provider',
 }
 
+from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
+
 
 def validate_sort_contract(contract: dict) -> None:
     if not contract:
@@ -195,6 +197,257 @@ def validate_daily_io_contract(local_inputs: dict, *, require_full_parity: bool 
             )
 
 
+def _formula_ir_constants(node) -> list[int | float]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'constant':
+        value = node.get('value')
+        if isinstance(value, (int, float)):
+            return [value]
+        try:
+            return [int(str(value))]
+        except Exception:
+            return []
+    constants: list[int | float] = []
+    for child in node.get('args') or []:
+        constants.extend(_formula_ir_constants(child))
+    return constants
+
+
+def _operator_lookback(operator: str, constants: list[int | float]) -> int | None:
+    operator = str(operator or '').lower()
+    if operator in {
+        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+    } and constants:
+        last = constants[-1]
+        if isinstance(last, float) and not last.is_integer():
+            return None
+        value = int(last)
+        return value if value > 0 else None
+    return None
+
+
+def _formula_ir_fields(node) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'field':
+        field = node.get('resolved_field') or node.get('name')
+        return [str(field).strip().lower()] if str(field or '').strip() else []
+    fields: list[str] = []
+    for child in node.get('args') or []:
+        fields.extend(_formula_ir_fields(child))
+    return list(dict.fromkeys(fields))
+
+
+def _field_unit(field: str) -> str:
+    field = str(field or '').strip().lower()
+    if field in {'open', 'high', 'low', 'close', 'pre_close', 'vwap'}:
+        return 'price'
+    if field in {'volume', 'vol'} or field.startswith('adv'):
+        return 'documented_volume_unit'
+    if field == 'amount':
+        return 'documented_amount_unit'
+    if field in {'returns', 'return', 'ret', 'pct_chg'}:
+        return 'decimal_return'
+    return 'numeric'
+
+
+def _operator_output_unit(operator: str, child_units: list[str]) -> str:
+    operator = str(operator or '').lower()
+    if operator in {'rank', 'ts_rank'}:
+        return 'rank_score'
+    if operator in {'correlation', 'corr'}:
+        return 'dimensionless_correlation'
+    if operator == 'covariance':
+        return 'source_unit_product'
+    if operator in {'argmax', 'argmin'}:
+        return 'window_position'
+    if operator == 'delay':
+        return child_units[0] if child_units else 'numeric'
+    units = {str(unit) for unit in child_units if str(unit)}
+    if operator in {'plus', 'minus'} and units == {'rank_score'}:
+        return 'composite_rank_score'
+    if len(units) == 1:
+        return next(iter(units))
+    return 'numeric'
+
+
+def _formula_ir_output_unit(node) -> str:
+    if not isinstance(node, dict):
+        return 'numeric'
+    if node.get('type') == 'field':
+        return _field_unit(str(node.get('resolved_field') or node.get('name') or ''))
+    if node.get('type') == 'constant':
+        return 'numeric'
+    if node.get('type') != 'operator':
+        return 'numeric'
+    operator = str(node.get('operator') or '').strip().lower()
+    child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+    return _operator_output_unit(operator, child_units)
+
+
+def expected_formula_operator_contracts(formula_ir: dict) -> list[dict]:
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    expected: list[dict] = []
+
+    def visit(node) -> None:
+        if not isinstance(node, dict):
+            return
+        for child in node.get('args') or []:
+            visit(child)
+        if node.get('type') != 'operator':
+            return
+        operator = str(node.get('operator') or '').strip().lower()
+        if not operator:
+            return
+        fields = _formula_ir_fields(node)
+        child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+        item = {
+            'operator': operator,
+            'sources': fields,
+            'output_unit': _operator_output_unit(operator, child_units),
+        }
+        lookback = _operator_lookback(operator, _formula_ir_constants(node))
+        if lookback is not None:
+            item['lookback_window'] = lookback
+        if operator == 'rank':
+            item['rank_scope_required'] = True
+        expected.append(item)
+
+    visit(root)
+    return expected
+
+
+def validate_derived_field_contract(
+    local_inputs: dict,
+    required_fields: list[str] | None = None,
+    expected_operators: list[dict] | None = None,
+) -> None:
+    contract = local_inputs.get('derived_field_contract')
+    assert isinstance(contract, dict) and contract, (
+        'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: derived_field_contract missing'
+    )
+    assert contract.get('version') == 'factorforge_derived_field_contract_v1', (
+        'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: invalid derived_field_contract.version'
+    )
+    assert contract.get('report_local_only') is True, (
+        'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: derived fields must be report-local only'
+    )
+    assert contract.get('clean_data_mutation') is False, (
+        'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: Step3A derived fields must not mutate clean data'
+    )
+    assert contract.get('validation_result') == 'PASS', (
+        'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: derived_field_contract.validation_result must be PASS'
+    )
+    derived = contract.get('derived_fields')
+    assert isinstance(derived, dict), (
+        'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: derived_field_contract.derived_fields must be a dict'
+    )
+    for field, spec in derived.items():
+        assert isinstance(spec, dict), (
+            f'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: derived field {field} spec invalid'
+        )
+        assert isinstance(spec.get('sources'), list) and spec.get('sources'), (
+            f'BLOCK_STANDARD_FORMULA_FIELD_SOURCE_MISSING: derived field {field} sources missing'
+        )
+        assert spec.get('rule'), (
+            f'BLOCK_STANDARD_FORMULA_DERIVATION_POLICY_MISSING: derived field {field} rule missing'
+        )
+        assert isinstance(spec.get('source_units'), dict) and spec.get('output_unit'), (
+            f'BLOCK_STANDARD_FORMULA_FIELD_UNIT_AMBIGUOUS: derived field {field} unit policy missing'
+        )
+        ambiguous_units = [
+            f'{source}:{unit}'
+            for source, unit in spec.get('source_units', {}).items()
+            if 'ambiguous' in str(unit).lower() or 'percent_or_decimal' in str(unit).lower()
+        ]
+        assert not ambiguous_units, (
+            f'BLOCK_STANDARD_FORMULA_FIELD_UNIT_AMBIGUOUS: derived field {field} ambiguous source units {ambiguous_units}'
+        )
+        assert spec.get('leakage_policy') == 'no future data', (
+            f'BLOCK_STANDARD_FORMULA_FIELD_LEAKAGE_POLICY_MISSING: derived field {field} leakage_policy missing'
+        )
+        operator = str(spec.get('operator') or '').lower()
+        if str(field).lower().startswith('adv') or operator in {
+            'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+            'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+        }:
+            assert spec.get('lookback_window'), (
+                f'BLOCK_STANDARD_FORMULA_DERIVATION_POLICY_MISSING: derived field {field} lookback_window missing'
+            )
+        if operator == 'rank':
+            assert spec.get('rank_scope'), (
+                f'BLOCK_STANDARD_FORMULA_DERIVATION_POLICY_MISSING: derived field {field} rank_scope missing'
+            )
+    required = {str(field).strip().lower() for field in (required_fields or []) if str(field).strip()}
+    produced = set(derived.keys()) | set(contract.get('standard_formula_fields_added') or [])
+    existing_passthrough = set(contract.get('source_fields') or [])
+    missing = sorted(required - produced - existing_passthrough)
+    assert not missing, (
+        f'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: required fields missing from derived contract {missing}'
+    )
+    expected = [item for item in (expected_operators or []) if isinstance(item, dict) and item.get('operator')]
+    if expected:
+        remaining = list(derived.items())
+        missing_ops: list[str] = []
+        mismatched_ops: list[str] = []
+        for item in expected:
+            operator = str(item.get('operator') or '').lower()
+            matched_idx = None
+            mismatch_reasons: list[str] = []
+            for idx, (_field, spec) in enumerate(remaining):
+                if str(spec.get('operator') or '').lower() != operator:
+                    continue
+                if item.get('lookback_window') is not None and spec.get('lookback_window') != item.get('lookback_window'):
+                    mismatch_reasons.append(f'lookback expected={item.get("lookback_window")} actual={spec.get("lookback_window")}')
+                    continue
+                if item.get('rank_scope_required') and not spec.get('rank_scope'):
+                    mismatch_reasons.append('rank_scope missing')
+                    continue
+                expected_sources = {str(source).strip().lower() for source in (item.get('sources') or []) if str(source).strip()}
+                actual_sources = {str(source).strip().lower() for source in (spec.get('sources') or []) if str(source).strip()}
+                if expected_sources and actual_sources != expected_sources:
+                    mismatch_reasons.append(f'sources expected={sorted(expected_sources)} actual={sorted(actual_sources)}')
+                    continue
+                expected_unit = item.get('output_unit')
+                if expected_unit and spec.get('output_unit') != expected_unit:
+                    mismatch_reasons.append(f'output_unit expected={expected_unit} actual={spec.get("output_unit")}')
+                    continue
+                matched_idx = idx
+                break
+            if matched_idx is None:
+                detail = operator
+                if item.get('lookback_window') is not None:
+                    detail += f':lookback={item["lookback_window"]}'
+                if item.get('rank_scope_required'):
+                    detail += ':rank_scope'
+                if mismatch_reasons:
+                    mismatched_ops.append(f'{detail}: {"; ".join(dict.fromkeys(mismatch_reasons))}')
+                else:
+                    missing_ops.append(detail)
+            else:
+                remaining.pop(matched_idx)
+        assert not mismatched_ops, (
+            f'BLOCK_STANDARD_FORMULA_OPERATOR_CONTRACT_MISMATCH: derived_field_contract formula operator semantics mismatch {mismatched_ops}'
+        )
+        assert not missing_ops, (
+            f'BLOCK_STANDARD_FORMULA_OPERATOR_CONTRACT_MISSING: derived_field_contract missing formula operator contracts {missing_ops}'
+        )
+
+
+def dataframe_columns(path: Path) -> list[str]:
+    if path.suffix.lower() == '.parquet':
+        try:
+            import pyarrow.parquet as pq
+            return list(pq.read_schema(path).names)
+        except Exception:
+            import pandas as pd
+            return list(pd.read_parquet(path).head(0).columns)
+    import pandas as pd
+    return list(pd.read_csv(path, nrows=0).columns)
+
+
 def _data_api_resolution(prep: dict, qcfg: dict) -> dict:
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     for candidate in [
@@ -259,10 +512,18 @@ def validate_step3_readiness_contract(
         return
 
     data_api = _data_api_resolution(prep, qcfg)
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    snapshot_source = str(local_inputs.get('snapshot_source') or '')
     clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
-    assert clean_daily.get('status') == 'ready', (
-        'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready clean_daily_bar Data API resolution'
-    )
+    moneyflow = data_api.get('moneyflow') if isinstance(data_api.get('moneyflow'), dict) else {}
+    if snapshot_source == 'data_api_moneyflow':
+        assert moneyflow.get('status') == 'ready', (
+            'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: moneyflow Step3A requires ready moneyflow Data API resolution'
+        )
+    else:
+        assert clean_daily.get('status') == 'ready', (
+            'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready clean_daily_bar Data API resolution'
+        )
     contract = _step4_data_contract(prep, qcfg, handoff)
     assert contract.get('version') == 'factorforge_step4_data_contract_v1', (
         'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: Step3A must emit Step4-readable Data API query contract'
@@ -281,11 +542,11 @@ def validate_step3_readiness_contract(
     )
 
     policy = _daily_filter_policy(prep, qcfg)
-    assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (
-        'BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING: clean daily policy must explicitly drop suspended and limit-event days'
-    )
+    if snapshot_source != 'data_api_moneyflow':
+        assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (
+            'BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING: clean daily policy must explicitly drop suspended and limit-event days'
+        )
 
-    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     if daily_rel:
         daily_path = workspace / daily_rel
@@ -303,17 +564,21 @@ if __name__ == '__main__':
         raise SystemExit('validate_step3.py requires --report-id or --manifest')
 
     prep_path = OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json'
+    fsm_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json'
     qlib_path = OBJ / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
     impl_path = OBJ / 'implementation_plan_master' / f'implementation_plan_master__{report_id}.json'
     handoff_path = OBJ / 'handoff' / f'handoff_to_step4__{report_id}.json'
 
+    assert fsm_path.exists(), f'BLOCK_STANDARD_FORMULA_FIELDS_MISSING: factor_spec_master missing: {fsm_path}'
     prep = load(prep_path)
+    fsm = load(fsm_path)
     qcfg = load(qlib_path)
     impl = load(impl_path)
     handoff = load(handoff_path)
     expected_step3a_ready = prep['feasibility'] in {'ready', 'proxy_ready'}
 
     assert prep.get('report_id') == report_id, f'data_prep_master.report_id mismatch: expected {report_id}, got {prep.get("report_id")}'
+    assert fsm.get('report_id') == report_id, f'factor_spec_master.report_id mismatch: expected {report_id}, got {fsm.get("report_id")}'
     assert qcfg.get('report_id') == report_id, f'qlib_adapter_config.report_id mismatch: expected {report_id}, got {qcfg.get("report_id")}'
     assert impl.get('report_id') == report_id, f'implementation_plan_master.report_id mismatch: expected {report_id}, got {impl.get("report_id")}'
     assert handoff.get('report_id') == report_id, f'handoff_to_step4.report_id mismatch: expected {report_id}, got {handoff.get("report_id")}'
@@ -340,17 +605,37 @@ if __name__ == '__main__':
         assert impl['step4_contract'].get('execution_mode') == impl_mode
 
     validate_step3_readiness_contract(prep, qcfg, impl, handoff, workspace=WORKSPACE)
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
+    standard_failures = validate_standard_formula_fields_contract(
+        standard_contract,
+        formula_text=canonical.get('formula_text') or '',
+        required_fields=formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs') or [],
+    )
+    assert not standard_failures, f'standard_formula_fields_contract invalid: {standard_failures}'
+    required_standard_fields = list((standard_contract or {}).get('required_standard_formula_fields') or [])
     if handoff.get('execution_mode') is not None:
         assert handoff.get('execution_mode') == impl_mode
     assert isinstance(prep.get('local_input_paths'), dict)
     minute_rel = prep['local_input_paths'].get('minute_df_parquet') or prep['local_input_paths'].get('minute_df_csv')
     daily_rel = prep['local_input_paths'].get('daily_df_parquet') or prep['local_input_paths'].get('daily_df_csv')
     input_mode = str(prep['local_input_paths'].get('input_mode') or '')
+    validate_derived_field_contract(
+        prep['local_input_paths'],
+        required_standard_fields,
+        expected_formula_operator_contracts(formula_ir),
+    )
     if prep['feasibility'] == 'blocked':
         assert prep.get('blocked_items'), 'blocked feasibility must carry explicit blocked_items'
         assert not (minute_rel and daily_rel), 'blocked feasibility must not claim executable local snapshots'
     else:
         assert daily_rel and (WORKSPACE / daily_rel).exists(), 'missing local input snapshot: daily_df_(csv/parquet)'
+        daily_columns = dataframe_columns(WORKSPACE / daily_rel)
+        missing_snapshot_fields = sorted(set(required_standard_fields) - set(daily_columns))
+        assert not missing_snapshot_fields, (
+            f'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: missing fields in Step3A local snapshot {missing_snapshot_fields}'
+        )
         validate_daily_io_contract(prep['local_input_paths'])
         if input_mode == 'daily_only':
             assert not minute_rel, 'daily_only Step 3A output must not claim minute snapshot'

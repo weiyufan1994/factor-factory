@@ -39,6 +39,11 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+def non_tmp_guard_output(name: str) -> Path:
+    """Return a path that remains non-tmp even when this repo is a /private/tmp worktree."""
+    return Path.home() / 'projects' / '.factorforge_non_tmp_guard_sentinel' / name
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
@@ -365,6 +370,13 @@ def create_step3a_daily_io_fixture(root: Path, report_id: str, *, csv_output_pol
             'drop_suspended': True,
             'drop_limit_events': True,
             'min_effective_days': 10,
+        },
+        'derived_field_contract': {
+            'version': 'factorforge_derived_field_contract_v1',
+            'report_local_only': True,
+            'clean_data_mutation': False,
+            'validation_result': 'PASS',
+            'derived_fields': {},
         },
         'daily_io_contract': {
             'version': 'factorforge_step3a_daily_io_contract_v1',
@@ -1087,6 +1099,42 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
             r'\blookahead\b',
         ],
     }
+    standard_contract = {
+        'version': 'factorforge_standard_formula_fields_contract_v1',
+        'required_standard_formula_fields': [],
+        'formula_fields_detected': ['close'],
+        'source_field_candidates': {},
+        'derivation_rules': {},
+        'lookback_policy': 'uses data available at factor timestamp only',
+        'leakage_policy': 'no future data',
+        'block_if_unavailable': True,
+        'source_fields_available': ['close'],
+        'unavailable_source_fields': {},
+    }
+    write_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'source_type': 'performance_smoke_fixture',
+        'implementation_mode': 'direct_code',
+        'canonical_spec': {
+            'formula_text': 'rank(close)',
+            'required_fields': ['close'],
+            'required_inputs': ['close'],
+            'formula_ir': {
+                'parse_status': 'success',
+                'required_fields': ['close'],
+                'operator_set': ['rank'],
+            },
+            'standard_formula_fields_contract': standard_contract,
+        },
+        'standard_formula_fields_contract': standard_contract,
+        'implementation_contract': {
+            'implementation_mode': 'direct_code',
+            'mode': 'direct_code',
+            'code_contract': code_contract,
+            'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        },
+    })
     write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
@@ -4508,7 +4556,7 @@ def run_polars_adaptive_replay_benchmark_contract_case(root: Path) -> dict[str, 
 
 
 def run_polars_adaptive_replay_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'polars_adaptive_replay_forbidden.json'
+    output = non_tmp_guard_output(f'polars_adaptive_replay_forbidden_{os.getpid()}.json')
     if output.exists():
         output.unlink()
     proc = run_cmd([
@@ -4579,7 +4627,7 @@ def run_polars_parity_forensics_contract_case(root: Path) -> dict[str, Any]:
 
 
 def run_polars_parity_forensics_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'polars_parity_forensics_forbidden.json'
+    output = non_tmp_guard_output(f'polars_parity_forensics_forbidden_{os.getpid()}.json')
     if output.exists():
         output.unlink()
     proc = run_cmd([
@@ -4969,7 +5017,7 @@ def run_throughput_profile_handles_missing_artifacts_case(root: Path) -> dict[st
 def run_throughput_profile_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
     report_id = 'PERF_SMOKE_THROUGHPUT_NON_TMP_OUTPUT'
     create_throughput_profile_fixture(root, report_id)
-    output = REPO_ROOT / 'objects' / 'validation' / 'throughput_profile_non_tmp_block.json'
+    output = non_tmp_guard_output(f'throughput_profile_non_tmp_block_{os.getpid()}.json')
     if output.exists():
         output.unlink()
     proc = run_cmd([
@@ -5164,7 +5212,7 @@ def run_operator_kernel_inventory_classifies_talib_case(root: Path) -> dict[str,
 
 
 def run_operator_kernel_inventory_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'docs' / f'.tmp_operator_kernel_inventory_should_block_{os.getpid()}.json'
+    output = non_tmp_guard_output(f'operator_kernel_inventory_should_block_{os.getpid()}.json')
     proc = run_cmd([
         sys.executable,
         'scripts/run_factorforge_operator_kernel_inventory.py',
@@ -5420,7 +5468,7 @@ def run_operator_candidate_benchmark_corr_cov_edge_parity_case(root: Path) -> di
 
 
 def run_operator_candidate_benchmark_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'docs' / f'.tmp_operator_candidate_benchmark_should_block_{os.getpid()}.json'
+    output = non_tmp_guard_output(f'operator_candidate_benchmark_should_block_{os.getpid()}.json')
     proc = run_cmd([
         sys.executable,
         'scripts/run_factorforge_operator_candidate_benchmark.py',
@@ -5551,7 +5599,7 @@ def run_formula_kernel_benchmark_contract_case(root: Path) -> dict[str, Any]:
 
 
 def run_formula_kernel_benchmark_blocks_non_tmp_output_case(root: Path) -> dict[str, Any]:
-    output = REPO_ROOT / 'docs' / f'.tmp_formula_kernel_benchmark_should_block_{os.getpid()}.json'
+    output = non_tmp_guard_output(f'formula_kernel_benchmark_should_block_{os.getpid()}.json')
     proc = run_cmd([
         sys.executable,
         'scripts/run_factorforge_formula_kernel_benchmark.py',

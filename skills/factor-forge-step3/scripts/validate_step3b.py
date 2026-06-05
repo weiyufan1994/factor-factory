@@ -798,7 +798,7 @@ def normalize_direct_code_result(result):
     return result
 
 
-def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
+def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract: dict | None = None) -> None:
     import pandas as pd
 
     module = import_module_from_path(path)
@@ -808,11 +808,16 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
     dates = [f'202601{day:02d}' for day in range(1, 12)]
     daily_rows = []
     minute_rows = []
+    required_fields = {
+        str(field).strip()
+        for field in ((code_contract or {}).get('required_fields') or [])
+        if str(field).strip()
+    }
     for stock_index, ts_code in enumerate(['000001.SZ', '000002.SZ']):
         base = 10.0 + stock_index * 10.0
         for day_index, trade_date in enumerate(dates):
             close = base + day_index * 0.05
-            daily_rows.append({
+            row = {
                 'ts_code': ts_code,
                 'trade_date': trade_date,
                 'open': close - 0.1,
@@ -820,8 +825,36 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict) -> None:
                 'high': close + 0.2,
                 'low': close - 0.2,
                 'vol': 1000.0 + day_index * 10.0,
+                'amount': close * (1000.0 + day_index * 10.0),
                 'pct_chg': 0.1,
-            })
+            }
+            if required_fields.intersection({
+                'net_mf_amount',
+                'buy_sm_amount',
+                'sell_sm_amount',
+                'buy_md_amount',
+                'sell_md_amount',
+                'buy_lg_amount',
+                'sell_lg_amount',
+                'buy_elg_amount',
+                'sell_elg_amount',
+            }):
+                direction = 1.0 if stock_index == 0 else -1.0
+                scale = 1000.0 + day_index * 20.0
+                row.update({
+                    'buy_sm_amount': scale * (1.00 + 0.01 * day_index),
+                    'sell_sm_amount': scale * (0.95 + 0.02 * stock_index),
+                    'buy_md_amount': scale * (0.80 + 0.01 * day_index),
+                    'sell_md_amount': scale * (0.78 + 0.02 * stock_index),
+                    'buy_lg_amount': scale * (0.70 + 0.06 * max(direction, 0.0) + 0.01 * day_index),
+                    'sell_lg_amount': scale * (0.68 + 0.06 * max(-direction, 0.0)),
+                    'buy_elg_amount': scale * (0.25 + 0.05 * max(direction, 0.0)),
+                    'sell_elg_amount': scale * (0.24 + 0.05 * max(-direction, 0.0)),
+                })
+                buy_total = row['buy_sm_amount'] + row['buy_md_amount'] + row['buy_lg_amount'] + row['buy_elg_amount']
+                sell_total = row['sell_sm_amount'] + row['sell_md_amount'] + row['sell_lg_amount'] + row['sell_elg_amount']
+                row['net_mf_amount'] = buy_total - sell_total
+            daily_rows.append(row)
             for minute_index, minute in enumerate(['09:30:00', '09:31:00', '09:32:00']):
                 minute_close = close + (minute_index - 1) * 0.03
                 volume = 1000.0 + stock_index * 500.0 + day_index * 20.0 + minute_index * 50.0
@@ -926,7 +959,7 @@ def validate_direct_code_mode(
     scan_direct_code_text(text, extra_patterns)
     scan_direct_code_ast(text)
     assert_high_speed_code_policy(text, code_contract or contract)
-    run_direct_code_fixture_smoke(implementation_path, output_schema)
+    run_direct_code_fixture_smoke(implementation_path, output_schema, code_contract)
 
 
 def custom_block_source(block: dict) -> str:

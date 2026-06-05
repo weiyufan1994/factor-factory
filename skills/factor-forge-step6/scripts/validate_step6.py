@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,16 @@ VALID_SEARCH_POLICY_MODES = {
     'multi_agent_parallel',
     'kill',
     'none',
+}
+VALID_STEP6_EVIDENCE_STATUS_VERSION = 'factorforge_step6_evidence_status_v1'
+VALID_STEP6_Q_LIB_NATIVE_STATUS = {
+    'not_attempted',
+    'preflight_blocked',
+    'preflight_ready',
+    'partial_payload',
+    'native_minimal_success',
+    'native_backtest_success',
+    'failed',
 }
 REQUIRED_FORBIDDEN_SEARCH = {
     'no_portfolio_expression_repair',
@@ -198,6 +209,33 @@ IMPLEMENTATION_MODEL_LINKAGE_KEYS = {
     'implementation_data_contract',
 }
 PLACEHOLDER_MODEL_LINKAGE_VALUES = {'', 'unknown', 'under_specified', 'n/a', 'none', 'todo', 'tbd'}
+REQUIRED_RESEARCH_EQUATION_METRIC_LINKS = {
+    'rank_ic',
+    'long_side_return',
+    'cost_adjusted_return',
+    'turnover',
+    'volatility_drag',
+    'max_drawdown',
+    'recovery_days',
+}
+VALID_RESEARCH_EQUATION_SUPPORT = {'supported', 'challenged', 'under_specified'}
+VALID_FAILED_EQUATION_COMPONENTS = {
+    'none',
+    'assumptions',
+    'latent_state',
+    'observable_estimator',
+    'price_process_projection',
+    'implementation_contract',
+    'trading_cost',
+    'drawdown_geometry',
+}
+GENERIC_RESEARCH_EQUATION_METRIC_TEXT = {
+    'metrics support the model',
+    'metrics support mechanism',
+    'supported by metrics',
+    'good',
+    'ok',
+}
 COUNCIL_FORBIDDEN_SKIP_KEYS = {
     'hard_guards',
     'forbidden_search',
@@ -219,8 +257,46 @@ def check(name: str, condition: bool, error: str | None = None, severity: str = 
     }
 
 
+def validate_evidence_status_contract(status: dict[str, Any] | None) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    if not isinstance(status, dict) or not status:
+        return [check('evidence_status_present', False, 'BLOCK_STEP6_EVIDENCE_STATUS_MISSING: evidence_status missing')]
+    checks.extend([
+        check('evidence_status_version', status.get('version') == VALID_STEP6_EVIDENCE_STATUS_VERSION, 'BLOCK_STEP6_EVIDENCE_STATUS_MISSING: invalid evidence_status.version'),
+        check('evidence_status_wrapper_status', status.get('wrapper_validation_status') in {'PASS', 'BLOCK', 'FAILED'}, 'BLOCK_STEP6_EVIDENCE_STATUS_WRAPPER_MISSING: wrapper_validation_status missing'),
+        check('evidence_status_self_quant', status.get('self_quant_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_SELF_QUANT_MISSING: self_quant_evidence_status missing'),
+        check('evidence_status_qlib', status.get('qlib_native_status') in VALID_STEP6_Q_LIB_NATIVE_STATUS, 'BLOCK_STEP6_EVIDENCE_STATUS_QLIB_MISSING: qlib_native_status missing'),
+        check('evidence_status_long_side', status.get('long_side_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_LONG_SIDE_MISSING: long_side_evidence_status missing'),
+        check('evidence_status_cost', status.get('cost_model_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_COST_MISSING: cost_model_status missing'),
+        check('evidence_status_drawdown', status.get('drawdown_geometry_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_DRAWDOWN_MISSING: drawdown_geometry_status missing'),
+        check('evidence_status_research_decision', status.get('research_decision') in {'promote', 'iterate', 'reject', 'needs_human_review'}, 'BLOCK_STEP6_EVIDENCE_STATUS_RESEARCH_DECISION_MISSING: research_decision missing'),
+        check('evidence_status_promotion_gate', status.get('promotion_gate_status') in {'open', 'blocked_by_long_side', 'blocked_by_cost', 'blocked_by_drawdown', 'blocked_by_evidence', 'not_applicable'}, 'BLOCK_STEP6_EVIDENCE_STATUS_PROMOTION_GATE_MISSING: promotion_gate_status missing'),
+    ])
+    if status.get('run_status') == 'partial' or status.get('status') == 'partial':
+        checks.append(check('evidence_status_no_generic_partial', False, 'BLOCK_STEP6_EVIDENCE_STATUS_GENERIC_PARTIAL: do not use generic partial without naming layer'))
+    return checks
+
+
 def nonempty_str(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def normalized_words(value: Any) -> str:
+    return ' '.join(re.findall(r'[a-zA-Z0-9_]+|[\u4e00-\u9fff]+', str(value or '').lower()))
+
+
+def generic_research_equation_metric_text(value: Any) -> bool:
+    normalized = normalized_words(value)
+    if normalized in GENERIC_RESEARCH_EQUATION_METRIC_TEXT:
+        return True
+    generic_phrases = [
+        'metrics support the model',
+        'metrics support mechanism',
+        'supported by metrics',
+        'metrics improve',
+        'test metrics',
+    ]
+    return any(phrase in normalized for phrase in generic_phrases)
 
 
 def nonempty_list(value) -> bool:
@@ -352,6 +428,38 @@ def validate_step6_model_linkage(mechanism_analysis: dict, revision_strategy: di
     revision_hypotheses = revision_strategy.get('revision_hypotheses') or []
     if revision_hypotheses and not all(isinstance(item, dict) and item.get('revision_model_layer') in VALID_MODEL_LAYER_TARGETS - {'none'} for item in revision_hypotheses):
         failures.append('BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING')
+
+    research_equation_review = mechanism_analysis.get('research_equation_review')
+    mechanism_math_contract_v2 = mechanism_analysis.get('mechanism_math_contract_v2') if isinstance(mechanism_analysis.get('mechanism_math_contract_v2'), dict) else {}
+    research_equation = mechanism_math_contract_v2.get('research_equation') if isinstance(mechanism_math_contract_v2.get('research_equation'), dict) else {}
+    expected_equation_status = research_equation.get('equation_status')
+    if not isinstance(research_equation_review, dict):
+        failures.append('BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS')
+    else:
+        metric_links = research_equation_review.get('metric_links')
+        metric_link_values_ok = isinstance(metric_links, dict) and REQUIRED_RESEARCH_EQUATION_METRIC_LINKS.issubset(set(metric_links.keys()))
+        if metric_link_values_ok:
+            for key in REQUIRED_RESEARCH_EQUATION_METRIC_LINKS:
+                value = metric_links.get(key)
+                normalized = str(value or '').strip().lower()
+                if (
+                    not nonempty_str(value)
+                    or normalized in PLACEHOLDER_MODEL_LINKAGE_VALUES
+                    or generic_research_equation_metric_text(value)
+                ):
+                    metric_link_values_ok = False
+                    break
+        review_ok = (
+            research_equation_review.get('reviewer_task') == 'research_equation_reviewer'
+            and research_equation_review.get('equation_supported_by_metrics') in VALID_RESEARCH_EQUATION_SUPPORT
+            and research_equation_review.get('failed_equation_component') in VALID_FAILED_EQUATION_COMPONENTS
+            and nonempty_str(research_equation_review.get('revision_implication'))
+            and metric_link_values_ok
+        )
+        if expected_equation_status:
+            review_ok = review_ok and research_equation_review.get('equation_status') == expected_equation_status
+        if not review_ok:
+            failures.append('BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS')
     return failures
 
 
@@ -852,6 +960,7 @@ if __name__ == '__main__':
         checks.append(check('report_id_match', iteration.get('report_id') == all_record.get('report_id') == knowledge.get('report_id') == rid, 'report_id mismatch'))
         checks.append(check('factor_id_match', iteration.get('factor_id') == all_record.get('factor_id') == knowledge.get('factor_id'), 'factor_id mismatch'))
         checks.append(check('headline_metrics_present', isinstance(iteration.get('evidence_summary', {}).get('headline_metrics'), dict), 'headline_metrics missing'))
+        checks.extend(validate_evidence_status_contract(iteration.get('evidence_status') or (iteration.get('evidence_summary') or {}).get('evidence_status')))
         checks.append(check('modification_targets_present', isinstance(iteration.get('loop_action', {}).get('modification_targets'), list), 'modification_targets missing'))
         checks.append(check('step5_handoff_recorded', isinstance(iteration.get('upstream_handoff', {}).get('step5_handoff_path'), str), 'step5 handoff path missing from iteration payload'))
         checks.append(check('framework_present', isinstance(iteration.get('research_judgment', {}).get('factor_investing_framework'), dict), 'factor investing framework missing'))
@@ -998,6 +1107,20 @@ if __name__ == '__main__':
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL',
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL' not in model_linkage_failures,
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract',
+        ))
+        checks.append(check(
+            'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS',
+            'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS' not in model_linkage_failures,
+            'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS: Step6 metrics must explicitly link to research_equation_review and required metric links',
+        ))
+        research_equation = mechanism_math_contract_v2.get('research_equation') if isinstance(mechanism_math_contract_v2.get('research_equation'), dict) else {}
+        research_equation_review = mechanism_analysis.get('research_equation_review') if isinstance(mechanism_analysis.get('research_equation_review'), dict) else {}
+        checks.append(check(
+            'research_conjecture_promotion_requires_supported_equation',
+            decision != 'promote_official'
+            or research_equation.get('equation_status') != 'research_conjecture'
+            or research_equation_review.get('equation_supported_by_metrics') == 'supported',
+            'research_conjecture cannot promote unless research_equation_review.equation_supported_by_metrics=supported',
         ))
         factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
         factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}

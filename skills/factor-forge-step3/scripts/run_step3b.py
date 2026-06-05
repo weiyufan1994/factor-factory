@@ -2144,6 +2144,81 @@ def _merge_direct_code_contracts(spec: dict, plan: dict | None) -> dict:
     return merged
 
 
+def ensure_direct_code_keyword_adapter(source_code: str) -> str:
+    """Expose a stable Step3B/Step4 compute_factor keyword API.
+
+    Older Step2 direct-code contracts may define positional-only or ambiguously
+    named compute functions. Step3B can execute those, but generated formal code
+    must present the `compute_factor(daily_df=..., minute_df=...)` API consumed
+    by validators and Step4.
+    """
+    marker = '_factorforge_user_compute_factor'
+    if marker in source_code:
+        return source_code
+    adapter = r'''
+
+# Factor Forge formal API adapter.
+# The original Step2 direct_code implementation is preserved above; this wrapper
+# normalizes the public entry point used by Step3B validators and Step4 runners.
+_factorforge_user_compute_factor = compute_factor
+
+def compute_factor(daily_df=None, minute_df=None):
+    import inspect as _factorforge_inspect
+
+    def _factorforge_frame_nonempty(_frame):
+        if _frame is None:
+            return False
+        if hasattr(_frame, "empty"):
+            return not bool(_frame.empty)
+        if hasattr(_frame, "is_empty") and callable(_frame.is_empty):
+            return not bool(_frame.is_empty())
+        try:
+            return len(_frame) > 0
+        except TypeError:
+            return True
+
+    _fn = _factorforge_user_compute_factor
+    try:
+        _params = list(_factorforge_inspect.signature(_fn).parameters.values())
+    except (TypeError, ValueError):
+        _params = []
+    _positional = [
+        _p for _p in _params
+        if _p.kind in {
+            _factorforge_inspect.Parameter.POSITIONAL_ONLY,
+            _factorforge_inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    _accepts_kwargs = any(_p.kind == _factorforge_inspect.Parameter.VAR_KEYWORD for _p in _params)
+    _accepts_daily = _accepts_kwargs or any(
+        _p.name == "daily_df" and _p.kind != _factorforge_inspect.Parameter.POSITIONAL_ONLY
+        for _p in _params
+    )
+    _accepts_minute = _accepts_kwargs or any(
+        _p.name == "minute_df" and _p.kind != _factorforge_inspect.Parameter.POSITIONAL_ONLY
+        for _p in _params
+    )
+    if _accepts_daily:
+        _kwargs = {"daily_df": daily_df}
+        if _accepts_minute:
+            _kwargs["minute_df"] = minute_df
+        return _fn(**_kwargs)
+    if len(_positional) == 1:
+        _name = _positional[0].name.lower()
+        if "minute" in _name or "intraday" in _name:
+            return _fn(minute_df)
+        if "daily" in _name:
+            return _fn(daily_df)
+        return _fn(minute_df if _factorforge_frame_nonempty(minute_df) else daily_df)
+    if _positional:
+        _first = _positional[0].name.lower()
+        if "minute" in _first or "intraday" in _first:
+            return _fn(minute_df, daily_df)
+    return _fn(daily_df, minute_df)
+'''
+    return source_code.rstrip() + '\n' + adapter.lstrip()
+
+
 def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity: dict, plan: dict | None = None):
     contract = spec.get('implementation_contract') or {}
     plan_contract = (plan or {}).get('implementation_contract') if isinstance((plan or {}).get('implementation_contract'), dict) else {}
@@ -2163,6 +2238,7 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
         )
     if 'def compute_factor' not in source_code:
         raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code source_code must define compute_factor().')
+    source_code = ensure_direct_code_keyword_adapter(source_code)
 
     factor_id = spec.get('factor_id') or report_id
     code_contract_hash = code_contract.get('code_contract_hash') or (plan or {}).get('code_contract_hash') or identity.get('code_contract_hash') or stable_hash(code_contract)

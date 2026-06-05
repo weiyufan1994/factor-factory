@@ -31,6 +31,7 @@ def main() -> int:
     self_quant = load(ctx.factorforge_root / 'evaluations' / rid / 'self_quant_analyzer' / 'evaluation_payload.json')
     qlib_backtest = load(ctx.factorforge_root / 'evaluations' / rid / 'qlib_backtest' / 'evaluation_payload.json')
     wrapper = load(ctx.objects_root / 'runtime_context' / f'ultimate_run_report__{rid}.json')
+    factor_run_master = load(ctx.objects_root / 'factor_run_master' / f'factor_run_master__{rid}.json')
     formal_parquet_path = run_dir / f'factor_values__{rid}.parquet'
     formal_csv_path = run_dir / f'factor_values__{rid}.csv'
     formal_csv_sample_path = run_dir / f'factor_values_sample__{rid}.csv'
@@ -88,6 +89,7 @@ def main() -> int:
         'qlib_backtest_failure_reason': qlib_backtest.get('failure_reason'),
         'qlib_backtest_resource_guard': qlib_backtest.get('resource_guard'),
         'qlib_backtest_performance_profile': qlib_backtest.get('performance_profile'),
+        'acceptance_summary': factor_run_master.get('acceptance_summary'),
         'wrapper_command_timing': [
             {
                 'name': c.get('name'),

@@ -202,3 +202,31 @@ Treat those files as the authoritative current repo-level reproducibility notes 
 ## Correctness Over Completion
 
 Step4 must evaluate the implemented factor identity, not merely produce a status. All-skipped backend evidence, missing self-quant long-only evidence, identity mismatch, or malformed factor values must BLOCK rather than feed Step5/6.
+
+## Long-Term Production Contract Discipline
+
+Step4 starts production acceptance reports from `acceptance_summary`. Do not
+infer `run_id` or `artifact_root` from nested `artifact_identity` when
+`acceptance_summary` exists. The summary must split wrapper status, backend
+status, reuse gate status, side effects, and research metrics.
+
+Report qlib as `qlib_native_status=<taxonomy>`. Never call qlib success unless
+status is `native_backtest_success` or explicitly `native_minimal_success` for a
+minimal-only run. The phrase "qlib partial success" is banned.
+
+Step4 consumes `standard_formula_fields_contract` and `derived_field_contract`
+from Step2/Step3A; it must enforce unit policy, lookback policy, leakage policy,
+and source fields before formal compute. Do not write "derive if needed" without
+source fields. Do not describe Step3B formal factor values; formal factor values
+are Step4-owned.
+
+Prompt vocabulary required for downstream continuity: `evidence_status`,
+`formula_implied_information`, `metric_anomaly_review`,
+`model_linked_metric_signature`, `volatility_drag`,
+`drawdown_recovery_area`, `component_ablation`, and
+`direction_losing_transform_review`.
+
+Explicit bans: no "partial run without layer"; no raw formula restatement as
+mechanism; no generic stochastic process as explanation.
+
+Required literal bans for validator coverage: derive if needed without source fields; raw formula restatement as mechanism.

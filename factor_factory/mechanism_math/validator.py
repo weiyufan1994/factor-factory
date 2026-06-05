@@ -10,9 +10,12 @@ from .schema import (
     FORBIDDEN_REPAIR_TERMS,
     FUNDAMENTAL_FIELDS,
     PRICE_FIELDS,
+    REQUIRED_EQUATION_QUALITY_FIELDS,
     REQUIRED_INFORMATION_SET_FIELDS,
     REQUIRED_REVISION_OPERATOR_FIELDS,
+    REQUIRED_RESEARCH_EQUATION_FIELDS,
     REQUIRED_SPECIFIED_FIELDS,
+    REQUIRED_T0_T1_BENCHMARK_FIELDS,
     VALID_FORMULA_MODEL_ROLES_V2,
     REVISION_TARGET_MATH_OBJECTS,
     VALID_MODEL_FAMILIES,
@@ -20,9 +23,12 @@ from .schema import (
     VALID_PRICE_PROCESS_PROJECTION_ROLES_V2,
     VALID_PRICE_PROCESS_TERMS_V2,
     VALID_PRIMARY_MODEL_FAMILIES_V2,
+    VALID_RESEARCH_EQUATION_STATUSES,
+    VALID_T0_T1_PRICE_PROCESS_TERMS,
     VALID_TOOLKITS,
     VOLUME_FIELDS,
 )
+from .equation_quality import score_research_equation
 
 
 def _nonempty_str(value: Any) -> bool:
@@ -72,6 +78,38 @@ def _is_vague_sde(contract: dict[str, Any]) -> bool:
     ]
     mentions_vague = any(re.search(pattern, text) for pattern in vague_patterns)
     return mentions_vague
+
+
+def _is_generic_research_equation_text(value: Any) -> bool:
+    if not _meaningful_str(value):
+        return True
+    text = str(value).strip().lower()
+    canonical = re.sub(r"\s+", " ", text)
+    generic_exact = {
+        "observable_factor_t = estimator(latent_state_t, f_t) + measurement_noise_t",
+        "factor_t = f(state_t)",
+        "return = alpha + noise",
+    }
+    if canonical in generic_exact:
+        return True
+    generic_terms = [
+        "generic research equation",
+        "placeholder equation",
+        "under_specified",
+        "latent_state_t",
+    ]
+    return any(term in text for term in generic_terms)
+
+
+def _is_generic_t0_t1_benchmark(value: Any) -> bool:
+    text = _text_blob(value).lower()
+    generic_patterns = [
+        r"\bds\s*=\s*mu\s*s\s*dt\s*\+\s*sigma\s*s\s*dw\b",
+        r"\bgeneric stochastic process\b",
+        r"\bgeometric brownian motion\b",
+        r"\bstandard sde\b",
+    ]
+    return any(re.search(pattern, text) for pattern in generic_patterns)
 
 
 def _canonical_expression_text(value: Any) -> str:
@@ -264,6 +302,212 @@ def _validate_formula_implied_information_review(contract: dict[str, Any]) -> li
     return failures
 
 
+def _validate_research_equation(contract: dict[str, Any]) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    equation = contract.get("research_equation")
+    if not isinstance(equation, dict) or not equation:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_MISSING",
+            "v2 contract requires research_equation with classification, assumptions, validity scope, estimator, metrics, falsification tests, and kill criteria",
+        )
+        return failures
+
+    missing = [field for field in REQUIRED_RESEARCH_EQUATION_FIELDS if field not in equation]
+    if missing:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            f"research_equation missing required fields: {missing}",
+        )
+    missing_quality = [field for field in REQUIRED_EQUATION_QUALITY_FIELDS if field not in equation]
+    if missing_quality:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            f"research_equation missing equation quality fields: {missing_quality}",
+        )
+
+    status = equation.get("equation_status")
+    if status not in VALID_RESEARCH_EQUATION_STATUSES:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            f"research_equation.equation_status must be one of {sorted(VALID_RESEARCH_EQUATION_STATUSES)}",
+        )
+
+    if _is_generic_research_equation_text(equation.get("equation_text")):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            "research_equation.equation_text must be report-specific, not a generic placeholder",
+        )
+
+    for field in ["assumptions", "expected_metric_signature", "falsification_tests", "kill_criteria"]:
+        if not _nonempty_meaningful_list(equation.get(field)):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+                f"research_equation.{field} must be a nonempty meaningful list",
+            )
+
+    scope = equation.get("validity_scope")
+    if not isinstance(scope, dict):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            "research_equation.validity_scope must be an object",
+        )
+    else:
+        for field in ["market", "frequency", "regime", "participant_structure"]:
+            if not _meaningful_str(scope.get(field)):
+                _failures_add(
+                    failures,
+                    "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+                    f"research_equation.validity_scope.{field} is required",
+                )
+
+    for field in ["symmetry_or_constraint", "symmetry_breaking_mechanism", "latent_state", "observable_estimator"]:
+        if not _meaningful_str(equation.get(field)):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+                f"research_equation.{field} must be nonempty and meaningful",
+            )
+
+    if status == "strict_identity":
+        text = _text_blob(equation).lower()
+        identity_terms = [
+            "identity",
+            "accounting",
+            "clearing",
+            "sdf",
+            "euler",
+            "cash-flow",
+            "cash flow",
+            "balance-sheet",
+            "balance sheet",
+            "no-arbitrage",
+            "no arbitrage",
+        ]
+        if not any(term in text for term in identity_terms):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+                "strict_identity research_equation must mention identity, accounting, clearing, SDF, Euler, cash-flow, balance-sheet, or no-arbitrage language",
+            )
+
+    if status == "behavioral_feedback" and (
+        not _nonempty_meaningful_list(equation.get("assumptions"))
+        or not _nonempty_meaningful_list(equation.get("falsification_tests"))
+    ):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            "behavioral_feedback research_equation requires explicit assumptions and falsification tests",
+        )
+    if status == "behavioral_feedback":
+        participant_loop = equation.get("participant_constraint_loop") or {}
+        if not isinstance(participant_loop, dict) or not _meaningful_str(participant_loop.get("repeat_mechanism")):
+            _failures_add(
+                failures,
+                "BLOCK_DIRAC_EQUATION_PARTICIPANT_LOOP_MISSING",
+                "behavioral_feedback research_equation requires participant_constraint_loop.repeat_mechanism",
+            )
+
+    if status == "empirical_invariance" and (
+        not isinstance(equation.get("validity_scope"), dict)
+        or not _nonempty_meaningful_list(equation.get("falsification_tests"))
+    ):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_RESEARCH_EQUATION_INVALID",
+            "empirical_invariance research_equation requires validity_scope and falsification_tests",
+        )
+
+    quality = score_research_equation(equation)
+    for code in quality.block_codes:
+        _failures_add(failures, code, f"research_equation quality rubric failed: {code}")
+    if status == "research_conjecture" and quality.quality_score < 40:
+        _failures_add(
+            failures,
+            "BLOCK_DIRAC_EQUATION_CONJECTURE_QUALITY_TOO_LOW",
+            "research_conjecture quality_score below 40 may remain a branch seed but cannot authorize promotion",
+        )
+    if status == "strict_identity" and quality.quality_score < 60:
+        _failures_add(
+            failures,
+            "BLOCK_DIRAC_EQUATION_STRICT_IDENTITY_QUALITY_TOO_LOW",
+            "strict_identity research_equation requires quality_score >= 60",
+        )
+    return failures
+
+
+def _validate_t0_t1_stochastic_benchmark(contract: dict[str, Any]) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    benchmark = contract.get("t0_t1_stochastic_benchmark")
+    if not isinstance(benchmark, dict) or not benchmark:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_MISSING",
+            "v2 contract requires t0_t1_stochastic_benchmark for price-process implications",
+        )
+        return failures
+
+    missing = [field for field in REQUIRED_T0_T1_BENCHMARK_FIELDS if field not in benchmark]
+    if missing:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+            f"t0_t1_stochastic_benchmark missing required fields: {missing}",
+        )
+
+    if benchmark.get("benchmark_required") is not True:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+            "t0_t1_stochastic_benchmark.benchmark_required must be true for price-predictive factors",
+        )
+
+    horizon = str(benchmark.get("horizon") or "").lower()
+    if not any(token in horizon for token in ["t+0", "t+1", "short_horizon", "report_horizon", "report horizon"]):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+            "t0_t1_stochastic_benchmark.horizon must mention T+0, T+1, short_horizon, or report_horizon",
+        )
+
+    affected = benchmark.get("affected_terms")
+    invalid_terms = [str(item) for item in affected or [] if item not in VALID_T0_T1_PRICE_PROCESS_TERMS]
+    if not _nonempty_meaningful_list(affected) or invalid_terms:
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+            f"t0_t1_stochastic_benchmark.affected_terms must be nonempty and within {sorted(VALID_T0_T1_PRICE_PROCESS_TERMS)}",
+        )
+
+    for field in ["conditional_distribution_claim", "benchmark_implication", "when_primary_model_cannot_infer"]:
+        if not _meaningful_str(benchmark.get(field)):
+            _failures_add(
+                failures,
+                "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+                f"t0_t1_stochastic_benchmark.{field} must be meaningful",
+            )
+    if not _nonempty_meaningful_list(benchmark.get("falsification_tests")):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+            "t0_t1_stochastic_benchmark.falsification_tests must be nonempty",
+        )
+    if _is_generic_t0_t1_benchmark(benchmark):
+        _failures_add(
+            failures,
+            "BLOCK_MECHANISM_MATH_V2_T0_T1_BENCHMARK_INVALID",
+            "t0_t1_stochastic_benchmark cannot be generic SDE or Brownian boilerplate",
+        )
+    return failures
+
+
 def _validate_return_source_review(thesis: dict[str, Any]) -> list[dict[str, str]]:
     failures: list[dict[str, str]] = []
     source = str(thesis.get("return_source_family") or "")
@@ -387,6 +631,8 @@ def validate_mechanism_math_contract_v2(contract: Any) -> list[dict[str, str]]:
     else:
         failures.extend(_validate_return_source_review(thesis))
 
+    failures.extend(_validate_research_equation(contract))
+    failures.extend(_validate_t0_t1_stochastic_benchmark(contract))
     failures.extend(_validate_formula_implied_information(contract))
     failures.extend(_validate_formula_implied_information_review(contract))
 

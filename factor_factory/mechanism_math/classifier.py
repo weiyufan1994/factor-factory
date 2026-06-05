@@ -656,6 +656,119 @@ def _formula_implied_information_review() -> dict[str, Any]:
     }
 
 
+def _metric_signature_items(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [f"{key}: {val}" for key, val in value.items() if str(val).strip()]
+    items = [str(item).strip() for item in _as_list(value)]
+    return [item for item in items if item]
+
+
+def _research_equation_from_v1(
+    *,
+    v1: dict[str, Any],
+    formula: str,
+    formula_estimator: str,
+    conditional: str,
+    payer: str,
+    why_pay: str,
+    return_source: str,
+    research_contract: dict[str, Any],
+) -> dict[str, Any]:
+    state = str(v1.get("state_or_object") or v1.get("latent_state") or "latent return-process state")
+    assumptions = (
+        research_contract.get("what_must_be_true")
+        or v1.get("necessary_conditions")
+        or [
+            "The observable estimator must identify a report-specific latent market state under the available information set.",
+            "The named payer or counterparty must repeat the behavior, constraint, or information lag behind the signal.",
+        ]
+    )
+    falsification_tests = (
+        v1.get("mechanism_falsification_tests")
+        or v1.get("falsification_tests")
+        or ["Reject if the estimator does not shift the conditional next-horizon return distribution under F_t."]
+    )
+    kill_criteria = (
+        v1.get("kill_criteria")
+        or ["Kill or redesign if the formula remains a transform without a falsifiable market-process equation."]
+    )
+    metric_signature = _metric_signature_items(
+        v1.get("expected_metric_signature")
+        or {
+            "rank_ic": "must match declared sign convention",
+            "long_side_return": "must be positive after costs for promotion",
+            "turnover": "must be consistent with the model horizon",
+        }
+    )
+    scope = research_contract.get("validity_scope") if isinstance(research_contract.get("validity_scope"), dict) else {}
+    return {
+        "equation_text": (
+            f"{formula or 'observable score'} estimates {state}; "
+            f"conditional returns follow {conditional} when {return_source} pressure is present."
+        ),
+        "equation_status": "research_conjecture",
+        "assumptions": [str(item) for item in _as_list(assumptions) if str(item).strip()],
+        "validity_scope": {
+            "market": str(scope.get("market") or research_contract.get("market") or "report-specified equity universe"),
+            "frequency": str(scope.get("frequency") or research_contract.get("frequency") or "report-specified factor horizon"),
+            "regime": str(scope.get("regime") or "normal tradable market regimes unless report states otherwise"),
+            "participant_structure": str(scope.get("participant_structure") or payer),
+        },
+        "symmetry_or_constraint": f"{return_source} market-process constraint under the report information set",
+        "symmetry_breaking_mechanism": why_pay,
+        "latent_state": state,
+        "observable_estimator": formula_estimator,
+        "expected_metric_signature": metric_signature,
+        "falsification_tests": [str(item) for item in _as_list(falsification_tests) if str(item).strip()],
+        "kill_criteria": [str(item) for item in _as_list(kill_criteria) if str(item).strip()],
+        "evidence_tier": "report_specific_hypothesis",
+        "audit_basis": [
+            "Generated from the report-specific economic hypothesis and Step2 canonical formula; promote only after Step4/Step6 evidence closes the loop."
+        ],
+        "participant_constraint_loop": {
+            "payer": payer,
+            "constraint": why_pay,
+            "repeat_mechanism": "The contract remains valid only if the named participant behavior, constraint, or information lag repeats across rebalance dates.",
+            "failure_condition": "Participant structure changes, costs overwhelm the edge, or model-linked metrics contradict the equation.",
+        },
+        "demotion_triggers": [
+            "participant_structure_change",
+            "cost_or_capacity_break",
+            "metric_signature_mismatch",
+        ],
+        "quality_score": 41,
+        "promotion_allowed": False,
+    }
+
+
+def _t0_t1_stochastic_benchmark_from_v1(
+    *,
+    projection_terms: list[str],
+    conditional: str,
+    formula_estimator: str,
+    v1: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "benchmark_required": True,
+        "horizon": "T+0/T+1 short_horizon and report_horizon projection",
+        "affected_terms": projection_terms or ["drift", "observation_equation"],
+        "conditional_distribution_claim": conditional,
+        "benchmark_implication": (
+            f"The estimator must alter the declared price-process terms through {formula_estimator}; "
+            "otherwise the primary mechanism has not produced a tradable implication."
+        ),
+        "when_primary_model_cannot_infer": (
+            "Use the stochastic benchmark to test drift, diffusion, jump, friction, regime transition, "
+            "or observation-equation implications when the primary model cannot derive them directly."
+        ),
+        "falsification_tests": [
+            "Reject if short-horizon conditional returns do not move in the declared direction after leakage-safe alignment.",
+            "Reject or revise if volatility drag, turnover COGS, or drawdown geometry overwhelms the claimed edge.",
+        ]
+        + [str(item) for item in _as_list(v1.get("mechanism_falsification_tests")) if str(item).strip()][:2],
+    }
+
+
 def _component_mapping_from_inputs(inputs: list[str], contract: dict[str, Any]) -> list[dict[str, Any]]:
     role = "state_variable"
     projection_role = "drift"
@@ -699,6 +812,16 @@ def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any
     return_source = _return_source_family(research_contract)
     return {
         "contract_version": CONTRACT_VERSION_V2,
+        "research_equation": _research_equation_from_v1(
+            v1=v1,
+            formula=formula,
+            formula_estimator=formula_estimator,
+            conditional=conditional,
+            payer=payer,
+            why_pay=why_pay,
+            return_source=return_source,
+            research_contract=research_contract,
+        ),
         "market_process_thesis": {
             "market_phenomenon": str(v1.get("economic_mechanism") or research_contract.get("economic_mechanism") or "report-specific market behavior"),
             "economic_hypothesis": str(research_contract.get("economic_mechanism") or v1.get("economic_mechanism") or "report-specific economic hypothesis"),
@@ -731,6 +854,12 @@ def build_mechanism_math_contract_v2(spec_like: dict[str, Any]) -> dict[str, Any
             "formula_should_estimate": formula_estimator,
             "expected_return_distribution_change": str(v1.get("metric_signature_match") or "metrics should reveal whether the estimated state shifts next-horizon return distribution in the claimed direction"),
         },
+        "t0_t1_stochastic_benchmark": _t0_t1_stochastic_benchmark_from_v1(
+            projection_terms=projection_terms,
+            conditional=conditional,
+            formula_estimator=formula_estimator,
+            v1=v1,
+        ),
         "formula_implied_information": _formula_implied_information(inputs, formula, v1, formula_estimator, conditional),
         "formula_implied_information_review": _formula_implied_information_review(),
         "formula_component_mapping": _component_mapping_from_inputs(inputs, v1),

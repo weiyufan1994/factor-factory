@@ -270,3 +270,29 @@ Direct-code and hybrid custom implementations must also satisfy the high-speed c
 ## Family Plugin Boundary
 
 Family-specific implementations may run only through `factor_factory.factor_families` after Step2 explicitly declares `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with structured evidence. Do not trigger a family plugin from `factor_id`, keywords, formula prose, or thesis text. Free-text matches may create a suggestion for human review, not an executable plugin selection.
+
+## Long-Term Production Contract Discipline
+
+Step3A materializes formula-required standard fields into the report-local
+snapshot and writes `derived_field_contract`. The contract must include unit
+policy, lookback policy, leakage policy, source fields, report-local-only
+status, and `clean_data_mutation=false`.
+
+Step3B and Step4 consume these fields. They must not independently guess aliases
+or derivations. The phrase "derive if needed" without source fields is banned.
+Step3B formal factor values is also banned: Step3B may write sample-only
+executability proof, while Step4 owns formal factor values and
+`acceptance_summary`.
+
+Prompt vocabulary required for downstream continuity: `standard_formula_fields_contract`,
+`acceptance_summary`, `qlib_native_status`, `evidence_status`,
+`formula_implied_information`, `metric_anomaly_review`,
+`model_linked_metric_signature`, `volatility_drag`,
+`drawdown_recovery_area`, `component_ablation`, and
+`direction_losing_transform_review`.
+
+Explicit bans: no "qlib partial success"; no "partial run without layer"; no
+raw formula restatement as mechanism; no generic stochastic process as
+explanation.
+
+Required literal terms for validator coverage: unit policy; derive if needed without source fields; generic stochastic process as explanation.

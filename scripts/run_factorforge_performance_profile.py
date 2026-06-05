@@ -28,6 +28,7 @@ def main() -> int:
     run_meta = load(ctx.factorforge_root / 'runs' / rid / f'run_metadata__{rid}.json')
     self_quant = load(ctx.factorforge_root / 'evaluations' / rid / 'self_quant_analyzer' / 'evaluation_payload.json')
     wrapper = load(ctx.objects_root / 'runtime_context' / f'ultimate_run_report__{rid}.json')
+    factor_run_master = load(ctx.objects_root / 'factor_run_master' / f'factor_run_master__{rid}.json')
     parquet_path = ctx.factorforge_root / 'runs' / rid / f'factor_values__{rid}.parquet'
     csv_path = ctx.factorforge_root / 'runs' / rid / f'factor_values__{rid}.csv'
     csv_sample_path = ctx.factorforge_root / 'runs' / rid / f'factor_values_sample__{rid}.csv'
@@ -94,6 +95,7 @@ def main() -> int:
         'parity_profile': parity_profile,
         'top_operator_bottlenecks': top_operator_bottlenecks,
         'self_quant_performance_profile': self_quant.get('performance_profile'),
+        'acceptance_summary': factor_run_master.get('acceptance_summary'),
         'wrapper_command_timing': [
             {
                 'name': c.get('name'),

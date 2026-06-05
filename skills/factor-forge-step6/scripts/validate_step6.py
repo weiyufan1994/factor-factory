@@ -101,6 +101,16 @@ VALID_SEARCH_POLICY_MODES = {
     'kill',
     'none',
 }
+VALID_STEP6_EVIDENCE_STATUS_VERSION = 'factorforge_step6_evidence_status_v1'
+VALID_STEP6_Q_LIB_NATIVE_STATUS = {
+    'not_attempted',
+    'preflight_blocked',
+    'preflight_ready',
+    'partial_payload',
+    'native_minimal_success',
+    'native_backtest_success',
+    'failed',
+}
 REQUIRED_FORBIDDEN_SEARCH = {
     'no_portfolio_expression_repair',
     'no_short_leg_adoption',
@@ -245,6 +255,26 @@ def check(name: str, condition: bool, error: str | None = None, severity: str = 
         'severity': severity,
         'error': None if condition else error,
     }
+
+
+def validate_evidence_status_contract(status: dict[str, Any] | None) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    if not isinstance(status, dict) or not status:
+        return [check('evidence_status_present', False, 'BLOCK_STEP6_EVIDENCE_STATUS_MISSING: evidence_status missing')]
+    checks.extend([
+        check('evidence_status_version', status.get('version') == VALID_STEP6_EVIDENCE_STATUS_VERSION, 'BLOCK_STEP6_EVIDENCE_STATUS_MISSING: invalid evidence_status.version'),
+        check('evidence_status_wrapper_status', status.get('wrapper_validation_status') in {'PASS', 'BLOCK', 'FAILED'}, 'BLOCK_STEP6_EVIDENCE_STATUS_WRAPPER_MISSING: wrapper_validation_status missing'),
+        check('evidence_status_self_quant', status.get('self_quant_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_SELF_QUANT_MISSING: self_quant_evidence_status missing'),
+        check('evidence_status_qlib', status.get('qlib_native_status') in VALID_STEP6_Q_LIB_NATIVE_STATUS, 'BLOCK_STEP6_EVIDENCE_STATUS_QLIB_MISSING: qlib_native_status missing'),
+        check('evidence_status_long_side', status.get('long_side_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_LONG_SIDE_MISSING: long_side_evidence_status missing'),
+        check('evidence_status_cost', status.get('cost_model_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_COST_MISSING: cost_model_status missing'),
+        check('evidence_status_drawdown', status.get('drawdown_geometry_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_DRAWDOWN_MISSING: drawdown_geometry_status missing'),
+        check('evidence_status_research_decision', status.get('research_decision') in {'promote', 'iterate', 'reject', 'needs_human_review'}, 'BLOCK_STEP6_EVIDENCE_STATUS_RESEARCH_DECISION_MISSING: research_decision missing'),
+        check('evidence_status_promotion_gate', status.get('promotion_gate_status') in {'open', 'blocked_by_long_side', 'blocked_by_cost', 'blocked_by_drawdown', 'blocked_by_evidence', 'not_applicable'}, 'BLOCK_STEP6_EVIDENCE_STATUS_PROMOTION_GATE_MISSING: promotion_gate_status missing'),
+    ])
+    if status.get('run_status') == 'partial' or status.get('status') == 'partial':
+        checks.append(check('evidence_status_no_generic_partial', False, 'BLOCK_STEP6_EVIDENCE_STATUS_GENERIC_PARTIAL: do not use generic partial without naming layer'))
+    return checks
 
 
 def nonempty_str(value) -> bool:
@@ -930,6 +960,7 @@ if __name__ == '__main__':
         checks.append(check('report_id_match', iteration.get('report_id') == all_record.get('report_id') == knowledge.get('report_id') == rid, 'report_id mismatch'))
         checks.append(check('factor_id_match', iteration.get('factor_id') == all_record.get('factor_id') == knowledge.get('factor_id'), 'factor_id mismatch'))
         checks.append(check('headline_metrics_present', isinstance(iteration.get('evidence_summary', {}).get('headline_metrics'), dict), 'headline_metrics missing'))
+        checks.extend(validate_evidence_status_contract(iteration.get('evidence_status') or (iteration.get('evidence_summary') or {}).get('evidence_status')))
         checks.append(check('modification_targets_present', isinstance(iteration.get('loop_action', {}).get('modification_targets'), list), 'modification_targets missing'))
         checks.append(check('step5_handoff_recorded', isinstance(iteration.get('upstream_handoff', {}).get('step5_handoff_path'), str), 'step5 handoff path missing from iteration payload'))
         checks.append(check('framework_present', isinstance(iteration.get('research_judgment', {}).get('factor_investing_framework'), dict), 'factor investing framework missing'))

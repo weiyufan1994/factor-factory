@@ -744,6 +744,18 @@ def case_step6_and_council() -> list[dict[str, Any]]:
     }
     proposal = RUN_COUNCIL.symbolic_law(packet)
     proposal["derivation_record"] = RUN_COUNCIL.build_derivation_record(packet, proposal)
+    proposal["research_equation_revision"] = {
+        "equation_component_target": "observable_estimator",
+        "equation_change": "Revise the observable estimator measurement equation so rank(delta(close, 5)) targets the latent drift/reversal state instead of a raw close transform.",
+        "expected_metric_signature_change": [
+            "rank_ic should improve when the estimator measures the intended latent state",
+            "long_side_return should become positive if the measurement equation sign is correct",
+        ],
+        "falsification_tests": [
+            "Reject the revision if rank_ic remains weak after leakage-safe estimator correction",
+            "Reject the revision if long_side_return remains non-positive after costs",
+        ],
+    }
     valid_reasons = validate_revision_council_proposal(proposal)
     bad_proposal = json.loads(json.dumps(proposal))
     bad_proposal.pop("revision_model_layer", None)

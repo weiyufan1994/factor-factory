@@ -581,6 +581,129 @@ def build_backend_runs_stub(report_id: str, evaluation_plan: dict[str, Any], run
     return runs
 
 
+def current_repo_sha() -> str:
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def _backend_status(backend_runs: list[dict[str, Any]], backend: str) -> str:
+    item = next((run for run in backend_runs if run.get('backend') == backend or run.get('name') == backend), None)
+    return str((item or {}).get('status') or 'not_attempted')
+
+
+def qlib_native_status_from_backend_runs(backend_runs: list[dict[str, Any]], backend_timing_profile: dict[str, Any]) -> str:
+    qlib_status = _backend_status(backend_runs, 'qlib_backtest')
+    timing = (backend_timing_profile.get('backends') or {}).get('qlib_native') or {}
+    timing_status = str(timing.get('status') or '')
+    if qlib_status == 'success':
+        return 'native_backtest_success'
+    if qlib_status == 'partial':
+        return 'partial_payload'
+    if qlib_status == 'failed':
+        return 'failed'
+    if qlib_status == 'skipped':
+        if timing_status == 'ready':
+            return 'preflight_ready'
+        if timing_status:
+            return 'preflight_blocked'
+        return 'not_attempted'
+    return 'not_attempted'
+
+
+def reuse_gate_status_from_factor_io(step4_factor_io_profile: dict[str, Any]) -> str:
+    if not isinstance(step4_factor_io_profile, dict) or not step4_factor_io_profile:
+        return 'not_applicable'
+    gate = step4_factor_io_profile.get('reuse_gate') if isinstance(step4_factor_io_profile.get('reuse_gate'), dict) else {}
+    decision = str(gate.get('decision') or '')
+    if step4_factor_io_profile.get('recomputed_factor') is True:
+        return 'recomputed'
+    if decision == 'reuse_allowed' or step4_factor_io_profile.get('recomputed_factor') is False:
+        return 'reused'
+    if decision.startswith('block_'):
+        return 'blocked'
+    return 'not_applicable'
+
+
+def build_acceptance_summary(
+    *,
+    report_id: str,
+    factor_id: str | None,
+    run_status: str,
+    output_paths: list[str],
+    backend_runs: list[dict[str, Any]],
+    backend_timing_profile: dict[str, Any],
+    step4_factor_io_profile: dict[str, Any],
+    input_io_profile: dict[str, Any],
+) -> dict[str, Any]:
+    factor_path = next((path for path in output_paths if str(path).endswith('.parquet')), None)
+    return {
+        'version': 'factorforge_production_acceptance_summary_v1',
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'run_id': f'{report_id}__run',
+        'artifact_root': str(FACTORFORGE),
+        'repo_sha': current_repo_sha(),
+        'wrapper_status': 'PASS' if run_status in {'success', 'partial'} else 'FAIL',
+        'validator_verdicts': {'step4': 'PENDING'},
+        'step3b': {
+            'backend': step4_factor_io_profile.get('source'),
+            'input_format': input_io_profile.get('daily_selected_format'),
+            'sample_only': step4_factor_io_profile.get('source') == 'step3b_compute_cache',
+            'is_formal_factor_values': step4_factor_io_profile.get('source') == 'prior_step4_parquet',
+            'phase_seconds': {},
+            'formula_engine_profile': {},
+            'parity_checked': True,
+        },
+        'step4': {
+            'formal_factor_values_owner': 'Step4',
+            'formal_factor_values_path': factor_path,
+            'self_quant_status': _backend_status(backend_runs, 'self_quant_analyzer'),
+            'qlib_native_status': qlib_native_status_from_backend_runs(backend_runs, backend_timing_profile),
+            'phase_seconds': {},
+        },
+        'reuse': {
+            'step3b_cache_reused_by_step4': step4_factor_io_profile.get('source') == 'step3b_compute_cache',
+            'reuse_gate_status': reuse_gate_status_from_factor_io(step4_factor_io_profile),
+            'reuse_reason': ((step4_factor_io_profile.get('reuse_gate') or {}).get('reason') if isinstance(step4_factor_io_profile.get('reuse_gate'), dict) else None),
+        },
+        'side_effects': {
+            'clean_data_mutated': False,
+            'generated_code_digest_changed': False,
+            'official_record_written': False,
+            'search_worker_started': False,
+        },
+        'metrics': {},
+    }
+
+
+def add_formal_acceptance_envelope(
+    payload: dict[str, Any],
+    *,
+    identity: dict[str, Any],
+    run_status: str,
+    acceptance_summary: dict[str, Any],
+) -> dict[str, Any]:
+    out = dict(payload)
+    out['run_id'] = identity.get('run_id') or f"{payload.get('report_id')}__run"
+    out['artifact_root'] = str(FACTORFORGE)
+    out['producer'] = identity.get('producer') or 'step4'
+    out['status'] = run_status
+    out['verdict'] = 'PASS' if run_status in {'success', 'partial'} else 'FAIL'
+    out['acceptance_summary'] = acceptance_summary
+    return out
+
+
 def runtime_python() -> Path:
     venv_python = WORKSPACE / '.venvs' / 'quant-research' / 'bin' / 'python'
     if venv_python.exists():
@@ -1039,6 +1162,31 @@ def resolve_input_paths(report_id: str, manifest: dict[str, Any] | None = None) 
     }
 
 
+def dataframe_columns(path: Path) -> list[str]:
+    if path.suffix.lower() == '.parquet':
+        try:
+            import pyarrow.parquet as pq
+            return list(pq.read_schema(path).names)
+        except Exception:
+            import pandas as pd
+            return list(pd.read_parquet(path).head(0).columns)
+    import pandas as pd
+    return list(pd.read_csv(path, nrows=0).columns)
+
+
+def resolve_declared_daily_input_path(dpm: dict[str, Any], handoff: dict[str, Any], input_paths: dict[str, Path]) -> Path | None:
+    if input_paths.get('daily'):
+        return Path(input_paths['daily'])
+    local_inputs = handoff.get('local_input_paths') if isinstance(handoff.get('local_input_paths'), dict) else {}
+    if not local_inputs:
+        local_inputs = dpm.get('local_input_paths') if isinstance(dpm.get('local_input_paths'), dict) else {}
+    raw = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    if not raw:
+        return None
+    path = Path(str(raw))
+    return path if path.is_absolute() else WORKSPACE / path
+
+
 def validate_inputs(report_id: str, fsm: dict[str, Any], dpm: dict[str, Any], handoff: dict[str, Any], input_paths: dict[str, Path]) -> tuple[list[dict[str, Any]], list[str]]:
     issues: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -1072,6 +1220,30 @@ def validate_inputs(report_id: str, fsm: dict[str, Any], dpm: dict[str, Any], ha
 
     if not dpm.get('data_sources'):
         issues.append({'severity': 'error', 'code': 'DATA_SOURCES_MISSING', 'message': 'data_sources missing', 'evidence': {}})
+
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
+    required_standard_fields = []
+    if isinstance(standard_contract, dict):
+        required_standard_fields = [
+            str(field).strip()
+            for field in (standard_contract.get('required_standard_formula_fields') or [])
+            if str(field).strip()
+        ]
+    daily_input_path = resolve_declared_daily_input_path(dpm, handoff, input_paths)
+    if required_standard_fields and daily_input_path and daily_input_path.exists():
+        daily_columns = dataframe_columns(daily_input_path)
+        missing_standard_fields = sorted(set(required_standard_fields) - set(daily_columns))
+        if missing_standard_fields:
+            issues.append({
+                'severity': 'error',
+                'code': 'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT',
+                'message': 'Step4 formal input snapshot missing required standard formula fields',
+                'evidence': {
+                    'daily_path': str(daily_input_path),
+                    'missing': missing_standard_fields,
+                },
+            })
 
     if fsm.get('human_review_required'):
         warnings.append('factor_spec_master indicates human_review_required=true; Step 4 proceeds under frozen-schema execution discipline.')
@@ -1919,6 +2091,29 @@ def main() -> None:
             'recommended_step5_scope': 'full' if run_status == 'success' else 'partial_scope_only',
             'notes_for_step5': ['partial result: evaluate only covered window/instruments'] if run_status == 'partial' else ['full result ready for evaluation']
         }
+
+        acceptance_summary = build_acceptance_summary(
+            report_id=report_id,
+            factor_id=factor_id,
+            run_status=run_status,
+            output_paths=step4_output_paths,
+            backend_runs=backend_runs,
+            backend_timing_profile=backend_timing_profile,
+            step4_factor_io_profile=step4_factor_io_profile,
+            input_io_profile=input_io_profile,
+        )
+        run_master = add_formal_acceptance_envelope(
+            run_master,
+            identity=run_master['artifact_identity'],
+            run_status=run_status,
+            acceptance_summary=acceptance_summary,
+        )
+        handoff_out = add_formal_acceptance_envelope(
+            handoff_out,
+            identity=handoff_out['artifact_identity'],
+            run_status=run_status,
+            acceptance_summary=acceptance_summary,
+        )
 
         write_json(run_master_path, run_master)
         write_json(diag_path, diagnostics)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from contextlib import contextmanager
 from typing import Any
 
@@ -48,6 +49,43 @@ def _validate_formula_ir_inputs(formula_ir: dict, frame: pd.DataFrame) -> None:
     missing = required - set(frame.columns)
     if missing:
         raise KeyError(f'BLOCK_MISSING_REFERENCE_KEYS: {sorted(missing)}')
+
+
+def _adv_window(field: str) -> int | None:
+    match = re.fullmatch(r'adv([1-9][0-9]*)', str(field or '').strip().lower())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _with_derived_formula_fields(formula_ir: dict, frame: pd.DataFrame) -> pd.DataFrame:
+    required_fields = [str(field).strip().lower() for field in formula_ir.get('required_fields') or []]
+    adv_fields = [(field, _adv_window(field)) for field in required_fields]
+    adv_fields = [(field, window) for field, window in adv_fields if window is not None]
+    needs_vwap = 'vwap' in required_fields and 'vwap' not in frame.columns
+    if not adv_fields and not needs_vwap:
+        return frame
+    missing_adv = [field for field, _window_value in adv_fields if field not in frame.columns]
+    if not missing_adv and not needs_vwap:
+        return frame
+    volume_col = 'volume' if 'volume' in frame.columns else 'vol' if 'vol' in frame.columns else None
+    if missing_adv and volume_col is None:
+        raise KeyError(f'BLOCK_MISSING_FIELD_ALIAS: adv derived fields require volume/vol source: {missing_adv}')
+    working = frame.copy()
+    volume = pd.to_numeric(working[volume_col], errors='coerce') if volume_col else None
+    if needs_vwap:
+        if volume_col is None or 'amount' not in working.columns:
+            raise KeyError('BLOCK_MISSING_FIELD_ALIAS: vwap derived field requires amount and volume/vol source')
+        amount = pd.to_numeric(working['amount'], errors='coerce')
+        working['vwap'] = amount / volume.replace(0, np.nan)
+    grouped_volume = volume.groupby(working['ts_code'], sort=False) if volume is not None else None
+    for field, window in adv_fields:
+        if field in working.columns:
+            continue
+        if grouped_volume is None:
+            raise KeyError(f'BLOCK_MISSING_FIELD_ALIAS: adv derived fields require volume/vol source: {missing_adv}')
+        working[field] = grouped_volume.transform(lambda s, window=window: s.rolling(window, min_periods=window).mean())
+    return working
 
 
 def _is_key_sorted(frame: pd.DataFrame) -> bool:
@@ -293,7 +331,7 @@ def _eval_cached(
 
 def evaluate_formula_ir_reference(formula_ir: dict, frame: pd.DataFrame) -> pd.Series:
     _validate_formula_ir_inputs(formula_ir, frame)
-    working = _prepare_reference_frame(frame)
+    working = _prepare_reference_frame(_with_derived_formula_fields(formula_ir, frame))
     return _eval(formula_ir['root'], working)
 
 
@@ -306,7 +344,7 @@ def evaluate_formula_ir_optimized(
     formula_kernel_config: dict | None = None,
 ):
     _validate_formula_ir_inputs(formula_ir, frame)
-    working, input_presorted = _prepare_optimized_frame(frame)
+    working, input_presorted = _prepare_optimized_frame(_with_derived_formula_fields(formula_ir, frame))
     resolved_formula_kernel_config = formula_kernel_config or resolve_formula_kernel_engine()
     cache: dict[str, Any] = {}
     stats: dict[str, Any] = {
@@ -359,7 +397,7 @@ def evaluate_formula_frame(
 ):
     if engine == 'reference':
         _validate_formula_ir_inputs(formula_ir, frame)
-        working = _prepare_reference_frame(frame)
+        working = _prepare_reference_frame(_with_derived_formula_fields(formula_ir, frame))
         values = _eval(formula_ir['root'], working)
         profile: dict[str, Any] = {
             'engine': 'pandas_formula_ir_reference',
@@ -374,7 +412,7 @@ def evaluate_formula_frame(
         }
     elif engine == 'optimized':
         _validate_formula_ir_inputs(formula_ir, frame)
-        working, input_presorted = _prepare_optimized_frame(frame)
+        working, input_presorted = _prepare_optimized_frame(_with_derived_formula_fields(formula_ir, frame))
         values, profile = evaluate_formula_ir_optimized(
             formula_ir,
             working,

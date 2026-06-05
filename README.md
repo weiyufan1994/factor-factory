@@ -369,6 +369,48 @@ python3 -m pip install -e ".[step4]"
 python3 -m pip install -e ".[qlib]"
 ```
 
+After a fresh clone, run the temporary/read-only verification path first:
+
+```bash
+python3 -m py_compile scripts/run_factorforge_ultimate.py scripts/update_clean_daily_bar_after_daily_update.py
+python3 scripts/run_factorforge_entrypoint_hygiene_smoke.py
+python3 scripts/run_factorforge_performance_smoke.py
+```
+
+These commands do not require a real report or clean data. They validate the entrypoint registry, wrapper boundaries, Step3/Step4 performance contracts, and key smoke cases. `run_factorforge_performance_smoke.py` writes only under `/tmp`.
+
+Prepare real daily data and the Qlib provider:
+
+```bash
+python3 scripts/update_clean_daily_bar_after_daily_update.py \
+  --end-date <YYYYMMDD> \
+  --publish \
+  --qlib-provider-qlib-smoke
+```
+
+This entrypoint publishes the shared `clean_daily_bar` into the Data API catalog and maintains the Microsoft Qlib provider by default:
+
+```text
+~/.qlib/qlib_data/cn_data
+~/.factorforge/qlib_provider.env
+```
+
+If a Data API catalog already exists, publish the Qlib provider directly:
+
+```bash
+python3 scripts/publish_qlib_daily_provider.py \
+  --data-api \
+  --catalog-path <factorforge_root>/data/catalog/data_catalog.json \
+  --dataset-id clean_daily_bar \
+  --start-date 20160101 \
+  --end-date <YYYYMMDD> \
+  --provider-dir ~/.qlib/qlib_data/cn_data \
+  --instrument-style legacy_qlib \
+  --raw-smoke \
+  --qlib-smoke \
+  --write-env-file ~/.factorforge/qlib_provider.env
+```
+
 Build runtime context:
 
 ```bash

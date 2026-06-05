@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib.util
 import json
 import os
 import shutil
@@ -58,6 +59,26 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def import_run_step3_module():
+    path = REPO_ROOT / "skills" / "factor-forge-step3" / "scripts" / "run_step3.py"
+    spec = importlib.util.spec_from_file_location("factorforge_step12_smoke_run_step3", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to import {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def import_run_step3b_module():
+    path = REPO_ROOT / "skills" / "factor-forge-step3" / "scripts" / "run_step3b.py"
+    spec = importlib.util.spec_from_file_location("factorforge_step12_smoke_run_step3b", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to import {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def remove_mechanism_source_fields(payload: dict[str, Any]) -> None:
     contract = payload.get("mechanism_math_contract")
     if isinstance(contract, dict):
@@ -78,6 +99,126 @@ def refresh_step2_identity_hashes(master: dict[str, Any], handoff: dict[str, Any
     handoff_identity = handoff.get("artifact_identity")
     if isinstance(handoff_identity, dict):
         handoff_identity["spec_hash"] = spec_hash
+
+
+def run_step3a_blocked_handoff_clears_execution_state_case() -> dict[str, Any]:
+    module = import_run_step3_module()
+    existing = {
+        "report_id": "STEP12_STALE_HANDOFF",
+        "step3a_ready": True,
+        "step3b_ready": True,
+        "first_run_outputs": {
+            "status": "ready",
+            "output_paths": ["runs/old/factor_values.parquet"],
+            "run_metadata_path": "runs/old/metadata.json",
+            "factor_values_path": "runs/old/factor_values.parquet",
+        },
+        "factor_impl_ref": "generated_code/old/factor.py",
+        "factor_impl_stub_ref": "generated_code/old/stub.py",
+        "qlib_expression_draft_ref": "objects/old/qlib.json",
+        "hybrid_execution_scaffold_ref": "objects/old/hybrid.json",
+        "local_input_paths": {
+            "old": "kept",
+            "daily_df_parquet": "runs/old/daily.parquet",
+            "daily_df_csv": "runs/old/daily.csv",
+            "daily_df_csv_sample": "runs/old/daily_sample.csv",
+            "minute_df_parquet": "runs/old/minute.parquet",
+            "minute_df_csv": "runs/old/minute.csv",
+        },
+    }
+    merged = module.merge_handoff(existing, {
+        "report_id": "STEP12_STALE_HANDOFF",
+        "step3a_ready": False,
+        "local_input_paths": {},
+    })
+    first_run = merged.get("first_run_outputs") or {}
+    stale_refs_absent = all(
+        key not in merged
+        for key in [
+            "factor_impl_ref",
+            "factor_impl_stub_ref",
+            "qlib_expression_draft_ref",
+            "hybrid_execution_scaffold_ref",
+            "step3b_sample_run_metadata_ref",
+            "step3b_sample_factor_values_ref",
+        ]
+    )
+    executable_local_input_keys = [
+        "daily_df_parquet",
+        "daily_df_csv",
+        "daily_df_csv_sample",
+        "minute_df_parquet",
+        "minute_df_csv",
+    ]
+    local_inputs = merged.get("local_input_paths") if isinstance(merged.get("local_input_paths"), dict) else {}
+    stale_local_inputs_absent = all(key not in local_inputs for key in executable_local_input_keys)
+    ok = (
+        merged.get("step3a_ready") is False
+        and merged.get("step3b_ready") is False
+        and first_run.get("status") == "blocked"
+        and not first_run.get("output_paths")
+        and first_run.get("factor_values_path") is None
+        and stale_refs_absent
+        and stale_local_inputs_absent
+    )
+    return {
+        "ok": bool(ok),
+        "step3a_ready": merged.get("step3a_ready"),
+        "step3b_ready": merged.get("step3b_ready"),
+        "first_run_outputs": first_run,
+        "stale_refs_absent": stale_refs_absent,
+        "local_input_paths": local_inputs,
+        "stale_local_inputs_absent": stale_local_inputs_absent,
+    }
+
+
+def run_step3b_cannot_upgrade_blocked_step3a_handoff_case() -> dict[str, Any]:
+    module = import_run_step3b_module()
+    existing = {
+        "report_id": "STEP12_BLOCKED_STEP3A",
+        "step3a_ready": False,
+        "step3b_ready": False,
+        "first_run_outputs": {
+            "status": "blocked",
+            "no_first_run_reason": "step3a_feasibility_blocked",
+            "output_paths": [],
+            "run_metadata_path": None,
+            "factor_values_path": None,
+        },
+        "local_input_paths": {
+            "input_mode": "blocked",
+            "snapshot_source": "step3a_feasibility_blocked",
+        },
+    }
+    merged = module.merge_handoff(existing, {
+        "report_id": "STEP12_BLOCKED_STEP3A",
+        "step3a_ready": False,
+        "step3b_ready": True,
+        "first_run_outputs": {
+            "status": "pending",
+            "no_first_run_reason": "no_local_snapshots_available",
+            "output_paths": [],
+            "run_metadata_path": None,
+            "factor_values_path": None,
+            "producer": "step3b",
+        },
+        "factor_impl_stub_ref": "generated_code/STEP12_BLOCKED_STEP3A/factor_impl_stub__STEP12_BLOCKED_STEP3A.py",
+    })
+    first_run = merged.get("first_run_outputs") or {}
+    ok = (
+        merged.get("step3a_ready") is False
+        and merged.get("step3b_ready") is False
+        and first_run.get("status") == "blocked"
+        and first_run.get("no_first_run_reason") == "step3a_feasibility_blocked"
+        and "factor_impl_stub_ref" not in merged
+    )
+    return {
+        "ok": bool(ok),
+        "step3a_ready": merged.get("step3a_ready"),
+        "step3b_ready": merged.get("step3b_ready"),
+        "first_run_outputs": first_run,
+        "factor_impl_stub_ref": merged.get("factor_impl_stub_ref"),
+    }
 
 
 def build_fixture(root: Path) -> None:
@@ -178,6 +319,8 @@ def main() -> int:
     alpha019_econ = alpha019_discipline.get("economic_hypothesis") or {}
     alpha019_math = alpha019_discipline.get("math_hypothesis_candidates") or []
     alpha019_contract = alpha019_master.get("mechanism_math_contract") or {}
+    rid_runtime_context = root / "objects" / "runtime_context" / f"runtime_context__{RID}.json"
+    alpha019_runtime_context = root / "objects" / "runtime_context" / f"runtime_context__{ALPHA019_RID}.json"
     alpha019_headline_blob = json.dumps({
         "factor_intuition": alpha019_aim.get("factor_intuition"),
         "return_source_hypothesis": alpha019_aim.get("return_source_hypothesis"),
@@ -217,6 +360,17 @@ def main() -> int:
             "slow" in alpha019_headline_blob
             and ("threshold" in alpha019_headline_blob or "short-horizon" in alpha019_headline_blob)
             and "price-volume" not in alpha019_headline_blob
+        ),
+        "canonical_formula_step1_v2_fields_present": (
+            isinstance(alpha019_discipline.get("market_process_thesis"), dict)
+            and isinstance(alpha019_discipline.get("primary_mechanism_model_candidates"), list)
+            and bool(alpha019_discipline.get("primary_mechanism_model_candidates"))
+            and isinstance(alpha019_discipline.get("stochastic_price_process_projection"), dict)
+            and (alpha019_discipline.get("stochastic_price_process_projection") or {}).get("projection_required") is True
+        ),
+        "ultimate_wrapper_does_not_write_worker_runtime_context": (
+            not rid_runtime_context.exists()
+            and not alpha019_runtime_context.exists()
         ),
     }
     mutation_cases: dict[str, Any] = {}
@@ -263,6 +417,35 @@ def main() -> int:
     else:
         mutation_cases["missing_mechanism_source_hypotheses_blocks_step2"] = {"ok": False, "skipped": "positive Step2 wrapper failed"}
 
+    mutation_cases["step3a_blocked_handoff_clears_execution_state"] = run_step3a_blocked_handoff_clears_execution_state_case()
+    mutation_cases["step3b_cannot_upgrade_blocked_step3a_handoff"] = run_step3b_cannot_upgrade_blocked_step3a_handoff_case()
+
+    if commands["alpha019_run_step2_wrapper"]["rc"] == 0:
+        proc = run([
+            sys.executable,
+            "scripts/run_factorforge_ultimate.py",
+            "--report-id",
+            ALPHA019_RID,
+            "--start-step",
+            "3",
+            "--end-step",
+            "3",
+            "--council-mode",
+            "off",
+        ], root)
+        output = proc["stdout_tail"] + proc["stderr_tail"]
+        mutation_cases["ultimate_step3_block_does_not_write_worker_runtime_context"] = {
+            "rc": proc["rc"],
+            "runtime_context_exists": alpha019_runtime_context.exists(),
+            "token_present": "validate_step3" in output or "BLOCK_STEP3A" in output,
+            "ok": proc["rc"] != 0 and not alpha019_runtime_context.exists(),
+        }
+    else:
+        mutation_cases["ultimate_step3_block_does_not_write_worker_runtime_context"] = {
+            "ok": False,
+            "skipped": "positive Alpha019 Step2 wrapper failed",
+        }
+
     summary = {
         "verdict": "ACCEPT" if all(cases.values()) and all(item.get("ok") for item in mutation_cases.values()) and not pollution and all(item["rc"] == 0 for item in commands.values()) else "BLOCK",
         "root_policy": {"factorforge_root": str(root), "is_tmp": is_tmp(root), "enforced": True},
@@ -272,6 +455,10 @@ def main() -> int:
         "economic_hypothesis": discipline.get("economic_hypothesis"),
         "math_candidate_count": len(discipline.get("math_hypothesis_candidates") or []),
         "mechanism_model_family": mechanism_contract.get("model_family"),
+        "runtime_context_guard": {
+            "rid_runtime_context_exists": rid_runtime_context.exists(),
+            "alpha019_runtime_context_exists": alpha019_runtime_context.exists(),
+        },
         "alpha019_formula_specific_modelling": {
             "headline_blob": alpha019_headline_blob,
             "step1_economic_hypothesis": alpha019_econ,

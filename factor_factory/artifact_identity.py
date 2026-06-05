@@ -202,3 +202,29 @@ def assert_identity_matches_strict(
                     raise AssertionError(f'hybrid {key} mismatch')
         else:
             raise AssertionError(f'unsupported implementation_mode: {mode}')
+
+
+def validate_top_level_formal_artifact_identity(payload: dict[str, Any], *, label: str = 'formal_artifact') -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        return [{'code': 'BLOCK_FORMAL_ARTIFACT_TOP_LEVEL_IDENTITY_MISSING', 'message': f'{label} is not an object'}]
+    identity = payload.get('artifact_identity') if isinstance(payload.get('artifact_identity'), dict) else {}
+    required = ['report_id', 'factor_id', 'run_id', 'artifact_root', 'producer', 'status', 'verdict']
+    missing = [field for field in required if payload.get(field) is None or payload.get(field) == '' or payload.get(field) == []]
+    if missing:
+        issues.append({
+            'code': 'BLOCK_FORMAL_ARTIFACT_TOP_LEVEL_IDENTITY_MISSING',
+            'message': f'{label} missing top-level formal identity fields',
+            'evidence': {'missing': missing},
+        })
+    if not identity:
+        issues.append({'code': 'BLOCK_FORMAL_ARTIFACT_TOP_LEVEL_IDENTITY_MISSING', 'message': f'{label}.artifact_identity missing'})
+        return issues
+    for field in ['report_id', 'factor_id', 'run_id']:
+        if identity.get(field) and payload.get(field) and identity.get(field) != payload.get(field):
+            issues.append({
+                'code': 'BLOCK_FORMAL_ARTIFACT_TOP_LEVEL_IDENTITY_MISMATCH',
+                'message': f'{label}.{field} differs from artifact_identity.{field}',
+                'evidence': {'top_level': payload.get(field), 'artifact_identity': identity.get(field)},
+            })
+    return issues

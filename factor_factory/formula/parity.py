@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,57 @@ def make_operator_fixture() -> pd.DataFrame:
                 'volume_ratio': 0.8 + code_idx * 0.08 + day_idx * 0.02,
             })
     return pd.DataFrame(rows)
+
+
+def _adv_window(field: str) -> int | None:
+    match = re.fullmatch(r'adv([1-9][0-9]*)', str(field or '').strip().lower())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _with_standard_formula_fixture_fields(formula_ir: dict[str, Any], fixture: pd.DataFrame) -> pd.DataFrame:
+    required = {str(field).strip().lower() for field in formula_ir.get('required_fields') or []}
+    adv_fields = sorted((field, _adv_window(field)) for field in required if _adv_window(field) is not None)
+    if not required and not adv_fields:
+        return fixture
+
+    working = fixture.copy()
+    volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
+    if ('volume' in required or adv_fields or 'vwap' in required) and volume_col is None:
+        raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: fixture missing volume/vol source')
+    if 'volume' in required and 'volume' not in working.columns:
+        working['volume'] = pd.to_numeric(working[volume_col], errors='coerce')
+        volume_col = 'volume'
+
+    if ('returns' in required or 'return' in required or 'ret' in required) and 'returns' not in working.columns:
+        return_col = 'return' if 'return' in working.columns else 'pct_chg' if 'pct_chg' in working.columns else None
+        if return_col is None:
+            raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: fixture missing returns/pct_chg source')
+        working['returns'] = pd.to_numeric(working[return_col], errors='coerce')
+    if 'return' in required and 'return' not in working.columns and 'returns' in working.columns:
+        working['return'] = working['returns']
+
+    if 'vwap' in required and 'vwap' not in working.columns:
+        volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
+        if volume_col is None or 'amount' not in working.columns:
+            raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: fixture missing vwap sources')
+        volume = pd.to_numeric(working[volume_col], errors='coerce')
+        amount = pd.to_numeric(working['amount'], errors='coerce')
+        working['vwap'] = amount / volume.mask(volume == 0)
+
+    missing_adv = [field for field, _window in adv_fields if field not in working.columns]
+    if missing_adv:
+        volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
+        if volume_col is None:
+            raise AssertionError(f'BLOCK_OPERATOR_PARITY_FAILED: fixture missing adv source {missing_adv}')
+        volume = pd.to_numeric(working[volume_col], errors='coerce')
+        grouped_volume = volume.groupby(working['ts_code'], sort=False)
+        for field, window in adv_fields:
+            if field in working.columns:
+                continue
+            working[field] = grouped_volume.transform(lambda s, window=window: s.rolling(window, min_periods=window).mean())
+    return working
 
 
 def _load_compute(path: Path):
@@ -79,7 +131,7 @@ def compare_outputs(reference: pd.DataFrame, generated: pd.DataFrame, *, toleran
 
 
 def run_operator_parity(formula_ir: dict[str, Any], implementation_path: Path, *, tolerance: float = 1e-9) -> dict[str, Any]:
-    fixture = make_operator_fixture()
+    fixture = _with_standard_formula_fixture_fields(formula_ir, make_operator_fixture())
     reference = evaluate_formula_frame(formula_ir, fixture)
     compute = _load_compute(implementation_path)
     generated = compute(daily_df=fixture.copy(), minute_df=None)

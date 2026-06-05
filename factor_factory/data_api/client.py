@@ -69,6 +69,18 @@ def _default_fields(dataset_id: str) -> list[str]:
         return ["turnover_rate", "pe", "pb", "total_mv", "circ_mv"]
     if dataset_id == "minute_bar":
         return ["open", "high", "low", "close", "vol", "amount"]
+    if dataset_id == "moneyflow":
+        return [
+            "buy_sm_amount",
+            "sell_sm_amount",
+            "buy_md_amount",
+            "sell_md_amount",
+            "buy_lg_amount",
+            "sell_lg_amount",
+            "buy_elg_amount",
+            "sell_elg_amount",
+            "net_mf_amount",
+        ]
     return ["close"]
 
 

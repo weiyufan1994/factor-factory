@@ -252,6 +252,12 @@ python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step
 
 Direct Step1/Step2 scripts are for isolated developer debugging only. Formal agent runs from Step2 onward must enter through `scripts/run_factorforge_ultimate.py` so the runtime context, proof manifest, and canonical artifact paths are fixed before later steps consume them.
 
+`objects/runtime_context/runtime_context__<report_id>.json` is the worker-entry
+contract. It must not be written before the relevant Step1/2/3A validators have
+all passed. The ultimate wrapper may use a temporary manifest to run local
+validators, but a BLOCKed Step1/Step2/Step3A run must leave the worker-entry
+runtime context absent and must not be described as runnable.
+
 ### Path B: Canonical alpha / known formula
 Start from Step3 when:
 - formula is already known
@@ -349,6 +355,10 @@ The wrapper is responsible for:
 - running validators immediately after each step,
 - stopping on the first failed validator or failed step,
 - writing `objects/runtime_context/ultimate_run_report__<report_id>.json` as the proof report.
+
+The proof report is not worker authorization. If a validator fails, the proof
+report may record the failure, but `runtime_context__<report_id>.json` must
+remain absent and no agent should launch worker Step3B/Step4 from that run.
 
 A run is not considered complete unless the wrapper proof report exists and has `status: PASS`. Ad-hoc metric tables, hand-written handoffs, or post-hoc Step4/5/6 objects are not valid substitutes for wrapper proof.
 

@@ -30,6 +30,7 @@ from factor_factory.formula.pandas_codegen import generate_pandas_formula_code
 from factor_factory.formula.polars_evaluator import assert_polars_result_parity, polars_dependency_available
 from factor_factory.formula.ts_rank_candidates import available_candidates, compare_candidate_to_reference, prepare_ts_rank_frame
 from factor_factory.formula.kernels import DEFAULT_NUMPY_TS_EXCLUDED_OPERATORS, DEFAULT_NUMPY_TS_OPERATORS, resolve_formula_kernel_engine
+from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
 from factor_factory.factor_families.price_volume import PLUGIN as PRICE_VOLUME_PLUGIN
 
 CANONICAL_DIRS = ['objects', 'runs', 'evaluations', 'generated_code', 'archive', 'factorforge', 'data/clean']
@@ -1053,6 +1054,15 @@ def run_step3_daily_parquet_csv_schema_parity_case(root: Path) -> dict[str, Any]
 
 def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: dict[str, Any]) -> None:
     objects = root / 'objects'
+    local_inputs.setdefault('derived_field_contract', {
+        'version': 'factorforge_derived_field_contract_v1',
+        'report_local_only': True,
+        'clean_data_mutation': False,
+        'validation_result': 'PASS',
+        'source_fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pct_chg', 'vol', 'amount'],
+        'standard_formula_fields_added': [],
+        'derived_fields': {},
+    })
     source_code = (
         "import pandas as pd\n\n"
         "def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:\n"
@@ -1088,6 +1098,23 @@ def write_step3_validation_artifacts(root: Path, report_id: str, local_inputs: d
             r'\blookahead\b',
         ],
     }
+    standard_contract = build_standard_formula_fields_contract(
+        formula_text='close',
+        required_fields=['close'],
+        available_source_fields=['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pct_chg', 'vol', 'amount'],
+    )
+    write_json(objects / 'factor_spec_master' / f'factor_spec_master__{report_id}.json', {
+        'report_id': report_id,
+        'factor_id': 'SMOKE',
+        'canonical_spec': {
+            'formula_text': 'close',
+            'formula_ir': {'required_fields': ['close']},
+            'required_fields': ['close'],
+            'standard_formula_fields_contract': standard_contract,
+        },
+        'implementation_mode_decision': {'implementation_mode': 'direct_code'},
+        'standard_formula_fields_contract': standard_contract,
+    })
     write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
         'report_id': report_id,
         'factor_id': 'SMOKE',
@@ -6017,8 +6044,23 @@ def create_step4_factor_csv_policy_fixture(root: Path, report_id: str, policy: s
         'report_id': report_id,
         'factor_id': 'SMOKE',
         'artifact_identity': artifact_identity,
-        'canonical_spec': {'implementation_path': str(impl_path)},
+        'canonical_spec': {
+            'formula_text': 'rank(close)',
+            'formula_ir': {'required_fields': ['close']},
+            'required_fields': ['close'],
+            'implementation_path': str(impl_path),
+            'standard_formula_fields_contract': build_standard_formula_fields_contract(
+                formula_text='rank(close)',
+                required_fields=['close'],
+                available_source_fields=['close', 'pct_chg'],
+            ),
+        },
         'implementation_mode_decision': {'implementation_mode': 'direct_code'},
+        'standard_formula_fields_contract': build_standard_formula_fields_contract(
+            formula_text='rank(close)',
+            required_fields=['close'],
+            available_source_fields=['close', 'pct_chg'],
+        ),
     })
     write_json(objects / 'data_prep_master' / f'data_prep_master__{report_id}.json', {
         'report_id': report_id,

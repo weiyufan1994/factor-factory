@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -43,6 +44,20 @@ CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
 DIRECT_CODE_CONTRACT_VERSION = 'factorforge_direct_code_contract_v1'
+MONEYFLOW_DATASET_FIELDS = [
+    'ts_code',
+    'trade_date',
+    'buy_sm_amount',
+    'sell_sm_amount',
+    'buy_md_amount',
+    'sell_md_amount',
+    'buy_lg_amount',
+    'sell_lg_amount',
+    'buy_elg_amount',
+    'sell_elg_amount',
+    'net_mf_amount',
+]
+MONEYFLOW_SIGNAL_FIELDS = set(MONEYFLOW_DATASET_FIELDS) - {'ts_code', 'trade_date'}
 DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_preserved_from_formal_step2_raw_direct_code_contract',
     'source_code_preserved_from_step2_direct_code_contract',
@@ -289,6 +304,52 @@ def merge_handoff(existing: dict, updates: dict) -> dict:
         merged['evaluation_plan'] = existing['evaluation_plan']
 
     merged['report_id'] = updates.get('report_id') or existing.get('report_id')
+
+    if updates.get('step3a_ready') is False:
+        merged['step3a_ready'] = False
+        merged['step3b_ready'] = False
+        merged['first_run_outputs'] = {
+            'status': 'blocked',
+            'no_first_run_reason': 'step3a_feasibility_blocked',
+            'output_paths': [],
+            'run_metadata_path': None,
+            'factor_values_path': None,
+        }
+        executable_local_input_keys = {
+            'daily_df_path',
+            'daily_df_parquet',
+            'daily_df_csv',
+            'daily_df_csv_sample',
+            'minute_df_path',
+            'minute_df_parquet',
+            'minute_df_csv',
+            'minute_df_csv_sample',
+            'local_daily_path',
+            'local_minute_path',
+        }
+        blocked_local_inputs = {}
+        if isinstance(update_local_inputs, dict):
+            blocked_local_inputs.update(update_local_inputs)
+        if not blocked_local_inputs:
+            blocked_local_inputs = {
+                'input_mode': 'blocked',
+                'snapshot_source': 'step3a_feasibility_blocked',
+                'snapshot_note': 'Step3A feasibility blocked; stale executable local snapshots cleared.',
+            }
+        for key in executable_local_input_keys:
+            blocked_local_inputs.pop(key, None)
+        merged['local_input_paths'] = blocked_local_inputs
+        for key in [
+            'factor_impl_ref',
+            'factor_impl_stub_ref',
+            'qlib_expression_draft_ref',
+            'hybrid_execution_scaffold_ref',
+            'step3b_sample_run_metadata_ref',
+            'step3b_sample_factor_values_ref',
+            'implementation_path',
+            'factor_values_path',
+        ]:
+            merged.pop(key, None)
     return merged
 
 
@@ -342,6 +403,29 @@ def _normalize_window_date(value):
     return digits if len(digits) == 8 else text
 
 
+def current_data_api_end_date() -> str:
+    override = _normalize_window_date(os.getenv('FACTORFORGE_DATA_API_CURRENT_END_DATE'))
+    if override and override != 'current':
+        return override
+    return datetime.now(timezone.utc).strftime('%Y%m%d')
+
+
+def _data_api_window_bound(value, *, default: str, current_sentinel: str | None = None) -> str:
+    normalized = _normalize_window_date(value)
+    if not normalized:
+        return default
+    if normalized == 'current':
+        return current_sentinel or default
+    return normalized
+
+
+def data_api_window_bounds(sample_window: dict) -> dict:
+    return {
+        'start': _data_api_window_bound(sample_window.get('start'), default='19000101'),
+        'end': _data_api_window_bound(sample_window.get('end'), default=current_data_api_end_date(), current_sentinel=current_data_api_end_date()),
+    }
+
+
 def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
     canonical = fsm.get('canonical_spec') or {}
     source_metadata = fsm.get('source_metadata') or {}
@@ -359,6 +443,7 @@ def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
             'start': source_metadata.get('window_start'),
             'end': source_metadata.get('window_end'),
             'calendar': source_metadata.get('calendar'),
+            '_allow_partial_window': True,
         })
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -369,6 +454,12 @@ def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
             return {
                 'start': start,
                 'end': end,
+                'calendar': candidate.get('calendar') or fallback.get('calendar') or 'A-share trading days',
+            }
+        if candidate.get('_allow_partial_window') and (start or end):
+            return {
+                'start': start or fallback.get('start') or '20100104',
+                'end': end or fallback.get('end') or 'current',
                 'calendar': candidate.get('calendar') or fallback.get('calendar') or 'A-share trading days',
             }
     return fallback
@@ -451,16 +542,25 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
             'blocked_reason': 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: Step2 direct_code contract must explicitly provide code_contract.source_code',
         }
 
-    required_fields = list(dict.fromkeys(
-        list(existing_code_contract.get('required_fields') or [])
-        + list(contract.get('required_fields') or [])
-        + list(canonical.get('required_inputs') or [])
-        + ['ts_code', 'trade_date']
-    ))
-    if 'vol' not in required_fields and 'volume' not in required_fields:
-        required_fields.append('vol')
-    if 'close' not in required_fields:
-        required_fields.append('close')
+    if existing_code_contract.get('required_fields'):
+        required_fields = list(dict.fromkeys(
+            list(existing_code_contract.get('required_fields') or [])
+            + ['ts_code', 'trade_date']
+        ))
+    else:
+        required_fields = list(dict.fromkeys(
+            list(contract.get('required_fields') or [])
+            + list(canonical.get('required_inputs') or [])
+            + ['ts_code', 'trade_date']
+        ))
+    # Explicit direct_code contracts can target non-OHLCV daily panels such as
+    # moneyflow. Do not silently append price/volume fields unless Step2 did
+    # not provide a source contract field list.
+    if not existing_code_contract.get('required_fields'):
+        if 'vol' not in required_fields and 'volume' not in required_fields:
+            required_fields.append('vol')
+        if 'close' not in required_fields:
+            required_fields.append('close')
     output_schema = (
         existing_code_contract.get('output_schema')
         or contract.get('output_schema')
@@ -571,10 +671,11 @@ def data_api_query_payload(
     universe='a_share_all',
     frequency: str = 'daily',
 ) -> dict:
+    query_window = data_api_window_bounds(sample_window)
     return {
         'dataset': dataset,
-        'start_date': _normalize_window_date(sample_window.get('start')) or '19000101',
-        'end_date': _normalize_window_date(sample_window.get('end')) if _normalize_window_date(sample_window.get('end')) != 'current' else '29991231',
+        'start_date': query_window['start'],
+        'end_date': query_window['end'],
         'universe': universe,
         'fields': list(dict.fromkeys(fields)),
         'frequency': frequency,
@@ -586,8 +687,10 @@ def build_step4_data_contract(
     sample_window: dict,
     daily_resolution: dict | None = None,
     minute_resolution: dict | None = None,
+    moneyflow_resolution: dict | None = None,
     daily_fields: list[str] | None = None,
     minute_fields: list[str] | None = None,
+    moneyflow_fields: list[str] | None = None,
 ) -> dict:
     full_queries = {}
     sample_queries = {}
@@ -610,8 +713,17 @@ def build_step4_data_contract(
             universe=['000001.SZ', '000002.SZ'],
             frequency='1min',
         )
+    if moneyflow_resolution:
+        fields = moneyflow_fields or MONEYFLOW_DATASET_FIELDS
+        full_queries['moneyflow'] = data_api_query_payload('moneyflow', sample_window, fields)
+        sample_queries['moneyflow'] = data_api_query_payload(
+            'moneyflow',
+            sample_window,
+            fields,
+            universe=['000001.SZ', '000002.SZ'],
+        )
     catalog_path = None
-    for resolution in [daily_resolution, minute_resolution]:
+    for resolution in [daily_resolution, minute_resolution, moneyflow_resolution]:
         if isinstance(resolution, dict) and resolution.get('catalog_path'):
             catalog_path = resolution.get('catalog_path')
             break
@@ -631,15 +743,312 @@ def build_step4_data_contract(
     }
 
 
-def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols: list[str] | None = None, csv_output_policy: str | None = None) -> dict:
-    del symbols, csv_output_policy
+def _adv_window(field: str) -> int | None:
+    match = re.fullmatch(r'adv([1-9][0-9]*)', str(field or '').strip().lower())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def formula_required_daily_fields(fsm: dict) -> list[str]:
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    candidates = (
+        list(formula_ir.get('required_fields') or [])
+        + list(canonical.get('required_inputs') or [])
+        + list(code_contract.get('required_fields') or [])
+        + list(contract.get('required_fields') or [])
+        + list(fsm.get('required_inputs') or [])
+    )
+    return list(dict.fromkeys(str(field).strip().lower() for field in candidates if str(field).strip()))
+
+
+def moneyflow_required_fields(fsm: dict) -> list[str]:
+    required = formula_required_daily_fields(fsm)
+    if not any(field in MONEYFLOW_SIGNAL_FIELDS for field in required):
+        return []
+    fields = ['ts_code', 'trade_date']
+    for field in required:
+        if field in MONEYFLOW_SIGNAL_FIELDS and field not in fields:
+            fields.append(field)
+    return fields
+
+
+def _formula_ir_constants(node) -> list[float]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'constant':
+        try:
+            return [float(node.get('value'))]
+        except (TypeError, ValueError):
+            return []
+    constants: list[float] = []
+    for child in node.get('args') or []:
+        constants.extend(_formula_ir_constants(child))
+    return constants
+
+
+def _operator_lookback(operator: str, constants: list[float]) -> int | None:
+    operator = str(operator or '').strip().lower()
+    if operator in {
+        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+    } and constants:
+        last = constants[-1]
+        if isinstance(last, float) and not last.is_integer():
+            return None
+        value = int(last)
+        return value if value > 0 else None
+    return None
+
+
+def _formula_ir_fields(node) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'field':
+        field = node.get('resolved_field') or node.get('name')
+        return [str(field).strip().lower()] if str(field or '').strip() else []
+    fields: list[str] = []
+    for child in node.get('args') or []:
+        fields.extend(_formula_ir_fields(child))
+    return list(dict.fromkeys(fields))
+
+
+def _field_unit(field: str) -> str:
+    field = str(field or '').strip().lower()
+    if field in {'open', 'high', 'low', 'close', 'pre_close', 'vwap'}:
+        return 'price'
+    if field in {'volume', 'vol'} or field.startswith('adv'):
+        return 'documented_volume_unit'
+    if field == 'amount':
+        return 'documented_amount_unit'
+    if field in {'returns', 'return', 'ret', 'pct_chg'}:
+        return 'documented_return_unit'
+    return 'numeric'
+
+
+def _operator_output_unit(operator: str, child_units: list[str]) -> str:
+    operator = str(operator or '').lower()
+    if operator in {'rank', 'ts_rank'}:
+        return 'rank_score'
+    if operator in {'correlation', 'corr'}:
+        return 'dimensionless_correlation'
+    if operator == 'covariance':
+        return 'source_unit_product'
+    if operator in {'argmax', 'argmin'}:
+        return 'window_position'
+    if operator == 'delay':
+        return child_units[0] if child_units else 'numeric'
+    units = {str(unit) for unit in child_units if str(unit)}
+    if operator in {'plus', 'minus'} and units == {'rank_score'}:
+        return 'composite_rank_score'
+    if len(units) == 1:
+        return next(iter(units))
+    return 'numeric'
+
+
+def _formula_ir_output_unit(node) -> str:
+    if not isinstance(node, dict):
+        return 'numeric'
+    if node.get('type') == 'field':
+        return _field_unit(str(node.get('resolved_field') or node.get('name') or ''))
+    if node.get('type') == 'constant':
+        return 'numeric'
+    if node.get('type') != 'operator':
+        return 'numeric'
+    operator = str(node.get('operator') or '').strip().lower()
+    child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+    return _operator_output_unit(operator, child_units)
+
+
+def formula_operator_contract_specs(formula_ir: dict | None) -> dict[str, dict]:
+    if not isinstance(formula_ir, dict):
+        return {}
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    contracts: dict[str, dict] = {}
+    counter = 0
+
+    def visit(node) -> None:
+        nonlocal counter
+        if not isinstance(node, dict):
+            return
+        for child in node.get('args') or []:
+            visit(child)
+        if node.get('type') != 'operator':
+            return
+        operator = str(node.get('operator') or '').strip().lower()
+        if not operator:
+            return
+        sources = _formula_ir_fields(node) or ['constant']
+        child_units = [_formula_ir_output_unit(child) for child in (node.get('args') or [])]
+        spec = {
+            'operator': operator,
+            'sources': sources,
+            'rule': 'formula_ir_operator_semantics',
+            'source_units': {source: _field_unit(source) for source in sources},
+            'output_unit': _operator_output_unit(operator, child_units),
+            'leakage_policy': 'no future data',
+        }
+        lookback = _operator_lookback(operator, _formula_ir_constants(node))
+        if lookback is not None:
+            spec['lookback_window'] = lookback
+        if operator == 'rank':
+            spec['rank_scope'] = 'cross_sectional_by_trade_date'
+        contracts[f'operator_{counter:03d}_{operator}'] = spec
+        counter += 1
+
+    visit(root)
+    return contracts
+
+
+def _derived_alias_spec(field: str, sources: list[str], rule: str, output_unit: str, *, operator: str = 'alias', lookback_window: int | None = None) -> dict:
+    spec = {
+        'operator': operator,
+        'sources': sources,
+        'rule': rule,
+        'source_units': {source: _field_unit(source) for source in sources},
+        'output_unit': output_unit,
+        'leakage_policy': 'no future data',
+    }
+    if lookback_window is not None:
+        spec['lookback_window'] = lookback_window
+    return spec
+
+
+def enrich_report_local_daily_fields(
+    daily_df: pd.DataFrame,
+    required_fields: list[str],
+    formula_ir: dict | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Materialize standard formula aliases in the report-local snapshot only."""
+    required = {str(field).strip().lower() for field in (required_fields or [])}
+    adv_fields = sorted((field, _adv_window(field)) for field in required if _adv_window(field) is not None)
+    needs_volume = 'volume' in required or bool(adv_fields) or 'vwap' in required
+    needs_returns = 'returns' in required or 'return' in required or 'ret' in required
+    needs_vwap = 'vwap' in required
+
+    added: list[str] = []
+    sources: dict[str, str] = {}
+    derived_fields: dict[str, dict] = {}
+    working = daily_df
+    if needs_volume or needs_returns or needs_vwap or adv_fields:
+        working = daily_df.copy()
+
+    volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
+    if needs_volume and 'volume' not in working.columns:
+        if volume_col is None:
+            raise SystemExit('BLOCK_FACTORFORGE_STEP3A_DERIVED_FIELD_MISSING_SOURCE: volume requires vol source')
+        working['volume'] = pd.to_numeric(working[volume_col], errors='coerce')
+        added.append('volume')
+        sources['volume'] = volume_col
+        derived_fields['volume'] = _derived_alias_spec(
+            'volume',
+            [volume_col],
+            f'alias(volume <- {volume_col})',
+            'documented_volume_unit',
+        )
+        volume_col = 'volume'
+
+    if needs_returns and 'returns' not in working.columns:
+        return_col = 'return' if 'return' in working.columns else 'pct_chg' if 'pct_chg' in working.columns else None
+        if return_col is None:
+            raise SystemExit('BLOCK_FACTORFORGE_STEP3A_DERIVED_FIELD_MISSING_SOURCE: returns requires pct_chg/return source')
+        return_values = pd.to_numeric(working[return_col], errors='coerce')
+        if return_col == 'pct_chg':
+            return_values = return_values / 100.0
+        working['returns'] = return_values
+        added.append('returns')
+        sources['returns'] = return_col
+        derived_fields['returns'] = _derived_alias_spec(
+            'returns',
+            [return_col],
+            'pct_chg / 100' if return_col == 'pct_chg' else f'alias(returns <- {return_col})',
+            'decimal_return',
+        )
+        if return_col == 'pct_chg':
+            derived_fields['returns']['source_units'] = {'pct_chg': 'percent'}
+
+    if needs_vwap and 'vwap' not in working.columns:
+        volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
+        if volume_col is None or 'amount' not in working.columns:
+            raise SystemExit('BLOCK_FACTORFORGE_STEP3A_DERIVED_FIELD_MISSING_SOURCE: vwap requires amount and volume/vol source')
+        volume = pd.to_numeric(working[volume_col], errors='coerce').replace(0, pd.NA)
+        amount = pd.to_numeric(working['amount'], errors='coerce')
+        working['vwap'] = amount / volume
+        added.append('vwap')
+        sources['vwap'] = f'amount/{volume_col}'
+        derived_fields['vwap'] = _derived_alias_spec(
+            'vwap',
+            ['amount', volume_col],
+            f'amount / {volume_col}',
+            'price_proxy',
+            operator='divide',
+        )
+
+    missing_adv = [field for field, _window in adv_fields if field not in working.columns]
+    if missing_adv:
+        volume_col = 'volume' if 'volume' in working.columns else 'vol' if 'vol' in working.columns else None
+        if volume_col is None:
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_STEP3A_DERIVED_FIELD_MISSING_SOURCE: '
+                f'adv fields require volume/vol source: {missing_adv}'
+            )
+        volume = pd.to_numeric(working[volume_col], errors='coerce')
+        grouped_volume = volume.groupby(working['ts_code'], sort=False)
+        for field, window in adv_fields:
+            if field in working.columns:
+                continue
+            working[field] = grouped_volume.transform(lambda s, window=window: s.rolling(window, min_periods=window).mean())
+            added.append(field)
+            sources[field] = f'rolling_mean({volume_col},{window})'
+            derived_fields[field] = _derived_alias_spec(
+                field,
+                [volume_col],
+                f'rolling_mean({volume_col},{window})',
+                'documented_volume_unit',
+                operator='mean',
+                lookback_window=window,
+            )
+
+    source_fields = sorted(
+        field
+        for field in required
+        if field in working.columns and field not in derived_fields and field not in added
+    )
+    derived_fields.update(formula_operator_contract_specs(formula_ir))
+
+    return working, {
+        'version': 'factorforge_derived_field_contract_v1',
+        'validation_result': 'PASS',
+        'standard_formula_fields_added': added,
+        'standard_formula_field_sources': sources,
+        'required_formula_fields': sorted(required),
+        'source_fields': source_fields,
+        'derived_fields': derived_fields,
+        'report_local_only': True,
+        'clean_data_mutation': False,
+    }
+
+
+def materialize_shared_daily_slice(
+    report_id: str,
+    sample_window: dict,
+    symbols: list[str] | None = None,
+    csv_output_policy: str | None = None,
+    required_fields: list[str] | None = None,
+    formula_ir: dict | None = None,
+) -> dict:
+    del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    query_window = data_api_window_bounds(sample_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=daily_fields,
     )
     step4_data_contract = build_step4_data_contract(
@@ -660,34 +1069,173 @@ def materialize_shared_daily_slice(report_id: str, sample_window: dict, symbols:
             'step4_data_contract': step4_data_contract,
         }
 
+    daily_result = fetch_data_api_dataset(
+        'clean_daily_bar',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=daily_fields,
+        universe='a_share_all',
+        frequency='daily',
+        catalog_path=daily_resolution.get('catalog_path'),
+    )
+    if daily_result.status not in {'ready', 'proxy_ready'}:
+        return {
+            'snapshot_note': (
+                'Data API resolved clean_daily_bar metadata but failed to fetch the report-local daily snapshot.'
+            ),
+            'snapshot_source': 'missing_data_api_clean_daily_bar',
+            'input_mode': 'daily_only',
+            'data_api_resolution': {'clean_daily_bar': daily_result.to_metadata()},
+            'step4_data_contract': step4_data_contract,
+        }
+
+    daily_df = daily_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    daily_df, derived_field_contract = enrich_report_local_daily_fields(
+        daily_df,
+        required_fields or [],
+        formula_ir=formula_ir,
+    )
+    policy = resolve_csv_policy(csv_output_policy)
+    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
+    daily_csv = local_dir / f'daily_input__{report_id}.csv'
+    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
+    daily_df.to_parquet(daily_parquet, index=False)
+    audit_payload = materialize_daily_audit_csv(
+        daily_df,
+        report_id=report_id,
+        full_csv_path=daily_csv,
+        sample_csv_path=daily_sample_csv,
+        policy=policy,
+    )
+
     return {
         'sample_window_actual': sample_window,
-        'snapshot_note': 'Step3A resolved clean_daily_bar through Data API; Step3B may fetch a small non-formal sample and Step4 owns full data execution.',
+        'snapshot_note': 'Step3A resolved clean_daily_bar through Data API and wrote a report-local daily snapshot for Step3B/Step4.',
         'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
+        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
+        'preferred_daily_format': 'parquet',
+        **audit_payload,
         'data_api_resolution': {'clean_daily_bar': daily_resolution},
         'step4_data_contract': step4_data_contract,
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
+        'derived_field_contract': derived_field_contract,
     }
 
 
-def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
+def materialize_moneyflow_slice(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+    required_fields: list[str] | None = None,
+) -> dict:
+    local_dir = RUNS / report_id / 'step3a_local_inputs'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    requested = list(dict.fromkeys(['ts_code', 'trade_date'] + list(required_fields or [])))
+    fields = [field for field in requested if field in MONEYFLOW_DATASET_FIELDS]
+    query_window = data_api_window_bounds(sample_window)
+    moneyflow_resolution = resolve_data_api_dataset(
+        'moneyflow',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=fields,
+    )
+    step4_data_contract = build_step4_data_contract(
+        sample_window=sample_window,
+        moneyflow_resolution=moneyflow_resolution,
+        moneyflow_fields=fields,
+    )
+    if moneyflow_resolution.get('status') != 'ready':
+        return {
+            'snapshot_note': 'Data API could not resolve ready moneyflow. Step3A will not proxy active buy/sell with OHLCV.',
+            'snapshot_source': 'missing_data_api_moneyflow',
+            'input_mode': 'daily_only',
+            'data_api_resolution': {'moneyflow': moneyflow_resolution},
+            'step4_data_contract': step4_data_contract,
+        }
+
+    moneyflow_result = fetch_data_api_dataset(
+        'moneyflow',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=fields,
+        universe='a_share_all',
+        frequency='daily',
+        catalog_path=moneyflow_resolution.get('catalog_path'),
+    )
+    if moneyflow_result.status not in {'ready', 'proxy_ready'}:
+        return {
+            'snapshot_note': 'Data API resolved moneyflow metadata but failed to fetch the report-local moneyflow snapshot.',
+            'snapshot_source': 'missing_data_api_moneyflow',
+            'input_mode': 'daily_only',
+            'data_api_resolution': {'moneyflow': moneyflow_result.to_metadata()},
+            'step4_data_contract': step4_data_contract,
+        }
+
+    moneyflow_df = moneyflow_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    policy = resolve_csv_policy(csv_output_policy)
+    moneyflow_parquet = local_dir / f'daily_input__{report_id}.parquet'
+    moneyflow_csv = local_dir / f'daily_input__{report_id}.csv'
+    moneyflow_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
+    moneyflow_df.to_parquet(moneyflow_parquet, index=False)
+    audit_payload = materialize_daily_audit_csv(
+        moneyflow_df,
+        report_id=report_id,
+        full_csv_path=moneyflow_csv,
+        sample_csv_path=moneyflow_sample_csv,
+        policy=policy,
+    )
+    return {
+        'sample_window_actual': {
+            'start': str(moneyflow_df['trade_date'].min()) if len(moneyflow_df) else query_window['start'],
+            'end': str(moneyflow_df['trade_date'].max()) if len(moneyflow_df) else query_window['end'],
+        },
+        'snapshot_note': 'Step3A resolved moneyflow through Data API and wrote a report-local moneyflow daily panel for Step3B sample proof.',
+        'snapshot_source': 'data_api_moneyflow',
+        'input_mode': 'daily_only',
+        'daily_df_parquet': str(moneyflow_parquet.relative_to(WORKSPACE)),
+        'preferred_daily_format': 'parquet',
+        **audit_payload,
+        'data_api_resolution': {'moneyflow': moneyflow_resolution},
+        'step4_data_contract': step4_data_contract,
+        'derived_field_contract': {
+            'version': 'factorforge_derived_field_contract_v1',
+            'validation_result': 'PASS',
+            'standard_formula_fields_added': [],
+            'standard_formula_field_sources': {},
+            'required_formula_fields': sorted(fields),
+            'source_fields': sorted(fields),
+            'derived_fields': {},
+            'report_local_only': True,
+            'clean_data_mutation': False,
+        },
+    }
+
+
+def build_local_price_volume_snapshots(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+    required_fields: list[str] | None = None,
+    formula_ir: dict | None = None,
+):
     del csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
+    query_window = data_api_window_bounds(sample_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=daily_fields,
     )
     minute_resolution = resolve_data_api_dataset(
         'minute_bar',
-        start=sample_window.get('start'),
-        end=sample_window.get('end'),
+        start=query_window['start'],
+        end=query_window['end'],
         fields=minute_fields,
         frequency='1min',
     )
@@ -744,7 +1292,13 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
             if minute_parquet.exists() or minute_parquet.is_symlink():
                 minute_parquet.unlink()
             minute_df.to_parquet(minute_parquet, index=False)
-            daily_slice = materialize_shared_daily_slice(report_id, sample_window, symbols=tickers)
+            daily_slice = materialize_shared_daily_slice(
+                report_id,
+                sample_window,
+                symbols=tickers,
+                required_fields=required_fields,
+                formula_ir=formula_ir,
+            )
             sample_actual = {
                 'start': str(minute_df['trade_date'].min()),
                 'end': str(minute_df['trade_date'].max())
@@ -829,6 +1383,11 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
                 'amount': close * (100000 + ticker_i * 1000),
             })
     daily_df = pd.DataFrame(daily_rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    daily_df, derived_field_contract = enrich_report_local_daily_fields(
+        daily_df,
+        required_fields or [],
+        formula_ir=formula_ir,
+    )
 
     policy = resolve_csv_policy(csv_output_policy)
     minute_csv = local_dir / f'minute_input__{report_id}.csv'
@@ -858,12 +1417,25 @@ def build_local_price_volume_snapshots(report_id: str, sample_window: dict, csv_
         'sample_window_actual': sample_actual,
         'snapshot_note': 'Synthetic fallback snapshot; use only when real local data layer is unavailable.',
         'snapshot_source': 'synthetic_fallback',
+        'derived_field_contract': derived_field_contract,
     }
 
 
-def build_local_daily_snapshot(report_id: str, sample_window: dict, csv_output_policy: str | None = None):
+def build_local_daily_snapshot(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+    required_fields: list[str] | None = None,
+    formula_ir: dict | None = None,
+):
     # Daily-only factors resolve the published clean_daily_bar Data API contract.
-    return materialize_shared_daily_slice(report_id, sample_window, csv_output_policy=csv_output_policy)
+    return materialize_shared_daily_slice(
+        report_id,
+        sample_window,
+        csv_output_policy=csv_output_policy,
+        required_fields=required_fields,
+        formula_ir=formula_ir,
+    )
 
 
 def build_step3a(report_id: str, csv_output_policy: str | None = None):
@@ -873,12 +1445,16 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
 
     factor_id = fsm.get('factor_id', report_id)
     canonical = fsm.get('canonical_spec', {})
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    required_fields = formula_required_daily_fields(fsm)
+    moneyflow_fields = moneyflow_required_fields(fsm)
+    need_moneyflow = bool(moneyflow_fields)
     price_volume_minute = is_price_volume_minute_formula(canonical)
     direct_code_minute = direct_code_requires_minute_inputs(fsm)
     required = canonical.get('required_inputs', [])
     required_text = ' '.join(required)
-    need_minute = bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute
-    need_daily = True
+    need_minute = (not need_moneyflow) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
+    need_daily = not need_moneyflow
     need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
 
     sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
@@ -930,6 +1506,29 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             'daily_amount': 'amount'
         })
 
+    if need_moneyflow:
+        data_sources.append({
+            'name': 'tushare_moneyflow',
+            'kind': 's3_partitioned',
+            'path': 's3://yufan-data-lake/tushares/资金流向数据/个股资金流向/',
+            'fields': moneyflow_fields,
+            'normalized_dataset': 'moneyflow',
+        })
+        coverage.append({'name': 'moneyflow_catalog', 'status': 'pending', 'detail': 'Data API catalog must resolve moneyflow for the declared sample window'})
+        field_mapping.update({
+            'instrument': 'ts_code',
+            'date': 'trade_date',
+            'buy_sm_amount': 'buy_sm_amount',
+            'sell_sm_amount': 'sell_sm_amount',
+            'buy_md_amount': 'buy_md_amount',
+            'sell_md_amount': 'sell_md_amount',
+            'buy_lg_amount': 'buy_lg_amount',
+            'sell_lg_amount': 'sell_lg_amount',
+            'buy_elg_amount': 'buy_elg_amount',
+            'sell_elg_amount': 'sell_elg_amount',
+            'net_mf_amount': 'net_mf_amount',
+        })
+
     daily_basic_meta = inspect_trade_date_csv_root(LOCAL_TUSHARE.daily_basic_dir)
     if need_daily_basic:
         data_sources.append({
@@ -968,7 +1567,33 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         })
 
     local_input_paths = {}
-    if need_minute:
+    if need_moneyflow:
+        local_input_paths = materialize_moneyflow_slice(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+            required_fields=moneyflow_fields,
+        )
+        snapshot_note = local_input_paths.get('snapshot_note')
+        snapshot_source = local_input_paths.get('snapshot_source')
+        if snapshot_note:
+            notes.append(str(snapshot_note))
+        if snapshot_source == 'data_api_moneyflow':
+            notes.append('Step 3A 已生成 moneyflow Data API contract；Step3B 只允许小样本 executability proof，Step4 负责全量正式数据执行')
+            coverage = [
+                item if item.get('name') != 'moneyflow_catalog' else {
+                    **item,
+                    'status': 'pass',
+                    'detail': 'moneyflow resolved through Data API catalog',
+                }
+                for item in coverage
+            ]
+        elif snapshot_source == 'missing_data_api_moneyflow':
+            blocked.append({
+                'code': 'DATA_API_MONEYFLOW_UNAVAILABLE',
+                'detail': snapshot_note,
+            })
+    elif need_minute:
         # Formula-declared price-volume minute factors may need daily_basic for scale / turnover features.
         # Only keep risks that are truly unresolved in the current data contract.
         if price_volume_minute:
@@ -980,7 +1605,13 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                     'risk': 'high'
                 }
             ])
-        local_input_paths = build_local_price_volume_snapshots(report_id, sample_window, csv_output_policy=csv_output_policy)
+        local_input_paths = build_local_price_volume_snapshots(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+            required_fields=required_fields,
+            formula_ir=formula_ir,
+        )
         if price_volume_minute:
             notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
         if direct_code_minute and not price_volume_minute:
@@ -1005,7 +1636,13 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
                 'detail': snapshot_note,
             })
     else:
-        local_input_paths = build_local_daily_snapshot(report_id, sample_window, csv_output_policy=csv_output_policy)
+        local_input_paths = build_local_daily_snapshot(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+            required_fields=required_fields,
+            formula_ir=formula_ir,
+        )
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_note:
@@ -1167,6 +1804,14 @@ def main():
     handoff_payload = merge_handoff(existing_handoff, {
         'report_id': report_id,
         'step3a_ready': step3a_ready,
+        'step3b_ready': False if not step3a_ready else None,
+        'first_run_outputs': {
+            'status': 'blocked',
+            'no_first_run_reason': 'step3a_feasibility_blocked',
+            'output_paths': [],
+            'run_metadata_path': None,
+            'factor_values_path': None,
+        } if not step3a_ready else None,
         'data_prep_master_ref': out_path.name,
         'qlib_adapter_config_ref': qlib_path.name,
         'implementation_plan_master_ref': impl_path.name,

@@ -97,13 +97,12 @@ run metadata.
 
 Step3B `step3b_sample_factor_values__{report_id}` artifacts are sample
 executability evidence only. Step4 must not treat them as formal factor values;
-if a Step3B parquet was capped or produced from sample queries, Step4 must
-recompute from the Data API/full input contract. However, if metadata proves the
-Step3B parquet accidentally or deliberately covers the exact full Step4 window
-with matching implementation path/hash, row/date/ticker counts, and producer
-lineage, Step4 must reuse it as a compute cache and then write/own the formal
-Step4 factor_values artifact. Recompute only when code, data, identity, or
-formal-evidence ownership differs.
+Step3B must not run full formal data or produce a full compute cache. Step4 must
+always compute full-data formal `factor_values__{report_id}` itself, except when
+reusing a prior Step4-owned formal factor parquet whose identity/hash lineage
+matches. Step3B metadata may be used for implementation audit and CSV policy,
+but Step4 must not consume `step3b_sample_factor_values` as a formal compute
+cache even if row/date/ticker counts appear to match.
 
 ## factor_run_master schema
 
@@ -203,3 +202,31 @@ Treat those files as the authoritative current repo-level reproducibility notes 
 ## Correctness Over Completion
 
 Step4 must evaluate the implemented factor identity, not merely produce a status. All-skipped backend evidence, missing self-quant long-only evidence, identity mismatch, or malformed factor values must BLOCK rather than feed Step5/6.
+
+## Long-Term Production Contract Discipline
+
+Step4 starts production acceptance reports from `acceptance_summary`. Do not
+infer `run_id` or `artifact_root` from nested `artifact_identity` when
+`acceptance_summary` exists. The summary must split wrapper status, backend
+status, reuse gate status, side effects, and research metrics.
+
+Report qlib as `qlib_native_status=<taxonomy>`. Never call qlib success unless
+status is `native_backtest_success` or explicitly `native_minimal_success` for a
+minimal-only run. The phrase "qlib partial success" is banned.
+
+Step4 consumes `standard_formula_fields_contract` and `derived_field_contract`
+from Step2/Step3A; it must enforce unit policy, lookback policy, leakage policy,
+and source fields before formal compute. Do not write "derive if needed" without
+source fields. Do not describe Step3B formal factor values; formal factor values
+are Step4-owned.
+
+Prompt vocabulary required for downstream continuity: `evidence_status`,
+`formula_implied_information`, `metric_anomaly_review`,
+`model_linked_metric_signature`, `volatility_drag`,
+`drawdown_recovery_area`, `component_ablation`, and
+`direction_losing_transform_review`.
+
+Explicit bans: no "partial run without layer"; no raw formula restatement as
+mechanism; no generic stochastic process as explanation.
+
+Required literal bans for validator coverage: derive if needed without source fields; raw formula restatement as mechanism.

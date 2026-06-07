@@ -33,6 +33,22 @@ TOKEN_FALSIFICATION_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FALSIFICATI
 TOKEN_KILL_CRITERIA_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_KILL_CRITERIA_MISSING"
 TOKEN_ORCHESTRATOR_MISMATCH = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_ORCHESTRATOR_MISMATCH"
 TOKEN_DIRECT_CODE_CONTRACT_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_DIRECT_CODE_CONTRACT_MISSING"
+VALID_PRIMARY_FAILURE_SIGNATURES = {
+    "cost_too_high",
+    "long_side_negative",
+    "non_monotonic",
+    "unstable_regime",
+    "implementation_suspect",
+    "mechanism_unclear",
+    "same_factor_identity_mismatch",
+    "none",
+}
+REQUIRED_REVISION_FORBIDDEN_CHANGES = [
+    "no_portfolio_expression_repair",
+    "no_short_leg_adoption",
+    "no_decile_trading",
+    "no_shared_clean_data_mutation",
+]
 
 
 def utc_now() -> str:
@@ -249,6 +265,37 @@ def proposal_count(root: Path, report_id: str) -> int:
     return len(proposal_files) + len(agent_results)
 
 
+def synthesis_revision_hypothesis(selected: dict[str, Any], implementation_mode: str) -> dict[str, Any]:
+    expected = selected.get("expected_metric_signature") if isinstance(selected.get("expected_metric_signature"), dict) else {}
+    expected_changes = [
+        f"{key}: {value}"
+        for key, value in expected.items()
+        if isinstance(key, str) and str(value).strip()
+    ]
+    falsification = selected.get("falsification_tests") if isinstance(selected.get("falsification_tests"), list) else []
+    kill = selected.get("kill_criteria") if isinstance(selected.get("kill_criteria"), list) else []
+    expression_change = nonempty_str(selected.get("formula_mutation_description")) or f"Apply selected Council synthesis law {selected.get('law_id')}"
+    math_change = nonempty_str(selected.get("math_model_link")) or nonempty_str(selected.get("economic_mechanism_link"))
+    return {
+        "hypothesis_id": safe_token(selected.get("law_id")),
+        "hypothesis": nonempty_str(selected.get("why_selected")) or f"Test selected Council synthesis law {selected.get('law_id')}.",
+        "mechanism_target": nonempty_str(selected.get("economic_mechanism_link")) or "Refine the factor mechanism while preserving the parent economic direction.",
+        "revision_model_layer": "observable_estimator",
+        "revision_target_math_object": "estimator_kernel",
+        "expression_change": expression_change,
+        "math_change": math_change or expression_change,
+        "expected_metric_effect": expected_changes[:],
+        "math_falsification_tests": falsification[:],
+        "implementation_mode_preference": implementation_mode if implementation_mode in {"operator", "hybrid", "direct_code"} else "unknown",
+        "expected_metric_change": expected_changes[:],
+        "falsification_tests": falsification[:],
+        "risk_of_overfit": "medium",
+        "kill_criteria": kill[:],
+        "why_not_portfolio_fix": "The failure is in the expression-level state estimator and math mechanism, so the revision must change Step3B factor construction rather than portfolio weights, long-short adoption, or decile trading.",
+        "forbidden_changes": REQUIRED_REVISION_FORBIDDEN_CHANGES[:],
+    }
+
+
 def build_revision_council_ref(root: Path, report_id: str, summary: dict[str, Any]) -> dict[str, Any]:
     branches = summary.get("recommended_branch_templates") if isinstance(summary.get("recommended_branch_templates"), list) else []
     valid_agent = summary.get("valid_agent_results") if isinstance(summary.get("valid_agent_results"), list) else []
@@ -323,10 +370,18 @@ def approve_iteration(
     selected_ids = final.get("selected_council_proposal_ids")
     if not isinstance(selected_ids, list) or not selected_ids:
         selected_ids = selected_proposal_ids(summary)
+    primary_failure_signature = final.get("primary_failure_signature")
+    if primary_failure_signature not in VALID_PRIMARY_FAILURE_SIGNATURES:
+        primary_failure_signature = "cost_too_high"
+    revision_hypotheses = final.get("revision_hypotheses")
+    if not isinstance(revision_hypotheses, list) or not revision_hypotheses:
+        revision_hypotheses = [synthesis_revision_hypothesis(selected, implementation_mode)]
     final.update(
         {
             "source": "revision_council",
             "revision_needed": True,
+            "primary_failure_signature": primary_failure_signature,
+            "revision_hypotheses": revision_hypotheses,
             "revision_quality": "actionable",
             "loop_authorization": "approved_for_step3b_handoff",
             "requires_human_approval_before_code_change": True,

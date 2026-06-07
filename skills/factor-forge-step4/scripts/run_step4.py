@@ -37,6 +37,15 @@ OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
+from factor_factory.data_access.minute_derived import (
+    DEFAULT_MINUTE_CUTOFF_TIME,
+    FLOW_STATE_REQUIRED_COLUMNS,
+    MINUTE_DERIVED_FLOW_STATE_V1,
+    load_flow_state_partitions,
+    normalize_cutoff_time,
+    normalize_trade_date,
+    research_window_contract as default_research_window_contract,
+)
 from factor_factory.data_api import fetch_data_api_dataset
 from factor_factory.runtime_context import (
     load_runtime_manifest,
@@ -68,6 +77,7 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'step4_factor_csv_policy_observed',
     'shared_evaluation_context',
     'backend_timing_profile',
+    'research_window_contract',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 
@@ -1938,6 +1948,113 @@ def _contract_query(contract: dict[str, Any], query_set: str, dataset_id: str) -
     return query
 
 
+def _minute_derived_state_requirements(contract: dict[str, Any], dpm: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    for source in (contract, dpm or {}):
+        raw = source.get('minute_derived_state_requirements') if isinstance(source, dict) else None
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, dict)]
+    return []
+
+
+def _minute_flow_state_requirement(contract: dict[str, Any], dpm: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    for requirement in _minute_derived_state_requirements(contract, dpm):
+        if requirement.get('dataset_id') == MINUTE_DERIVED_FLOW_STATE_V1:
+            return requirement
+    return None
+
+
+def _research_window_contract(contract: dict[str, Any], dpm: dict[str, Any]) -> dict[str, Any]:
+    candidate = contract.get('research_window_contract') if isinstance(contract, dict) else None
+    if isinstance(candidate, dict) and candidate:
+        return candidate
+    candidate = dpm.get('research_window_contract') if isinstance(dpm, dict) else None
+    if isinstance(candidate, dict) and candidate:
+        return candidate
+    return default_research_window_contract(dpm.get('sample_window') if isinstance(dpm, dict) else {})
+
+
+def _daily_trade_dates_for_minute_query(daily_df: pd.DataFrame, minute_query: dict[str, Any]) -> list[str]:
+    if 'trade_date' not in daily_df.columns:
+        raise SystemExit('BLOCK_STEP4_STREAMING_DAILY_DATE_MISSING: daily_df missing trade_date')
+    dates = sorted(str(x) for x in _normal_date_text(daily_df['trade_date']).dropna().unique())
+    if not dates:
+        return []
+    query_start = normalize_trade_date(minute_query.get('start_date') or dates[0])
+    query_end = normalize_trade_date(minute_query.get('end_date') or dates[-1])
+    return [date for date in dates if query_start <= date <= query_end]
+
+
+def _generic_minute_full_window_forbidden(dates: list[str]) -> bool:
+    if os.getenv('FACTORFORGE_ALLOW_GENERIC_MINUTE_FULL_WINDOW') == '1':
+        return False
+    max_days = int(os.getenv('FACTORFORGE_STEP4_GENERIC_MINUTE_MAX_DAYS', '120') or '120')
+    return len(dates) > max_days
+
+
+def _load_required_minute_flow_state(
+    *,
+    requirement: dict[str, Any],
+    daily_df: pd.DataFrame,
+    minute_query: dict[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    dates = _daily_trade_dates_for_minute_query(daily_df, minute_query)
+    if not dates:
+        raise SystemExit('BLOCK_STEP4_FLOW_PREAGG_WINDOW_EMPTY: no daily dates overlap minute query')
+    root = requirement.get('local_warm_cache_root') or requirement.get('root')
+    cutoff_time = requirement.get('cutoff_time') or DEFAULT_MINUTE_CUTOFF_TIME
+    source_data_version = requirement.get('source_data_version')
+    fields = requirement.get('required_fields') or FLOW_STATE_REQUIRED_COLUMNS
+    loaded = load_flow_state_partitions(
+        start_date=dates[0],
+        end_date=dates[-1],
+        required_dates=dates,
+        root=root,
+        cutoff_time=cutoff_time,
+        source_data_version=source_data_version,
+        required_fields=fields,
+    )
+    if loaded.status == 'ready':
+        return loaded.frame, loaded.profile
+    blocker = loaded.profile.get('blocker') or 'BLOCK_MINUTE_DERIVED_STATE_COVERAGE_INCOMPLETE'
+    raise SystemExit(f"{blocker}: {json.dumps(loaded.profile, ensure_ascii=False, sort_keys=True, default=str)}")
+
+
+def compute_factor_from_minute_derived_state(
+    module: Any,
+    *,
+    daily_df: pd.DataFrame,
+    flow_state_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    compute_started = time.perf_counter()
+    if hasattr(module, 'compute_factor_from_derived_state'):
+        result = normalize_direct_code_result(module.compute_factor_from_derived_state(daily_df=daily_df, derived_state_df=flow_state_df))
+        mode = 'module_compute_factor_from_derived_state'
+    elif _supports_sp3_intraday_flow_fast_path(module):
+        result = _compute_sp3_from_intraday_flow_daily(daily_df, flow_state_df)
+        mode = 'step4_builtin_sp3_from_minute_derived_flow_state'
+    else:
+        try:
+            result = compute_factor_with_contract(module, daily_df, flow_state_df)
+            mode = 'module_compute_factor_with_derived_state_as_minute_df'
+        except Exception as exc:
+            raise SystemExit(
+                'BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED: '
+                'minute factor has derived-state requirement, but implementation cannot consume '
+                f'{MINUTE_DERIVED_FLOW_STATE_V1}; add compute_factor_from_derived_state or regenerate direct_code. '
+                f'error={type(exc).__name__}:{exc}'
+            ) from exc
+    if not isinstance(result, pd.DataFrame):
+        raise SystemExit('BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED: derived-state compute did not return DataFrame')
+    return result, {
+        'source': 'step4_minute_derived_flow_state',
+        'dataset_id': MINUTE_DERIVED_FLOW_STATE_V1,
+        'compute_mode': mode,
+        'factor_compute_seconds': time.perf_counter() - compute_started,
+        'derived_state_rows': int(len(flow_state_df)),
+        'factor_rows': int(len(result)),
+    }
+
+
 def _fetch_contract_frame(query: dict[str, Any]):
     result = fetch_data_api_dataset(
         str(query.get('dataset')),
@@ -2403,26 +2520,83 @@ def main() -> None:
                 return
             minute_streaming_profile = None
             intraday_flow_preagg_profile = None
+            minute_derived_state_profile = None
+            minute_derived_factor_profile = None
             if minute_streaming_query:
-                if _supports_sp3_intraday_flow_fast_path(module):
-                    result_df, intraday_flow_preagg_profile = compute_factor_intraday_flow_daily_preagg_contract(
-                        daily_df=signal_daily_df,
-                        minute_query=minute_streaming_query,
-                        report_id=report_id,
-                        run_dir=run_dir,
+                try:
+                    flow_requirement = _minute_flow_state_requirement(step4_contract, dpm)
+                    minute_dates = _daily_trade_dates_for_minute_query(signal_daily_df, minute_streaming_query)
+                    if flow_requirement:
+                        load_started = time.perf_counter()
+                        flow_state_df, minute_derived_state_profile = _load_required_minute_flow_state(
+                            requirement=flow_requirement,
+                            daily_df=signal_daily_df,
+                            minute_query=minute_streaming_query,
+                        )
+                        minute_derived_state_profile['phase_seconds'] = {
+                            'load_derived_state': minute_derived_state_profile.get('load_seconds') or (time.perf_counter() - load_started),
+                        }
+                        result_df, minute_derived_factor_profile = compute_factor_from_minute_derived_state(
+                            module,
+                            daily_df=signal_daily_df,
+                            flow_state_df=flow_state_df,
+                        )
+                    elif _generic_minute_full_window_forbidden(minute_dates):
+                        raise SystemExit(
+                            'BLOCK_STEP4_MINUTE_GENERIC_STREAMING_FULL_WINDOW_FORBIDDEN: '
+                            f'generic minute streaming is forbidden for {len(minute_dates)} formal dates without '
+                            f'{MINUTE_DERIVED_FLOW_STATE_V1}; run scripts/build_minute_derived_datamart.py or declare a derived-state contract.'
+                        )
+                    elif _supports_sp3_intraday_flow_fast_path(module):
+                        result_df, intraday_flow_preagg_profile = compute_factor_intraday_flow_daily_preagg_contract(
+                            daily_df=signal_daily_df,
+                            minute_query=minute_streaming_query,
+                            report_id=report_id,
+                            run_dir=run_dir,
+                        )
+                    else:
+                        result_df, minute_streaming_profile = compute_factor_streaming_minute_contract(
+                            module,
+                            daily_df=signal_daily_df,
+                            minute_query=minute_streaming_query,
+                            report_id=report_id,
+                        )
+                except SystemExit as exc:
+                    token = str(exc).split(':', 1)[0]
+                    issues.append({
+                        'severity': 'error',
+                        'code': token,
+                        'message': str(exc),
+                        'evidence': {
+                            'minute_streaming_query': minute_streaming_query,
+                            'minute_derived_state_requirements': _minute_derived_state_requirements(step4_contract, dpm),
+                            'step4_data_contract': step4_contract,
+                        },
+                    })
+                    run_master, diagnostics, handoff_out = build_failure_outputs(
+                        report_id,
+                        factor_id,
+                        str(impl_path),
+                        dpm.get('sample_window', {}),
+                        run_dir,
+                        input_paths,
+                        issues,
+                        warnings,
+                        token,
+                        'minute_derived_state_precheck',
+                        start_utc,
                     )
-                else:
-                    result_df, minute_streaming_profile = compute_factor_streaming_minute_contract(
-                        module,
-                        daily_df=signal_daily_df,
-                        minute_query=minute_streaming_query,
-                        report_id=report_id,
-                    )
+                    write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
+                    write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
+                    write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
+                    return
             else:
                 result_df = compute_factor_with_contract(module, signal_daily_df, minute_df)
             step4_factor_io_profile = {
                 'version': 'factorforge_step4_factor_io_profile_v1',
                 'source': (
+                    'step4_minute_derived_flow_state_recompute'
+                    if minute_derived_state_profile else
                     'step4_intraday_flow_daily_preagg_recompute'
                     if intraday_flow_preagg_profile else
                     ('step4_minute_streaming_recompute' if minute_streaming_query else 'step4_recompute_fallback')
@@ -2450,6 +2624,16 @@ def main() -> None:
             }
             if intraday_flow_preagg_profile:
                 step4_factor_io_profile['intraday_flow_daily_preagg_profile'] = intraday_flow_preagg_profile
+            if minute_derived_state_profile:
+                step4_factor_io_profile['minute_derived_state_profile'] = minute_derived_state_profile
+            if minute_derived_factor_profile:
+                step4_factor_io_profile['minute_derived_factor_profile'] = minute_derived_factor_profile
+                step4_factor_io_profile['performance_phase_profile'] = {
+                    'load_derived_state_seconds': float((minute_derived_state_profile or {}).get('load_seconds') or 0.0),
+                    'factor_compute_seconds': float(minute_derived_factor_profile.get('factor_compute_seconds') or 0.0),
+                    'evaluation_seconds': None,
+                    'write_outputs_seconds': None,
+                }
             if minute_streaming_profile:
                 step4_factor_io_profile['minute_streaming_profile'] = minute_streaming_profile
 
@@ -2482,6 +2666,7 @@ def main() -> None:
         actual_end = str(result_df['trade_date'].max()) if 'trade_date' in result_df.columns and row_count else None
         target_window = dpm.get('sample_window', {}) or {}
         prepared_window = (dpm.get('local_input_paths') or {}).get('sample_window_actual') or {}
+        research_window = _research_window_contract(step4_contract, dpm)
         target_start_raw = target_window.get('start')
         target_start = str(target_start_raw) if target_start_raw is not None else None
         target_end_raw = target_window.get('end')
@@ -2573,6 +2758,7 @@ def main() -> None:
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
             'shared_evaluation_context': shared_context_profile,
             'backend_timing_profile': backend_timing_profile,
+            'research_window_contract': research_window,
         }
         meta = merge_run_metadata(existing_meta, step4_owned_meta)
         write_json(meta_path, meta)

@@ -495,6 +495,12 @@ def build_factor_case_master(
         "factor_id": frm.get("factor_id"),
         "final_status": final_status,
         "case_stage": "step5_closed",
+        "research_window_contract": frm.get("research_window_contract") or dpm.get("research_window_contract") or {},
+        "oos_revision_policy": {
+            "oos_revision_fitting_allowed": False,
+            "oos_usage": "diagnostic_holdout_only",
+            "rule": "Step5/Step6 must not repeatedly fit revision choices on OOS evidence.",
+        },
         "evaluation_summary": build_evaluation_summary(frm, evaluation),
         "factor_profile": {
             "factor_name": fsm.get("factor_name") or fsm.get("name"),

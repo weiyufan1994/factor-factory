@@ -72,6 +72,13 @@ It does not generate raw metrics itself. Instead it:
 28. Preferred revision direction is economic linearity: make higher factor values correspond more directly and monotonically to the economic state expected to earn risk-adjusted long-side returns.
 29. Treat every factor like a business: long-side return is revenue, trading COGS defaults to `turnover * 0.3%`, volatility is operating instability/risk-capital pressure, `-0.5 * sigma^2` is volatility drag on geometric growth, max drawdown is capital impairment, and recovery time is payback/depreciation. Risk budget follows Sharpe, drawdown, recovery, capacity, and confidence.
 30. Default Step6 promotion objective is `long_side_risk_adjusted_alpha`: candidate Sharpe >= `0.50`, official Sharpe >= `0.80`, max drawdown no worse than `-35%`, and recovery days preferably <= `252`.
+30a. For current minute-factor research, Step6 must preserve the Step4
+`research_window_contract`: in-sample ends at `2025-07-11` by default and later
+data is OOS holdout. OOS evidence may diagnose degradation or robustness, but
+Step6 and Council must not repeatedly fit revisions on OOS metrics. If Step4
+blocked because `minute_derived_flow_state_v1` is missing, incomplete, or
+identity-mismatched, treat that as a production-path infrastructure BLOCK, not a
+mechanism reject.
 31. Every successful formal Step6 loop must write `loop_research_brief__<report_id>__iter<n>.md/json` and link it from `research_iteration_master.loop_research_brief`. The brief must answer economic interpretation, metrics/chart evidence, metric analysis, knowledge comparison, next research direction, and final loop conclusion. Missing brief, missing core metrics, missing required chart keys, or long-short chart evidence not labeled `diagnostic_only` is a validation block.
 32. Step6 must carry the `mechanism_math_contract` into `mechanism_analysis`,
 revision hypotheses, and the loop research brief. The math contract is an

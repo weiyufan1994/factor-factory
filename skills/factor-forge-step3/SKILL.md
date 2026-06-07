@@ -30,6 +30,17 @@ It has two internal layers:
 
 Step 3 does **not** perform full data execution or final backtest / evaluation itself. Step 4 owns full Data API fetch, formal `factor_values__{report_id}` outputs, execution diagnostics, and run-master creation; Step 5 remains the evaluation / archival layer.
 
+For minute-bar factors, Step3A must write the full-data execution contract
+instead of asking Step4 to infer raw minute paths. Formal minute factors that can
+be reduced to daily/bucket flow state must declare
+`minute_derived_state_requirements[]`, currently including
+`minute_derived_flow_state_v1` with `trade_date` parquet partitions, cutoff time,
+source data version, schema version, producer version, and artifact hash. Step3B
+may still fetch only a small sample for executability proof, but full 2016-2026
+Step4 execution requires the derived datamart or an explicit backfill. The
+default current research window is in-sample through `2025-07-11`; data after
+that date is OOS holdout and must not be used for repeated revision fitting.
+
 ## Research Discipline
 
 Step 3 must protect the thesis during implementation:

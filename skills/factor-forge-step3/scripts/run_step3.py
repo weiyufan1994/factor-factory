@@ -28,6 +28,8 @@ from factor_factory.data_access import (
     CleanDailyLayerPaths,
     clean_daily_layer_ready,
     inspect_trade_date_csv_root,
+    minute_derived_flow_state_requirement,
+    research_window_contract,
     resolve_clean_daily_layer_paths,
     resolve_local_tushare_paths,
 )
@@ -84,6 +86,8 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_generated_by_step3a_llm_provider',
 }
 INTRADAY_PROXY_DATASETS = {'intraday_flow_proxy_daily', 'clean_minute_bar'}
+MINUTE_DERIVED_FLOW_STATE_DATASET = 'minute_derived_flow_state_v1'
+DEFAULT_MINUTE_DERIVED_CUTOFF_TIME = '14:50:00'
 
 
 def data_api_dataset_registered(dataset_id: str) -> tuple[bool, str | None]:
@@ -758,6 +762,7 @@ def build_step4_data_contract(
     minute_fields: list[str] | None = None,
     moneyflow_fields: list[str] | None = None,
     daily_basic_fields: list[str] | None = None,
+    minute_derived_state_requirements: list[dict] | None = None,
 ) -> dict:
     full_queries = {}
     sample_queries = {}
@@ -810,6 +815,8 @@ def build_step4_data_contract(
         'catalog_path': catalog_path,
         'full_queries': full_queries,
         'sample_queries': sample_queries,
+        'minute_derived_state_requirements': minute_derived_state_requirements or [],
+        'research_window_contract': research_window_contract(sample_window),
         'formal_factor_values_owner': 'Step4',
         'step3b_sample_policy': {
             'is_formal_factor_values': False,
@@ -1319,6 +1326,12 @@ def build_local_price_volume_snapshots(
     full_query_window = data_api_window_bounds(sample_window)
     executability_window = step3a_executability_window(sample_window)
     query_window = data_api_window_bounds(executability_window)
+    minute_derived_requirement = minute_derived_flow_state_requirement(
+        start_date=full_query_window['start'],
+        end_date=research_window_contract(sample_window)['in_sample']['end'],
+        cutoff_time=DEFAULT_MINUTE_DERIVED_CUTOFF_TIME,
+        source_data_version=os.getenv('FACTORFORGE_MINUTE_SOURCE_DATA_VERSION') or 'minute_bar_raw_v1',
+    )
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
         start=query_window['start'],
@@ -1351,6 +1364,7 @@ def build_local_price_volume_snapshots(
         daily_fields=daily_fields,
         minute_fields=minute_fields,
         daily_basic_fields=daily_basic_fields if daily_basic_required else None,
+        minute_derived_state_requirements=[minute_derived_requirement],
     )
     daily_basic_ready = (not daily_basic_required) or (
         isinstance(daily_basic_resolution, dict) and daily_basic_resolution.get('status') in {'ready', 'proxy_ready'}
@@ -1951,6 +1965,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
         'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
+        'minute_derived_state_requirements': (local_input_paths.get('step4_data_contract') or {}).get('minute_derived_state_requirements') or [],
+        'research_window_contract': (local_input_paths.get('step4_data_contract') or {}).get('research_window_contract') or research_window_contract(sample_window),
     }
 
     qlib_adapter_config = {
@@ -1995,6 +2011,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
         'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
         'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
+        'research_window_contract': (local_input_paths.get('step4_data_contract') or {}).get('research_window_contract') or research_window_contract(sample_window),
         'sample_window': sample_window,
         'local_input_paths': local_input_paths,
         'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'

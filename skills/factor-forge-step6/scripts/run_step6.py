@@ -998,6 +998,7 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         long_side_verdict = 'blocked'
 
     diagnostic = run_master.get('diagnostic_summary') or {}
+    research_window = run_master.get('research_window_contract') or case.get('research_window_contract') or {}
     row_count = _safe_float(diagnostic.get('row_count') or run_master.get('row_count'))
     date_count = _safe_float(diagnostic.get('date_count') or run_master.get('date_count'))
     ticker_count = _safe_float(diagnostic.get('ticker_count') or run_master.get('ticker_count'))
@@ -1101,6 +1102,12 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
             'turnover_too_high': high_turnover,
             'cogs_destroy_alpha': cogs_destroy_alpha,
             'high_revenue_bad_business_factor': cogs_destroy_alpha,
+        },
+        'research_window_policy': {
+            'contract': research_window,
+            'oos_revision_fitting_allowed': False,
+            'oos_usage': 'diagnostic_holdout_only',
+            'rule': 'Step5/Step6 may inspect OOS degradation, but repeated revision fitting must use in-sample evidence only.',
         },
         'data_or_implementation_suspicions': suspicions,
         'evidence_verdict': evidence_verdict,

@@ -137,6 +137,28 @@ static joins should come from reusable `backtest_base_dataset` artifacts instead
 of being rebuilt for every factor, child, or sibling branch when identity and
 data-window lineage match.
 
+Full-window minute production must not fall back to generic raw-minute
+streaming. For formal 2016-2026-style windows, Step4 must first consume a
+declared `minute_derived_state_requirements[]` contract, currently including
+`minute_derived_flow_state_v1` for signed-flow / pressure / concentration /
+intraday-noise factors. The derived datamart is partitioned by `trade_date` and
+must carry source data version, cutoff time, schema version, producer version,
+and artifact hash. Step4 may load the derived parquet and then run only the
+factor expression and evaluation. If the required derived state is absent,
+incomplete, or identity-mismatched, Step4 must BLOCK with one of:
+`BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED`,
+`BLOCK_STEP4_MINUTE_GENERIC_STREAMING_FULL_WINDOW_FORBIDDEN`,
+`BLOCK_MINUTE_DERIVED_STATE_COVERAGE_INCOMPLETE`, or
+`BLOCK_MINUTE_DERIVED_STATE_IDENTITY_MISMATCH`. Building or refreshing the
+derived state is an explicit backfill task
+(`scripts/build_minute_derived_datamart.py`), not an implicit side effect of
+Step4.
+
+Default research-window policy for current minute-factor research is
+in-sample through `2025-07-11`; later data is OOS holdout. Step4 should preserve
+`research_window_contract` in run metadata, and Step5/Step6 must not repeatedly
+fit revisions on OOS evidence.
+
 ## factor_run_master schema
 
 ```json

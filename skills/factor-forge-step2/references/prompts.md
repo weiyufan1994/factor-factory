@@ -98,6 +98,7 @@ Mandatory order:
 5. Build canonical_spec.formula_text only after the detector contract is coherent.
 6. Generate direct_code only after the formula and data requirements are unambiguous.
 7. If direct_code cannot implement the detector without unstated assumptions, set implementation_contract.code_contract.status = "blocked".
+8. If the detector consumes minute bars, tick data, large intraday panels, or a future training dataset, direct_code must include a bounded batch plan or be blocked.
 
 Required output additions:
 {
@@ -121,7 +122,18 @@ Required output additions:
     "code_contract": {
       "status": "ready|blocked",
       "blocked_reason": "",
-      "source_code": ""
+      "source_code": "",
+      "batch_execution_plan": {
+        "version": "factorforge_batch_execution_plan_v1",
+        "memory_budget_mb": null,
+        "estimated_peak_memory_mb": null,
+        "partition_key": "",
+        "selected_columns": [],
+        "predicate_pushdown": [],
+        "lookback_overlap_or_state": "",
+        "checkpoint_resume_path": "",
+        "parity_sample_policy": ""
+      }
     }
   }
 }
@@ -133,5 +145,6 @@ Invalid outputs:
 - direct_code must implement the estimator only after the mechanism contract is coherent
 - direct_code that ignores rolling windows, valid-day filters, cost basis, liquidity state, or other detector requirements stated in the contract
 - direct_code that computes a proxy different from the declared measurement_equation
+- direct_code over minute/tick/large panel data that loads the full dataset into memory without a batch_execution_plan
 - raw-field restatement is invalid
 ```

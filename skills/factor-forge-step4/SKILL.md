@@ -87,6 +87,18 @@ documenting that close-after-market factor values at t are evaluated against
 next-trading-day returns (`pct_chg.shift(-1)`), merged on `datetime` and `code`.
 Same-day returns must not be used as IC or NAV labels.
 
+Intraday signals need an explicit timing evaluator instead of being judged only
+by the default daily close-after-market label. If a factor uses minute/tick data
+with a cutoff such as 14:50 or 14:55, Step4 must record
+`intraday_signal_timing_contract.version=factorforge_intraday_signal_timing_contract_v1`
+and evaluate only label modes whose information set is legal, for example
+`close_to_next_open`, `close_to_next_close`, `close_to_next_vwap_0935_1000`,
+`close_to_next_vwap_0930_1030`, or `open_to_close_next_day`. The payload must
+state `signal_cutoff_time`, `execution_price_policy`, `label_price_policy`,
+`information_set`, and `same_day_return_used_as_label=false`. Without this
+contract, Step4 may report the default daily result but must not conclude that a
+14:50/14:55 trading hypothesis has been falsified.
+
 When Step3B run metadata declares
 `performance_profile.csv_output_profile.csv_output_policy`, Step4 must respect
 it for factor CSV writeback. `full_csv` and legacy missing metadata may write or
@@ -103,6 +115,27 @@ reusing a prior Step4-owned formal factor parquet whose identity/hash lineage
 matches. Step3B metadata may be used for implementation audit and CSV policy,
 but Step4 must not consume `step3b_sample_factor_values` as a formal compute
 cache even if row/date/ticker counts appear to match.
+
+Formal factor compute and evaluation must be memory-bounded. For minute bars,
+tick data, large daily universes, or future model-training/evaluator paths,
+Step4 must estimate peak memory before execution. If the estimate exceeds about
+50-60% available RAM, or if a run shows `Killed`, exit 137, OOM-kill logs,
+allocator failure, or swap exhaustion, Step4 must not retry the same
+all-in-memory path. It must switch to
+`batch_execution_plan.version=factorforge_batch_execution_plan_v1` or BLOCK
+with `BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED`.
+
+The batch plan must state memory budget, estimated peak memory, partition key,
+selected columns, predicate pushdown, rolling/lookback overlap or carried state,
+checkpoint/resume paths, output cache identity, and a bounded parity sample.
+Step4 writes per-batch Parquet/cache outputs and releases intermediates between
+batches. It must not accumulate all partitions in a Python list for final concat
+unless the resulting materialization is proven within budget. Cross-sectional
+rank/quantile evaluation must preserve complete per-date cross-sections or use
+a documented two-pass plan. Backtest labels, masks, calendars, cost tables, and
+static joins should come from reusable `backtest_base_dataset` artifacts instead
+of being rebuilt for every factor, child, or sibling branch when identity and
+data-window lineage match.
 
 ## factor_run_master schema
 

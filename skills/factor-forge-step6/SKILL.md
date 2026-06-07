@@ -150,12 +150,22 @@ synthesis remains advisory and the ultimate loop must not materialize a child.
 38. When the ultimate loop receives an approved Step3B handoff and a valid main
 agent Council synthesis, Step6 child materialization must write
 `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`
-before the child Step3B run. The spec must contain parent/child formulas,
-formula hashes, selected revision law ids, expected metric signature,
-falsification tests, kill criteria, the source synthesis path/hash, and
-write/execute permissions. Non-audit child revisions must change the formula
-hash; otherwise the materializer or Step3B must BLOCK instead of rerunning the
-parent formula.
+before the child Step3B run. The spec must contain implementation mode,
+parent/child formulas or direct-code law statements, formula/code-law hashes,
+selected revision law ids, expected metric signature, falsification tests, kill
+criteria, the source synthesis path/hash, and write/execute permissions.
+Non-audit child revisions must change the formula hash or code-law hash;
+otherwise the materializer or Step3B must BLOCK instead of rerunning the parent
+implementation.
+38a. Direct-code and native intraday revisions are valid Step6 outputs, but only
+as executable mutation contracts. If the parent factor is `direct_code` or
+`hybrid`, the main-agent Council synthesis must preserve that mode unless it
+explicitly proves an operator conversion with Formula-IR parity. A direct-code
+child spec must include `direct_code_revision_contract`: target function or
+block, required fields, information-set/timing contract, state features,
+formula law, code mutation scope, and code-law hash. Step6 must not coerce an
+intraday moneyflow/state-space revision into an unrelated parseable operator
+formula such as `rank(close)`.
 39. Child materialization must copy report-local Step3A daily snapshots
 (Parquet preferred, CSV audit when present) into the child run directory and
 rewrite child data-prep paths accordingly. A child `--start-step 3b` run must

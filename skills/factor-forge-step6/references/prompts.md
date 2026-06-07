@@ -56,7 +56,9 @@ Required output:
         "classification": "bug|data_artifact|implementation_artifact|benign_model_implication|tradable_anomaly|new_factor_seed|theory_rejected",
         "equation_component_implicated": "",
         "branch_seed_if_any": {
+          "implementation_mode": "operator|direct_code|hybrid",
           "child_formula_or_law": "",
+          "direct_code_revision_contract": {},
           "expected_metric_signature": [],
           "kill_criteria": []
         }
@@ -81,6 +83,8 @@ Rules:
 - If metrics fail, identify the failed layer instead of saying "factor bad".
 - If a negative or unexpected implication appears, classify it. Do not discard it silently.
 - new_factor_seed and tradable_anomaly require branch_seed_if_any, but approved_for_branch_generation remains false unless the existing human approval gate approves it.
+- Direct-code/native intraday revisions must remain direct_code or hybrid unless you explicitly prove an operator conversion with Formula-IR parity. Do not replace a state-space, moneyflow, minute, or tick law with an unrelated parseable formula.
+- If a branch would require minute/tick scale data or model training, include `batch_execution_plan.version=factorforge_batch_execution_plan_v1` or state why it is not needed.
 - Maintain the equation-to-factor discovery queue as review_only until human approval.
 ```
 

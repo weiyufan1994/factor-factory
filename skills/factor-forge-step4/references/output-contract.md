@@ -8,6 +8,9 @@
   - `evaluation_plan`
   - `evaluation_results.backend_runs`
 - Step 4 standardizes the run envelope plus a mandatory self-quant evidence pack.
+- Heavy formal compute/evaluation should expose `batch_execution_plan` and batch/cache profile when minute/tick/large-panel data would exceed memory budget.
+- Intraday signal evaluation should expose `intraday_signal_timing_contract` with signal cutoff, execution price policy, label price policy, information set, and legal label mode.
+- Reusable labels, masks, calendars, costs, and joins should be represented as `backtest_base_dataset` artifacts when identity and data-window lineage match.
 - `self_quant_analyzer` must emit:
   - `standard_metric_contract`
   - `ic_summary`

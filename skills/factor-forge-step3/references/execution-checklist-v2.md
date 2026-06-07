@@ -23,6 +23,9 @@
 - [ ] hybrid_execution_scaffold written
 - [ ] if Step 3A local snapshots exist, first-run `factor_values` artifacts are written under `factorforge/runs/{report_id}/`
 - [ ] no accidental full-minute + sample-daily mixed package
+- [ ] direct_code/hybrid child revisions preserve implementation mode and include executable mutation contracts
+- [ ] minute/tick/large-panel direct_code includes `batch_execution_plan.version=factorforge_batch_execution_plan_v1`
+- [ ] prior OOM/exit-137/Killed evidence is handled by batch mode or `BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED`, not blind retry
 - [ ] validate_step3b.py returns PASS
 
 ## Final handoff

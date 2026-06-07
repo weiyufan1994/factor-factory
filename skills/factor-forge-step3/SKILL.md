@@ -143,12 +143,34 @@ Optional:
     Polars. Pandas remains acceptable as a reference or compatibility layer, but
     Python row loops and pandas `groupby.apply` require explicit justification
     in the implementation plan and generated-code comments.
+  - Direct-code and hybrid implementations over minute bars, tick data, or any
+    large intraday source must expose a bounded batch path. The implementation
+    plan must include `batch_execution_plan.version=factorforge_batch_execution_plan_v1`
+    with memory budget, estimated peak memory, partition key, selected columns,
+    predicate pushdown policy, rolling/lookback overlap or carried state,
+    checkpoint/resume path, and reference/parity sample. If the estimator cannot
+    be batch-safe, Step3B must BLOCK with `BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED`
+    instead of emitting all-in-memory code.
+  - Batch-safe code must stream partitions and write per-batch Parquet/cache
+    outputs; it must not build an unbounded list of intermediate DataFrames for
+    final concat. Time-series windows require overlap or state carry, and
+    cross-sectional operators require complete per-date cross-sections or a
+    two-pass plan. This applies to future model-training scaffolds as well:
+    use mini-batches, dataset streaming, checkpointing, and gradient
+    accumulation rather than loading full tensors into RAM.
   - Child revision runs created by the ultimate loop must consume
     `objects/research_iteration_master/executable_revision_spec__{child_report_id}.json`
     before generating code or factor values. A child report id must not silently
     rerun the parent formula: missing specs must BLOCK, non-audit no-op formula
     hashes must BLOCK, and Step3B metadata/handoff must expose the applied
     executable revision spec and child formula hash.
+  - Child revisions preserve implementation mode. `implementation_mode=operator`
+    requires Formula-IR parse/parity. `implementation_mode=direct_code` or
+    `hybrid` requires a `direct_code_revision_contract` or hybrid mutation
+    contract with target function/block, required fields, data timing contract,
+    code-law hash, and mutation scope. Step3B must not replace a native minute
+    or tick law with an unrelated parseable operator formula merely to satisfy
+    Formula-IR.
 
 ### Handoff
 - `factorforge/objects/handoff/handoff_to_step4__{report_id}.json`
@@ -189,6 +211,10 @@ overwrite stale execution-state fields such as `first_run_outputs`, Step3B
 sample output references, generated implementation references, and run metadata
 paths. A blocked Step3A handoff must not preserve old `step3b_ready=true`
 state from a previous run.
+17. Step3B must treat `Killed`, exit 137, OOM-kill logs, allocator failure, or
+swap exhaustion as a design failure, not a transient retry. The next attempt
+must attach a bounded `batch_execution_plan` or BLOCK with
+`BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED`.
 
 ## Recommended execution chain
 

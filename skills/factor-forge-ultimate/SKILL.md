@@ -75,6 +75,40 @@ lineage already exists, downstream steps must consume it as a cache or evidence
 source instead of recomputing. Recompute only when the implementation, data
 contract, identity, or required formal-evidence ownership differs.
 
+## Memory Pressure and Batch Execution Protocol
+
+The "no ordinary batch mode" research rule means no shallow mechanical research
+shortcut. It does not permit all-in-memory execution when data are too large.
+For minute bars, tick data, large cross-sectional universes, or future deep
+learning/model-training jobs, the production default is bounded batch execution.
+
+Before launching a heavy Step3B/Step4 or training run, the agent must estimate
+peak memory from row count, selected columns, dtype size, join/window expansion,
+and expected intermediate materialization. If estimated peak memory exceeds
+about 50-60% of available RAM, or if a prior run shows `Killed`, exit code 137,
+OOM-kill logs, memory allocator failure, or swap exhaustion, the run must not be
+retried with the same all-in-memory path. It must either switch to a batch plan
+or BLOCK with `BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED`.
+
+The batch plan must be explicit in the run proof or implementation plan:
+
+- `batch_execution_plan.version=factorforge_batch_execution_plan_v1`
+- memory budget and estimated peak memory
+- partition key (`trade_date`, month, instrument shard, or model mini-batch)
+- selected columns and predicate pushdown policy
+- rolling/lookback overlap or carried state
+- output format, checkpoint/resume path, and cache identity
+- validation sample/parity policy against a smaller reference run
+
+Batch execution must stream each partition to Parquet or a bounded model
+checkpoint and release intermediates between batches. It must not accumulate a
+list of all batch DataFrames for final concat unless the post-concat size is
+already proven within budget. Rolling time-series factors need lookback overlap
+or per-instrument carry state; cross-sectional ranks need complete per-date
+cross-sections or an explicit two-pass algorithm. Deep learning training must
+use dataset streaming, mini-batches, gradient accumulation/checkpointing, and
+resumeable checkpoints rather than materializing the full tensor dataset.
+
 The current production/experimental split is documented in
 `docs/operations/factorforge-production-vs-experimental-performance.zh-CN.md`.
 
@@ -151,9 +185,10 @@ auditable child revision package:
   optional handoffs/configs
 - report-local child daily snapshots copied from the parent Step3A slice
 - `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`
-  containing the executable child formula from the synthesis, parent/child
-  formula hashes, selected revision law ids, expected metric signature,
-  falsification tests, kill criteria, and the synthesis path/hash
+  containing the executable child formula or direct-code law statement from the
+  synthesis, implementation mode, parent/child formula or code-law hashes,
+  selected revision law ids, expected metric signature, falsification tests,
+  kill criteria, and the synthesis path/hash
 
 Child Step3B must consume this executable revision spec and BLOCK if it is
 missing or if a non-audit revision leaves the formula hash unchanged. A loop that
@@ -167,6 +202,17 @@ If a completed Council summary and a valid main-agent synthesis already exist,
 before classifying the iteration as ready for child materialization. If the
 bridge validation fails, the loop must BLOCK and must not leave an active
 approved handoff behind.
+
+Direct-code and native minute/tick child revisions are first-class revisions.
+The ultimate loop must not force them through Formula-IR or operator mode. If
+the parent implementation is `direct_code` or `hybrid`, the child revision spec
+must carry `implementation_mode`, `revision_type=direct_code_mutation` or
+`hybrid_mutation`, `direct_code_revision_contract`, required data contracts,
+target function/block, code-law hash, and executable mutation scope. A
+human-readable child law such as an intraday moneyflow state equation is valid
+only when paired with an executable direct-code mutation contract. Replacing it
+with an unrelated parseable formula such as `rank(close)` is research pollution
+and must BLOCK.
 
 If a completed real-agent Council collection unanimously recommends terminal
 rejection and no main-agent synthesis selects a child formula, the loop may

@@ -3202,6 +3202,85 @@ def decide(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> str:
     return 'needs_human_review'
 
 
+def _status_from_backend(backend_statuses: dict[str, str], backend: str) -> str:
+    status = str(backend_statuses.get(backend) or '').strip().lower()
+    if status == 'success':
+        return 'complete'
+    if status == 'failed':
+        return 'failed'
+    if status:
+        return 'partial'
+    return 'missing'
+
+
+def _qlib_native_status(payloads: dict[str, dict[str, Any]], backend_statuses: dict[str, str]) -> str:
+    qlib = payloads.get('qlib_backtest') if isinstance(payloads.get('qlib_backtest'), dict) else {}
+    status = str(backend_statuses.get('qlib_backtest') or qlib.get('status') or '').strip().lower()
+    if status == 'failed':
+        return 'failed'
+    if not qlib:
+        return 'not_attempted'
+    mode = str(qlib.get('mode') or '').strip().lower()
+    if status == 'success' and mode == 'native_minimal':
+        return 'native_minimal_success'
+    if status == 'success':
+        return 'native_backtest_success'
+    if qlib.get('readiness'):
+        return 'preflight_ready'
+    return 'partial_payload'
+
+
+def build_evidence_status(
+    *,
+    run_master: dict[str, Any],
+    evaluation: dict[str, Any],
+    payloads: dict[str, dict[str, Any]],
+    backend_statuses: dict[str, str],
+    metrics: dict[str, Any],
+    decision: str,
+) -> dict[str, Any]:
+    long_complete = all(_safe_float(metrics.get(key)) is not None for key in [
+        'long_side_annual_return',
+        'long_side_max_drawdown',
+        'long_side_recovery_days',
+    ])
+    cost_complete = _safe_float(metrics.get('cost_adjusted_annual_return')) is not None
+    drawdown_complete = all(_safe_float(metrics.get(key)) is not None for key in [
+        'long_side_max_drawdown',
+        'long_side_recovery_days',
+    ])
+    long_ret = _safe_float(metrics.get('long_side_annual_return'))
+    cost_ret = _safe_float(metrics.get('cost_adjusted_annual_return'))
+    max_dd = _safe_float(metrics.get('long_side_max_drawdown'))
+    if cost_ret is not None and cost_ret <= 0:
+        promotion_gate_status = 'blocked_by_cost'
+    elif long_ret is not None and long_ret <= 0:
+        promotion_gate_status = 'blocked_by_long_side'
+    elif max_dd is not None and max_dd < -0.35:
+        promotion_gate_status = 'blocked_by_drawdown'
+    elif decision == 'promote_official':
+        promotion_gate_status = 'open'
+    else:
+        promotion_gate_status = 'blocked_by_evidence'
+    research_decision = 'promote' if decision == 'promote_official' else decision
+    if research_decision not in {'promote', 'iterate', 'reject', 'needs_human_review'}:
+        research_decision = 'needs_human_review'
+    return {
+        'version': 'factorforge_step6_evidence_status_v1',
+        'status': 'complete' if evaluation.get('artifact_ready') is True else 'partial_evaluation_artifact',
+        'run_status': str(run_master.get('run_status') or evaluation.get('run_status') or 'unknown'),
+        'wrapper_validation_status': 'PASS' if evaluation.get('artifact_ready') is True else 'BLOCK',
+        'self_quant_evidence_status': _status_from_backend(backend_statuses, 'self_quant_analyzer'),
+        'qlib_native_status': _qlib_native_status(payloads, backend_statuses),
+        'long_side_evidence_status': 'complete' if long_complete else 'missing',
+        'cost_model_status': 'complete' if cost_complete else 'missing',
+        'drawdown_geometry_status': 'complete' if drawdown_complete else 'missing',
+        'research_decision': research_decision,
+        'promotion_gate_status': promotion_gate_status,
+        'source': 'step6_mapped_from_step4_step5_evidence',
+    }
+
+
 def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -3224,6 +3303,14 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         str(item.get('backend')): str(item.get('status'))
         for item in (((run_master.get('evaluation_results') or {}).get('backend_runs')) or [])
     }
+    evidence_status = build_evidence_status(
+        run_master=run_master,
+        evaluation=evaluation,
+        payloads=payloads,
+        backend_statuses=backend_statuses,
+        metrics=metrics,
+        decision=decision,
+    )
 
     thesis = (
         'Factor shows enough evidence to enter the official library.' if decision == 'promote_official'
@@ -3371,9 +3458,11 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'run_status': run_master.get('run_status'),
             'backend_statuses': backend_statuses,
             'headline_metrics': metrics,
+            'evidence_status': evidence_status,
             'step5_lessons': case.get('lessons') or handoff.get('lessons') or [],
             'step5_next_actions': case.get('next_actions') or handoff.get('next_actions') or [],
         },
+        'evidence_status': evidence_status,
         'research_judgment': {
             'decision': decision,
             'thesis': thesis,

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -30,7 +31,7 @@ from factor_factory.data_access import (
     resolve_clean_daily_layer_paths,
     resolve_local_tushare_paths,
 )
-from factor_factory.data_api import fetch_data_api_dataset, resolve_data_api_dataset
+from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
@@ -58,11 +59,47 @@ MONEYFLOW_DATASET_FIELDS = [
     'net_mf_amount',
 ]
 MONEYFLOW_SIGNAL_FIELDS = set(MONEYFLOW_DATASET_FIELDS) - {'ts_code', 'trade_date'}
+DAILY_BASIC_DATASET_FIELDS = [
+    'ts_code',
+    'trade_date',
+    'turnover_rate',
+    'turnover_rate_f',
+    'volume_ratio',
+    'pe',
+    'pe_ttm',
+    'pb',
+    'ps',
+    'ps_ttm',
+    'dv_ratio',
+    'dv_ttm',
+    'total_share',
+    'float_share',
+    'free_share',
+    'total_mv',
+    'circ_mv',
+]
 DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_preserved_from_formal_step2_raw_direct_code_contract',
     'source_code_preserved_from_step2_direct_code_contract',
     'source_code_generated_by_step3a_llm_provider',
 }
+INTRADAY_PROXY_DATASETS = {'intraday_flow_proxy_daily', 'clean_minute_bar'}
+
+
+def data_api_dataset_registered(dataset_id: str) -> tuple[bool, str | None]:
+    catalog_path = default_catalog_path()
+    if catalog_path is None or not catalog_path.exists():
+        return False, str(catalog_path) if catalog_path else None
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+    except Exception:
+        return False, str(catalog_path)
+    raw = catalog.get('datasets', catalog)
+    if isinstance(raw, dict):
+        return dataset_id in raw, str(catalog_path)
+    if isinstance(raw, list):
+        return any(isinstance(item, dict) and item.get('dataset_id') == dataset_id for item in raw), str(catalog_path)
+    return False, str(catalog_path)
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
@@ -376,7 +413,11 @@ def merge_implementation_plan(existing: dict, updates: dict) -> dict:
         merged['implementation_mode'] = existing['implementation_mode']
         merged['preferred_execution_mode'] = existing['implementation_mode']
 
-    if _contract_has_source(updates) and not _contract_has_source(existing):
+    # Step2/factor_spec is the authoritative source for direct_code contracts.
+    # A previous Step3 run may have written an implementation_plan with stale
+    # source_code; do not let that old plan override a refreshed formal
+    # contract when Step3A is rerun.
+    if _contract_has_source(updates):
         for key in ['code_contract', 'implementation_contract', 'output_schema', 'source_code', 'code_hash', 'code_contract_hash']:
             if key in updates:
                 merged[key] = updates[key]
@@ -423,6 +464,30 @@ def data_api_window_bounds(sample_window: dict) -> dict:
     return {
         'start': _data_api_window_bound(sample_window.get('start'), default='19000101'),
         'end': _data_api_window_bound(sample_window.get('end'), default=current_data_api_end_date(), current_sentinel=current_data_api_end_date()),
+    }
+
+
+def step3a_executability_window(sample_window: dict, *, max_calendar_days: int = 21) -> dict:
+    """Use a bounded real-data window for Step3B code proof; Step4 owns full execution."""
+    bounds = data_api_window_bounds(sample_window)
+    start = bounds['start']
+    end = bounds['end']
+    if re.fullmatch(r'\d{8}', start) and re.fullmatch(r'\d{8}', end):
+        start_dt = datetime.strptime(start, '%Y%m%d')
+        end_dt = datetime.strptime(end, '%Y%m%d')
+        capped_end = min(end_dt, start_dt + timedelta(days=max_calendar_days))
+        end = capped_end.strftime('%Y%m%d')
+    return {
+        'start': start,
+        'end': end,
+        'calendar': sample_window.get('calendar') or 'A-share trading days',
+        'source_window': {
+            'start': bounds['start'],
+            'end': bounds['end'],
+            'calendar': sample_window.get('calendar') or 'A-share trading days',
+        },
+        'bounded_for': 'step3b_executability_proof',
+        'full_execution_owner': 'Step4',
     }
 
 
@@ -688,9 +753,11 @@ def build_step4_data_contract(
     daily_resolution: dict | None = None,
     minute_resolution: dict | None = None,
     moneyflow_resolution: dict | None = None,
+    daily_basic_resolution: dict | None = None,
     daily_fields: list[str] | None = None,
     minute_fields: list[str] | None = None,
     moneyflow_fields: list[str] | None = None,
+    daily_basic_fields: list[str] | None = None,
 ) -> dict:
     full_queries = {}
     sample_queries = {}
@@ -722,8 +789,17 @@ def build_step4_data_contract(
             fields,
             universe=['000001.SZ', '000002.SZ'],
         )
+    if daily_basic_resolution:
+        fields = daily_basic_fields or DAILY_BASIC_DATASET_FIELDS
+        full_queries['daily_basic'] = data_api_query_payload('daily_basic', sample_window, fields)
+        sample_queries['daily_basic'] = data_api_query_payload(
+            'daily_basic',
+            sample_window,
+            fields,
+            universe=['000001.SZ', '000002.SZ'],
+        )
     catalog_path = None
-    for resolution in [daily_resolution, minute_resolution, moneyflow_resolution]:
+    for resolution in [daily_resolution, minute_resolution, moneyflow_resolution, daily_basic_resolution]:
         if isinstance(resolution, dict) and resolution.get('catalog_path'):
             catalog_path = resolution.get('catalog_path')
             break
@@ -1141,9 +1217,18 @@ def materialize_moneyflow_slice(
         end=query_window['end'],
         fields=fields,
     )
+    clean_daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    clean_daily_resolution = resolve_data_api_dataset(
+        'clean_daily_bar',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=clean_daily_fields,
+    )
     step4_data_contract = build_step4_data_contract(
         sample_window=sample_window,
+        daily_resolution=clean_daily_resolution,
         moneyflow_resolution=moneyflow_resolution,
+        daily_fields=clean_daily_fields,
         moneyflow_fields=fields,
     )
     if moneyflow_resolution.get('status') != 'ready':
@@ -1220,53 +1305,165 @@ def build_local_price_volume_snapshots(
     required_fields: list[str] | None = None,
     formula_ir: dict | None = None,
 ):
-    del csv_output_policy
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
+    step3_sample_universe = ['000001.SZ', '000002.SZ']
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
-    query_window = data_api_window_bounds(sample_window)
+    required_set = {str(field).strip().lower() for field in (required_fields or []) if str(field).strip()}
+    daily_basic_fields = [
+        field for field in DAILY_BASIC_DATASET_FIELDS
+        if field in {'ts_code', 'trade_date'} or field in required_set
+    ]
+    daily_basic_required = len(daily_basic_fields) > 2
+    full_query_window = data_api_window_bounds(sample_window)
+    executability_window = step3a_executability_window(sample_window)
+    query_window = data_api_window_bounds(executability_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
         start=query_window['start'],
         end=query_window['end'],
         fields=daily_fields,
+        universe=step3_sample_universe,
     )
     minute_resolution = resolve_data_api_dataset(
         'minute_bar',
         start=query_window['start'],
         end=query_window['end'],
         fields=minute_fields,
+        universe=step3_sample_universe,
         frequency='1min',
     )
+    daily_basic_resolution = None
+    if daily_basic_required:
+        daily_basic_resolution = resolve_data_api_dataset(
+            'daily_basic',
+            start=query_window['start'],
+            end=query_window['end'],
+            fields=daily_basic_fields,
+            universe=step3_sample_universe,
+        )
     step4_data_contract = build_step4_data_contract(
         sample_window=sample_window,
         daily_resolution=daily_resolution,
         minute_resolution=minute_resolution,
+        daily_basic_resolution=daily_basic_resolution,
         daily_fields=daily_fields,
         minute_fields=minute_fields,
+        daily_basic_fields=daily_basic_fields if daily_basic_required else None,
     )
-    if daily_resolution.get('status') != 'ready' or minute_resolution.get('status') not in {'ready', 'proxy_ready'}:
+    daily_basic_ready = (not daily_basic_required) or (
+        isinstance(daily_basic_resolution, dict) and daily_basic_resolution.get('status') in {'ready', 'proxy_ready'}
+    )
+    if daily_resolution.get('status') != 'ready' or minute_resolution.get('status') not in {'ready', 'proxy_ready'} or not daily_basic_ready:
         return {
-            'snapshot_note': 'Data API could not resolve required minute/daily datasets; Step3A will not guess raw minute paths or build clean layers.',
+            'snapshot_note': 'Data API could not resolve required minute/daily/daily_basic datasets; Step3A will not guess raw minute paths or build clean layers.',
             'snapshot_source': 'missing_data_api_minute_or_daily',
             'input_mode': 'price_volume_minute',
             'data_api_resolution': {
                 'clean_daily_bar': daily_resolution,
                 'minute_bar': minute_resolution,
+                'daily_basic': daily_basic_resolution,
             },
             'step4_data_contract': step4_data_contract,
         }
+    daily_result = fetch_data_api_dataset(
+        'clean_daily_bar',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=daily_fields,
+        universe=step3_sample_universe,
+        catalog_path=daily_resolution.get('catalog_path'),
+    )
+    minute_result = fetch_data_api_dataset(
+        'minute_bar',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=minute_fields,
+        universe=step3_sample_universe,
+        frequency='1min',
+        catalog_path=minute_resolution.get('catalog_path'),
+    )
+    daily_basic_result = None
+    if daily_basic_required and daily_basic_resolution:
+        daily_basic_result = fetch_data_api_dataset(
+            'daily_basic',
+            start=query_window['start'],
+            end=query_window['end'],
+            fields=daily_basic_fields,
+            universe=step3_sample_universe,
+            catalog_path=daily_basic_resolution.get('catalog_path'),
+        )
+    daily_basic_fetch_ready = (not daily_basic_required) or (
+        daily_basic_result is not None and daily_basic_result.status in {'ready', 'proxy_ready'}
+    )
+    if daily_result.status != 'ready' or minute_result.status not in {'ready', 'proxy_ready'} or not daily_basic_fetch_ready:
+        return {
+            'snapshot_note': 'Data API resolved minute/daily metadata but failed to fetch the Step3B sample snapshots.',
+            'snapshot_source': 'missing_data_api_minute_or_daily',
+            'input_mode': 'price_volume_minute',
+            'data_api_resolution': {
+                'clean_daily_bar': daily_result.to_metadata(),
+                'minute_bar': minute_result.to_metadata(),
+                'daily_basic': daily_basic_result.to_metadata() if daily_basic_result is not None else daily_basic_resolution,
+            },
+            'step4_data_contract': step4_data_contract,
+        }
+    daily_df = daily_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    if daily_basic_result is not None:
+        daily_basic_df = daily_basic_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+        overlap = [
+            col for col in daily_basic_df.columns
+            if col in daily_df.columns and col not in {'ts_code', 'trade_date'}
+        ]
+        if overlap:
+            daily_basic_df = daily_basic_df.drop(columns=overlap)
+        daily_df = daily_df.merge(daily_basic_df, on=['ts_code', 'trade_date'], how='left')
+    minute_sort = [col for col in ['ts_code', 'trade_date', 'trade_time'] if col in minute_result.frame.columns]
+    minute_df = minute_result.frame.sort_values(minute_sort).reset_index(drop=True) if minute_sort else minute_result.frame.reset_index(drop=True)
+    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
+    daily_csv = local_dir / f'daily_input__{report_id}.csv'
+    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
+    minute_parquet = local_dir / f'minute_input__{report_id}.parquet'
+    minute_csv = local_dir / f'minute_input__{report_id}.csv'
+    minute_sample_csv = local_dir / f'minute_input_sample__{report_id}.csv'
+    daily_df.to_parquet(daily_parquet, index=False)
+    minute_df.to_parquet(minute_parquet, index=False)
+    daily_audit = materialize_daily_audit_csv(
+        daily_df,
+        report_id=report_id,
+        full_csv_path=daily_csv,
+        sample_csv_path=daily_sample_csv,
+        policy=resolve_csv_policy(csv_output_policy),
+    )
+    minute_csv_profile = materialize_daily_audit_csv(
+        minute_df,
+        report_id=report_id,
+        full_csv_path=minute_csv,
+        sample_csv_path=minute_sample_csv,
+        policy=resolve_csv_policy(csv_output_policy),
+    )
     return {
         'sample_window_actual': sample_window,
-        'snapshot_note': 'Step3A resolved minute_bar and clean_daily_bar through Data API; Step3B may fetch a small non-formal sample and Step4 owns full data execution.',
+        'step3b_executability_window_actual': executability_window,
+        'snapshot_note': 'Step3A resolved minute_bar and clean_daily_bar through Data API and wrote report-local sample snapshots for Step3B executability proof; Step4 owns full data execution.',
         'snapshot_source': 'data_api_minute_plus_daily',
         'input_mode': 'price_volume_minute',
+        'daily_df_path': str(daily_parquet.relative_to(WORKSPACE)),
+        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
+        'minute_df_path': str(minute_parquet.relative_to(WORKSPACE)),
+        'minute_df_parquet': str(minute_parquet.relative_to(WORKSPACE)),
+        'minute_df_csv': minute_csv_profile.get('daily_df_csv'),
+        'minute_df_csv_sample': minute_csv_profile.get('daily_df_csv_sample'),
+        **daily_audit,
+        'minute_io_contract': minute_csv_profile.get('daily_io_contract'),
         'data_api_resolution': {
             'clean_daily_bar': daily_resolution,
             'minute_bar': minute_resolution,
+            'daily_basic': daily_basic_resolution,
         },
         'step4_data_contract': step4_data_contract,
+        'step4_full_window': full_query_window,
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
     }
@@ -1456,6 +1653,22 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     need_minute = (not need_moneyflow) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
     need_daily = not need_moneyflow
     need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
+    explicitly_required_intraday_proxy_datasets = [
+        dataset_id for dataset_id in INTRADAY_PROXY_DATASETS
+        if dataset_id in required or dataset_id in required_text
+    ]
+    missing_intraday_proxy_datasets = []
+    intraday_proxy_catalog_path = None
+    for dataset_id in explicitly_required_intraday_proxy_datasets:
+        registered, catalog_path = data_api_dataset_registered(dataset_id)
+        intraday_proxy_catalog_path = intraday_proxy_catalog_path or catalog_path
+        if not registered:
+            missing_intraday_proxy_datasets.append(dataset_id)
+    if missing_intraday_proxy_datasets:
+        need_minute = False
+        need_daily = False
+        need_moneyflow = False
+        need_daily_basic = False
 
     sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
     data_sources = []
@@ -1464,6 +1677,66 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     blocked = []
     field_mapping = {}
     notes = []
+    intraday_proxy_blocked_local_input_paths = None
+
+    if missing_intraday_proxy_datasets:
+        data_sources.extend([
+            {
+                'name': dataset_id,
+                'kind': 'data_api_catalog_dataset',
+                'path': None,
+                'fields': [],
+                'normalized_dataset': dataset_id,
+            }
+            for dataset_id in explicitly_required_intraday_proxy_datasets
+        ])
+        coverage.append({
+            'name': 'intraday_flow_proxy_catalog',
+            'status': 'blocked',
+            'detail': (
+                'Step2 explicitly requires intraday proxy dataset(s), but they are not registered in the Data API catalog: '
+                + ', '.join(missing_intraday_proxy_datasets)
+            ),
+            'catalog_path': intraday_proxy_catalog_path,
+        })
+        field_mapping.update({
+            'instrument': 'ts_code',
+            'date': 'trade_date',
+            'intraday_cutoff': 'trade_time',
+            'active_flow_proxy': 'net_active_flow_proxy_1450',
+            'flow_concentration': 'flow_hhi_1450',
+            'impact_efficiency': 'price_impact_efficiency_1450',
+        })
+        blocked.append({
+            'code': 'DATA_API_INTRADAY_FLOW_PROXY_DATASET_UNAVAILABLE',
+            'detail': (
+                'Required clean/precomputed intraday proxy dataset is absent from the Data API catalog. '
+                'Step3A must not fall back to raw minute_bar downloads for this formal hypothesis.'
+            ),
+            'missing_datasets': missing_intraday_proxy_datasets,
+            'catalog_path': intraday_proxy_catalog_path,
+        })
+        intraday_proxy_blocked_local_input_paths = {
+            'input_mode': 'blocked',
+            'snapshot_source': 'missing_intraday_flow_proxy_dataset',
+            'snapshot_note': (
+                'Step3A blocked before raw minute fetch because the factor requires clean/precomputed '
+                'intraday flow proxy datasets not present in the Data API catalog.'
+            ),
+            'missing_datasets': missing_intraday_proxy_datasets,
+            'catalog_path': intraday_proxy_catalog_path,
+            'data_api_resolution': {
+                'status': 'dataset_missing',
+                'missing_datasets': missing_intraday_proxy_datasets,
+                'catalog_path': intraday_proxy_catalog_path,
+            },
+            'step4_data_contract': {
+                'status': 'blocked',
+                'reason': 'missing_intraday_flow_proxy_dataset',
+                'required_datasets': explicitly_required_intraday_proxy_datasets,
+                'forbidden_fallback': 'raw minute_bar fetch',
+            },
+        }
 
     if need_minute:
         data_sources.append({
@@ -1567,7 +1840,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         })
 
     local_input_paths = {}
-    if need_moneyflow:
+    if intraday_proxy_blocked_local_input_paths is not None:
+        local_input_paths = intraday_proxy_blocked_local_input_paths
+        notes.append(str(local_input_paths.get('snapshot_note') or ''))
+    elif need_moneyflow:
         local_input_paths = materialize_moneyflow_slice(
             report_id,
             sample_window,

@@ -30,6 +30,24 @@ def make_operator_fixture() -> pd.DataFrame:
                 'turnover_rate': 0.4 + code_idx * 0.12 + day_idx * 0.03,
                 'turnover_rate_f': 0.5 + code_idx * 0.10 + day_idx * 0.025,
                 'volume_ratio': 0.8 + code_idx * 0.08 + day_idx * 0.02,
+                'buy_sm_amount': 80.0 + code_idx * 5.0 + day_idx * 3.0,
+                'sell_sm_amount': 76.0 + code_idx * 4.0 + day_idx * 2.0,
+                'buy_md_amount': 120.0 + code_idx * 8.0 + day_idx * 4.0,
+                'sell_md_amount': 118.0 + code_idx * 6.0 + day_idx * 3.0,
+                'buy_lg_amount': 150.0 + code_idx * 12.0 + day_idx * 5.0,
+                'sell_lg_amount': 143.0 + code_idx * 10.0 + day_idx * 4.0,
+                'buy_elg_amount': 60.0 + code_idx * 9.0 + day_idx * 3.0,
+                'sell_elg_amount': 58.0 + code_idx * 7.0 + day_idx * 2.0,
+                'net_mf_amount': (
+                    (80.0 + code_idx * 5.0 + day_idx * 3.0)
+                    + (120.0 + code_idx * 8.0 + day_idx * 4.0)
+                    + (150.0 + code_idx * 12.0 + day_idx * 5.0)
+                    + (60.0 + code_idx * 9.0 + day_idx * 3.0)
+                    - (76.0 + code_idx * 4.0 + day_idx * 2.0)
+                    - (118.0 + code_idx * 6.0 + day_idx * 3.0)
+                    - (143.0 + code_idx * 10.0 + day_idx * 4.0)
+                    - (58.0 + code_idx * 7.0 + day_idx * 2.0)
+                ),
             })
     return pd.DataFrame(rows)
 

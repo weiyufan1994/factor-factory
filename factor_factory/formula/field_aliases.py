@@ -19,6 +19,15 @@ FIELD_ALIASES = {
     'close': ['close'],
     'vwap': ['vwap'],
     'turnover': ['turnover', 'turnover_rate'],
+    'net_mf_amount': ['net_mf_amount'],
+    'buy_sm_amount': ['buy_sm_amount'],
+    'sell_sm_amount': ['sell_sm_amount'],
+    'buy_md_amount': ['buy_md_amount'],
+    'sell_md_amount': ['sell_md_amount'],
+    'buy_lg_amount': ['buy_lg_amount'],
+    'sell_lg_amount': ['sell_lg_amount'],
+    'buy_elg_amount': ['buy_elg_amount'],
+    'sell_elg_amount': ['sell_elg_amount'],
 }
 
 STANDARD_FORMULA_FIELDS_CONTRACT_VERSION = 'factorforge_standard_formula_fields_contract_v1'

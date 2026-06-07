@@ -195,13 +195,26 @@ def assert_artifact_identity(label: str, data: dict, expected: dict | None = Non
             f'{label}.artifact_identity.artifact_role mismatch: expected {role}, got {identity.get("artifact_role")}'
         )
     if expected:
-        assert_identity_matches_strict(
-            expected,
-            identity,
-            expected_label='expected',
-            actual_label=label,
-            allowed_role_transitions={(expected.get('artifact_role'), role or identity.get('artifact_role'))},
-        )
+        if expected.get('implementation_mode') == 'direct_code':
+            assert_identity_matches_strict(
+                expected,
+                identity,
+                expected_label='expected',
+                actual_label=label,
+                require_mode_hash=False,
+                allowed_role_transitions={(expected.get('artifact_role'), role or identity.get('artifact_role'))},
+            )
+            assert expected.get('code_contract_hash') == identity.get('code_contract_hash'), (
+                f'{label}.artifact_identity.code_contract_hash mismatch'
+            )
+        else:
+            assert_identity_matches_strict(
+                expected,
+                identity,
+                expected_label='expected',
+                actual_label=label,
+                allowed_role_transitions={(expected.get('artifact_role'), role or identity.get('artifact_role'))},
+            )
     return identity
 
 
@@ -432,8 +445,6 @@ def collect_declared_direct_code_hashes(
     handoff: dict,
 ) -> list[tuple[str, str]]:
     identity_sources = [
-        ('factor_spec_master.artifact_identity', spec.get('artifact_identity')),
-        ('factor_spec_master.metadata.artifact_identity', (spec.get('metadata') or {}).get('artifact_identity')),
         ('implementation_plan_master.artifact_identity', plan.get('artifact_identity')),
         ('implementation_plan_master.metadata.artifact_identity', (plan.get('metadata') or {}).get('artifact_identity')),
         ('qlib_expression_draft.artifact_identity', qlib_data.get('artifact_identity')),
@@ -444,8 +455,6 @@ def collect_declared_direct_code_hashes(
         ('handoff_to_step4.metadata.artifact_identity', (handoff.get('metadata') or {}).get('artifact_identity')),
     ]
     metadata_sources = [
-        ('factor_spec_master.code_hash', spec),
-        ('factor_spec_master.metadata.code_hash', spec.get('metadata') or {}),
         ('implementation_plan_master.code_hash', plan),
         ('implementation_plan_master.metadata.code_hash', plan.get('metadata') or {}),
         ('qlib_expression_draft.code_hash', qlib_data),
@@ -1323,6 +1332,16 @@ if __name__ == '__main__':
     data = load(impl)
     h = load(handoff)
     prep = load(prep_path)
+    if prep.get('feasibility') == 'blocked' and h.get('step3a_ready') is False and h.get('step3b_ready') is False:
+        first_run = h.get('first_run_outputs') or data.get('first_run_outputs') or {}
+        assert first_run.get('status') == 'blocked', 'blocked Step3A must carry blocked first_run_outputs'
+        assert first_run.get('output_paths') == [], 'blocked Step3A/Step3B must not expose output paths'
+        assert not stub.exists(), 'blocked Step3A must not allow Step3B stub generation'
+        assert not real_impl.exists(), 'blocked Step3A must not allow Step3B implementation generation'
+        assert not qlib.exists(), 'blocked Step3A must not allow Step3B qlib draft generation'
+        assert not hybrid.exists(), 'blocked Step3A must not allow Step3B hybrid scaffold generation'
+        print('RESULT: PASS')
+        raise SystemExit(0)
     qlib_data = load(qlib)
     hybrid_data = load(hybrid)
     spec_identity = assert_artifact_identity('factor_spec_master', spec_data, role='factor_spec_master')

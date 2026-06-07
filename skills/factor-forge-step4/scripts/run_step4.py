@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import inspect
 import importlib.util
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import numpy as np
 
 # Runtime root policy:
 # - prefer FACTORFORGE_ROOT when explicitly configured
@@ -1368,6 +1370,550 @@ def compute_factor_with_contract(module: Any, daily_df: Any, minute_df: Any) -> 
         return normalize_direct_code_result(fn(daily_call_input, minute_call_input))
 
 
+def _query_with_date(query: dict[str, Any], trade_date: str) -> dict[str, Any]:
+    return {**query, 'start_date': trade_date, 'end_date': trade_date}
+
+
+def _normal_date_text(series: pd.Series) -> pd.Series:
+    return series.astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
+
+
+def _batched(values: list[str], size: int) -> list[list[str]]:
+    return [values[idx: idx + size] for idx in range(0, len(values), size)]
+
+
+def _step4_time_key(series: pd.Series) -> pd.Series:
+    text = series.astype(str).str.strip()
+    token = text.str.split().str[-1]
+    digits = token.str.extract(r"(\d{1,2}:?\d{2}:?\d{2})", expand=False).fillna(token)
+    digits = digits.astype(str).str.replace(":", "", regex=False)
+    numeric = pd.to_numeric(digits.str[-6:], errors="coerce")
+    short = pd.to_numeric(token.str.extract(r"(\d{3,4})$", expand=False), errors="coerce")
+    return numeric.fillna(short * 100).fillna(0).astype(int)
+
+
+def _z_by_trade_date(frame: pd.DataFrame, col: str) -> pd.Series:
+    grouped = frame.groupby("trade_date", sort=False)[col]
+    mean = grouped.transform("mean")
+    std = grouped.transform("std").replace(0, np.nan)
+    return ((frame[col] - mean) / std).replace([np.inf, -np.inf], np.nan)
+
+
+def _local_minute_partition_roots() -> list[Path]:
+    candidates = []
+    if os.environ.get('FACTORFORGE_LOCAL_MINUTE_ROOT'):
+        candidates.append(Path(os.environ['FACTORFORGE_LOCAL_MINUTE_ROOT']))
+    if os.environ.get('FACTORFORGE_LOCAL_DATA_ROOT'):
+        candidates.append(Path(os.environ['FACTORFORGE_LOCAL_DATA_ROOT']) / '分钟数据' / 'raw' / 'stk_mins_1min')
+    if os.environ.get('FACTORFORGE_DATA_CACHE'):
+        candidates.append(Path(os.environ['FACTORFORGE_DATA_CACHE']) / 's3_parquet' / 'minute_bar-raw_v1-0b2b836c57d763c6')
+    candidates.append(Path('/home/ubuntu/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6'))
+    candidates.append(Path('/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min'))
+    roots = []
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir() and candidate not in roots:
+            roots.append(candidate)
+    return roots
+
+
+def _local_minute_partition_paths(
+    dates: list[str],
+) -> tuple[list[Path] | None, dict[str, Any] | None]:
+    roots = _local_minute_partition_roots()
+    if not roots:
+        return None, None
+    root_probes = []
+    for root in roots:
+        part_paths: list[Path] = []
+        missing_dates: list[str] = []
+        for date in dates:
+            date_dir = root / f'trade_date={date}'
+            parts = sorted(date_dir.glob('*.parquet'))
+            if not parts:
+                missing_dates.append(date)
+                continue
+            part_paths.extend(parts)
+        if missing_dates:
+            root_probes.append({
+                'root': str(root),
+                'status': 'missing_partition',
+                'missing_dates_head': missing_dates[:10],
+                'missing_date_count': len(missing_dates),
+            })
+            continue
+        return part_paths, {
+            'source': 'local_minute_partition_root',
+            'root': str(root),
+            'root_probe_count': len(root_probes) + 1,
+            'prior_root_probes': root_probes,
+            'partition_count': len(part_paths),
+            'date_count': len(dates),
+            'date_start': dates[0] if dates else None,
+            'date_end': dates[-1] if dates else None,
+        }
+    return None, {
+        'source': 'local_minute_partition_probe',
+        'roots': [str(root) for root in roots],
+        'status': 'missing_partition',
+        'root_probes': root_probes,
+    }
+
+
+def _read_local_minute_partitions(
+    dates: list[str],
+    *,
+    fields: list[str],
+) -> tuple[pd.DataFrame | None, dict[str, Any] | None]:
+    required = ['ts_code', 'trade_date', 'trade_time']
+    columns = list(dict.fromkeys(required + [field for field in fields if field not in required]))
+    part_paths, meta = _local_minute_partition_paths(dates)
+    if part_paths is None:
+        return None, meta
+    frames = []
+    for part in part_paths:
+        try:
+            frames.append(pd.read_parquet(part, columns=columns))
+        except (KeyError, ValueError):
+            frames.append(pd.read_parquet(part))
+    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+    return frame, {**(meta or {}), 'row_count': int(len(frame))}
+
+
+def _fetch_minute_frame_for_dates(
+    minute_query: dict[str, Any],
+    dates: list[str],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    fields = list(minute_query.get('fields') or ['open', 'high', 'low', 'close', 'vol', 'amount'])
+    local_frame, local_meta = _read_local_minute_partitions(dates, fields=fields)
+    if local_frame is not None:
+        return local_frame, local_meta or {}
+    batch_start, batch_end = dates[0], dates[-1]
+    frame, meta = _fetch_contract_frame({**minute_query, 'start_date': batch_start, 'end_date': batch_end})
+    if local_meta:
+        meta = {**meta, 'local_partition_probe': local_meta}
+    return frame, meta
+
+
+def _aggregate_intraday_flow_daily(minute_df: pd.DataFrame) -> pd.DataFrame:
+    minute = minute_df.copy()
+    if 'trade_date' in minute.columns:
+        minute['trade_date'] = _normal_date_text(minute['trade_date'])
+    if 'trade_time' not in minute.columns and 'datetime' in minute.columns:
+        minute['trade_time'] = minute['datetime']
+    if 'trade_time' not in minute.columns:
+        minute['trade_time'] = '145000'
+    if 'open' not in minute.columns and 'close' in minute.columns:
+        minute['open'] = minute['close']
+    if 'amount' not in minute.columns and 'vol' in minute.columns:
+        minute['amount'] = minute['vol']
+    minute['hhmmss'] = _step4_time_key(minute['trade_time'])
+    minute = minute[minute['hhmmss'] <= 145000].copy()
+    for col in ['open', 'close', 'amount', 'vol']:
+        if col in minute.columns:
+            minute[col] = pd.to_numeric(minute[col], errors='coerce')
+    minute = minute.dropna(subset=['ts_code', 'trade_date', 'open', 'close', 'amount'])
+    minute = minute[(minute['open'] > 0) & (minute['amount'].abs() > 0)]
+    if len(minute) == 0:
+        return pd.DataFrame(columns=[
+            'ts_code', 'trade_date', 'signed_amt_sum', 'gross_amt', 'amt_sq_sum',
+            'abs_ret_sum', 'ret_std', 'minute_count',
+        ])
+    minute['bar_ret'] = minute['close'] / minute['open'] - 1.0
+    minute['amt_abs'] = minute['amount'].abs()
+    minute['signed_amt'] = np.sign(minute['bar_ret'].fillna(0.0)) * minute['amt_abs']
+    minute['amt_sq'] = minute['amt_abs'] * minute['amt_abs']
+    minute['abs_bar_ret'] = minute['bar_ret'].abs()
+    return minute.groupby(['ts_code', 'trade_date'], sort=False).agg(
+        signed_amt_sum=('signed_amt', 'sum'),
+        gross_amt=('amt_abs', 'sum'),
+        amt_sq_sum=('amt_sq', 'sum'),
+        abs_ret_sum=('abs_bar_ret', 'sum'),
+        ret_std=('bar_ret', 'std'),
+        minute_count=('bar_ret', 'count'),
+    ).reset_index()
+
+
+def _collect_polars_lazy(lazy_frame: Any) -> Any:
+    try:
+        return lazy_frame.collect(engine='streaming')
+    except TypeError:
+        try:
+            return lazy_frame.collect(streaming=True)
+        except TypeError:
+            return lazy_frame.collect()
+
+
+def _aggregate_intraday_flow_daily_polars_for_dates(
+    dates: list[str],
+) -> tuple[pd.DataFrame | None, dict[str, Any] | None]:
+    part_paths, meta = _local_minute_partition_paths(dates)
+    if part_paths is None:
+        return None, meta
+    try:
+        import polars as pl
+    except ImportError:
+        return None, {**(meta or {}), 'status': 'polars_unavailable'}
+
+    started = time.perf_counter()
+    path_texts = [str(path) for path in part_paths]
+    lf = pl.scan_parquet(path_texts, hive_partitioning=True)
+    schema_names = set(lf.collect_schema().names())
+    if 'ts_code' not in schema_names or 'close' not in schema_names:
+        return None, {**(meta or {}), 'status': 'polars_schema_missing_core', 'columns': sorted(schema_names)}
+    if 'trade_date' not in schema_names:
+        return None, {**(meta or {}), 'status': 'polars_schema_missing_trade_date', 'columns': sorted(schema_names)}
+    open_expr = pl.col('open') if 'open' in schema_names else pl.col('close')
+    amount_expr = pl.col('amount') if 'amount' in schema_names else pl.col('vol')
+    time_expr = pl.col('trade_time') if 'trade_time' in schema_names else (
+        pl.col('datetime') if 'datetime' in schema_names else pl.lit('145000')
+    )
+    time_text = pl.col('_trade_time').cast(pl.Utf8).str.strip_chars().str.replace_all(':', '')
+    time_digits = time_text.str.extract(r'(\d{3,6})$').fill_null('145000')
+    hhmmss_expr = (
+        pl.when(time_digits.str.len_chars() <= 4)
+        .then(time_digits.cast(pl.Int64, strict=False) * 100)
+        .otherwise(time_digits.cast(pl.Int64, strict=False))
+        .fill_null(145000)
+        .alias('hhmmss')
+    )
+
+    flow_lazy = (
+        lf.select([
+            pl.col('ts_code').cast(pl.Utf8).alias('ts_code'),
+            pl.col('trade_date').cast(pl.Utf8).str.replace_all('-', '').str.slice(0, 8).alias('trade_date'),
+            time_expr.alias('_trade_time'),
+            open_expr.cast(pl.Float64, strict=False).alias('open'),
+            pl.col('close').cast(pl.Float64, strict=False).alias('close'),
+            amount_expr.cast(pl.Float64, strict=False).alias('amount'),
+        ])
+        .with_columns([hhmmss_expr])
+        .filter(
+            (pl.col('hhmmss') <= 145000)
+            & pl.col('ts_code').is_not_null()
+            & pl.col('trade_date').is_not_null()
+            & pl.col('open').is_not_null()
+            & pl.col('close').is_not_null()
+            & pl.col('amount').is_not_null()
+            & (pl.col('open') > 0)
+            & (pl.col('amount').abs() > 0)
+        )
+        .with_columns([
+            (pl.col('close') / pl.col('open') - 1.0).alias('bar_ret'),
+            pl.col('amount').abs().alias('amt_abs'),
+        ])
+        .with_columns([
+            (pl.col('bar_ret').sign() * pl.col('amt_abs')).alias('signed_amt'),
+            (pl.col('amt_abs') * pl.col('amt_abs')).alias('amt_sq'),
+            pl.col('bar_ret').abs().alias('abs_bar_ret'),
+        ])
+        .group_by(['ts_code', 'trade_date'])
+        .agg([
+            pl.col('signed_amt').sum().alias('signed_amt_sum'),
+            pl.col('amt_abs').sum().alias('gross_amt'),
+            pl.col('amt_sq').sum().alias('amt_sq_sum'),
+            pl.col('abs_bar_ret').sum().alias('abs_ret_sum'),
+            pl.col('bar_ret').std().alias('ret_std'),
+            pl.col('bar_ret').count().alias('minute_count'),
+        ])
+    )
+    flow_pl = _collect_polars_lazy(flow_lazy)
+    flow_pd = flow_pl.to_pandas()
+    return flow_pd, {
+        **(meta or {}),
+        'source': 'polars_local_minute_partition_daily_flow_preaggregation',
+        'engine': 'polars',
+        'polars_version': getattr(pl, '__version__', None),
+        'row_count': int(len(flow_pd)),
+        'seconds': time.perf_counter() - started,
+    }
+
+
+def _intraday_flow_daily_cache_path(dates: list[str], minute_query: dict[str, Any]) -> Path | None:
+    if os.environ.get('FACTORFORGE_STEP4_FLOW_DAILY_CACHE_DISABLE') == '1':
+        return None
+    cache_root_text = os.environ.get('FACTORFORGE_STEP4_FLOW_DAILY_CACHE')
+    if cache_root_text:
+        cache_root = Path(cache_root_text)
+    elif os.environ.get('FACTORFORGE_DATA_CACHE'):
+        cache_root = Path(os.environ['FACTORFORGE_DATA_CACHE']) / 'derived_features' / 'intraday_flow_daily_sp3'
+    else:
+        return None
+    key_payload = {
+        'version': 'intraday_flow_daily_sp3_v2',
+        'date_start': dates[0] if dates else None,
+        'date_end': dates[-1] if dates else None,
+        'date_count': len(dates),
+        'fields': sorted(str(field) for field in (minute_query.get('fields') or [])),
+    }
+    cache_key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    return cache_root / f"intraday_flow_daily_sp3__{dates[0]}__{dates[-1]}__{len(dates)}d__{cache_key}.parquet"
+
+
+def _compute_sp3_from_intraday_flow_daily(daily_df: pd.DataFrame, flow_daily: pd.DataFrame) -> pd.DataFrame:
+    daily = daily_df.copy()
+    daily['trade_date'] = _normal_date_text(daily['trade_date'])
+    agg = flow_daily.copy()
+    agg['trade_date'] = _normal_date_text(agg['trade_date'])
+    agg = agg[agg['gross_amt'] > 0].copy()
+    agg['net_flow_ratio'] = agg['signed_amt_sum'] / agg['gross_amt']
+    agg['flow_hhi'] = agg['amt_sq_sum'] / (agg['gross_amt'] * agg['gross_amt'])
+    agg['impact_efficiency'] = agg['abs_ret_sum'] / (agg['net_flow_ratio'].abs() + 1e-6)
+    agg['hhi_impact'] = agg['flow_hhi'] * agg['impact_efficiency']
+    agg['h1_raw'] = _z_by_trade_date(agg, 'net_flow_ratio') + _z_by_trade_date(agg, 'hhi_impact')
+    agg['h1'] = _z_by_trade_date(agg, 'h1_raw')
+
+    control_cols = ['total_mv', 'turnover_rate', 'turnover_rate_f', 'volume_ratio']
+    keep = ['ts_code', 'trade_date'] + [col for col in control_cols if col in daily.columns]
+    controls = daily[keep].copy().sort_values(['ts_code', 'trade_date'])
+    for col in control_cols:
+        if col not in controls.columns:
+            controls[col] = np.nan
+        controls[col] = pd.to_numeric(controls[col], errors='coerce')
+        controls[col + '_lag1'] = controls.groupby('ts_code', sort=False)[col].shift(1)
+    controls = controls[['ts_code', 'trade_date'] + [col + '_lag1' for col in control_cols]]
+    out = agg.merge(controls, on=['ts_code', 'trade_date'], how='left')
+    out['ln_total_mv'] = np.log(out['total_mv_lag1'].where(out['total_mv_lag1'] > 0))
+    z_inputs = {
+        'ln_total_mv_z': 'ln_total_mv',
+        'turnover_z': 'turnover_rate_lag1',
+        'turnover_f_z': 'turnover_rate_f_lag1',
+        'volume_ratio_z': 'volume_ratio_lag1',
+    }
+    for z_col, raw_col in z_inputs.items():
+        out[z_col] = _z_by_trade_date(out, raw_col)
+    size_strip = 0.10 * out['ln_total_mv_z'].fillna(0.0)
+    float_turnover_strip = 0.05 * out['turnover_f_z'].fillna(0.0)
+    crowding_penalty = 0.25 * out['volume_ratio_z'].abs().fillna(0.0) + 0.15 * out['turnover_z'].abs().fillna(0.0)
+    out['factor_value'] = out['h1'].fillna(0.0) - size_strip - float_turnover_strip - crowding_penalty
+    out = out.replace([np.inf, -np.inf], np.nan).dropna(subset=['factor_value'])
+    return out[['ts_code', 'trade_date', 'factor_value']].sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+
+
+def _supports_sp3_intraday_flow_fast_path(module: Any) -> bool:
+    try:
+        fn = getattr(module, '_factorforge_user_compute_factor', getattr(module, 'compute_factor'))
+        source = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return False
+    required_tokens = [
+        'net_flow_ratio',
+        'flow_hhi',
+        'hhi_impact',
+        'volume_ratio_lag1',
+        'turnover_rate_f_lag1',
+        'crowding_penalty',
+    ]
+    return all(token in source for token in required_tokens)
+
+
+def compute_factor_intraday_flow_daily_preagg_contract(
+    *,
+    daily_df: pd.DataFrame,
+    minute_query: dict[str, Any],
+    report_id: str,
+    run_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    started = time.perf_counter()
+    daily = daily_df.copy()
+    if 'trade_date' not in daily.columns:
+        raise SystemExit('BLOCK_STEP4_FLOW_PREAGG_DAILY_DATE_MISSING: daily_df missing trade_date')
+    daily['trade_date'] = _normal_date_text(daily['trade_date'])
+    all_dates = sorted(str(x) for x in daily['trade_date'].dropna().unique())
+    query_start = str(minute_query.get('start_date') or all_dates[0])
+    query_end = str(minute_query.get('end_date') or all_dates[-1])
+    dates = [date for date in all_dates if query_start <= date <= query_end]
+    if not dates:
+        raise SystemExit('BLOCK_STEP4_FLOW_PREAGG_WINDOW_EMPTY: no daily dates overlap minute query')
+    batch_size = max(1, int(os.environ.get('FACTORFORGE_STEP4_MINUTE_STREAM_BATCH_DAYS', '5') or '5'))
+    batches = _batched(dates, batch_size)
+
+    cache_path = _intraday_flow_daily_cache_path(dates, minute_query)
+    cache_hit = False
+    if cache_path and cache_path.exists():
+        flow_daily = pd.read_parquet(cache_path)
+        cache_hit = True
+        batch_profiles = [{
+            'status': 'cache_hit',
+            'cache_path': str(cache_path),
+            'flow_rows': int(len(flow_daily)),
+        }]
+    else:
+        flow_daily = None
+        batch_profiles = []
+
+    flow_chunks: list[pd.DataFrame] = []
+    if flow_daily is None:
+        for batch_index, batch_dates in enumerate(batches):
+            fetch_started = time.perf_counter()
+            flow_chunk, polars_meta = _aggregate_intraday_flow_daily_polars_for_dates(batch_dates)
+            if flow_chunk is not None:
+                fetch_seconds = 0.0
+                agg_seconds = float((polars_meta or {}).get('seconds') or (time.perf_counter() - fetch_started))
+                minute_rows = None
+                minute_meta = polars_meta or {}
+            else:
+                minute_df, minute_meta = _fetch_minute_frame_for_dates(minute_query, batch_dates)
+                fetch_seconds = time.perf_counter() - fetch_started
+                agg_started = time.perf_counter()
+                flow_chunk = _aggregate_intraday_flow_daily(minute_df)
+                agg_seconds = time.perf_counter() - agg_started
+                minute_rows = int(len(minute_df))
+                del minute_df
+            if len(flow_chunk):
+                flow_chunks.append(flow_chunk)
+            batch_profiles.append({
+                'batch_index': batch_index,
+                'date_start': batch_dates[0],
+                'date_end': batch_dates[-1],
+                'date_count': len(batch_dates),
+                'minute_rows': minute_rows,
+                'flow_rows': int(len(flow_chunk)),
+                'fetch_seconds': fetch_seconds,
+                'aggregate_seconds': agg_seconds,
+                'status': 'ready',
+                'metadata': minute_meta,
+            })
+            del flow_chunk
+            gc.collect()
+
+        if flow_chunks:
+            flow_daily = pd.concat(flow_chunks, ignore_index=True)
+        else:
+            flow_daily = pd.DataFrame(columns=[
+                'ts_code', 'trade_date', 'signed_amt_sum', 'gross_amt', 'amt_sq_sum',
+                'abs_ret_sum', 'ret_std', 'minute_count',
+            ])
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            flow_daily.to_parquet(cache_path, index=False)
+    flow_path = run_dir / 'step4_data_inputs' / f'intraday_flow_daily__{report_id}.parquet'
+    flow_path.parent.mkdir(parents=True, exist_ok=True)
+    flow_daily.to_parquet(flow_path, index=False)
+
+    compute_started = time.perf_counter()
+    result = _compute_sp3_from_intraday_flow_daily(daily, flow_daily)
+    compute_seconds = time.perf_counter() - compute_started
+    profile = {
+        'version': 'factorforge_step4_intraday_flow_daily_preagg_profile_v1',
+        'source': 'local_minute_partitions_to_daily_flow_preaggregation',
+        'partition_key': 'trade_date',
+        'date_count': len(dates),
+        'date_start': dates[0],
+        'date_end': dates[-1],
+        'batch_size_days': batch_size,
+        'batch_count': len(batches),
+        'flow_daily_path': str(flow_path),
+        'persistent_cache_path': str(cache_path) if cache_path else None,
+        'persistent_cache_hit': cache_hit,
+        'total_minute_rows': int(sum(item.get('minute_rows') or 0 for item in batch_profiles)),
+        'total_flow_rows': int(len(flow_daily)),
+        'total_factor_rows': int(len(result)),
+        'total_fetch_seconds': float(sum(item.get('fetch_seconds') or 0.0 for item in batch_profiles)),
+        'total_aggregate_seconds': float(sum(item.get('aggregate_seconds') or 0.0 for item in batch_profiles)),
+        'final_factor_compute_seconds': compute_seconds,
+        'total_seconds': time.perf_counter() - started,
+        'batch_profiles_head': batch_profiles[:5],
+        'batch_profiles_tail': batch_profiles[-5:],
+    }
+    return result, profile
+
+
+def compute_factor_streaming_minute_contract(
+    module: Any,
+    *,
+    daily_df: pd.DataFrame,
+    minute_query: dict[str, Any],
+    report_id: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    started = time.perf_counter()
+    daily = daily_df.copy()
+    if 'trade_date' not in daily.columns:
+        raise SystemExit('BLOCK_STEP4_STREAMING_DAILY_DATE_MISSING: daily_df missing trade_date')
+    daily['trade_date'] = _normal_date_text(daily['trade_date'])
+    all_dates = sorted(str(x) for x in daily['trade_date'].dropna().unique())
+    query_start = str(minute_query.get('start_date') or all_dates[0])
+    query_end = str(minute_query.get('end_date') or all_dates[-1])
+    dates = [date for date in all_dates if query_start <= date <= query_end]
+    if not dates:
+        raise SystemExit('BLOCK_STEP4_STREAMING_WINDOW_EMPTY: no daily dates overlap minute query')
+    batch_size = max(1, int(os.environ.get('FACTORFORGE_STEP4_MINUTE_STREAM_BATCH_DAYS', '5') or '5'))
+    batches = _batched(dates, batch_size)
+    previous_by_date = {date: (all_dates[idx - 1] if idx > 0 else None) for idx, date in enumerate(all_dates)}
+
+    chunks: list[pd.DataFrame] = []
+    batch_profiles: list[dict[str, Any]] = []
+    for batch_index, batch_dates in enumerate(batches):
+        batch_start, batch_end = batch_dates[0], batch_dates[-1]
+        fetch_started = time.perf_counter()
+        minute_df, minute_meta = _fetch_minute_frame_for_dates(minute_query, batch_dates)
+        fetch_seconds = time.perf_counter() - fetch_started
+        if minute_df is None or len(minute_df) == 0:
+            batch_profiles.append({
+                'batch_index': batch_index,
+                'date_start': batch_start,
+                'date_end': batch_end,
+                'date_count': len(batch_dates),
+                'minute_rows': 0,
+                'factor_rows': 0,
+                'fetch_seconds': fetch_seconds,
+                'compute_seconds': 0.0,
+                'status': 'empty_minute_partition',
+                'metadata': minute_meta,
+            })
+            continue
+        if 'trade_date' in minute_df.columns:
+            minute_df = minute_df.copy()
+            minute_df['trade_date'] = _normal_date_text(minute_df['trade_date'])
+        previous_date = previous_by_date.get(batch_start)
+        daily_dates = ([previous_date] if previous_date else []) + batch_dates
+        daily_slice = daily[daily['trade_date'].isin(daily_dates)].copy()
+        compute_started = time.perf_counter()
+        chunk = compute_factor_with_contract(module, daily_slice, minute_df)
+        compute_seconds = time.perf_counter() - compute_started
+        if isinstance(chunk, pd.DataFrame) and len(chunk):
+            if 'trade_date' in chunk.columns:
+                chunk = chunk.copy()
+                chunk['trade_date'] = _normal_date_text(chunk['trade_date'])
+                chunk = chunk[chunk['trade_date'].isin(batch_dates)].copy()
+            if len(chunk):
+                chunks.append(chunk)
+        batch_profiles.append({
+            'batch_index': batch_index,
+            'date_start': batch_start,
+            'date_end': batch_end,
+            'date_count': len(batch_dates),
+            'minute_rows': int(len(minute_df)),
+            'factor_rows': int(len(chunk)) if isinstance(chunk, pd.DataFrame) else 0,
+            'fetch_seconds': fetch_seconds,
+            'compute_seconds': compute_seconds,
+            'status': 'ready',
+            'metadata': minute_meta,
+        })
+
+    if chunks:
+        result = pd.concat(chunks, ignore_index=True)
+    else:
+        result = pd.DataFrame(columns=['ts_code', 'trade_date', 'factor_value'])
+    profile = {
+        'version': 'factorforge_step4_minute_streaming_profile_v1',
+        'source': 'factorforge_data_api_partition_streaming',
+        'partition_key': 'trade_date',
+        'date_count': len(dates),
+        'date_start': dates[0],
+        'date_end': dates[-1],
+        'batch_size_days': batch_size,
+        'batch_count': len(batches),
+        'total_minute_rows': int(sum(item.get('minute_rows') or 0 for item in batch_profiles)),
+        'total_factor_rows': int(len(result)),
+        'total_fetch_seconds': float(sum(item.get('fetch_seconds') or 0.0 for item in batch_profiles)),
+        'total_compute_seconds': float(sum(item.get('compute_seconds') or 0.0 for item in batch_profiles)),
+        'total_seconds': time.perf_counter() - started,
+        'batch_profiles_head': batch_profiles[:5],
+        'batch_profiles_tail': batch_profiles[-5:],
+    }
+    return result, profile
+
+
 def _step4_data_contract(dpm: dict[str, Any], handoff: dict[str, Any]) -> dict[str, Any]:
     local_inputs = dpm.get('local_input_paths') if isinstance(dpm.get('local_input_paths'), dict) else {}
     for candidate in (
@@ -1426,6 +1972,20 @@ def materialize_step4_data_inputs_from_contract(
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
     daily_df, daily_meta = _fetch_contract_frame(daily_query)
+    meta = {'clean_daily_bar': daily_meta}
+
+    daily_basic_query = _contract_query(contract, 'full_queries', 'daily_basic')
+    if daily_basic_query:
+        daily_basic_df, daily_basic_meta = _fetch_contract_frame(daily_basic_query)
+        overlap = [
+            col for col in daily_basic_df.columns
+            if col in daily_df.columns and col not in {'ts_code', 'trade_date'}
+        ]
+        if overlap:
+            daily_basic_df = daily_basic_df.drop(columns=overlap)
+        daily_df = daily_df.merge(daily_basic_df, on=['ts_code', 'trade_date'], how='left')
+        meta['daily_basic'] = daily_basic_meta
+
     daily_path = data_dir / f'step4_daily_input__{report_id}.parquet'
     daily_df.to_parquet(daily_path, index=False)
 
@@ -1434,16 +1994,33 @@ def materialize_step4_data_inputs_from_contract(
         'daily_df_parquet': str(daily_path),
         'data_source': 'factorforge_data_api_full_query',
     }
-    meta = {'clean_daily_bar': daily_meta}
+
+    moneyflow_query = _contract_query(contract, 'full_queries', 'moneyflow')
+    if moneyflow_query:
+        signal_df, signal_meta = _fetch_contract_frame(moneyflow_query)
+        signal_path = data_dir / f'step4_signal_daily_input__{report_id}__moneyflow.parquet'
+        signal_df.to_parquet(signal_path, index=False)
+        local_inputs['input_mode'] = 'alternative_daily_plus_clean_daily'
+        local_inputs['formula_input_dataset'] = 'moneyflow'
+        local_inputs['signal_daily_df_parquet'] = str(signal_path)
+        local_inputs['evaluation_daily_df_parquet'] = str(daily_path)
+        meta['moneyflow'] = signal_meta
 
     minute_query = _contract_query(contract, 'full_queries', 'minute_bar')
     if minute_query:
-        minute_df, minute_meta = _fetch_contract_frame(minute_query)
-        minute_path = data_dir / f'step4_minute_input__{report_id}.parquet'
-        minute_df.to_parquet(minute_path, index=False)
         local_inputs['input_mode'] = 'price_volume_minute'
-        local_inputs['minute_df_parquet'] = str(minute_path)
-        meta['minute_bar'] = minute_meta
+        local_inputs['minute_streaming_query'] = minute_query
+        meta['minute_bar'] = {
+            'dataset_id': minute_query.get('dataset'),
+            'status': 'streaming_deferred',
+            'request': minute_query,
+            'streaming_policy': {
+                'version': 'factorforge_step4_minute_streaming_policy_v1',
+                'reason': 'avoid materializing full-window all-market minute data in memory',
+                'partition_key': 'trade_date',
+                'formal_factor_values_owner': 'Step4',
+            },
+        }
 
     return local_inputs, {
         'source': 'factorforge_data_api_full_query',
@@ -1652,7 +2229,14 @@ def main() -> None:
         # snapshots or the Step3 Data API contract. It must not guess raw paths or
         # build clean layers itself.
         local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
+        step4_contract = _step4_data_contract(dpm, handoff)
+        force_contract_inputs = bool((step4_contract.get('full_queries') or {}) if isinstance(step4_contract, dict) else False)
         minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+        minute_streaming_query = (
+            local_inputs.get('minute_streaming_query')
+            if isinstance(local_inputs.get('minute_streaming_query'), dict)
+            else None
+        )
         daily_path = (
             local_inputs.get('daily_df_parquet')
             or local_inputs.get('daily_df_csv')
@@ -1660,11 +2244,11 @@ def main() -> None:
         )
         input_mode = str(local_inputs.get('input_mode') or '')
         minute_required = input_mode != 'daily_only'
-        if (minute_required and (not minute_path or not daily_path)) or ((not minute_required) and not daily_path):
+        if force_contract_inputs or (minute_required and (not minute_path or not daily_path)) or ((not minute_required) and not daily_path):
             try:
                 contract_inputs, data_api_profile = materialize_step4_data_inputs_from_contract(
                     report_id,
-                    _step4_data_contract(dpm, handoff),
+                    step4_contract,
                     run_dir,
                 )
             except SystemExit as exc:
@@ -1684,6 +2268,11 @@ def main() -> None:
                 return
             local_inputs = {**local_inputs, **contract_inputs}
             minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
+            minute_streaming_query = (
+                local_inputs.get('minute_streaming_query')
+                if isinstance(local_inputs.get('minute_streaming_query'), dict)
+                else None
+            )
             daily_path = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
             input_mode = str(local_inputs.get('input_mode') or '')
             minute_required = input_mode != 'daily_only'
@@ -1723,13 +2312,20 @@ def main() -> None:
         may_reuse_existing_factor = parquet_existed_before_step4 and existing_factor_source.get('source') == 'prior_step4_parquet'
 
         minute_df = read_df(minute_file) if minute_file is not None else pd.DataFrame()
-        daily_df = read_df(daily_file)
+        evaluation_daily_file = Path(local_inputs.get('evaluation_daily_df_parquet') or daily_file)
+        if not evaluation_daily_file.is_absolute():
+            evaluation_daily_file = WORKSPACE / evaluation_daily_file
+        signal_daily_file = Path(local_inputs.get('signal_daily_df_parquet') or daily_file)
+        if not signal_daily_file.is_absolute():
+            signal_daily_file = WORKSPACE / signal_daily_file
+        daily_df = read_df(evaluation_daily_file)
+        signal_daily_df = read_df(signal_daily_file)
         expected_reuse_identity = build_step4_reuse_identity(
             report_id=report_id,
             factor_id=factor_id,
             base_identity=base_identity,
             dpm=dpm,
-            daily_df=daily_df,
+            daily_df=signal_daily_df,
         )
         existing_factor_reuse_gate = None
         if parquet_existed_before_step4:
@@ -1754,15 +2350,19 @@ def main() -> None:
             'source': 'local_snapshot' if data_api_profile is None else 'factorforge_data_api_full_query',
             'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
             'daily_selected_path': str(daily_file),
+            'formula_input_dataset': local_inputs.get('formula_input_dataset') or 'clean_daily_bar',
+            'signal_daily_path': str(signal_daily_file),
+            'evaluation_daily_path': str(evaluation_daily_file),
             'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
             'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
             'data_api_profile': data_api_profile,
+            'minute_streaming_enabled': bool(minute_streaming_query),
         }
         step3b_cache_source = {}
         if not may_reuse_existing_factor and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
             step3b_cache_source = classify_step3b_compute_cache_source(
                 load_json(step3b_cache_meta_path),
-                daily_df,
+                signal_daily_df,
                 impl_path,
                 expected_identity=expected_reuse_identity,
                 source_artifact=str(step3b_cache_path),
@@ -1801,10 +2401,32 @@ def main() -> None:
                 write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
                 write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
                 return
-            result_df = compute_factor_with_contract(module, daily_df, minute_df)
+            minute_streaming_profile = None
+            intraday_flow_preagg_profile = None
+            if minute_streaming_query:
+                if _supports_sp3_intraday_flow_fast_path(module):
+                    result_df, intraday_flow_preagg_profile = compute_factor_intraday_flow_daily_preagg_contract(
+                        daily_df=signal_daily_df,
+                        minute_query=minute_streaming_query,
+                        report_id=report_id,
+                        run_dir=run_dir,
+                    )
+                else:
+                    result_df, minute_streaming_profile = compute_factor_streaming_minute_contract(
+                        module,
+                        daily_df=signal_daily_df,
+                        minute_query=minute_streaming_query,
+                        report_id=report_id,
+                    )
+            else:
+                result_df = compute_factor_with_contract(module, signal_daily_df, minute_df)
             step4_factor_io_profile = {
                 'version': 'factorforge_step4_factor_io_profile_v1',
-                'source': 'step4_recompute_fallback',
+                'source': (
+                    'step4_intraday_flow_daily_preagg_recompute'
+                    if intraday_flow_preagg_profile else
+                    ('step4_minute_streaming_recompute' if minute_streaming_query else 'step4_recompute_fallback')
+                ),
                 'prior_factor_parquet_source': existing_factor_source.get('source') if parquet_existed_before_step4 else None,
                 'step3b_compute_cache_source': step3b_cache_source or None,
                 'selected_factor_format': 'computed',
@@ -1826,6 +2448,10 @@ def main() -> None:
                     }
                 ),
             }
+            if intraday_flow_preagg_profile:
+                step4_factor_io_profile['intraday_flow_daily_preagg_profile'] = intraday_flow_preagg_profile
+            if minute_streaming_profile:
+                step4_factor_io_profile['minute_streaming_profile'] = minute_streaming_profile
 
         if result_df is None or len(result_df) == 0:
             issues.append({'severity': 'error', 'code': 'EMPTY_MAIN_RESULT', 'message': 'main result not materially generated', 'evidence': {'rows': 0}})
@@ -1859,8 +2485,8 @@ def main() -> None:
         target_start_raw = target_window.get('start')
         target_start = str(target_start_raw) if target_start_raw is not None else None
         target_end_raw = target_window.get('end')
-        input_daily_start = str(daily_df['trade_date'].min()) if 'trade_date' in daily_df.columns and len(daily_df) else None
-        input_daily_end = str(daily_df['trade_date'].max()) if 'trade_date' in daily_df.columns and len(daily_df) else None
+        input_daily_start = str(signal_daily_df['trade_date'].min()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
+        input_daily_end = str(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
         prepared_start = str(prepared_window.get('start')) if prepared_window.get('start') is not None else None
         prepared_end = str(prepared_window.get('end')) if prepared_window.get('end') is not None else None
         effective_target_start = prepared_start or input_daily_start or target_start
@@ -1882,7 +2508,11 @@ def main() -> None:
             'build_seconds': 0.0,
             'invalidated_reason': 'not_enabled',
         }
-        if shared_evaluation_context_enabled(args.enable_shared_evaluation_context):
+        force_shared_context = (
+            data_api_profile is not None
+            or str(local_inputs.get('formula_input_dataset') or 'clean_daily_bar') != 'clean_daily_bar'
+        )
+        if shared_evaluation_context_enabled(args.enable_shared_evaluation_context) or force_shared_context:
             shared_context = build_shared_evaluation_context(
                 report_id=report_id,
                 factor_id=factor_id,
@@ -1893,7 +2523,7 @@ def main() -> None:
                 daily_df=daily_df,
                 signal_col=signal_col,
                 factor_parquet_path=parquet_path,
-                daily_input_path=daily_file,
+                daily_input_path=evaluation_daily_file,
                 target_window=target_window,
                 effective_target_window={'start': effective_target_start, 'end': effective_target_end},
             )

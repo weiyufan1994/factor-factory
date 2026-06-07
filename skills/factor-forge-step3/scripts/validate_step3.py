@@ -324,6 +324,8 @@ def validate_derived_field_contract(
     required_fields: list[str] | None = None,
     expected_operators: list[dict] | None = None,
 ) -> None:
+    if not (required_fields or expected_operators):
+        return
     contract = local_inputs.get('derived_field_contract')
     assert isinstance(contract, dict) and contract, (
         'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: derived_field_contract missing'
@@ -621,15 +623,15 @@ if __name__ == '__main__':
     minute_rel = prep['local_input_paths'].get('minute_df_parquet') or prep['local_input_paths'].get('minute_df_csv')
     daily_rel = prep['local_input_paths'].get('daily_df_parquet') or prep['local_input_paths'].get('daily_df_csv')
     input_mode = str(prep['local_input_paths'].get('input_mode') or '')
-    validate_derived_field_contract(
-        prep['local_input_paths'],
-        required_standard_fields,
-        expected_formula_operator_contracts(formula_ir),
-    )
     if prep['feasibility'] == 'blocked':
         assert prep.get('blocked_items'), 'blocked feasibility must carry explicit blocked_items'
         assert not (minute_rel and daily_rel), 'blocked feasibility must not claim executable local snapshots'
     else:
+        validate_derived_field_contract(
+            prep['local_input_paths'],
+            required_standard_fields,
+            expected_formula_operator_contracts(formula_ir),
+        )
         assert daily_rel and (WORKSPACE / daily_rel).exists(), 'missing local input snapshot: daily_df_(csv/parquet)'
         daily_columns = dataframe_columns(WORKSPACE / daily_rel)
         missing_snapshot_fields = sorted(set(required_standard_fields) - set(daily_columns))

@@ -815,6 +815,20 @@ def main() -> int:
                     write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
                     print("awaiting_next_derivation")
                     return 0
+                terminal_text = f"{terminal_result.get('stdout_tail') or ''}\n{terminal_result.get('stderr_tail') or ''}"
+                if "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_NOT_UNANIMOUS" in terminal_text:
+                    iteration["outcome"] = "awaiting_main_agent_council_synthesis"
+                    iteration["stop_reason"] = "completed_council_requires_main_agent_synthesis"
+                    iteration["proof_status"] = "PAUSED"
+                    proof["status"] = "PAUSED"
+                    proof["final_outcome"] = "awaiting_main_agent_council_synthesis"
+                    proof["stop_reason"] = "completed_council_requires_main_agent_synthesis"
+                    proof["updated_at_utc"] = utc_now()
+                    append_note(proof, f"Completed Council for {current_report_id} requires main-agent synthesis before child materialization")
+                    write_json_atomic(proof_path, proof)
+                    write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
+                    print("awaiting_main_agent_council_synthesis")
+                    return 0
                 proof["status"] = "FAIL"
                 proof["final_outcome"] = "blocked"
                 proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_TERMINAL_COUNCIL_REJECTION_FAILED"

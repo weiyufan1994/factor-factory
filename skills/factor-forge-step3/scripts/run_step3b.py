@@ -573,26 +573,47 @@ def apply_executable_revision_spec(report_id: str, spec: dict, spec_path: Path) 
     child_formula = str(revision_spec.get('child_formula') or '').strip()
     if not child_formula:
         raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_formula')
-    parsed = parse_formula(child_formula)
-    if parsed.get('parse_status') != 'success':
-        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: formula_parse_failed')
+    implementation_mode = str(revision_spec.get('implementation_mode') or spec.get('implementation_mode') or (spec.get('artifact_identity') or {}).get('implementation_mode') or 'operator')
     parent_hash = str(revision_spec.get('parent_formula_hash') or '')
-    child_hash = str(revision_spec.get('child_formula_hash') or parsed.get('formula_hash') or '')
+    child_hash = str(revision_spec.get('child_formula_hash') or revision_spec.get('child_code_law_hash') or '')
+    parsed = None
+    revision_contract = revision_spec.get('direct_code_revision_contract') if isinstance(revision_spec.get('direct_code_revision_contract'), dict) else {}
+    if implementation_mode == 'operator':
+        parsed = parse_formula(child_formula)
+        if parsed.get('parse_status') != 'success':
+            raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: formula_parse_failed')
+        child_hash = child_hash or str(parsed.get('formula_hash') or '')
+        if child_hash != parsed.get('formula_hash'):
+            raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_formula_hash')
+    elif implementation_mode in {'direct_code', 'hybrid'}:
+        if not isinstance(revision_contract, dict) or not revision_contract:
+            raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: direct_code_revision_contract')
+        if not child_hash:
+            raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_code_law_hash')
+    else:
+        raise SystemExit(f'BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: implementation_mode={implementation_mode}')
     if revision_spec.get('revision_type') != 'audit_rerun' and parent_hash and parent_hash == child_hash:
         raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_NO_EFFECT')
-    if child_hash != parsed.get('formula_hash'):
-        raise SystemExit('BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_INVALID: child_formula_hash')
 
     updated = json.loads(json.dumps(spec))
     canonical = updated.setdefault('canonical_spec', {})
     canonical['formula_text'] = child_formula
-    canonical['formula_ir'] = parsed
-    canonical['formula_hash'] = parsed.get('formula_hash')
-    canonical['operator_set'] = parsed.get('operator_set') or []
-    canonical['operators'] = parsed.get('operator_set') or []
-    canonical['required_inputs'] = parsed.get('required_fields') or []
-    canonical['required_fields'] = parsed.get('required_fields') or []
-    updated['formula_hash'] = parsed.get('formula_hash')
+    canonical['formula_hash'] = child_hash
+    if implementation_mode == 'operator':
+        canonical['formula_ir'] = parsed
+        canonical['operator_set'] = parsed.get('operator_set') or []
+        canonical['operators'] = parsed.get('operator_set') or []
+        canonical['required_inputs'] = parsed.get('required_fields') or []
+        canonical['required_fields'] = parsed.get('required_fields') or []
+    else:
+        canonical['formula_ir'] = None
+        canonical['operator_set'] = []
+        canonical['operators'] = []
+        if revision_contract.get('required_fields'):
+            canonical['required_inputs'] = revision_contract.get('required_fields') or []
+            canonical['required_fields'] = revision_contract.get('required_fields') or []
+    updated['formula_hash'] = child_hash
+    updated['implementation_mode'] = implementation_mode
     updated['executable_revision_spec_ref'] = str(path)
     updated['revision_identity'] = {
         'contract_version': 'factorforge_child_revision_identity_v1',
@@ -601,19 +622,32 @@ def apply_executable_revision_spec(report_id: str, spec: dict, spec_path: Path) 
         'revision_spec_path': str(path),
         'parent_formula_hash': parent_hash,
         'child_formula_hash': child_hash,
+        'implementation_mode': implementation_mode,
         'revision_noop': parent_hash == child_hash,
         'revision_identity_status': 'audit_rerun' if revision_spec.get('revision_type') == 'audit_rerun' else 'changed',
     }
     updated.setdefault('implementation_contract', {})
     if isinstance(updated['implementation_contract'], dict):
-        updated['implementation_contract']['mode'] = 'operator'
-        updated['implementation_contract']['formula_ir'] = parsed
-        updated['implementation_contract']['formula_hash'] = parsed.get('formula_hash')
-        updated['implementation_contract']['operator_set'] = parsed.get('operator_set') or []
-        updated['implementation_contract']['required_fields'] = parsed.get('required_fields') or []
+        updated['implementation_contract']['mode'] = implementation_mode
+        updated['implementation_contract']['implementation_mode'] = implementation_mode
+        updated['implementation_contract']['formula_hash'] = child_hash
+        if implementation_mode == 'operator':
+            updated['implementation_contract']['formula_ir'] = parsed
+            updated['implementation_contract']['operator_set'] = parsed.get('operator_set') or []
+            updated['implementation_contract']['required_fields'] = parsed.get('required_fields') or []
+        else:
+            existing_code_contract = updated['implementation_contract'].get('code_contract') if isinstance(updated['implementation_contract'].get('code_contract'), dict) else {}
+            merged_code_contract = dict(existing_code_contract)
+            merged_code_contract.update(revision_contract)
+            updated['implementation_contract']['code_contract'] = merged_code_contract
+            updated['implementation_contract']['direct_code_revision_contract'] = revision_contract
+            updated['implementation_contract']['formula_ir'] = None
+            updated['implementation_contract']['operator_set'] = []
+            if revision_contract.get('required_fields'):
+                updated['implementation_contract']['required_fields'] = revision_contract.get('required_fields') or []
     if isinstance(updated.get('artifact_identity'), dict):
-        updated['artifact_identity']['formula_hash'] = parsed.get('formula_hash')
-        updated['artifact_identity']['implementation_mode'] = 'operator'
+        updated['artifact_identity']['formula_hash'] = child_hash
+        updated['artifact_identity']['implementation_mode'] = implementation_mode
     if updated != spec:
         write_json(spec_path, updated)
     return updated, revision_spec
@@ -1631,6 +1665,8 @@ def generate_first_run_factor_values(
     }
     step3b_cache_identity = {
         'producer': 'step3b_sample_proof',
+        'sample_only': True,
+        'step3b_scope': 'sample_executability_proof_only',
         'is_formal_factor_values': False,
         'report_id': report_id,
         'factor_id': factor_id,
@@ -1652,6 +1688,8 @@ def generate_first_run_factor_values(
         **step3b_cache_identity,
         'version': 'factorforge_step3b_compute_cache_identity_v1',
         'producer': 'step3b_sample_proof',
+        'sample_only': True,
+        'step3b_scope': 'sample_executability_proof_only',
         'implementation_path': str(implementation_path),
         'selected_factor_format': 'parquet',
         'selected_factor_path': str(step3b_cache_parquet),
@@ -1674,7 +1712,7 @@ def generate_first_run_factor_values(
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
-        'boundary_note': 'Step3B produced a non-formal sample/cache proof only; Step4 owns formal factor_values and IC/NAV/backtest evaluation.',
+        'boundary_note': 'Step3B produced a non-formal sample/cache proof only; Step4 owns full-data factor_values and IC/NAV/backtest evaluation.',
         'performance_profile': {
             'version': 'factorforge_step3b_performance_profile_v1',
             'row_count': int(len(result_df)),
@@ -1717,6 +1755,8 @@ def generate_first_run_factor_values(
         'csv_output_profile': csv_output_profile,
         'run_metadata_path': str(step3b_cache_meta.relative_to(FF)),
         'producer': 'step3b_sample_proof',
+        'sample_only': True,
+        'step3b_scope': 'sample_executability_proof_only',
         'is_formal_factor_values': False,
         'formal_factor_values_owner': 'Step4',
         'signal_column': signal_col,
@@ -2417,6 +2457,50 @@ def main():
 
     prep = load_json(prep_path)
     step3a_ready = prep.get('feasibility') in {'ready', 'proxy_ready'}
+    if not step3a_ready:
+        handoff_identity = derive_child_identity(spec_identity, artifact_role='handoff_to_step4', producer='step3b')
+        existing_handoff = read_existing_json(handoff_path)
+        first_run_outputs = {
+            'status': 'blocked',
+            'no_first_run_reason': 'step3a_feasibility_blocked',
+            'output_paths': [],
+            'run_metadata_path': None,
+            'factor_values_path': None,
+            'producer': 'step3b',
+            'reason': prep.get('blocked_items') or 'Step3A feasibility is blocked',
+        }
+        handoff_payload = merge_handoff(existing_handoff, {
+            'report_id': report_id,
+            'artifact_identity': handoff_identity,
+            'implementation_mode': spec_identity.get('implementation_mode'),
+            'implementation_status': 'blocked',
+            'source_type': spec_identity.get('source_type'),
+            'spec_hash': spec_identity.get('spec_hash'),
+            'branch_id': spec_identity.get('branch_id'),
+            'step3a_ready': False,
+            'step3b_ready': False,
+            'data_prep_master_ref': existing_handoff.get('data_prep_master_ref') or f'data_prep_master__{report_id}.json',
+            'qlib_adapter_config_ref': existing_handoff.get('qlib_adapter_config_ref') or f'qlib_adapter_config__{report_id}.json',
+            'factor_spec_master_ref': existing_handoff.get('factor_spec_master_ref') or f'factor_spec_master__{report_id}.json',
+            'implementation_plan_master_ref': existing_handoff.get('implementation_plan_master_ref') or f'implementation_plan_master__{report_id}.json',
+            'factor_impl_ref': None,
+            'factor_impl_stub_ref': None,
+            'qlib_expression_draft_ref': None,
+            'hybrid_execution_scaffold_ref': None,
+            'execution_mode': spec_identity.get('implementation_mode'),
+            'local_input_paths': prep.get('local_input_paths', {}),
+            'step4_data_contract': prep.get('step4_data_contract') or {},
+            'step2_research_context': step2_research_context,
+            'implementation_mode_decision': finalize_mode_decision_blocked(
+                mode_decision,
+                spec_identity.get('implementation_mode'),
+                'BLOCK_STEP3B_REQUIRES_READY_STEP3A: Step3A feasibility is blocked',
+            ),
+            'first_run_outputs': first_run_outputs,
+        })
+        write_json(handoff_path, handoff_payload)
+        print('BLOCK_STEP3B_REQUIRES_READY_STEP3A: Step3A feasibility is blocked; Step3B skipped without generated_code writes.')
+        return
     real_impl_rel = f'generated_code/{report_id}/factor_impl__{report_id}.py'
     real_impl_abs = FF / real_impl_rel
     stub_impl_rel = str(stub_path.relative_to(FF))

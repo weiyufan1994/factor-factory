@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.formula.parser import parse_formula
+from factor_factory.artifact_identity import stable_hash
 from factor_factory.runtime_context import resolve_factorforge_context
 
 SYNTHESIS_VERSION = "factorforge_main_agent_council_synthesis_v1"
@@ -31,6 +32,7 @@ TOKEN_METRIC_SIGNATURE_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_METRIC_S
 TOKEN_FALSIFICATION_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FALSIFICATION_MISSING"
 TOKEN_KILL_CRITERIA_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_KILL_CRITERIA_MISSING"
 TOKEN_ORCHESTRATOR_MISMATCH = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_ORCHESTRATOR_MISMATCH"
+TOKEN_DIRECT_CODE_CONTRACT_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_DIRECT_CODE_CONTRACT_MISSING"
 
 
 def utc_now() -> str:
@@ -143,7 +145,7 @@ def validate_synthesis(root: Path, report_id: str, synthesis_path: Path) -> tupl
         block(TOKEN_CHILD_FORMULA_MISSING, {"reason": "selected_revision_missing", "synthesis_path": str(synthesis_path)})
     if not nonempty_str(selected.get("law_id")):
         block(TOKEN_SELECTED_LAW_MISSING, {"synthesis_path": str(synthesis_path)})
-    if not nonempty_str(selected.get("child_formula")):
+    if not child_formula_or_law(selected):
         block(TOKEN_CHILD_FORMULA_MISSING, {"synthesis_path": str(synthesis_path)})
     if not nonempty_dict(selected.get("expected_metric_signature")):
         block(TOKEN_METRIC_SIGNATURE_MISSING, {"synthesis_path": str(synthesis_path)})
@@ -157,6 +159,30 @@ def validate_synthesis(root: Path, report_id: str, synthesis_path: Path) -> tupl
     return synthesis, selected
 
 
+def child_formula_or_law(selected: dict[str, Any]) -> str:
+    return (
+        nonempty_str(selected.get("child_formula"))
+        or nonempty_str(selected.get("child_formula_or_law"))
+        or nonempty_str(selected.get("direct_code_law"))
+        or nonempty_str(selected.get("formula_law"))
+    )
+
+
+def parent_implementation_mode(root: Path, report_id: str, selected: dict[str, Any] | None = None) -> str:
+    if selected:
+        explicit = nonempty_str(selected.get("implementation_mode"))
+        if explicit:
+            return explicit
+        if isinstance(selected.get("direct_code_revision_contract"), dict) and selected["direct_code_revision_contract"]:
+            return "direct_code"
+    path = factor_spec_path(root, report_id)
+    spec = load_json(path) if path.exists() else {}
+    identity = spec.get("artifact_identity") if isinstance(spec.get("artifact_identity"), dict) else {}
+    mode = nonempty_str(identity.get("implementation_mode")) or nonempty_str(spec.get("implementation_mode"))
+    contract = spec.get("implementation_contract") if isinstance(spec.get("implementation_contract"), dict) else {}
+    return mode or nonempty_str(contract.get("mode")) or nonempty_str(contract.get("implementation_mode")) or "operator"
+
+
 def parent_formula_and_hash(root: Path, report_id: str) -> tuple[str, str]:
     path = factor_spec_path(root, report_id)
     spec = load_json(path) if path.exists() else {}
@@ -166,11 +192,36 @@ def parent_formula_and_hash(root: Path, report_id: str) -> tuple[str, str]:
         block(TOKEN_PARENT_FORMULA_MISSING, {"report_id": report_id, "factor_spec_path": str(path)})
     parsed = parse_formula(formula)
     if parsed.get("parse_status") != "success":
-        block("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FORMULA_PARSE_FAILED", {"formula": formula, "errors": parsed.get("parse_errors") or []})
+        return formula, stable_hash(
+            {
+                "hash_role": "parent_formula_audit_hash",
+                "formula_text": formula,
+                "parse_status": "not_formula_ir_parent",
+                "parse_errors": parsed.get("parse_errors") or [],
+            }
+        )
     return formula, str(parsed.get("formula_hash") or "")
 
 
-def child_formula_hash(child_formula: str, parent_hash: str) -> tuple[dict[str, Any], str]:
+def child_formula_hash(child_formula: str, parent_hash: str, implementation_mode: str, selected: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    if implementation_mode in {"direct_code", "hybrid"}:
+        contract_key = "direct_code_revision_contract" if implementation_mode == "direct_code" else "hybrid_revision_contract"
+        contract = selected.get(contract_key)
+        if not isinstance(contract, dict) or not contract:
+            contract = selected.get("direct_code_revision_contract")
+        if not isinstance(contract, dict) or not contract:
+            block(TOKEN_DIRECT_CODE_CONTRACT_MISSING, {"implementation_mode": implementation_mode, "child_formula_or_law": child_formula})
+        child_hash = stable_hash(
+            {
+                "hash_role": f"{implementation_mode}_child_code_law_hash",
+                "implementation_mode": implementation_mode,
+                "child_formula_or_law": child_formula,
+                "revision_contract": contract,
+            }
+        )
+        if child_hash == parent_hash:
+            block("BLOCK_FACTORFORGE_CHILD_REVISION_NO_EFFECT", {"child_formula_hash": child_hash})
+        return None, child_hash
     parsed = parse_formula(child_formula)
     if parsed.get("parse_status") != "success":
         block("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FORMULA_PARSE_FAILED", {"formula": child_formula, "errors": parsed.get("parse_errors") or []})
@@ -259,6 +310,7 @@ def approve_iteration(
     parent_formula: str,
     parent_hash: str,
     child_hash: str,
+    implementation_mode: str,
     approval_source: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     updated = json.loads(json.dumps(iteration))
@@ -284,9 +336,10 @@ def approve_iteration(
             "orchestrator_synthesis_path": str(synthesis_path),
             "orchestrator_synthesis_sha256": sha256_file(synthesis_path),
             "selected_executable_revision_law_id": selected.get("law_id"),
-            "selected_child_formula": selected.get("child_formula"),
+            "selected_child_formula": child_formula_or_law(selected),
             "selected_child_formula_hash": child_hash,
             "parent_formula_hash": parent_hash,
+            "implementation_mode": implementation_mode,
             "selected_council_proposal_ids": selected_ids,
             "expected_metric_signature": selected.get("expected_metric_signature"),
             "falsification_tests": selected.get("falsification_tests"),
@@ -295,6 +348,7 @@ def approve_iteration(
         }
     )
     research_memo["final_revision_strategy"] = final
+    research_memo["revision_strategy"] = dict(final)
     if not isinstance(updated.get("revision_council_ref"), dict) or updated.get("revision_council_ref", {}).get("enabled") is not True:
         updated["revision_council_ref"] = build_revision_council_ref(root, report_id, summary)
     loop_action = updated.setdefault("loop_action", {})
@@ -331,8 +385,10 @@ def approve_iteration(
             "selected_revision": {
                 "revision_id": law_token,
                 "law_id": selected.get("law_id"),
-                "child_formula": selected.get("child_formula"),
+                "implementation_mode": implementation_mode,
+                "child_formula": child_formula_or_law(selected),
                 "child_formula_hash": child_hash,
+                "direct_code_revision_contract": selected.get("direct_code_revision_contract"),
                 "formula_mutation_description": selected.get("formula_mutation_description"),
                 "expected_metric_signature": selected.get("expected_metric_signature"),
                 "falsification_tests": selected.get("falsification_tests"),
@@ -340,9 +396,11 @@ def approve_iteration(
                 "orchestrator_synthesis_path": str(synthesis_path),
             },
             "executable_revision_spec": {
-                "revision_type": "formula_mutation",
-                "child_formula": selected.get("child_formula"),
+                "implementation_mode": implementation_mode,
+                "revision_type": "formula_mutation" if implementation_mode == "operator" else f"{implementation_mode}_mutation",
+                "child_formula": child_formula_or_law(selected),
                 "selected_revision_law_id": selected.get("law_id"),
+                "direct_code_revision_contract": selected.get("direct_code_revision_contract"),
                 "expected_metric_signature": selected.get("expected_metric_signature"),
                 "falsification_tests": selected.get("falsification_tests"),
                 "kill_criteria": selected.get("kill_criteria"),
@@ -442,7 +500,8 @@ def main() -> int:
         block(TOKEN_ITERATION_MISSING, {"report_id": rid, "iteration_path": str(iter_path)})
     iteration = load_json(iter_path)
     parent_formula, parent_hash = parent_formula_and_hash(root, rid)
-    _, child_hash = child_formula_hash(nonempty_str(selected.get("child_formula")), parent_hash)
+    implementation_mode = parent_implementation_mode(root, rid, selected)
+    _, child_hash = child_formula_hash(child_formula_or_law(selected), parent_hash, implementation_mode, selected)
     out_handoff = handoff_path(root, rid)
     brief_json_path, brief_md_path = loop_brief_paths(root, iteration)
     rollback_snapshot = {
@@ -462,6 +521,7 @@ def main() -> int:
         parent_formula=parent_formula,
         parent_hash=parent_hash,
         child_hash=child_hash,
+        implementation_mode=implementation_mode,
         approval_source=args.approval_source,
     )
     update_loop_brief_council_section(root, rid, updated_iteration, summary)
@@ -477,6 +537,7 @@ def main() -> int:
         "handoff_to_step3b_path": str(out_handoff),
         "iteration_path": str(iter_path),
         "selected_law_id": selected.get("law_id"),
+        "implementation_mode": implementation_mode,
         "parent_formula_hash": parent_hash,
         "child_formula_hash": child_hash,
         "canonical_write_permission": False,

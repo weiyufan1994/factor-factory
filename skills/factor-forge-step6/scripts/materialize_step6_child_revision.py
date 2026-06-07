@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.runtime_context import resolve_factorforge_context
 from factor_factory.formula.parser import parse_formula
+from factor_factory.artifact_identity import stable_hash
 
 MATERIALIZATION_VERSION = "factorforge_step6_child_revision_materialization_v1"
 EXECUTABLE_REVISION_SPEC_VERSION = "factorforge_executable_revision_spec_v1"
@@ -167,6 +168,71 @@ def formula_hash(formula_text: str) -> str:
     return str(parsed.get("formula_hash") or "")
 
 
+def parent_formula_hash_for_audit(formula_text: str) -> str:
+    parsed = parse_formula(formula_text)
+    if parsed.get("parse_status") == "success":
+        return str(parsed.get("formula_hash") or "")
+    return stable_hash(
+        {
+            "formula_text": formula_text,
+            "parse_status": "not_formula_ir_parent",
+            "parse_errors": parsed.get("parse_errors") or [],
+            "hash_role": "parent_formula_audit_hash",
+        }
+    )
+
+
+def child_formula_or_law(selected: dict[str, Any]) -> str:
+    return (
+        nonempty_str(selected.get("child_formula"))
+        or nonempty_str(selected.get("child_formula_or_law"))
+        or nonempty_str(selected.get("direct_code_law"))
+        or nonempty_str(selected.get("formula_law"))
+    )
+
+
+def selected_implementation_mode(parent_spec: dict[str, Any], parent_handoff: dict[str, Any], selected: dict[str, Any]) -> str:
+    explicit = nonempty_str(selected.get("implementation_mode"))
+    if explicit:
+        return explicit
+    if isinstance(selected.get("direct_code_revision_contract"), dict) and selected["direct_code_revision_contract"]:
+        return "direct_code"
+    identity = parent_spec.get("artifact_identity") if isinstance(parent_spec.get("artifact_identity"), dict) else {}
+    contract = parent_spec.get("implementation_contract") if isinstance(parent_spec.get("implementation_contract"), dict) else {}
+    mode = (
+        nonempty_str(identity.get("implementation_mode"))
+        or nonempty_str(parent_spec.get("implementation_mode"))
+        or nonempty_str(parent_handoff.get("implementation_mode"))
+        or nonempty_str(parent_handoff.get("execution_mode"))
+        or nonempty_str(contract.get("mode"))
+        or nonempty_str(contract.get("implementation_mode"))
+    )
+    return mode or "operator"
+
+
+def child_revision_hash(child_formula: str, implementation_mode: str, selected: dict[str, Any]) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
+    if implementation_mode == "operator":
+        child_formula_ir = parse_formula(child_formula)
+        if child_formula_ir.get("parse_status") != "success":
+            raise ValueError("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FORMULA_PARSE_FAILED: " + "; ".join(child_formula_ir.get("parse_errors") or []))
+        return child_formula_ir, str(child_formula_ir.get("formula_hash") or ""), {}
+    contract_key = "direct_code_revision_contract" if implementation_mode == "direct_code" else "hybrid_revision_contract"
+    revision_contract = selected.get(contract_key)
+    if not isinstance(revision_contract, dict) or not revision_contract:
+        revision_contract = selected.get("direct_code_revision_contract")
+    if not isinstance(revision_contract, dict) or not revision_contract:
+        raise ValueError(f"BLOCK_FACTORFORGE_EXECUTABLE_REVISION_DIRECT_CODE_CONTRACT_MISSING: implementation_mode={implementation_mode}")
+    code_law_hash = stable_hash(
+        {
+            "hash_role": f"{implementation_mode}_child_code_law_hash",
+            "implementation_mode": implementation_mode,
+            "child_formula_or_law": child_formula,
+            "revision_contract": revision_contract,
+        }
+    )
+    return None, code_law_hash, revision_contract
+
+
 def nonempty_str(value: Any) -> str:
     return str(value).strip() if isinstance(value, str) and value.strip() else ""
 
@@ -228,7 +294,7 @@ def load_orchestrator_synthesis(
         raise ValueError(f"{CHILD_FORMULA_MISSING_BLOCK}: synthesis.selected_revision is required")
     if not nonempty_str(selected.get("law_id")):
         raise ValueError(f"{SELECTED_LAW_MISSING_BLOCK}: synthesis.selected_revision.law_id is required")
-    if not nonempty_str(selected.get("child_formula")):
+    if not child_formula_or_law(selected):
         raise ValueError(f"{CHILD_FORMULA_MISSING_BLOCK}: synthesis.selected_revision.child_formula is required")
     if not nonempty_dict(selected.get("expected_metric_signature")):
         raise ValueError(f"{METRIC_SIGNATURE_MISSING_BLOCK}: synthesis.selected_revision.expected_metric_signature is required")
@@ -272,14 +338,14 @@ def build_executable_revision_spec(
         parent_handoff,
         explicit_synthesis_path,
     )
-    child_formula = nonempty_str(selected_revision.get("child_formula"))
+    child_formula = child_formula_or_law(selected_revision)
     derivation_rule = nonempty_str(selected_revision.get("law_id"))
-    parent_formula_hash = formula_hash(parent_formula)
-    child_formula_ir = parse_formula(child_formula)
-    if child_formula_ir.get("parse_status") != "success":
-        raise ValueError("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FORMULA_PARSE_FAILED: " + "; ".join(child_formula_ir.get("parse_errors") or []))
-    child_formula_hash = str(child_formula_ir.get("formula_hash") or "")
+    implementation_mode = selected_implementation_mode(parent_spec, parent_handoff, selected_revision)
+    parent_formula_hash = parent_formula_hash_for_audit(parent_formula)
+    child_formula_ir, child_formula_hash, direct_code_revision_contract = child_revision_hash(child_formula, implementation_mode, selected_revision)
     revision_type = str((parent_handoff.get("executable_revision_spec") or {}).get("revision_type") or parent_handoff.get("revision_type") or "formula_mutation")
+    if implementation_mode != "operator" and revision_type == "formula_mutation":
+        revision_type = f"{implementation_mode}_mutation"
     if revision_type != "audit_rerun" and child_formula_hash == parent_formula_hash:
         raise ValueError("BLOCK_FACTORFORGE_CHILD_REVISION_NO_EFFECT")
     prior = synthesis.get("prior_revision_memory") if isinstance(synthesis.get("prior_revision_memory"), dict) else {}
@@ -304,12 +370,15 @@ def build_executable_revision_spec(
         "source_orchestrator_synthesis_sha256": sha256_file(synthesis_path),
         "selected_revision_law_ids": selected_ids,
         "revision_type": revision_type,
+        "implementation_mode": implementation_mode,
         "derivation_rule": derivation_rule,
         "parent_formula": parent_formula,
         "child_formula": child_formula,
         "parent_formula_hash": parent_formula_hash,
         "child_formula_hash": child_formula_hash,
+        "child_code_law_hash": child_formula_hash if implementation_mode != "operator" else None,
         "child_formula_ir": child_formula_ir,
+        "direct_code_revision_contract": direct_code_revision_contract or None,
         "formula_mutation_description": selected_revision.get("formula_mutation_description")
         or f"Apply {derivation_rule} from main-agent Council synthesis.",
         "expected_metric_signature": selected_revision.get("expected_metric_signature") or {},
@@ -328,7 +397,6 @@ def build_executable_revision_spec(
                 "math_model_link": selected_revision.get("math_model_link"),
             },
         },
-        "implementation_mode": "operator",
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval": {
@@ -392,6 +460,87 @@ def rewrite_common(payload: dict[str, Any], *, child_report_id: str, branch_id: 
             producer=producer,
         )
     return out
+
+
+def apply_executable_revision_contract(
+    payload: dict[str, Any],
+    executable_revision_spec: dict[str, Any],
+    *,
+    root: Path,
+    child_report_id: str,
+) -> dict[str, Any]:
+    """Keep child control artifacts aligned with the executable revision spec."""
+    implementation_mode = nonempty_str(executable_revision_spec.get("implementation_mode")) or "operator"
+    formula_ir = executable_revision_spec.get("child_formula_ir") if isinstance(executable_revision_spec.get("child_formula_ir"), dict) else {}
+    formula_hash_value = str(executable_revision_spec.get("child_formula_hash") or formula_ir.get("formula_hash") or "")
+    payload["implementation_mode"] = implementation_mode
+    if "execution_mode" in payload:
+        payload["execution_mode"] = implementation_mode
+    payload["formula_hash"] = formula_hash_value or payload.get("formula_hash")
+    payload["executable_revision_spec_ref"] = str(executable_revision_spec_path(root, child_report_id))
+    if implementation_mode == "operator":
+        payload["code_hash"] = None
+        payload["code_contract_hash"] = None
+        payload["factor_impl_ref"] = None
+        payload["factor_impl_stub_ref"] = None
+    if isinstance(payload.get("artifact_identity"), dict):
+        identity = payload["artifact_identity"]
+        identity["implementation_mode"] = implementation_mode
+        identity["formula_hash"] = formula_hash_value or identity.get("formula_hash")
+        if implementation_mode == "operator":
+            identity["code_hash"] = None
+            identity["code_contract_hash"] = None
+    if "factor_spec_master_ref" in payload:
+        payload["factor_spec_master_ref"] = f"factor_spec_master__{child_report_id}.json"
+    if "data_prep_master_ref" in payload:
+        payload["data_prep_master_ref"] = f"data_prep_master__{child_report_id}.json"
+    if "implementation_plan_master_ref" in payload:
+        payload["implementation_plan_master_ref"] = None
+    if "hybrid_execution_scaffold_ref" in payload:
+        if implementation_mode == "operator":
+            payload["hybrid_execution_scaffold_ref"] = None
+    contract = payload.get("implementation_contract")
+    if isinstance(contract, dict):
+        contract["implementation_mode"] = implementation_mode
+        contract["mode"] = implementation_mode
+        contract["formula_hash"] = formula_hash_value
+        if implementation_mode == "operator":
+            contract["formula_ir"] = formula_ir
+            contract["operator_set"] = formula_ir.get("operator_set") or []
+            contract["required_fields"] = formula_ir.get("required_fields") or []
+            contract.pop("source_code", None)
+            contract.pop("code_hash", None)
+            contract.pop("code_contract_hash", None)
+        else:
+            revision_contract = executable_revision_spec.get("direct_code_revision_contract")
+            if isinstance(revision_contract, dict) and revision_contract:
+                existing_code_contract = contract.get("code_contract") if isinstance(contract.get("code_contract"), dict) else {}
+                merged_code_contract = dict(existing_code_contract)
+                merged_code_contract.update(revision_contract)
+                contract["code_contract"] = merged_code_contract
+                contract["direct_code_revision_contract"] = revision_contract
+            contract["formula_ir"] = None
+            contract["operator_set"] = []
+            if isinstance(revision_contract, dict):
+                required_fields = revision_contract.get("required_fields") or revision_contract.get("fields") or []
+                if required_fields:
+                    contract["required_fields"] = required_fields
+        canonical = payload.get("canonical_spec")
+        if isinstance(canonical, dict):
+            canonical["formula_text"] = executable_revision_spec.get("child_formula") or canonical.get("formula_text")
+            canonical["formula_hash"] = formula_hash_value or canonical.get("formula_hash")
+            if implementation_mode == "operator":
+                canonical["formula_ir"] = formula_ir
+                canonical["operator_set"] = formula_ir.get("operator_set") or []
+                canonical["required_fields"] = formula_ir.get("required_fields") or []
+            else:
+                canonical["formula_ir"] = None
+                canonical["operator_set"] = []
+                canonical["operators"] = []
+                revision_contract = executable_revision_spec.get("direct_code_revision_contract")
+                if isinstance(revision_contract, dict):
+                    canonical["required_fields"] = revision_contract.get("required_fields") or canonical.get("required_fields") or []
+    return payload
 
 
 def main() -> int:
@@ -565,17 +714,12 @@ def main() -> int:
             producer=producer,
         )
         if kind == "factor_spec_master":
-            formula_ir = executable_revision_spec["child_formula_ir"]
-            formula_hash = formula_ir.get("formula_hash")
-            payload.setdefault("canonical_spec", {})
-            payload["canonical_spec"]["formula_text"] = executable_revision_spec["child_formula"]
-            payload["canonical_spec"]["formula_ir"] = formula_ir
-            payload["canonical_spec"]["operator_set"] = formula_ir.get("operator_set") or []
-            payload["canonical_spec"]["operators"] = formula_ir.get("operator_set") or []
-            payload["canonical_spec"]["required_inputs"] = formula_ir.get("required_fields") or []
-            payload["canonical_spec"]["required_fields"] = formula_ir.get("required_fields") or []
-            payload["canonical_spec"]["formula_hash"] = formula_hash
-            payload["executable_revision_spec_ref"] = str(executable_revision_spec_path(root, child))
+            payload = apply_executable_revision_contract(
+                payload,
+                executable_revision_spec,
+                root=root,
+                child_report_id=child,
+            )
             payload["revision_identity"] = {
                 "contract_version": "factorforge_child_revision_identity_v1",
                 "parent_report_id": parent,
@@ -583,19 +727,10 @@ def main() -> int:
                 "revision_spec_path": str(executable_revision_spec_path(root, child)),
                 "parent_formula_hash": executable_revision_spec["parent_formula_hash"],
                 "child_formula_hash": executable_revision_spec["child_formula_hash"],
+                "implementation_mode": executable_revision_spec.get("implementation_mode"),
                 "revision_noop": executable_revision_spec["parent_formula_hash"] == executable_revision_spec["child_formula_hash"],
                 "revision_identity_status": "audit_rerun" if executable_revision_spec["revision_type"] == "audit_rerun" else "changed",
             }
-            if formula_hash:
-                payload["formula_hash"] = formula_hash
-                payload.setdefault("implementation_contract", {})
-                if isinstance(payload["implementation_contract"], dict):
-                    payload["implementation_contract"]["formula_ir"] = formula_ir
-                    payload["implementation_contract"]["formula_hash"] = formula_hash
-                    payload["implementation_contract"]["operator_set"] = formula_ir.get("operator_set") or []
-                    payload["implementation_contract"]["required_fields"] = formula_ir.get("required_fields") or []
-                if isinstance(payload.get("artifact_identity"), dict):
-                    payload["artifact_identity"]["formula_hash"] = formula_hash
         if kind == "data_prep_master":
             local_inputs = payload.setdefault("local_input_paths", {})
             if isinstance(local_inputs, dict):
@@ -629,6 +764,12 @@ def main() -> int:
                         daily_io["csv_path"] = None
                     daily_io["csv_sample_path"] = None
                 local_inputs["input_mode"] = local_inputs.get("input_mode") or "daily_only"
+        payload = apply_executable_revision_contract(
+            payload,
+            executable_revision_spec,
+            root=root,
+            child_report_id=child,
+        )
         target = object_path(root, kind, child)
         write_json(target, payload)
         materialized[kind] = str(target)
@@ -654,6 +795,12 @@ def main() -> int:
             payload["factor_impl_ref"] = None
             payload["factor_impl_stub_ref"] = None
             payload["step6_parent_handoff_ref"] = str(parent_handoff_path)
+        payload = apply_executable_revision_contract(
+            payload,
+            executable_revision_spec,
+            root=root,
+            child_report_id=child,
+        )
         target = object_path(root, kind, child)
         write_json(target, payload)
         materialized[kind] = str(target)

@@ -2073,6 +2073,121 @@ def _fetch_contract_frame(query: dict[str, Any]):
     return result.frame, result.to_metadata()
 
 
+def _stable_json_hash(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+
+
+def _backtest_base_cache_root() -> Path:
+    explicit = os.getenv('FACTORFORGE_BACKTEST_BASE_CACHE_ROOT')
+    if explicit:
+        return Path(explicit).expanduser()
+    cache_root = os.getenv('FACTORFORGE_DATA_CACHE')
+    if cache_root:
+        return Path(cache_root).expanduser() / 'backtest_base_daily_controls_v1'
+    worker_cache = Path('/home/ubuntu/factorforge_data_api_cache/backtest_base_daily_controls_v1')
+    if worker_cache.exists() or worker_cache.parent.exists():
+        return worker_cache
+    return Path.home() / '.cache' / 'factorforge_data_api' / 'backtest_base_daily_controls_v1'
+
+
+def _backtest_base_identity(contract: dict[str, Any]) -> dict[str, Any]:
+    full_queries = contract.get('full_queries') if isinstance(contract.get('full_queries'), dict) else {}
+    relevant_queries = {
+        key: full_queries.get(key)
+        for key in ['clean_daily_bar', 'daily_basic']
+        if full_queries.get(key)
+    }
+    return {
+        'version': 'backtest_base_daily_controls_v1',
+        'contract_version': contract.get('version'),
+        'data_api_package': contract.get('data_api_package'),
+        'catalog_path': contract.get('catalog_path'),
+        'queries': relevant_queries,
+    }
+
+
+def _contract_flag(contract: dict[str, Any], key: str) -> bool:
+    value = contract.get(key)
+    if value is None and isinstance(contract.get('performance_contract'), dict):
+        value = contract['performance_contract'].get(key)
+    if value is None and isinstance(contract.get('reuse_contract'), dict):
+        value = contract['reuse_contract'].get(key)
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes', 'on', 'required'}
+    return bool(value)
+
+
+def _backtest_base_cache_paths(contract: dict[str, Any]) -> tuple[Path, Path, dict[str, Any]]:
+    identity = _backtest_base_identity(contract)
+    identity_hash = _stable_json_hash(identity)
+    cache_dir = _backtest_base_cache_root() / f'identity={identity_hash[:16]}'
+    return (
+        cache_dir / f'backtest_base_daily_controls_v1__{identity_hash[:16]}.parquet',
+        cache_dir / f'backtest_base_daily_controls_v1__{identity_hash[:16]}.metadata.json',
+        {**identity, 'identity_hash': identity_hash},
+    )
+
+
+def _load_backtest_base_cache(contract: dict[str, Any]) -> tuple[Path | None, dict[str, Any] | None]:
+    data_path, meta_path, identity = _backtest_base_cache_paths(contract)
+    if not data_path.exists() or not meta_path.exists():
+        return None, None
+    try:
+        metadata = load_json(meta_path)
+    except Exception:
+        return None, None
+    if metadata.get('identity_hash') != identity.get('identity_hash'):
+        return None, None
+    return data_path, {
+        'version': 'factorforge_backtest_base_reuse_profile_v1',
+        'dataset_id': 'backtest_base_daily_controls_v1',
+        'backtest_base_reuse_hit': True,
+        'backtest_base_cache_path': str(data_path),
+        'backtest_base_metadata_path': str(meta_path),
+        'identity_hash': identity.get('identity_hash'),
+        'row_count': metadata.get('row_count'),
+        'date_count': metadata.get('date_count'),
+        'ticker_count': metadata.get('ticker_count'),
+        'source': 'persistent_warm_cache',
+    }
+
+
+def _write_backtest_base_cache(
+    daily_df: pd.DataFrame,
+    contract: dict[str, Any],
+    *,
+    result_metadata: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    data_path, meta_path, identity = _backtest_base_cache_paths(contract)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    daily_df.to_parquet(data_path, index=False)
+    metadata = {
+        **identity,
+        'dataset_id': 'backtest_base_daily_controls_v1',
+        'path': str(data_path),
+        'row_count': int(len(daily_df)),
+        'date_count': int(daily_df['trade_date'].nunique()) if 'trade_date' in daily_df.columns and len(daily_df) else 0,
+        'ticker_count': int(daily_df['ts_code'].nunique()) if 'ts_code' in daily_df.columns and len(daily_df) else 0,
+        'columns': [str(col) for col in daily_df.columns],
+        'artifact_hash': sha256_file(data_path),
+        'result_metadata': result_metadata,
+        'written_at_utc': utc_now(),
+    }
+    write_json(meta_path, metadata)
+    return data_path, {
+        'version': 'factorforge_backtest_base_reuse_profile_v1',
+        'dataset_id': 'backtest_base_daily_controls_v1',
+        'backtest_base_reuse_hit': False,
+        'backtest_base_cache_path': str(data_path),
+        'backtest_base_metadata_path': str(meta_path),
+        'identity_hash': identity.get('identity_hash'),
+        'row_count': metadata['row_count'],
+        'date_count': metadata['date_count'],
+        'ticker_count': metadata['ticker_count'],
+        'source': 'rebuilt_and_cached',
+    }
+
+
 def materialize_step4_data_inputs_from_contract(
     report_id: str,
     contract: dict[str, Any],
@@ -2088,12 +2203,75 @@ def materialize_step4_data_inputs_from_contract(
 
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    cached_base_path, cached_base_profile = _load_backtest_base_cache(contract)
+    if cached_base_path is not None and cached_base_profile is not None:
+        local_inputs = {
+            'input_mode': 'daily_only',
+            'daily_df_parquet': str(cached_base_path),
+            'data_source': 'factorforge_data_api_backtest_base_cache',
+        }
+        meta = {
+            'backtest_base_daily_controls_v1': cached_base_profile,
+            'cache_reuse': cached_base_profile,
+        }
+        moneyflow_query = _contract_query(contract, 'full_queries', 'moneyflow')
+        if moneyflow_query:
+            signal_df, signal_meta = _fetch_contract_frame(moneyflow_query)
+            signal_path = data_dir / f'step4_signal_daily_input__{report_id}__moneyflow.parquet'
+            signal_df.to_parquet(signal_path, index=False)
+            local_inputs['input_mode'] = 'alternative_daily_plus_clean_daily'
+            local_inputs['formula_input_dataset'] = 'moneyflow'
+            local_inputs['signal_daily_df_parquet'] = str(signal_path)
+            local_inputs['evaluation_daily_df_parquet'] = str(cached_base_path)
+            meta['moneyflow'] = signal_meta
+        minute_query = _contract_query(contract, 'full_queries', 'minute_bar')
+        if minute_query:
+            local_inputs['input_mode'] = 'price_volume_minute'
+            local_inputs['minute_streaming_query'] = minute_query
+            meta['minute_bar'] = {
+                'dataset_id': minute_query.get('dataset'),
+                'status': 'streaming_deferred',
+                'request': minute_query,
+                'streaming_policy': {
+                    'version': 'factorforge_step4_minute_streaming_policy_v1',
+                    'reason': 'avoid materializing full-window all-market minute data in memory',
+                    'partition_key': 'trade_date',
+                    'formal_factor_values_owner': 'Step4',
+                },
+            }
+        return local_inputs, {
+            'source': 'factorforge_data_api_full_query',
+            'contract_version': contract.get('version'),
+            'data_api_package': contract.get('data_api_package'),
+            'catalog_path': contract.get('catalog_path'),
+            'queries': contract.get('full_queries') or {},
+            'result_metadata': meta,
+            'backtest_base_reuse_profile': cached_base_profile,
+        }
+    if _contract_flag(contract, 'backtest_base_reuse_required'):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_BACKTEST_BASE_REUSE_REQUIRED: '
+            'Step4 contract requires an existing reusable backtest_base_daily_controls_v1 artifact, '
+            'but no matching persistent cache was found.'
+        )
+
     daily_df, daily_meta = _fetch_contract_frame(daily_query)
     meta = {'clean_daily_bar': daily_meta}
 
     daily_basic_query = _contract_query(contract, 'full_queries', 'daily_basic')
     if daily_basic_query:
         daily_basic_df, daily_basic_meta = _fetch_contract_frame(daily_basic_query)
+        daily_basic_perf = daily_basic_meta.get('performance_profile') if isinstance(daily_basic_meta, dict) else {}
+        if _contract_flag(contract, 'daily_basic_parquet_required') and (
+            not isinstance(daily_basic_perf, dict)
+            or daily_basic_perf.get('daily_basic_selected_format') != 'parquet'
+        ):
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_DAILY_BASIC_PARQUET_REQUIRED: '
+                'Step4 contract requires daily_basic parquet/warm-cache access, '
+                f'but selected profile was {daily_basic_perf}'
+            )
         overlap = [
             col for col in daily_basic_df.columns
             if col in daily_df.columns and col not in {'ts_code', 'trade_date'}
@@ -2103,8 +2281,12 @@ def materialize_step4_data_inputs_from_contract(
         daily_df = daily_df.merge(daily_basic_df, on=['ts_code', 'trade_date'], how='left')
         meta['daily_basic'] = daily_basic_meta
 
-    daily_path = data_dir / f'step4_daily_input__{report_id}.parquet'
-    daily_df.to_parquet(daily_path, index=False)
+    daily_path, backtest_base_profile = _write_backtest_base_cache(
+        daily_df,
+        contract,
+        result_metadata=meta,
+    )
+    meta['backtest_base_daily_controls_v1'] = backtest_base_profile
 
     local_inputs = {
         'input_mode': 'daily_only',
@@ -2146,6 +2328,7 @@ def materialize_step4_data_inputs_from_contract(
         'catalog_path': contract.get('catalog_path'),
         'queries': contract.get('full_queries') or {},
         'result_metadata': meta,
+        'backtest_base_reuse_profile': backtest_base_profile,
     }
 
 
@@ -2475,6 +2658,28 @@ def main() -> None:
             'data_api_profile': data_api_profile,
             'minute_streaming_enabled': bool(minute_streaming_query),
         }
+        if isinstance(data_api_profile, dict):
+            result_metadata = data_api_profile.get('result_metadata') if isinstance(data_api_profile.get('result_metadata'), dict) else {}
+            daily_basic_meta = result_metadata.get('daily_basic') if isinstance(result_metadata.get('daily_basic'), dict) else {}
+            daily_basic_perf = daily_basic_meta.get('performance_profile') if isinstance(daily_basic_meta.get('performance_profile'), dict) else {}
+            backtest_base_profile = (
+                data_api_profile.get('backtest_base_reuse_profile')
+                if isinstance(data_api_profile.get('backtest_base_reuse_profile'), dict)
+                else result_metadata.get('backtest_base_daily_controls_v1')
+            )
+            if isinstance(daily_basic_perf, dict) and daily_basic_perf:
+                input_io_profile['daily_basic_reuse_profile'] = daily_basic_perf
+                input_io_profile['daily_basic_selected_format'] = daily_basic_perf.get('daily_basic_selected_format')
+                input_io_profile['daily_basic_cache_hit'] = daily_basic_perf.get('daily_basic_cache_hit')
+                input_io_profile['daily_basic_cache_path'] = daily_basic_perf.get('daily_basic_cache_path')
+                input_io_profile['daily_basic_rows'] = daily_basic_perf.get('daily_basic_rows')
+                input_io_profile['daily_basic_dates'] = daily_basic_perf.get('daily_basic_dates')
+                input_io_profile['daily_basic_tickers'] = daily_basic_perf.get('daily_basic_tickers')
+                input_io_profile['daily_basic_load_seconds'] = daily_basic_perf.get('daily_basic_load_seconds')
+            if isinstance(backtest_base_profile, dict) and backtest_base_profile:
+                input_io_profile['backtest_base_reuse_profile'] = backtest_base_profile
+                input_io_profile['backtest_base_reuse_hit'] = backtest_base_profile.get('backtest_base_reuse_hit')
+                input_io_profile['backtest_base_cache_path'] = backtest_base_profile.get('backtest_base_cache_path')
         step3b_cache_source = {}
         if not may_reuse_existing_factor and step3b_cache_path.exists() and step3b_cache_meta_path.exists():
             step3b_cache_source = classify_step3b_compute_cache_source(

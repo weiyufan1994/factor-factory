@@ -176,10 +176,21 @@ def step4_factor_csv_policy_from_step3b(existing_meta: dict[str, Any]) -> dict[s
     csv_profile = ((existing_meta or {}).get('performance_profile') or {}).get('csv_output_profile') or {}
     raw_policy = csv_profile.get('csv_output_policy')
     if raw_policy is None:
-        policy = 'legacy_missing'
-        allowed = True
-        written = True
-        reason = None
+        env_policy = (os.getenv('FACTORFORGE_CSV_OUTPUT_POLICY') or '').strip()
+        if env_policy:
+            policy = str(env_policy)
+            if policy not in FACTOR_CSV_POLICY_VALUES:
+                raise SystemExit(f'BLOCK_STEP4_INVALID_FACTOR_CSV_POLICY:{policy}')
+            allowed = policy == 'full_csv'
+            written = allowed
+            reason = None if allowed else f'step4_env_{policy}_policy'
+            source = 'step4_env'
+        else:
+            policy = 'legacy_missing'
+            allowed = True
+            written = True
+            reason = None
+            source = 'legacy_missing'
     else:
         policy = str(raw_policy)
         if policy not in FACTOR_CSV_POLICY_VALUES:
@@ -187,8 +198,9 @@ def step4_factor_csv_policy_from_step3b(existing_meta: dict[str, Any]) -> dict[s
         allowed = policy == 'full_csv'
         written = allowed
         reason = None if allowed else f'step3b_{policy}_policy'
+        source = 'step3b_run_metadata'
     return {
-        'source': 'step3b_run_metadata',
+        'source': source,
         'csv_output_policy': policy,
         'factor_csv_write_allowed': bool(allowed),
         'factor_csv_written_by_step4': bool(written),

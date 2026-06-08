@@ -767,6 +767,13 @@ def main() -> int:
             approval_result = run_command(approval_cmd, env=env, dry_run=args.dry_run)
             iteration["approval_bridge_command"] = approval_result
             iteration["approval_bridge_rc"] = approval_result.get("rc")
+            iteration["approval_consumed_loop_slot"] = True
+            iteration["approval_bridge_budget_semantics"] = {
+                "version": "factorforge_approval_bridge_budget_semantics_v1",
+                "approval_consumed_loop_slot": True,
+                "child_materialization_requires_subsequent_loop_slot": True,
+                "reason": "completed Council synthesis approval mutates loop state before child materialization",
+            }
             if approval_result.get("rc") != 0:
                 proof["status"] = "FAIL"
                 proof["final_outcome"] = "blocked"
@@ -783,6 +790,14 @@ def main() -> int:
                 max_reached=loop_index >= args.max_loops,
             )
             iteration.update(state)
+            if loop_index >= args.max_loops and state.get("can_continue"):
+                iteration["approval_bridge_requires_additional_loop_for_child"] = True
+                proof["approval_consumed_loop_slot"] = True
+                proof["approval_bridge_requires_additional_loop_for_child"] = True
+                append_note(
+                    proof,
+                    f"Approval bridge consumed loop slot {loop_index}; rerun with additional max_loops to materialize child for {current_report_id}",
+                )
             proof["updated_at_utc"] = utc_now()
             append_note(proof, f"Approved main-agent Council synthesis for {current_report_id}")
             write_json_atomic(proof_path, proof)

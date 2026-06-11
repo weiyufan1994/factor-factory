@@ -2040,7 +2040,10 @@ def _load_required_minute_flow_state(
         rows_before_cutoff = int(len(frame))
         if 'cutoff_time' in frame.columns:
             normalized_cutoff = normalize_cutoff_time(cutoff_time)
-            frame = frame.loc[frame['cutoff_time'].astype(str) == normalized_cutoff].copy()
+            cutoff_series = frame['cutoff_time'].map(
+                lambda value: normalize_cutoff_time(value) if pd.notna(value) else ''
+            )
+            frame = frame.loc[cutoff_series == normalized_cutoff].copy()
         if 'trade_date' in frame.columns:
             expected_dates = set(dates)
             frame['_factorforge_trade_date_norm'] = _normal_date_text(frame['trade_date'])

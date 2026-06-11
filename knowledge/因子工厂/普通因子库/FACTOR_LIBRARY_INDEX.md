@@ -17,6 +17,7 @@
 | ALPHA009_PAPER_20160101_20250711 | Alpha009 | regime-adaptive: monotonic_up→delta, mixed→-delta | 0.020 | 0.171 | — | ❌ reject |
 | ALPHA006_PAPER_20160101_20250711 | Alpha006 | `(-1 * corr(open, volume, 10))` | 0.026 | 0.309 | +0.001% | ✅ iterate |
 | ALPHA007_PAPER_20160101_20250711 | Alpha007(kurt-skew) | `folded * (1 + 0.5*(kurt_zs - skew_zs))` | 0.057 | 0.678 | +0.022% | ✅ validated |
+| VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401 | VP support-overhang | `lower_support_ratio - upper_overhang_ratio` | 0.189 / 0.168 / 0.040 | 2024-01 smoke only | top10 excess +0.883% / +1.501% / +2.058% | 🔬 exploratory_smoke |
 
 ---
 
@@ -31,6 +32,7 @@
 | SIZE | 0.068 | 0.520 | +0.292% | +0.051% | 多头明确 |
 | short_low_vol | 0.054 | **0.609** | +0.283% | +0.032% | 空头侧 |
 | Alpha007(kurt-skew) | **0.057** | **0.678** | +0.298% | +0.022% | regime-adap |
+| VP support-overhang | 0.189 / 0.168 / 0.040 | 2024-01 smoke only | +1.057% / +2.612% / +1.638% | top10 excess +0.883% / +1.501% / +2.058% | 研究线索，需 full-window |
 
 ---
 

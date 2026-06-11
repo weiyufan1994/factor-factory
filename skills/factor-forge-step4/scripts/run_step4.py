@@ -1970,7 +1970,8 @@ def _minute_derived_state_requirements(contract: dict[str, Any], dpm: dict[str, 
 
 def _minute_flow_state_requirement(contract: dict[str, Any], dpm: dict[str, Any] | None = None) -> dict[str, Any] | None:
     for requirement in _minute_derived_state_requirements(contract, dpm):
-        if requirement.get('dataset_id') == MINUTE_DERIVED_FLOW_STATE_V1:
+        dataset_id = str(requirement.get('dataset_id') or '').strip()
+        if dataset_id in {MINUTE_DERIVED_FLOW_STATE_V1, 'intraday_flow_distribution_moments_v1'}:
             return requirement
     return None
 
@@ -2012,10 +2013,55 @@ def _load_required_minute_flow_state(
     dates = _daily_trade_dates_for_minute_query(daily_df, minute_query)
     if not dates:
         raise SystemExit('BLOCK_STEP4_FLOW_PREAGG_WINDOW_EMPTY: no daily dates overlap minute query')
+    dataset_id = str(requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1).strip()
     root = requirement.get('local_warm_cache_root') or requirement.get('root')
     cutoff_time = requirement.get('cutoff_time') or DEFAULT_MINUTE_CUTOFF_TIME
     source_data_version = requirement.get('source_data_version')
     fields = requirement.get('required_fields') or FLOW_STATE_REQUIRED_COLUMNS
+    if dataset_id != MINUTE_DERIVED_FLOW_STATE_V1:
+        required_fields = list(dict.fromkeys([*fields, 'ts_code', 'trade_date', 'cutoff_time']))
+        started = time.perf_counter()
+        result = fetch_data_api_dataset(
+            dataset_id,
+            start=dates[0],
+            end=dates[-1],
+            fields=required_fields,
+            universe=minute_query.get('universe') or 'a_share_all',
+            frequency=requirement.get('frequency') or 'daily',
+            catalog_path=requirement.get('catalog_path') or minute_query.get('catalog_path'),
+        )
+        if result.status not in {'ready', 'proxy_ready'}:
+            raise SystemExit(
+                f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
+                f"status={result.status} reason={result.blocked_reason}"
+            )
+        frame = result.frame.copy()
+        rows_before_cutoff = int(len(frame))
+        if 'cutoff_time' in frame.columns:
+            normalized_cutoff = normalize_cutoff_time(cutoff_time)
+            frame = frame.loc[frame['cutoff_time'].astype(str) == normalized_cutoff].copy()
+        if 'trade_date' in frame.columns:
+            expected_dates = set(dates)
+            frame['_factorforge_trade_date_norm'] = _normal_date_text(frame['trade_date'])
+            frame = frame.loc[frame['_factorforge_trade_date_norm'].isin(expected_dates)].drop(columns=['_factorforge_trade_date_norm']).copy()
+        if frame.empty:
+            raise SystemExit(
+                f"BLOCK_STEP4_MINUTE_DERIVED_STATE_EMPTY: {dataset_id} cutoff_time={cutoff_time} "
+                f"date_window={dates[0]}..{dates[-1]}"
+            )
+        profile = result.to_metadata()
+        profile.update({
+            'dataset_id': dataset_id,
+            'cutoff_time': normalize_cutoff_time(cutoff_time),
+            'rows_before_cutoff_filter': rows_before_cutoff,
+            'rows_after_cutoff_filter': int(len(frame)),
+            'date_count_after_filter': int(frame['trade_date'].nunique()) if 'trade_date' in frame.columns else None,
+            'ticker_count_after_filter': int(frame['ts_code'].nunique()) if 'ts_code' in frame.columns else None,
+            'load_seconds': time.perf_counter() - started,
+            'load_mode': 'data_api_minute_derived_state',
+        })
+        return frame, profile
+
     loaded = load_flow_state_partitions(
         start_date=dates[0],
         end_date=dates[-1],
@@ -2036,6 +2082,7 @@ def compute_factor_from_minute_derived_state(
     *,
     daily_df: pd.DataFrame,
     flow_state_df: pd.DataFrame,
+    dataset_id: str = MINUTE_DERIVED_FLOW_STATE_V1,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     compute_started = time.perf_counter()
     if hasattr(module, 'compute_factor_from_derived_state'):
@@ -2059,7 +2106,7 @@ def compute_factor_from_minute_derived_state(
         raise SystemExit('BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED: derived-state compute did not return DataFrame')
     return result, {
         'source': 'step4_minute_derived_flow_state',
-        'dataset_id': MINUTE_DERIVED_FLOW_STATE_V1,
+        'dataset_id': dataset_id,
         'compute_mode': mode,
         'factor_compute_seconds': time.perf_counter() - compute_started,
         'derived_state_rows': int(len(flow_state_df)),
@@ -2757,6 +2804,7 @@ def main() -> None:
                             module,
                             daily_df=signal_daily_df,
                             flow_state_df=flow_state_df,
+                            dataset_id=str(flow_requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1),
                         )
                     elif _generic_minute_full_window_forbidden(minute_dates):
                         raise SystemExit(

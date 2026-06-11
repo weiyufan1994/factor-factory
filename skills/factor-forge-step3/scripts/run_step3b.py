@@ -2558,11 +2558,29 @@ def main():
     # COMMENT_POLICY: execution_handoff
     # Step 3B handoff freezes the implementation/code artifact references for Step 4.
     existing_handoff = read_existing_json(handoff_path)
+    direct_code_handoff_fields: dict = {}
+    code_contract_for_handoff = implementation_plan.get('code_contract') if isinstance(implementation_plan.get('code_contract'), dict) else {}
+    if implementation_plan.get('implementation_mode') == 'direct_code' and code_contract_for_handoff:
+        law_id_for_handoff = _extract_direct_code_law_id(code_contract_for_handoff)
+        contract_without_source = {
+            key: value
+            for key, value in code_contract_for_handoff.items()
+            if key not in {'source_code'}
+        }
+        if law_id_for_handoff:
+            direct_code_handoff_fields['direct_code_law'] = law_id_for_handoff
+            direct_code_handoff_fields['direct_code_law_id'] = law_id_for_handoff
+        for hash_key in ('code_law_hash', 'direct_code_law_hash', 'law_hash'):
+            if code_contract_for_handoff.get(hash_key):
+                direct_code_handoff_fields['code_law_hash'] = code_contract_for_handoff.get(hash_key)
+                break
+        direct_code_handoff_fields['direct_code_revision_contract'] = contract_without_source
     handoff_payload = merge_handoff(existing_handoff, {
         'report_id': report_id,
         'artifact_identity': handoff_identity,
         'producer': artifact_producer,
         **family_fields,
+        **direct_code_handoff_fields,
         'implementation_mode': spec_identity.get('implementation_mode'),
         'source_type': spec_identity.get('source_type'),
         'spec_hash': spec_identity.get('spec_hash'),

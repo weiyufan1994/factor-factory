@@ -17,6 +17,7 @@ FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorf
 OBJ = FACTORFORGE / 'objects'
 ALLOWED = {'success', 'partial', 'failed'}
 QLIB_NATIVE_STATUS_VALUES = {
+    'not_applicable',
     'not_attempted',
     'preflight_blocked',
     'preflight_ready',

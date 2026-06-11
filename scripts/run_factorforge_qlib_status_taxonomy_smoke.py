@@ -56,6 +56,9 @@ def main() -> None:
     issues = validate(module, {'status': 'skipped', 'mode': 'native', 'qlib_native_status': 'preflight_ready'}, mandatory=False)
     cases['qlib_preflight_ready_passes_as_preflight_only'] = {'ok': not issues, 'issues': issues}
 
+    issues = validate(module, {'status': 'skipped', 'mode': 'sample_stub', 'qlib_native_status': 'not_applicable'}, mandatory=False)
+    cases['qlib_not_applicable_passes_as_explicit_skip'] = {'ok': not issues, 'issues': issues}
+
     issues = validate(module, {'status': 'success', 'mode': 'native_minimal', 'qlib_native_status': 'native_backtest_success'}, mandatory=True)
     cases['qlib_native_backtest_success_passes'] = {'ok': not issues, 'issues': issues}
 

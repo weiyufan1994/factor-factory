@@ -146,6 +146,60 @@ def planned_target_paths(root: Path, parent: str, child: str, parent_data_prep: 
     return targets
 
 
+def ensure_child_qlib_adapter_config(root: Path, parent: str, child: str) -> dict[str, Any]:
+    parent_cfg = object_path(root, "qlib_adapter_config", parent)
+    child_cfg = object_path(root, "qlib_adapter_config", child)
+    if parent_cfg.exists():
+        payload = rewrite_common(
+            load_json(parent_cfg),
+            child_report_id=child,
+            branch_id=None,
+            parent_run_id=None,
+            artifact_role="qlib_adapter_config",
+            producer="ultimate_loop_child_materializer",
+        )
+        payload["parent_qlib_adapter_config_ref"] = str(parent_cfg)
+        payload["qlib_adapter_config_lineage"] = {
+            "version": "factorforge_child_qlib_adapter_config_lineage_v1",
+            "parent_report_id": parent,
+            "child_report_id": child,
+            "parent_qlib_adapter_config_path": str(parent_cfg),
+            "parent_qlib_adapter_config_sha256": sha256_file(parent_cfg),
+            "status": "copied_from_parent",
+        }
+        status = "copied_from_parent"
+    else:
+        payload = {
+            "version": "factorforge_qlib_adapter_config_v1",
+            "report_id": child,
+            "producer": "ultimate_loop_child_materializer",
+            "status": "not_applicable",
+            "qlib_native_status": "not_applicable",
+            "reason": "direct_code_derived_state_not_supported_by_qlib",
+            "parent_report_id": parent,
+            "created_at_utc": utc_now(),
+            "qlib_adapter_config_lineage": {
+                "version": "factorforge_child_qlib_adapter_config_lineage_v1",
+                "parent_report_id": parent,
+                "child_report_id": child,
+                "parent_qlib_adapter_config_path": str(parent_cfg),
+                "status": "not_applicable_created",
+            },
+        }
+        status = "not_applicable_created"
+    write_json(child_cfg, payload)
+
+    child_handoff = object_path(root, "handoff_to_step4", child)
+    if child_handoff.exists():
+        handoff = load_json(child_handoff)
+        handoff["qlib_adapter_config_ref"] = child_cfg.name
+        handoff["qlib_adapter_config_path"] = str(child_cfg)
+        handoff.setdefault("qlib_adapter_config_lineage", payload.get("qlib_adapter_config_lineage"))
+        write_json(child_handoff, handoff)
+
+    return {"status": status, "path": str(child_cfg)}
+
+
 def executable_revision_spec_path(root: Path, child: str) -> Path:
     return object_path(root, "executable_revision_spec", child)
 
@@ -804,6 +858,10 @@ def main() -> int:
         target = object_path(root, kind, child)
         write_json(target, payload)
         materialized[kind] = str(target)
+
+    qlib_config_result = ensure_child_qlib_adapter_config(root, parent, child)
+    materialized["qlib_adapter_config"] = qlib_config_result["path"]
+    materialized["qlib_adapter_config_status"] = qlib_config_result["status"]
 
     report_branch_id = executable_revision_spec.get("branch_id") or branch_id
     report = {

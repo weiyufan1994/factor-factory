@@ -244,19 +244,41 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     run_dir = FF / 'runs' / report_id
     factor_path = run_dir / f'factor_values__{report_id}.parquet'
 
-    missing = [str(p) for p in [cfg_path, factor_path] if not p.exists()]
-    if missing:
+    if not cfg_path.exists():
         return {
             'backend': 'qlib_backtest',
             'mode': 'sample_stub',
             'report_id': report_id,
             'status': 'failed',
             'failure_reason': 'missing required qlib inputs',
-            'missing_paths': missing,
+            'missing_paths': [str(cfg_path)],
             'extensible_metrics': True,
         }
 
     cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+    if cfg.get('status') == 'not_applicable' or cfg.get('qlib_native_status') == 'not_applicable':
+        return {
+            'backend': 'qlib_backtest',
+            'mode': 'sample_stub',
+            'report_id': report_id,
+            'status': 'skipped',
+            'qlib_native_status': 'not_applicable',
+            'skip_reason': cfg.get('reason') or 'qlib adapter config marked not_applicable',
+            'qlib_adapter_config_path': str(cfg_path),
+            'extensible_metrics': True,
+        }
+
+    if not factor_path.exists():
+        return {
+            'backend': 'qlib_backtest',
+            'mode': 'sample_stub',
+            'report_id': report_id,
+            'status': 'failed',
+            'failure_reason': 'missing required qlib inputs',
+            'missing_paths': [str(factor_path)],
+            'extensible_metrics': True,
+        }
+
     factor_df, signal_col, factor_id = load_factor_values_with_signal(report_id)
     factor_df = factor_df[['ts_code', 'trade_date', signal_col]].copy()
     daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])

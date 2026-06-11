@@ -213,6 +213,15 @@ human-readable child law such as an intraday moneyflow state equation is valid
 only when paired with an executable direct-code mutation contract. Replacing it
 with an unrelated parseable formula such as `rank(close)` is research pollution
 and must BLOCK.
+Moneyflow/Miller-style executable laws must be referenced by `law_id` and
+`code_law_hash` through the versioned law registry, not copied into
+`run_step3b.py` for every child. Step3B should import/resolve the law by id and
+block missing or hash-mismatched laws; adding a new law should normally be a
+registry entry plus tests, not a runner rewrite.
+Direct-code child materialization must also carry qlib adapter semantics: copy
+the parent qlib adapter config when supported, or write child-local
+`qlib_native_status=not_applicable` with an explicit reason so Step4 qlib is
+skipped rather than reported as missing-input failure.
 
 If a completed real-agent Council collection unanimously recommends terminal
 rejection and no main-agent synthesis selects a child formula, the loop may
@@ -720,6 +729,13 @@ evidence contradictions, and revision-or-kill implications.
 `awaiting_main_agent_mechanism_memo` and `awaiting_agent_results` are internal
 checkpoint states. They are not reasons to stop and ask the user for another
 command during normal production research.
+Any loop pause at `awaiting_main_agent_mechanism_memo`,
+`awaiting_agent_results`, `awaiting_main_agent_council_synthesis`, or
+`awaiting_next_derivation` must write
+`objects/research_iteration_master/paused_research_note__<report_id>.json` and
+`.md` with the pause reason, evidence paths, known backend/metric status,
+lessons, and exact next questions. A paused run without this durable note is
+not production-complete.
 
 When the wrapper or loop returns `awaiting_main_agent_mechanism_memo`, the
 current runtime main agent must read the questionnaire, write the free-form

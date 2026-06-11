@@ -164,6 +164,13 @@ criteria, the source synthesis path/hash, and write/execute permissions.
 Non-audit child revisions must change the formula hash or code-law hash;
 otherwise the materializer or Step3B must BLOCK instead of rerunning the parent
 implementation.
+The child materializer must also write a child-local
+`qlib_adapter_config__<child_report_id>.json`: copy and re-identify the parent
+adapter config when qlib is supported, or write
+`qlib_native_status=not_applicable` with reason
+`direct_code_derived_state_not_supported_by_qlib` when the child is a
+direct-code derived-state law that qlib should skip. Missing qlib config is a
+framework defect, not a valid child qlib failure.
 38a. Direct-code and native intraday revisions are valid Step6 outputs, but only
 as executable mutation contracts. If the parent factor is `direct_code` or
 `hybrid`, the main-agent Council synthesis must preserve that mode unless it
@@ -514,6 +521,14 @@ itself, write `status=final` / `producer=real_agent` result JSON files to the
 exact expected paths, run collection validation and finalize, then continue the
 official loop. Do not ask the user to manually advance the next command unless
 valid Council output cannot be produced in the current runtime.
+When the loop legitimately pauses at
+`awaiting_main_agent_mechanism_memo`, `awaiting_agent_results`,
+`awaiting_main_agent_council_synthesis`, or `awaiting_next_derivation`, it must
+write `paused_research_note__<report_id>.json` and `.md` under
+`objects/research_iteration_master/`. The note must preserve pause state,
+reason, backend/metric status when known, evidence paths, lessons, and the next
+questions needed to resume. A paused run without durable knowledge writeback is
+not production-complete.
 
 Agentic dispatch artifacts must include
 `runtime_dispatch_policy.policy_version=factorforge_runtime_dispatch_policy_v1`.

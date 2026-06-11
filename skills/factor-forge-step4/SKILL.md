@@ -24,6 +24,12 @@ Current practical backend maturity:
 - `self_quant_analyzer` quick mode is production-usable on the current EC2 resource envelope
 - `qlib_backtest` now has both a sample-stub layer and a native minimal backtest path; native execution depends on qlib-friendly signal formatting, especially `instrument` / `datetime` semantics
 - Qlib native requires the Microsoft Qlib package and a provider/store. A Python package named `qlib` is not sufficient; preflight must verify `qlib.init` plus `qlib.data.D`, and must skip native execution if a non-Microsoft `qlib` package is imported.
+- Direct-code child revisions over derived intraday state may be outside qlib's
+  native adapter surface. In that case Step3/Step6 must provide a child-local
+  `qlib_adapter_config__{report_id}.json` with
+  `qlib_native_status=not_applicable` and a reason such as
+  `direct_code_derived_state_not_supported_by_qlib`; Step4 must record qlib as
+  skipped/not_applicable, not failed because the qlib input config is missing.
 - Standard Step4 evidence is mandatory. Agents must not fill missing Step4 evidence with ad hoc plotting scripts or one-off notebooks.
 
 ## Research Discipline

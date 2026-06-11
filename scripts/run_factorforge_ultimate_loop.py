@@ -34,6 +34,128 @@ METRIC_ALIASES: dict[str, list[str]] = {
     "long_side_recovery_days": ["long_side_recovery_days", "recovery_days", "long_side_recovery_time_days"],
 }
 
+PAUSED_NOTE_STATES = {
+    "awaiting_main_agent_mechanism_memo",
+    "awaiting_agent_results",
+    "awaiting_main_agent_council_synthesis",
+    "awaiting_next_derivation",
+}
+
+
+def paused_note_paths(factorforge_root: Path, report_id: str) -> tuple[Path, Path]:
+    base = factorforge_root / "objects" / "research_iteration_master"
+    return (
+        base / f"paused_research_note__{report_id}.json",
+        base / f"paused_research_note__{report_id}.md",
+    )
+
+
+def _paused_next_questions(pause_state: str) -> list[str]:
+    if pause_state == "awaiting_main_agent_mechanism_memo":
+        return [
+            "What is the formula-specific economic mechanism and selected mathematical model?",
+            "Which observable estimator and metric signature would falsify this mechanism?",
+        ]
+    if pause_state == "awaiting_agent_results":
+        return [
+            "Which Council agents have not returned their advisory packets?",
+            "Does the current evidence require waiting, rerun, or manual cancellation?",
+        ]
+    if pause_state == "awaiting_main_agent_council_synthesis":
+        return [
+            "Which Council proposal should be selected as the executable revision law?",
+            "What are the child formula/code law, expected metric signature, falsification tests, and kill criteria?",
+        ]
+    if pause_state == "awaiting_next_derivation":
+        return [
+            "Which research equation component failed?",
+            "Should the next branch be bug fix, data artifact check, implementation artifact check, tradable anomaly, or new factor seed?",
+        ]
+    return ["What explicit human or agent decision is required before the loop may continue?"]
+
+
+def write_paused_research_note(
+    *,
+    factorforge_root: Path,
+    report_id: str,
+    pause_state: str,
+    proof: dict[str, Any],
+    iteration: dict[str, Any] | None,
+    reason: str | None = None,
+) -> dict[str, str]:
+    json_path, markdown_path = paused_note_paths(factorforge_root, report_id)
+    latest_iteration = iteration or {}
+    payload = {
+        "version": "factorforge_paused_research_note_v1",
+        "status": "paused",
+        "report_id": report_id,
+        "parent_report_id": latest_iteration.get("parent_report_id"),
+        "pause_state": pause_state,
+        "reason": reason or proof.get("stop_reason") or latest_iteration.get("stop_reason"),
+        "created_at_utc": utc_now(),
+        "proof_status": proof.get("status"),
+        "final_outcome": proof.get("final_outcome"),
+        "wrapper_command_status": (latest_iteration.get("wrapper_command") or {}).get("status"),
+        "wrapper_rc": (latest_iteration.get("wrapper_command") or {}).get("rc"),
+        "backend_status": {
+            "step4": latest_iteration.get("step4_status"),
+            "self_quant": latest_iteration.get("self_quant_status"),
+            "qlib": latest_iteration.get("qlib_native_status"),
+        },
+        "core_metrics": latest_iteration.get("core_metrics") or proof.get("core_metrics") or {},
+        "evidence_paths": {
+            "ultimate_loop_report": proof.get("proof_path"),
+            "wrapper_proof_path": latest_iteration.get("wrapper_proof_path"),
+            "materialization_report_path": latest_iteration.get("materialization_report_path"),
+            "next_derivation_questionnaire_path": proof.get("next_derivation_questionnaire_path"),
+        },
+        "research_lessons": proof.get("notes") or [],
+        "next_questions": _paused_next_questions(pause_state),
+    }
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(json_path, payload)
+    markdown = [
+        f"# Paused Research Note: {report_id}",
+        "",
+        f"- Status: paused",
+        f"- Pause state: {pause_state}",
+        f"- Reason: {payload['reason']}",
+        f"- Wrapper rc: {payload['wrapper_rc']}",
+        "",
+        "## Next Questions",
+        *[f"- {item}" for item in payload["next_questions"]],
+        "",
+        "## Evidence Paths",
+        *[f"- {key}: {value}" for key, value in payload["evidence_paths"].items() if value],
+        "",
+    ]
+    markdown_path.write_text("\n".join(markdown), encoding="utf-8")
+    return {"json_path": str(json_path), "markdown_path": str(markdown_path)}
+
+
+def attach_paused_note_if_needed(
+    *,
+    factorforge_root: Path,
+    report_id: str,
+    proof: dict[str, Any],
+    iteration: dict[str, Any] | None,
+    pause_state: str | None = None,
+    reason: str | None = None,
+) -> None:
+    state = pause_state or proof.get("final_outcome")
+    if proof.get("status") != "PAUSED" or state not in PAUSED_NOTE_STATES:
+        return
+    note = write_paused_research_note(
+        factorforge_root=factorforge_root,
+        report_id=report_id,
+        pause_state=str(state),
+        proof=proof,
+        iteration=iteration,
+        reason=reason,
+    )
+    proof["paused_research_note_json_path"] = note["json_path"]
+    proof["paused_research_note_markdown_path"] = note["markdown_path"]
+
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Run Factor Forge Ultimate in a bounded revision loop.")
@@ -541,6 +663,7 @@ def main() -> int:
         max_loops=args.max_loops,
         args=vars(args),
     )
+    proof["proof_path"] = str(proof_path)
     proof["brief_path"] = str(brief_path)
     write_json_atomic(proof_path, proof)
 
@@ -826,6 +949,14 @@ def main() -> int:
                     proof["next_derivation_questionnaire_path"] = str(questionnaire_path)
                     proof["updated_at_utc"] = utc_now()
                     append_note(proof, f"Recorded branch falsification for {current_report_id}; next math-mechanism derivation required")
+                    attach_paused_note_if_needed(
+                        factorforge_root=ctx.factorforge_root,
+                        report_id=current_report_id,
+                        proof=proof,
+                        iteration=iteration,
+                        pause_state="awaiting_next_derivation",
+                        reason="revision_branch_falsified_next_derivation_required",
+                    )
                     write_json_atomic(proof_path, proof)
                     write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
                     print("awaiting_next_derivation")
@@ -840,6 +971,14 @@ def main() -> int:
                     proof["stop_reason"] = "completed_council_requires_main_agent_synthesis"
                     proof["updated_at_utc"] = utc_now()
                     append_note(proof, f"Completed Council for {current_report_id} requires main-agent synthesis before child materialization")
+                    attach_paused_note_if_needed(
+                        factorforge_root=ctx.factorforge_root,
+                        report_id=current_report_id,
+                        proof=proof,
+                        iteration=iteration,
+                        pause_state="awaiting_main_agent_council_synthesis",
+                        reason="completed_council_requires_main_agent_synthesis",
+                    )
                     write_json_atomic(proof_path, proof)
                     write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
                     print("awaiting_main_agent_council_synthesis")
@@ -877,6 +1016,14 @@ def main() -> int:
             proof["status"] = state.get("proof_status")
             proof["final_outcome"] = state.get("outcome")
             proof["stop_reason"] = state.get("stop_reason")
+            attach_paused_note_if_needed(
+                factorforge_root=ctx.factorforge_root,
+                report_id=current_report_id,
+                proof=proof,
+                iteration=iteration,
+                pause_state=str(state.get("outcome") or ""),
+                reason=str(state.get("stop_reason") or ""),
+            )
             write_json_atomic(proof_path, proof)
             write_aggregate_brief(brief_path, proof, ctx.factorforge_root)
             print(proof["final_outcome"])

@@ -44,6 +44,7 @@ from factor_factory.formula.operators import default_ts_rank_engine_profile, res
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture
 from factor_factory.performance import PhaseTimer, safe_file_size
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.factor_laws.moneyflow.registry import resolve_contract as resolve_moneyflow_law_contract
 
 MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
 HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
@@ -880,6 +881,23 @@ def merge_handoff(existing: dict, updates: dict) -> dict:
     for key in ['factor_impl_ref', 'factor_impl_stub_ref', 'qlib_expression_draft_ref', 'hybrid_execution_scaffold_ref', 'execution_mode']:
         if merged.get(key) is None and existing.get(key) is not None:
             merged[key] = existing[key]
+
+    existing_first_run = existing.get('first_run_outputs')
+    existing_local_inputs = existing.get('local_input_paths')
+    existing_step3a_blocked = (
+        existing.get('step3a_ready') is False
+        and (
+            (isinstance(existing_first_run, dict) and existing_first_run.get('status') == 'blocked')
+            or (isinstance(existing_local_inputs, dict) and existing_local_inputs.get('input_mode') == 'blocked')
+        )
+    )
+    if existing_step3a_blocked:
+        merged['step3a_ready'] = False
+        merged['step3b_ready'] = False
+        if isinstance(existing_first_run, dict):
+            merged['first_run_outputs'] = existing_first_run
+        for key in ['factor_impl_ref', 'factor_impl_stub_ref', 'qlib_expression_draft_ref', 'hybrid_execution_scaffold_ref']:
+            merged.pop(key, None)
 
     merged['report_id'] = updates.get('report_id') or existing.get('report_id')
     return merged
@@ -2229,6 +2247,35 @@ def _merge_direct_code_contracts(spec: dict, plan: dict | None) -> dict:
     return merged
 
 
+def _extract_direct_code_law_id(contract: dict) -> str | None:
+    for key in ('law_id', 'direct_code_law_id', 'selected_law_id'):
+        value = contract.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ('direct_code_law', 'child_formula_or_law', 'child_formula'):
+        value = contract.get(key)
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text.startswith('direct_code_law:'):
+            return text.split(':', 1)[1].strip()
+    return None
+
+
+def resolve_direct_code_law_contract(contract: dict) -> dict:
+    law_id = _extract_direct_code_law_id(contract)
+    if not law_id:
+        return {}
+    expected_hash = (
+        contract.get('code_law_hash')
+        or contract.get('direct_code_law_hash')
+        or contract.get('law_hash')
+    )
+    resolved = resolve_moneyflow_law_contract(law_id, expected_hash=str(expected_hash) if expected_hash else None)
+    resolved['contract_source'] = 'law_registry'
+    return resolved
+
+
 def ensure_direct_code_keyword_adapter(source_code: str) -> str:
     """Expose a stable Step3B/Step4 `compute_factor(daily_df=..., minute_df=...)` API.
 
@@ -2307,6 +2354,9 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
     contract = spec.get('implementation_contract') or {}
     plan_contract = (plan or {}).get('implementation_contract') if isinstance((plan or {}).get('implementation_contract'), dict) else {}
     code_contract = _merge_direct_code_contracts(spec, plan)
+    law_contract = resolve_direct_code_law_contract(code_contract)
+    if law_contract:
+        code_contract = {**code_contract, **law_contract}
     source_code = str(
         code_contract.get('source_code')
         or contract.get('source_code')
@@ -2498,6 +2548,14 @@ def main():
             ),
             'first_run_outputs': first_run_outputs,
         })
+        handoff_payload['step3a_ready'] = False
+        handoff_payload['step3b_ready'] = False
+        handoff_payload['implementation_status'] = 'blocked'
+        handoff_payload['factor_impl_ref'] = None
+        handoff_payload['factor_impl_stub_ref'] = None
+        handoff_payload['qlib_expression_draft_ref'] = None
+        handoff_payload['hybrid_execution_scaffold_ref'] = None
+        handoff_payload['first_run_outputs'] = first_run_outputs
         write_json(handoff_path, handoff_payload)
         print('BLOCK_STEP3B_REQUIRES_READY_STEP3A: Step3A feasibility is blocked; Step3B skipped without generated_code writes.')
         return

@@ -3,6 +3,9 @@ from __future__ import annotations
 SUPPORTED_MILLER_DERIVED_STATE_LAWS = {
     "miller_flow_v15_repair_confirmed_absorption_fp_v1",
     "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+    "miller_flow_v18a_absolute_long_edge_gate_v1",
+    "miller_flow_v18b_first_passage_repair_edge_v1",
+    "miller_flow_v18c_crowding_filtered_repair_v1",
 }
 
 
@@ -50,6 +53,9 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
             "miller_flow_v15_repair_confirmed_absorption_fp_v1",
             "miller_flow_v16_positive_repair_core_fp_v1",
             "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+            "miller_flow_v18a_absolute_long_edge_gate_v1",
+            "miller_flow_v18b_first_passage_repair_edge_v1",
+            "miller_flow_v18c_crowding_filtered_repair_v1",
         }
         and "signed_flow_imbalance" in agg.columns
         and "ret_excess_kurtosis" in agg.columns
@@ -231,6 +237,9 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
             "miller_flow_v15_repair_confirmed_absorption_fp_v1",
             "miller_flow_v16_positive_repair_core_fp_v1",
             "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+            "miller_flow_v18a_absolute_long_edge_gate_v1",
+            "miller_flow_v18b_first_passage_repair_edge_v1",
+            "miller_flow_v18c_crowding_filtered_repair_v1",
         }:
             if _factorforge_direct_code_law_id == "miller_flow_v11_first_passage_lite_v1":
                 out["raw_v11_repair_absorption_signal"] = (
@@ -316,6 +325,9 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
                 "miller_flow_v15_repair_confirmed_absorption_fp_v1",
                 "miller_flow_v16_positive_repair_core_fp_v1",
                 "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+                "miller_flow_v18a_absolute_long_edge_gate_v1",
+                "miller_flow_v18b_first_passage_repair_edge_v1",
+                "miller_flow_v18c_crowding_filtered_repair_v1",
             }:
                 out["v14_latent_absorption_state"] = (
                     0.44 * out["absorption_state"].fillna(0.0)
@@ -392,6 +404,9 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
                     "miller_flow_v15_repair_confirmed_absorption_fp_v1",
                     "miller_flow_v16_positive_repair_core_fp_v1",
                     "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+                    "miller_flow_v18a_absolute_long_edge_gate_v1",
+                    "miller_flow_v18b_first_passage_repair_edge_v1",
+                    "miller_flow_v18c_crowding_filtered_repair_v1",
                 }:
                     _current["v15_repair_confirmation_raw"] = (
                         0.38
@@ -608,6 +623,131 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
                             - 0.10 * _current["crowded_chasing_state"].fillna(0.0)
                             - 0.08 * _current["prior_overheat"].fillna(0.0)
                         )
+                    if _factorforge_direct_code_law_id in {
+                        "miller_flow_v18a_absolute_long_edge_gate_v1",
+                        "miller_flow_v18b_first_passage_repair_edge_v1",
+                        "miller_flow_v18c_crowding_filtered_repair_v1",
+                    }:
+                        _current["v18_positive_repair_core"] = (
+                            _factorforge_positive(_current["v15_repair_confirmation_z"]).fillna(0.0)
+                            * (0.42 + 0.36 * _current["v15_repair_gate"].fillna(0.0))
+                            + 0.26 * _factorforge_positive(_current["v14_absorption_momentum_z"]).fillna(0.0)
+                            + 0.18 * _factorforge_positive(_current["ret_tail_asymmetry_z"]).fillna(0.0)
+                            + 0.12 * _current["v15_confirmed_absorption_state"].fillna(0.0).clip(0.0, 4.0)
+                        )
+                        _current["v18_crowding_overheat"] = (
+                            0.34 * _current["crowded_chasing_state"].fillna(0.0)
+                            + 0.28 * _current["prior_overheat"].fillna(0.0)
+                            + 0.22 * _factorforge_positive(_current["ret_excess_kurtosis_z"]).fillna(0.0)
+                            + 0.16 * _factorforge_positive(_current["bad_selling_noise_state"]).fillna(0.0)
+                        )
+                        _current["v18_tradable_mid_gate"] = 1.0 / (
+                            1.0
+                            + _factorforge_np.exp(
+                                -(
+                                    0.36
+                                    + 0.24 * _current["float_turnover_prev_z"].fillna(0.0)
+                                    + 0.18 * _current["volume_ratio_prev_z"].fillna(0.0)
+                                    - 0.42 * _factorforge_positive(0.10 - _current["cap_rank_pct_prev"].fillna(0.50)).fillna(0.0)
+                                    - 0.30 * _factorforge_positive(_current["cap_rank_pct_prev"].fillna(0.50) - 0.85).fillna(0.0)
+                                    - 0.20 * _factorforge_positive(-_current["float_turnover_prev_z"].fillna(0.0)).fillna(0.0)
+                                ).clip(lower=-20.0, upper=20.0)
+                            )
+                        )
+                        _current["v18_market_drift_support"] = (
+                            0.22 * _current["pct_chg_prev_z"].fillna(0.0)
+                            + 0.18 * _factorforge_positive(_current["volume_ratio_prev_z"]).fillna(0.0)
+                            - 0.18 * _factorforge_positive(-_current["pct_chg_prev_z"].fillna(0.0)).fillna(0.0)
+                        )
+                        _current["v18_absolute_long_margin"] = (
+                            _current["raw_v11_repair_absorption_signal"].fillna(0.0)
+                            + 0.34 * _current["v18_positive_repair_core"].fillna(0.0)
+                            + 0.16 * _current["v18_market_drift_support"].fillna(0.0)
+                            - 0.30 * _current["v18_crowding_overheat"].fillna(0.0)
+                            - 0.18 * _current["v15_unconfirmed_distress_penalty"].fillna(0.0)
+                        )
+                        _current["v18_absolute_long_gate"] = 1.0 / (
+                            1.0
+                            + _factorforge_np.exp(
+                                -(
+                                    0.72 * _current["v18_absolute_long_margin"].fillna(0.0)
+                                    + 0.30 * _current["v18_tradable_mid_gate"].fillna(0.0)
+                                    - 0.22
+                                ).clip(lower=-20.0, upper=20.0)
+                            )
+                        )
+                    if _factorforge_direct_code_law_id == "miller_flow_v18a_absolute_long_edge_gate_v1":
+                        _current["raw_v11_repair_absorption_signal"] = (
+                            _current["v18_absolute_long_margin"].fillna(0.0)
+                            * _current["v18_absolute_long_gate"].fillna(0.0)
+                            * (0.70 + 0.36 * _current["v18_tradable_mid_gate"].fillna(0.0))
+                            - 0.18 * _factorforge_positive(0.50 - _current["v18_absolute_long_gate"].fillna(0.0))
+                            - 0.08 * _current["v18_crowding_overheat"].fillna(0.0)
+                        )
+                    if _factorforge_direct_code_law_id == "miller_flow_v18b_first_passage_repair_edge_v1":
+                        _current["v18_up_hit_probability"] = 1.0 / (
+                            1.0
+                            + _factorforge_np.exp(
+                                -(
+                                    0.58 * _current["v18_positive_repair_core"].fillna(0.0)
+                                    + 0.36 * _current["v15_confirmed_absorption_state"].fillna(0.0)
+                                    + 0.22 * _current["v14_absorption_momentum_z"].fillna(0.0)
+                                    - 0.34 * _current["v18_crowding_overheat"].fillna(0.0)
+                                    - 0.16
+                                ).clip(lower=-20.0, upper=20.0)
+                            )
+                        )
+                        _current["v18_down_hit_probability"] = 1.0 / (
+                            1.0
+                            + _factorforge_np.exp(
+                                -(
+                                    0.52 * _current["bad_selling_noise_state"].fillna(0.0)
+                                    + 0.32 * _factorforge_positive(-_current["v15_repair_confirmation_z"]).fillna(0.0)
+                                    + 0.24 * _current["fragile_tail_penalty"].fillna(0.0)
+                                    + 0.20 * _current["crowded_chasing_state"].fillna(0.0)
+                                    - 0.30 * _current["v15_confirmed_absorption_state"].fillna(0.0)
+                                ).clip(lower=-20.0, upper=20.0)
+                            )
+                        )
+                        _current["v18_upside_distance"] = (
+                            0.34 * _current["discount_repair_state"].fillna(0.0).clip(0.0, 5.0)
+                            + 0.30 * _current["v18_positive_repair_core"].fillna(0.0).clip(0.0, 5.0)
+                            + 0.18 * _factorforge_positive(-_current["ret_excess_kurtosis_z"]).fillna(0.0).clip(0.0, 3.0)
+                        )
+                        _current["v18_downside_distance"] = (
+                            0.36 * _current["bad_selling_noise_state"].fillna(0.0).clip(0.0, 5.0)
+                            + 0.24 * _factorforge_positive(-_current["v15_repair_confirmation_z"]).fillna(0.0).clip(0.0, 3.0)
+                            + 0.22 * _current["v18_crowding_overheat"].fillna(0.0).clip(0.0, 5.0)
+                        )
+                        _current["raw_v11_repair_absorption_signal"] = (
+                            _current["v18_up_hit_probability"].fillna(0.0)
+                            * (0.54 + 0.30 * _current["v18_upside_distance"].fillna(0.0))
+                            - _current["v18_down_hit_probability"].fillna(0.0)
+                            * (0.56 + 0.26 * _current["v18_downside_distance"].fillna(0.0))
+                            - 0.10 * _current["v15_unconfirmed_distress_penalty"].fillna(0.0)
+                            - 0.08 * _current["prior_overheat"].fillna(0.0)
+                        ) * _current["v18_tradable_mid_gate"].fillna(0.0)
+                    if _factorforge_direct_code_law_id == "miller_flow_v18c_crowding_filtered_repair_v1":
+                        _current["v18_smart_repair_gate"] = 1.0 / (
+                            1.0
+                            + _factorforge_np.exp(
+                                -(
+                                    0.50 * _current["v18_positive_repair_core"].fillna(0.0)
+                                    + 0.24 * _current["v15_repair_gate"].fillna(0.0)
+                                    + 0.18 * _factorforge_positive(_current["amount_hhi_z"]).fillna(0.0)
+                                    - 0.44 * _current["v18_crowding_overheat"].fillna(0.0)
+                                    - 0.20 * _current["bad_selling_noise_state"].fillna(0.0)
+                                    - 0.08
+                                ).clip(lower=-20.0, upper=20.0)
+                            )
+                        )
+                        _current["raw_v11_repair_absorption_signal"] = (
+                            _current["v18_positive_repair_core"].fillna(0.0)
+                            * _current["v18_smart_repair_gate"].fillna(0.0)
+                            * (0.68 + 0.24 * _current["v18_tradable_mid_gate"].fillna(0.0))
+                            - 0.22 * _current["v18_crowding_overheat"].fillna(0.0)
+                            - 0.14 * _current["v15_unconfirmed_distress_penalty"].fillna(0.0)
+                        )
                     _current["factor_value"] = _current["raw_v11_repair_absorption_signal"]
                     return _current[["ts_code", "trade_date", "factor_value"]].replace(
                         [_factorforge_np.inf, -_factorforge_np.inf],
@@ -769,6 +909,9 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
             "miller_flow_v15_repair_confirmed_absorption_fp_v1",
             "miller_flow_v16_positive_repair_core_fp_v1",
             "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+            "miller_flow_v18a_absolute_long_edge_gate_v1",
+            "miller_flow_v18b_first_passage_repair_edge_v1",
+            "miller_flow_v18c_crowding_filtered_repair_v1",
         }:
         agg["persistent_tail_pressure"] = (
             0.45 * agg["miller_tail_pressure"].fillna(0.0)
@@ -1047,6 +1190,9 @@ def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
                     "miller_flow_v15_repair_confirmed_absorption_fp_v1",
                     "miller_flow_v16_positive_repair_core_fp_v1",
                     "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+                    "miller_flow_v18a_absolute_long_edge_gate_v1",
+                    "miller_flow_v18b_first_passage_repair_edge_v1",
+                    "miller_flow_v18c_crowding_filtered_repair_v1",
                 }:
         out["posterior_tail_pressure_H_z_lag1"] = out.groupby("ts_code", sort=False)["tail_pressure_z"].shift(1)
         out["posterior_tail_pressure_H_z_lag2"] = out.groupby("ts_code", sort=False)["tail_pressure_z"].shift(2)

@@ -117,6 +117,7 @@ def test_step3b_contract_resolution() -> dict[str, Any]:
 def test_real_moneyflow_law_registry_entries() -> dict[str, Any]:
     import pandas as pd
 
+    from factor_factory.factor_laws.moneyflow.derived_state import SUPPORTED_MILLER_DERIVED_STATE_LAWS
     from factor_factory.factor_laws.moneyflow.registry import resolve_law
 
     sample = pd.DataFrame(
@@ -129,14 +130,12 @@ def test_real_moneyflow_law_registry_entries() -> dict[str, Any]:
             "pct_chg": [1.0, -1.0, 2.0, -0.5],
             "turnover_rate": [1.5, 1.2, 1.6, 1.1],
             "volume_ratio": [1.1, 0.9, 1.2, 0.8],
+            "circ_mv": [80.0, 150.0, 82.0, 148.0],
             "total_mv": [100.0, 200.0, 101.0, 198.0],
         }
     )
     results: dict[str, Any] = {}
-    for law_id in (
-        "miller_flow_v15_repair_confirmed_absorption_fp_v1",
-        "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
-    ):
+    for law_id in sorted(SUPPORTED_MILLER_DERIVED_STATE_LAWS):
         law = resolve_law(law_id)
         assert_true("real law hash", len(law.code_law_hash) == 64, law.code_law_hash)
         assert_true(

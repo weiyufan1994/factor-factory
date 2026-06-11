@@ -27,6 +27,7 @@ TOKEN_ADAPTER_CHANGED = "BLOCK_FACTORFORGE_MULTIBRANCH_ADAPTER_SYNTHESIS_CHANGED
 TOKEN_FAILED = "BLOCK_FACTORFORGE_MULTIBRANCH_MATERIALIZATION_FAILED"
 TOKEN_CHILD_COLLISION = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_ID_COLLISION"
 TOKEN_DUP_HASH = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_FORMULA_DUPLICATE"
+TOKEN_PREFLIGHT_FAILED = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
 
 
 def utc_now() -> str:
@@ -75,8 +76,227 @@ def child_materialization_report_path(root: Path, parent: str, child: str) -> Pa
     return root / "objects" / "runtime_context" / filename
 
 
+def object_path(root: Path, kind: str, report_id: str) -> Path:
+    names = {
+        "alpha_idea_master": ("alpha_idea_master", f"alpha_idea_master__{report_id}.json"),
+        "factor_spec_master": ("factor_spec_master", f"factor_spec_master__{report_id}.json"),
+        "data_prep_master": ("data_prep_master", f"data_prep_master__{report_id}.json"),
+        "qlib_adapter_config": ("data_prep_master", f"qlib_adapter_config__{report_id}.json"),
+        "handoff_to_step3": ("handoff", f"handoff_to_step3__{report_id}.json"),
+        "handoff_to_step4": ("handoff", f"handoff_to_step4__{report_id}.json"),
+        "executable_revision_spec": ("research_iteration_master", f"executable_revision_spec__{report_id}.json"),
+    }
+    rel_dir, name = names[kind]
+    return root / "objects" / rel_dir / name
+
+
 def executable_revision_spec_path(root: Path, child: str) -> Path:
     return root / "objects" / "research_iteration_master" / f"executable_revision_spec__{child}.json"
+
+
+def resolved_path(root: Path, raw: Any) -> Path | None:
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    if path.is_absolute():
+        return path
+    candidates = [root / path]
+    parts = path.parts
+    if parts and parts[0] == root.name:
+        candidates.append(root.parent / path)
+        candidates.append(root / Path(*parts[1:]))
+    candidates.append(root.parent / path)
+    return next((candidate for candidate in candidates if candidate.exists()), candidates[0])
+
+
+def resolved_daily_sources(root: Path, data_prep: dict[str, Any]) -> dict[str, Path]:
+    local_inputs = data_prep.get("local_input_paths")
+    if not isinstance(local_inputs, dict):
+        return {}
+    sources: dict[str, Path] = {}
+    for suffix, key in (("parquet", "daily_df_parquet"), ("csv", "daily_df_csv")):
+        path = resolved_path(root, local_inputs.get(key))
+        if path and path.exists():
+            sources[suffix] = path
+    return sources
+
+
+def child_daily_input_path(root: Path, child: str, suffix: str) -> Path:
+    return root / "runs" / child / "step3a_local_inputs" / f"daily_input__{child}.{suffix}"
+
+
+def child_daily_meta_path(root: Path, child: str) -> Path:
+    return root / "runs" / child / "step3a_local_inputs" / f"daily_input_meta__{child}.json"
+
+
+def planned_target_paths(root: Path, parent: str, child: str, parent_data_prep: dict[str, Any]) -> dict[str, Path]:
+    targets = {
+        "alpha_idea_master": object_path(root, "alpha_idea_master", child),
+        "factor_spec_master": object_path(root, "factor_spec_master", child),
+        "data_prep_master": object_path(root, "data_prep_master", child),
+        "qlib_adapter_config": object_path(root, "qlib_adapter_config", child),
+        "executable_revision_spec": object_path(root, "executable_revision_spec", child),
+        "materialization_report": child_materialization_report_path(root, parent, child),
+    }
+    for suffix, source in resolved_daily_sources(root, parent_data_prep).items():
+        if source.exists():
+            targets[f"child_daily_input_{suffix}"] = child_daily_input_path(root, child, suffix)
+    local_inputs = parent_data_prep.get("local_input_paths")
+    if isinstance(local_inputs, dict):
+        meta_source = resolved_path(root, local_inputs.get("daily_input_meta_json"))
+        if meta_source and meta_source.exists():
+            targets["child_daily_input_meta_json"] = child_daily_meta_path(root, child)
+    for kind in ("handoff_to_step3", "handoff_to_step4"):
+        if object_path(root, kind, parent).exists():
+            targets[kind] = object_path(root, kind, child)
+    return targets
+
+
+def artifact_identity_report_id(payload: dict[str, Any]) -> str:
+    identity = payload.get("artifact_identity") if isinstance(payload.get("artifact_identity"), dict) else {}
+    return str(identity.get("report_id") or payload.get("report_id") or "")
+
+
+def stable_hash(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    clone = json.loads(json.dumps(payload, ensure_ascii=False))
+    for key in ("report_id", "artifact_identity", "lineage_repair", "created_at_utc", "updated_at_utc"):
+        clone.pop(key, None)
+    return clone
+
+
+def validate_lineage_repair(root: Path, report_id: str, artifact_kind: str, payload: dict[str, Any], path: Path) -> dict[str, Any]:
+    repair = payload.get("lineage_repair")
+    if not isinstance(repair, dict):
+        return {"status": "not_repaired", "path": str(path)}
+    if repair.get("status") != "pass" or repair.get("target_report_id") != report_id or repair.get("artifact_kind") != artifact_kind:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: invalid lineage_repair for {artifact_kind}")
+    source_raw = repair.get("source_artifact_path")
+    source_sha = repair.get("source_artifact_sha256")
+    if not isinstance(source_raw, str) or not source_raw or not isinstance(source_sha, str) or not source_sha:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: lineage_repair source identity missing for {artifact_kind}")
+    source_path = Path(source_raw).expanduser()
+    if not source_path.is_absolute():
+        source_path = root / source_path
+    if not source_path.exists() or sha256_file(source_path) != source_sha:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: lineage_repair source artifact changed for {artifact_kind}")
+    if repair.get("repair_scope") != "identity_wrapper_only":
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: lineage_repair scope must be identity_wrapper_only for {artifact_kind}")
+    semantic_before = str(repair.get("semantic_payload_sha256_before") or "")
+    semantic_after = str(repair.get("semantic_payload_sha256_after") or "")
+    current_semantic = stable_hash(semantic_payload(payload))
+    source_semantic = stable_hash(semantic_payload(load_json(source_path)))
+    if not semantic_before or not semantic_after or semantic_before != semantic_after:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: lineage_repair semantic hash contract invalid for {artifact_kind}")
+    if current_semantic != semantic_after:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: repaired {artifact_kind} semantic payload changed after repair")
+    if source_semantic != semantic_before:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: lineage_repair source semantic payload changed for {artifact_kind}")
+    return {
+        "status": "repaired",
+        "path": str(path),
+        "source_report_id": repair.get("source_report_id"),
+        "source_artifact_sha256": source_sha,
+    }
+
+
+def validate_required_parent_artifact(root: Path, report_id: str, artifact_kind: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    path = object_path(root, artifact_kind, report_id)
+    if not path.exists():
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: parent {artifact_kind} missing at {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: parent {artifact_kind} is not a JSON object")
+    observed_report_id = artifact_identity_report_id(payload)
+    if observed_report_id != report_id:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: parent {artifact_kind} report_id mismatch: {observed_report_id!r}")
+    repair_status = validate_lineage_repair(root, report_id, artifact_kind, payload, path)
+    return payload, {
+        "artifact_kind": artifact_kind,
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "lineage_repair": repair_status,
+    }
+
+
+def validate_direct_code_law(branch: dict[str, Any]) -> dict[str, Any]:
+    implementation_mode = str(branch.get("implementation_mode") or "")
+    child_formula = str(branch.get("child_formula") or "")
+    contract = branch.get("direct_code_revision_contract") if isinstance(branch.get("direct_code_revision_contract"), dict) else {}
+    law_id = str(contract.get("code_law_id") or branch.get("law_id") or "")
+    if implementation_mode != "direct_code" and not child_formula.startswith("direct_code_law:"):
+        return {"status": "not_applicable"}
+    if not law_id:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: direct_code branch law_id missing")
+    try:
+        from factor_factory.factor_laws.moneyflow.registry import resolve_law
+
+        resolved = resolve_law(law_id)
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: direct_code law unavailable: {law_id}: {exc}") from exc
+    return {
+        "status": "available",
+        "law_id": law_id,
+        "law_hash": resolved.code_law_hash,
+        "implementation_mode": "direct_code",
+    }
+
+
+def preflight_materialization(root: Path, report_id: str, approval: dict[str, Any]) -> dict[str, Any]:
+    parent_payloads: dict[str, dict[str, Any]] = {}
+    parent_artifacts: list[dict[str, Any]] = []
+    for artifact_kind in ("alpha_idea_master", "factor_spec_master", "data_prep_master"):
+        payload, status = validate_required_parent_artifact(root, report_id, artifact_kind)
+        parent_payloads[artifact_kind] = payload
+        parent_artifacts.append(status)
+
+    data_prep = parent_payloads["data_prep_master"]
+    declared_sources = []
+    local_inputs = data_prep.get("local_input_paths") if isinstance(data_prep.get("local_input_paths"), dict) else {}
+    for key in ("daily_df_parquet", "daily_df_csv"):
+        if local_inputs.get(key):
+            path = resolved_path(root, local_inputs.get(key))
+            if not path or not path.exists():
+                raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: parent data source missing: {key}")
+            declared_sources.append({"key": key, "path": str(path), "sha256": sha256_file(path)})
+    if not declared_sources:
+        raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: parent data source missing: daily_df_parquet or daily_df_csv must be declared")
+
+    target_paths: list[dict[str, Any]] = []
+    direct_code_laws: list[dict[str, Any]] = []
+    seen_targets: dict[Path, str] = {}
+    for branch in approval.get("selected_branches") or []:
+        child = str(branch.get("child_report_id") or "")
+        if not child:
+            raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child_report_id missing")
+        for kind, path in planned_target_paths(root, report_id, child, data_prep).items():
+            if path in seen_targets:
+                raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child target collision between {seen_targets[path]} and {child}: {path}")
+            seen_targets[path] = child
+            if path.exists():
+                raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child target already exists: {kind} {path}")
+            target_paths.append({"child_report_id": child, "kind": kind, "path": str(path)})
+        direct_code_laws.append({"child_report_id": child, **validate_direct_code_law(branch)})
+
+    return {
+        "contract_version": "factorforge_multibranch_materialization_preflight_v1",
+        "status": "pass",
+        "checked_at_utc": utc_now(),
+        "parent_report_id": report_id,
+        "parent_artifacts": parent_artifacts,
+        "declared_daily_sources": declared_sources,
+        "child_target_paths": target_paths,
+        "direct_code_laws": direct_code_laws,
+        "step4_backend_policy": {
+            "status": "checked",
+            "qlib_not_applicable_allowed_for_direct_code": True,
+        },
+    }
 
 
 def validate_approval(root: Path, report_id: str, approval: dict[str, Any]) -> None:
@@ -272,21 +492,43 @@ def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any
     if existing is not None:
         print(f"SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION: {aggregate_report_path(root, report_id, loop_index)}")
         return existing
+    try:
+        preflight = preflight_materialization(root, report_id, approval)
+    except ValueError as exc:
+        payload = base_report(root, report_id, approval, loop_index, [], status="BLOCK")
+        payload["block_reason"] = TOKEN_PREFLIGHT_FAILED
+        payload["preflight"] = {
+            "contract_version": "factorforge_multibranch_materialization_preflight_v1",
+            "status": "blocked",
+            "checked_at_utc": utc_now(),
+            "error": str(exc),
+        }
+        write_json(aggregate_report_path(root, report_id, loop_index), payload)
+        raise
     children: list[dict[str, Any]] = []
     for branch in approval["selected_branches"]:
         result = run_child_materializer(root, report_id, branch, approval)
         children.append(result)
         if result["materialization_rc"] != 0:
-            payload = base_report(root, report_id, approval, loop_index, children, status="BLOCK")
+            payload = base_report(root, report_id, approval, loop_index, children, status="BLOCK", preflight=preflight)
             payload["block_reason"] = TOKEN_FAILED
             write_json(aggregate_report_path(root, report_id, loop_index), payload)
             raise ValueError(TOKEN_FAILED)
-    payload = base_report(root, report_id, approval, loop_index, children, status="PASS")
+    payload = base_report(root, report_id, approval, loop_index, children, status="PASS", preflight=preflight)
     write_json(aggregate_report_path(root, report_id, loop_index), payload)
     return payload
 
 
-def base_report(root: Path, report_id: str, approval: dict[str, Any], loop_index: int, children: list[dict[str, Any]], *, status: str) -> dict[str, Any]:
+def base_report(
+    root: Path,
+    report_id: str,
+    approval: dict[str, Any],
+    loop_index: int,
+    children: list[dict[str, Any]],
+    *,
+    status: str,
+    preflight: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "contract_version": MATERIALIZATION_VERSION,
         "created_at_utc": utc_now(),
@@ -304,6 +546,7 @@ def base_report(root: Path, report_id: str, approval: dict[str, Any], loop_index
         "human_approval_required": True,
         "clean_data_touched": False,
         "official_promotion_written": False,
+        "preflight": preflight or {},
     }
 
 

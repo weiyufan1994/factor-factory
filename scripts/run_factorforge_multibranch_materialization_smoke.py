@@ -145,6 +145,26 @@ def materialize(root: Path) -> dict[str, Any]:
     )
 
 
+def repair_lineage(root: Path, *, report_id: str = REPORT_ID, source_report_id: str = "MULTIBRANCH_MATERIALIZATION_ANCESTOR") -> dict[str, Any]:
+    return run_cmd(
+        root,
+        [
+            sys.executable,
+            "scripts/repair_factorforge_report_lineage_artifacts.py",
+            "--factorforge-root",
+            str(root),
+            "--report-id",
+            report_id,
+            "--source-report-id",
+            source_report_id,
+            "--artifact-kind",
+            "alpha_idea_master",
+            "--reason",
+            "smoke_ancestor_alpha_idea_wrapper_repair",
+        ],
+    )
+
+
 def write_daily_fixture(root: Path, report_id: str) -> dict[str, str]:
     path = daily_dir(root, report_id)
     path.mkdir(parents=True, exist_ok=True)
@@ -505,8 +525,172 @@ def case_missing_approval(root: Path) -> dict[str, Any]:
     return {"case": "multibranch_missing_approval_blocks", "ok": mat["rc"] == 1 and token in text, "token_present": token in text, "materialize": mat}
 
 
+def case_missing_parent_alpha_preflight_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    (root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{REPORT_ID}.json").unlink()
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "multibranch_missing_parent_alpha_preflight_blocks",
+        "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text and "alpha_idea_master" in text,
+        "token_present": token in text,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
+def case_missing_daily_source_preflight_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    data_prep_path = root / "objects" / "data_prep_master" / f"data_prep_master__{REPORT_ID}.json"
+    data_prep = load_json(data_prep_path)
+    data_prep["local_input_paths"] = {}
+    write_json(data_prep_path, data_prep)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "multibranch_missing_daily_source_preflight_blocks",
+        "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text and "daily_df_parquet" in text,
+        "token_present": token in text,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
+def case_qlib_target_collision_preflight_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    approval_payload = load_json(approval_path(root))
+    child = approval_payload["selected_branches"][0]["child_report_id"]
+    qlib_path = root / "objects" / "data_prep_master" / f"qlib_adapter_config__{child}.json"
+    write_json(qlib_path, {"report_id": child, "preexisting": True})
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    qlib_after = load_json(qlib_path)
+    return {
+        "case": "multibranch_qlib_target_collision_preflight_blocks",
+        "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text and "qlib_adapter_config" in text and qlib_after.get("preexisting") is True,
+        "token_present": token in text,
+        "preexisting_preserved": qlib_after.get("preexisting") is True,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
+def case_lineage_repair_enables_materialization(root: Path) -> dict[str, Any]:
+    ancestor = "MULTIBRANCH_MATERIALIZATION_ANCESTOR"
+    setup_parent(root, ancestor)
+    setup_parent(root)
+    target_alpha = root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{REPORT_ID}.json"
+    target_alpha.unlink()
+    repair = repair_lineage(root, report_id=REPORT_ID, source_report_id=ancestor)
+    repaired_payload = load_json(target_alpha)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    mat = materialize(root)
+    report = load_json(aggregate_path(root))
+    repair_contract = repaired_payload.get("lineage_repair") if isinstance(repaired_payload.get("lineage_repair"), dict) else {}
+    return {
+        "case": "multibranch_lineage_repair_enables_materialization",
+        "ok": (
+            repair["rc"] == 0
+            and repair_contract.get("status") == "pass"
+            and repair_contract.get("source_report_id") == ancestor
+            and repaired_payload.get("report_id") == REPORT_ID
+            and approval["rc"] == 0
+            and mat["rc"] == 0
+            and report.get("status") == "PASS"
+        ),
+        "repair": repair,
+        "lineage_repair": repair_contract,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
+def case_lineage_repair_semantic_drift_blocks(root: Path) -> dict[str, Any]:
+    ancestor = "MULTIBRANCH_MATERIALIZATION_ANCESTOR"
+    setup_parent(root, ancestor)
+    setup_parent(root)
+    target_alpha = root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{REPORT_ID}.json"
+    target_alpha.unlink()
+    repair = repair_lineage(root, report_id=REPORT_ID, source_report_id=ancestor)
+    repaired_payload = load_json(target_alpha)
+    repaired_payload["semantic_drift_after_repair"] = True
+    write_json(target_alpha, repaired_payload)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "lineage_repair_semantic_drift_blocks",
+        "ok": repair["rc"] == 0 and approval["rc"] == 0 and mat["rc"] == 1 and token in text and "semantic payload changed" in text,
+        "token_present": token in text,
+        "repair": repair,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
+def case_lineage_repair_source_missing_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    missing_source = "MULTIBRANCH_MATERIALIZATION_MISSING_ANCESTOR"
+    repair = repair_lineage(root, report_id=REPORT_ID, source_report_id=missing_source)
+    text = repair["stdout_tail"] + repair["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_LINEAGE_REPAIR_SOURCE_MISSING"
+    return {
+        "case": "lineage_repair_source_missing_blocks",
+        "ok": repair["rc"] == 1 and token in text,
+        "token_present": token in text,
+        "repair": repair,
+    }
+
+
+def case_lineage_repair_target_exists_blocks(root: Path) -> dict[str, Any]:
+    ancestor = "MULTIBRANCH_MATERIALIZATION_ANCESTOR"
+    setup_parent(root, ancestor)
+    setup_parent(root)
+    repair = repair_lineage(root, report_id=REPORT_ID, source_report_id=ancestor)
+    text = repair["stdout_tail"] + repair["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_LINEAGE_REPAIR_TARGET_EXISTS"
+    return {
+        "case": "lineage_repair_target_exists_blocks",
+        "ok": repair["rc"] == 1 and token in text,
+        "token_present": token in text,
+        "repair": repair,
+    }
+
+
+def case_direct_code_law_unavailable_preflight_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    payload = direct_code_synthesis()
+    payload["selected_branches"][0]["law_id"] = "miller_flow_missing_registry_law_v1"
+    payload["selected_branches"][0]["child_formula"] = "direct_code_law:miller_flow_missing_registry_law_v1"
+    payload["selected_branches"][0]["direct_code_revision_contract"]["code_law_id"] = "miller_flow_missing_registry_law_v1"
+    write_synthesis(root, payload)
+    approval = approve(root)
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "multibranch_direct_code_law_unavailable_preflight_blocks",
+        "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text and "direct_code law unavailable" in text,
+        "token_present": token in text,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
 def case_non_tmp_root_blocks() -> dict[str, Any]:
-    root = REPO_ROOT / "_factorforge_multibranch_materialization_non_tmp_probe"
+    root = Path("/dev/null/factorforge_multibranch_materialization_non_tmp_probe")
     proc = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "run_factorforge_multibranch_materialization_smoke.py"), "--root", str(root)],
         cwd=str(REPO_ROOT),
@@ -553,6 +737,14 @@ def main() -> int:
         run_case(root, "adapter_synthesis_mutation", case_adapter_synthesis_mutation),
         run_case(root, "duplicate_approval_hash", case_duplicate_approval_hash),
         run_case(root, "missing_approval", case_missing_approval),
+        run_case(root, "missing_parent_alpha_preflight", case_missing_parent_alpha_preflight_blocks),
+        run_case(root, "missing_daily_source_preflight", case_missing_daily_source_preflight_blocks),
+        run_case(root, "qlib_target_collision_preflight", case_qlib_target_collision_preflight_blocks),
+        run_case(root, "direct_code_law_unavailable_preflight", case_direct_code_law_unavailable_preflight_blocks),
+        run_case(root, "lineage_repair_enables_materialization", case_lineage_repair_enables_materialization),
+        run_case(root, "lineage_repair_semantic_drift", case_lineage_repair_semantic_drift_blocks),
+        run_case(root, "lineage_repair_source_missing", case_lineage_repair_source_missing_blocks),
+        run_case(root, "lineage_repair_target_exists", case_lineage_repair_target_exists_blocks),
         case_non_tmp_root_blocks(),
     ]
     after = file_snapshot()

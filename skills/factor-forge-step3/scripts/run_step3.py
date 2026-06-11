@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 from datetime import datetime, timezone
 from datetime import timedelta
@@ -36,6 +35,7 @@ from factor_factory.data_access import (
 )
 from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FF.parent
@@ -133,43 +133,19 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     return manifest, manifest_report_id(manifest)
 
 
-def step3_runtime_copy_path(factorforge_root: Path, report_id: str) -> Path:
-    safe_report_id = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(report_id)).strip('_') or 'unknown_report'
-    return factorforge_root / 'runs' / safe_report_id / 'step3_runtime' / f'run_step3__{safe_report_id}.py'
-
-
 def maybe_reexec_from_step3_template_copy(report_id: str | None, manifest_path: str | None) -> None:
-    """Run formal Step3A from a per-report copy, keeping this file template-only."""
-    if os.getenv(STEP3_TEMPLATE_COPY_ENV) == '1':
-        return
-    if os.getenv('FACTORFORGE_ALLOW_CANONICAL_STEP3_TEMPLATE_EXECUTION') == '1':
-        return
-
-    manifest = load_runtime_manifest(manifest_path) if manifest_path else None
-    resolved_report_id = report_id or (manifest_report_id(manifest) if manifest else None)
-    if not resolved_report_id:
-        return
-    factorforge_root = manifest_factorforge_root(manifest) if manifest else FF
-    source = Path(__file__).resolve()
-    target = step3_runtime_copy_path(factorforge_root, resolved_report_id)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    meta = {
-        'version': STEP3_TEMPLATE_COPY_VERSION,
-        'report_id': resolved_report_id,
-        'source_template_path': str(source),
-        'runtime_copy_path': str(target),
-        'source_template_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
-        'created_at_utc': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        'policy': 'canonical_run_step3_py_is_template_only',
-    }
-    meta_path = target.with_suffix('.meta.json')
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
-    os.environ[STEP3_TEMPLATE_COPY_ENV] = '1'
-    os.environ['FACTORFORGE_REPO_ROOT'] = str(source.parents[3])
-    os.environ['FACTORFORGE_STEP3_TEMPLATE_PATH'] = str(source)
-    os.environ['FACTORFORGE_STEP3_RUNTIME_COPY_PATH'] = str(target)
-    os.execv(sys.executable, [sys.executable, str(target), *sys.argv[1:]])
+    maybe_reexec_from_template_copy(
+        script_stem='run_step3',
+        report_id=report_id,
+        manifest_path=manifest_path,
+        default_factorforge_root=FF,
+        source_path=Path(__file__),
+        copy_env=STEP3_TEMPLATE_COPY_ENV,
+        copy_version=STEP3_TEMPLATE_COPY_VERSION,
+        policy='canonical_run_step3_py_is_template_only',
+        template_path_env='FACTORFORGE_STEP3_TEMPLATE_PATH',
+        runtime_copy_path_env='FACTORFORGE_STEP3_RUNTIME_COPY_PATH',
+    )
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:

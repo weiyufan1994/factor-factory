@@ -2009,8 +2009,9 @@ def _load_required_minute_flow_state(
     requirement: dict[str, Any],
     daily_df: pd.DataFrame,
     minute_query: dict[str, Any],
+    required_dates: list[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    dates = _daily_trade_dates_for_minute_query(daily_df, minute_query)
+    dates = required_dates or _daily_trade_dates_for_minute_query(daily_df, minute_query)
     if not dates:
         raise SystemExit('BLOCK_STEP4_FLOW_PREAGG_WINDOW_EMPTY: no daily dates overlap minute query')
     dataset_id = str(requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1).strip()
@@ -2075,6 +2076,94 @@ def _load_required_minute_flow_state(
         return loaded.frame, loaded.profile
     blocker = loaded.profile.get('blocker') or 'BLOCK_MINUTE_DERIVED_STATE_COVERAGE_INCOMPLETE'
     raise SystemExit(f"{blocker}: {json.dumps(loaded.profile, ensure_ascii=False, sort_keys=True, default=str)}")
+
+
+def compute_factor_from_data_api_minute_derived_state_batches(
+    module: Any,
+    *,
+    daily_df: pd.DataFrame,
+    requirement: dict[str, Any],
+    minute_query: dict[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+    started = time.perf_counter()
+    dates = _daily_trade_dates_for_minute_query(daily_df, minute_query)
+    if not dates:
+        raise SystemExit('BLOCK_STEP4_FLOW_PREAGG_WINDOW_EMPTY: no daily dates overlap minute query')
+    batch_size = int(os.getenv('FACTORFORGE_STEP4_DERIVED_STATE_BATCH_DAYS', '20') or '20')
+    batch_size = max(1, batch_size)
+    daily_work = daily_df.copy()
+    daily_work['_factorforge_trade_date_norm'] = _normal_date_text(daily_work['trade_date'])
+    results: list[pd.DataFrame] = []
+    batch_profiles: list[dict[str, Any]] = []
+    total_loaded_rows = 0
+    total_factor_rows = 0
+    total_load_seconds = 0.0
+    total_compute_seconds = 0.0
+    for start_idx in range(0, len(dates), batch_size):
+        batch_dates = dates[start_idx:start_idx + batch_size]
+        daily_dates = set(batch_dates)
+        if start_idx > 0:
+            daily_dates.add(dates[start_idx - 1])
+        daily_slice = daily_work.loc[daily_work['_factorforge_trade_date_norm'].isin(daily_dates)].drop(columns=['_factorforge_trade_date_norm']).copy()
+        flow_state_df, load_profile = _load_required_minute_flow_state(
+            requirement=requirement,
+            daily_df=daily_slice,
+            minute_query=minute_query,
+            required_dates=batch_dates,
+        )
+        batch_result, compute_profile = compute_factor_from_minute_derived_state(
+            module,
+            daily_df=daily_slice,
+            flow_state_df=flow_state_df,
+            dataset_id=str(requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1),
+        )
+        if not batch_result.empty and 'trade_date' in batch_result.columns:
+            normalized_result_dates = _normal_date_text(batch_result['trade_date'])
+            batch_result = batch_result.loc[normalized_result_dates.isin(set(batch_dates))].copy()
+        results.append(batch_result)
+        total_loaded_rows += int(len(flow_state_df))
+        total_factor_rows += int(len(batch_result))
+        total_load_seconds += float(load_profile.get('load_seconds') or 0.0)
+        total_compute_seconds += float(compute_profile.get('factor_compute_seconds') or 0.0)
+        batch_profiles.append({
+            'batch_index': len(batch_profiles),
+            'start_date': batch_dates[0],
+            'end_date': batch_dates[-1],
+            'date_count': len(batch_dates),
+            'derived_state_rows': int(len(flow_state_df)),
+            'factor_rows': int(len(batch_result)),
+            'load_seconds': float(load_profile.get('load_seconds') or 0.0),
+            'factor_compute_seconds': float(compute_profile.get('factor_compute_seconds') or 0.0),
+        })
+        del flow_state_df, batch_result, daily_slice
+        gc.collect()
+    result_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=['ts_code', 'trade_date', 'factor_value'])
+    state_profile = {
+        'status': 'ready',
+        'dataset_id': str(requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1),
+        'load_mode': 'data_api_minute_derived_state_batched',
+        'batch_size_days': int(batch_size),
+        'batch_count': len(batch_profiles),
+        'date_count': len(dates),
+        'start_date': dates[0],
+        'end_date': dates[-1],
+        'derived_state_rows': int(total_loaded_rows),
+        'factor_rows': int(total_factor_rows),
+        'load_seconds': float(total_load_seconds),
+        'total_seconds': float(time.perf_counter() - started),
+        'batch_profiles_head': batch_profiles[:5],
+        'batch_profiles_tail': batch_profiles[-5:],
+    }
+    factor_profile = {
+        'source': 'step4_minute_derived_flow_state',
+        'dataset_id': str(requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1),
+        'compute_mode': 'batched_module_compute_factor_from_derived_state',
+        'batch_count': len(batch_profiles),
+        'factor_compute_seconds': float(total_compute_seconds),
+        'derived_state_rows': int(total_loaded_rows),
+        'factor_rows': int(total_factor_rows),
+    }
+    return result_df, state_profile, factor_profile
 
 
 def compute_factor_from_minute_derived_state(
@@ -2791,21 +2880,32 @@ def main() -> None:
                     flow_requirement = _minute_flow_state_requirement(step4_contract, dpm)
                     minute_dates = _daily_trade_dates_for_minute_query(signal_daily_df, minute_streaming_query)
                     if flow_requirement:
-                        load_started = time.perf_counter()
-                        flow_state_df, minute_derived_state_profile = _load_required_minute_flow_state(
-                            requirement=flow_requirement,
-                            daily_df=signal_daily_df,
-                            minute_query=minute_streaming_query,
-                        )
-                        minute_derived_state_profile['phase_seconds'] = {
-                            'load_derived_state': minute_derived_state_profile.get('load_seconds') or (time.perf_counter() - load_started),
-                        }
-                        result_df, minute_derived_factor_profile = compute_factor_from_minute_derived_state(
-                            module,
-                            daily_df=signal_daily_df,
-                            flow_state_df=flow_state_df,
-                            dataset_id=str(flow_requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1),
-                        )
+                        flow_dataset_id = str(flow_requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1)
+                        if flow_dataset_id != MINUTE_DERIVED_FLOW_STATE_V1:
+                            result_df, minute_derived_state_profile, minute_derived_factor_profile = (
+                                compute_factor_from_data_api_minute_derived_state_batches(
+                                    module,
+                                    daily_df=signal_daily_df,
+                                    requirement=flow_requirement,
+                                    minute_query=minute_streaming_query,
+                                )
+                            )
+                        else:
+                            load_started = time.perf_counter()
+                            flow_state_df, minute_derived_state_profile = _load_required_minute_flow_state(
+                                requirement=flow_requirement,
+                                daily_df=signal_daily_df,
+                                minute_query=minute_streaming_query,
+                            )
+                            minute_derived_state_profile['phase_seconds'] = {
+                                'load_derived_state': minute_derived_state_profile.get('load_seconds') or (time.perf_counter() - load_started),
+                            }
+                            result_df, minute_derived_factor_profile = compute_factor_from_minute_derived_state(
+                                module,
+                                daily_df=signal_daily_df,
+                                flow_state_df=flow_state_df,
+                                dataset_id=flow_dataset_id,
+                            )
                     elif _generic_minute_full_window_forbidden(minute_dates):
                         raise SystemExit(
                             'BLOCK_STEP4_MINUTE_GENERIC_STREAMING_FULL_WINDOW_FORBIDDEN: '

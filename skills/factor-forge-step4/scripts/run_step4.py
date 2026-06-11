@@ -627,7 +627,10 @@ def _backend_status(backend_runs: list[dict[str, Any]], backend: str) -> str:
 
 
 def qlib_native_status_from_backend_runs(backend_runs: list[dict[str, Any]], backend_timing_profile: dict[str, Any]) -> str:
-    qlib_status = _backend_status(backend_runs, 'qlib_backtest')
+    item = next((run for run in backend_runs if run.get('backend') == 'qlib_backtest' or run.get('name') == 'qlib_backtest'), None)
+    if isinstance(item, dict) and item.get('qlib_native_status') == 'not_applicable':
+        return 'not_applicable'
+    qlib_status = str((item or {}).get('status') or 'not_attempted')
     timing = (backend_timing_profile.get('backends') or {}).get('qlib_native') or {}
     timing_status = str(timing.get('status') or '')
     if qlib_status == 'success':

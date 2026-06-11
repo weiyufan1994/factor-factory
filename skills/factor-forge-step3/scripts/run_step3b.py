@@ -672,6 +672,43 @@ def read_existing_json(p: Path) -> dict:
     return load_json(p)
 
 
+def write_direct_code_qlib_not_applicable_config(
+    *,
+    report_id: str,
+    spec_identity: dict,
+    code_contract: dict,
+) -> Path | None:
+    dataset_id = str(code_contract.get('dataset_id') or '').strip()
+    if not dataset_id:
+        return None
+    if dataset_id not in {
+        'minute_derived_flow_state_v1',
+        'intraday_flow_state_v2',
+        'intraday_flow_distribution_moments_v1',
+        'intraday_pseudo_dollar_bar_v1',
+        'intraday_value_occupation_state_v1',
+    }:
+        return None
+    path = OBJ / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
+    payload = {
+        'report_id': report_id,
+        'artifact_identity': derive_child_identity(
+            spec_identity,
+            artifact_role='qlib_adapter_config',
+            producer='step3b',
+        ),
+        'status': 'not_applicable',
+        'qlib_native_status': 'not_applicable',
+        'reason': 'direct_code_derived_state_not_supported_by_qlib',
+        'implementation_mode': 'direct_code',
+        'dataset_id': dataset_id,
+        'direct_code_law_id': _extract_direct_code_law_id(code_contract),
+        'contract_version': 'factorforge_qlib_adapter_config_v1',
+    }
+    write_json(path, payload)
+    return path
+
+
 def merge_handoff(existing: dict, updates: dict) -> dict:
     merged = dict(existing)
     merged.update({k: v for k, v in updates.items() if v is not None})
@@ -2575,6 +2612,11 @@ def main():
                 direct_code_handoff_fields['code_law_hash'] = code_contract_for_handoff.get(hash_key)
                 break
         direct_code_handoff_fields['direct_code_revision_contract'] = contract_without_source
+        write_direct_code_qlib_not_applicable_config(
+            report_id=report_id,
+            spec_identity=spec_identity,
+            code_contract=code_contract_for_handoff,
+        )
     handoff_payload = merge_handoff(existing_handoff, {
         'report_id': report_id,
         'artifact_identity': handoff_identity,

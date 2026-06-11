@@ -24,6 +24,16 @@ def load_validator():
     return module
 
 
+def load_runner():
+    path = REPO_ROOT / 'skills/factor-forge-step6/scripts/run_step6.py'
+    spec = importlib.util.spec_from_file_location('step6_runner_evidence_smoke', path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'cannot load {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def valid_status() -> dict:
     return {
         'version': 'factorforge_step6_evidence_status_v1',
@@ -44,6 +54,7 @@ def has(checks: list[dict], token: str) -> bool:
 
 def main() -> None:
     module = load_validator()
+    runner = load_runner()
     cases: dict[str, dict] = {}
 
     status = valid_status()
@@ -65,6 +76,20 @@ def main() -> None:
     checks = module.validate_evidence_status_contract(valid_status())
     failed_checks = [item for item in checks if item.get('status') == 'BLOCK']
     cases['valid_evidence_status_passes'] = {'ok': not failed_checks, 'checks': checks}
+
+    status = valid_status()
+    status['qlib_native_status'] = 'not_applicable'
+    checks = module.validate_evidence_status_contract(status)
+    failed_checks = [item for item in checks if item.get('status') == 'BLOCK']
+    mapped = runner._qlib_native_status(
+        {'qlib_backtest': {'status': 'skipped', 'qlib_native_status': 'not_applicable'}},
+        {'qlib_backtest': 'skipped'},
+    )
+    cases['qlib_not_applicable_status_passes'] = {
+        'ok': not failed_checks and mapped == 'not_applicable',
+        'checks': checks,
+        'mapped': mapped,
+    }
 
     failed = [name for name, item in cases.items() if not item.get('ok')]
     summary = {'verdict': 'ACCEPT' if not failed else 'BLOCK', 'cases': cases, 'failed': failed}

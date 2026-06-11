@@ -116,6 +116,20 @@ def main() -> None:
         os.environ.pop("FACTORFORGE_CSV_OUTPUT_POLICY", None)
     else:
         os.environ["FACTORFORGE_CSV_OUTPUT_POLICY"] = old_policy
+    qlib_not_applicable = step4.qlib_native_status_from_backend_runs(
+        [
+            {
+                "backend": "qlib_backtest",
+                "status": "skipped",
+                "summary": {"qlib_native_status": "not_applicable"},
+            }
+        ],
+        {"backends": {"qlib_native": {"status": "skipped"}}},
+    )
+    date_coverage_ok = (
+        step4._normal_date_value("2025-07-11") == "20250711"
+        and step4._normal_date_value("20250711") == "20250711"
+    )
 
     from scripts.summarize_factorforge_run_artifacts import summarize
 
@@ -131,6 +145,8 @@ def main() -> None:
                 and env_policy.get("factor_csv_write_allowed") is False
             ),
             "csv_policy_invalid_env_blocks": invalid_policy_blocks,
+            "qlib_not_applicable_summary_status": qlib_not_applicable == "not_applicable",
+            "coverage_date_formats_normalize": date_coverage_ok,
             "summary_reports_parent_and_law": summary.get("parent_report_id") == "PARENT" and summary.get("selected_law_id") == "miller_flow_v7",
             "summary_reports_direct_code_hash": bool(summary.get("code_law_hash")),
             "summary_reports_derived_state": summary.get("derived_state_proof", {}).get("derived_state_hit") is True,

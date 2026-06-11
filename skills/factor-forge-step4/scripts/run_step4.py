@@ -628,8 +628,11 @@ def _backend_status(backend_runs: list[dict[str, Any]], backend: str) -> str:
 
 def qlib_native_status_from_backend_runs(backend_runs: list[dict[str, Any]], backend_timing_profile: dict[str, Any]) -> str:
     item = next((run for run in backend_runs if run.get('backend') == 'qlib_backtest' or run.get('name') == 'qlib_backtest'), None)
-    if isinstance(item, dict) and item.get('qlib_native_status') == 'not_applicable':
-        return 'not_applicable'
+    if isinstance(item, dict):
+        explicit_status = item.get('qlib_native_status')
+        summary = item.get('summary') if isinstance(item.get('summary'), dict) else {}
+        if explicit_status == 'not_applicable' or summary.get('qlib_native_status') == 'not_applicable':
+            return 'not_applicable'
     qlib_status = str((item or {}).get('status') or 'not_attempted')
     timing = (backend_timing_profile.get('backends') or {}).get('qlib_native') or {}
     timing_status = str(timing.get('status') or '')
@@ -1401,6 +1404,15 @@ def _query_with_date(query: dict[str, Any], trade_date: str) -> dict[str, Any]:
 
 def _normal_date_text(series: pd.Series) -> pd.Series:
     return series.astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
+
+
+def _normal_date_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {'none', 'nan', 'nat'}:
+        return None
+    return text.replace('-', '')[:8]
 
 
 def _batched(values: list[str], size: int) -> list[list[str]]:
@@ -3033,23 +3045,23 @@ def main() -> None:
         row_count = int(len(result_df))
         date_count = int(result_df['trade_date'].nunique()) if 'trade_date' in result_df.columns else 0
         ticker_count = int(result_df['ts_code'].nunique()) if 'ts_code' in result_df.columns else 0
-        actual_start = str(result_df['trade_date'].min()) if 'trade_date' in result_df.columns and row_count else None
-        actual_end = str(result_df['trade_date'].max()) if 'trade_date' in result_df.columns and row_count else None
+        actual_start = _normal_date_value(result_df['trade_date'].min()) if 'trade_date' in result_df.columns and row_count else None
+        actual_end = _normal_date_value(result_df['trade_date'].max()) if 'trade_date' in result_df.columns and row_count else None
         target_window = dpm.get('sample_window', {}) or {}
         prepared_window = (dpm.get('local_input_paths') or {}).get('sample_window_actual') or {}
         research_window = _research_window_contract(step4_contract, dpm)
         target_start_raw = target_window.get('start')
-        target_start = str(target_start_raw) if target_start_raw is not None else None
+        target_start = _normal_date_value(target_start_raw)
         target_end_raw = target_window.get('end')
-        input_daily_start = str(signal_daily_df['trade_date'].min()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
-        input_daily_end = str(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
-        prepared_start = str(prepared_window.get('start')) if prepared_window.get('start') is not None else None
-        prepared_end = str(prepared_window.get('end')) if prepared_window.get('end') is not None else None
+        input_daily_start = _normal_date_value(signal_daily_df['trade_date'].min()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
+        input_daily_end = _normal_date_value(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
+        prepared_start = _normal_date_value(prepared_window.get('start'))
+        prepared_end = _normal_date_value(prepared_window.get('end'))
         effective_target_start = prepared_start or input_daily_start or target_start
         if str(target_end_raw) == 'current':
             effective_target_end = input_daily_end
         else:
-            effective_target_end = prepared_end or (str(target_end_raw) if target_end_raw is not None else None)
+            effective_target_end = prepared_end or _normal_date_value(target_end_raw)
         target_end = effective_target_end
         coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
         run_status = 'success' if coverage_complete else 'partial'

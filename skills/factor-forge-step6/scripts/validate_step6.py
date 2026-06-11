@@ -103,6 +103,7 @@ VALID_SEARCH_POLICY_MODES = {
 }
 VALID_STEP6_EVIDENCE_STATUS_VERSION = 'factorforge_step6_evidence_status_v1'
 VALID_STEP6_Q_LIB_NATIVE_STATUS = {
+    'not_applicable',
     'not_attempted',
     'preflight_blocked',
     'preflight_ready',

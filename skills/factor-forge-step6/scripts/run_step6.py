@@ -3223,6 +3223,18 @@ def _status_from_backend(backend_statuses: dict[str, str], backend: str) -> str:
 def _qlib_native_status(payloads: dict[str, dict[str, Any]], backend_statuses: dict[str, str]) -> str:
     qlib = payloads.get('qlib_backtest') if isinstance(payloads.get('qlib_backtest'), dict) else {}
     status = str(backend_statuses.get('qlib_backtest') or qlib.get('status') or '').strip().lower()
+    explicit_status = str(qlib.get('qlib_native_status') or '').strip().lower()
+    if explicit_status in {
+        'not_applicable',
+        'not_attempted',
+        'preflight_blocked',
+        'preflight_ready',
+        'partial_payload',
+        'native_minimal_success',
+        'native_backtest_success',
+        'failed',
+    }:
+        return explicit_status
     if status == 'failed':
         return 'failed'
     if not qlib:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from datetime import timedelta
@@ -88,6 +89,8 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
 INTRADAY_PROXY_DATASETS = {'intraday_flow_proxy_daily', 'clean_minute_bar'}
 MINUTE_DERIVED_FLOW_STATE_DATASET = 'minute_derived_flow_state_v1'
 DEFAULT_MINUTE_DERIVED_CUTOFF_TIME = '14:50:00'
+STEP3_TEMPLATE_COPY_ENV = 'FACTORFORGE_STEP3_TEMPLATE_COPY'
+STEP3_TEMPLATE_COPY_VERSION = 'factorforge_step3_template_copy_v1'
 
 
 def data_api_dataset_registered(dataset_id: str) -> tuple[bool, str | None]:
@@ -128,6 +131,44 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     elif os.getenv('FACTORFORGE_CLEAN_DAILY_DIR'):
         CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
     return manifest, manifest_report_id(manifest)
+
+
+def step3_runtime_copy_path(factorforge_root: Path, report_id: str) -> Path:
+    safe_report_id = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(report_id)).strip('_') or 'unknown_report'
+    return factorforge_root / 'runs' / safe_report_id / 'step3_runtime' / f'run_step3__{safe_report_id}.py'
+
+
+def maybe_reexec_from_step3_template_copy(report_id: str | None, manifest_path: str | None) -> None:
+    """Run formal Step3A from a per-report copy, keeping this file template-only."""
+    if os.getenv(STEP3_TEMPLATE_COPY_ENV) == '1':
+        return
+    if os.getenv('FACTORFORGE_ALLOW_CANONICAL_STEP3_TEMPLATE_EXECUTION') == '1':
+        return
+
+    manifest = load_runtime_manifest(manifest_path) if manifest_path else None
+    resolved_report_id = report_id or (manifest_report_id(manifest) if manifest else None)
+    if not resolved_report_id:
+        return
+    factorforge_root = manifest_factorforge_root(manifest) if manifest else FF
+    source = Path(__file__).resolve()
+    target = step3_runtime_copy_path(factorforge_root, resolved_report_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    meta = {
+        'version': STEP3_TEMPLATE_COPY_VERSION,
+        'report_id': resolved_report_id,
+        'source_template_path': str(source),
+        'runtime_copy_path': str(target),
+        'source_template_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+        'created_at_utc': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        'policy': 'canonical_run_step3_py_is_template_only',
+    }
+    meta_path = target.with_suffix('.meta.json')
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+    os.environ[STEP3_TEMPLATE_COPY_ENV] = '1'
+    os.environ['FACTORFORGE_STEP3_TEMPLATE_PATH'] = str(source)
+    os.environ['FACTORFORGE_STEP3_RUNTIME_COPY_PATH'] = str(target)
+    os.execv(sys.executable, [sys.executable, str(target), *sys.argv[1:]])
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
@@ -2062,6 +2103,7 @@ def main():
     ap.add_argument('--csv-output-policy', help='Step3A daily CSV audit output policy. Defaults to full_csv.')
     args = ap.parse_args()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
+    maybe_reexec_from_step3_template_copy(args.report_id, args.manifest)
     enforce_direct_step_policy(args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     report_id = args.report_id or manifest_rid

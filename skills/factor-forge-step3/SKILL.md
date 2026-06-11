@@ -51,6 +51,15 @@ Step 3 must protect the thesis during implementation:
 - Step 3B must flag approximations that change economic meaning.
 - Boundary handling, missing values, extreme values, and numerical stability must be explicit.
 - Step3B sample factor values prove executability, not research validity; Step4/5/6 still decide whether the signal is worth keeping.
+- `skills/factor-forge-step3/scripts/run_step3.py` is a canonical template, not
+  a per-factor scratchpad. Formal Step3A execution must run from a report-local
+  copy under `runs/<report_id>/step3_runtime/run_step3__<report_id>.py`; the
+  template creates that copy and re-execs it before writing Step3 artifacts.
+  New research must not edit the canonical template to add factor-specific
+  fields, qlib tweaks, or data-source hacks. Factor-specific behavior belongs
+  in `factor_spec_master`, `data_prep_master`, generated run artifacts, Data
+  API/datamart contracts, or a reviewed report-local runtime copy. This
+  prevents one factor's Step3 changes from leaking into another factor's values.
 
 ## Inputs
 

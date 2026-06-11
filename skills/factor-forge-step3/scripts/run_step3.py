@@ -21,7 +21,7 @@ import pandas as pd
 # COMMENT_POLICY: runtime_path
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
-REPO_ROOT = LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser() if os.getenv('FACTORFORGE_REPO_ROOT') else (LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3])
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -166,6 +166,7 @@ def maybe_reexec_from_step3_template_copy(report_id: str | None, manifest_path: 
     meta_path = target.with_suffix('.meta.json')
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
     os.environ[STEP3_TEMPLATE_COPY_ENV] = '1'
+    os.environ['FACTORFORGE_REPO_ROOT'] = str(source.parents[3])
     os.environ['FACTORFORGE_STEP3_TEMPLATE_PATH'] = str(source)
     os.environ['FACTORFORGE_STEP3_RUNTIME_COPY_PATH'] = str(target)
     os.execv(sys.executable, [sys.executable, str(target), *sys.argv[1:]])

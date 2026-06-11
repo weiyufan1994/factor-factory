@@ -837,6 +837,43 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                 'amount': close * (1000.0 + day_index * 10.0),
                 'pct_chg': 0.1,
             }
+            direction = 1.0 if stock_index == 0 else -1.0
+            pressure_scale = 1000.0 + day_index * 20.0 + stock_index * 100.0
+            row.update({
+                'signed_pressure_sum': direction * pressure_scale * (0.12 + 0.01 * day_index),
+                'gross_pressure_sum': pressure_scale,
+                'pressure_sq_sum': pressure_scale * pressure_scale / 3.0,
+                'absolute_move_sum': 0.03 + 0.002 * day_index,
+                'intraday_ret_noise': 0.010 + 0.001 * stock_index,
+                'minute_count': 3,
+                'signed_amt_sum': direction * pressure_scale * (0.12 + 0.01 * day_index),
+                'gross_amt': pressure_scale,
+                'amt_sq_sum': pressure_scale * pressure_scale / 3.0,
+                'abs_ret_sum': 0.03 + 0.002 * day_index,
+                'ret_std': 0.010 + 0.001 * stock_index,
+                'signed_flow_imbalance': direction * (0.20 + 0.01 * day_index),
+                'signed_amount_skew': direction * 0.35,
+                'signed_amount_excess_kurtosis': 0.20 + 0.02 * stock_index,
+                'signed_flow_tail_asymmetry': direction * 0.18,
+                'large_small_signed_spread': direction * 0.15,
+                'amount_hhi': 0.22 + 0.01 * stock_index,
+                'amount_top5_share': 0.40 + 0.01 * day_index,
+                'amount_entropy': 1.20 - 0.01 * stock_index,
+                'ret_skew': direction * 0.08,
+                'ret_excess_kurtosis': 0.12 + 0.01 * day_index,
+                'ret_tail_asymmetry': direction * 0.10,
+                'realized_vol': 0.018 + 0.001 * day_index,
+                'realized_vol_of_vol': 0.004 + 0.001 * stock_index,
+                'positive_signed_amount_share': 0.55 if direction > 0 else 0.45,
+                'negative_signed_amount_share': 0.45 if direction > 0 else 0.55,
+                'circ_mv': 800000.0 + 10000.0 * stock_index,
+                'total_mv': 900000.0 + 12000.0 * stock_index,
+                'turnover_rate': 1.2 + 0.05 * day_index,
+                'turnover_rate_f': 1.0 + 0.04 * day_index,
+                'volume_ratio': 1.1 + 0.03 * stock_index,
+                'fixed_small_universe_flag': 1.0 if stock_index == 0 else 0.0,
+                'fixed_small_rank_pct': 0.20 + 0.20 * stock_index,
+            })
             if required_fields.intersection({
                 'net_mf_amount',
                 'buy_sm_amount',
@@ -848,7 +885,6 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                 'buy_elg_amount',
                 'sell_elg_amount',
             }):
-                direction = 1.0 if stock_index == 0 else -1.0
                 scale = 1000.0 + day_index * 20.0
                 row.update({
                     'buy_sm_amount': scale * (1.00 + 0.01 * day_index),
@@ -913,8 +949,13 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     declared = output_schema.get('columns') if isinstance(output_schema, dict) else None
     signal_candidates = [col for col in (declared or []) if col not in {'ts_code', 'trade_date'}]
     signal_candidates.extend(['factor_value', 'signal'])
-    if not any(col in result.columns for col in signal_candidates):
+    signal_column = next((col for col in signal_candidates if col in result.columns), None)
+    if signal_column is None:
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing factor_value or declared signal column')
+    if pd.to_numeric(result[signal_column], errors='coerce').notna().sum() == 0:
+        raise AssertionError(
+            f'BLOCK_STEP3B_DIRECT_CODE_ALL_NULL_OUTPUT: fixture signal column {signal_column} is entirely null in {path}'
+        )
 
 
 def validate_direct_code_mode(

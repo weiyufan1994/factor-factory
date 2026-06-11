@@ -114,6 +114,49 @@ def test_step3b_contract_resolution() -> dict[str, Any]:
     return {"resolved_law_id": resolved["law_id"], "blocked_handoff_guard": True}
 
 
+def test_real_moneyflow_law_registry_entries() -> dict[str, Any]:
+    import pandas as pd
+
+    from factor_factory.factor_laws.moneyflow.registry import resolve_law
+
+    sample = pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ", "000002.SZ", "000001.SZ", "000002.SZ"],
+            "trade_date": ["20250101", "20250101", "20250102", "20250102"],
+            "signed_flow_imbalance": [1.0, -1.0, 1.5, -0.5],
+            "ret_excess_kurtosis": [0.2, -0.1, 0.3, -0.2],
+            "close": [10.0, 20.0, 10.2, 19.8],
+            "pct_chg": [1.0, -1.0, 2.0, -0.5],
+            "turnover_rate": [1.5, 1.2, 1.6, 1.1],
+            "volume_ratio": [1.1, 0.9, 1.2, 0.8],
+            "total_mv": [100.0, 200.0, 101.0, 198.0],
+        }
+    )
+    results: dict[str, Any] = {}
+    for law_id in (
+        "miller_flow_v15_repair_confirmed_absorption_fp_v1",
+        "miller_flow_v17_benchmark_relative_repaired_absorption_v1",
+    ):
+        law = resolve_law(law_id)
+        assert_true("real law hash", len(law.code_law_hash) == 64, law.code_law_hash)
+        assert_true(
+            "real law derived state option",
+            law.adapter_options.get("supports_minute_derived_flow_state_v1") is True,
+            law.adapter_options,
+        )
+        namespace: dict[str, Any] = {}
+        exec(law.source_code, namespace)
+        output = namespace["compute_factor"](daily_df=sample)
+        assert_true("real law output rows", len(output) == len(sample), output)
+        assert_true("real law output schema", list(output.columns) == ["ts_code", "trade_date", "factor_value"], output)
+        assert_true("real law no null factor values", output["factor_value"].notna().all(), output)
+        results[law_id] = {
+            "code_law_hash": law.code_law_hash,
+            "rows": int(len(output)),
+        }
+    return results
+
+
 def test_child_qlib_config() -> dict[str, Any]:
     materializer = import_script_module(
         "materialize_step6_child_revision_smoke",
@@ -226,6 +269,7 @@ def main() -> int:
     results = {
         "law_registry": test_law_registry(),
         "step3b_contract_resolution": test_step3b_contract_resolution(),
+        "real_moneyflow_law_registry_entries": test_real_moneyflow_law_registry_entries(),
         "child_qlib_config": test_child_qlib_config(),
         "qlib_not_applicable_backend": test_qlib_not_applicable_backend(),
         "paused_note": test_paused_note(),

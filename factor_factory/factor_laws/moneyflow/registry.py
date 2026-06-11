@@ -4,6 +4,11 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from factor_factory.factor_laws.moneyflow.derived_state import (
+    SUPPORTED_MILLER_DERIVED_STATE_LAWS,
+    minute_derived_flow_state_law_source,
+)
+
 BLOCK_LAW_MISSING = "BLOCK_FACTORFORGE_DIRECT_CODE_LAW_MISSING"
 BLOCK_LAW_HASH_MISMATCH = "BLOCK_FACTORFORGE_DIRECT_CODE_LAW_HASH_MISMATCH"
 BLOCK_LAW_DUPLICATE = "BLOCK_FACTORFORGE_DIRECT_CODE_LAW_DUPLICATE"
@@ -143,3 +148,23 @@ register_law(
         },
     )
 )
+
+
+for _law_id in sorted(SUPPORTED_MILLER_DERIVED_STATE_LAWS):
+    register_law(
+        DirectCodeLaw(
+            law_id=_law_id,
+            source_code=minute_derived_flow_state_law_source(_law_id),
+            adapter_options={
+                "requires_minute_or_derived_state": True,
+                "supports_minute_derived_flow_state_v1": True,
+                "requires_step4_derived_state": True,
+            },
+            metadata={
+                "description": "Miller moneyflow production law migrated from the historical Step3B derived-state adapter.",
+                "historical_source": "backup/factorforge-dirty-before-cleanup-20260611-094945:skills/factor-forge-step3/scripts/run_step3b.py",
+                "migration_scope": "registry_entry_only_existing_artifacts_must_be_rerun_or_marked_historical_caveat",
+                "requires_qlib_adapter_config_rerun": True,
+            },
+        )
+    )

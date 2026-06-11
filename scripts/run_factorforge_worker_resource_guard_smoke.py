@@ -10,6 +10,13 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TOKEN_NON_TMP_ROOT = "BLOCK_NON_TMP_WORKER_RESOURCE_GUARD_SMOKE_ROOT"
+
+
+def is_tmp(path: Path) -> bool:
+    raw = str(path)
+    resolved = str(path.resolve(strict=False))
+    return raw.startswith("/tmp/") or resolved.startswith("/tmp/") or resolved.startswith("/private/tmp/")
 
 
 def write_text(path: Path, text: str) -> None:
@@ -101,6 +108,23 @@ PID    PPID %CPU %MEM COMMAND
     }
 
 
+def case_non_tmp_root_blocks() -> dict[str, Any]:
+    root = Path("/dev/null/factorforge_worker_resource_guard_smoke_probe")
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "run_factorforge_worker_resource_guard_smoke.py"), "--root", str(root), "--fresh"],
+        cwd=str(REPO_ROOT),
+        text=True,
+        capture_output=True,
+    )
+    text = proc.stdout + proc.stderr
+    return {
+        "case": "worker_resource_guard_non_tmp_root_blocks",
+        "ok": proc.returncode == 1 and TOKEN_NON_TMP_ROOT in text,
+        "token_present": TOKEN_NON_TMP_ROOT in text,
+        "rc": proc.returncode,
+    }
+
+
 def run_case(root: Path, name: str, fn) -> dict[str, Any]:
     case_root = root / name
     if case_root.exists():
@@ -120,6 +144,9 @@ def main() -> int:
     parser.add_argument("--fresh", action="store_true")
     args = parser.parse_args()
     root = Path(args.root).expanduser()
+    if not is_tmp(root):
+        print(TOKEN_NON_TMP_ROOT, file=sys.stderr)
+        return 1
     if args.fresh and root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -127,6 +154,7 @@ def main() -> int:
         run_case(root, "busy_data_backfill", case_busy_data_backfill_blocks),
         run_case(root, "busy_factorforge_process", case_busy_factorforge_process_blocks),
         run_case(root, "idle_worker", case_idle_worker_passes),
+        case_non_tmp_root_blocks(),
     ]
     summary = {
         "verdict": "ACCEPT" if all(case.get("ok") for case in cases) else "BLOCK",

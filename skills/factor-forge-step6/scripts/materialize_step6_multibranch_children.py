@@ -226,11 +226,20 @@ def validate_direct_code_law(branch: dict[str, Any]) -> dict[str, Any]:
     implementation_mode = str(branch.get("implementation_mode") or "")
     child_formula = str(branch.get("child_formula") or "")
     contract = branch.get("direct_code_revision_contract") if isinstance(branch.get("direct_code_revision_contract"), dict) else {}
-    law_id = str(contract.get("code_law_id") or branch.get("law_id") or "")
+    embedded_law_id = child_formula.removeprefix("direct_code_law:").strip() if child_formula.startswith("direct_code_law:") else ""
+    contract_law_id = str(contract.get("code_law_id") or "").strip()
+    branch_law_id = str(branch.get("law_id") or "").strip()
+    law_id = contract_law_id or branch_law_id or embedded_law_id
     if implementation_mode != "direct_code" and not child_formula.startswith("direct_code_law:"):
         return {"status": "not_applicable"}
     if not law_id:
         raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: direct_code branch law_id missing")
+    declared_law_ids = {item for item in (contract_law_id, branch_law_id, embedded_law_id) if item}
+    if len(declared_law_ids) > 1:
+        raise ValueError(
+            f"{TOKEN_PREFLIGHT_FAILED}: direct_code law identity mismatch: "
+            f"branch_law_id={branch_law_id!r} code_law_id={contract_law_id!r} child_formula_law_id={embedded_law_id!r}"
+        )
     try:
         from factor_factory.factor_laws.moneyflow.registry import resolve_law
 
@@ -247,7 +256,7 @@ def validate_direct_code_law(branch: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def preflight_materialization(root: Path, report_id: str, approval: dict[str, Any]) -> dict[str, Any]:
+def preflight_materialization(root: Path, report_id: str, approval: dict[str, Any], *, check_child_targets: bool = True) -> dict[str, Any]:
     parent_payloads: dict[str, dict[str, Any]] = {}
     parent_artifacts: list[dict[str, Any]] = []
     for artifact_kind in ("alpha_idea_master", "factor_spec_master", "data_prep_master"):
@@ -274,13 +283,14 @@ def preflight_materialization(root: Path, report_id: str, approval: dict[str, An
         child = str(branch.get("child_report_id") or "")
         if not child:
             raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child_report_id missing")
-        for kind, path in planned_target_paths(root, report_id, child, data_prep).items():
-            if path in seen_targets:
-                raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child target collision between {seen_targets[path]} and {child}: {path}")
-            seen_targets[path] = child
-            if path.exists():
-                raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child target already exists: {kind} {path}")
-            target_paths.append({"child_report_id": child, "kind": kind, "path": str(path)})
+        if check_child_targets:
+            for kind, path in planned_target_paths(root, report_id, child, data_prep).items():
+                if path in seen_targets:
+                    raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child target collision between {seen_targets[path]} and {child}: {path}")
+                seen_targets[path] = child
+                if path.exists():
+                    raise ValueError(f"{TOKEN_PREFLIGHT_FAILED}: child target already exists: {kind} {path}")
+                target_paths.append({"child_report_id": child, "kind": kind, "path": str(path)})
         direct_code_laws.append({"child_report_id": child, **validate_direct_code_law(branch)})
 
     return {
@@ -290,6 +300,7 @@ def preflight_materialization(root: Path, report_id: str, approval: dict[str, An
         "parent_report_id": report_id,
         "parent_artifacts": parent_artifacts,
         "declared_daily_sources": declared_sources,
+        "child_target_collision_checked": check_child_targets,
         "child_target_paths": target_paths,
         "direct_code_laws": direct_code_laws,
         "step4_backend_policy": {
@@ -488,12 +499,8 @@ def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any
         raise ValueError(TOKEN_APPROVAL_MISSING)
     approval = load_json(path)
     validate_approval(root, report_id, approval)
-    existing = existing_materialization_reusable(root, report_id, approval, loop_index=loop_index)
-    if existing is not None:
-        print(f"SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION: {aggregate_report_path(root, report_id, loop_index)}")
-        return existing
     try:
-        preflight = preflight_materialization(root, report_id, approval)
+        reuse_preflight = preflight_materialization(root, report_id, approval, check_child_targets=False)
     except ValueError as exc:
         payload = base_report(root, report_id, approval, loop_index, [], status="BLOCK")
         payload["block_reason"] = TOKEN_PREFLIGHT_FAILED
@@ -502,6 +509,25 @@ def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any
             "status": "blocked",
             "checked_at_utc": utc_now(),
             "error": str(exc),
+        }
+        write_json(aggregate_report_path(root, report_id, loop_index), payload)
+        raise
+    existing = existing_materialization_reusable(root, report_id, approval, loop_index=loop_index)
+    if existing is not None:
+        existing["preflight"] = reuse_preflight
+        print(f"SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION: {aggregate_report_path(root, report_id, loop_index)}")
+        return existing
+    try:
+        preflight = preflight_materialization(root, report_id, approval, check_child_targets=True)
+    except ValueError as exc:
+        payload = base_report(root, report_id, approval, loop_index, [], status="BLOCK", preflight=reuse_preflight)
+        payload["block_reason"] = TOKEN_PREFLIGHT_FAILED
+        payload["preflight"] = {
+            "contract_version": "factorforge_multibranch_materialization_preflight_v1",
+            "status": "blocked",
+            "checked_at_utc": utc_now(),
+            "error": str(exc),
+            "reuse_preflight": reuse_preflight,
         }
         write_json(aggregate_report_path(root, report_id, loop_index), payload)
         raise

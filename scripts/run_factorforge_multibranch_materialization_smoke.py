@@ -474,6 +474,47 @@ def case_existing_materialization_reused(root: Path) -> dict[str, Any]:
     }
 
 
+def case_existing_materialization_reuse_parent_missing_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    first = materialize(root)
+    (root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{REPORT_ID}.json").unlink()
+    second = materialize(root)
+    text = second["stdout_tail"] + second["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "multibranch_existing_reuse_parent_missing_blocks",
+        "ok": approval["rc"] == 0 and first["rc"] == 0 and second["rc"] == 1 and token in text and "alpha_idea_master" in text,
+        "token_present": token in text,
+        "approval": approval,
+        "first_materialize": first,
+        "second_materialize": second,
+    }
+
+
+def case_existing_materialization_reuse_daily_missing_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    write_synthesis(root, valid_synthesis())
+    approval = approve(root)
+    first = materialize(root)
+    data_prep_path = root / "objects" / "data_prep_master" / f"data_prep_master__{REPORT_ID}.json"
+    data_prep = load_json(data_prep_path)
+    data_prep["local_input_paths"] = {}
+    write_json(data_prep_path, data_prep)
+    second = materialize(root)
+    text = second["stdout_tail"] + second["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "multibranch_existing_reuse_daily_missing_blocks",
+        "ok": approval["rc"] == 0 and first["rc"] == 0 and second["rc"] == 1 and token in text and "daily_df_parquet" in text,
+        "token_present": token in text,
+        "approval": approval,
+        "first_materialize": first,
+        "second_materialize": second,
+    }
+
+
 def case_source_mutation(root: Path) -> dict[str, Any]:
     setup_parent(root)
     write_synthesis(root, valid_synthesis())
@@ -689,6 +730,24 @@ def case_direct_code_law_unavailable_preflight_blocks(root: Path) -> dict[str, A
     }
 
 
+def case_direct_code_law_formula_contract_mismatch_blocks(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    payload = direct_code_synthesis()
+    payload["selected_branches"][0]["child_formula"] = "direct_code_law:miller_flow_missing_registry_law_v1"
+    write_synthesis(root, payload)
+    approval = approve(root)
+    mat = materialize(root)
+    text = mat["stdout_tail"] + mat["stderr_tail"]
+    token = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+    return {
+        "case": "multibranch_direct_code_law_formula_contract_mismatch_blocks",
+        "ok": approval["rc"] == 0 and mat["rc"] == 1 and token in text and "direct_code law identity mismatch" in text,
+        "token_present": token in text,
+        "approval": approval,
+        "materialize": mat,
+    }
+
+
 def case_non_tmp_root_blocks() -> dict[str, Any]:
     root = Path("/dev/null/factorforge_multibranch_materialization_non_tmp_probe")
     proc = subprocess.run(
@@ -733,6 +792,8 @@ def main() -> int:
         run_case(root, "happy_path", case_happy),
         run_case(root, "direct_code_materialization", case_direct_code_materialization),
         run_case(root, "existing_materialization_reused", case_existing_materialization_reused),
+        run_case(root, "existing_reuse_parent_missing", case_existing_materialization_reuse_parent_missing_blocks),
+        run_case(root, "existing_reuse_daily_missing", case_existing_materialization_reuse_daily_missing_blocks),
         run_case(root, "source_mutation", case_source_mutation),
         run_case(root, "adapter_synthesis_mutation", case_adapter_synthesis_mutation),
         run_case(root, "duplicate_approval_hash", case_duplicate_approval_hash),
@@ -741,6 +802,7 @@ def main() -> int:
         run_case(root, "missing_daily_source_preflight", case_missing_daily_source_preflight_blocks),
         run_case(root, "qlib_target_collision_preflight", case_qlib_target_collision_preflight_blocks),
         run_case(root, "direct_code_law_unavailable_preflight", case_direct_code_law_unavailable_preflight_blocks),
+        run_case(root, "direct_code_law_formula_contract_mismatch", case_direct_code_law_formula_contract_mismatch_blocks),
         run_case(root, "lineage_repair_enables_materialization", case_lineage_repair_enables_materialization),
         run_case(root, "lineage_repair_semantic_drift", case_lineage_repair_semantic_drift_blocks),
         run_case(root, "lineage_repair_source_missing", case_lineage_repair_source_missing_blocks),

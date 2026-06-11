@@ -288,6 +288,49 @@ def valid_synthesis(report_id: str = REPORT_ID) -> dict[str, Any]:
     }
 
 
+def direct_code_synthesis(report_id: str = REPORT_ID) -> dict[str, Any]:
+    payload = valid_synthesis(report_id)
+    common_contract = {
+        "target_function": "factor_factory.factor_laws.moneyflow.derived_state.compute_factor_from_state_frame",
+        "required_fields": ["v15_repair_confirmed_absorption", "intraday_flow_signal", "circ_mv"],
+        "information_set": "cutoff_state_only_no_future_minutes",
+        "mutation_scope": "registered_moneyflow_law_only",
+    }
+    payload["selected_branches"] = [
+        {
+            "branch_role": "exploit",
+            "law_id": "miller_flow_v18a_absolute_long_edge_gate_v1",
+            "implementation_mode": "direct_code",
+            "child_formula": "direct_code_law:miller_flow_v18a_absolute_long_edge_gate_v1",
+            "why_selected": "Tests the strongest exploit branch as a direct-code moneyflow law.",
+            "economic_mechanism_link": "Keeps the repaired absorption state but requires positive long-edge drift.",
+            "math_model_link": "Direct-code derived-state law for absorbing stochastic process with long-edge gate.",
+            "expected_metric_signature": {"long_side_annual_return_after_cost": "positive", "rank_ic_mean": "non_decreasing"},
+            "falsification_tests": ["Long-side return remains negative.", "Rank IC deteriorates versus parent."],
+            "kill_criteria": ["No positive top-bucket return after cost.", "No IC improvement versus parent."],
+            "source_agent_roles": ["main_agent_orchestrator"],
+            "direct_code_revision_contract": {**common_contract, "code_law_id": "miller_flow_v18a_absolute_long_edge_gate_v1"},
+        },
+        {
+            "branch_role": "exploration",
+            "law_id": "miller_flow_v18b_first_passage_repair_edge_v1",
+            "implementation_mode": "direct_code",
+            "child_formula": "direct_code_law:miller_flow_v18b_first_passage_repair_edge_v1",
+            "why_selected": "Explores first-passage payoff instead of additive score repair.",
+            "how_it_differs_from_exploit": "Changes the mathematical object from long-edge drift gate to first-passage payoff process with up/down hitting probabilities.",
+            "mechanism_difference_class": "first_passage_payoff",
+            "economic_mechanism_link": "Tests whether repaired absorption predicts upward barrier hit before downside failure.",
+            "math_model_link": "First-passage stochastic process payoff with asymmetric up/down barriers.",
+            "expected_metric_signature": {"long_side_annual_return_after_cost": "positive_if_hitting_model_valid", "rank_ic_mean": "positive"},
+            "falsification_tests": ["No improvement versus V18A.", "Long-side risk-adjusted return remains weak."],
+            "kill_criteria": ["No positive top-bucket return.", "Worse drawdown than parent."],
+            "source_agent_roles": ["main_agent_orchestrator"],
+            "direct_code_revision_contract": {**common_contract, "code_law_id": "miller_flow_v18b_first_passage_repair_edge_v1"},
+        },
+    ]
+    return payload
+
+
 def write_synthesis(root: Path, payload: dict[str, Any], report_id: str = REPORT_ID) -> None:
     write_json(synthesis_path(root, report_id), payload)
     markdown_path(root, report_id).parent.mkdir(parents=True, exist_ok=True)
@@ -333,6 +376,43 @@ def case_happy(root: Path) -> dict[str, Any]:
         "child_snapshots_ok": child_snapshots_ok,
         "branch_context_ok": branch_context_ok,
         "materialization_branch_context_ok": materialization_branch_context_ok,
+        "aggregate_report": str(aggregate_path(root)),
+    }
+
+
+def case_direct_code_materialization(root: Path) -> dict[str, Any]:
+    setup_parent(root)
+    write_synthesis(root, direct_code_synthesis())
+    approval = approve(root)
+    mat = materialize(root)
+    report = load_json(aggregate_path(root))
+    children = report.get("children") if isinstance(report.get("children"), list) else []
+    specs = [load_json(Path(child["executable_revision_spec_path"])) for child in children]
+    materialization_reports = [load_json(Path(child["materialization_report_path"])) for child in children]
+    direct_contracts_present = all(isinstance(spec.get("direct_code_revision_contract"), dict) and spec["direct_code_revision_contract"] for spec in specs)
+    direct_modes_present = all(spec.get("implementation_mode") == "direct_code" for spec in specs)
+    qlib_not_applicable = all(
+        load_json(Path(materialization["materialized_artifacts"]["qlib_adapter_config"])).get("qlib_native_status") == "not_applicable"
+        for materialization in materialization_reports
+    )
+    unique_code_hashes = len({spec.get("child_formula_hash") for spec in specs}) == len(specs)
+    return {
+        "case": "multibranch_materializes_direct_code_children",
+        "ok": approval["rc"] == 0
+        and mat["rc"] == 0
+        and report.get("status") == "PASS"
+        and len(children) == 2
+        and direct_contracts_present
+        and direct_modes_present
+        and qlib_not_applicable
+        and unique_code_hashes,
+        "approval": approval,
+        "materialize": mat,
+        "child_count": len(children),
+        "implementation_modes": [spec.get("implementation_mode") for spec in specs],
+        "child_code_law_hashes": [spec.get("child_formula_hash") for spec in specs],
+        "direct_contracts_present": direct_contracts_present,
+        "qlib_not_applicable": qlib_not_applicable,
         "aggregate_report": str(aggregate_path(root)),
     }
 
@@ -467,6 +547,7 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     cases = [
         run_case(root, "happy_path", case_happy),
+        run_case(root, "direct_code_materialization", case_direct_code_materialization),
         run_case(root, "existing_materialization_reused", case_existing_materialization_reused),
         run_case(root, "source_mutation", case_source_mutation),
         run_case(root, "adapter_synthesis_mutation", case_adapter_synthesis_mutation),

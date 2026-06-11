@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.formula.parser import parse_formula
+from factor_factory.artifact_identity import stable_hash
 from factor_factory.runtime_context import resolve_factorforge_context
 from factor_factory.ultimate_loop.state import next_child_report_id
 
@@ -95,6 +96,31 @@ def formula_hash(formula: str) -> str:
     return str(parsed.get("formula_hash") or "")
 
 
+def revision_hash(branch: dict[str, Any], child_formula: str) -> str:
+    implementation_mode = nonempty_str(branch.get("implementation_mode"))
+    if not implementation_mode and isinstance(branch.get("direct_code_revision_contract"), dict) and branch["direct_code_revision_contract"]:
+        implementation_mode = "direct_code"
+    if not implementation_mode and isinstance(branch.get("hybrid_revision_contract"), dict) and branch["hybrid_revision_contract"]:
+        implementation_mode = "hybrid"
+    implementation_mode = implementation_mode or "operator"
+    if implementation_mode in {"direct_code", "hybrid"}:
+        contract_key = "direct_code_revision_contract" if implementation_mode == "direct_code" else "hybrid_revision_contract"
+        contract = branch.get(contract_key)
+        if not isinstance(contract, dict) or not contract:
+            contract = branch.get("direct_code_revision_contract")
+        if not isinstance(contract, dict) or not contract:
+            raise ValueError(f"BLOCK_FACTORFORGE_MULTIBRANCH_DIRECT_CODE_CONTRACT_MISSING: law_id={branch.get('law_id')}")
+        return stable_hash(
+            {
+                "hash_role": f"{implementation_mode}_multibranch_code_law_hash",
+                "implementation_mode": implementation_mode,
+                "child_formula_or_law": child_formula,
+                "revision_contract": contract,
+            }
+        )
+    return formula_hash(child_formula)
+
+
 def import_validator():
     validator_path = REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "validate_main_agent_multibranch_synthesis.py"
     spec = importlib.util.spec_from_file_location("validate_main_agent_multibranch_synthesis", validator_path)
@@ -118,9 +144,18 @@ def nonempty_str(value: Any) -> str:
 
 
 def selected_revision_from_branch(branch: dict[str, Any]) -> dict[str, Any]:
-    return {
+    child_formula = (
+        branch.get("child_formula")
+        or branch.get("child_formula_or_law")
+        or branch.get("direct_code_law")
+        or branch.get("formula_law")
+    )
+    payload = {
         "law_id": branch.get("law_id"),
-        "child_formula": branch.get("child_formula"),
+        "child_formula": child_formula,
+        "child_formula_or_law": branch.get("child_formula_or_law") or child_formula,
+        "direct_code_law": branch.get("direct_code_law"),
+        "implementation_mode": branch.get("implementation_mode"),
         "why_selected": branch.get("why_selected"),
         "formula_mutation_description": branch.get("formula_mutation_description")
         or branch.get("why_selected")
@@ -132,6 +167,11 @@ def selected_revision_from_branch(branch: dict[str, Any]) -> dict[str, Any]:
         "kill_criteria": branch.get("kill_criteria") or [],
         "source_agent_roles": branch.get("source_agent_roles") or [],
     }
+    if isinstance(branch.get("direct_code_revision_contract"), dict) and branch["direct_code_revision_contract"]:
+        payload["direct_code_revision_contract"] = branch["direct_code_revision_contract"]
+    if isinstance(branch.get("hybrid_revision_contract"), dict) and branch["hybrid_revision_contract"]:
+        payload["hybrid_revision_contract"] = branch["hybrid_revision_contract"]
+    return payload
 
 
 def write_adapter_synthesis(
@@ -253,7 +293,7 @@ def approve(root: Path, report_id: str, *, loop_index: int, approval_source: str
         law_id = nonempty_str(branch.get("law_id"))
         branch_role = nonempty_str(branch.get("branch_role"))
         child_formula = nonempty_str(branch.get("child_formula"))
-        child_hash = formula_hash(child_formula)
+        child_hash = revision_hash(branch, child_formula)
         if child_hash in child_hashes:
             raise ValueError(f"{TOKEN_DUP_HASH}:branch[{idx}]")
         child_hashes.add(child_hash)

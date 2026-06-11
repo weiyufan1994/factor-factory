@@ -180,6 +180,68 @@ def case_valid(root: Path) -> dict[str, Any]:
     return {"case": "valid_exploit_plus_exploration_pass", "ok": proc["rc"] == 0, "validate": proc, "branch_count": len(payload.get("selected_branches") or [])}
 
 
+def direct_code_synthesis() -> dict[str, Any]:
+    payload = valid_synthesis()
+    payload["selected_branches"] = [
+        {
+            "branch_role": "exploit",
+            "law_id": "miller_flow_v18a_absolute_long_edge_gate_v1",
+            "implementation_mode": "direct_code",
+            "child_formula": "direct_code_law:miller_flow_v18a_absolute_long_edge_gate_v1",
+            "why_selected": "Tests the strongest exploit branch as a direct-code moneyflow law.",
+            "economic_mechanism_link": "Keeps the V15 repaired absorption state but requires positive long-edge drift.",
+            "math_model_link": "Direct-code derived-state law for an absorbing stochastic process with long-edge gate.",
+            "expected_metric_signature": {"long_side_annual_return_after_cost": "positive", "rank_ic_mean": "non_decreasing"},
+            "falsification_tests": ["Long-side return remains negative.", "Rank IC deteriorates versus V15."],
+            "kill_criteria": ["No positive top-bucket return after cost.", "No IC improvement versus V15."],
+            "source_agent_roles": ["main_agent_orchestrator"],
+            "direct_code_revision_contract": {
+                "target_function": "factor_factory.factor_laws.moneyflow.derived_state.compute_factor_from_state_frame",
+                "code_law_id": "miller_flow_v18a_absolute_long_edge_gate_v1",
+                "required_fields": ["v15_repair_confirmed_absorption", "intraday_flow_signal", "circ_mv"],
+                "information_set": "cutoff_state_only_no_future_minutes",
+                "mutation_scope": "registered_moneyflow_law_only",
+            },
+        },
+        {
+            "branch_role": "exploration",
+            "law_id": "miller_flow_v18b_first_passage_repair_edge_v1",
+            "implementation_mode": "direct_code",
+            "child_formula": "direct_code_law:miller_flow_v18b_first_passage_repair_edge_v1",
+            "why_selected": "Explores a first-passage payoff form rather than an additive repaired score.",
+            "how_it_differs_from_exploit": "Changes the mathematical object from long-edge drift gate to first-passage payoff process with up/down hitting probabilities.",
+            "mechanism_difference_class": "first_passage_payoff",
+            "economic_mechanism_link": "Tests whether repaired absorption predicts upward barrier hit before downside failure.",
+            "math_model_link": "First-passage stochastic process payoff with asymmetric up/down barriers.",
+            "expected_metric_signature": {"long_side_annual_return_after_cost": "positive_if_hitting_model_valid", "rank_ic_mean": "positive"},
+            "falsification_tests": ["No improvement versus V18A.", "Long-side risk-adjusted return remains weak."],
+            "kill_criteria": ["No positive top-bucket return.", "Worse drawdown than V15."],
+            "source_agent_roles": ["main_agent_orchestrator"],
+            "direct_code_revision_contract": {
+                "target_function": "factor_factory.factor_laws.moneyflow.derived_state.compute_factor_from_state_frame",
+                "code_law_id": "miller_flow_v18b_first_passage_repair_edge_v1",
+                "required_fields": ["v15_repair_confirmed_absorption", "intraday_flow_signal", "circ_mv"],
+                "information_set": "cutoff_state_only_no_future_minutes",
+                "mutation_scope": "registered_moneyflow_law_only",
+            },
+        },
+    ]
+    return payload
+
+
+def case_direct_code_valid(root: Path) -> dict[str, Any]:
+    write_synthesis(root, direct_code_synthesis())
+    proc = validate(root)
+    payload = load_json(synthesis_path(root))
+    return {
+        "case": "direct_code_multibranch_laws_pass",
+        "ok": proc["rc"] == 0,
+        "validate": proc,
+        "branch_count": len(payload.get("selected_branches") or []),
+        "law_ids": [branch.get("law_id") for branch in payload.get("selected_branches") or []],
+    }
+
+
 def case_mutation(root: Path, name: str, mutate, token: str) -> dict[str, Any]:
     payload = valid_synthesis()
     mutate(payload)
@@ -209,6 +271,7 @@ def main() -> int:
 
     cases: list[dict[str, Any]] = []
     cases.append(case_valid(root))
+    cases.append(case_direct_code_valid(root))
     cases.append(case_mutation(root, "duplicate_formula_hash_blocks", lambda p: p["selected_branches"].__setitem__(1, {**p["selected_branches"][1], "child_formula": p["selected_branches"][0]["child_formula"]}), "BLOCK_FACTORFORGE_MULTIBRANCH_DUPLICATE_FORMULA_HASH"))
     cases.append(case_mutation(root, "missing_exploit_branch_blocks", lambda p: p["selected_branches"][0].__setitem__("branch_role", "exploration"), "BLOCK_FACTORFORGE_MULTIBRANCH_EXPLOIT_BRANCH_COUNT"))
     cases.append(case_mutation(root, "too_many_branches_blocks", lambda p: p["selected_branches"].extend([copy.deepcopy(p["selected_branches"][1]), {**copy.deepcopy(p["selected_branches"][1]), "law_id": "extra_branch", "child_formula": "rank(high)"}]), "BLOCK_FACTORFORGE_MULTIBRANCH_TOO_MANY_BRANCHES"))

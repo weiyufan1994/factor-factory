@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.formula.parser import parse_formula
+from factor_factory.artifact_identity import stable_hash
 from factor_factory.runtime_context import resolve_factorforge_context
 
 CONTRACT_VERSION = "factorforge_main_agent_multibranch_synthesis_v1"
@@ -29,6 +30,7 @@ TOKEN_FORBIDDEN_RULE = "BLOCK_FACTORFORGE_MULTIBRANCH_FORBIDDEN_REVISION_RULE"
 TOKEN_NO_DIVERSITY = "BLOCK_FACTORFORGE_MULTIBRANCH_NO_MECHANISM_DIVERSITY"
 TOKEN_PARSE = "BLOCK_FACTORFORGE_MULTIBRANCH_FORMULA_PARSE_FAILED"
 TOKEN_BRANCH_PERMISSION = "BLOCK_FACTORFORGE_MULTIBRANCH_BRANCH_PERMISSION_UNSAFE"
+TOKEN_DIRECT_CODE_CONTRACT = "BLOCK_FACTORFORGE_MULTIBRANCH_DIRECT_CODE_CONTRACT_MISSING"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -90,14 +92,50 @@ def prior_memory(root: Path, report_id: str, synthesis: dict[str, Any]) -> dict[
     return packet_prior if isinstance(packet_prior, dict) else {}
 
 
-def branch_formula_hash(branch: dict[str, Any]) -> tuple[str | None, str | None]:
-    formula = nonempty_str(branch.get("child_formula"))
-    if not formula:
+def branch_formula_or_law(branch: dict[str, Any]) -> str:
+    return (
+        nonempty_str(branch.get("child_formula"))
+        or nonempty_str(branch.get("child_formula_or_law"))
+        or nonempty_str(branch.get("direct_code_law"))
+        or nonempty_str(branch.get("formula_law"))
+    )
+
+
+def branch_implementation_mode(branch: dict[str, Any]) -> str:
+    explicit = nonempty_str(branch.get("implementation_mode"))
+    if explicit:
+        return explicit
+    if isinstance(branch.get("direct_code_revision_contract"), dict) and branch["direct_code_revision_contract"]:
+        return "direct_code"
+    if isinstance(branch.get("hybrid_revision_contract"), dict) and branch["hybrid_revision_contract"]:
+        return "hybrid"
+    return "operator"
+
+
+def branch_revision_hash(branch: dict[str, Any]) -> tuple[str | None, str | None, str]:
+    law_text = branch_formula_or_law(branch)
+    if not law_text:
         return None, None
-    parsed = parse_formula(formula)
+    implementation_mode = branch_implementation_mode(branch)
+    if implementation_mode in {"direct_code", "hybrid"}:
+        contract_key = "direct_code_revision_contract" if implementation_mode == "direct_code" else "hybrid_revision_contract"
+        contract = branch.get(contract_key)
+        if not isinstance(contract, dict) or not contract:
+            contract = branch.get("direct_code_revision_contract")
+        if not isinstance(contract, dict) or not contract:
+            return None, TOKEN_DIRECT_CODE_CONTRACT, implementation_mode
+        return stable_hash(
+            {
+                "hash_role": f"{implementation_mode}_multibranch_code_law_hash",
+                "implementation_mode": implementation_mode,
+                "child_formula_or_law": law_text,
+                "revision_contract": contract,
+            }
+        ), None, implementation_mode
+    parsed = parse_formula(law_text)
     if parsed.get("parse_status") != "success":
-        return None, json.dumps(parsed.get("parse_errors") or [], ensure_ascii=False)
-    return str(parsed.get("formula_hash") or ""), None
+        return None, json.dumps(parsed.get("parse_errors") or [], ensure_ascii=False), implementation_mode
+    return str(parsed.get("formula_hash") or ""), None, implementation_mode
 
 
 def mechanism_diversity_ok(branch: dict[str, Any], exploit: dict[str, Any]) -> bool:
@@ -198,7 +236,6 @@ def validate(root: Path, report_id: str, synthesis_path: Path, markdown_path: Pa
     required_fields = [
         "branch_role",
         "law_id",
-        "child_formula",
         "why_selected",
         "economic_mechanism_link",
         "math_model_link",
@@ -227,6 +264,18 @@ def validate(root: Path, report_id: str, synthesis_path: Path, markdown_path: Pa
                 ok = bool(nonempty_str(value))
             if not ok:
                 missing.append(field)
+        if not branch_formula_or_law(branch):
+            missing.append("child_formula")
+        implementation_mode = branch_implementation_mode(branch)
+        if implementation_mode not in {"operator", "direct_code", "hybrid"}:
+            missing.append("implementation_mode")
+        if implementation_mode in {"direct_code", "hybrid"}:
+            contract_key = "direct_code_revision_contract" if implementation_mode == "direct_code" else "hybrid_revision_contract"
+            contract = branch.get(contract_key)
+            if not isinstance(contract, dict) or not contract:
+                contract = branch.get("direct_code_revision_contract")
+            if not isinstance(contract, dict) or not contract:
+                missing.append(contract_key)
         role = branch.get("branch_role")
         if role not in {"exploit", "exploration"}:
             missing.append("branch_role")
@@ -237,9 +286,10 @@ def validate(root: Path, report_id: str, synthesis_path: Path, markdown_path: Pa
         law_id = nonempty_str(branch.get("law_id"))
         if law_id and law_id in forbidden_rules:
             reasons.append(f"{TOKEN_FORBIDDEN_RULE}:branch[{idx}]")
-        formula_hash, parse_error = branch_formula_hash(branch)
+        formula_hash, parse_error, implementation_mode = branch_revision_hash(branch)
         if parse_error:
-            reasons.append(f"{TOKEN_PARSE}:branch[{idx}]")
+            token = TOKEN_DIRECT_CODE_CONTRACT if parse_error == TOKEN_DIRECT_CODE_CONTRACT else TOKEN_PARSE
+            reasons.append(f"{token}:branch[{idx}]")
             continue
         if formula_hash:
             branch_hashes[law_id or f"branch_{idx}"] = formula_hash

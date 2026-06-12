@@ -96,6 +96,17 @@ def main() -> int:
     retrieval.write_text(json.dumps({'id': 'smoke', 'text': 'smoke'}, ensure_ascii=False) + '\n', encoding='utf-8')
     # Do not call the embedding service in smoke; path-policy coverage above is enough.
 
+    results.append(expect('alpha101_registry_blocks_without_workspace', [
+        sys.executable,
+        'scripts/build_alpha101_registry.py',
+    ], 1, BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN))
+    results.append(expect('alpha101_registry_workspace_dry_run_passes', [
+        sys.executable,
+        'scripts/build_alpha101_registry.py',
+        '--workspace-root', str(workspace),
+        '--dry-run',
+    ], 0, 'alpha101_registry_guard_pass'))
+
     alpha_registry = root / 'alpha101_registry.json'
     alpha_registry.write_text(json.dumps({
         'records': [

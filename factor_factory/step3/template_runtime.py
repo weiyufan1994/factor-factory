@@ -9,15 +9,24 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.research_workspace import BLOCK_STEP3_COPY_OUTSIDE_WORKSPACE, assert_path_under_workspace
+from factor_factory.runtime_context import load_runtime_manifest, manifest_factor_workspace, manifest_factorforge_root, manifest_report_id
 
 
 def safe_report_id(report_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(report_id)).strip("_") or "unknown_report"
 
 
-def runtime_copy_path(factorforge_root: Path, report_id: str, *, script_stem: str) -> Path:
+def runtime_copy_path(
+    factorforge_root: Path,
+    report_id: str,
+    *,
+    script_stem: str,
+    workspace_root: Path | None = None,
+) -> Path:
     safe_id = safe_report_id(report_id)
+    if workspace_root is not None:
+        return Path(workspace_root) / "step3_runtime" / safe_id / f"{script_stem}__{safe_id}.py"
     return factorforge_root / "runs" / safe_id / "step3_runtime" / f"{script_stem}__{safe_id}.py"
 
 
@@ -52,19 +61,37 @@ def maybe_reexec_from_template_copy(
         return
 
     factorforge_root = manifest_factorforge_root(manifest) if manifest else default_factorforge_root
+    factor_workspace = manifest_factor_workspace(manifest) if manifest else None
     source = source_path.resolve()
-    target = runtime_copy_path(factorforge_root, resolved_report_id, script_stem=script_stem)
+    target = runtime_copy_path(
+        factorforge_root,
+        resolved_report_id,
+        script_stem=script_stem,
+        workspace_root=factor_workspace,
+    )
+    if factor_workspace is not None:
+        try:
+            assert_path_under_workspace(target, factor_workspace, label="step3_runtime_copy")
+        except ValueError as exc:
+            raise SystemExit(f"{BLOCK_STEP3_COPY_OUTSIDE_WORKSPACE}: {exc}") from exc
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    runtime_hash = hashlib.sha256(target.read_bytes()).hexdigest()
 
     meta = {
-        "version": copy_version,
+        "version": "factorforge_step3_runtime_copy_v2" if factor_workspace else copy_version,
         "report_id": resolved_report_id,
+        "factor_id": manifest.get("factor_id") if manifest else None,
+        "research_id": manifest.get("research_id") if manifest else None,
+        "factor_workspace": str(factor_workspace) if factor_workspace else None,
         "source_template_path": str(source),
         "runtime_copy_path": str(target),
-        "source_template_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "source_template_sha256": source_hash,
+        "baseline_template_hash": source_hash,
+        "runtime_copy_hash": runtime_hash,
         "created_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "policy": policy,
+        "policy": "formal_step3_runs_must_execute_workspace_copy" if factor_workspace else policy,
     }
     target.with_suffix(".meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True),

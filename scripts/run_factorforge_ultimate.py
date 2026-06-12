@@ -16,7 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.runtime_context import resolve_factorforge_context, utc_now, write_json_atomic
+from factor_factory.research_workspace import (
+    BLOCK_WORKSPACE_MISSING,
+    build_workspace_manifest,
+    default_workspace_root,
+    load_workspace_manifest,
+    validate_workspace_cli_identity,
+    validate_workspace_manifest,
+    workspace_manifest_path,
+    write_workspace_manifest,
+)
+from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
 
 
 STEP_ORDER = ['2', '3', '3b', '4', '5', '6']
@@ -144,12 +154,17 @@ def path_snapshot(path: Path) -> dict[str, Any]:
     return {'path': str(path), 'exists': True, 'kind': 'other', 'sha256': None, 'digest': None}
 
 
-def council_side_effect_snapshot(factorforge_root: Path, report_id: str) -> dict[str, dict[str, Any]]:
+def council_side_effect_snapshot(
+    factorforge_root: Path,
+    report_id: str,
+    *,
+    clean_data_root: Path | None = None,
+) -> dict[str, dict[str, Any]]:
     return {
         'step3b_handoff': path_snapshot(factorforge_root / 'objects' / 'handoff' / f'handoff_to_step3b__{report_id}.json'),
         'generated_code': path_snapshot(factorforge_root / 'generated_code' / report_id),
         'official_record': path_snapshot(factorforge_root / 'objects' / 'factor_library_official' / f'factor_record__{report_id}.json'),
-        'data_clean': path_snapshot(factorforge_root / 'data' / 'clean'),
+        'data_clean': path_snapshot(clean_data_root or (factorforge_root / 'data' / 'clean')),
     }
 
 
@@ -457,6 +472,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--factorforge-root', default=None)
     ap.add_argument('--branch-id', default=None)
     ap.add_argument('--manifest', default=None, help='Use an existing runtime manifest instead of creating a new one.')
+    ap.add_argument('--factor-id', default=None)
+    ap.add_argument('--research-id', default=None)
+    ap.add_argument('--factor-workspace', default=None)
+    ap.add_argument('--init-factor-workspace', action='store_true')
+    ap.add_argument('--allow-legacy-global-runtime', action='store_true')
     ap.add_argument('--skip-step3a', action='store_true', help='When starting at Step3, skip run_step3 and run only Step3B onward.')
     ap.add_argument('--skip-researcher-packets', action='store_true', help='Do not build Step6 researcher packet/dossier before Step6.')
     ap.add_argument('--apply-approved-revision', action='store_true', help='Apply a human-approved Step6 revision before running the requested step range.')
@@ -480,10 +500,64 @@ def main() -> int:
     end = normalize_step(args.end_step, END_ALIASES)
     steps = step_slice(start, end)
 
-    ctx = resolve_factorforge_context(args.factorforge_root)
+    formal_workspace_steps = bool(set(steps) & {'3', '3b', '4', '5', '6'})
+    factor_workspace = Path(args.factor_workspace).expanduser().resolve() if args.factor_workspace else None
+    runtime_manifest_from_args: dict[str, Any] | None = None
     if args.manifest:
         manifest_path = Path(args.manifest).expanduser()
-        manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
+        if manifest_path.exists():
+            runtime_manifest_from_args = load_runtime_manifest(manifest_path)
+            if runtime_manifest_from_args.get('contract_version') == 'factorforge_runtime_context_v2':
+                raw_workspace = runtime_manifest_from_args.get('factor_workspace')
+                if raw_workspace:
+                    factor_workspace = Path(str(raw_workspace)).expanduser().resolve()
+        elif formal_workspace_steps and not factor_workspace and not args.allow_legacy_global_runtime:
+            print(BLOCK_WORKSPACE_MISSING)
+            return 1
+    if formal_workspace_steps and not factor_workspace:
+        if args.init_factor_workspace:
+            if not args.factor_id or not args.research_id:
+                print(f'{BLOCK_WORKSPACE_MISSING}: --init-factor-workspace requires --factor-id and --research-id')
+                return 1
+            factorforge_root = Path(args.factorforge_root).expanduser().resolve() if args.factorforge_root else REPO_ROOT
+            factor_workspace = default_workspace_root(
+                factorforge_root=factorforge_root,
+                factor_id=args.factor_id,
+                research_id=args.research_id,
+            )
+            ws_manifest = build_workspace_manifest(
+                repo_root=REPO_ROOT,
+                factorforge_root=factorforge_root,
+                factor_id=args.factor_id,
+                research_id=args.research_id,
+                root_report_id=args.report_id,
+                implementation_mode='unknown',
+            )
+            write_workspace_manifest(workspace_manifest_path(factor_workspace), ws_manifest)
+        elif not args.allow_legacy_global_runtime:
+            print(BLOCK_WORKSPACE_MISSING)
+            return 1
+    if factor_workspace:
+        ws_path = workspace_manifest_path(factor_workspace)
+        if not ws_path.exists():
+            print(f'BLOCK_FACTORFORGE_FACTOR_RESEARCH_WORKSPACE_MANIFEST_INVALID: missing {ws_path}')
+            return 1
+        ws_manifest = load_workspace_manifest(ws_path)
+        failures = validate_workspace_manifest(ws_manifest)
+        failures.extend(
+            validate_workspace_cli_identity(
+                ws_manifest,
+                factor_id=args.factor_id,
+                research_id=args.research_id,
+            )
+        )
+        if failures:
+            print('\n'.join(failures))
+            return 1
+    ctx = resolve_factorforge_context(args.factorforge_root, factor_workspace=factor_workspace)
+    if args.manifest:
+        manifest_path = Path(args.manifest).expanduser()
+        manifest = runtime_manifest_from_args if runtime_manifest_from_args else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
     else:
         manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
         manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
@@ -498,7 +572,11 @@ def main() -> int:
     env = os.environ.copy()
     env.pop('FACTORFORGE_ALLOW_DIRECT_STEP', None)
     env.pop('FACTORFORGE_ALLOW_LEGACY_STEP6_HANDOFF', None)
-    env['FACTORFORGE_ROOT'] = str(ctx.factorforge_root)
+    env['FACTORFORGE_ROOT'] = str(ctx.active_root)
+    env['FACTORFORGE_SHARED_FACTORFORGE_ROOT'] = str(ctx.factorforge_root)
+    if ctx.factor_workspace:
+        env['FACTORFORGE_FACTOR_WORKSPACE'] = str(ctx.factor_workspace)
+        env['FACTORFORGE_FACTOR_WORKSPACE_MANIFEST'] = str(ctx.factor_workspace_manifest or (ctx.factor_workspace / 'manifest.json'))
     env['FACTORFORGE_ULTIMATE_RUN'] = '1'
 
     py = sys.executable
@@ -548,6 +626,8 @@ def main() -> int:
         'started_at_utc': utc_now(),
         'finished_at_utc': None,
         'factorforge_root': str(ctx.factorforge_root),
+        'active_root': str(ctx.active_root),
+        'factor_workspace': str(ctx.factor_workspace) if ctx.factor_workspace else None,
         'repo_root': str(ctx.repo_root),
         'manifest_path': str(manifest_path),
         'start_step': start,
@@ -642,7 +722,7 @@ def main() -> int:
             output = (result.stdout_tail or '') + '\n' + (result.stderr_tail or '')
             if name == 'run_step6' and 'AWAITING_MAIN_AGENT_MECHANISM_MEMO' in output:
                 proof['status'] = 'PAUSED'
-                proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.factorforge_root, args.report_id)
+                proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.active_root, args.report_id)
                 proof['revision_council'] = {
                     'requested_mode': args.council_mode,
                     'status': 'not_reached',
@@ -740,8 +820,9 @@ def main() -> int:
                 }
                 write_json_atomic(proof_path, proof)
             else:
-                provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(ctx.factorforge_root, args.report_id)
-                side_effect_before = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
+                council_root = ctx.active_root
+                provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(council_root, args.report_id)
+                side_effect_before = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
                 if effective_mode in {'agentic_dispatch_manifest', 'agentic_contract_mock'}:
                     if effective_mode == 'agentic_dispatch_manifest':
                         council_commands = [
@@ -800,7 +881,7 @@ def main() -> int:
                 write_json_atomic(proof_path, proof)
                 for council_name, council_command in council_commands:
                     injected_failure = os.environ.get('FACTORFORGE_ULTIMATE_TEST_FAIL_COUNCIL_COMMAND')
-                    if injected_failure and injected_failure == council_name and is_tmp_root(ctx.factorforge_root):
+                    if injected_failure and injected_failure == council_name and is_tmp_root(council_root):
                         council_command = [py, '-c', f"import sys; print('INJECTED_COUNCIL_FAILURE:{council_name}', file=sys.stderr); raise SystemExit(1)"]
                     council_result = run_command(council_name, council_command, cwd=ctx.repo_root, env=env, dry_run=False)
                     proof['revision_council']['commands'].append(asdict(council_result))
@@ -816,12 +897,12 @@ def main() -> int:
                         print(f'[PROOF] {proof_path}')
                         return int(council_result.returncode or 1)
 
-                side_effect_after = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
-                if os.environ.get('FACTORFORGE_ULTIMATE_TEST_MUTATE_GENERATED_CODE_AFTER_COUNCIL') == '1' and is_tmp_root(ctx.factorforge_root):
-                    injected_path = ctx.factorforge_root / 'generated_code' / args.report_id / 'wrapper_side_effect_injection.txt'
+                side_effect_after = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
+                if os.environ.get('FACTORFORGE_ULTIMATE_TEST_MUTATE_GENERATED_CODE_AFTER_COUNCIL') == '1' and is_tmp_root(council_root):
+                    injected_path = council_root / 'generated_code' / args.report_id / 'wrapper_side_effect_injection.txt'
                     injected_path.parent.mkdir(parents=True, exist_ok=True)
                     injected_path.write_text('forbidden side effect injected by council primary smoke\n', encoding='utf-8')
-                    side_effect_after = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
+                    side_effect_after = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
                 changes = side_effect_changes(side_effect_before, side_effect_after)
                 proof['revision_council']['side_effect_after'] = side_effect_after
                 if changes:
@@ -837,11 +918,11 @@ def main() -> int:
                     print(f'[PROOF] {proof_path}')
                     return 1
                 if effective_mode == 'agentic_dispatch_manifest':
-                    proof['revision_council'].update(summarize_council_dispatch(ctx.factorforge_root, args.report_id, side_effect_after, side_effect_before))
+                    proof['revision_council'].update(summarize_council_dispatch(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'awaiting_agent_results'
                     proof['revision_council']['formal_council_status'] = 'awaiting_agent_results'
                 else:
-                    proof['revision_council'].update(summarize_council_attachment(ctx.factorforge_root, args.report_id, side_effect_after, side_effect_before))
+                    proof['revision_council'].update(summarize_council_attachment(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'completed'
                     proof['revision_council']['formal_council_status'] = 'agentic_completed' if effective_mode == 'agentic_contract_mock' else 'scaffold_only'
                     proof['revision_council']['attached'] = proof['revision_council'].get('attached') is True

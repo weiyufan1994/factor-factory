@@ -347,18 +347,21 @@ Use this split for operational knowledge sharing:
 - EC2 should pull the latest Mac-published knowledge bundle from S3 and keep a local cache for compute.
 - Tailscale may be used as a convenience path, but it must not be the only way EC2 can access knowledge; Mac power/network state must not block EC2 from pulling the last published bundle.
 
-Canonical Mac knowledge layout:
+Canonical production knowledge layout:
 
-- structured source of truth: `/Users/humphrey/projects/factor-factory/objects/`
-- human-readable vault: `/Users/humphrey/projects/factor-factory/knowledge/因子工厂/`
-- retrieval index: `/Users/humphrey/projects/factor-factory/knowledge/retrieval/`
+- each formal factor research owns a factor workspace created before Step3+ execution.
+- structured source of truth: `<factor_workspace>/objects/`
+- human-readable production notes: `<factor_workspace>/knowledge/human_readable/`
+- canonical structured knowledge: `<factor_workspace>/knowledge/canonical/`
+- retrieval index: `<factor_workspace>/knowledge/retrieval/`
+- repo-root `/Users/humphrey/projects/factor-factory/knowledge/因子工厂/` is an explicit export/vault target only; it is not the default production write path.
 
 Do not use legacy duplicate roots as active knowledge stores:
 
 - `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault/`
 - `/Users/humphrey/projects/factor-factory/factorforge/objects/`
 
-The S3 bundle must carry the same active layout: `objects/`, `knowledge/因子工厂/`, and `knowledge/retrieval/`.
+The S3 bundle may carry exported vault material, but production writes must originate from the workspace layout and include export provenance when copied to repo-root or S3-facing vault paths.
 
 Mac publishes the authoritative object bundle with:
 

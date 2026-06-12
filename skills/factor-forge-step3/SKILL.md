@@ -53,12 +53,13 @@ Step 3 must protect the thesis during implementation:
 - Step3B sample factor values prove executability, not research validity; Step4/5/6 still decide whether the signal is worth keeping.
 - `skills/factor-forge-step3/scripts/run_step3.py` and `run_step3b.py` are
   canonical templates, not per-factor scratchpads. Formal Step3A/Step3B
-  execution must run from report-local copies under
-  `runs/<report_id>/step3_runtime/run_step3__<report_id>.py` and
-  `runs/<report_id>/step3_runtime/run_step3b__<report_id>.py`; the templates
-  create those copies and re-exec them before writing Step3 artifacts. New
-  research must not edit canonical Step3 templates to add factor-specific
-  fields, qlib tweaks, data-source hacks, or direct-code law variants.
+  execution must first create a factor research workspace and run from copies
+  under `<factor_workspace>/step3_runtime/<report_id>/`; the templates create
+  those copies and re-exec them before writing Step3 artifacts. Legacy
+  `factorforge/runs/<report_id>/step3_runtime/` copies are debug-only and must
+  not be used to claim a production research run. New research must not edit
+  canonical Step3 templates to add factor-specific fields, qlib tweaks,
+  data-source hacks, or direct-code law variants.
   Factor-specific behavior belongs in `factor_spec_master`,
   `data_prep_master`, generated run artifacts, Data API/datamart contracts,
   versioned direct-code law registry entries, or reviewed report-local runtime

@@ -216,6 +216,7 @@ def cmd_bundle(args: argparse.Namespace) -> int:
 
     runtime_root = resolve_runtime_root(args.runtime_root)
     objects_root = resolve_objects_root(runtime_root)
+    source_workspace = Path(args.source_workspace).expanduser().resolve() if args.source_workspace else None
     include = args.include or list(KNOWLEDGE_SPECS.keys())
     files = iter_selected_files(objects_root, include)
     if not files:
@@ -237,6 +238,8 @@ def cmd_bundle(args: argparse.Namespace) -> int:
             'git_commit': current_git_commit(),
             'runtime_root': str(runtime_root),
             'objects_root': str(objects_root),
+            'source_workspace': str(source_workspace) if source_workspace else None,
+            'export_manifest': str(Path(args.export_manifest).expanduser()) if args.export_manifest else None,
             'include': include,
             'file_count': len(files),
             'files': [rel for _, rel in files],
@@ -349,7 +352,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
         run_with_factorforge_root(['python3', str(REPO_ROOT / 'scripts' / 'build_factorforge_retrieval_index.py')], base_root)
         print('[REBUILD] retrieval index')
     if args.export_obsidian:
-        run_with_factorforge_root(['python3', str(REPO_ROOT / 'scripts' / 'export_factorforge_obsidian.py')], base_root)
+        export_cmd = ['python3', str(REPO_ROOT / 'scripts' / 'export_factorforge_obsidian.py'), '--export-knowledge-vault']
+        if args.workspace_root:
+            export_cmd.extend(['--workspace-root', args.workspace_root, '--write-export-manifest'])
+        run_with_factorforge_root(export_cmd, base_root)
         print('[REBUILD] obsidian vault')
     return 0
 
@@ -367,6 +373,8 @@ def main() -> int:
     p_bundle.add_argument('--bucket', default=DEFAULT_BUCKET)
     p_bundle.add_argument('--prefix', default=DEFAULT_PREFIX)
     p_bundle.add_argument('--source-role', default='local', choices=['mac_authoritative', 'ec2_results', 'local'])
+    p_bundle.add_argument('--source-workspace', default=None, help='Optional factor research workspace source root recorded in bundle manifest.')
+    p_bundle.add_argument('--export-manifest', default=None, help='Optional workspace export manifest recorded in bundle manifest.')
     p_bundle.add_argument('--update-latest', action='store_true', help='After S3 upload, write latest.json pointing to this immutable bundle.')
     p_bundle.add_argument('--latest-name', default='latest.json')
     p_bundle.add_argument('--include', nargs='*', choices=sorted(KNOWLEDGE_SPECS.keys()))
@@ -380,6 +388,7 @@ def main() -> int:
     p_apply.add_argument('--overwrite-unprotected', action='store_true', help='Overwrite existing non-protected knowledge files such as human-readable vault, retrieval index, and ordinary library records.')
     p_apply.add_argument('--rebuild-index', action='store_true')
     p_apply.add_argument('--export-obsidian', action='store_true')
+    p_apply.add_argument('--workspace-root', default=None, help='Optional workspace root used when rebuilding an explicit Obsidian export.')
     p_apply.set_defaults(func=cmd_apply)
 
     args = parser.parse_args()

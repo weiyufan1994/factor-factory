@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_workspace import (
+    BLOCK_KNOWLEDGE_PROVENANCE_MISSING,
     BLOCK_KNOWLEDGE_VAULT_EXPORT_NOT_EXPLICIT,
     BLOCK_KNOWLEDGE_WRITE_PATH_INVALID,
     assert_path_under_workspace,
@@ -382,6 +383,12 @@ def main() -> None:
     output_default = (workspace_root / 'knowledge' / 'human_readable') if workspace_root else DEFAULT_OUTPUT
     out = Path(args.output_root or output_default).expanduser().resolve()
     enforce_output_policy(out=out, workspace_root=workspace_root, explicit_export=args.export_knowledge_vault)
+    if workspace_root and args.export_knowledge_vault:
+        try:
+            assert_path_under_workspace(out, workspace_root, label='obsidian_output_root')
+        except ValueError:
+            if not args.write_export_manifest:
+                raise SystemExit(BLOCK_KNOWLEDGE_PROVENANCE_MISSING)
 
     factor_dir = objects_root / 'factor_library_all'
     official_dir = objects_root / 'factor_library_official'

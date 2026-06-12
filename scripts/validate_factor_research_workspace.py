@@ -62,6 +62,12 @@ def main() -> int:
                         assert_path_under_workspace(Path(raw), workspace_root, label=f"{section}.{item_key}")
                     except ValueError as exc:
                         failures.append(str(exc))
+        for item_key, raw in (runtime_manifest.get("branch") or {}).items():
+            if isinstance(raw, str):
+                try:
+                    assert_path_under_workspace(Path(raw), workspace_root, label=f"branch.{item_key}")
+                except ValueError as exc:
+                    failures.append(str(exc))
     for raw in args.assert_path:
         if "=" not in raw:
             failures.append(f"{BLOCK_OUTPUT_OUTSIDE_WORKSPACE}: malformed assert-path {raw!r}")

@@ -199,7 +199,7 @@ class FactorForgeContext:
         return self.evaluations_root / report_id / backend / 'evaluation_payload.json'
 
     def research_branch_root(self, report_id: str, branch_id: str) -> Path:
-        return self.factorforge_root / 'research_branches' / report_id / branch_id
+        return self.active_root / 'research_branches' / report_id / branch_id
 
     def remap_legacy_path(self, raw: str | Path | None) -> Path | None:
         if raw is None:

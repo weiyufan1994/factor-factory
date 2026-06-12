@@ -154,12 +154,17 @@ def path_snapshot(path: Path) -> dict[str, Any]:
     return {'path': str(path), 'exists': True, 'kind': 'other', 'sha256': None, 'digest': None}
 
 
-def council_side_effect_snapshot(factorforge_root: Path, report_id: str) -> dict[str, dict[str, Any]]:
+def council_side_effect_snapshot(
+    factorforge_root: Path,
+    report_id: str,
+    *,
+    clean_data_root: Path | None = None,
+) -> dict[str, dict[str, Any]]:
     return {
         'step3b_handoff': path_snapshot(factorforge_root / 'objects' / 'handoff' / f'handoff_to_step3b__{report_id}.json'),
         'generated_code': path_snapshot(factorforge_root / 'generated_code' / report_id),
         'official_record': path_snapshot(factorforge_root / 'objects' / 'factor_library_official' / f'factor_record__{report_id}.json'),
-        'data_clean': path_snapshot(factorforge_root / 'data' / 'clean'),
+        'data_clean': path_snapshot(clean_data_root or (factorforge_root / 'data' / 'clean')),
     }
 
 
@@ -717,7 +722,7 @@ def main() -> int:
             output = (result.stdout_tail or '') + '\n' + (result.stderr_tail or '')
             if name == 'run_step6' and 'AWAITING_MAIN_AGENT_MECHANISM_MEMO' in output:
                 proof['status'] = 'PAUSED'
-                proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.factorforge_root, args.report_id)
+                proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.active_root, args.report_id)
                 proof['revision_council'] = {
                     'requested_mode': args.council_mode,
                     'status': 'not_reached',
@@ -815,8 +820,9 @@ def main() -> int:
                 }
                 write_json_atomic(proof_path, proof)
             else:
-                provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(ctx.factorforge_root, args.report_id)
-                side_effect_before = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
+                council_root = ctx.active_root
+                provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(council_root, args.report_id)
+                side_effect_before = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
                 if effective_mode in {'agentic_dispatch_manifest', 'agentic_contract_mock'}:
                     if effective_mode == 'agentic_dispatch_manifest':
                         council_commands = [
@@ -875,7 +881,7 @@ def main() -> int:
                 write_json_atomic(proof_path, proof)
                 for council_name, council_command in council_commands:
                     injected_failure = os.environ.get('FACTORFORGE_ULTIMATE_TEST_FAIL_COUNCIL_COMMAND')
-                    if injected_failure and injected_failure == council_name and is_tmp_root(ctx.factorforge_root):
+                    if injected_failure and injected_failure == council_name and is_tmp_root(council_root):
                         council_command = [py, '-c', f"import sys; print('INJECTED_COUNCIL_FAILURE:{council_name}', file=sys.stderr); raise SystemExit(1)"]
                     council_result = run_command(council_name, council_command, cwd=ctx.repo_root, env=env, dry_run=False)
                     proof['revision_council']['commands'].append(asdict(council_result))
@@ -891,12 +897,12 @@ def main() -> int:
                         print(f'[PROOF] {proof_path}')
                         return int(council_result.returncode or 1)
 
-                side_effect_after = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
-                if os.environ.get('FACTORFORGE_ULTIMATE_TEST_MUTATE_GENERATED_CODE_AFTER_COUNCIL') == '1' and is_tmp_root(ctx.factorforge_root):
-                    injected_path = ctx.factorforge_root / 'generated_code' / args.report_id / 'wrapper_side_effect_injection.txt'
+                side_effect_after = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
+                if os.environ.get('FACTORFORGE_ULTIMATE_TEST_MUTATE_GENERATED_CODE_AFTER_COUNCIL') == '1' and is_tmp_root(council_root):
+                    injected_path = council_root / 'generated_code' / args.report_id / 'wrapper_side_effect_injection.txt'
                     injected_path.parent.mkdir(parents=True, exist_ok=True)
                     injected_path.write_text('forbidden side effect injected by council primary smoke\n', encoding='utf-8')
-                    side_effect_after = council_side_effect_snapshot(ctx.factorforge_root, args.report_id)
+                    side_effect_after = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
                 changes = side_effect_changes(side_effect_before, side_effect_after)
                 proof['revision_council']['side_effect_after'] = side_effect_after
                 if changes:
@@ -912,11 +918,11 @@ def main() -> int:
                     print(f'[PROOF] {proof_path}')
                     return 1
                 if effective_mode == 'agentic_dispatch_manifest':
-                    proof['revision_council'].update(summarize_council_dispatch(ctx.factorforge_root, args.report_id, side_effect_after, side_effect_before))
+                    proof['revision_council'].update(summarize_council_dispatch(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'awaiting_agent_results'
                     proof['revision_council']['formal_council_status'] = 'awaiting_agent_results'
                 else:
-                    proof['revision_council'].update(summarize_council_attachment(ctx.factorforge_root, args.report_id, side_effect_after, side_effect_before))
+                    proof['revision_council'].update(summarize_council_attachment(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'completed'
                     proof['revision_council']['formal_council_status'] = 'agentic_completed' if effective_mode == 'agentic_contract_mock' else 'scaffold_only'
                     proof['revision_council']['attached'] = proof['revision_council'].get('attached') is True

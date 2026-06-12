@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_workspace import (
+    BLOCK_KNOWLEDGE_PROVENANCE_MISSING,
     BLOCK_KNOWLEDGE_WRITE_PATH_INVALID,
     BLOCK_KNOWLEDGE_VAULT_EXPORT_NOT_EXPLICIT,
     BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN,
@@ -58,6 +59,23 @@ def main() -> int:
         '--workspace-root', str(workspace),
         '--output-root', str(REPO_ROOT / 'knowledge' / '因子工厂'),
     ], 1, BLOCK_KNOWLEDGE_VAULT_EXPORT_NOT_EXPLICIT))
+    results.append(expect('external_vault_export_requires_manifest', [
+        sys.executable,
+        'scripts/export_factorforge_obsidian.py',
+        '--workspace-root', str(workspace),
+        '--output-root', str(root / 'external_vault_without_manifest'),
+        '--export-knowledge-vault',
+    ], 1, BLOCK_KNOWLEDGE_PROVENANCE_MISSING))
+    results.append(expect('external_vault_export_with_manifest_passes', [
+        sys.executable,
+        'scripts/export_factorforge_obsidian.py',
+        '--workspace-root', str(workspace),
+        '--output-root', str(root / 'external_vault_with_manifest'),
+        '--export-knowledge-vault',
+        '--write-export-manifest',
+    ], 0))
+    if not list((workspace / 'knowledge' / 'export_manifest').glob('knowledge_vault_export__*.json')):
+        raise AssertionError('explicit external export did not write export manifest')
 
     results.append(expect('workspace_default_obsidian_export_passes', [
         sys.executable,

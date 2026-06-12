@@ -19,6 +19,7 @@ from factor_factory.research_workspace import (
     default_workspace_root,
 )
 from factor_factory.step3.template_runtime import runtime_copy_path
+from scripts.run_factorforge_ultimate import council_side_effect_snapshot, disable_provisional_step3b_handoff_for_council
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -94,6 +95,53 @@ def main() -> int:
         '--workspace-root', str(workspace),
         '--runtime-manifest', str(runtime_manifest),
     ]), 0))
+    results.append(expect_rc('build_branch_runtime_context_v2', run([
+        sys.executable,
+        'scripts/build_factorforge_runtime_context.py',
+        '--report-id', report_id,
+        '--branch-id', 'branch_a',
+        '--factor-id', factor_id,
+        '--research-id', research_id,
+        '--factor-workspace', str(workspace),
+        '--factorforge-root', str(factorforge_root),
+        '--write',
+    ]), 0))
+    branch_manifest = workspace / 'objects' / 'runtime_context' / f'runtime_context__{report_id}__branch_a.json'
+    branch_payload = json.loads(branch_manifest.read_text(encoding='utf-8'))
+    branch_root = Path(str((branch_payload.get('branch') or {}).get('branch_root')))
+    if not str(branch_root.resolve(strict=False)).startswith(str(workspace.resolve())):
+        raise AssertionError(f'branch_root outside workspace: {branch_root}')
+    results.append(expect_rc('validate_branch_workspace', run([
+        sys.executable,
+        'scripts/validate_factor_research_workspace.py',
+        '--runtime-manifest', str(branch_manifest),
+    ]), 0))
+    branch_payload['branch']['branch_root'] = str(root / 'outside_branch_root')
+    branch_manifest.write_text(json.dumps(branch_payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    results.append(expect_rc('branch_root_outside_workspace_blocks', run([
+        sys.executable,
+        'scripts/validate_factor_research_workspace.py',
+        '--runtime-manifest', str(branch_manifest),
+    ]), 1, BLOCK_OUTPUT_OUTSIDE_WORKSPACE))
+
+    council_handoff = workspace / 'objects' / 'handoff' / f'handoff_to_step3b__{report_id}.json'
+    council_handoff.parent.mkdir(parents=True, exist_ok=True)
+    council_handoff.write_text(json.dumps({'status': 'iterate', 'loop_authorization': 'advisory_only'}, ensure_ascii=False), encoding='utf-8')
+    disable_result = disable_provisional_step3b_handoff_for_council(workspace, report_id)
+    if disable_result.get('disabled') is not True:
+        raise AssertionError(f'Council handoff was not disabled in workspace: {disable_result}')
+    archive_path = Path(str(disable_result.get('archive_path')))
+    if not str(archive_path.resolve(strict=False)).startswith(str(workspace.resolve())):
+        raise AssertionError(f'Council archive outside workspace: {archive_path}')
+    global_handoff = factorforge_root / 'objects' / 'handoff' / f'handoff_to_step3b__{report_id}.json'
+    if global_handoff.exists():
+        raise AssertionError(f'Council helper touched global handoff path: {global_handoff}')
+    side_effect_snapshot = council_side_effect_snapshot(workspace, report_id, clean_data_root=factorforge_root / 'data' / 'clean')
+    for key in ('step3b_handoff', 'generated_code', 'official_record'):
+        path = Path(str(side_effect_snapshot[key]['path'])).resolve(strict=False)
+        if not str(path).startswith(str(workspace.resolve())):
+            raise AssertionError(f'Council side-effect path outside workspace: {key}={path}')
+    results.append({'name': 'council_bookkeeping_paths_workspace_scoped', 'rc': 0, 'token': None, 'status': 'PASS'})
     results.append(expect_rc('outside_path_blocks', run([
         sys.executable,
         'scripts/validate_factor_research_workspace.py',

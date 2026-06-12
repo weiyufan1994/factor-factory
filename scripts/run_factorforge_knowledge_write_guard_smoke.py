@@ -96,19 +96,68 @@ def main() -> int:
     retrieval.write_text(json.dumps({'id': 'smoke', 'text': 'smoke'}, ensure_ascii=False) + '\n', encoding='utf-8')
     # Do not call the embedding service in smoke; path-policy coverage above is enough.
 
+    alpha_registry = root / 'alpha101_registry.json'
+    alpha_registry.write_text(json.dumps({
+        'records': [
+            {
+                'alpha_no': 1,
+                'factor_id': 'Alpha001',
+                'report_id': 'ALPHA001_QLIB_ONLY_20160101_20250711',
+                'formula': 'rank(close)',
+            },
+            {
+                'alpha_no': 2,
+                'factor_id': 'Alpha002',
+                'report_id': 'ALPHA002_QLIB_ONLY_20160101_20250711',
+                'formula': 'rank(open)',
+            },
+        ],
+    }, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    alpha_kb = workspace / 'knowledge' / 'human_readable' / '知识库'
+    alpha_kb.mkdir(parents=True, exist_ok=True)
+    (alpha_kb / 'ALPHA001_QLIB_ONLY_20160101_20250711.md').write_text('\n'.join([
+        '---',
+        'report_id: "ALPHA001_QLIB_ONLY_20160101_20250711"',
+        'factor_id: "Alpha001"',
+        'decision: "watch"',
+        '---',
+        '',
+        '# Alpha001',
+        '',
+    ]), encoding='utf-8')
+
     results.append(expect('alpha101_batch_judge_blocks_without_workspace', [
         sys.executable,
         'scripts/run_alpha101_qlib_batch_judge.py',
     ], 1, BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN))
+    results.append(expect('alpha101_batch_judge_workspace_dry_run_passes', [
+        sys.executable,
+        'scripts/run_alpha101_qlib_batch_judge.py',
+        '--workspace-root', str(workspace),
+        '--dry-run',
+    ], 0, 'alpha101_qlib_batch_guard_pass'))
     results.append(expect('alpha101_queue_blocks_without_workspace', [
         sys.executable,
         'scripts/build_alpha101_research_queue.py',
     ], 1, BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN))
+    queue_output = workspace / 'knowledge' / 'canonical' / 'alpha101_research_queue.json'
     results.append(expect('alpha101_queue_writes_inside_workspace', [
         sys.executable,
         'scripts/build_alpha101_research_queue.py',
         '--workspace-root', str(workspace),
+        '--registry', str(alpha_registry),
     ], 0))
+    queue_payload = json.loads(queue_output.read_text(encoding='utf-8'))
+    if queue_payload['counts'] != {'pending': 1, 'researched': 1, 'total': 2}:
+        raise AssertionError(f'alpha101 queue counts mismatch: {queue_payload["counts"]}')
+    resolved_workspace = workspace.resolve()
+    for row in queue_payload['queue']:
+        for record in row['knowledge_records']:
+            resolved_record = Path(record['path']).resolve()
+            try:
+                resolved_record.relative_to(resolved_workspace)
+            except ValueError as exc:
+                raise AssertionError(f'alpha101 queue contains knowledge record outside workspace: {resolved_record}') from exc
 
     summary = {
         'verdict': 'ACCEPT',

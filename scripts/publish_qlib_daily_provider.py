@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -15,13 +16,24 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / 'scripts'
+sys.path = [item for item in sys.path if Path(item or '.').resolve() != SCRIPTS_DIR]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
 
-from build_report_qlib_provider import build_provider, load_daily_source, normalize_source, raw_format_smoke  # noqa: E402
 from factor_factory.data_api import fetch_data_api_dataset  # noqa: E402
+
+_builder_spec = importlib.util.spec_from_file_location(
+    'factorforge_build_report_qlib_provider',
+    SCRIPTS_DIR / 'build_report_qlib_provider.py',
+)
+if _builder_spec is None or _builder_spec.loader is None:
+    raise ImportError(f'cannot load {SCRIPTS_DIR / "build_report_qlib_provider.py"}')
+_builder_module = importlib.util.module_from_spec(_builder_spec)
+_builder_spec.loader.exec_module(_builder_module)
+build_provider = _builder_module.build_provider
+load_daily_source = _builder_module.load_daily_source
+normalize_source = _builder_module.normalize_source
+raw_format_smoke = _builder_module.raw_format_smoke
 
 
 DEFAULT_PROVIDER_DIR = Path.home() / '.qlib' / 'qlib_data' / 'cn_data'

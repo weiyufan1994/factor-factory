@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -211,7 +213,6 @@ def main() -> int:
     if clean_slice.empty:
         raise SystemExit(f'no clean rows produced for append window {start}..{end}')
 
-    import pyarrow.parquet as pq
     missing_columns = REQUIRED_ENHANCED_COLUMNS - set(pq.ParquetFile(daily_clean).schema_arrow.names)
     if missing_columns:
         raise SystemExit(f'existing clean layer lacks enhanced columns; run build_daily_clean_enhanced once first: {sorted(missing_columns)}')
@@ -224,16 +225,40 @@ def main() -> int:
         args.daily_basic_lookback_days,
     )
 
-    existing = pd.read_parquet(daily_clean)
-    existing['trade_date'] = existing['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
-    existing = existing[existing['trade_date'] < start].copy()
-    combined = pd.concat([existing, enhanced_slice], ignore_index=True, sort=False)
-    combined = combined.sort_values(['trade_date', 'ts_code']).reset_index(drop=True)
-
     tmp = daily_clean.with_suffix('.parquet.tmp')
-    combined.to_parquet(tmp, index=False)
+    source_parquet = pq.ParquetFile(daily_clean)
+    writer: pq.ParquetWriter | None = None
+    retained_rows = 0
+    retained_dates: set[str] = set()
+    try:
+        for batch in source_parquet.iter_batches(batch_size=250_000):
+            frame = batch.to_pandas()
+            frame['trade_date'] = frame['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
+            frame = frame[frame['trade_date'] < start].copy()
+            if frame.empty:
+                continue
+            retained_rows += len(frame)
+            retained_dates.update(frame['trade_date'].dropna().astype(str).unique().tolist())
+            table = pa.Table.from_pandas(frame, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(tmp, table.schema)
+            writer.write_table(table)
+
+        enhanced_slice = enhanced_slice.sort_values(['trade_date', 'ts_code']).reset_index(drop=True)
+        table = pa.Table.from_pandas(enhanced_slice, preserve_index=False)
+        if writer is None:
+            writer = pq.ParquetWriter(tmp, table.schema)
+        else:
+            table = table.cast(writer.schema)
+        writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
     tmp.replace(daily_clean)
 
+    output_rows = retained_rows + len(enhanced_slice)
+    output_dates = retained_dates | set(enhanced_slice['trade_date'].dropna().astype(str).unique().tolist())
+    meta_frame = enhanced_slice.head(0).copy()
     append_summary = {
         'start': start,
         'end': end,
@@ -244,7 +269,15 @@ def main() -> int:
         'daily_basic_dir': str(raw_paths.daily_basic_dir),
         'clean_meta': slice_meta,
     }
-    update_meta(daily_meta, meta, append_summary, enrichment, combined)
+    update_meta(daily_meta, meta, append_summary, enrichment, meta_frame)
+    meta_after = read_meta(daily_meta)
+    meta_after['output_summary'] = {
+        'rows': int(output_rows),
+        'tickers': None,
+        'trade_dates': int(len(output_dates)),
+        'columns': pq.ParquetFile(daily_clean).schema_arrow.names,
+    }
+    daily_meta.write_text(json.dumps(meta_after, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({
         'mode': 'incremental_append',
         'skipped': False,
@@ -256,10 +289,10 @@ def main() -> int:
         },
         'summary': append_summary,
         'after': {
-            'rows': int(len(combined)),
-            'date_min': str(combined['trade_date'].min()),
-            'date_max': str(combined['trade_date'].max()),
-            'date_count': int(combined['trade_date'].nunique()),
+            'rows': int(output_rows),
+            'date_min': min(output_dates) if output_dates else None,
+            'date_max': max(output_dates) if output_dates else None,
+            'date_count': int(len(output_dates)),
             'size_mb': round(daily_clean.stat().st_size / 1024**2, 1),
         },
     }, ensure_ascii=False, indent=2))

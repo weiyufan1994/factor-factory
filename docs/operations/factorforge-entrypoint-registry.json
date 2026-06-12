@@ -44,6 +44,8 @@
     "scripts/run_factorforge_multibranch_synthesis_smoke.py",
     "scripts/run_factorforge_prompt_contract_smoke.py",
     "scripts/run_factorforge_unit_tests.py",
+    "scripts/run_worker_execution_contract_smoke.py",
+    "scripts/validate_worker_command_report.py",
     "scripts/run_factorforge_ultimate_loop_smoke.py",
     "scripts/run_main_agent_mechanism_memo_smoke.py",
     "scripts/run_mechanism_math_contract_smoke.py",
@@ -95,7 +97,9 @@
     "scripts/backfill_mechanism_math_contract.py",
     "scripts/factorforge_formal_run_manifest.py",
     "scripts/factorforge_run_registry.py",
-    "scripts/factorforge_task_ledger.py"
+    "scripts/factorforge_task_ledger.py",
+    "scripts/run_worker_task_spec.py",
+    "scripts/run_worker_task_via_ssm.py"
   ],
   "deprecated_or_historical": [
     "scripts/deprecated/run_alpha014_step3b.py",

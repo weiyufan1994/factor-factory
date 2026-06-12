@@ -29,6 +29,8 @@ DEFAULT_FACTORFORGE_ROOT = Path(os.getenv("FACTORFORGE_ROOT", "/home/ubuntu/.ope
 DEFAULT_RUN_ROOT = Path(os.getenv("FACTORFORGE_RUN_ROOT", "/home/ubuntu/.openclaw/workspace/runs")).expanduser()
 DEFAULT_QLIB_PROVIDER_DIR = Path(os.getenv("QLIB_PROVIDER_URI") or (Path.home() / ".qlib" / "qlib_data" / "cn_data")).expanduser()
 DEFAULT_QLIB_PROVIDER_ENV = Path(os.getenv("FACTORFORGE_QLIB_PROVIDER_ENV") or (Path.home() / ".factorforge" / "qlib_provider.env")).expanduser()
+DEFAULT_QLIB_PROVIDER_S3_URI = "s3://yufan-data-lake/factorforge/datamart/qlib_data/cn_data/"
+DEFAULT_WORKER_QLIB_PYTHON = Path("/home/ubuntu/miniconda3/envs/rdagent4qlib/bin/python")
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -103,6 +105,39 @@ def parquet_trade_date_max(path: Path) -> str | None:
     return str(frame["trade_date"].astype(str).str.replace(".0", "", regex=False).str.zfill(8).max())
 
 
+def clean_meta_s3_uri(clean_s3_uri: str) -> str:
+    if clean_s3_uri.endswith(".parquet"):
+        return clean_s3_uri[:-len(".parquet")] + ".meta.json"
+    return clean_s3_uri.rstrip("/") + ".meta.json"
+
+
+def restore_clean_layer_from_s3_if_missing(args: argparse.Namespace) -> dict[str, Any]:
+    clean_parquet = args.clean_dir / "daily_clean.parquet"
+    clean_meta = args.clean_dir / "daily_clean.meta.json"
+    if clean_parquet.exists() and clean_meta.exists():
+        return {
+            "skipped": True,
+            "reason": "local_clean_layer_present",
+            "clean_parquet": str(clean_parquet),
+            "clean_meta": str(clean_meta),
+        }
+
+    args.clean_dir.mkdir(parents=True, exist_ok=True)
+    parquet_proc = run(["aws", "s3", "cp", args.s3_uri, str(clean_parquet), "--only-show-errors"])
+    meta_uri = clean_meta_s3_uri(args.s3_uri)
+    meta_proc = run(["aws", "s3", "cp", meta_uri, str(clean_meta), "--only-show-errors"])
+    return {
+        "skipped": False,
+        "reason": "local_clean_layer_missing",
+        "source_parquet_uri": args.s3_uri,
+        "source_meta_uri": meta_uri,
+        "clean_parquet": str(clean_parquet),
+        "clean_meta": str(clean_meta),
+        "parquet_stdout_tail": parquet_proc.stdout[-1000:],
+        "meta_stdout_tail": meta_proc.stdout[-1000:],
+    }
+
+
 def resolve_publisher_script() -> Path:
     candidates = [
         REPO_ROOT / "scripts" / "factorforge_data_api.py",
@@ -117,8 +152,10 @@ def resolve_publisher_script() -> Path:
 
 def publish_qlib_provider(args: argparse.Namespace, effective_end_date: str, env: dict[str, str]) -> dict[str, Any]:
     provider_dir = args.qlib_provider_dir.expanduser()
+    qlib_python = args.qlib_provider_python.expanduser()
+    python_executable = str(qlib_python) if qlib_python.exists() else sys.executable
     cmd = [
-        sys.executable,
+        python_executable,
         "scripts/publish_qlib_daily_provider.py",
         "--data-api",
         "--catalog-path",
@@ -139,6 +176,8 @@ def publish_qlib_provider(args: argparse.Namespace, effective_end_date: str, env
     ]
     if args.qlib_provider_qlib_smoke:
         cmd.append("--qlib-smoke")
+    if args.qlib_provider_s3_uri:
+        cmd.extend(["--sync-s3-uri", args.qlib_provider_s3_uri])
     proc = run(cmd, env={**env, "QLIB_PROVIDER_URI": str(provider_dir)})
     payload = read_json_from_stdout(proc)
     return {
@@ -146,6 +185,7 @@ def publish_qlib_provider(args: argparse.Namespace, effective_end_date: str, env
         "command": cmd,
         "provider_dir": str(provider_dir),
         "env_file": str(args.qlib_provider_env_file.expanduser()),
+        "python_executable": python_executable,
         "stdout_tail": proc.stdout[-4000:],
         "stderr_tail": proc.stderr[-2000:],
         "publish_report": payload,
@@ -174,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-qlib-provider-publish", action="store_true", help="Do not publish the global Microsoft Qlib provider after clean_daily_bar refresh.")
     parser.add_argument("--qlib-provider-dir", type=Path, default=DEFAULT_QLIB_PROVIDER_DIR)
     parser.add_argument("--qlib-provider-env-file", type=Path, default=DEFAULT_QLIB_PROVIDER_ENV)
+    parser.add_argument("--qlib-provider-s3-uri", default=DEFAULT_QLIB_PROVIDER_S3_URI)
+    parser.add_argument("--qlib-provider-python", type=Path, default=Path(os.getenv("FACTORFORGE_QLIB_PROVIDER_PYTHON") or DEFAULT_WORKER_QLIB_PYTHON))
     parser.add_argument("--qlib-provider-start-date", default="20100104")
     parser.add_argument("--qlib-provider-instrument-style", default="legacy_qlib", choices=["ts_code", "tushare", "provider", "legacy_qlib", "qlib", "raw"])
     parser.add_argument("--qlib-provider-qlib-smoke", action="store_true", help="Also run Microsoft Qlib read smoke after publishing the provider.")
@@ -237,6 +279,8 @@ def main() -> int:
             "stderr_tail": proc.stderr[-2000:],
         }
 
+    summary["restore_clean_layer"] = restore_clean_layer_from_s3_if_missing(args)
+
     refresh_cmd = [
         sys.executable,
         "scripts/refresh_clean_daily_after_tushare_update.py",
@@ -248,6 +292,7 @@ def main() -> int:
         effective_end_date,
         "--operator",
         args.operator,
+        "--sync-all-daily-basic-if-missing",
     ]
     if args.force:
         refresh_cmd.append("--force")

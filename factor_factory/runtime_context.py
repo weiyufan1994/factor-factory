@@ -8,6 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from factor_factory.research_workspace import (
+    BLOCK_WORKSPACE_MANIFEST_INVALID,
+    load_workspace_manifest,
+    validate_workspace_manifest,
+    workspace_manifest_path,
+)
+
 try:
     import fcntl
 except Exception:  # pragma: no cover - fcntl is unavailable on some non-Unix hosts
@@ -29,7 +36,7 @@ def load_json(path: Path) -> dict[str, Any]:
 def load_runtime_manifest(path: str | Path) -> dict[str, Any]:
     manifest = load_json(Path(path).expanduser())
     version = manifest.get('contract_version')
-    if version != 'factorforge_runtime_context_v1':
+    if version not in {'factorforge_runtime_context_v1', 'factorforge_runtime_context_v2'}:
         raise ValueError(f'unsupported FactorForge runtime manifest: {version!r}')
     return manifest
 
@@ -53,6 +60,11 @@ def manifest_factorforge_root(manifest: dict[str, Any]) -> Path:
     if not root:
         raise ValueError('runtime manifest is missing factorforge_root')
     return Path(root).expanduser()
+
+
+def manifest_factor_workspace(manifest: dict[str, Any]) -> Path | None:
+    raw = manifest.get('factor_workspace')
+    return Path(raw).expanduser() if raw else None
 
 
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
@@ -88,22 +100,30 @@ class FactorForgeContext:
     repo_root: Path
     workspace_root: Path
     factorforge_root: Path
+    factor_workspace: Path | None = None
+    factor_workspace_manifest: Path | None = None
+    factor_id: str | None = None
+    research_id: str | None = None
+
+    @property
+    def active_root(self) -> Path:
+        return self.factor_workspace or self.factorforge_root
 
     @property
     def objects_root(self) -> Path:
-        return self.factorforge_root / 'objects'
+        return self.active_root / 'objects'
 
     @property
     def runs_root(self) -> Path:
-        return self.factorforge_root / 'runs'
+        return self.active_root / 'runs'
 
     @property
     def evaluations_root(self) -> Path:
-        return self.factorforge_root / 'evaluations'
+        return self.active_root / 'evaluations'
 
     @property
     def archive_root(self) -> Path:
-        return self.factorforge_root / 'archive'
+        return self.active_root / 'archive'
 
     @property
     def data_root(self) -> Path:
@@ -116,6 +136,14 @@ class FactorForgeContext:
     @property
     def runtime_context_root(self) -> Path:
         return self.objects_root / 'runtime_context'
+
+    @property
+    def knowledge_root(self) -> Path:
+        return self.active_root / 'knowledge'
+
+    @property
+    def step3_runtime_root(self) -> Path:
+        return self.active_root / 'step3_runtime'
 
     def object_path(self, kind: str, report_id: str, *, name: str | None = None) -> Path:
         defaults = {
@@ -293,8 +321,9 @@ class FactorForgeContext:
                 },
             },
         }
+        version = 'factorforge_runtime_context_v2' if self.factor_workspace else 'factorforge_runtime_context_v1'
         manifest: dict[str, Any] = {
-            'contract_version': 'factorforge_runtime_context_v1',
+            'contract_version': version,
             'created_at_utc': utc_now(),
             'report_id': report_id,
             'repo_root': str(self.repo_root),
@@ -308,6 +337,18 @@ class FactorForgeContext:
             'objects': objects,
             'runs': runs,
             'evaluations': evaluations,
+            'knowledge': {
+                'knowledge_root': str(self.knowledge_root),
+                'canonical_root': str(self.knowledge_root / 'canonical'),
+                'human_readable_root': str(self.knowledge_root / 'human_readable'),
+                'export_manifest_root': str(self.knowledge_root / 'export_manifest'),
+            },
+            'write_policy': {
+                'production_writes_must_stay_under_workspace': bool(self.factor_workspace),
+                'repo_root_knowledge_write_allowed': False if self.factor_workspace else None,
+                'repo_root_data_write_allowed': False if self.factor_workspace else None,
+                'vault_export_requires_explicit_flag': bool(self.factor_workspace),
+            },
             'step_io': step_io,
             'resolution_policy': [
                 'Agent/skill orchestration is responsible for discovering inputs and outputs once and writing this manifest.',
@@ -317,6 +358,16 @@ class FactorForgeContext:
                 'When a manifest field exists, script-local path guessing is a compatibility fallback only.',
             ],
         }
+        if self.factor_workspace:
+            manifest.update(
+                {
+                    'factor_id': self.factor_id,
+                    'research_id': self.research_id,
+                    'factor_workspace': str(self.factor_workspace),
+                    'factor_workspace_manifest': str(self.factor_workspace_manifest or (self.factor_workspace / 'manifest.json')),
+                    'step3_runtime_root': str(self.step3_runtime_root),
+                }
+            )
         if branch_id:
             manifest['branch_id'] = branch_id
             manifest['branch'] = {
@@ -359,7 +410,11 @@ class FactorForgeContext:
         return out
 
 
-def resolve_factorforge_context(explicit_root: str | Path | None = None) -> FactorForgeContext:
+def resolve_factorforge_context(
+    explicit_root: str | Path | None = None,
+    *,
+    factor_workspace: str | Path | None = None,
+) -> FactorForgeContext:
     if explicit_root:
         ff = Path(explicit_root).expanduser()
     elif os.getenv('FACTORFORGE_ROOT'):
@@ -368,4 +423,28 @@ def resolve_factorforge_context(explicit_root: str | Path | None = None) -> Fact
         ff = LEGACY_FACTORFORGE
     else:
         ff = REPO_ROOT
-    return FactorForgeContext(repo_root=REPO_ROOT, workspace_root=ff.parent, factorforge_root=ff)
+    ff = ff.resolve()
+    workspace = Path(factor_workspace).expanduser().resolve() if factor_workspace else None
+    workspace_manifest = None
+    factor_id = None
+    research_id = None
+    if workspace:
+        workspace_manifest = workspace_manifest_path(workspace)
+        if not workspace_manifest.exists():
+            raise ValueError(f'{BLOCK_WORKSPACE_MANIFEST_INVALID}: missing manifest {workspace_manifest}')
+        payload = load_workspace_manifest(workspace_manifest)
+        failures = validate_workspace_manifest(payload)
+        if failures:
+            raise ValueError('; '.join(failures))
+        factor_id = str(payload.get('factor_id') or '')
+        research_id = str(payload.get('research_id') or '')
+        ff = Path(str(payload.get('factorforge_root') or ff)).expanduser().resolve()
+    return FactorForgeContext(
+        repo_root=REPO_ROOT,
+        workspace_root=ff.parent,
+        factorforge_root=ff,
+        factor_workspace=workspace,
+        factor_workspace_manifest=workspace_manifest,
+        factor_id=factor_id,
+        research_id=research_id,
+    )

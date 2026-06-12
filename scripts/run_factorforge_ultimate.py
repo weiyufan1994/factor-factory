@@ -16,7 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.runtime_context import resolve_factorforge_context, utc_now, write_json_atomic
+from factor_factory.research_workspace import (
+    BLOCK_WORKSPACE_MISSING,
+    build_workspace_manifest,
+    default_workspace_root,
+    load_workspace_manifest,
+    validate_workspace_cli_identity,
+    validate_workspace_manifest,
+    workspace_manifest_path,
+    write_workspace_manifest,
+)
+from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
 
 
 STEP_ORDER = ['2', '3', '3b', '4', '5', '6']
@@ -457,6 +467,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--factorforge-root', default=None)
     ap.add_argument('--branch-id', default=None)
     ap.add_argument('--manifest', default=None, help='Use an existing runtime manifest instead of creating a new one.')
+    ap.add_argument('--factor-id', default=None)
+    ap.add_argument('--research-id', default=None)
+    ap.add_argument('--factor-workspace', default=None)
+    ap.add_argument('--init-factor-workspace', action='store_true')
+    ap.add_argument('--allow-legacy-global-runtime', action='store_true')
     ap.add_argument('--skip-step3a', action='store_true', help='When starting at Step3, skip run_step3 and run only Step3B onward.')
     ap.add_argument('--skip-researcher-packets', action='store_true', help='Do not build Step6 researcher packet/dossier before Step6.')
     ap.add_argument('--apply-approved-revision', action='store_true', help='Apply a human-approved Step6 revision before running the requested step range.')
@@ -480,10 +495,64 @@ def main() -> int:
     end = normalize_step(args.end_step, END_ALIASES)
     steps = step_slice(start, end)
 
-    ctx = resolve_factorforge_context(args.factorforge_root)
+    formal_workspace_steps = bool(set(steps) & {'3', '3b', '4', '5', '6'})
+    factor_workspace = Path(args.factor_workspace).expanduser().resolve() if args.factor_workspace else None
+    runtime_manifest_from_args: dict[str, Any] | None = None
     if args.manifest:
         manifest_path = Path(args.manifest).expanduser()
-        manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
+        if manifest_path.exists():
+            runtime_manifest_from_args = load_runtime_manifest(manifest_path)
+            if runtime_manifest_from_args.get('contract_version') == 'factorforge_runtime_context_v2':
+                raw_workspace = runtime_manifest_from_args.get('factor_workspace')
+                if raw_workspace:
+                    factor_workspace = Path(str(raw_workspace)).expanduser().resolve()
+        elif formal_workspace_steps and not factor_workspace and not args.allow_legacy_global_runtime:
+            print(BLOCK_WORKSPACE_MISSING)
+            return 1
+    if formal_workspace_steps and not factor_workspace:
+        if args.init_factor_workspace:
+            if not args.factor_id or not args.research_id:
+                print(f'{BLOCK_WORKSPACE_MISSING}: --init-factor-workspace requires --factor-id and --research-id')
+                return 1
+            factorforge_root = Path(args.factorforge_root).expanduser().resolve() if args.factorforge_root else REPO_ROOT
+            factor_workspace = default_workspace_root(
+                factorforge_root=factorforge_root,
+                factor_id=args.factor_id,
+                research_id=args.research_id,
+            )
+            ws_manifest = build_workspace_manifest(
+                repo_root=REPO_ROOT,
+                factorforge_root=factorforge_root,
+                factor_id=args.factor_id,
+                research_id=args.research_id,
+                root_report_id=args.report_id,
+                implementation_mode='unknown',
+            )
+            write_workspace_manifest(workspace_manifest_path(factor_workspace), ws_manifest)
+        elif not args.allow_legacy_global_runtime:
+            print(BLOCK_WORKSPACE_MISSING)
+            return 1
+    if factor_workspace:
+        ws_path = workspace_manifest_path(factor_workspace)
+        if not ws_path.exists():
+            print(f'BLOCK_FACTORFORGE_FACTOR_RESEARCH_WORKSPACE_MANIFEST_INVALID: missing {ws_path}')
+            return 1
+        ws_manifest = load_workspace_manifest(ws_path)
+        failures = validate_workspace_manifest(ws_manifest)
+        failures.extend(
+            validate_workspace_cli_identity(
+                ws_manifest,
+                factor_id=args.factor_id,
+                research_id=args.research_id,
+            )
+        )
+        if failures:
+            print('\n'.join(failures))
+            return 1
+    ctx = resolve_factorforge_context(args.factorforge_root, factor_workspace=factor_workspace)
+    if args.manifest:
+        manifest_path = Path(args.manifest).expanduser()
+        manifest = runtime_manifest_from_args if runtime_manifest_from_args else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
     else:
         manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
         manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
@@ -498,7 +567,11 @@ def main() -> int:
     env = os.environ.copy()
     env.pop('FACTORFORGE_ALLOW_DIRECT_STEP', None)
     env.pop('FACTORFORGE_ALLOW_LEGACY_STEP6_HANDOFF', None)
-    env['FACTORFORGE_ROOT'] = str(ctx.factorforge_root)
+    env['FACTORFORGE_ROOT'] = str(ctx.active_root)
+    env['FACTORFORGE_SHARED_FACTORFORGE_ROOT'] = str(ctx.factorforge_root)
+    if ctx.factor_workspace:
+        env['FACTORFORGE_FACTOR_WORKSPACE'] = str(ctx.factor_workspace)
+        env['FACTORFORGE_FACTOR_WORKSPACE_MANIFEST'] = str(ctx.factor_workspace_manifest or (ctx.factor_workspace / 'manifest.json'))
     env['FACTORFORGE_ULTIMATE_RUN'] = '1'
 
     py = sys.executable
@@ -548,6 +621,8 @@ def main() -> int:
         'started_at_utc': utc_now(),
         'finished_at_utc': None,
         'factorforge_root': str(ctx.factorforge_root),
+        'active_root': str(ctx.active_root),
+        'factor_workspace': str(ctx.factor_workspace) if ctx.factor_workspace else None,
         'repo_root': str(ctx.repo_root),
         'manifest_path': str(manifest_path),
         'start_step': start,

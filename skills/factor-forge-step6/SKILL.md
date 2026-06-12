@@ -40,6 +40,12 @@ It does not generate raw metrics itself. Instead it:
 - optional `factorforge/objects/research_iteration_master/search_branch_result__{report_id}__{branch_id}.json`
 - optional `factorforge/objects/research_iteration_master/program_search_merge__{report_id}.json`
 
+For formal factor research, replace the legacy `factorforge/...` prefix above with
+`<factor_workspace>/...`. Step6/Council/knowledge writes must stay inside the
+factor workspace by default. Repo-root `knowledge/因子工厂` is an explicit
+export/vault target only and requires an export manifest; it is not a production
+default write path.
+
 ## Core rules
 
 1. Step 6 is responsible for reflection and decision, not raw metric generation.

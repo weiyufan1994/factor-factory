@@ -6,7 +6,7 @@
 
 - Mac：主编辑源，负责正式研究、review、知识库吸收与人工确认。
 - GitHub：代码、skill、文档、SOP 的 canonical source。
-- S3：Factor Forge 知识包耐久共享层，提供 `latest.json` 指针。知识包同时包含结构化 `objects/`、人类可读 `knowledge/因子工厂/` vault、以及 retrieval index。
+- S3：Factor Forge 知识包耐久共享层，提供 `latest.json` 指针。知识包可包含 workspace 导出的结构化对象、人类可读 vault、retrieval index，以及导出 provenance。
 - EC2：计算与缓存节点，从 GitHub 拉代码，从 S3 拉知识对象；产出结果后可上传到独立 `ec2-results` 前缀。
 - Tailscale：可作为快速通道，但不是知识库可用性的依赖。Mac 关机时，EC2 仍应能从 S3 取最近一次发布的知识包。
 
@@ -32,26 +32,31 @@ python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
 
 ## Canonical Layout
 
-Mac 本地只认这一套路径：
+正式生产研究首先只认 factor workspace 内路径：
 
 ```text
-/Users/humphrey/projects/factor-factory/objects/
-/Users/humphrey/projects/factor-factory/knowledge/因子工厂/
-/Users/humphrey/projects/factor-factory/knowledge/retrieval/
+<factor_workspace>/objects/
+<factor_workspace>/knowledge/canonical/
+<factor_workspace>/knowledge/human_readable/
+<factor_workspace>/knowledge/retrieval/
+<factor_workspace>/knowledge/export_manifest/
 ```
 
 含义：
 
-- `objects/`：唯一结构化写入源。Step5/6、factor library、knowledge base、iteration、case、handoff 都以这里为准。
-- `knowledge/因子工厂/`：唯一人类可读 Obsidian/Markdown vault；包括普通因子库、正式因子库、知识库、研究迭代、手工研究 archive。
-- `knowledge/retrieval/`：从 `objects/` 构建的检索索引。
+- `<factor_workspace>/objects/`：该因子的结构化写入源。Step5/6、factor library、knowledge base、iteration、case、handoff 都以这里为准。
+- `<factor_workspace>/knowledge/human_readable/`：该因子的生产人类可读 Markdown 输出。
+- `<factor_workspace>/knowledge/canonical/`：该因子的结构化知识与队列输出。
+- `<factor_workspace>/knowledge/retrieval/`：从 workspace objects/knowledge 构建的检索索引。
+- `<factor_workspace>/knowledge/export_manifest/`：显式导出到 repo-root vault 或 S3 vault 时的审计记录。
 
 不要把以下路径当作新的知识库入口：
 
+- `knowledge/因子工厂/`：显式 export/vault，不再是 production 默认写入路径。
 - `knowledge/obsidian_vault/`：legacy 英文 vault，已废弃。
-- `factorforge/objects/`：legacy/runtime 残留，不是 Mac canonical root。
+- `factorforge/objects/`：legacy/runtime 残留，不是新研究 canonical root。
 
-因子研究员、Bernard、Codex 都应默认使用 `objects/` + `knowledge/因子工厂/` 这同一套地址。`ALPHA015_20160101_RESEARCH_ARCHIVE.md` 这类手工研究 archive 位于 `knowledge/因子工厂/知识库/`，并随 S3 knowledge bundle 同步。
+因子研究员、Bernard、Codex 都应默认使用当前 factor workspace。`knowledge/因子工厂/` 只用于明确执行 `--export-knowledge-vault` 的人工阅读/共享导出。
 
 ## EC2 拉取 Mac 知识包
 

@@ -2,12 +2,28 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from factor_factory.research_workspace import (
+    BLOCK_KNOWLEDGE_VAULT_EXPORT_NOT_EXPLICIT,
+    BLOCK_KNOWLEDGE_WRITE_PATH_INVALID,
+    assert_path_under_workspace,
+    is_repo_root_vault,
+    load_workspace_manifest,
+    validate_workspace_manifest,
+    workspace_manifest_path,
+)
+
 RUNTIME_ROOT = Path(os.getenv('FACTORFORGE_ROOT', str(REPO_ROOT))).expanduser()
 OBJECTS = RUNTIME_ROOT / 'objects'
 DEFAULT_OUTPUT = RUNTIME_ROOT / 'knowledge' / '因子工厂'
@@ -18,6 +34,18 @@ DIR_FACTORS_OFFICIAL = '正式因子库'
 DIR_KNOWLEDGE = '知识库'
 DIR_ITERATIONS = '研究迭代'
 DIR_AGENT = 'Agent'
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -266,16 +294,99 @@ def render_agent_note() -> str:
     ])
 
 
+def resolve_workspace(args: argparse.Namespace) -> tuple[Path | None, dict[str, Any] | None]:
+    if not args.workspace_root:
+        return None, None
+    workspace_root = Path(args.workspace_root).expanduser().resolve()
+    manifest_path = workspace_manifest_path(workspace_root)
+    if not manifest_path.exists():
+        raise SystemExit(f'BLOCK_FACTORFORGE_FACTOR_RESEARCH_WORKSPACE_MANIFEST_INVALID: missing {manifest_path}')
+    manifest = load_workspace_manifest(manifest_path)
+    failures = validate_workspace_manifest(manifest)
+    if failures:
+        raise SystemExit('\n'.join(failures))
+    return workspace_root, manifest
+
+
+def enforce_output_policy(
+    *,
+    out: Path,
+    workspace_root: Path | None,
+    explicit_export: bool,
+) -> None:
+    if workspace_root is None:
+        if is_repo_root_vault(out, REPO_ROOT) and not explicit_export:
+            raise SystemExit(BLOCK_KNOWLEDGE_VAULT_EXPORT_NOT_EXPLICIT)
+        return
+    if is_repo_root_vault(out, REPO_ROOT) and not explicit_export:
+        raise SystemExit(BLOCK_KNOWLEDGE_VAULT_EXPORT_NOT_EXPLICIT)
+    try:
+        assert_path_under_workspace(out, workspace_root, label='obsidian_output_root')
+        return
+    except ValueError:
+        if not explicit_export:
+            raise SystemExit(f'{BLOCK_KNOWLEDGE_WRITE_PATH_INVALID}: output_root={out} workspace={workspace_root}')
+
+
+def write_export_manifest(
+    *,
+    workspace_root: Path,
+    workspace_manifest: dict[str, Any],
+    output_root: Path,
+) -> Path:
+    export_root = workspace_root / 'knowledge' / 'export_manifest'
+    export_root.mkdir(parents=True, exist_ok=True)
+    files = []
+    for path in sorted(output_root.rglob('*')):
+        if path.is_file():
+            files.append(
+                {
+                    'path': str(path),
+                    'relative_path': str(path.relative_to(output_root)),
+                    'size_bytes': path.stat().st_size,
+                    'sha256': sha256_file(path),
+                }
+            )
+    payload = {
+        'contract_version': 'factorforge_knowledge_vault_export_manifest_v1',
+        'created_at_utc': utc_now(),
+        'source_workspace': str(workspace_root),
+        'destination_root': str(output_root),
+        'factor_id': workspace_manifest.get('factor_id'),
+        'research_id': workspace_manifest.get('research_id'),
+        'root_report_id': workspace_manifest.get('root_report_id'),
+        'file_count': len(files),
+        'files': files,
+        'policy': {
+            'explicit_export': True,
+            'repo_root_vault_is_export_only': True,
+            'production_default_written_inside_workspace': True,
+        },
+    }
+    out = export_root / f'knowledge_vault_export__{utc_now().replace(":", "").replace("-", "")}.json'
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    print(f'[EXPORT_MANIFEST] {out}')
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description='Export factor library / knowledge base objects into an Obsidian-friendly vault.')
-    ap.add_argument('--output-root', default=str(DEFAULT_OUTPUT), help='Vault output root (default: knowledge/因子工厂)')
+    ap.add_argument('--workspace-root', default=None, help='Factor research workspace root. Production default writes under workspace/knowledge/human_readable.')
+    ap.add_argument('--output-root', default=None, help='Vault output root. Defaults to workspace/knowledge/human_readable when --workspace-root is set; otherwise legacy knowledge/因子工厂.')
+    ap.add_argument('--export-knowledge-vault', action='store_true', help='Explicitly export from a workspace to an external vault such as repo-root knowledge/因子工厂.')
+    ap.add_argument('--write-export-manifest', action='store_true', help='Write an audited export manifest under workspace/knowledge/export_manifest.')
     args = ap.parse_args()
 
-    out = Path(args.output_root).resolve()
-    factor_dir = OBJECTS / 'factor_library_all'
-    official_dir = OBJECTS / 'factor_library_official'
-    knowledge_dir = OBJECTS / 'research_knowledge_base'
-    iteration_dir = OBJECTS / 'research_iteration_master'
+    workspace_root, workspace_manifest = resolve_workspace(args)
+    objects_root = (workspace_root / 'objects') if workspace_root else OBJECTS
+    output_default = (workspace_root / 'knowledge' / 'human_readable') if workspace_root else DEFAULT_OUTPUT
+    out = Path(args.output_root or output_default).expanduser().resolve()
+    enforce_output_policy(out=out, workspace_root=workspace_root, explicit_export=args.export_knowledge_vault)
+
+    factor_dir = objects_root / 'factor_library_all'
+    official_dir = objects_root / 'factor_library_official'
+    knowledge_dir = objects_root / 'research_knowledge_base'
+    iteration_dir = objects_root / 'research_iteration_master'
 
     factor_files = sorted(factor_dir.glob('factor_record__*.json'))
     official_files = sorted(official_dir.glob('factor_record__*.json')) if official_dir.exists() else []
@@ -336,6 +447,8 @@ def main() -> None:
             ],
         ),
     )
+    if workspace_root and args.export_knowledge_vault and args.write_export_manifest:
+        write_export_manifest(workspace_root=workspace_root, workspace_manifest=workspace_manifest or {}, output_root=out)
 
 
 if __name__ == '__main__':

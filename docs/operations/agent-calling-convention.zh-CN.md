@@ -181,7 +181,7 @@ python3 <data-script>.py ... --operator codex
 4. Step4 必须解释 metric、图表和可交易性。
 5. Step5/6 必须沉淀到普通因子库、正式因子库和知识库。
 6. 失败因子也必须写入普通因子库和知识库。
-7. Obsidian vault 固定为 `/Users/humphrey/projects/factor-factory/knowledge/因子工厂`。
+7. 正式因子研究必须先创建 factor workspace；Step5/6 知识默认写入 `<factor_workspace>/knowledge/...`。`/Users/humphrey/projects/factor-factory/knowledge/因子工厂` 只能作为显式 export/vault，不是 production 默认落库路径。
 
 ## 系统能力台账
 

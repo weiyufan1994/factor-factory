@@ -1,0 +1,23 @@
+{
+  "contract_version": "factorforge_factor_research_workspace_v1",
+  "factor_id": "vp_v18_value_occupation",
+  "research_id": "vp_v18_value_occupation_20260614",
+  "status": "research_side_workspace",
+  "scope": "Value-profile / occupation-measure V18 OOS stream and incremental linear evaluation research artifacts.",
+  "production_artifact": false,
+  "official_promotion": false,
+  "canonical_write_policy": {
+    "repo_root_scripts_allowed": false,
+    "repo_root_operations_notes_allowed": false,
+    "official_library_write_allowed": false
+  },
+  "paths": {
+    "scripts": "scripts",
+    "docs": "docs",
+    "results": "results"
+  },
+  "notes": [
+    "This workspace groups VP V18 research-side notes and scripts.",
+    "The value-domain thesis should remain tied to occupation measure and first-passage framing before any formula revision."
+  ]
+}

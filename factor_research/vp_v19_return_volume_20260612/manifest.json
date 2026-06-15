@@ -1,0 +1,24 @@
+{
+  "contract_version": "factorforge_factor_research_workspace_v1",
+  "factor_id": "vp_v19_return_volume",
+  "research_id": "vp_v19_return_volume_20260612",
+  "status": "research_side_workspace",
+  "scope": "VP V19 return-volume covariation and intraday return-volume state research artifacts.",
+  "production_artifact": false,
+  "official_promotion": false,
+  "canonical_write_policy": {
+    "repo_root_scripts_allowed": false,
+    "repo_root_operations_notes_allowed": false,
+    "official_library_write_allowed": false
+  },
+  "paths": {
+    "scripts": "scripts",
+    "data_helpers": "data_helpers",
+    "docs": "docs",
+    "results": "results"
+  },
+  "notes": [
+    "This workspace contains VP V19-specific research scripts, worker wrapper, data helper scripts, and research notes.",
+    "The moved tracked scripts were previously under repo-root scripts/ and are now scoped to this factor research workspace."
+  ]
+}

@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 import warnings
 from collections import defaultdict
@@ -29,6 +30,23 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 warnings.filterwarnings("ignore", category=FutureWarning, message="Downcasting object dtype arrays on \\.fillna")
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = next(
+    (
+        parent
+        for parent in [SCRIPT_DIR, *SCRIPT_DIR.parents]
+        if (parent / "factor_research").is_dir() and (parent / ".git").exists()
+    ),
+    SCRIPT_DIR.parents[2],
+)
+for path in [
+    SCRIPT_DIR,
+    REPO_ROOT / "factor_research" / "vp_p0_baseline_20260610" / "scripts",
+    REPO_ROOT / "factor_research" / "vp_v18_value_occupation_20260614" / "scripts",
+]:
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from research_vp_v18_drift_persistence_eval import (
     BASELINES,

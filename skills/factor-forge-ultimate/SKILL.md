@@ -47,6 +47,34 @@ Every real Factor Forge research round must deposit knowledge before the next
 round starts. This applies to successful runs, failed runs, BLOCKs, performance
 failures, data-quality findings, weak-alpha results, and abandoned branches.
 
+## Factor Research Workspace Gate
+
+Every non-smoke factor study must start by creating or selecting one active
+factor workspace under:
+
+```text
+factor_research/<factor_or_report_id>/<research_id>/
+```
+
+or, for an already established single-folder study, the nearest existing
+`factor_research/<research_id>/` workspace with a `manifest.json`.
+
+Single-factor scripts, ad-hoc evaluators, worker launch helpers, research
+reports, data requests, result snapshots, and scratch state must stay inside
+that active workspace, normally under `scripts/`, `docs/`, `results/`,
+`objects/`, or `runs/`. Do not write new factor-specific files into repo-root
+`scripts/`, repo-root `docs/operations/`, or baseline Step3/Step4 runner files.
+
+Repo-root `scripts/` is reserved for reusable framework tooling, validators,
+smokes, and explicitly promoted shared utilities. A factor-specific helper may
+move there only after a deliberate framework promotion, tests, and documentation
+that prove it is no longer tied to one factor or branch.
+
+If a real research request has no active workspace, create the workspace and
+manifest before Step3/4/5/6 work. If historical files are found outside their
+factor workspace, migrate or quarantine them before continuing unless the user
+explicitly asks for a read-only inspection.
+
 Before launching a new child loop, branch, revision, portfolio-policy test, or
 follow-on backtest, the main agent must write or update durable knowledge under
 the active Factor Forge knowledge surfaces:

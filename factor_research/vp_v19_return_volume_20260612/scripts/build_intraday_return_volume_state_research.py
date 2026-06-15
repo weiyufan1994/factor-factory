@@ -12,11 +12,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = next(
+    (
+        parent
+        for parent in [SCRIPT_DIR, *SCRIPT_DIR.parents]
+        if (parent / "factor_research").is_dir() and (parent / ".git").exists()
+    ),
+    SCRIPT_DIR.parents[2],
+)
+for path in [
+    SCRIPT_DIR,
+    REPO_ROOT / "factor_research" / "vp_v18_value_occupation_20260614" / "scripts",
+]:
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from research_vp_v18_drift_persistence_eval import clean_date
 from research_vp_v19_return_volume_eval import derive_return_volume_for_day, read_minute_day

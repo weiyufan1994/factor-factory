@@ -107,8 +107,8 @@ An earlier wide run generated size-neutral signals for every universe and expand
 
 Local validation before worker dispatch:
 
-- `python3 -m py_compile scripts/research_vp_v19_return_volume_eval.py`
-- `bash -n scripts/run_vp_v19_worker.sh`
-- `git diff --check -- scripts/research_vp_v19_return_volume_eval.py scripts/run_vp_v19_worker.sh`
+- `python3 -m py_compile factor_research/vp_v19_return_volume_20260612/scripts/research_vp_v19_return_volume_eval.py`
+- `bash -n factor_research/vp_v19_return_volume_20260612/scripts/run_vp_v19_worker.sh`
+- `git diff --check -- factor_research/vp_v19_return_volume_20260612/scripts/research_vp_v19_return_volume_eval.py factor_research/vp_v19_return_volume_20260612/scripts/run_vp_v19_worker.sh`
 
 The core result is for direction-finding only. A full-window test requires either broader minute feature coverage or a production return-volume state datamart.

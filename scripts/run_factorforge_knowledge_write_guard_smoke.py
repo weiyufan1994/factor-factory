@@ -98,11 +98,11 @@ def main() -> int:
 
     results.append(expect('alpha101_registry_blocks_without_workspace', [
         sys.executable,
-        'scripts/build_alpha101_registry.py',
+        'factor_research/alpha101_batch_qlib_20260611/scripts/build_alpha101_registry.py',
     ], 1, BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN))
     results.append(expect('alpha101_registry_workspace_dry_run_passes', [
         sys.executable,
-        'scripts/build_alpha101_registry.py',
+        'factor_research/alpha101_batch_qlib_20260611/scripts/build_alpha101_registry.py',
         '--workspace-root', str(workspace),
         '--dry-run',
     ], 0, 'alpha101_registry_guard_pass'))
@@ -139,22 +139,22 @@ def main() -> int:
 
     results.append(expect('alpha101_batch_judge_blocks_without_workspace', [
         sys.executable,
-        'scripts/run_alpha101_qlib_batch_judge.py',
+        'factor_research/alpha101_batch_qlib_20260611/scripts/run_alpha101_qlib_batch_judge.py',
     ], 1, BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN))
     results.append(expect('alpha101_batch_judge_workspace_dry_run_passes', [
         sys.executable,
-        'scripts/run_alpha101_qlib_batch_judge.py',
+        'factor_research/alpha101_batch_qlib_20260611/scripts/run_alpha101_qlib_batch_judge.py',
         '--workspace-root', str(workspace),
         '--dry-run',
     ], 0, 'alpha101_qlib_batch_guard_pass'))
     results.append(expect('alpha101_queue_blocks_without_workspace', [
         sys.executable,
-        'scripts/build_alpha101_research_queue.py',
+        'factor_research/alpha101_batch_qlib_20260611/scripts/build_alpha101_research_queue.py',
     ], 1, BLOCK_REPO_ROOT_DATA_WRITE_FORBIDDEN))
     queue_output = workspace / 'knowledge' / 'canonical' / 'alpha101_research_queue.json'
     results.append(expect('alpha101_queue_writes_inside_workspace', [
         sys.executable,
-        'scripts/build_alpha101_research_queue.py',
+        'factor_research/alpha101_batch_qlib_20260611/scripts/build_alpha101_research_queue.py',
         '--workspace-root', str(workspace),
         '--registry', str(alpha_registry),
     ], 0))

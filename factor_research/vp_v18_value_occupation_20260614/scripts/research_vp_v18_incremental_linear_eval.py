@@ -13,9 +13,26 @@ import argparse
 import json
 import math
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = next(
+    (
+        parent
+        for parent in [SCRIPT_DIR, *SCRIPT_DIR.parents]
+        if (parent / "factor_research").is_dir() and (parent / ".git").exists()
+    ),
+    SCRIPT_DIR.parents[2],
+)
+for path in [
+    SCRIPT_DIR,
+    REPO_ROOT / "factor_research" / "vp_p0_baseline_20260610" / "scripts",
+]:
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from research_vp_p0_baseline_eval import add_signals, add_universe_flags, clean_date, finite_float, load_vp_state
 from research_vp_v18_drift_persistence_eval import add_v18_features, load_daily

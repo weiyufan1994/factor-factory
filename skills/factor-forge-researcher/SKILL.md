@@ -81,6 +81,30 @@ the current round taught. This is required even when the round failed, was
 BLOCKed, produced weak metrics, exposed a framework bug, or only clarified what
 not to do.
 
+## Factor Workspace Discipline
+
+Every real factor research effort needs an explicit active workspace before new
+research-side files are created:
+
+```text
+factor_research/<factor_or_report_id>/<research_id>/
+```
+
+or an existing `factor_research/<research_id>/` folder with a valid
+`manifest.json`.
+
+Keep all factor-specific scripts, research notes, data requests, worker helper
+scripts, result summaries, temporary state, and branch artifacts inside that
+workspace. Do not place new single-factor files in repo-root `scripts/`,
+repo-root `docs/operations/`, shared baseline Step3/Step4 files, or generic
+framework folders. Those locations are only for reusable framework code,
+contracts, validators, smokes, or explicitly promoted shared utilities.
+
+If you discover factor-specific files outside a workspace, stop normal research
+flow and either migrate them into the right workspace or clearly mark them as
+historical/quarantined before continuing. A clean workspace boundary is part of
+research correctness, not cosmetic repo hygiene.
+
 A round is not researcher-complete until the durable record contains:
 
 - the exact report/branch/run identity and artifact roots,

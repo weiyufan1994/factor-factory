@@ -1,0 +1,18 @@
+{
+  "contract_version": "factorforge_factor_research_workspace_v1",
+  "factor_id": "alpha101_batch",
+  "research_id": "alpha101_batch_qlib_20260611",
+  "status": "historical_research_workspace",
+  "production_artifact": false,
+  "official_promotion": false,
+  "paths": {
+    "scripts": "scripts",
+    "docs": "docs",
+    "results": "results"
+  },
+  "write_policy": {
+    "repo_root_scripts_allowed": false,
+    "repo_root_operations_notes_allowed": false,
+    "new_factor_research_requires_new_workspace": true
+  }
+}

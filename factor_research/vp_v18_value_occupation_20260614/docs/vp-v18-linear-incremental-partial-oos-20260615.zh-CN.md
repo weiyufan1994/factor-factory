@@ -10,7 +10,7 @@ Important data boundary: the OOS value-occupation state covers 2025-07-14 to 202
 
 Artifacts:
 
-- Script: `scripts/research_vp_v18_incremental_linear_eval.py`
+- Script: `factor_research/vp_v18_value_occupation_20260614/scripts/research_vp_v18_incremental_linear_eval.py`
 - Core-control output: `/tmp/vp18_incremental_linear_core_20260615`
 - State-control output: `/tmp/vp18_incremental_linear_state_controls_partial_20260615`
 - OOS state local cache: `/tmp/vp18_oos_state_20260614`

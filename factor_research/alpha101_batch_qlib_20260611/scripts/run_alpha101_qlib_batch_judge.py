@@ -15,7 +15,14 @@ from types import SimpleNamespace
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+def find_repo_root(path: Path) -> Path:
+    for parent in [path.resolve().parent, *path.resolve().parents]:
+        if (parent / "factor_factory").is_dir() and (parent / ".git").exists():
+            return parent
+    raise RuntimeError(f"could not locate factor-factory repo root from {path}")
+
+
+REPO_ROOT = find_repo_root(Path(__file__))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

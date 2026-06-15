@@ -82,6 +82,50 @@ Default working thresholds:
 
 These thresholds are research governance defaults, not eternal truths. They may be tightened by asset class, liquidity bucket, turnover, or portfolio context. A positive-return factor with low Sharpe, high volatility drag, deep drawdown, or slow recovery should be iterated or rejected, not promoted.
 
+## Factor Complexity Penalty
+
+Do not impose a hard limit such as "at most three primitives." A factor may be
+mathematically richer when the economic hypothesis requires it. But every added
+state, interaction, threshold, nonlinear gate, data dependency, or free
+parameter must pay a complexity cost.
+
+Use this research objective when comparing revisions:
+
+$$
+\mathcal{J}(f)
+=
+\mathrm{OOSLongEdge}(f)
++ \alpha\,IC_{\mathrm{resid}}(f)
+- \lambda_C\,\mathrm{Complexity}(f)
+$$
+
+where complexity should increase with:
+
+$$
+\mathrm{Complexity}(f)
+=
+aN_{\mathrm{primitive}}
++ bN_{\mathrm{interaction}}
++ cN_{\mathrm{free\ parameter}}
++ dN_{\mathrm{data\ dependency}}
++ eN_{\mathrm{nonlinear\ gate}}
+$$
+
+This is a soft penalty, not a style preference. A complex factor can win if it
+delivers durable OOS long-side improvement, residual IC, lower drawdown, or a
+clearer economic mapping. A complex factor should lose if it only improves
+in-sample raw IC, adds opaque gates, or hides overfit behind mathematical
+language.
+
+For every proposed revision, state:
+- which economic state or stochastic-process component the new term represents
+  (`drift`, `volatility`, `barrier distance`, `hitting probability`, or another
+  named object),
+- why the added complexity improves generalization rather than backtest fit,
+- what metric improvement must appear for the added complexity to be worth it,
+- and which term, gate, or parameter should be removed if the improvement does
+  not appear.
+
 ## Canonical Return Sources
 
 1. `risk_premium`
@@ -121,8 +165,10 @@ A proper revision proposal should answer:
 3. Why does the revised factor expression map more linearly/monotonically to risk-adjusted long-side expected returns?
 4. What is the `revision_operator` and why should it improve generalization?
 5. What are the `overfit_risk` and `kill_criteria`?
-6. Should the next loop use genetic formula mutation, Bayesian parameter search, RL-policy advisory, or multi-agent parallel exploration?
-7. Confirm that the proposal changes the factor expression or Step3B code itself, not portfolio mechanics.
+6. What complexity was added or removed, and is the marginal benefit worth the
+   complexity penalty?
+7. Should the next loop use genetic formula mutation, Bayesian parameter search, RL-policy advisory, or multi-agent parallel exploration?
+8. Confirm that the proposal changes the factor expression or Step3B code itself, not portfolio mechanics.
 
 ## Program Search Policy
 

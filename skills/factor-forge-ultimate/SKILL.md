@@ -41,6 +41,45 @@ For every factor, the agent must behave like a researcher from the beginning:
 
 Only use a mechanical/lightweight run if the user explicitly says this is a smoke test.
 
+## Knowledge-First Research Gate
+
+Every real Factor Forge research round must deposit knowledge before the next
+round starts. This applies to successful runs, failed runs, BLOCKs, performance
+failures, data-quality findings, weak-alpha results, and abandoned branches.
+
+Before launching a new child loop, branch, revision, portfolio-policy test, or
+follow-on backtest, the main agent must write or update durable knowledge under
+the active Factor Forge knowledge surfaces:
+
+- `objects/research_journal/research_journal__<report_id>.json`
+- `objects/research_knowledge_base/`
+- `knowledge/因子工厂/`
+- an operations/research note under `docs/operations/` when the lesson is
+  framework-level, data-layer, performance, or human-forwardable
+
+The writeback must preserve enough context for a future Bernard/Humphrey/Codex
+researcher to avoid repeating the same work:
+
+- report id, factor id, branch id, law id, and formula/code-law hash when
+  available
+- artifact roots and S3/local proof paths
+- data window, IS/OOS split, universe, portfolio policy, and cost assumptions
+- economic hypothesis and math mechanism, including the selected random object
+  or state variable
+- executable formula or direct-code law summary
+- factor-complexity delta: added/removed primitives, interactions, thresholds,
+  nonlinear gates, data dependencies, and free parameters; plus whether OOS
+  long-side evidence or residual IC paid for the added complexity
+- key metrics, long-side evidence, turnover/cost, drawdown/recovery, and
+  benchmark comparison when available
+- what improved, what failed, what was falsified, and what must not be repeated
+- next research questions and any required data/framework fixes
+
+If the newest evidence only exists in `/tmp`, a temporary S3 prefix, a worker
+scratch path, or untracked scripts, it is not fully deposited. The agent must
+say so and write the missing knowledge record before presenting the branch as
+research-complete or continuing into another formal iteration.
+
 ## Production vs Experimental Performance Boundary
 
 This skill is production-ready for new factor research only on the default
@@ -155,6 +194,10 @@ The current production/experimental split is documented in
 - retrieve similar prior cases
 - classify the return source
 - run `math_discipline_review`
+- apply the factor-complexity penalty: useful complexity is allowed, but every
+  added state, interaction, gate, threshold, parameter, and data dependency must
+  be justified by a named economic/mathematical object and by OOS long-side or
+  residual-information evidence
 - extract `learning_and_innovation`
 - build `experience_chain`, `revision_taxonomy`, `program_search_policy`, and `diversity_position`
 - decide `promote_official / iterate / reject / needs_human_review`

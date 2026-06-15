@@ -73,6 +73,35 @@ Use `references/research-journal-schema.md`.
 
 The journal is the agent's memory for this factor. It should accumulate the author's original idea, the agent's interpretation, implementation concerns, evidence interpretation, lessons, and revision history.
 
+## Knowledge-First Round Discipline
+
+Before starting any next run, child branch, revision, portfolio-policy test, or
+new mechanism variant, update the research journal and knowledge base with what
+the current round taught. This is required even when the round failed, was
+BLOCKed, produced weak metrics, exposed a framework bug, or only clarified what
+not to do.
+
+A round is not researcher-complete until the durable record contains:
+
+- the exact report/branch/run identity and artifact roots,
+- the economic hypothesis and mathematical mechanism tested,
+- the executable formula or direct-code law id/hash,
+- the data window, universe, portfolio policy, cost assumption, and IS/OOS
+  boundary,
+- the metrics that matter for the current mandate, especially long-side return,
+  IC/rank IC, turnover, cost, drawdown, recovery, and benchmark comparison,
+- the factor-complexity change: added/removed primitives, interactions,
+  thresholds, nonlinear gates, data dependencies, and free parameters, plus why
+  the marginal evidence justifies or falsifies that complexity,
+- the result classification: improved, falsified, inconclusive, blocked, or
+  framework/data issue,
+- transferable patterns, anti-patterns, and forbidden repeats,
+- next research questions or required data/framework repairs.
+
+If evidence only exists in `/tmp`, worker scratch paths, temporary S3 prefixes,
+or untracked scripts, explicitly mark it as not fully deposited and write the
+missing durable note before continuing.
+
 ## Evidence Dossier
 
 At any point after a `report_id` exists, build a dossier:
@@ -140,6 +169,8 @@ If iterating, the researcher must write a revision brief that explains:
 - which return source the change strengthens,
 - why the change is not metric cosmetics,
 - what metrics should improve,
+- what complexity cost the change adds or removes, and which added terms should
+  be removed if OOS long-side or residual-IC evidence does not pay for them,
 - what result would kill the hypothesis,
 - and why the modification should improve generalization rather than merely optimize the latest backtest.
 
@@ -161,6 +192,10 @@ When Step6 begins, use both:
 - Do not leave a case without asking what future Bernard/Humphrey/Codex should learn from it.
 - The ordinary factor library contains every attempt; the official library contains only factors with serious research approval.
 - Knowledge should be portable: future agents must be able to learn from both success and failure.
+- Do not ban complexity by arbitrary rule. Penalize complexity explicitly:
+  additional primitives, interactions, free parameters, nonlinear gates, and
+  data dependencies must be justified by OOS long-side or residual-information
+  evidence and by a clear economic or mathematical object.
 ## Implementation and Factor Isolation Discipline
 
 - Every formal factor artifact must carry `artifact_identity`.

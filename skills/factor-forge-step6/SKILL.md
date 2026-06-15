@@ -85,6 +85,26 @@ Step6 and Council must not repeatedly fit revisions on OOS metrics. If Step4
 blocked because `minute_derived_flow_state_v1` is missing, incomplete, or
 identity-mismatched, treat that as a production-path infrastructure BLOCK, not a
 mechanism reject.
+30b. Step6 must apply a factor-complexity penalty when comparing revisions. Do
+not enforce an arbitrary hard cap on primitives or math tools; instead score
+each candidate by OOS long-side edge, residual IC, risk/cost evidence, and a
+complexity cost for added primitives, interactions, free parameters, data
+dependencies, and nonlinear gates:
+
+$$
+\mathcal{J}(f)
+=
+\mathrm{OOSLongEdge}(f)
++ \alpha IC_{\mathrm{resid}}(f)
+- \lambda_C \mathrm{Complexity}(f)
+$$
+
+Every added term must name the economic state or mathematical object it
+represents, such as drift, volatility, barrier distance, hitting probability,
+occupation mass, latent state, or constraint pressure. If added complexity only
+improves in-sample raw IC, or cannot be linked to OOS long-side/residual
+evidence, Step6 must classify it as overfit risk and prefer a simpler
+expression.
 31. Every successful formal Step6 loop must write `loop_research_brief__<report_id>__iter<n>.md/json` and link it from `research_iteration_master.loop_research_brief`. The brief must answer economic interpretation, metrics/chart evidence, metric analysis, knowledge comparison, next research direction, and final loop conclusion. Missing brief, missing core metrics, missing required chart keys, or long-short chart evidence not labeled `diagnostic_only` is a validation block.
 32. Step6 must carry the `mechanism_math_contract` into `mechanism_analysis`,
 revision hypotheses, and the loop research brief. The math contract is an
@@ -118,7 +138,10 @@ failed factor to a stochastic-process story or a generic payer narrative.
 Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
 Council proposals must state which economic hypothesis, primary mathematical
 model, observable estimator, benchmark test, and falsification signature they
-are revising.
+are revising. They must also state the complexity delta: which terms, gates,
+parameters, interactions, or data dependencies are added or removed, why the
+expected marginal benefit is worth the complexity penalty, and what evidence
+would remove the added complexity in the next loop.
 Step6 `mechanism_analysis` must include `research_equation_review` with metric
 links for rank IC, long-side return, cost-adjusted return, turnover,
 volatility drag, max drawdown, recovery days, and drawdown geometry when
@@ -242,6 +265,17 @@ exploit path retains exploration evidence and cannot repeat falsified sibling
 laws or formula hashes without explicit new evidence. This path does not write
 clean data or official records, and generated code writes are limited to the
 child reports that are explicitly materialized and executed.
+45. Knowledge writeback is a continuation gate, not an end-of-project courtesy.
+Before Step6 authorizes another loop, branch, child materialization, portfolio
+policy test, or formal follow-on run, it must preserve the current round's
+knowledge in the research journal, research knowledge base, or a human-readable
+operations/research note. This record must include evidence paths, factor/run
+identity, economic hypothesis, math mechanism, executable formula or law id,
+universe, cost policy, IS/OOS boundary, key metrics, what improved, what failed,
+what was falsified, forbidden repeats, and next questions. Runs whose latest
+evidence only lives in `/tmp`, worker scratch directories, temporary S3
+prefixes, or untracked scripts are not fully deposited and must be marked as
+such before the agent continues.
 
 ## Research Analyst Standard
 

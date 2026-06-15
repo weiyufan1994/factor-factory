@@ -27,6 +27,39 @@ residualization 或 neutralization 操作。Revision Council packet 必须读取
 以及匹配的 `knowledge/因子工厂/知识库/*MECHANISM*` 机制补充材料，并继续传递到
 agentic taskbook。
 
+## 因子复杂度惩罚
+
+Step6 不应使用“最多几个变量”这类硬性限制来压制机制研究。复杂机制可以被接受，
+但每个新增 primitive、interaction、threshold、nonlinear gate、data dependency
+或 free parameter 都必须付出复杂度成本。比较 revision 时使用如下软目标：
+
+$$
+\mathcal{J}(f)
+=
+\mathrm{OOSLongEdge}(f)
++ \alpha IC_{\mathrm{resid}}(f)
+- \lambda_C \mathrm{Complexity}(f)
+$$
+
+其中：
+
+$$
+\mathrm{Complexity}(f)
+=
+aN_{\mathrm{primitive}}
++ bN_{\mathrm{interaction}}
++ cN_{\mathrm{free\ parameter}}
++ dN_{\mathrm{data\ dependency}}
++ eN_{\mathrm{nonlinear\ gate}}
+$$
+
+新增复杂度必须说明它对应哪个经济状态或数学对象，例如 drift、volatility、
+barrier distance、hitting probability、occupation mass、latent state 或
+constraint pressure。只有当 OOS long-side、residual IC、风险/成本证据或更清晰的
+经济映射能够支付这项复杂度时，复杂 revision 才应被保留。若新增复杂度只提高
+in-sample raw IC，或无法解释其经济对象，Step6 必须把它记录为 overfit risk，
+并优先选择更简单的表达式。
+
 ## 目标
 
 Step 6 的存在意义，是让因子工厂具备“记忆”和“进化”能力，而不是每次都像新人一样重新研究。

@@ -22,6 +22,42 @@ packets must ingest human supplemental mechanism context from
 and matching `knowledge/因子工厂/知识库/*MECHANISM*` notes, then propagate that
 context into agentic taskbooks.
 
+## Factor Complexity Penalty
+
+Step6 must not suppress mechanism research with a hard rule such as "at most N
+variables." Complex mechanisms are allowed, but each added primitive,
+interaction, threshold, nonlinear gate, data dependency, or free parameter must
+pay a complexity cost. Compare revisions with this soft objective:
+
+$$
+\mathcal{J}(f)
+=
+\mathrm{OOSLongEdge}(f)
++ \alpha IC_{\mathrm{resid}}(f)
+- \lambda_C \mathrm{Complexity}(f)
+$$
+
+where:
+
+$$
+\mathrm{Complexity}(f)
+=
+aN_{\mathrm{primitive}}
++ bN_{\mathrm{interaction}}
++ cN_{\mathrm{free\ parameter}}
++ dN_{\mathrm{data\ dependency}}
++ eN_{\mathrm{nonlinear\ gate}}
+$$
+
+Each added complexity term must name the economic state or mathematical object
+it represents, such as drift, volatility, barrier distance, hitting
+probability, occupation mass, latent state, or constraint pressure. Keep a
+complex revision only when OOS long-side evidence, residual IC, risk/cost
+evidence, or a clearer economic mapping pays for the complexity. If added
+complexity only improves in-sample raw IC, or cannot be tied to a named
+economic object, Step6 must record it as overfit risk and prefer the simpler
+expression.
+
 ## Purpose
 
 Step 6 exists to make the factor factory cumulative rather than forgetful.

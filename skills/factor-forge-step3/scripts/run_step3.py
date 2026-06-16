@@ -898,6 +898,34 @@ def build_state_dependency_contract_from_step3(data_prep_master: dict) -> dict:
     }
 
 
+def load_step3_state_catalog(data_prep_master: dict) -> tuple[dict, dict]:
+    candidates: list[Path] = []
+    for env_name in ['FACTORFORGE_STATE_CATALOG', 'FACTORFORGE_DATA_API_CATALOG']:
+        raw = os.getenv(env_name)
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    step4_contract = data_prep_master.get('step4_data_contract') if isinstance(data_prep_master.get('step4_data_contract'), dict) else {}
+    if step4_contract.get('state_catalog_path'):
+        candidates.append(Path(step4_contract['state_catalog_path']).expanduser())
+    if step4_contract.get('catalog_path'):
+        candidates.append(Path(step4_contract['catalog_path']).expanduser())
+    default_catalog = default_catalog_path()
+    if default_catalog:
+        candidates.append(Path(default_catalog).expanduser())
+
+    seen = set()
+    checked = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        checked.append(key)
+        if path.exists():
+            return load_json(path), {'type': 'data_api_catalog', 'path_or_uri': str(path), 'checked': checked}
+    return {}, {'type': 'data_api_catalog_missing', 'checked': checked}
+
+
 def write_step3_state_reuse_contracts(
     *,
     manifest: dict | None,
@@ -909,17 +937,21 @@ def write_step3_state_reuse_contracts(
     resolution_path = paths.get('state_resolution') or (OBJ / 'data_prep_master' / f'state_resolution__{report_id}.json')
     data_request_dir = paths.get('data_request_dir') or (OBJ / 'data_prep_master' / report_id / 'data_requests')
     contract = build_state_dependency_contract_from_step3(data_prep_master)
+    catalog, catalog_source = load_step3_state_catalog(data_prep_master)
+    if contract.get('no_state_required') is True:
+        catalog = {}
+        catalog_source = {
+            'type': 'step3_noop_no_state_required',
+            'reason': 'Step3 writes no-op resolution when no derived state dependency is declared',
+        }
     resolution = resolve_state_dependencies(
         contract=contract,
-        catalog={},
+        catalog=catalog,
         report_id=report_id,
         factor_id=str(data_prep_master.get('factor_id') or report_id),
         research_id=(manifest or {}).get('research_id') if isinstance(manifest, dict) else None,
         dependency_contract_path=str(contract_path),
-        catalog_source={
-            'type': 'step3_no_catalog_resolution',
-            'reason': 'Step3 writes no-op resolution when no derived state dependency is declared',
-        },
+        catalog_source=catalog_source,
     )
     write_json(contract_path, {'state_dependency_contract': contract})
     write_resolution_outputs(

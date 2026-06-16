@@ -125,6 +125,29 @@ def build_knowledge_reference_contract(
     }
 
 
+def build_legacy_knowledge_reference_contract(
+    *,
+    similar_case_lessons: list[Any],
+    producer: str,
+) -> dict[str, Any]:
+    lessons = [str(item) for item in (similar_case_lessons or []) if str(item).strip()]
+    return {
+        "contract_version": KNOWLEDGE_REFERENCE_CONTRACT_VERSION,
+        "producer": producer,
+        "created_at_utc": utc_now(),
+        "retrieval_required": False,
+        "retrieval_status": "legacy_artifact_without_retrieval_provenance",
+        "query_hash": "legacy_artifact_no_query_hash",
+        "query_terms": [],
+        "index_paths_checked": [],
+        "indexes_available": [],
+        "hit_count": 0,
+        "retrieved_case_ids": [],
+        "similar_case_lessons_imported": lessons,
+        "fallback_reason": "legacy_artifact_missing_knowledge_reference_contract",
+    }
+
+
 def validate_knowledge_reference_contract(contract: dict[str, Any], *, retrieval_required: bool | None = None) -> list[str]:
     if not isinstance(contract, dict) or not contract:
         return [f"{BLOCK_KNOWLEDGE_RETRIEVAL_PROVENANCE_MISSING}: knowledge_reference_contract"]

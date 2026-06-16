@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from factor_factory.state_reuse import (
     BLOCK_DATA_REQUEST_REQUIRED,
     BLOCK_RAW_MINUTE_FULL_WINDOW_FORBIDDEN,
     BLOCK_STATE_COVERAGE_INSUFFICIENT,
+    BLOCK_STATE_DATAMART_QA_NOT_ACCEPTED,
     BLOCK_STATE_DEPENDENCY_UNDECLARED,
     BLOCK_STATE_SCHEMA_VERSION_MISMATCH,
     REVISION_DATA_PLAN_VERSION,
@@ -151,6 +153,20 @@ def main() -> int:
             raise AssertionError(f"real Data API catalog lookahead flag was not read from metadata: {real_hit}")
         if not str(real_hit.get("materialized_root") or "").endswith("/intraday_flow_state_v2"):
             raise AssertionError(f"real Data API catalog uri was not used as materialized_root: {real_hit}")
+        real_qa_contract = base_contract()
+        real_qa_contract["required_datasets"][0]["required_fields"] = real_contract["required_datasets"][0]["required_fields"]
+        real_qa_contract["required_datasets"][0].pop("window", None)
+        results.append(expect_rc("real_data_api_catalog_missing_qa_blocks", run([
+            sys.executable,
+            "scripts/validate_factorforge_state_dependency.py",
+            "--dependency-contract", str(write_json(root / "real_data_api_qa_contract.json", {"state_dependency_contract": real_qa_contract})),
+            "--catalog", str(real_catalog),
+            "--report-id", report_id,
+            "--factor-id", factor_id,
+            "--research-id", research_id,
+            "--output-state-resolution", str(root / "real_data_api_qa_resolution.json"),
+            "--output-data-request-dir", str(request_dir),
+        ]), 1, BLOCK_STATE_DATAMART_QA_NOT_ACCEPTED))
 
     qa_file = write_json(root / "qa_accept.json", {"verdict": "ACCEPT"})
     qa_catalog = base_catalog()
@@ -250,6 +266,73 @@ def main() -> int:
     if noop_provenance.get("no_state_required") is not True or noop_provenance.get("reuse_hit") is not False:
         raise AssertionError(f"invalid no-op Step4 state provenance: {noop_provenance}")
     results.append({"name": "step3_noop_state_contract_smoke", "rc": 0, "token": None, "status": "PASS"})
+
+    step3_qa = write_json(root / "step3_state_qa.json", {"verdict": "ACCEPT", "start": "20240102", "end": "20240105"})
+    step3_catalog = write_json(root / "step3_state_catalog.json", {
+        "catalog_version": "factorforge_data_catalog_v1",
+        "datasets": {
+            "intraday_flow_state_v2": {
+                "uri": str(root / "datamarts" / "intraday_flow_state_v2"),
+                "columns": [
+                    "ts_code",
+                    "trade_date",
+                    "net_flow_ratio",
+                    "large_net_flow_ratio_abs",
+                    "tail_net_flow_ratio_1450_1455",
+                    "no_future_intraday_minutes",
+                ],
+                "metadata": {
+                    "schema_version": "intraday_flow_state_v2_schema_v2.1",
+                    "qa_summary_path": str(step3_qa),
+                    "no_future_intraday_minutes": "true",
+                },
+            }
+        },
+    })
+    old_state_catalog = os.environ.get("FACTORFORGE_STATE_CATALOG")
+    os.environ["FACTORFORGE_STATE_CATALOG"] = str(step3_catalog)
+    try:
+        step3_profile = step3_module.write_step3_state_reuse_contracts(
+            manifest={
+                "research_id": research_id,
+                "state_reuse": {
+                    "state_dependency_contract": str(root / "step3_catalog_state_contract.json"),
+                    "state_resolution": str(root / "step3_catalog_state_resolution.json"),
+                    "data_request_dir": str(root / "step3_catalog_data_requests"),
+                },
+            },
+            report_id=report_id,
+            data_prep_master={
+                "report_id": report_id,
+                "factor_id": factor_id,
+                "minute_derived_state_requirements": [
+                    {
+                        "dataset_id": "intraday_flow_state_v2",
+                        "schema_version": "intraday_flow_state_v2_schema_v2.1",
+                        "start_date": "20240102",
+                        "end_date": "20240105",
+                        "cutoff_time": "14:50:00",
+                        "required_fields": [
+                            "net_flow_ratio",
+                            "large_net_flow_ratio_abs",
+                            "tail_net_flow_ratio_1450_1455",
+                        ],
+                        "fallback_policy": "block_or_explicit_backfill",
+                    }
+                ],
+            },
+        )
+    finally:
+        if old_state_catalog is None:
+            os.environ.pop("FACTORFORGE_STATE_CATALOG", None)
+        else:
+            os.environ["FACTORFORGE_STATE_CATALOG"] = old_state_catalog
+    step3_resolution = json.loads(Path(step3_profile["state_resolution_path"]).read_text(encoding="utf-8"))
+    if step3_resolution.get("blocked") is True or not step3_resolution.get("reuse_hits"):
+        raise AssertionError(f"Step3 active catalog state resolution did not reuse datamart: {step3_resolution}")
+    if step3_resolution["catalog_source"].get("path_or_uri") != str(step3_catalog):
+        raise AssertionError(f"Step3 state resolver did not use FACTORFORGE_STATE_CATALOG: {step3_resolution}")
+    results.append({"name": "step3_active_catalog_state_reuse_smoke", "rc": 0, "token": None, "status": "PASS"})
 
     schema_catalog = base_catalog()
     schema_catalog["datasets"]["intraday_flow_state_v2"]["schema_version"] = "old_schema"

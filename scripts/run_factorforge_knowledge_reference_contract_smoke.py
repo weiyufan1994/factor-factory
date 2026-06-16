@@ -15,6 +15,7 @@ from factor_factory.knowledge_reference import (
     BLOCK_KNOWLEDGE_RETRIEVAL_REQUIRED,
     KNOWLEDGE_REFERENCE_CONTRACT_VERSION,
     build_knowledge_reference_contract,
+    build_legacy_knowledge_reference_contract,
     validate_knowledge_reference_contract,
 )
 
@@ -28,6 +29,15 @@ def write_jsonl(path: Path, rows: list[dict]) -> Path:
 def load_step1_module():
     path = REPO_ROOT / "skills/factor_forge_step1/modules/report_ingestion/research_discipline.py"
     spec = importlib.util.spec_from_file_location("factorforge_step1_research_discipline_smoke", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"failed to load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise AssertionError(f"failed to load {path}")
     module = importlib.util.module_from_spec(spec)
@@ -95,6 +105,30 @@ def main() -> int:
     if discipline.get("similar_case_lessons_imported") != step1_contract.get("similar_case_lessons_imported"):
         raise AssertionError("Step1 similar_case_lessons_imported diverged from knowledge_reference_contract")
     results.append({"name": "step1_attaches_knowledge_reference_contract", "status": "PASS"})
+
+    legacy = build_legacy_knowledge_reference_contract(
+        similar_case_lessons=["legacy lesson retained from old Step1 artifact"],
+        producer="legacy_smoke",
+    )
+    if validate_knowledge_reference_contract(legacy, retrieval_required=False):
+        raise AssertionError(f"legacy knowledge reference fallback did not validate: {legacy}")
+    if legacy.get("fallback_reason") != "legacy_artifact_missing_knowledge_reference_contract":
+        raise AssertionError(f"legacy fallback reason missing: {legacy}")
+    results.append({"name": "legacy_artifact_knowledge_reference_fallback", "status": "PASS"})
+
+    step1_validator = load_module(
+        REPO_ROOT / "skills/factor-forge-step1/scripts/validate_step1.py",
+        "factorforge_step1_validator_legacy_smoke",
+    )
+    step2_validator = load_module(
+        REPO_ROOT / "skills/factor-forge-step2/scripts/validate_step2.py",
+        "factorforge_step2_validator_legacy_smoke",
+    )
+    if not step1_validator.valid_knowledge_reference_contract({}, ["legacy lesson"]):
+        raise AssertionError("Step1 validator did not accept legacy lessons without knowledge_reference_contract")
+    if not step2_validator.valid_knowledge_reference_contract({}, ["legacy lesson"]):
+        raise AssertionError("Step2 validator did not accept legacy lessons without knowledge_reference_contract")
+    results.append({"name": "legacy_validator_fallback_accepts_old_artifacts", "status": "PASS"})
 
     summary = {
         "verdict": "ACCEPT",

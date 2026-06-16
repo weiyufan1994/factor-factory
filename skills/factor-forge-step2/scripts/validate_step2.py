@@ -40,7 +40,7 @@ ALLOWED_IMPLEMENTATION_MODES = {'operator', 'direct_code', 'hybrid'}
 from factor_factory.artifact_identity import build_spec_hash
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.factor_families.registry import FamilyPluginContractError, get_family_plugin_contract
-from factor_factory.knowledge_reference import validate_knowledge_reference_contract
+from factor_factory.knowledge_reference import build_legacy_knowledge_reference_contract, validate_knowledge_reference_contract
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 
 
@@ -57,8 +57,14 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
-def valid_knowledge_reference_contract(value) -> bool:
-    return not validate_knowledge_reference_contract(value or {}, retrieval_required=False)
+def valid_knowledge_reference_contract(value, lessons=None) -> bool:
+    candidate = value
+    if not candidate and nonempty_list(lessons):
+        candidate = build_legacy_knowledge_reference_contract(
+            similar_case_lessons=lessons,
+            producer='step2_legacy_artifact_validator',
+        )
+    return not validate_knowledge_reference_contract(candidate or {}, retrieval_required=False)
 
 
 def direct_code_contract_checks(master):
@@ -376,7 +382,14 @@ def main() -> None:
             check('innovative_idea_seeds_present', nonempty_list(learning.get('innovative_idea_seeds') or research_contract.get('innovative_idea_seeds')), 'innovative_idea_seeds missing'),
             check('reuse_instruction_present', nonempty_list(learning.get('reuse_instruction_for_future_agents') or research_contract.get('reuse_instruction_for_future_agents')), 'reuse_instruction_for_future_agents missing'),
             check('similar_case_lessons_imported_present', nonempty_list(learning.get('similar_case_lessons_imported') or research_contract.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
-            check('knowledge_reference_contract_present', valid_knowledge_reference_contract(learning.get('knowledge_reference_contract') or research_contract.get('knowledge_reference_contract')), 'knowledge_reference_contract missing or invalid'),
+            check(
+                'knowledge_reference_contract_present',
+                valid_knowledge_reference_contract(
+                    learning.get('knowledge_reference_contract') or research_contract.get('knowledge_reference_contract'),
+                    learning.get('similar_case_lessons_imported') or research_contract.get('similar_case_lessons_imported'),
+                ),
+                'knowledge_reference_contract missing or invalid',
+            ),
             check('information_set_not_illegal', 'illegal' not in info_legality and 'forward_reference' not in info_legality, f'information_set_legality blocks Step2 acceptance: {info_legality}', severity='WARN'),
         ])
         checks.extend(identity_check(master, handoff, rid))

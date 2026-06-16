@@ -124,9 +124,12 @@ def _date_value(raw: Any) -> str | None:
 
 def _coverage(entry: dict[str, Any]) -> dict[str, Any]:
     raw = entry.get("coverage") if isinstance(entry.get("coverage"), dict) else {}
+    meta = _metadata(entry)
+    meta_coverage = meta.get("coverage") if isinstance(meta.get("coverage"), dict) else {}
+    qa_payload = _read_qa_payload(_qa_path(entry))
     return {
-        "start": _date_value(raw.get("start") or entry.get("start")),
-        "end": _date_value(raw.get("end") or entry.get("end")),
+        "start": _date_value(raw.get("start") or entry.get("start") or meta_coverage.get("start") or meta.get("start") or qa_payload.get("start")),
+        "end": _date_value(raw.get("end") or entry.get("end") or meta_coverage.get("end") or meta.get("end") or qa_payload.get("end")),
     }
 
 
@@ -173,15 +176,21 @@ def _schema_fields(entry: dict[str, Any]) -> set[str]:
     return set()
 
 
-def _read_qa_verdict_from_path(path: Any) -> str | None:
+def _read_qa_payload(path: Any) -> dict[str, Any]:
     if not path:
-        return None
+        return {}
     qa_path = Path(str(path)).expanduser()
     if not qa_path.exists():
-        return None
+        return {}
     try:
-        payload = load_json(qa_path)
+        return load_json(qa_path)
     except Exception:
+        return {}
+
+
+def _read_qa_verdict_from_path(path: Any) -> str | None:
+    payload = _read_qa_payload(path)
+    if not payload:
         return None
     for key in ("qa_verdict", "verdict", "latest_reviewer_verdict", "final_verdict", "status"):
         value = payload.get(key)

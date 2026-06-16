@@ -48,10 +48,13 @@ Step 2 is the canonical-spec guardrail. It must verify:
   or code. It must state the latent/model state recovered by the estimator and
   the conditional return-distribution term it is expected to change.
 
-Step2 does not silently invent prior knowledge. It preserves the Step1
-`knowledge_reference_contract` into `research_contract` and
-`learning_and_innovation`; if the contract is missing or malformed, Step2
-validation must BLOCK even when `similar_case_lessons_imported` is non-empty.
+Step2 does not silently invent prior knowledge. For fresh formal artifacts, it
+preserves the Step1 `knowledge_reference_contract` into `research_contract` and
+`learning_and_innovation`. For legacy Step1/Step2 artifacts created before this
+contract existed, Step2 may build explicit legacy fallback provenance from
+existing `similar_case_lessons_imported`; the fallback must be auditable and
+must mark the artifact as `legacy_artifact_without_retrieval_provenance`.
+Malformed fresh contracts still BLOCK.
 
 The output should be precise enough that two independent implementers would build the same kind of factor.
 

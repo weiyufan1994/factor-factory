@@ -19,6 +19,7 @@ Do not use a lightweight batch path unless the user explicitly requests a mechan
 
 For normal research, every factor must have:
 - source understanding from the report/paper/idea,
+- an explicit economic hypothesis and a flexible math-forced insight pass,
 - implementation review after Step3,
 - evidence review after Step4,
 - case reflection after Step5,
@@ -26,6 +27,34 @@ For normal research, every factor must have:
 - math discipline review that identifies the random object, target statistic, information-set legality, and overfit controls,
 - learning writeback that extracts transferable patterns, anti-patterns, and innovative idea seeds,
 - and, if needed, a revision brief that sends the loop back to Step3B.
+
+## Flexible Math-Forced Research
+
+Researcher judgment must actively use mathematics to understand the factor, but
+this is not a rigid checklist. Start from the economic hypothesis, then select
+one or more mathematical objects and tools that actually fit the suspected
+market process. Valid choices include stochastic processes, state-space or
+Bayesian models, covariance identities, projection or residualization,
+occupation measures, stopping/hitting problems, Taylor or local decompositions,
+spectral views, distributional transforms, microstructure/inventory models, or
+other justified tools.
+
+The durable research record must explain:
+
+- which mathematical object was selected and why it fits the economic
+  hypothesis,
+- what insight the chosen tool forced that was not obvious from the formula
+  prose alone,
+- what information the transformation preserves, removes, aliases, or makes
+  untradeable,
+- how the insight maps to an observable estimator or next formula/law version,
+- what long-side, residual-IC, universe/regime, or IS/OOS result would falsify
+  the mechanism.
+
+Do not mechanically apply every tool. A simple decomposition is preferred when
+it explains the payer and expected return signature. Added interactions,
+nonlinear gates, parameters, or data dependencies must pay the complexity cost
+defined below.
 
 ## Research Loop
 

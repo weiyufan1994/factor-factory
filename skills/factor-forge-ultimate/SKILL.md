@@ -148,6 +148,11 @@ The current production/experimental split is documented in
 - standardize and validate Step1 research fields: `step1_random_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`
 - `economic_hypothesis` must first classify the broad source as `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`, then state the second-layer mechanism and the likely counterparty paying the return
 - `math_hypothesis_candidates` must map the economic mechanism to report-specific mathematical tools. Do not use fixed mappings like "price-volume means microstructure"; use DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, dimensional/scaling analysis, or other tools only when they explain the report-specific counterparty and asset-price logic
+- every formal research pass must include a flexible math-forced insight step:
+  choose the mathematical object and tools from the economic hypothesis, state
+  what the tools reveal, what information they preserve or discard, how the
+  insight maps to an observable estimator, and what evidence would falsify it.
+  This is a menu of justified tools, not a fixed checklist.
 - researcher records the author's thesis and what must be true for the idea to work
 
 ### Step2
@@ -553,6 +558,13 @@ python3 skills/factor-forge-researcher/scripts/build_researcher_dossier.py --rep
 ## Math Discipline And Learning
 
 Use `docs/operations/factorforge-math-research-discipline.zh-CN.md` as the execution version of the math map.
+
+Math discipline is mandatory, but tool choice is flexible. Agents must not
+decorate reports with generic SDE/physics language or force every candidate
+through the same checklist. They must instead justify the selected mathematical
+object from the economic hypothesis, use the smallest tool set that forces a
+testable insight, and record information preserved, removed, aliased, or made
+untradeable by the transformation.
 
 Every serious Step6 output must include:
 - `math_discipline_review`

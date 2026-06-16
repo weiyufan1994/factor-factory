@@ -4,12 +4,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'
+
+from factor_factory.knowledge_reference import validate_knowledge_reference_contract
 
 
 def check(name: str, condition: bool, error: str | None = None, severity: str = 'BLOCK'):
@@ -23,6 +28,10 @@ def nonempty_str(value) -> bool:
 
 def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
+
+
+def valid_knowledge_reference_contract(value) -> bool:
+    return not validate_knowledge_reference_contract(value or {}, retrieval_required=False)
 
 
 def valid_economic_hypothesis(value) -> bool:
@@ -168,6 +177,7 @@ def main() -> None:
             check('primary_mechanism_model_candidates_present', valid_primary_model_candidates(discipline.get('primary_mechanism_model_candidates')), 'research_discipline.primary_mechanism_model_candidates missing or incomplete'),
             check('stochastic_price_process_projection_present', valid_stochastic_projection(discipline.get('stochastic_price_process_projection')), 'research_discipline.stochastic_price_process_projection missing or incomplete'),
             check('similar_case_lessons_imported_present', nonempty_list(discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
+            check('knowledge_reference_contract_present', valid_knowledge_reference_contract(discipline.get('knowledge_reference_contract') or learning.get('knowledge_reference_contract')), 'knowledge_reference_contract missing or invalid'),
             check('what_must_be_true_present', nonempty_list(discipline.get('what_must_be_true')), 'what_must_be_true missing'),
             check('what_would_break_it_present', nonempty_list(discipline.get('what_would_break_it')), 'what_would_break_it missing'),
             check('information_set_not_illegal', 'illegal' not in info_hint and 'forward_reference' not in info_hint, f'information_set_hint blocks Step1 acceptance: {info_hint}', severity='WARN'),

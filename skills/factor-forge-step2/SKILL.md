@@ -42,11 +42,16 @@ Step 2 is the canonical-spec guardrail. It must verify:
 - information used at time `t` is legally available at time `t`,
 - boundary-sensitive transforms such as rank, bucket, winsorize, truncate, argmax, and argmin are called out,
 - critical ambiguities trigger `human_review_required` instead of being silently guessed.
-- the Step1 random object and similar-case lessons are preserved instead of lost at spec extraction time,
+- the Step1 random object, similar-case lessons, and `knowledge_reference_contract` are preserved instead of lost at spec extraction time,
 - the canonical spec states the target statistic, economic mechanism, expected failure modes, innovative idea seeds, and reuse instructions for future agents.
 - the mechanism math contract does not merely repeat formula text, raw fields,
   or code. It must state the latent/model state recovered by the estimator and
   the conditional return-distribution term it is expected to change.
+
+Step2 does not silently invent prior knowledge. It preserves the Step1
+`knowledge_reference_contract` into `research_contract` and
+`learning_and_innovation`; if the contract is missing or malformed, Step2
+validation must BLOCK even when `similar_case_lessons_imported` is non-empty.
 
 The output should be precise enough that two independent implementers would build the same kind of factor.
 

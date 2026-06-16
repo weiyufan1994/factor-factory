@@ -91,6 +91,17 @@ not let Step4 fall back to a full-window raw minute scan. Bounded smoke can use
 small fixtures, but it is not production evidence. Raw full-window minute
 production is Data API work, not a Factor Forge Step4 fallback.
 
+## Knowledge Reference Contract
+
+Formal runs must preserve prior-knowledge provenance from Step1 through Step6.
+Step1 writes `knowledge_reference_contract.contract_version=factorforge_knowledge_reference_contract_v1`
+alongside `similar_case_lessons_imported`; Step2 preserves it in
+`research_contract` and `learning_and_innovation`; Step6/Council writes
+retrieval context for each revision. Cold-start is allowed only when explicitly
+recorded with checked index paths, query hash, hit count, and fallback reason.
+Missing provenance blocks formal acceptance even if a human-readable lesson
+string is present.
+
 ## Memory Pressure and Batch Execution Protocol
 
 The "no ordinary batch mode" research rule means no shallow mechanical research

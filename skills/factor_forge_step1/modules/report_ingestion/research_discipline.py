@@ -9,6 +9,7 @@ from factor_factory.mechanism_math.formula_specific import (
     build_formula_understanding,
     select_math_model_from_economic_hypothesis,
 )
+from factor_factory.knowledge_reference import build_knowledge_reference_contract
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -414,6 +415,21 @@ def infer_information_set_hint(alpha_idea_master: Dict[str, Any], *context: Any)
 
 
 def load_similar_case_lessons(repo_root: Path, query_text: str, top_k: int = 3) -> List[str]:
+    return list(load_similar_case_context(repo_root, query_text, top_k=top_k).get("similar_case_lessons_imported") or [])
+
+
+def load_similar_case_context(repo_root: Path, query_text: str, top_k: int = 3) -> Dict[str, Any]:
+    contract = build_knowledge_reference_contract(
+        repo_root=repo_root,
+        query_text=query_text,
+        producer="step1_research_discipline",
+        top_k=top_k,
+        retrieval_required=False,
+    )
+    return contract
+
+
+def load_similar_case_lessons_legacy(repo_root: Path, query_text: str, top_k: int = 3) -> List[str]:
     candidates: List[tuple[float, str]] = []
     q_tokens = _tokens(query_text)
     index_paths = [
@@ -479,7 +495,8 @@ def build_step1_research_discipline(
         ],
     }
     info_hint = infer_information_set_hint(alpha_idea_master, *context)
-    similar_lessons = load_similar_case_lessons(repo, query_text)
+    knowledge_reference_contract = load_similar_case_context(repo, query_text)
+    similar_lessons = list(knowledge_reference_contract.get("similar_case_lessons_imported") or [])
     explicit_thesis = _explicit_market_process_thesis(alpha_idea_master)
     existing_discipline = alpha_idea_master.get("research_discipline") if isinstance(alpha_idea_master.get("research_discipline"), dict) else {}
     what_must_be_true = (
@@ -515,6 +532,7 @@ def build_step1_research_discipline(
         "what_would_break_it": [str(x) for x in what_would_break_it if str(x).strip()],
         "what_must_be_true_provenance": alpha_idea_master.get("market_process_thesis_provenance"),
         "similar_case_lessons_imported": similar_lessons,
+        "knowledge_reference_contract": knowledge_reference_contract,
         "producer": "step1_research_discipline",
     }
 
@@ -538,5 +556,6 @@ def attach_step1_research_discipline(
     out["math_discipline_review"] = math_review
     learning = dict(out.get("learning_and_innovation") or {})
     learning.setdefault("similar_case_lessons_imported", discipline["similar_case_lessons_imported"])
+    learning.setdefault("knowledge_reference_contract", discipline.get("knowledge_reference_contract"))
     out["learning_and_innovation"] = learning
     return out

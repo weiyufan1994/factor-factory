@@ -48,6 +48,10 @@ Step3 must resolve those dependencies catalog-first, write
 `state_resolution__<report_id>.json`, and write `data_request_v1` when the
 state datamart is missing or not production-ready. Missing state is an awaiting
 Data API request, not permission for Step4 to scan raw minute data.
+If the factor is daily-only or otherwise has no derived state dependency,
+Step3A must still write an explicit no-op state dependency contract and
+`state_resolution__<report_id>.json` with `no_state_required=true`; Step4 must
+accept that no-op resolution instead of treating the factor as undeclared.
 
 ## Research Discipline
 

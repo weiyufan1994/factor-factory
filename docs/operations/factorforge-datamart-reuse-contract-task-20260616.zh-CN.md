@@ -47,8 +47,10 @@
 
 ```text
 factor_factory/state_reuse.py
+factor_factory/knowledge_reference.py
 scripts/validate_factorforge_state_dependency.py
 scripts/run_factorforge_state_reuse_contract_smoke.py
+scripts/run_factorforge_knowledge_reference_contract_smoke.py
 ```
 
 如现有模块已有更合适位置，可沿用现有 pattern，但必须保持职责清晰。
@@ -63,6 +65,8 @@ scripts/build_factorforge_runtime_context.py
 factor_factory/runtime_context.py
 skills/factor-forge-ultimate/SKILL.md
 skills/factor-forge-step3/SKILL.md
+skills/factor-forge-step1/SKILL.md
+skills/factor-forge-step2/SKILL.md
 skills/factor-forge-step4/SKILL.md
 skills/factor-forge-step6/SKILL.md
 skills/factor-forge-researcher/SKILL.md
@@ -149,7 +153,13 @@ python3 scripts/validate_factorforge_state_dependency.py \
 行为：
 
 1. 读取 `state_dependency_contract`。
-2. 读取 fake catalog / local catalog JSON。
+2. 读取 fake catalog / local catalog JSON；必须兼容真实 Data API catalog
+   fragment：
+   - `columns`
+   - `metadata.schema_version`
+   - `metadata.qa_summary_path`
+   - `metadata.no_future_intraday_minutes` 字符串布尔
+   - `uri`
 3. 检查 dataset existence、schema、fields、coverage、QA、lookahead policy。
 4. 写 `state_resolution_v1`。
 5. 缺失或不合格时写 `data_request_v1`，退出非 0，打印 blocker token。
@@ -158,21 +168,33 @@ python3 scripts/validate_factorforge_state_dependency.py \
 
 Step3 必须在正式执行前解析 state dependency：
 
-1. 从 executable law / child spec / runtime manifest 找到 `state_dependency_contract`。
-2. 找不到时 BLOCK：
+1. 从 executable law / child spec / runtime manifest 找到或生成
+   `state_dependency_contract`。
+2. 如果因子不依赖 derived state，Step3A 必须写 no-op contract/resolution：
+
+```json
+{
+  "required_datasets": [],
+  "no_state_required": true,
+  "state_dependencies_required": false,
+  "blocked": false
+}
+```
+
+3. 如果 Step4 从已有 manifest/resolution 启动且找不到 state contract/resolution，BLOCK：
 
 ```text
 BLOCK_FACTORFORGE_STATE_DEPENDENCY_UNDECLARED
 ```
 
-3. 调用 resolver 写：
+4. 调用 resolver 写：
 
 ```text
 objects/data_prep_master/<report_id>/state_resolution__<report_id>.json
 objects/data_prep_master/<report_id>/data_request__*.json
 ```
 
-4. 只要 `state_resolution.blocked=true`，Step3 formal outcome 必须是 blocked / awaiting data request，不允许进入 Step4 production。
+5. 只要 `state_resolution.blocked=true`，Step3 formal outcome 必须是 blocked / awaiting data request，不允许进入 Step4 production。
 
 ## 6. Task D：Step4 raw minute guard 与 provenance
 
@@ -245,6 +267,7 @@ Validator 规则：
 3. blocked state resolution 不得进入 Step4。
 4. missing / QA not accepted / coverage insufficient / schema mismatch 必须输出明确 blocker token。
 5. dry-run 也要验证 mismatch / missing contract 的 blocker 行为。
+6. 如果本次 run 包含 Step3A 和 Step4，且没有现成 resolution，Ultimate 可以把 gate 标记为 `deferred_to_step3`，但必须把 manifest 中的 state resolution path 传给 Step4；Step4 仍需最终校验。
 
 Ultimate 对缺 state 的 outcome 建议为：
 
@@ -275,6 +298,28 @@ skills/factor-forge-researcher/SKILL.md
 - Council 必须输出 revision data plan；
 - bounded smoke 不等于 production proof；
 - Data API P0 schema 不接收 alpha score / composite research feature。
+- Step1 必须写 `knowledge_reference_contract_v1`；
+- Step2 必须保留 Step1 knowledge provenance；
+- Step6 / Council 每次 revision 必须有 retrieval context 或显式 cold-start gap。
+
+## 9b. Task H：Knowledge reference contract
+
+新增 `factor_factory/knowledge_reference.py`：
+
+1. 定义 `factorforge_knowledge_reference_contract_v1`。
+2. Step1 检索 `knowledge/retrieval/factorforge_retrieval_index.jsonl` 后写：
+   - `query_hash`
+   - `index_paths_checked`
+   - `indexes_available`
+   - `hit_count`
+   - `retrieved_case_ids`
+   - `similar_case_lessons_imported`
+   - `fallback_reason`
+3. Step2 把该合同复制到 `research_contract` 和
+   `learning_and_innovation`。
+4. Step1/Step2 validator 必须要求 provenance 完整，但不要求一定命中。
+5. Step6/Council revision 必须继承 retrieval context；缺失时 BLOCK
+   `BLOCK_FACTORFORGE_REVISION_KNOWLEDGE_CONTEXT_MISSING`。
 
 ## 10. Blocker tokens
 
@@ -291,6 +336,10 @@ BLOCK_FACTORFORGE_STATE_LOOKAHEAD_CONTRACT_MISSING
 BLOCK_FACTORFORGE_DATA_REQUEST_REQUIRED
 BLOCK_FACTORFORGE_RAW_MINUTE_FULL_WINDOW_FORBIDDEN
 BLOCK_FACTORFORGE_STATE_REUSE_PROVENANCE_MISSING
+BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_PROVENANCE_MISSING
+BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_INDEX_MISSING
+BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_REQUIRED
+BLOCK_FACTORFORGE_REVISION_KNOWLEDGE_CONTEXT_MISSING
 ```
 
 ## 11. Smoke 要求
@@ -327,6 +376,20 @@ scripts/run_factorforge_state_reuse_contract_smoke.py
    - dataset 存在但 schema / coverage 不满足；
    - 分别 BLOCK schema / coverage token。
 
+6. `real_data_api_catalog_fragment_smoke`
+   - 使用真实 `intraday_flow_state_v2.production_contract.catalog.json` fragment；
+   - 读取 `columns`、`metadata.schema_version`、`metadata.no_future_intraday_minutes`、`uri`；
+   - 不得误报 schema mismatch。
+
+7. `step3_noop_state_contract_smoke`
+   - 无 derived state dependency 时 Step3 写 no-op contract/resolution；
+   - Step4 provenance 接受 `no_state_required=true`。
+
+8. `knowledge_reference_contract_smoke`
+   - 命中知识库时写 hit provenance；
+   - cold-start 时写 fallback reason；
+   - required retrieval 且 zero-hit 时 BLOCK。
+
 ## 12. 验证命令
 
 完成后至少运行：
@@ -334,10 +397,13 @@ scripts/run_factorforge_state_reuse_contract_smoke.py
 ```bash
 python3 -m py_compile \
   factor_factory/state_reuse.py \
+  factor_factory/knowledge_reference.py \
   scripts/validate_factorforge_state_dependency.py \
-  scripts/run_factorforge_state_reuse_contract_smoke.py
+  scripts/run_factorforge_state_reuse_contract_smoke.py \
+  scripts/run_factorforge_knowledge_reference_contract_smoke.py
 
 python3 scripts/run_factorforge_state_reuse_contract_smoke.py
+python3 scripts/run_factorforge_knowledge_reference_contract_smoke.py
 python3 scripts/run_factor_research_workspace_smoke.py
 python3 scripts/run_factorforge_knowledge_write_guard_smoke.py
 git diff --check

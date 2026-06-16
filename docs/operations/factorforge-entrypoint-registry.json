@@ -48,6 +48,7 @@
     "scripts/run_factorforge_framework_evidence_smoke.py",
     "scripts/run_factorforge_run_isolation_smoke.py",
     "scripts/run_factorforge_knowledge_sync_smoke.py",
+    "scripts/run_factorforge_knowledge_reference_contract_smoke.py",
     "scripts/run_factorforge_knowledge_write_guard_smoke.py",
     "scripts/run_factorforge_mechanism_math_v2_smoke.py",
     "scripts/run_factorforge_minute_derived_datamart_smoke.py",

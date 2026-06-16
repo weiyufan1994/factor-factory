@@ -21,6 +21,7 @@ from factor_factory.state_reuse import (
     STATE_DEPENDENCY_CONTRACT_VERSION,
     assert_no_raw_minute_full_window_scan,
     build_step4_state_reuse_provenance,
+    require_state_resolution_ready,
     portfolio_only_revision_allows_skip,
     validate_revision_data_plan,
 )
@@ -83,6 +84,10 @@ def base_catalog() -> dict:
     }
 
 
+def real_data_api_catalog_path() -> Path:
+    return Path("/Users/humphrey/projects/factorforge-data-api-runtime/proofs/moneyflow-v7-production-contract-20260608/intraday_flow_state_v2.production_contract.catalog.json")
+
+
 def main() -> int:
     root = Path("/tmp/factorforge_state_reuse_contract_smoke")
     if not str(root).startswith("/tmp/"):
@@ -115,6 +120,58 @@ def main() -> int:
     provenance = build_step4_state_reuse_provenance(state_resolution_path=resolution_path)
     if provenance.get("raw_minute_full_window_scan") is not False or provenance.get("reuse_hit") is not True:
         raise AssertionError(f"invalid Step4 provenance: {provenance}")
+
+    real_catalog = real_data_api_catalog_path()
+    if real_catalog.exists():
+        real_contract = base_contract()
+        real_contract["required_datasets"][0]["required_fields"] = [
+            "net_flow_ratio",
+            "large_net_flow_ratio_abs",
+            "tail_net_flow_ratio_1450_1455",
+        ]
+        real_contract["required_datasets"][0].pop("window", None)
+        real_contract["required_datasets"][0]["qa_required"] = False
+        real_resolution = root / "real_data_api_catalog_resolution.json"
+        results.append(expect_rc("real_data_api_catalog_fragment_smoke", run([
+            sys.executable,
+            "scripts/validate_factorforge_state_dependency.py",
+            "--dependency-contract", str(write_json(root / "real_data_api_contract.json", {"state_dependency_contract": real_contract})),
+            "--catalog", str(real_catalog),
+            "--report-id", report_id,
+            "--factor-id", factor_id,
+            "--research-id", research_id,
+            "--output-state-resolution", str(real_resolution),
+            "--output-data-request-dir", str(request_dir),
+        ]), 0))
+        real_payload = json.loads(real_resolution.read_text(encoding="utf-8"))
+        real_hit = (real_payload.get("reuse_hits") or [{}])[0]
+        if real_hit.get("schema_version") != "intraday_flow_state_v2_schema_v2.1":
+            raise AssertionError(f"real Data API catalog schema_version was not read from metadata: {real_hit}")
+        if real_hit.get("lookahead_policy_present") is not True:
+            raise AssertionError(f"real Data API catalog lookahead flag was not read from metadata: {real_hit}")
+        if not str(real_hit.get("materialized_root") or "").endswith("/intraday_flow_state_v2"):
+            raise AssertionError(f"real Data API catalog uri was not used as materialized_root: {real_hit}")
+
+    qa_file = write_json(root / "qa_accept.json", {"verdict": "ACCEPT"})
+    qa_catalog = base_catalog()
+    entry = qa_catalog["datasets"]["intraday_flow_state_v2"]
+    entry.pop("qa_verdict", None)
+    entry.pop("qa_path", None)
+    entry["metadata"] = {"qa_summary_path": str(qa_file), "schema_version": entry.pop("schema_version"), "no_future_intraday_minutes": "true"}
+    entry["columns"] = entry.pop("schema")
+    entry["uri"] = entry.pop("materialized_root")
+    qa_resolution = root / "metadata_qa_resolution.json"
+    results.append(expect_rc("metadata_qa_summary_path_smoke", run([
+        sys.executable,
+        "scripts/validate_factorforge_state_dependency.py",
+        "--dependency-contract", str(contract_path),
+        "--catalog", str(write_json(root / "metadata_qa_catalog.json", qa_catalog)),
+        "--report-id", report_id,
+        "--factor-id", factor_id,
+        "--research-id", research_id,
+        "--output-state-resolution", str(qa_resolution),
+        "--output-data-request-dir", str(request_dir),
+    ]), 0))
 
     missing_contract = write_json(root / "missing_contract.json", {"state_dependency_contract": base_contract("moneyflow_xxx_state_v1")})
     missing_resolution = root / "missing_state_resolution.json"
@@ -161,6 +218,38 @@ def main() -> int:
     if not portfolio_only_revision_allows_skip(portfolio_plan):
         raise AssertionError("portfolio-only revision did not allow factor recompute skip")
     results.append({"name": "portfolio_only_revision_smoke", "rc": 0, "token": None, "status": "PASS"})
+
+    import importlib.util
+    step3_path = REPO_ROOT / "skills/factor-forge-step3/scripts/run_step3.py"
+    spec = importlib.util.spec_from_file_location("factorforge_step3_smoke_module", step3_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("failed to load Step3 module for no-op state contract smoke")
+    step3_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(step3_module)
+    noop_manifest = {
+        "research_id": research_id,
+        "state_reuse": {
+            "state_dependency_contract": str(root / "noop_state_contract.json"),
+            "state_resolution": str(root / "noop_state_resolution.json"),
+            "data_request_dir": str(root / "noop_data_requests"),
+        },
+    }
+    noop_profile = step3_module.write_step3_state_reuse_contracts(
+        manifest=noop_manifest,
+        report_id=report_id,
+        data_prep_master={
+            "report_id": report_id,
+            "factor_id": factor_id,
+            "minute_derived_state_requirements": [],
+        },
+    )
+    noop_resolution = require_state_resolution_ready(Path(noop_manifest["state_reuse"]["state_resolution"]))
+    if noop_profile.get("no_state_required") is not True or noop_resolution.get("no_state_required") is not True:
+        raise AssertionError(f"Step3 no-op state resolution did not validate: {noop_profile} {noop_resolution}")
+    noop_provenance = build_step4_state_reuse_provenance(state_resolution_path=Path(noop_manifest["state_reuse"]["state_resolution"]))
+    if noop_provenance.get("no_state_required") is not True or noop_provenance.get("reuse_hit") is not False:
+        raise AssertionError(f"invalid no-op Step4 state provenance: {noop_provenance}")
+    results.append({"name": "step3_noop_state_contract_smoke", "rc": 0, "token": None, "status": "PASS"})
 
     schema_catalog = base_catalog()
     schema_catalog["datasets"]["intraday_flow_state_v2"]["schema_version"] = "old_schema"

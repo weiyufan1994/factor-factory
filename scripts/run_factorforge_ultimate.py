@@ -579,6 +579,20 @@ def run_state_reuse_gate(
             raise StateReuseBlock(token, f'state dependency resolution blocked: {state_resolution_path}')
 
     if requires_gate:
+        if (
+            '3' in steps
+            and not args.skip_step3a
+            and not args.dry_run
+            and not args.state_dependency_contract
+            and not args.state_catalog
+            and not args.state_resolution
+            and state_resolution_path
+            and not state_resolution_path.exists()
+        ):
+            gate['status'] = 'deferred_to_step3'
+            gate['state_resolution_path'] = str(state_resolution_path)
+            gate['reason'] = 'Step3A is responsible for writing state dependency/no-op resolution before Step4.'
+            return gate
         if (not state_resolution_path or not state_resolution_path.exists()) and (not state_contract_path or not state_contract_path.exists()):
             raise StateReuseBlock(BLOCK_STATE_DEPENDENCY_UNDECLARED, str(state_contract_path))
         if not state_resolution_path:

@@ -102,6 +102,19 @@ def _catalog_entries(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {}
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "accept", "accepted"}
+
+
+def _metadata(entry: dict[str, Any]) -> dict[str, Any]:
+    raw = entry.get("metadata")
+    return raw if isinstance(raw, dict) else {}
+
+
 def _date_value(raw: Any) -> str | None:
     if raw is None:
         return None
@@ -148,23 +161,80 @@ def _schema_fields(entry: dict[str, Any]) -> set[str]:
     raw_fields = entry.get("fields")
     if isinstance(raw_fields, list):
         return {str(item) for item in raw_fields if item}
+    raw_columns = entry.get("columns")
+    if isinstance(raw_columns, list):
+        fields: set[str] = set()
+        for item in raw_columns:
+            if isinstance(item, str):
+                fields.add(item)
+            elif isinstance(item, dict) and item.get("name"):
+                fields.add(str(item["name"]))
+        return fields
     return set()
 
 
+def _read_qa_verdict_from_path(path: Any) -> str | None:
+    if not path:
+        return None
+    qa_path = Path(str(path)).expanduser()
+    if not qa_path.exists():
+        return None
+    try:
+        payload = load_json(qa_path)
+    except Exception:
+        return None
+    for key in ("qa_verdict", "verdict", "latest_reviewer_verdict", "final_verdict", "status"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    for key in ("qa_verdict", "verdict", "final_verdict", "status"):
+        value = summary.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _qa_path(entry: dict[str, Any]) -> str | None:
+    meta = _metadata(entry)
+    return (
+        entry.get("qa_path")
+        or entry.get("qa_summary_path")
+        or meta.get("qa_path")
+        or meta.get("qa_summary_path")
+    )
+
+
 def _qa_accepted(entry: dict[str, Any]) -> bool:
-    value = entry.get("qa_verdict") or entry.get("verdict") or entry.get("latest_reviewer_verdict")
+    meta = _metadata(entry)
+    value = (
+        entry.get("qa_verdict")
+        or entry.get("verdict")
+        or entry.get("latest_reviewer_verdict")
+        or meta.get("qa_verdict")
+        or meta.get("verdict")
+        or meta.get("latest_reviewer_verdict")
+        or _read_qa_verdict_from_path(_qa_path(entry))
+    )
     return str(value or "").upper() == "ACCEPT"
 
 
 def _lookahead_present(entry: dict[str, Any]) -> bool:
-    return bool(entry.get("lookahead_policy") or entry.get("no_future_intraday_minutes") is True)
+    meta = _metadata(entry)
+    return bool(
+        entry.get("lookahead_policy")
+        or _truthy(entry.get("no_future_intraday_minutes"))
+        or _truthy(meta.get("no_future_intraday_minutes"))
+        or meta.get("lookahead_policy")
+    )
 
 
 def _schema_version_ok(entry: dict[str, Any], requirement: dict[str, Any]) -> bool:
     required = requirement.get("schema_version")
     if not required:
         return True
-    return str(entry.get("schema_version") or "") == str(required)
+    meta = _metadata(entry)
+    return str(entry.get("schema_version") or meta.get("schema_version") or "") == str(required)
 
 
 def _fields_present(entry: dict[str, Any], requirement: dict[str, Any]) -> bool:
@@ -179,6 +249,7 @@ def _entry_path(entry: dict[str, Any]) -> str | None:
         entry.get("catalog_entry_path")
         or entry.get("catalog_path")
         or entry.get("path")
+        or entry.get("uri")
     )
 
 
@@ -188,6 +259,7 @@ def _materialized_root(entry: dict[str, Any]) -> str | None:
         or entry.get("output_root")
         or entry.get("root")
         or entry.get("source_uri")
+        or entry.get("uri")
     )
 
 
@@ -250,11 +322,13 @@ def resolve_state_dependencies(
             "failures": failures,
         }
     entries = _catalog_entries(catalog)
+    required_datasets = contract.get("required_datasets") or []
+    no_state_required = bool(contract.get("no_state_required") is True or not required_datasets)
     reuse_hits: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
     data_requests: list[dict[str, Any]] = []
     failures = []
-    for requirement in contract.get("required_datasets") or []:
+    for requirement in required_datasets:
         dataset_id = str(requirement.get("dataset_id") or "")
         entry = entries.get(dataset_id)
         reason = None
@@ -299,10 +373,10 @@ def resolve_state_dependencies(
         reuse_hits.append(
             {
                 "dataset_id": dataset_id,
-                "schema_version": entry.get("schema_version"),
+                "schema_version": entry.get("schema_version") or _metadata(entry).get("schema_version"),
                 "catalog_entry_path": _entry_path(entry),
-                "qa_path": entry.get("qa_path"),
-                "qa_verdict": entry.get("qa_verdict") or entry.get("verdict"),
+                "qa_path": _qa_path(entry),
+                "qa_verdict": entry.get("qa_verdict") or entry.get("verdict") or _metadata(entry).get("qa_verdict") or _metadata(entry).get("verdict"),
                 "coverage": coverage,
                 "required_fields": fields,
                 "required_fields_present": True,
@@ -325,6 +399,8 @@ def resolve_state_dependencies(
         "resolved_at_utc": utc_now(),
         "dependency_contract_path": dependency_contract_path,
         "catalog_source": catalog_source or {},
+        "state_dependencies_required": not no_state_required,
+        "no_state_required": no_state_required,
         "reuse_hits": reuse_hits,
         "missing_state_variables": missing,
         "data_requests": data_requests,
@@ -364,6 +440,8 @@ def require_state_resolution_ready(path: Path) -> dict[str, Any]:
     if resolution.get("blocked") is True:
         token = str(resolution.get("blocker_token") or BLOCK_DATA_REQUEST_REQUIRED)
         raise StateReuseBlock(token, f"state resolution blocked: {path}")
+    if resolution.get("no_state_required") is True or resolution.get("state_dependencies_required") is False:
+        return resolution
     if not resolution.get("reuse_hits"):
         raise StateReuseBlock(BLOCK_STATE_REUSE_PROVENANCE_MISSING, f"no reuse_hits in {path}")
     return resolution
@@ -380,6 +458,8 @@ def build_step4_state_reuse_provenance(
         "contract_version": STATE_DATAMART_REUSE_VERSION,
         "state_resolution_path": str(Path(state_resolution_path).expanduser()),
         "reuse_hit": bool(resolution.get("reuse_hits")),
+        "state_dependencies_required": resolution.get("state_dependencies_required") is not False,
+        "no_state_required": resolution.get("no_state_required") is True,
         "datasets": [
             {
                 "dataset_id": item.get("dataset_id"),

@@ -592,6 +592,11 @@ def build_step2_research_contract(
             or (aim.get('learning_and_innovation') or {}).get('similar_case_lessons_imported')
             or ['No similar prior case was imported from Step1; treat this as a cold-start prior and write back lessons after Step6.']
         ),
+        'knowledge_reference_contract': (
+            (aim.get('research_discipline') or {}).get('knowledge_reference_contract')
+            or (aim.get('learning_and_innovation') or {}).get('knowledge_reference_contract')
+            or {}
+        ),
         'producer': 'step2_research_contract',
     }
 
@@ -1029,6 +1034,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         },
         'learning_and_innovation': {
             'similar_case_lessons_imported': research_contract['similar_case_lessons_imported'],
+            'knowledge_reference_contract': research_contract.get('knowledge_reference_contract') or {},
             'innovative_idea_seeds': research_contract['innovative_idea_seeds'],
             'reuse_instruction_for_future_agents': research_contract['reuse_instruction_for_future_agents'],
         },

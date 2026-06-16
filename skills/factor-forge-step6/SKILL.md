@@ -73,6 +73,13 @@ default write path.
 23. Program search is a supplement to researcher judgment, not a replacement. Search branches must start from Step6 return-source analysis, market-structure hypothesis, knowledge-base priors, and falsification tests before any GA/Bayesian/multi-agent execution.
 24. Current mandate is long-only. Step6 must not use short selling, long-short spread, or direct decile trading as an adoption basis.
 25. Decile/quantile outputs are diagnostics only: use them to inspect monotonicity and top-group long-side behavior, never as a proposed trading instrument.
+
+Every revision must carry a knowledge-reference trail. Step6/Council retrieval
+context must record the retrieval index path, availability, query terms, and
+similar cases; if no case is found, the memo must state a cold-start knowledge
+gap rather than silently proceeding. Child revision materialization must inherit
+this context from Step6 artifacts or block with
+`BLOCK_FACTORFORGE_REVISION_KNOWLEDGE_CONTEXT_MISSING`.
 26. Revision must modify the factor expression and Step3B implementation itself. Do not “fix” a weak factor by changing portfolio expression, short-leg exposure, rebalance mechanics, or decile trading.
 27. Official promotion requires risk-adjusted positive long-side evidence. If a factor is strictly monotonic but the high-score long side does not make money with acceptable Sharpe/drawdown/recovery, Step6 must choose `iterate` or `reject`, not `promote_official`.
 28. Preferred revision direction is economic linearity: make higher factor values correspond more directly and monotonically to the economic state expected to earn risk-adjusted long-side returns.

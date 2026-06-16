@@ -254,12 +254,18 @@ class FactorForgeContext:
             'self_quant_payload': str(self.evaluation_payload_path(report_id, 'self_quant_analyzer')),
             'qlib_backtest_payload': str(self.evaluation_payload_path(report_id, 'qlib_backtest')),
         }
+        state_reuse = {
+            'state_dependency_contract': str(self.objects_root / 'data_prep_master' / report_id / f'state_dependency_contract__{report_id}.json'),
+            'state_resolution': str(self.objects_root / 'data_prep_master' / report_id / f'state_resolution__{report_id}.json'),
+            'data_request_dir': str(self.objects_root / 'data_prep_master' / report_id / 'data_requests'),
+        }
         step_io = {
             'step3': {
                 'inputs': {
                     'alpha_idea_master': objects['alpha_idea_master'],
                     'factor_spec_master': objects['factor_spec_master'],
                     'handoff_to_step3': objects['handoff_to_step3'],
+                    'state_dependency_contract': state_reuse['state_dependency_contract'],
                 },
                 'data_inputs': {
                     'shared_clean_data_root': str(self.clean_data_root),
@@ -272,6 +278,8 @@ class FactorForgeContext:
                     'factor_values_csv': runs['factor_values_csv'],
                     'run_metadata': runs['run_metadata'],
                     'handoff_to_step4': objects['handoff_to_step4'],
+                    'state_resolution': state_reuse['state_resolution'],
+                    'data_request_dir': state_reuse['data_request_dir'],
                 },
             },
             'step4': {
@@ -281,6 +289,7 @@ class FactorForgeContext:
                     'handoff_to_step4': objects['handoff_to_step4'],
                     'factor_values_parquet': runs['factor_values_parquet'],
                     'step3a_daily_input_csv': runs['step3a_daily_input_csv'],
+                    'state_resolution': state_reuse['state_resolution'],
                 },
                 'outputs': {
                     'factor_run_master': objects['factor_run_master'],
@@ -337,6 +346,7 @@ class FactorForgeContext:
             'objects': objects,
             'runs': runs,
             'evaluations': evaluations,
+            'state_reuse': state_reuse,
             'knowledge': {
                 'knowledge_root': str(self.knowledge_root),
                 'canonical_root': str(self.knowledge_root / 'canonical'),

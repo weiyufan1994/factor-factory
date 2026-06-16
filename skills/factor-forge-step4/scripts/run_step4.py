@@ -53,6 +53,12 @@ from factor_factory.runtime_context import (
     manifest_path,
     manifest_report_id,
 )
+from factor_factory.state_reuse import (
+    BLOCK_STATE_RESOLUTION_MISSING,
+    StateReuseBlock,
+    assert_no_raw_minute_full_window_scan,
+    build_step4_state_reuse_provenance,
+)
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
 
@@ -75,6 +81,7 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'step4_factor_io_profile',
     'step4_formal_factor_identity',
     'step4_factor_csv_policy_observed',
+    'state_datamart_reuse',
     'shared_evaluation_context',
     'backend_timing_profile',
     'research_window_contract',
@@ -2627,6 +2634,24 @@ def main() -> None:
     input_paths = resolve_input_paths(report_id, manifest=manifest)
     run_dir = RUNS / report_id
     ensure_dir(run_dir)
+    state_resolution_raw = (
+        os.getenv('FACTORFORGE_STATE_RESOLUTION')
+        or ((manifest.get('state_reuse') or {}).get('state_resolution') if manifest else None)
+    )
+    state_resolution_path = Path(state_resolution_raw).expanduser() if state_resolution_raw else None
+    state_reuse_required = os.getenv('FACTORFORGE_REQUIRE_STATE_REUSE_CONTRACT') == '1'
+    state_datamart_reuse: dict[str, Any] | None = None
+    if state_resolution_path and state_resolution_path.exists():
+        try:
+            state_datamart_reuse = build_step4_state_reuse_provenance(
+                state_resolution_path=state_resolution_path,
+                bounded_smoke=False,
+                raw_minute_full_window_scan=False,
+            )
+        except StateReuseBlock as exc:
+            raise SystemExit(str(exc)) from exc
+    elif state_reuse_required:
+        raise SystemExit(f'{BLOCK_STATE_RESOLUTION_MISSING}: {state_resolution_path}')
 
     issues: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -2744,6 +2769,18 @@ def main() -> None:
             minute_required = input_mode != 'daily_only'
         else:
             data_api_profile = None
+        if state_reuse_required:
+            try:
+                assert_no_raw_minute_full_window_scan(
+                    input_paths=[
+                        *(str(value) for value in local_inputs.values() if isinstance(value, str)),
+                        *(json.dumps(value, ensure_ascii=False, sort_keys=True) for value in local_inputs.values() if isinstance(value, dict)),
+                    ],
+                    production=True,
+                    explicit_data_production_context=False,
+                )
+            except StateReuseBlock as exc:
+                raise SystemExit(str(exc)) from exc
 
         import pandas as pd  # local import to keep hard dependency only for real execution path
         minute_file = Path(minute_path) if minute_path else None
@@ -2823,6 +2860,7 @@ def main() -> None:
             'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
             'data_api_profile': data_api_profile,
             'minute_streaming_enabled': bool(minute_streaming_query),
+            'state_datamart_reuse': state_datamart_reuse,
         }
         if isinstance(data_api_profile, dict):
             result_metadata = data_api_profile.get('result_metadata') if isinstance(data_api_profile.get('result_metadata'), dict) else {}
@@ -3139,6 +3177,7 @@ def main() -> None:
             'step4_factor_io_profile': step4_factor_io_profile,
             'step4_formal_factor_identity': expected_reuse_identity,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
+            'state_datamart_reuse': state_datamart_reuse,
             'shared_evaluation_context': shared_context_profile,
             'backend_timing_profile': backend_timing_profile,
             'research_window_contract': research_window,

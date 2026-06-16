@@ -35,6 +35,11 @@ from factor_factory.data_access import (
 )
 from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.state_reuse import (
+    STATE_DEPENDENCY_CONTRACT_VERSION,
+    resolve_state_dependencies,
+    write_resolution_outputs,
+)
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
@@ -841,6 +846,127 @@ def build_step4_data_contract(
             'purpose': 'step3_executability_proof',
             'full_execution_owner': 'Step4',
         },
+    }
+
+
+def state_reuse_paths_from_manifest(manifest: dict | None) -> dict:
+    state_reuse = manifest.get('state_reuse') if isinstance(manifest, dict) else {}
+    if not isinstance(state_reuse, dict):
+        return {}
+    return {
+        'state_dependency_contract': Path(state_reuse['state_dependency_contract']).expanduser() if state_reuse.get('state_dependency_contract') else None,
+        'state_resolution': Path(state_reuse['state_resolution']).expanduser() if state_reuse.get('state_resolution') else None,
+        'data_request_dir': Path(state_reuse['data_request_dir']).expanduser() if state_reuse.get('data_request_dir') else None,
+    }
+
+
+def build_state_dependency_contract_from_step3(data_prep_master: dict) -> dict:
+    requirements = []
+    for item in data_prep_master.get('minute_derived_state_requirements') or []:
+        if not isinstance(item, dict) or not item.get('dataset_id'):
+            continue
+        requirements.append({
+            'dataset_id': item.get('dataset_id'),
+            'schema_version': item.get('schema_version'),
+            'window': {
+                'start': item.get('start_date'),
+                'end': item.get('end_date'),
+            },
+            'required_fields': list(item.get('required_fields') or []),
+            'parameters': {
+                'cutoff_time': item.get('cutoff_time'),
+                'source_minute_dataset_id': item.get('source_minute_dataset_id'),
+                'source_data_version': item.get('source_data_version'),
+            },
+            'qa_required': True,
+            'lookahead_policy_required': True,
+            'no_future_intraday_minutes': True,
+            'fallback_policy': item.get('fallback_policy') or 'block_or_explicit_backfill',
+        })
+    return {
+        'contract_version': STATE_DEPENDENCY_CONTRACT_VERSION,
+        'producer': 'step3a',
+        'report_id': data_prep_master.get('report_id'),
+        'factor_id': data_prep_master.get('factor_id'),
+        'required_datasets': requirements,
+        'no_state_required': not bool(requirements),
+        'no_state_reason': 'daily_or_catalog_data_only_no_derived_state_dependency' if not requirements else None,
+        'allowed_missing_behavior': 'block',
+        'raw_minute_full_window_allowed': False,
+        'bounded_smoke_allowed': True,
+        'data_request_on_missing': True,
+    }
+
+
+def load_step3_state_catalog(data_prep_master: dict) -> tuple[dict, dict]:
+    candidates: list[Path] = []
+    for env_name in ['FACTORFORGE_STATE_CATALOG', 'FACTORFORGE_DATA_API_CATALOG']:
+        raw = os.getenv(env_name)
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    step4_contract = data_prep_master.get('step4_data_contract') if isinstance(data_prep_master.get('step4_data_contract'), dict) else {}
+    if step4_contract.get('state_catalog_path'):
+        candidates.append(Path(step4_contract['state_catalog_path']).expanduser())
+    if step4_contract.get('catalog_path'):
+        candidates.append(Path(step4_contract['catalog_path']).expanduser())
+    default_catalog = default_catalog_path()
+    if default_catalog:
+        candidates.append(Path(default_catalog).expanduser())
+
+    seen = set()
+    checked = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        checked.append(key)
+        if path.exists():
+            return load_json(path), {'type': 'data_api_catalog', 'path_or_uri': str(path), 'checked': checked}
+    return {}, {'type': 'data_api_catalog_missing', 'checked': checked}
+
+
+def write_step3_state_reuse_contracts(
+    *,
+    manifest: dict | None,
+    report_id: str,
+    data_prep_master: dict,
+) -> dict:
+    paths = state_reuse_paths_from_manifest(manifest)
+    contract_path = paths.get('state_dependency_contract') or (OBJ / 'data_prep_master' / f'state_dependency_contract__{report_id}.json')
+    resolution_path = paths.get('state_resolution') or (OBJ / 'data_prep_master' / f'state_resolution__{report_id}.json')
+    data_request_dir = paths.get('data_request_dir') or (OBJ / 'data_prep_master' / report_id / 'data_requests')
+    contract = build_state_dependency_contract_from_step3(data_prep_master)
+    catalog, catalog_source = load_step3_state_catalog(data_prep_master)
+    if contract.get('no_state_required') is True:
+        catalog = {}
+        catalog_source = {
+            'type': 'step3_noop_no_state_required',
+            'reason': 'Step3 writes no-op resolution when no derived state dependency is declared',
+        }
+    resolution = resolve_state_dependencies(
+        contract=contract,
+        catalog=catalog,
+        report_id=report_id,
+        factor_id=str(data_prep_master.get('factor_id') or report_id),
+        research_id=(manifest or {}).get('research_id') if isinstance(manifest, dict) else None,
+        dependency_contract_path=str(contract_path),
+        catalog_source=catalog_source,
+    )
+    write_json(contract_path, {'state_dependency_contract': contract})
+    write_resolution_outputs(
+        resolution=resolution,
+        state_resolution_path=resolution_path,
+        data_request_dir=data_request_dir,
+    )
+    return {
+        'state_dependency_contract_path': str(contract_path),
+        'state_resolution_path': str(resolution_path),
+        'data_request_dir': str(data_request_dir),
+        'state_dependencies_required': resolution.get('state_dependencies_required') is not False,
+        'no_state_required': resolution.get('no_state_required') is True,
+        'blocked': resolution.get('blocked') is True,
+        'blocker_token': resolution.get('blocker_token'),
     }
 
 
@@ -2088,6 +2214,13 @@ def main():
         raise SystemExit('run_step3.py requires --report-id or --manifest')
 
     data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id, csv_output_policy=csv_policy)
+    state_reuse_contract = write_step3_state_reuse_contracts(
+        manifest=_manifest,
+        report_id=report_id,
+        data_prep_master=data_prep_master,
+    )
+    data_prep_master['state_reuse_contract'] = state_reuse_contract
+    qlib_adapter_config['state_reuse_contract'] = state_reuse_contract
 
     out_path = OBJ / 'data_prep_master' / f'data_prep_master__{report_id}.json'
     qlib_path = OBJ / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
@@ -2130,6 +2263,7 @@ def main():
         'factor_spec_master_ref': f'factor_spec_master__{report_id}.json',
         'local_input_paths': data_prep_master['local_input_paths'],
         'step4_data_contract': data_prep_master.get('step4_data_contract') or {},
+        'state_reuse_contract': state_reuse_contract,
     })
     write_json(handoff_path, handoff_payload)
 

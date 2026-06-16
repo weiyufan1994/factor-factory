@@ -73,6 +73,13 @@ default write path.
 23. Program search is a supplement to researcher judgment, not a replacement. Search branches must start from Step6 return-source analysis, market-structure hypothesis, knowledge-base priors, and falsification tests before any GA/Bayesian/multi-agent execution.
 24. Current mandate is long-only. Step6 must not use short selling, long-short spread, or direct decile trading as an adoption basis.
 25. Decile/quantile outputs are diagnostics only: use them to inspect monotonicity and top-group long-side behavior, never as a proposed trading instrument.
+
+Every revision must carry a knowledge-reference trail. Step6/Council retrieval
+context must record the retrieval index path, availability, query terms, and
+similar cases; if no case is found, the memo must state a cold-start knowledge
+gap rather than silently proceeding. Child revision materialization must inherit
+this context from Step6 artifacts or block with
+`BLOCK_FACTORFORGE_REVISION_KNOWLEDGE_CONTEXT_MISSING`.
 26. Revision must modify the factor expression and Step3B implementation itself. Do not “fix” a weak factor by changing portfolio expression, short-leg exposure, rebalance mechanics, or decile trading.
 27. Official promotion requires risk-adjusted positive long-side evidence. If a factor is strictly monotonic but the high-score long side does not make money with acceptable Sharpe/drawdown/recovery, Step6 must choose `iterate` or `reject`, not `promote_official`.
 28. Preferred revision direction is economic linearity: make higher factor values correspond more directly and monotonically to the economic state expected to earn risk-adjusted long-side returns.
@@ -85,6 +92,14 @@ Step6 and Council must not repeatedly fit revisions on OOS metrics. If Step4
 blocked because `minute_derived_flow_state_v1` is missing, incomplete, or
 identity-mismatched, treat that as a production-path infrastructure BLOCK, not a
 mechanism reject.
+30b. Council and child revisions must write
+`revision_data_plan.contract_version=factorforge_revision_data_plan_v1`. The
+plan must distinguish formula changes, state-variable changes, and
+portfolio-only changes. If a revision needs a new state datamart, it must set
+`new_state_required=true` and `data_request_required=true`; it must not authorize
+Step4 to scan full-window raw minute data. If a revision only changes holding,
+rebalance, or portfolio policy, it should set
+`factor_value_recompute_required=false` and reuse existing factor values.
 31. Every successful formal Step6 loop must write `loop_research_brief__<report_id>__iter<n>.md/json` and link it from `research_iteration_master.loop_research_brief`. The brief must answer economic interpretation, metrics/chart evidence, metric analysis, knowledge comparison, next research direction, and final loop conclusion. Missing brief, missing core metrics, missing required chart keys, or long-short chart evidence not labeled `diagnostic_only` is a validation block.
 32. Step6 must carry the `mechanism_math_contract` into `mechanism_analysis`,
 revision hypotheses, and the loop research brief. The math contract is an

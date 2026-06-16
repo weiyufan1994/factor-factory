@@ -75,6 +75,33 @@ lineage already exists, downstream steps must consume it as a cache or evidence
 source instead of recomputing. Recompute only when the implementation, data
 contract, identity, or required formal-evidence ownership differs.
 
+## State Datamart Reuse Contract
+
+Formal Step4 production must be state-dependency-aware. A factor law or child
+spec that depends on reusable intraday/daily state must declare
+`state_dependency_contract.contract_version=factorforge_state_dependency_contract_v1`.
+Before Step4, Ultimate must either consume an existing
+`state_resolution__<report_id>.json` or resolve the dependency contract against
+the Data API catalog with `scripts/validate_factorforge_state_dependency.py`.
+
+If the required datamart is missing, not QA ACCEPT, schema-mismatched,
+coverage-insufficient, or lacks a lookahead/no-future-minutes policy, Ultimate
+must BLOCK or return an awaiting-data outcome with `data_request_v1`; it must
+not let Step4 fall back to a full-window raw minute scan. Bounded smoke can use
+small fixtures, but it is not production evidence. Raw full-window minute
+production is Data API work, not a Factor Forge Step4 fallback.
+
+## Knowledge Reference Contract
+
+Formal runs must preserve prior-knowledge provenance from Step1 through Step6.
+Step1 writes `knowledge_reference_contract.contract_version=factorforge_knowledge_reference_contract_v1`
+alongside `similar_case_lessons_imported`; Step2 preserves it in
+`research_contract` and `learning_and_innovation`; Step6/Council writes
+retrieval context for each revision. Cold-start is allowed only when explicitly
+recorded with checked index paths, query hash, hit count, and fallback reason.
+Missing provenance blocks formal acceptance even if a human-readable lesson
+string is present.
+
 ## Memory Pressure and Batch Execution Protocol
 
 The "no ordinary batch mode" research rule means no shallow mechanical research

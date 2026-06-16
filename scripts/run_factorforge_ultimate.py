@@ -27,6 +27,16 @@ from factor_factory.research_workspace import (
     write_workspace_manifest,
 )
 from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
+from factor_factory.state_reuse import (
+    BLOCK_STATE_DEPENDENCY_UNDECLARED,
+    StateReuseBlock,
+    assert_no_raw_minute_full_window_scan,
+    load_json as load_state_json,
+    load_state_dependency_contract,
+    require_state_resolution_ready,
+    resolve_state_dependencies,
+    write_resolution_outputs,
+)
 
 
 STEP_ORDER = ['2', '3', '3b', '4', '5', '6']
@@ -491,7 +501,94 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--subagent-model', default=None)
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--proof-output', default=None)
+    ap.add_argument('--state-dependency-contract', default=None)
+    ap.add_argument('--state-catalog', default=None)
+    ap.add_argument('--state-resolution', default=None)
+    ap.add_argument('--state-data-request-dir', default=None)
+    ap.add_argument('--state-input-path', action='append', default=[], help='Step4 input path to check for forbidden production raw-minute roots.')
+    ap.add_argument('--require-state-reuse-contract', action='store_true')
+    ap.add_argument('--explicit-data-production-context', action='store_true')
     return ap.parse_args()
+
+
+def _manifest_state_path(manifest: dict[str, Any], key: str) -> Path | None:
+    raw = ((manifest.get('state_reuse') or {}).get(key))
+    return Path(raw).expanduser() if raw else None
+
+
+def run_state_reuse_gate(
+    *,
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    ctx,
+    steps: list[str],
+) -> dict[str, Any]:
+    state_resolution_path = Path(args.state_resolution).expanduser() if args.state_resolution else _manifest_state_path(manifest, 'state_resolution')
+    state_contract_path = Path(args.state_dependency_contract).expanduser() if args.state_dependency_contract else _manifest_state_path(manifest, 'state_dependency_contract')
+    data_request_dir = Path(args.state_data_request_dir).expanduser() if args.state_data_request_dir else _manifest_state_path(manifest, 'data_request_dir')
+    requires_gate = bool(args.require_state_reuse_contract or ('4' in steps and not args.dry_run))
+    gate: dict[str, Any] = {
+        'contract_version': 'factorforge_ultimate_state_reuse_gate_v1',
+        'required': requires_gate,
+        'status': 'skipped',
+        'state_dependency_contract_path': str(state_contract_path) if state_contract_path else None,
+        'state_catalog_path': args.state_catalog,
+        'state_resolution_path': str(state_resolution_path) if state_resolution_path else None,
+        'data_request_dir': str(data_request_dir) if data_request_dir else None,
+    }
+
+    if not requires_gate and not args.state_dependency_contract and not args.state_resolution and not args.state_catalog and not args.state_input_path:
+        return gate
+
+    assert_no_raw_minute_full_window_scan(
+        input_paths=[str(item) for item in (args.state_input_path or [])],
+        production='4' in steps,
+        explicit_data_production_context=bool(args.explicit_data_production_context),
+    )
+
+    if args.state_dependency_contract or args.state_catalog:
+        if not state_contract_path or not state_contract_path.exists():
+            raise StateReuseBlock(BLOCK_STATE_DEPENDENCY_UNDECLARED, str(state_contract_path))
+        if not args.state_catalog:
+            raise StateReuseBlock(BLOCK_STATE_DEPENDENCY_UNDECLARED, '--state-catalog is required with --state-dependency-contract')
+        catalog_path = Path(args.state_catalog).expanduser()
+        contract = load_state_dependency_contract(state_contract_path)
+        catalog = load_state_json(catalog_path)
+        resolution = resolve_state_dependencies(
+            contract=contract,
+            catalog=catalog,
+            report_id=args.report_id,
+            factor_id=args.factor_id or ctx.factor_id,
+            research_id=args.research_id or ctx.research_id,
+            dependency_contract_path=str(state_contract_path),
+            catalog_source={'type': 'local_json', 'path_or_uri': str(catalog_path)},
+        )
+        if not state_resolution_path:
+            raise StateReuseBlock(BLOCK_STATE_DEPENDENCY_UNDECLARED, 'state_resolution path missing from runtime manifest')
+        write_resolution_outputs(
+            resolution=resolution,
+            state_resolution_path=state_resolution_path,
+            data_request_dir=data_request_dir,
+        )
+        gate['resolution_written'] = str(state_resolution_path)
+        gate['data_request_ids'] = resolution.get('data_request_ids') or []
+        if resolution.get('blocked') is True:
+            token = str(resolution.get('blocker_token') or BLOCK_STATE_DEPENDENCY_UNDECLARED)
+            gate['status'] = 'blocked'
+            gate['blocker_token'] = token
+            raise StateReuseBlock(token, f'state dependency resolution blocked: {state_resolution_path}')
+
+    if requires_gate:
+        if (not state_resolution_path or not state_resolution_path.exists()) and (not state_contract_path or not state_contract_path.exists()):
+            raise StateReuseBlock(BLOCK_STATE_DEPENDENCY_UNDECLARED, str(state_contract_path))
+        if not state_resolution_path:
+            raise StateReuseBlock(BLOCK_STATE_DEPENDENCY_UNDECLARED, 'state_resolution path missing from runtime manifest')
+        resolution = require_state_resolution_ready(state_resolution_path)
+        gate['status'] = 'passed'
+        gate['reuse_hit_count'] = len(resolution.get('reuse_hits') or [])
+    else:
+        gate['status'] = 'checked'
+    return gate
 
 
 def main() -> int:
@@ -644,6 +741,7 @@ def main() -> int:
         'expected_artifacts_after': {},
         'step3b_mode_decision': collect_step3b_mode_decision(manifest),
         'revision_council': {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'status': 'skipped', 'reason': 'disabled'} if args.council_mode == 'off' else {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'subagent_provider': args.subagent_provider, 'subagent_model': args.subagent_model, 'status': 'pending'},
+        'state_reuse_gate': None,
         'research_loop_policy': {
             'policy': args.research_loop_policy,
             'max_council_loops': args.max_council_loops,
@@ -659,6 +757,28 @@ def main() -> int:
         'failure': None,
         'usage_rule': 'This proof report is the only acceptable evidence for a claimed factor-forge-ultimate run. Agents must not replace formal Step4/5/6 execution by ad-hoc metrics or post-hoc object writing.',
     }
+    try:
+        proof['state_reuse_gate'] = run_state_reuse_gate(args=args, manifest=manifest, ctx=ctx, steps=steps)
+        if isinstance(proof.get('state_reuse_gate'), dict):
+            state_resolution_for_child = proof['state_reuse_gate'].get('state_resolution_path')
+            if state_resolution_for_child:
+                env['FACTORFORGE_STATE_RESOLUTION'] = str(state_resolution_for_child)
+            if proof['state_reuse_gate'].get('required') is True:
+                env['FACTORFORGE_REQUIRE_STATE_REUSE_CONTRACT'] = '1'
+    except StateReuseBlock as exc:
+        proof['state_reuse_gate'] = {
+            'contract_version': 'factorforge_ultimate_state_reuse_gate_v1',
+            'status': 'blocked',
+            'blocker_token': exc.token,
+            'message': str(exc),
+        }
+        proof['status'] = 'FAIL'
+        proof['failure'] = {'command': 'state_reuse_gate', 'returncode': 1, 'token': exc.token}
+        proof['finished_at_utc'] = utc_now()
+        write_json_atomic(proof_path, proof)
+        print(exc.token)
+        print(f'[PROOF] {proof_path}')
+        return 1
     write_json_atomic(proof_path, proof)
 
     if args.council_mode == 'agentic':

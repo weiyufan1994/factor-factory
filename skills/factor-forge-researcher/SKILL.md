@@ -108,6 +108,10 @@ Write/update the journal with:
 Review:
 - whether data inputs match the source idea,
 - whether Step3B implementation matches the canonical formula,
+- whether the factor law declared reusable state dependencies,
+- whether Step3 resolved state datamarts through the Data API catalog,
+- whether missing states were converted into `data_request_v1` instead of a
+  Step4 raw-minute fallback,
 - whether any approximation changed the economic meaning,
 - whether data windows and cleaning choices are justified.
 

@@ -22,6 +22,35 @@ Step1/2 必须回答：
 - 它使用的信息在交易时点是否真实可得？
 - 它的收益来源是假设为 `risk_premium`、`information_advantage`、`constraint_driven_arbitrage`，还是 `mixed`？
 
+### 1a. 数学工具是研究引擎，不是固定清单
+
+研究员必须主动使用数学工具帮助发现机制，但不得把数学纪律变成死板 checklist。
+工具由经济假设选择，而不是反过来让每个因子都套同一组公式。
+
+可选工具包括但不限于：
+
+- 等价恒等式、量纲/单位检查、极限情形；
+- Taylor 或局部分解、协方差代数、投影/残差化；
+- stochastic process / Ito projection / jump process；
+- state-space、Bayesian posterior、latent-state filtering；
+- occupation measure、barrier / stopping / hitting problem；
+- distribution moments、tail statistics、robust statistics；
+- Fourier / spectral / natural market time；
+- microstructure、inventory、execution、market-player model。
+
+每次严肃研究至少要留下以下最小输出，而不是逐项机械套工具：
+
+1. 选择的数学对象是什么，为什么适合当前 economic hypothesis；
+2. 该工具逼出了什么原公式文字没有直接说明的 insight；
+3. 变换保留、删除、混叠了什么信息，或让什么信息不可交易；
+4. insight 如何映射到 observable estimator、factor expression 或 revision law；
+5. 哪些 long-side、residual IC、universe/regime、IS/OOS 结果会证伪它。
+
+如果最简单的恒等变换或线性分解已经足够解释 payer 和 metric signature，
+不要为了“高级”而增加随机微积分、非线性 gate 或复杂状态模型。任何额外
+primitive、interaction、free parameter、data dependency 都必须支付 complexity
+penalty，并由 OOS long-side 或 residual-information evidence 证明值得保留。
+
 ### 2. 先判断收益来源，再解释 metric
 
 Step4/5/6 不得从 IC、Sharpe、回测净值直接跳到结论。

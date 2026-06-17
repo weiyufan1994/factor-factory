@@ -54,6 +54,7 @@ from factor_factory.artifact_identity import (
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
 from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
+from factor_factory.knowledge_context import retrieve_factor_knowledge_context
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 
 
@@ -561,6 +562,56 @@ def build_reuse_instructions(primary: Dict[str, Any], aim: Dict[str, Any]) -> Li
     ]
 
 
+def build_factor_knowledge_query(primary: Dict[str, Any], aim: Dict[str, Any], thesis: Dict[str, Any]) -> str:
+    discipline = aim.get('research_discipline') or {}
+    final_factor = aim.get('final_factor') or {}
+    parts = [
+        str(final_factor.get('name') or ''),
+        str(final_factor.get('economic_logic') or ''),
+        str(final_factor.get('behavioral_logic') or ''),
+        str(final_factor.get('causal_chain') or ''),
+        ' '.join(str(item) for item in final_factor.get('assembly_steps') or []),
+        str(primary.get('raw_formula_text') or ''),
+        ' '.join(str(item) for item in thesis.get('signals') or []),
+        ' '.join(str(item) for item in thesis.get('key_variables') or []),
+        json.dumps(discipline.get('economic_hypothesis') or {}, ensure_ascii=False),
+        json.dumps(discipline.get('math_hypothesis_candidates') or [], ensure_ascii=False),
+        str(discipline.get('initial_return_source_hypothesis') or ''),
+        str(discipline.get('step1_random_object') or ''),
+    ]
+    return ' '.join(part for part in parts if part and part != '{}')
+
+
+def retrieve_step2_factor_knowledge_context(primary: Dict[str, Any], aim: Dict[str, Any], thesis: Dict[str, Any]) -> Dict[str, Any]:
+    query_text = build_factor_knowledge_query(primary, aim, thesis)
+    try:
+        return retrieve_factor_knowledge_context(text=query_text, top_k=5)
+    except Exception as exc:
+        return {
+            'schema_version': 'factor_knowledge_context_v1',
+            'node_count': 0,
+            'nodes': [],
+            'related_edges': [],
+            'retrieval_error': str(exc),
+            'query': {'text': query_text, 'top_k': 5},
+        }
+
+
+def summarize_factor_knowledge_context(context: Dict[str, Any]) -> List[str]:
+    lessons: List[str] = []
+    for node in context.get('nodes') or []:
+        node_id = node.get('id') or 'unknown_graph_node'
+        status = ','.join(str(item) for item in node.get('research_status') or [])
+        summary = str(node.get('summary') or '').strip()
+        lesson = f'Graph prior {node_id}'
+        if status:
+            lesson += f' [{status}]'
+        if summary:
+            lesson += f': {summary[:260]}'
+        lessons.append(lesson)
+    return lessons
+
+
 def build_step2_research_contract(
     primary: Dict[str, Any],
     consistency: Dict[str, Any],
@@ -572,6 +623,23 @@ def build_step2_research_contract(
     math_hypothesis_candidates = discipline.get('math_hypothesis_candidates') or []
     formula_understanding = discipline.get('formula_understanding') or aim.get('formula_understanding') or {}
     economic_to_math_modelling = discipline.get('economic_to_math_modelling') or aim.get('economic_to_math_modelling') or {}
+    factor_knowledge_context = (
+        discipline.get('factor_knowledge_context')
+        or (aim.get('learning_and_innovation') or {}).get('factor_knowledge_context')
+        or retrieve_step2_factor_knowledge_context(primary, aim, thesis)
+    )
+    graph_lessons = summarize_factor_knowledge_context(factor_knowledge_context)
+    prior_lessons = (
+        (aim.get('research_discipline') or {}).get('similar_case_lessons_imported')
+        or (aim.get('learning_and_innovation') or {}).get('similar_case_lessons_imported')
+        or []
+    )
+    similar_case_lessons = list(dict.fromkeys([
+        *[str(item) for item in prior_lessons if str(item).strip()],
+        *graph_lessons,
+    ]))
+    if not similar_case_lessons:
+        similar_case_lessons = ['No similar prior case was imported from Step1/graph; treat this as a cold-start prior and write back lessons after Step6.']
     return {
         'target_statistic': infer_target_statistic(primary, aim),
         'economic_mechanism': infer_economic_mechanism(primary, aim, thesis),
@@ -587,11 +655,17 @@ def build_step2_research_contract(
             or aim.get('step1_random_object')
             or infer_step1_random_object_fallback(primary, aim)
         ),
-        'similar_case_lessons_imported': (
-            (aim.get('research_discipline') or {}).get('similar_case_lessons_imported')
-            or (aim.get('learning_and_innovation') or {}).get('similar_case_lessons_imported')
-            or ['No similar prior case was imported from Step1; treat this as a cold-start prior and write back lessons after Step6.']
-        ),
+        'similar_case_lessons_imported': similar_case_lessons,
+        'factor_knowledge_context': factor_knowledge_context,
+        'knowledge_reference_contract': {
+            'schema_version': 'factorforge_knowledge_reference_contract_v1',
+            'source': 'factor_knowledge_graph' if (factor_knowledge_context.get('node_count') or 0) > 0 else 'cold_start_or_unavailable',
+            'context_schema_version': factor_knowledge_context.get('schema_version'),
+            'node_count': factor_knowledge_context.get('node_count') or 0,
+            'edge_count': factor_knowledge_context.get('edge_count') or 0,
+            'retrieval_error': factor_knowledge_context.get('retrieval_error'),
+            'not_same_factor_unless_identity_matches': True,
+        },
         'producer': 'step2_research_contract',
     }
 
@@ -1029,9 +1103,12 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         },
         'learning_and_innovation': {
             'similar_case_lessons_imported': research_contract['similar_case_lessons_imported'],
+            'factor_knowledge_context_imported': research_contract.get('factor_knowledge_context') or {},
+            'knowledge_reference_contract': research_contract.get('knowledge_reference_contract') or {},
             'innovative_idea_seeds': research_contract['innovative_idea_seeds'],
             'reuse_instruction_for_future_agents': research_contract['reuse_instruction_for_future_agents'],
         },
+        'knowledge_reference_contract': research_contract.get('knowledge_reference_contract') or {},
         'research_contract': research_contract,
         'standard_formula_fields_contract': standard_formula_fields_contract,
         'ambiguities': list(dict.fromkeys(primary.get('ambiguities', []) + primary.get('inferred_items', []))),
@@ -1136,6 +1213,7 @@ def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> Non
         'mechanism_math_contract': master.get('mechanism_math_contract') or {},
         'mechanism_math_contract_v2': master.get('mechanism_math_contract_v2') or {},
         'learning_and_innovation': master.get('learning_and_innovation') or {},
+        'knowledge_reference_contract': master.get('knowledge_reference_contract') or {},
     }
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)
 

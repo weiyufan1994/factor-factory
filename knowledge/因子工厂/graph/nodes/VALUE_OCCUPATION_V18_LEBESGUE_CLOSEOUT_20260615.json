@@ -1,0 +1,170 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::value_occupation_v18_lebesgue_closeout_20260615",
+  "node_type": "feature_candidate",
+  "title": "Value occupation V18 weak residual drift and failed long tail",
+  "summary": "Value-occupation V18 is a durable lesson for value-domain factors: price-axis occupation states can carry weak residual short-horizon ranking information, but positive partial IC does not imply a tradable top-score long basket.",
+  "factor_ids": [
+    "value_occupation_v18",
+    "v18_repair_drift_score",
+    "intraday_value_occupation_state_v1"
+  ],
+  "report_ids": [
+    "value_occupation_v18_lebesgue_measure_closeout_20260615"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "microstructure",
+      "reversal",
+      "liquidity"
+    ],
+    "barra_style": [
+      "liquidity",
+      "volatility",
+      "momentum"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "rank_transform",
+      "neutralized_expression",
+      "ts_operator",
+      "cs_operator"
+    ],
+    "cn_quant_practice": [
+      "high_frequency_microstructure",
+      "intraday_reversal",
+      "feature_for_ml",
+      "risk_overlay"
+    ],
+    "buyside_style": [
+      "microstructure_alpha",
+      "alpha_combination_feature",
+      "regime_conditioner",
+      "risk_factor"
+    ],
+    "economic_mechanism": [
+      "inventory_pressure",
+      "liquidity_provision",
+      "forced_flow",
+      "overreaction",
+      "limits_to_arbitrage"
+    ],
+    "math_mechanism": [
+      "occupation_measure",
+      "hidden_state",
+      "stochastic_process",
+      "path_functional",
+      "residualization"
+    ],
+    "data_source": [
+      "minute_bar_derived_state",
+      "data_api_datamart",
+      "daily_ohlcv"
+    ],
+    "tradability": [
+      "long_side",
+      "cost_sensitive",
+      "model_feature_only",
+      "mid_cap_exposed"
+    ],
+    "research_status": [
+      "feature_candidate",
+      "standalone_rejected",
+      "validated"
+    ],
+    "failure_mode": [
+      "after_cost_failure",
+      "overfit_gate",
+      "liquidity_exposure"
+    ]
+  },
+  "mechanism": {
+    "economic_hypothesis": "The value-occupation repair state is a short-horizon inventory and liquidity imbalance proxy. Recent traded value below the reference price and lower price-axis support may indicate absorbed selling pressure, but the payer is unstable: stale holders, repair chasers, inventory rebalancers, or hidden liquidators can all appear in the high-score tail.",
+    "payer": "fragile short-horizon inventory/liquidity imbalance: repair chasers, stale holders, forced sellers, and inventory rebalancers",
+    "receiver": "a diversified model stack that can use weak residual drift while capping extreme high-score tail exposure",
+    "random_object": "latent inventory state proxied by intraday price-axis occupation measure and daily return process",
+    "target_statistic": "OOS residual/partial IC and rolling model delta IC, not standalone top-bucket long return",
+    "state_equation_latex": "$$\\n\\frac{dP_{i,t}}{P_{i,t}}=\\mu_i(t,I_t)dt+\\sigma_i(t,I_t)dW_{i,t}+dJ_{i,t}\\n$$",
+    "occupation_measure_latex": "$$\\n\\mu_{i,t}(dp)=\\sum_{s\\le t} amount_{i,s}\\,\\delta(P_{i,s}-p)\\,dp\\n$$",
+    "signal_latex": "$$\\nS_{i,t}=z_{cs}(below\\_cost\\_depth_{i,t})+z_{cs}(lower\\_support\\_mass_{i,t})+0.35z_{cs}(mom^{cutoff}_{3d,i,t})-0.25z_{cs}(vol_{20d,i,t})\\n$$",
+    "factor_expression": "v18_repair_drift_score over intraday_value_occupation_state_v1 plus daily risk/path controls",
+    "dirac_style_forced_insight": "The occupation-measure object forced the research to separate two claims: a state can contain weak conditional drift information, while its high-score tail can still be an untradeable mixture of crowded repair, stale support, and hidden liquidation.",
+    "information_preserved_removed": "The linear V18 score preserves below-cost depth, lower support mass, short drift, and volatility penalty, but it compresses barrier/target geometry into one scalar and removes the full payoff shape of the price-axis mass distribution.",
+    "complexity_penalty_reasoning": "Further nonlinear gates were rejected because OOS bucket shape already falsified standalone high-score trading; added complexity would likely optimize a weak residual feature instead of creating a robust long-side payoff theorem."
+  },
+  "evidence": {
+    "window": "OOS 2025-07-14 to 2026-06-12; IS cutoff 2025-07-11",
+    "universe": "full and middle_20_90 primary; smallest_20 showed little incremental value",
+    "portfolio_policy": "partial-IC residual tests and rolling 60-date linear ablation; top bucket diagnostics used as falsification",
+    "cost_assumption": "not a standalone after-cost long-only factor; top-bucket net/excess diagnostics negative",
+    "key_metrics": {
+      "oos_rows": 1008139,
+      "oos_dates": 222,
+      "oos_tickers": 4674,
+      "middle_20_90_core_partial_ic_1d": 0.02083,
+      "middle_20_90_core_partial_ic_3d": 0.02257,
+      "middle_20_90_core_partial_ic_5d": 0.016943,
+      "middle_20_90_state_partial_ic_1d": 0.018963,
+      "middle_20_90_state_partial_ic_3d": 0.018251,
+      "middle_20_90_state_partial_ic_5d": 0.011461,
+      "middle_20_90_bucket5_excess_1d": -0.000006,
+      "middle_20_90_bucket5_excess_3d": -0.000581,
+      "middle_20_90_bucket5_excess_5d": -0.001366,
+      "middle_20_90_rolling_delta_ic_1d": 0.003067,
+      "middle_20_90_rolling_delta_ic_3d": 0.0021,
+      "middle_20_90_rolling_delta_ic_5d": 0.001256
+    },
+    "verdict": "closed_weak_feature_not_promoted",
+    "falsification": "High-score long baskets were negative despite positive residual/partial IC; V18 is not an official standalone factor and should only be considered as a capped low-weight model-stack feature.",
+    "artifact_paths": [
+      "factor_research/value_occupation_v18/oos_incremental_20260615/docs/full_oos_incremental_result.zh-CN.md",
+      "factor_research/value_occupation_v18/oos_incremental_20260615/docs/rolling_model_ablation_60d.zh-CN.md",
+      "factor_research/value_occupation_v18/oos_incremental_20260615/knowledge/canonical/value_occupation_v18_lebesgue_measure_closeout.json"
+    ]
+  },
+  "source_paths": [
+    "factor_research/value_occupation_v18/oos_incremental_20260615/knowledge/canonical/value_occupation_v18_lebesgue_measure_closeout.json",
+    "factor_research/value_occupation_v18/oos_incremental_20260615/knowledge/human_readable/value_occupation_v18_lebesgue_measure_closeout.zh-CN.md",
+    "factor_research/value_occupation_v18/oos_incremental_20260615/docs/full_oos_incremental_result.zh-CN.md",
+    "factor_research/value_occupation_v18/oos_incremental_20260615/docs/rolling_model_ablation_60d.zh-CN.md",
+    "factor_research/value_occupation_v18/oos_incremental_20260615/objects/research_knowledge_base/knowledge_record__VALUE_OCCUPATION_V18_LEBESGUE_MEASURE_20260615.json"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::occupation_measure",
+      "note": "V18 is built from the price-axis occupation state rather than raw time-domain returns."
+    },
+    {
+      "edge_type": "uses_math",
+      "target": "math::hidden_state",
+      "note": "The occupation state proxies latent inventory and liquidity imbalance."
+    },
+    {
+      "edge_type": "refines",
+      "target": "node::vp_support_overhang_occupation_20260610",
+      "note": "This closeout adds OOS residual and bucket-payoff evidence to the earlier support-overhang mechanism."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "node::moneyflow_feature_candidates_v15_v18_v19_20260617",
+      "note": "Both preserve weak ranking information but fail as standalone high-score long strategies."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_mechanism::positive_ic_implies_buy_top_bucket",
+      "note": "Positive partial IC coexisted with negative high-score bucket returns."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "model_feature::capped_value_occupation_state",
+      "note": "Use as a low-weight linear model feature with exposure caps, not as a standalone optimizer score."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node for value-domain, occupation-measure, support/overhang, or Lebesgue-measure factor ideas.",
+    "Always test both residual/partial IC and bucket payoff shape; do not use positive IC alone for long-side admission.",
+    "Prefer simple linear usage with exposure caps; stop formula engineering if high-score tail remains negative.",
+    "Use middle_20_90 as a more relevant test universe than smallest-cap buckets for this mechanism."
+  ]
+}

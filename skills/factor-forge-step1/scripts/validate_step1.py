@@ -25,6 +25,21 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def valid_knowledge_reference_contract(value) -> bool:
+    if not value:
+        return True
+    if not isinstance(value, dict):
+        return False
+    if value.get('schema_version') != 'factorforge_knowledge_reference_contract_v1':
+        return False
+    if value.get('context_schema_version') not in {None, 'factor_knowledge_context_v1'}:
+        return False
+    if value.get('not_same_factor_unless_identity_matches') is not True:
+        return False
+    node_count = value.get('node_count')
+    return node_count is None or isinstance(node_count, int)
+
+
 def valid_economic_hypothesis(value) -> bool:
     if not isinstance(value, dict) or not value:
         return False
@@ -168,6 +183,11 @@ def main() -> None:
             check('primary_mechanism_model_candidates_present', valid_primary_model_candidates(discipline.get('primary_mechanism_model_candidates')), 'research_discipline.primary_mechanism_model_candidates missing or incomplete'),
             check('stochastic_price_process_projection_present', valid_stochastic_projection(discipline.get('stochastic_price_process_projection')), 'research_discipline.stochastic_price_process_projection missing or incomplete'),
             check('similar_case_lessons_imported_present', nonempty_list(discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
+            check(
+                'knowledge_reference_contract_valid_if_present',
+                valid_knowledge_reference_contract(aim.get('knowledge_reference_contract') or discipline.get('knowledge_reference_contract') or learning.get('knowledge_reference_contract')),
+                'knowledge_reference_contract malformed',
+            ),
             check('what_must_be_true_present', nonempty_list(discipline.get('what_must_be_true')), 'what_must_be_true missing'),
             check('what_would_break_it_present', nonempty_list(discipline.get('what_would_break_it')), 'what_would_break_it missing'),
             check('information_set_not_illegal', 'illegal' not in info_hint and 'forward_reference' not in info_hint, f'information_set_hint blocks Step1 acceptance: {info_hint}', severity='WARN'),

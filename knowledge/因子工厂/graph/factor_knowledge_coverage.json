@@ -1,0 +1,2695 @@
+{
+  "created_at_utc": "2026-06-17T17:23:51.081530Z",
+  "graph_node_count": 11,
+  "graph_nodes": [
+    {
+      "id": "node::alpha007_regime_kurt_skew_20260422",
+      "node_type": "mechanism",
+      "research_status": [
+        "validated",
+        "candidate"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/ALPHA007_REGIME_KURT_SKEW_20260422.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/ALPHA007_PAPER_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA009_ALPHA007_CHOPPY_SKEW_20260422.md",
+        "knowledge/因子工厂/知识库/因子迭代方法论.md",
+        "knowledge/因子工厂/普通因子库/ALPHA007_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA007_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/研究迭代/ALPHA007_QLIB_ONLY_20160101_20250711.md"
+      ],
+      "title": "Alpha007 folded reversal with kurtosis-skewness regime weighting"
+    },
+    {
+      "id": "node::alpha013_price_volume_covariance_reversal_20260618",
+      "node_type": "feature_candidate",
+      "research_status": [
+        "feature_candidate",
+        "needs_oos"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/ALPHA013_PRICE_VOLUME_COVARIANCE_REVERSAL_20260618.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/ALPHA013_CANONICAL_FORMULA.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA013_CANONICAL_FORMULA.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_A_C5_S5.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_B_C10_S5.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_C_C10_S10.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_D_C20_S10.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_E_C10_M5.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_F_D1_C10_S5.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABVOL_STATE_MEAN5.md",
+        "knowledge/因子工厂/普通因子库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md",
+        "knowledge/因子工厂/知识库/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_A_C5_S5.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_B_C10_S5.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_C_C10_S10.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_D_C20_S10.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_E_C10_M5.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_F_D1_C10_S5.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md",
+        "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_MEAN5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_CANONICAL_FORMULA.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_A_C5_S5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_B_C10_S5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_C_C10_S10.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_D_C20_S10.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_E_C10_M5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_F_D1_C10_S5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABVOL_STATE_MEAN5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA013_REV_PERSISTENCE_CONFIRMED.md"
+      ],
+      "title": "Alpha013 price-volume covariance reversal candidate"
+    },
+    {
+      "id": "node::alpha014_momentum_volume_corr_smoothing_20260618",
+      "node_type": "anti_pattern",
+      "research_status": [
+        "anti_pattern",
+        "feature_candidate"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/ALPHA014_MOMENTUM_VOLUME_CORR_SMOOTHING_20260618.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/ALPHA014_CANONICAL_FORMULA.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA014_CANONICAL_FORMULA.md",
+        "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5.md",
+        "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA014_20160101_RESEARCH_ARCHIVE.md",
+        "knowledge/因子工厂/知识库/ALPHA014_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_CANONICAL_FORMULA.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md"
+      ],
+      "title": "Alpha014 smoothing and low-turnover tradeoff"
+    },
+    {
+      "id": "node::alpha015_corr_rank_volume_pressure_20260618",
+      "node_type": "feature_candidate",
+      "research_status": [
+        "candidate",
+        "feature_candidate",
+        "needs_oos"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/ALPHA015_CORR_RANK_VOLUME_PRESSURE_20260618.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/ALPHA015_CANONICAL_FORMULA_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA015_CANONICAL_FORMULA_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR5_SUM5_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR7_SUM7_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_REV_OUTER_SMOOTH5_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A025_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A040_20160101.md",
+        "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A075_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_20160101_RESEARCH_ARCHIVE.md",
+        "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REV_CORR5_SUM5_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REV_CORR7_SUM7_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_REV_OUTER_SMOOTH5_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A025_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A040_20160101.md",
+        "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A075_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_CANONICAL_FORMULA_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR5_SUM5_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR7_SUM7_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_REV_OUTER_SMOOTH5_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A025_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A040_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+        "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A075_20160101.md"
+      ],
+      "title": "Alpha015 correlation-rank volume pressure candidate"
+    },
+    {
+      "id": "node::alpha036_complex_multicomponent_rank_20260618",
+      "node_type": "anti_pattern",
+      "research_status": [
+        "anti_pattern",
+        "feature_candidate"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/ALPHA036_COMPLEX_MULTICOMPONENT_RANK_20260618.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/ALPHA036_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA036_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/研究迭代/ALPHA036_QLIB_ONLY_20160101_20250711.md"
+      ],
+      "title": "Alpha036 complex multi-component rank expression"
+    },
+    {
+      "id": "node::alpha038_tsrank_intraday_direction_20260618",
+      "node_type": "feature_candidate",
+      "research_status": [
+        "candidate",
+        "feature_candidate",
+        "needs_oos"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/ALPHA038_TSRANK_INTRADAY_DIRECTION_20260618.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/ALPHA038_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/知识库/ALPHA038_QLIB_ONLY_20160101_20250711.md",
+        "knowledge/因子工厂/研究迭代/ALPHA038_QLIB_ONLY_20160101_20250711.md"
+      ],
+      "title": "Alpha038 ts-rank and close/open direction candidate"
+    },
+    {
+      "id": "node::cpv_occ_loc_stability_v3_20260616",
+      "node_type": "feature_candidate",
+      "research_status": [
+        "validated",
+        "candidate",
+        "feature_candidate"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/CPV_OCC_LOC_STABILITY_V3_20260616.json",
+      "source_paths": [
+        "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/knowledge/canonical/cpv_occ_v3_price_path_occupation_result_20260616.json",
+        "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/docs/cpv-v3-price-path-occupation-result-20260616.zh-CN.md",
+        "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/docs/cpv-v3-price-path-occupation-step1-step2.zh-CN.md",
+        "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/objects/research_iteration_master/admission_review__dongwu_20241229_cpv_price_path_occupation_v3__20260616.json",
+        "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_expanded_grid/cpv_occ_v3_candidate_controls_proof.json",
+        "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_microcap_targeted_h5/cpv_occ_v3_candidate_controls_proof.json"
+      ],
+      "title": "CPV V3 price-path occupation location stability candidate"
+    },
+    {
+      "id": "node::cs_residual_vol_20d_neg_20260616",
+      "node_type": "factor",
+      "research_status": [
+        "candidate",
+        "needs_oos"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/CS_RESIDUAL_VOL_20D_NEG_20260616.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md",
+        "factor_research/cs_resid_vol_20260616/knowledge/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
+      ],
+      "title": "Cross-sectional close-volume residual volatility diagnostic"
+    },
+    {
+      "id": "node::moneyflow_feature_candidates_v15_v18_v19_20260617",
+      "node_type": "feature_candidate",
+      "research_status": [
+        "feature_candidate",
+        "standalone_rejected"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.md",
+        "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md",
+        "factor_research/moneyflow_v18_long_edge_20260611/knowledge/canonical/moneyflow-v18-feature-candidates-20260617.json",
+        "factor_research/moneyflow_v19_payoff_calibration_20260615/knowledge/canonical/moneyflow-v19-lessons-20260615.json",
+        "factor_research/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
+      ],
+      "title": "Moneyflow repaired absorption and first-passage feature candidates"
+    },
+    {
+      "id": "node::value_occupation_v18_lebesgue_closeout_20260615",
+      "node_type": "feature_candidate",
+      "research_status": [
+        "feature_candidate",
+        "standalone_rejected",
+        "validated"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/VALUE_OCCUPATION_V18_LEBESGUE_CLOSEOUT_20260615.json",
+      "source_paths": [
+        "factor_research/value_occupation_v18/oos_incremental_20260615/knowledge/canonical/value_occupation_v18_lebesgue_measure_closeout.json",
+        "factor_research/value_occupation_v18/oos_incremental_20260615/knowledge/human_readable/value_occupation_v18_lebesgue_measure_closeout.zh-CN.md",
+        "factor_research/value_occupation_v18/oos_incremental_20260615/docs/full_oos_incremental_result.zh-CN.md",
+        "factor_research/value_occupation_v18/oos_incremental_20260615/docs/rolling_model_ablation_60d.zh-CN.md",
+        "factor_research/value_occupation_v18/oos_incremental_20260615/objects/research_knowledge_base/knowledge_record__VALUE_OCCUPATION_V18_LEBESGUE_MEASURE_20260615.json"
+      ],
+      "title": "Value occupation V18 weak residual drift and failed long tail"
+    },
+    {
+      "id": "node::vp_support_overhang_occupation_20260610",
+      "node_type": "mechanism",
+      "research_status": [
+        "mechanism_candidate",
+        "needs_full_is"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/VP_SUPPORT_OVERHANG_OCCUPATION_20260610.json",
+      "source_paths": [
+        "knowledge/因子工厂/普通因子库/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md",
+        "docs/operations/value-occupation-long-side-research-20260610.zh-CN.md",
+        "factor_research/vp_p0_baseline_20260610/docs/vp-support-overhang-full-window-test-plan-20260610.zh-CN.md"
+      ],
+      "title": "Value-profile support-overhang occupation measure"
+    }
+  ],
+  "libraries": {
+    "official_factor_library": {
+      "coverage_ratio": 0.3333,
+      "covered_count": 1,
+      "high_priority_missing_count": 0,
+      "path": "knowledge/因子工厂/正式因子库",
+      "record_count": 3,
+      "records": [
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/正式因子库/ALPHA001_PAPER_20100104_CURRENT.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/正式因子库/ALPHA007_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/正式因子库/COMBO_MCAP_VOL_20160101_20250711.md"
+        }
+      ]
+    },
+    "ordinary_factor_library": {
+      "coverage_ratio": 0.2981,
+      "covered_count": 48,
+      "high_priority_missing_count": 0,
+      "path": "knowledge/因子工厂/普通因子库",
+      "record_count": 161,
+      "records": [
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA001_PAPER_20100104_CURRENT.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA001_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA002_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA002_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA003_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA003_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA004_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA004_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA005_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA005_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA006_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA006_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA007_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA007_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA008_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA008_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA009_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA009_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA010_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA011_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA011_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA012_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA012_SOURCE_101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_CANONICAL_FORMULA.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_A_C5_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_B_C10_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_C_C10_S10.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_D_C20_S10.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_E_C10_M5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_F_D1_C10_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABVOL_STATE_MEAN5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_CANONICAL_FORMULA.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_CANONICAL_FORMULA_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR5_SUM5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR7_SUM7_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_REV_OUTER_SMOOTH5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A025_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A040_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A075_20160101.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA016_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA017_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA018_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA019_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA020_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA021_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA022_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA023_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA024_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA025_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA026_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA027_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA028_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA029_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA030_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA031_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA032_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA033_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA034_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA035_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA036_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA037_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA038_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA039_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA040_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA041_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA042_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA043_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA044_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA045_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA046_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA047_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA048_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA049_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA050_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA051_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA052_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA053_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA054_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA055_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA056_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA057_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA058_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA059_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA060_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA061_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA062_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA063_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA064_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA065_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA066_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA067_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA068_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA069_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA070_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA071_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA072_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA073_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA074_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA075_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA076_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA077_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA078_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA079_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA080_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA081_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA082_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA083_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA084_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA085_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA086_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA087_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA088_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA089_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA090_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA091_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA092_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA093_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA094_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA095_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA096_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA097_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA098_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA099_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA100_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA101_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/ALPHA101_QLIB_ONLY_MAINTENANCE_INDEX_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/AUTO_HANDOFF_001.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/COMBO_MCAP_VOL_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/DONGWU_TECH_ANALYSIS_20200619_02.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/DRAGON_OVERFLOW_SECTOR_20260424.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/FACTOR_LIBRARY_INDEX.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/PB_VALUE_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/SIZE_MCAP_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/普通因子库/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md"
+        }
+      ]
+    },
+    "research_iterations": {
+      "coverage_ratio": 0.3087,
+      "covered_count": 46,
+      "high_priority_missing_count": 0,
+      "path": "knowledge/因子工厂/研究迭代",
+      "record_count": 149,
+      "records": [
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA001_PAPER_20100104_CURRENT.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA001_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA002_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA002_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA003_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA003_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA004_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA004_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA005_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA006_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA007_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA008_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA009_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA010_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA011_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA012_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA012_SOURCE_101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_CANONICAL_FORMULA.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_A_C5_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_B_C10_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_C_C10_S10.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_D_C20_S10.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_E_C10_M5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_F_D1_C10_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABVOL_STATE_MEAN5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA013_REV_PERSISTENCE_CONFIRMED.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_CANONICAL_FORMULA.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_CANONICAL_FORMULA_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR5_SUM5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR7_SUM7_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_REV_OUTER_SMOOTH5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A025_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A040_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A060_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A075_20160101.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA016_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA017_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA018_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA019_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA020_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA021_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA022_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA023_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA024_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA025_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA026_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA027_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA028_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA029_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA030_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA031_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA032_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA033_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA034_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA035_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA036_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA037_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA038_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA039_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA040_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA041_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA042_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA043_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA044_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA045_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA046_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA047_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA048_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA049_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA050_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA051_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA052_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA053_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA054_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA055_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA056_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA057_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA058_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA059_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA060_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA061_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA062_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA063_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA064_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA065_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA066_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA067_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA068_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA069_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA070_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA071_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA072_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA073_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA074_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA075_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA076_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA077_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA078_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA079_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA080_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA081_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA082_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA083_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA084_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA085_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA086_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA087_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA088_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA089_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA090_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA091_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA092_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA093_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA094_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA095_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA096_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA097_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA098_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA099_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA100_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA101_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/ALPHA101_QLIB_ONLY_MAINTENANCE_INDEX_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/AUTO_HANDOFF_001.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/DONGWU_TECH_ANALYSIS_20200619_02.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/研究迭代/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md"
+        }
+      ]
+    },
+    "research_knowledge_base": {
+      "coverage_ratio": 0.3226,
+      "covered_count": 50,
+      "high_priority_missing_count": 0,
+      "path": "knowledge/因子工厂/知识库",
+      "record_count": 155,
+      "records": [
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA001_PAPER_20100104_CURRENT.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA001_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA002_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA002_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA003_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA003_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA004_PAPER_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA004_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA005_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA006_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA007_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA008_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA009_ALPHA007_CHOPPY_SKEW_20260422.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA009_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA010_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA011_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA012_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA012_SOURCE_101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_CANONICAL_FORMULA.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_A_C5_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_B_C10_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_C_C10_S10.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_D_C20_S10.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_E_C10_M5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_F_D1_C10_S5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_MEAN5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_20160101_RESEARCH_ARCHIVE.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_CANONICAL_FORMULA.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_20160101_RESEARCH_ARCHIVE.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_CANONICAL_FORMULA_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REV_CORR5_SUM5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REV_CORR7_SUM7_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_REV_OUTER_SMOOTH5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A025_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A040_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A075_20160101.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA016_20160101_MECHANISM_CONTEXT.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA016_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA017_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA018_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA019_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA020_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA021_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA022_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA023_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA024_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA025_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA026_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA027_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA028_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA029_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA030_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA031_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA032_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA033_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA034_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA035_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA036_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA037_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/ALPHA038_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA039_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA040_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA041_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA042_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA043_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA044_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA045_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA046_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA047_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA048_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA049_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA050_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA051_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA052_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA053_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA054_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA055_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA056_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA057_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA058_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA059_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA060_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA061_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA062_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA063_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA064_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA065_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA066_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA067_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA068_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA069_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA070_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA071_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA072_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA073_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA074_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA075_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA076_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA077_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA078_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA079_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA080_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA081_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA082_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA083_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA084_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA085_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA086_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA087_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA088_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA089_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA090_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA091_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA092_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA093_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA094_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA095_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA096_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA097_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA098_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA099_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA100_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA101_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA101_QLIB_ONLY_MAINTENANCE_INDEX_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/AUTO_HANDOFF_001.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/A股量价因子市场结构先验.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/DONGWU_TECH_ANALYSIS_20200619_02.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": true,
+          "path": "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/因子迭代方法论.md"
+        }
+      ]
+    }
+  },
+  "migration_guidance": [
+    "Coverage ratio is informational, not a blocker; the historical vault is large and should be migrated gradually.",
+    "Prioritize records with strong reusable mechanisms, official/candidate status, or repeated failure modes.",
+    "Each migrated record must pass run_factor_knowledge_network_readiness.py node quality checks."
+  ],
+  "missing_high_priority": [],
+  "node_status_counts": {
+    "anti_pattern": 2,
+    "candidate": 5,
+    "feature_candidate": 8,
+    "mechanism_candidate": 1,
+    "needs_full_is": 1,
+    "needs_oos": 4,
+    "standalone_rejected": 2,
+    "validated": 3
+  },
+  "schema_version": "factor_knowledge_graph_coverage_v1"
+}

@@ -399,6 +399,7 @@ Optional manual retrieval check:
 
 ```bash
 python3 scripts/query_factorforge_retrieval_index.py --query "factor monotonicity partial validation" --top-k 5
+python3 scripts/retrieve_factor_knowledge_context.py --text "<mechanism or factor terms>" --top-k 5
 ```
 
 ## References
@@ -427,6 +428,7 @@ Step6 treats failure as research knowledge. Knowledge/library writeback must pre
 - No evidence identity, no promotion: `research_iteration_master`, `factor_library_all`, `factor_library_official`, and `research_knowledge_base` must preserve `artifact_identity`, `evidence_identity`, `source_case_identity`, `implementation_mode_decision`, `decision_lineage`, and `knowledge_provenance`.
 - Official promotion requires `factor_case_master.final_status=validated`, verified identity chain, successful required Step4 evidence, long-side risk-adjusted metrics, and no unresolved correctness risk.
 - Similar case knowledge is not same-factor evidence. Knowledge records must declare `knowledge_scope` as `same_factor`, `similar_case`, `general_methodology`, or `anti_pattern`, and same-factor scope requires matching factor identity.
+- Structured factor knowledge graph nodes are analogy-only by default. Step6 `build_retrieval_context` appends `factor_knowledge_context_v1` from `knowledge/因子工厂/graph/` and maps graph nodes into `similar_cases` as `factor_knowledge_graph_node` records, but these records may only guide mechanism analysis, anti-pattern checks, or revision design. They cannot bypass evidence/provenance gates or become same-factor proof unless artifact identity/hash lineage matches independently.
 - Iterate creates a child branch and never overwrites main. `handoff_to_step3b` must carry `parent_identity`, `new_branch_id`, `parent_run_id`, `must_preserve`, `must_change`, and `forbidden_changes`.
 - The provenance gate runs before any `research_iteration_master`, library, knowledge, official, or Step3B handoff write. If the gate fails, Step6 writes only `objects/validation/step6_prewrite_block__<report_id>.json`.
 

@@ -50,6 +50,31 @@ Step1 outputs must include:
 
 The deterministic standardizer/validator is a developer-debug fallback after an existing Step1 route. Formal agent-led research should let the Step1 route emit canonical artifacts, then continue from Step2 via `scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 2 --end-step 6`.
 
+## Factor Knowledge Network
+
+Step1 must treat the factor knowledge network as a prior/analogy source. During
+standardization, retrieve graph context from `knowledge/因子工厂/graph` and carry
+it forward under:
+
+- `research_discipline.factor_knowledge_context`
+- `research_discipline.knowledge_reference_contract`
+- `learning_and_innovation.factor_knowledge_context`
+- `learning_and_innovation.knowledge_reference_contract`
+- top-level `knowledge_reference_contract`
+
+The graph uses multi-label taxonomy for market and institutional conventions:
+momentum, reversal, value, quality, low volatility, liquidity, microstructure,
+Barra-style exposures, WorldQuant-style operator families, and China quant
+practice such as index enhancement, market neutral, intraday reversal,
+high-frequency microstructure, crowding monitor, and ML feature. These labels
+are retrieval hints only. They must not replace report reading, economic
+hypothesis formation, or Dirac-style mathematical mechanism extraction.
+
+Graph context is not same-factor evidence unless identity/hash lineage proves
+it. Use it to import reusable mechanisms, anti-patterns, and failed paths:
+wrong mathematical object, size/liquidity exposure, after-cost failure, data
+coverage block, or overfit gate.
+
 ## Prerequisites
 
 - OpenClaw environment with `pdf` tool available

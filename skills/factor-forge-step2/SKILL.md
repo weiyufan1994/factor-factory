@@ -34,6 +34,21 @@ cointegration/copula for a behavioral relation, jump/stochastic-process models,
 wavelet/Fourier scale separation, projection, dimensional analysis, or other
 mathematical tools when the report thesis justifies them.
 
+Step2 also consumes the Factor Knowledge Network when available. During spec
+construction, `run_step2.py` retrieves `factor_knowledge_context_v1` from
+`knowledge/因子工厂/graph/` and writes it into:
+
+```text
+research_contract.factor_knowledge_context
+research_contract.knowledge_reference_contract
+learning_and_innovation.factor_knowledge_context_imported
+learning_and_innovation.knowledge_reference_contract
+```
+
+Graph context is similar-case prior knowledge only. It may guide mechanism
+selection, anti-pattern checks, and revision seeds, but it cannot replace
+Step1/Step2 source understanding or same-factor evidence.
+
 ## Research Discipline
 
 Step 2 is the canonical-spec guardrail. It must verify:

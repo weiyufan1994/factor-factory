@@ -1,0 +1,110 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::vp_support_overhang_occupation_20260610",
+  "node_type": "mechanism",
+  "title": "Value-profile support-overhang occupation measure",
+  "summary": "The VP support-overhang idea changes the random object from price distance to price-axis occupation mass, using lower support and upper overhang to model repair path geometry.",
+  "factor_ids": [
+    "vp_support_overhang_below_cost_guard"
+  ],
+  "report_ids": [
+    "VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "microstructure",
+      "reversal"
+    ],
+    "cn_quant_practice": [
+      "high_frequency_microstructure",
+      "intraday_reversal"
+    ],
+    "buyside_style": [
+      "microstructure_alpha",
+      "execution_aware_alpha",
+      "regime_conditioner"
+    ],
+    "economic_mechanism": [
+      "liquidity_provision",
+      "profit_payer_supply",
+      "smart_absorption"
+    ],
+    "math_mechanism": [
+      "occupation_measure",
+      "first_passage",
+      "path_functional"
+    ],
+    "data_source": [
+      "minute_bar_derived_state",
+      "data_api_datamart"
+    ],
+    "tradability": [
+      "long_side",
+      "cost_sensitive"
+    ],
+    "research_status": [
+      "mechanism_candidate",
+      "needs_full_is"
+    ],
+    "failure_mode": [
+      "data_coverage_gap",
+      "smoke_only_false_positive"
+    ]
+  },
+  "mechanism": {
+    "payer": "holders selling near weak price-axis support or buyers trapped by upper overhang",
+    "receiver": "liquidity provider buying names with defended lower occupation mass and open upside path",
+    "random_object": "price-axis occupation measure built from intraday amount mass",
+    "occupation_measure_latex": "\\mu_t(dp)=\\sum_{s=t-L}^{t} amount_s\\,\\delta(P_s-p)\\,dp",
+    "signal_latex": "support\\_minus\\_overhang=lower\\_support\\_ratio-upper\\_overhang\\_ratio",
+    "math_forced_insight": "A value-domain factor should not compress the price-axis mass shape into only mean/sigma; support, overhang, voids, targets, and barriers are the useful objects."
+  },
+  "evidence": {
+    "classification": "exploratory_smoke_needs_full_window",
+    "sample_window": "2024-01 only, 22 trading days",
+    "key_metrics": {
+      "support_minus_overhang_rank_ic_1d": 0.189,
+      "support_minus_overhang_rank_ic_3d": 0.168,
+      "support_minus_overhang_top10_excess_3d": 0.01501,
+      "below_cost_depth_rank_ic_1d": -0.229
+    },
+    "boundary": "The smoke is promising but full-window coverage was incomplete; below_cost_depth alone is a reverse/value-trap signal."
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md",
+    "docs/operations/value-occupation-long-side-research-20260610.zh-CN.md",
+    "factor_research/vp_p0_baseline_20260610/docs/vp-support-overhang-full-window-test-plan-20260610.zh-CN.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::occupation_measure",
+      "note": "The core object is成交额在价格轴上的占据测度."
+    },
+    {
+      "edge_type": "uses_math",
+      "target": "math::first_passage",
+      "note": "Support/overhang defines target and barrier geometry for repair paths."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::smoke_only_false_positive",
+      "note": "2024-01 smoke cannot substitute for full-window IS/OOS validation."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_mechanism::below_cost_is_bullish",
+      "note": "Naked below-cost depth was a negative signal in the smoke evidence."
+    },
+    {
+      "edge_type": "inspires",
+      "target": "method::value_domain_barrier_target_factor",
+      "note": "Build future value-domain factors from occupation mass, target, barrier, and first-passage payoff."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node for value-domain, support/resistance, price-axis volume, or hitting-problem factors.",
+    "Do not use below-cost depth as a positive signal without lower support and no-break confirmation.",
+    "Treat support-minus-overhang as a research lead until full-window datamart coverage and cost evidence are available."
+  ]
+}

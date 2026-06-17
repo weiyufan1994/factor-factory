@@ -1,0 +1,136 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::moneyflow_feature_candidates_v15_v18_v19_20260617",
+  "node_type": "feature_candidate",
+  "title": "Moneyflow repaired absorption and first-passage feature candidates",
+  "summary": "Moneyflow V15/V18/V19 did not produce a standalone official alpha, but preserved reusable feature candidates around profit-payer supply, repaired absorption, and first-passage payoff geometry.",
+  "factor_ids": [
+    "moneyflow_v15",
+    "moneyflow_v18a",
+    "moneyflow_v18b",
+    "moneyflow_v19d"
+  ],
+  "report_ids": [
+    "moneyflow_v18_long_edge_20260611",
+    "moneyflow_v19_payoff_calibration_20260615",
+    "moneyflow_v21_hysteresis_feature_policy_20260617"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "microstructure",
+      "reversal"
+    ],
+    "cn_quant_practice": [
+      "high_frequency_microstructure",
+      "moneyflow_alpha",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "microstructure_alpha",
+      "flow_alpha",
+      "execution_aware_alpha",
+      "alpha_combination_feature"
+    ],
+    "economic_mechanism": [
+      "profit_payer_supply",
+      "forced_flow",
+      "information_advantage",
+      "smart_absorption"
+    ],
+    "math_mechanism": [
+      "hidden_state",
+      "first_passage",
+      "stochastic_process"
+    ],
+    "data_source": [
+      "minute_bar_derived_state",
+      "moneyflow",
+      "data_api_datamart"
+    ],
+    "tradability": [
+      "long_side",
+      "high_turnover_risk",
+      "cost_sensitive",
+      "model_feature_only"
+    ],
+    "research_status": [
+      "feature_candidate",
+      "standalone_rejected"
+    ],
+    "failure_mode": [
+      "after_cost_failure",
+      "turnover_cost_exceeds_gross_edge"
+    ]
+  },
+  "mechanism": {
+    "payer": "profit payers, forced sellers, uninformed liquidity demand, or pressure-driven institutions",
+    "receiver": "latent informed absorption or patient capital",
+    "random_object": "hidden-state price process and first-passage payoff",
+    "state_equation_latex": "dP_{i,t}=\\mu(H_{i,t},C_{i,t},B_{i,t})dt+\\sigma_{i,t}dW_{i,t}",
+    "payoff_equation_latex": "LongEdge_{i,t}=Pr(\\tau_{up}<\\tau_{down}|\\mathcal F_t)D_{up,i,t}-Pr(\\tau_{down}<\\tau_{up}|\\mathcal F_t)D_{down,i,t}-Cost_{i,t}",
+    "math_forced_insight": "The first-passage payoff forced the research away from additive net-inflow scoring: a long signal must separate repaired absorption from crowded chase by comparing upside hit probability and distance against downside barrier risk and turnover cost.",
+    "formula_candidates": [
+      {
+        "id": "V18b",
+        "latex": "Signal^{18b}_{i,t}=G_{tradable}[p_{up}(0.54+0.30D_{up})-p_{down}(0.56+0.26D_{down})-0.10U-0.08O]"
+      },
+      {
+        "id": "V19d",
+        "latex": "S^{19d}_{i,t}=\\min(z^{18a}_{i,t},z^{18b}_{i,t})"
+      }
+    ]
+  },
+  "evidence": {
+    "window": "20160104-20250711 IS",
+    "oos_used_for_fitting": false,
+    "classification": "feature_candidate_not_standalone_after_cost_factor",
+    "official_factor": false,
+    "key_metrics": {
+      "V19d_raw_rank_ic_mean_full": 0.0425003,
+      "V19d_raw_rank_ic_mean_fixed_small_20": 0.0603969,
+      "V19d_resid_top_decile_excess_full": 0.00031782,
+      "V18b_resid_top_decile_excess_full": 0.000441898
+    },
+    "falsification": "V21 full IS showed positive gross excess but turnover costs exceeded gross edge; do not promote as standalone."
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.md",
+    "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md",
+    "factor_research/moneyflow_v18_long_edge_20260611/knowledge/canonical/moneyflow-v18-feature-candidates-20260617.json",
+    "factor_research/moneyflow_v19_payoff_calibration_20260615/knowledge/canonical/moneyflow-v19-lessons-20260615.json",
+    "factor_research/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::first_passage",
+      "note": "Moneyflow long edge is defined as upside repair hitting probability times distance minus downside break probability times distance and cost."
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "mechanism::profit_payer_supply",
+      "note": "The desired long side buys supply from profit payers or forced sellers after absorption confirmation."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::turnover_cost_exceeds_gross_edge",
+      "note": "V19/V21 preserved gross information but standalone after-cost long NAV failed."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_mechanism::net_inflow_alpha",
+      "note": "Net inflow or main-buy strength alone cannot distinguish smart absorption from crowded chase."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "model_feature::first_passage_moneyflow",
+      "note": "Use V18b/V19d as model-combination features or inspiration, not as official standalone alphas."
+    }
+  ],
+  "reuse_guidance": [
+    "When a new factor has profit-payer supply or repaired reversal logic, retrieve this node first.",
+    "Do not compress a hitting/path-repair problem into only mean, sigma, or z-score.",
+    "Do not promote positive Rank IC unless long-side after-cost evidence clears turnover cost.",
+    "Use V18b as the preferred first-passage mathematical template."
+  ]
+}

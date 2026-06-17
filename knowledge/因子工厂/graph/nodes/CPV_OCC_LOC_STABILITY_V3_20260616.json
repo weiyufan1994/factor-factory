@@ -1,0 +1,206 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::cpv_occ_loc_stability_v3_20260616",
+  "node_type": "feature_candidate",
+  "title": "CPV V3 price-path occupation location stability candidate",
+  "summary": "CPV V3 is a reusable Dirac-style case where the identity behind Corr(price, volume) forced the research object away from a raw correlation formula and toward a price-path occupation/location state. The final useful component is simple: low 20-day dispersion of normalized VWAP-minus-TWAP location in the close-adjacent window. It has formal OOS evidence in non-microcap/index universes, but is a composite-feature candidate rather than an official standalone factor.",
+  "factor_ids": [
+    "CPV_OCC_LOC_STABILITY_V3",
+    "alpha_occ_loc_stability",
+    "intraday_price_path_occupation_state_v1"
+  ],
+  "report_ids": [
+    "dongwu_20241229_cpv_price_path_occupation_v3"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "microstructure",
+      "liquidity",
+      "reversal",
+      "capital_flow"
+    ],
+    "barra_style": [
+      "liquidity",
+      "volatility",
+      "momentum"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "correlation",
+      "rank_transform",
+      "ts_operator"
+    ],
+    "cn_quant_practice": [
+      "high_frequency_microstructure",
+      "index_enhancement",
+      "feature_for_ml",
+      "risk_overlay"
+    ],
+    "buyside_style": [
+      "microstructure_alpha",
+      "execution_aware_alpha",
+      "flow_alpha",
+      "alpha_combination_feature",
+      "regime_conditioner"
+    ],
+    "economic_mechanism": [
+      "forced_flow",
+      "inventory_pressure",
+      "liquidity_provision",
+      "benchmark_pressure",
+      "limits_to_arbitrage"
+    ],
+    "math_mechanism": [
+      "occupation_measure",
+      "path_functional",
+      "covariance_projection",
+      "residualization",
+      "stochastic_process"
+    ],
+    "data_source": [
+      "minute_bar_derived_state",
+      "data_api_datamart",
+      "daily_ohlcv"
+    ],
+    "tradability": [
+      "long_side",
+      "cost_sensitive",
+      "model_feature_only",
+      "benchmark_relative",
+      "capacity_sensitive"
+    ],
+    "research_status": [
+      "validated",
+      "candidate",
+      "feature_candidate"
+    ],
+    "failure_mode": [
+      "liquidity_exposure",
+      "wrong_math_object",
+      "overfit_gate"
+    ]
+  },
+  "mechanism": {
+    "economic_hypothesis": "Constraint-driven late-session and close-adjacent execution flow creates repeatable volume-location states. Stocks whose tail-session volume sits in a stable normalized location on the price path face lower short-horizon adverse-selection risk; unstable volume-location states look more like impact, chase, distribution, or unstable liquidity demand.",
+    "payer": "constraint-driven close-adjacent execution flow, benchmark/passive rebalancing pressure, and unstable liquidity demand",
+    "receiver": "liquidity providers or alpha stacks that buy stable execution-state names over 3-5 trading days",
+    "random_object": "price-path occupation measure and the 20-day stability of normalized VWAP-minus-TWAP location",
+    "target_statistic": "3-day and 5-day forward top-decile excess net return plus residual RankIC in non-microcap/index universes",
+    "key_equation_latex": "$$\\n\\operatorname{Cov}(P,V)=\\bar V\\,(VWAP-TWAP),\\qquad \\operatorname{Corr}(P,V)=\\frac{\\bar V\\,(VWAP-TWAP)}{\\sigma_P\\sigma_V}.\\n$$",
+    "occupation_measure_latex": "$$\\n\\mu^V_{i,d,w}(dp)=\\sum_{m\\in w} V_{i,d,m}\\,\\delta_{P_{i,d,m}}(dp),\\qquad \\mu^T_{i,d,w}(dp)=\\sum_{m\\in w}\\delta_{P_{i,d,m}}(dp).\\n$$",
+    "signal_latex": "$$\\nlocation\\_sigma_{i,d,w}=\\frac{VWAP_{i,d,w}-TWAP_{i,d,w}}{\\operatorname{std}(P_{i,d,w})},\\qquad S_{i,t,w}=-\\operatorname{Std}_{20d}\\big(location\\_sigma_{i,d,w}\\big).\\n$$",
+    "dirac_style_forced_insight": "The covariance identity shows that CPV is not merely an invalid price-level correlation. The structure forces a price-axis occupation/location object: VWAP-minus-TWAP is the first moment shift of volume mass relative to time mass on the same price path. The useful signal was not the raw level or raw rho, but the stability of this occupation-location coordinate.",
+    "information_preserved_removed": "The normalized location coordinate preserves where traded mass sits on the intraday price path while removing pure price-level scale. The 20-day dispersion transform removes noisy one-day location levels and captures repeatability of the execution state. Transforming into return increments or adding rho linearly was cleaner-looking but removed or distorted the payer and hurt long-side payoff.",
+    "factor_expression": "CPV_OCC_LOC_STABILITY_V3: alpha_i,t,w = -Std_20d((VWAP_i,d,w - TWAP_i,d,w) / std(P_i,d,w)), primary window report_bucket_1431_1500, primary horizons 3 and 5",
+    "complexity_penalty_reasoning": "The final candidate deliberately keeps one state coordinate and one 20-day stability operator. Linear rho additions, close_minus_vwap absorption confirmation, and microcap branches were tested and rejected or bounded; extra gates should only be reintroduced as model-stack features with explicit incremental evidence."
+  },
+  "evidence": {
+    "window": "IS through 2025-07-11; formal OOS 2025-07-14 to 2026-06-12",
+    "oos_window": "2025-07-14 to 2026-06-12",
+    "universe": "Primary evidence: csi800, csi800+csi1000, csi2000, csi_all_share, investable_500m; microcap_small10 and microcap_small20 rejected for the main factor",
+    "portfolio_policy": "formal OOS expanded grid, report_bucket_1431_1500, horizons 3 and 5, top-decile excess net and residual-control evaluation",
+    "cost_assumption": "net top-excess metrics after formal tradability and cost treatment in the CPV V3 evaluation artifacts",
+    "key_metrics": {
+      "expanded_grid_command_id": "13a30c4f-dad1-4f1f-8f67-9a1e9617cd95",
+      "expanded_grid_runtime_seconds": 1047.67,
+      "factor_row_count": 3565357,
+      "daily_metric_rows": 70896,
+      "summary_rows": 324,
+      "investable_500m_h5_rank_ic": 0.013056,
+      "investable_500m_h5_residual_rank_ic": 0.018705,
+      "investable_500m_h5_top_excess_net_sharpe": 2.06638,
+      "investable_500m_h5_max_drawdown": -0.104263,
+      "csi800_h5_rank_ic": 0.019779,
+      "csi800_h5_residual_rank_ic": 0.018225,
+      "csi800_h5_top_excess_net_sharpe": 3.669158,
+      "csi800_h5_max_drawdown": -0.107108,
+      "csi800_csi1000_h5_rank_ic": 0.019848,
+      "csi800_csi1000_h5_residual_rank_ic": 0.016477,
+      "csi800_csi1000_h5_top_excess_net_sharpe": 3.684227,
+      "csi800_csi1000_h5_max_drawdown": -0.091264,
+      "csi2000_h5_rank_ic": 0.01584,
+      "csi2000_h5_residual_rank_ic": 0.021677,
+      "csi2000_h5_top_excess_net_sharpe": 2.684654,
+      "csi2000_h5_max_drawdown": -0.085269,
+      "csi_all_share_h5_rank_ic": 0.012542,
+      "csi_all_share_h5_residual_rank_ic": 0.018506,
+      "csi_all_share_h5_top_excess_net_sharpe": 2.128912,
+      "csi_all_share_h5_max_drawdown": -0.106151,
+      "microcap_small10_h5_rank_ic": 0.003601,
+      "microcap_small10_h5_residual_rank_ic": 0.003041,
+      "microcap_small10_h5_top_excess_net_sharpe": -5.520002,
+      "microcap_small10_h5_max_drawdown": -0.450139,
+      "microcap_small20_h5_rank_ic": 0.005014,
+      "microcap_small20_h5_residual_rank_ic": 0.008166,
+      "microcap_small20_h5_top_excess_net_sharpe": -6.171252,
+      "microcap_small20_h5_max_drawdown": -0.362669
+    },
+    "verdict": "factor_library_candidate_not_official_standalone_non_microcap_only",
+    "classification": "low_to_medium_weight_composite_feature; not a standalone strategy or official factor",
+    "falsification": "Microcap OOS long-side is rejected for the main factor; h1 and earlier continuous windows are weaker; naive rho linear addition and close_minus_vwap absorption confirmation were falsified or bounded. Future work should test incremental model-stack value rather than continue the same standalone axis.",
+    "artifact_paths": [
+      "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_expanded_grid/cpv_occ_v3_candidate_controls_summary.csv",
+      "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_expanded_grid/cpv_occ_v3_candidate_controls_proof.json",
+      "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_microcap_targeted_h5/cpv_occ_v3_candidate_controls_summary.csv",
+      "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_microcap_targeted_h5/cpv_occ_v3_candidate_controls_proof.json"
+    ]
+  },
+  "source_paths": [
+    "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/knowledge/canonical/cpv_occ_v3_price_path_occupation_result_20260616.json",
+    "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/docs/cpv-v3-price-path-occupation-result-20260616.zh-CN.md",
+    "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/docs/cpv-v3-price-path-occupation-step1-step2.zh-CN.md",
+    "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/objects/research_iteration_master/admission_review__dongwu_20241229_cpv_price_path_occupation_v3__20260616.json",
+    "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_expanded_grid/cpv_occ_v3_candidate_controls_proof.json",
+    "factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/evaluation/candidate_controls_occ_v3_formal_oos_microcap_targeted_h5/cpv_occ_v3_candidate_controls_proof.json"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::occupation_measure",
+      "note": "VWAP-minus-TWAP is treated as a moment of traded mass over the price path rather than as a raw price-volume correlation."
+    },
+    {
+      "edge_type": "uses_math",
+      "target": "math::covariance_projection",
+      "note": "The CPV identity projects Corr(P,V) into mean volume, location shift, price volatility, and volume volatility components."
+    },
+    {
+      "edge_type": "refines",
+      "target": "node::vp_support_overhang_occupation_20260610",
+      "note": "Both use price-axis/path occupation; CPV V3 narrows it to intraday VWAP-TWAP location stability."
+    },
+    {
+      "edge_type": "refines",
+      "target": "node::value_occupation_v18_lebesgue_closeout_20260615",
+      "note": "Both show that occupation-style positive IC must be separated from long-side payoff and microcap tail behavior."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_mechanism::price_volume_corr_is_invalid_price_level_noise",
+      "note": "The covariance identity shows CPV can encode occupation-location information even though price level itself is nonstationary."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_mechanism::rho_stability_high_ic_is_long_side_factor",
+      "note": "Rho stability had high IC but poor top-decile payoff shape, so high ranking information alone did not create a clean long-side factor."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "model_feature::close_adjacent_execution_state",
+      "note": "Use as a low-to-medium weight model-stack feature for execution-state stability in non-microcap/index universes."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "node::value_occupation_v18_lebesgue_closeout_20260615",
+      "note": "Both preserve the warning that positive residual/partial IC can diverge from high-score long-side payoff."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node when a formula contains Corr(price, volume), VWAP, TWAP, close-volume interaction, or price-path occupation language.",
+    "Start future CPV-style work from the identity and the occupation/location random object before proposing smoother correlations or return-increment replacements.",
+    "Prefer report_bucket_1431_1500 and 3-5 day horizons unless a new payer hypothesis justifies another window.",
+    "Do not reuse the main signal in microcap_small10 or microcap_small20 without a new hypothesis; formal OOS long-side evidence is negative there.",
+    "Do not add rho or close-minus-VWAP absorption gates linearly just because they increase IC; require monotonic long-side and residual payoff evidence.",
+    "Treat this as a feature candidate for model stacking, not as official standalone promotion."
+  ]
+}

@@ -220,6 +220,60 @@ When Step6 begins, use both:
   additional primitives, interactions, free parameters, nonlinear gates, and
   data dependencies must be justified by OOS long-side or residual-information
   evidence and by a clear economic or mathematical object.
+
+## Factor Knowledge Network Writeback
+
+The human-readable vault under `knowledge/因子工厂/` is not enough by itself.
+Before forming a thesis or Step6 revision, retrieve relevant graph context when
+the report/idea suggests known mechanisms, data states, or failure modes:
+
+```bash
+python3 scripts/retrieve_factor_knowledge_context.py --text <idea_or_factor_terms> --top-k 5
+python3 scripts/retrieve_factor_knowledge_context.py --tag <taxonomy_tag> --text <idea_or_factor_terms> --top-k 5
+```
+
+Use retrieved nodes as analogies, reusable mechanisms, and anti-patterns; do
+not treat them as same-factor proof unless artifact identity matches.
+
+When a research branch produces a reusable mechanism, candidate feature, failure
+pattern, or official factor, write a machine-readable knowledge node under:
+
+```text
+knowledge/因子工厂/graph/nodes/
+```
+
+Each node must use `factor_knowledge_node_v1` and the taxonomy in:
+
+```text
+knowledge/因子工厂/taxonomy/factor_taxonomy_v1.json
+```
+
+Start from the writeback template unless an automated generator is available:
+
+```text
+knowledge/因子工厂/graph/templates/factor_knowledge_node_template.json
+knowledge/因子工厂/graph/templates/factor_knowledge_node_writeback_guide.md
+```
+
+Use multi-label taxonomy rather than a single classification tree. At minimum,
+capture market-consensus style, economic mechanism, math mechanism, data source,
+tradability, research status, and failure mode when applicable.
+
+Knowledge nodes should preserve the real research insight, not just process
+metadata. For each node, record the payer/receiver if relevant, selected random
+object, key equation or mechanism, evidence window, falsification result,
+source paths, and relation edges such as `uses_math`, `shares_failure_with`,
+`reusable_as`, `contradicts`, or `inspires`.
+
+Validate graph writeback with:
+
+```bash
+python3 scripts/build_factor_knowledge_graph.py
+python3 scripts/query_factor_knowledge_graph.py --tag <mechanism_or_status>
+```
+
+Do not mark graph presence as official promotion. A graph node can be
+`feature_candidate`, `standalone_rejected`, `anti_pattern`, or `data_blocked`.
 ## Implementation and Factor Isolation Discipline
 
 - Every formal factor artifact must carry `artifact_identity`.

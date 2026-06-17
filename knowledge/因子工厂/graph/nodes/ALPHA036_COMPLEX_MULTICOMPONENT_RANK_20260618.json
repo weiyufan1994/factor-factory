@@ -1,0 +1,153 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::alpha036_complex_multicomponent_rank_20260618",
+  "node_type": "anti_pattern",
+  "title": "Alpha036 complex multi-component rank expression",
+  "summary": "Alpha036 is a cautionary Alpha101 case: a heavily weighted mix of price-volume correlation, open-close reversal, delayed return rank, VWAP-ADV correlation, and long moving-average displacement produced only weak Qlib-only IC and weak long-short Sharpe with very high turnover.",
+  "factor_ids": [
+    "Alpha036"
+  ],
+  "report_ids": [
+    "ALPHA036_QLIB_ONLY_20160101_20250711"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "momentum",
+      "reversal",
+      "liquidity",
+      "microstructure",
+      "multi_factor"
+    ],
+    "barra_style": [
+      "momentum",
+      "liquidity",
+      "volatility",
+      "size"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "correlation",
+      "rank_transform",
+      "ts_operator",
+      "cs_operator"
+    ],
+    "cn_quant_practice": [
+      "index_enhancement",
+      "market_neutral",
+      "risk_overlay",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "risk_factor",
+      "alpha_combination_feature",
+      "portfolio_construction_signal"
+    ],
+    "economic_mechanism": [
+      "overreaction",
+      "forced_flow",
+      "liquidity_provision",
+      "inventory_pressure",
+      "benchmark_pressure"
+    ],
+    "math_mechanism": [
+      "cross_sectional_rank",
+      "time_series_state",
+      "covariance_projection",
+      "path_functional",
+      "stochastic_process"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "qlib_provider"
+    ],
+    "tradability": [
+      "long_side",
+      "long_short",
+      "high_turnover_risk",
+      "cost_sensitive",
+      "model_feature_only"
+    ],
+    "research_status": [
+      "anti_pattern",
+      "feature_candidate"
+    ],
+    "failure_mode": [
+      "turnover_cost_exceeds_gross_edge",
+      "overfit_gate",
+      "smoke_only_false_positive"
+    ]
+  },
+  "mechanism": {
+    "economic_hypothesis": "Alpha036 attempts to combine several plausible price-volume pressure states, but the weighted sum lacks a single dominant payer and therefore risks becoming a complexity-weighted rank soup rather than a clean monetizable mechanism.",
+    "payer": "mixed short-horizon momentum, reversal, and liquidity-pressure participants with no single isolated profit payer",
+    "receiver": "portfolio-construction or ML model that might use component features after decomposition, not a standalone long-only investor",
+    "random_object": "weighted sum of multiple daily rank-transformed price-volume path states",
+    "target_statistic": "Qlib-only Rank IC and 5-day quantile long-short Sharpe as a preliminary component judge",
+    "key_equation_latex": "$$\\nS^{036}_{i,t}=2.21R\\{\\rho_{15}(C-O,V_{t-1})\\}+0.7R\\{O-C\\}+0.73R\\{TSR_5(-r_{t-6})\\}+R\\{|\\rho_6(VWAP,ADV20)|\\}+0.6R\\{(MA_{200}(C)-O)(C-O)\\}\\n$$",
+    "dirac_style_forced_insight": "The formula decomposes into multiple heterogeneous state variables; the math forces a component audit before promotion because a weighted sum can hide which payer, if any, is actually funding returns.",
+    "information_preserved_removed": "Rank transforms preserve ordinal component ordering but remove scale and make the hand-chosen weights hard to justify without component-level contribution evidence.",
+    "factor_expression": "Alpha036 101 Formulaic Alphas expression as Qlib-only partial judge.",
+    "complexity_penalty_reasoning": "Complexity is high: five components, multiple windows, fixed weights, correlations, ranks, and a 200-day anchor. Current weak IC/Sharpe does not pay for that complexity."
+  },
+  "evidence": {
+    "window": "IS 2016-01-01 to 2025-07-11; OOS 2025-07-12 to provider latest",
+    "universe": "Qlib cn_data provider Alpha101 judge universe",
+    "portfolio_policy": "5-trading-day non-overlap quantile NAV; Q1-Q10 direction reported without automatic sign flip",
+    "cost_assumption": "Qlib-only partial component judge; no official after-cost promotion",
+    "key_metrics": {
+      "is_rankic_1d": 0.0103003,
+      "is_rankic_ir_1d": 0.0956385,
+      "is_rankic_5d": 0.00644656,
+      "is_ls_sharpe_annualized": 0.350155,
+      "is_turnover_mean": 0.748159,
+      "oos_rankic_1d": 0.0105849,
+      "oos_rankic_5d": 0.0135663,
+      "oos_ls_sharpe_annualized": 0.237149,
+      "oos_turnover_mean": 0.754458
+    },
+    "verdict": "anti_pattern",
+    "falsification": "Do not use Alpha036 as a standalone factor unless component attribution shows a specific payer and after-cost evidence improves despite high turnover.",
+    "artifact_paths": [
+      "knowledge/因子工厂/普通因子库/ALPHA036_QLIB_ONLY_20160101_20250711.md"
+    ]
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/ALPHA036_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA036_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/研究迭代/ALPHA036_QLIB_ONLY_20160101_20250711.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::component_decomposition",
+      "note": "The expression should be decomposed into component states before any revision."
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "market_consensus::multi_factor",
+      "note": "It is a weighted multi-component expression, not a single clean anomaly."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::turnover_cost_exceeds_gross_edge",
+      "note": "Turnover is roughly 0.75 in both IS and OOS while LS Sharpe is weak."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_method::weighted_rank_sum_without_payer",
+      "note": "A complex weighted sum is not justified without payer attribution and after-cost evidence."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "anti_pattern::complexity_not_paid",
+      "note": "Use this node as a complexity-penalty warning for future Council revisions."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node when a proposed revision combines many rank/correlation components without a single economic payer.",
+    "Decompose fixed-weight expressions into component evidence before adding more gates or windows.",
+    "Treat weak positive IC plus very high turnover as feature-screening evidence only.",
+    "Use as an anti-pattern for complexity that is not paid by long-side or residual-information evidence."
+  ]
+}

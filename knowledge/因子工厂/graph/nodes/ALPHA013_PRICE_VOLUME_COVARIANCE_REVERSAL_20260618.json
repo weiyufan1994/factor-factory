@@ -1,0 +1,193 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::alpha013_price_volume_covariance_reversal_20260618",
+  "node_type": "feature_candidate",
+  "title": "Alpha013 price-volume covariance reversal candidate",
+  "summary": "Alpha013 preserves a reusable daily price-volume microstructure signal: negative ranked covariance between ranked close and ranked volume contains long-side ordering information, but turnover, drawdown, and backend gaps prevent official standalone admission.",
+  "factor_ids": [
+    "Alpha013",
+    "Alpha013AbvolStateLagConfirm",
+    "Alpha013PersistenceConfirmed"
+  ],
+  "report_ids": [
+    "ALPHA013_CANONICAL_FORMULA",
+    "ALPHA013_REV_ABVOL_STATE_LAGCONFIRM",
+    "ALPHA013_REV_PERSISTENCE_CONFIRMED"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "reversal",
+      "liquidity",
+      "microstructure"
+    ],
+    "barra_style": [
+      "liquidity",
+      "momentum",
+      "volatility"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "correlation",
+      "rank_transform",
+      "ts_operator",
+      "cs_operator"
+    ],
+    "cn_quant_practice": [
+      "index_enhancement",
+      "intraday_reversal",
+      "feature_for_ml",
+      "capacity_management"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "microstructure_alpha",
+      "alpha_combination_feature",
+      "capacity_management"
+    ],
+    "economic_mechanism": [
+      "forced_flow",
+      "liquidity_provision",
+      "limits_to_arbitrage",
+      "inventory_pressure"
+    ],
+    "math_mechanism": [
+      "covariance_projection",
+      "cross_sectional_rank",
+      "time_series_state",
+      "stochastic_process"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "qlib_provider"
+    ],
+    "tradability": [
+      "long_side",
+      "high_turnover_risk",
+      "capacity_sensitive",
+      "cost_sensitive",
+      "model_feature_only"
+    ],
+    "research_status": [
+      "feature_candidate",
+      "needs_oos"
+    ],
+    "failure_mode": [
+      "after_cost_failure",
+      "turnover_cost_exceeds_gross_edge",
+      "framework_block"
+    ]
+  },
+  "mechanism": {
+    "economic_hypothesis": "When volume co-moves too tightly with recent closing-price ranks, part of the move can be forced or inventory-driven rather than informed; the long side pays by short-horizon liquidity demanders and receives by patient liquidity providers who buy after the induced pressure is ranked as exhausted.",
+    "payer": "forced flow, benchmark or inventory-constrained traders, and short-horizon liquidity demand",
+    "receiver": "structured liquidity provider or stat-arb capital that can hold through the repair window",
+    "random_object": "daily ranked price-volume covariance process",
+    "target_statistic": "next-period long-side expected return and residual rank IC after controlling for turnover cost",
+    "key_equation_latex": "$$\\nS^{013}_{i,t}=-\\operatorname{rank}_{cs}\\left(\\operatorname{cov}_{5}\\left(\\operatorname{rank}_{cs}(C_{i,\\cdot}),\\operatorname{rank}_{cs}(V_{i,\\cdot})\\right)_t\\right)\\n$$",
+    "dirac_style_forced_insight": "The covariance operator forces the object to be a joint price-volume state, not a pure reversal score: if volume is removed, the hypothesized payer disappears; if the rank transform is removed, the signal becomes capacity- and scale-dominated.",
+    "information_preserved_removed": "Cross-sectional ranking preserves ordinal pressure and removes absolute liquidity scale; the 5-day covariance preserves short-horizon co-movement but aliases execution cost into turnover unless separately penalized.",
+    "factor_expression": "(-1 * rank(covariance(rank(close), rank(volume), 5))) plus Alpha013 abnormal-volume and persistence revisions as feature candidates.",
+    "complexity_penalty_reasoning": "Persistence and abnormal-volume variants are justified only if they improve after-cost long-side evidence; current evidence confirms ordering but not standalone capital efficiency."
+  },
+  "evidence": {
+    "window": "20160101 through available IS evidence in Alpha013 library records",
+    "universe": "Factor Forge Alpha101 daily universe",
+    "portfolio_policy": "long-side top group / diagnostic deciles, not direct short-leg promotion",
+    "cost_assumption": "self_quant cost diagnostics available; after-cost long-side is negative in canonical record",
+    "key_metrics": {
+      "canonical_rank_ic_mean": 0.03587350534248189,
+      "canonical_rank_ic_ir": 0.6113997100935327,
+      "canonical_long_side_annual_return": 0.16438592056707668,
+      "canonical_long_side_sharpe": 0.687059654175764,
+      "canonical_turnover_mean_daily": 0.47228425686413855,
+      "canonical_cost_adjusted_annual_return": -0.19257067744563408,
+      "canonical_max_drawdown": -0.399399396444137,
+      "persistence_rank_ic_mean": 0.034368,
+      "persistence_long_side_return": 0.162214
+    },
+    "verdict": "feature_candidate",
+    "falsification": "Reject standalone promotion unless OOS and after-cost long-side evidence survive turnover reduction without deleting the covariance payer.",
+    "artifact_paths": [
+      "knowledge/因子工厂/普通因子库/ALPHA013_CANONICAL_FORMULA.md",
+      "knowledge/因子工厂/普通因子库/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+      "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+      "knowledge/因子工厂/知识库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md"
+    ],
+    "variant_family_coverage": {
+      "scope": "ALPHA013 historical ordinary/knowledge/iteration records are mapped to this mechanism-family node; individual variants still require their own artifact review before promotion.",
+      "covered_source_path_count": 36,
+      "covered_prefix": "ALPHA013"
+    }
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/ALPHA013_CANONICAL_FORMULA.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA013_CANONICAL_FORMULA.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_A_C5_S5.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_B_C10_S5.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_C_C10_S10.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_D_C20_S10.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_E_C10_M5.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_20160101_F_D1_C10_S5.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_ABVOL_STATE_MEAN5.md",
+    "knowledge/因子工厂/普通因子库/ALPHA013_REV_PERSISTENCE_CONFIRMED.md",
+    "knowledge/因子工厂/知识库/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_A_C5_S5.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_B_C10_S5.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_C_C10_S10.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_D_C20_S10.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_E_C10_M5.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_20160101_F_D1_C10_S5.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md",
+    "knowledge/因子工厂/知识库/ALPHA013_REV_ABVOL_STATE_MEAN5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_CANONICAL_FORMULA.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_A_C5_S5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_B_C10_S5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_C_C10_S10.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_D_C20_S10.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_E_C10_M5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_20160101_F_D1_C10_S5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABNORMAL_VOLUME_NORM.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABVOL_STATE_LAGCONFIRM.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_ABVOL_STATE_MEAN5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA013_REV_PERSISTENCE_CONFIRMED.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::covariance_projection",
+      "note": "The factor is a ranked covariance projection of price and volume states."
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "market_consensus::reversal",
+      "note": "The long-side interpretation is pressure exhaustion and repair rather than continuation."
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "buyside_style::stat_arb_signal",
+      "note": "The evidence is most useful as an ordinal stat-arb feature, not a standalone strategy."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::turnover_cost_exceeds_gross_edge",
+      "note": "Gross ranking survives, but canonical after-cost long-side evidence is negative."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "model_feature::price_volume_pressure_state",
+      "note": "Reuse as a model feature or conditioner when a new idea depends on forced price-volume pressure."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node for new price-volume covariance, abnormal-volume, liquidity-pressure, or Alpha101-style rank/covariance ideas.",
+    "Do not treat positive Rank IC as sufficient; check whether turnover cost consumes the long-side edge.",
+    "If revising, preserve the joint price-volume covariance object; pure price reversal is a different hypothesis.",
+    "Use the node as a feature-candidate analogy for ML combination or risk-conditioned long-only variants."
+  ]
+}

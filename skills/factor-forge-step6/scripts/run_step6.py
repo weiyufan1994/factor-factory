@@ -31,6 +31,7 @@ from factor_factory.provenance import (
     build_knowledge_provenance,
     derive_identity as derive_provenance_identity,
 )
+from factor_factory.knowledge_context import graph_node_to_similar_case, retrieve_factor_knowledge_context
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
@@ -2722,17 +2723,45 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         except Exception:
             embedding_available = False
 
+    factor_knowledge_context: dict[str, Any] = {
+        'schema_version': 'factor_knowledge_context_v1',
+        'node_count': 0,
+        'nodes': [],
+        'related_edges': [],
+        'retrieval_disabled': True,
+    }
+    graph_candidates: list[dict[str, Any]] = []
+    graph_retrieval_enabled = os.getenv('FACTORFORGE_DISABLE_GRAPH_KNOWLEDGE_CONTEXT') != '1'
+    if graph_retrieval_enabled:
+        try:
+            factor_knowledge_context = retrieve_factor_knowledge_context(text=query_text, top_k=top_k)
+            for node in factor_knowledge_context.get('nodes') or []:
+                overlap_count = len(node.get('overlap_terms') or [])
+                graph_candidates.append(graph_node_to_similar_case(node, score=2.0 + overlap_count * 0.25))
+        except Exception as exc:
+            factor_knowledge_context = {
+                'schema_version': 'factor_knowledge_context_v1',
+                'node_count': 0,
+                'nodes': [],
+                'related_edges': [],
+                'retrieval_error': str(exc),
+            }
+    candidates.extend(graph_candidates)
     candidates.sort(key=lambda item: (-item['score'], str(item.get('report_id') or ''), str(item.get('doc_type') or '')))
     top = candidates[:top_k]
     return {
         'retrieval_index_path': str(RETRIEVAL_INDEX),
         'retrieval_index_available': RETRIEVAL_INDEX.exists(),
+        'factor_knowledge_context_available': bool(factor_knowledge_context.get('node_index_available')),
+        'factor_knowledge_context_node_count': factor_knowledge_context.get('node_count') or 0,
+        'factor_knowledge_context': factor_knowledge_context,
         'embedding_index_available': embedding_available,
         'embedding_endpoint': EMBEDDING_ENDPOINT,
         'query_terms': query_tokens[:40],
         'similar_cases': top,
         'retrieval_notes': [
             'retrieval currently uses lightweight lexical + metadata matching over factorforge_retrieval_index.jsonl',
+            'factor knowledge graph context is appended as analogy/anti-pattern evidence when available',
             'if local embedding index + endpoint are available, similarity scores are added on top of lexical family-aware matching',
             'same-factor_id cases are boosted to prefer family-aware reflection',
         ],

@@ -56,6 +56,21 @@ def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
 
 
+def valid_knowledge_reference_contract(value) -> bool:
+    if not value:
+        return True
+    if not isinstance(value, dict):
+        return False
+    if value.get('schema_version') != 'factorforge_knowledge_reference_contract_v1':
+        return False
+    if value.get('context_schema_version') not in {None, 'factor_knowledge_context_v1'}:
+        return False
+    if value.get('not_same_factor_unless_identity_matches') is not True:
+        return False
+    node_count = value.get('node_count')
+    return node_count is None or isinstance(node_count, int)
+
+
 def direct_code_contract_checks(master):
     if master.get('implementation_mode') != 'direct_code':
         return []
@@ -371,6 +386,11 @@ def main() -> None:
             check('innovative_idea_seeds_present', nonempty_list(learning.get('innovative_idea_seeds') or research_contract.get('innovative_idea_seeds')), 'innovative_idea_seeds missing'),
             check('reuse_instruction_present', nonempty_list(learning.get('reuse_instruction_for_future_agents') or research_contract.get('reuse_instruction_for_future_agents')), 'reuse_instruction_for_future_agents missing'),
             check('similar_case_lessons_imported_present', nonempty_list(learning.get('similar_case_lessons_imported') or research_contract.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
+            check(
+                'knowledge_reference_contract_valid_if_present',
+                valid_knowledge_reference_contract(master.get('knowledge_reference_contract') or learning.get('knowledge_reference_contract') or research_contract.get('knowledge_reference_contract')),
+                'knowledge_reference_contract malformed',
+            ),
             check('information_set_not_illegal', 'illegal' not in info_legality and 'forward_reference' not in info_legality, f'information_set_legality blocks Step2 acceptance: {info_legality}', severity='WARN'),
         ])
         checks.extend(identity_check(master, handoff, rid))

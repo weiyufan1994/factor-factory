@@ -733,12 +733,26 @@ def _formula_implied_information(
         structural_constraints.append(f"Observable inputs constrain the latent state estimate to information in: {', '.join(inputs)}")
     structural_constraints.append("The inferred state must explain a conditional return-distribution change rather than restate a raw field.")
     latent_state = str(v1.get("latent_state") or v1.get("state_or_object") or "latent return-process state")
+    model_family = str(v1.get("model_family") or "stochastic_process")
+    model_state = latent_state
+    estimator_interpretation = (
+        f"a report-specific observable proxy for {model_state}; the formula is a measurement channel for a "
+        f"{model_family} state, not the state itself"
+    )
+    price_process_connection = (
+        f"the next-period return distribution changes when {model_state} is present under the signal-date "
+        "filtration; the relevant test is whether the conditional drift survives costs and regime splits"
+    )
+    if conditional and "estimated_state_t" not in str(conditional):
+        price_process_connection = (
+            f"{price_process_connection}; benchmark conditional claim: {conditional}"
+        )
     return {
         "structural_constraints": structural_constraints,
         "latent_state_inferred_by_formula": latent_state,
-        "estimator_interpretation": formula_estimator,
+        "estimator_interpretation": estimator_interpretation,
         "why_not_raw_field_restatement": "The formula is treated as an observable estimator of the declared latent/model state; raw fields are only measurements, not the mechanism state itself.",
-        "price_process_connection": conditional,
+        "price_process_connection": price_process_connection,
     }
 
 

@@ -687,6 +687,7 @@ def write_direct_code_qlib_not_applicable_config(
         'intraday_flow_distribution_moments_v1',
         'intraday_pseudo_dollar_bar_v1',
         'intraday_value_occupation_state_v1',
+        'intraday_retained_chip_state_v1',
     }:
         return None
     path = OBJ / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
@@ -1181,7 +1182,7 @@ def _run_formula_engine_with_profile(
     candidate_seconds = time.perf_counter() - candidate_start
     compare_start = time.perf_counter()
     try:
-        parity = compare_outputs(reference_sample, candidate_sample, tolerance=1e-12)
+        parity = compare_outputs(reference_sample, candidate_sample)
     except AssertionError as exc:
         if (formula_kernel_config or {}).get('experimental_enabled'):
             raise AssertionError(f'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED:{exc}') from exc

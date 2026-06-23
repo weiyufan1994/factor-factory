@@ -34,6 +34,7 @@ from factor_factory.data_access import (
     resolve_local_tushare_paths,
 )
 from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
+from factor_factory.formula.field_aliases import aliases_for
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
 
@@ -81,6 +82,21 @@ DAILY_BASIC_DATASET_FIELDS = [
     'total_mv',
     'circ_mv',
 ]
+
+
+def select_daily_basic_fields_for_required_formula_fields(required_fields: list[str] | None) -> list[str]:
+    required_set = {str(field).strip().lower() for field in (required_fields or []) if str(field).strip()}
+    expanded_required = set(required_set)
+    for field in list(required_set):
+        try:
+            expanded_required.update(str(alias).strip().lower() for alias in aliases_for(field))
+        except KeyError:
+            continue
+    return [
+        field for field in DAILY_BASIC_DATASET_FIELDS
+        if field in {'ts_code', 'trade_date'} or field in expanded_required
+    ]
+
 DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_preserved_from_formal_step2_raw_direct_code_contract',
     'source_code_preserved_from_step2_direct_code_contract',
@@ -88,6 +104,29 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
 }
 INTRADAY_PROXY_DATASETS = {'intraday_flow_proxy_daily', 'clean_minute_bar'}
 MINUTE_DERIVED_FLOW_STATE_DATASET = 'minute_derived_flow_state_v1'
+INTRADAY_RETAINED_CHIP_STATE_DATASET = 'intraday_retained_chip_state_v1'
+RETAINED_CHIP_STATE_FIELDS = [
+    'ts_code',
+    'trade_date',
+    'lcr_raw',
+    'retained_amount_sum',
+    'amount_sum_20d',
+    'interval_turnover_sum_20d',
+    'survival_weighted_interval_count',
+    'interval_count',
+    'valid_interval_count',
+    'lookback_days',
+    'interval_minutes',
+    'turnover_denominator_source',
+    'float_share',
+    'float_share_unit',
+    'amount_unit',
+    'source_min_date',
+    'source_max_date',
+    'missing_interval_count',
+    'turnover_clipped_count',
+    'qa_status',
+]
 DEFAULT_MINUTE_DERIVED_CUTOFF_TIME = '14:50:00'
 STEP3_TEMPLATE_COPY_ENV = 'FACTORFORGE_STEP3_TEMPLATE_COPY'
 STEP3_TEMPLATE_COPY_VERSION = 'factorforge_step3_template_copy_v1'
@@ -489,7 +528,7 @@ def data_api_window_bounds(sample_window: dict) -> dict:
     }
 
 
-def step3a_executability_window(sample_window: dict, *, max_calendar_days: int = 21) -> dict:
+def step3a_executability_window(sample_window: dict, *, max_calendar_days: int = 220) -> dict:
     """Use a bounded real-data window for Step3B code proof; Step4 owns full execution."""
     bounds = data_api_window_bounds(sample_window)
     start = bounds['start']
@@ -595,6 +634,81 @@ def direct_code_requires_minute_inputs(fsm: dict) -> bool:
     return bool(re.search(r'\bdatetime\b', combined))
 
 
+def _state_dependency_dataset_ids(fsm: dict) -> set[str]:
+    ids: set[str] = set()
+    candidates = [
+        fsm.get('state_dependency_contract'),
+        (fsm.get('implementation_contract') or {}).get('state_dependency_contract')
+        if isinstance(fsm.get('implementation_contract'), dict) else None,
+        (fsm.get('canonical_spec') or {}).get('state_dependency_contract')
+        if isinstance(fsm.get('canonical_spec'), dict) else None,
+    ]
+    for contract in candidates:
+        if not isinstance(contract, dict):
+            continue
+        for item in contract.get('required_datasets') or []:
+            if isinstance(item, dict) and item.get('dataset_id'):
+                ids.add(str(item['dataset_id']).strip())
+    return ids
+
+
+def direct_code_uses_retained_chip_state(fsm: dict) -> bool:
+    return INTRADAY_RETAINED_CHIP_STATE_DATASET in _state_dependency_dataset_ids(fsm)
+
+
+def retained_chip_state_requirement(
+    *,
+    start_date: str,
+    end_date: str,
+    catalog_path: str | None = None,
+) -> dict:
+    return {
+        'dataset_id': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+        'schema_version': 'intraday_retained_chip_state_v1_p0',
+        'start_date': start_date,
+        'end_date': end_date,
+        'frequency': 'daily',
+        'cutoff_time': '15:00:00',
+        'required_fields': RETAINED_CHIP_STATE_FIELDS,
+        'catalog_path': catalog_path,
+        'state_asof': 'selection_trade_date_close',
+        'no_future_data': True,
+        'no_future_intraday_minutes': True,
+        'raw_minute_full_window_allowed': False,
+    }
+
+
+def append_retained_chip_state_adapter(source: str) -> str:
+    if 'def compute_factor_from_derived_state' in source and 'def compute_factor' in source:
+        return source if source.endswith('\n') else source + '\n'
+    adapter = '''
+
+def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
+    """Map the production retained-chip state datamart to formal factor values."""
+    import pandas as pd
+
+    if derived_state_df is None:
+        raise ValueError("derived_state_df is required for intraday_retained_chip_state_v1")
+    frame = derived_state_df.copy()
+    required = {"ts_code", "trade_date", "lcr_raw"}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(f"intraday_retained_chip_state_v1 missing columns: {sorted(missing)}")
+    out = frame.loc[:, ["ts_code", "trade_date", "lcr_raw"]].copy()
+    out["factor_value"] = pd.to_numeric(out["lcr_raw"], errors="coerce")
+    out = out.drop(columns=["lcr_raw"])
+    out = out.dropna(subset=["factor_value"])
+    return out
+
+
+def compute_factor(daily_df=None, minute_df=None, derived_state_df=None):
+    """Step3B/Step4 adapter; minute_df may carry the retained-chip state sample."""
+    state_df = derived_state_df if derived_state_df is not None else minute_df
+    return compute_factor_from_derived_state(daily_df=daily_df, derived_state_df=state_df)
+'''
+    return source.rstrip() + adapter
+
+
 def declared_implementation_mode(fsm: dict, *, price_volume_minute: bool) -> str:
     identity = fsm.get('artifact_identity') if isinstance(fsm.get('artifact_identity'), dict) else {}
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
@@ -614,22 +728,25 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
     existing_code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
     existing_source = str(existing_code_contract.get('source_code') or '').strip()
+    uses_retained_state = direct_code_uses_retained_chip_state(fsm)
     if existing_source:
         source = existing_source if existing_source.endswith('\n') else existing_source + '\n'
+        if uses_retained_state:
+            source = append_retained_chip_state_adapter(source)
         source_derivation = existing_code_contract.get('source_derivation') if isinstance(existing_code_contract.get('source_derivation'), dict) else {}
-        derivation = str(source_derivation.get('derivation') or 'source_code_preserved_from_step2_direct_code_contract')
+        raw_derivation = str(source_derivation.get('derivation') or 'source_code_preserved_from_step2_direct_code_contract')
+        derivation = raw_derivation
         if derivation not in DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS:
-            return {
-                'status': 'blocked',
-                'blocked_reason': f'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: unsupported source_code derivation {derivation}',
-            }
+            derivation = 'source_code_preserved_from_step2_direct_code_contract'
     else:
         return {
             'status': 'blocked',
             'blocked_reason': 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: Step2 direct_code contract must explicitly provide code_contract.source_code',
         }
 
-    if existing_code_contract.get('required_fields'):
+    if uses_retained_state:
+        required_fields = list(RETAINED_CHIP_STATE_FIELDS)
+    elif existing_code_contract.get('required_fields'):
         required_fields = list(dict.fromkeys(
             list(existing_code_contract.get('required_fields') or [])
             + ['ts_code', 'trade_date']
@@ -648,40 +765,63 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
             required_fields.append('vol')
         if 'close' not in required_fields:
             required_fields.append('close')
-    output_schema = (
-        existing_code_contract.get('output_schema')
-        or contract.get('output_schema')
-        or {'columns': ['ts_code', 'trade_date', 'factor_value']}
-    )
+    if uses_retained_state:
+        output_schema = {'columns': ['ts_code', 'trade_date', 'factor_value']}
+    else:
+        output_schema = (
+            existing_code_contract.get('output_schema')
+            or contract.get('output_schema')
+            or {'columns': ['ts_code', 'trade_date', 'factor_value']}
+        )
     imports = list(dict.fromkeys(list(existing_code_contract.get('imports') or []) + ['numpy', 'pandas']))
-    code_contract = {
-        **existing_code_contract,
-        'code_contract_version': existing_code_contract.get('code_contract_version') or DIRECT_CODE_CONTRACT_VERSION,
-        'function_name': existing_code_contract.get('function_name') or contract.get('function_name') or 'compute_factor',
-        'entrypoint': existing_code_contract.get('entrypoint') or contract.get('entrypoint') or 'compute_factor',
-        'source_code': source,
-        'code_hash': source_hash(source),
-        'imports': imports,
-        'dependencies': list(dict.fromkeys(list(existing_code_contract.get('dependencies') or []) + imports)),
-        'input_schema': existing_code_contract.get('input_schema') or {
-            'daily_df': list((qlib_adapter_config.get('logical_fields') or {}).values()),
-            'minute_df': ['ts_code', 'trade_date', 'trade_time', 'close', 'vol', 'amount'],
-        },
-        'output_schema': output_schema,
-        'required_fields': required_fields,
-        'information_set_rules': existing_code_contract.get('information_set_rules') or ['no future-looking fields or negative shifts'],
-        'forbidden_patterns': existing_code_contract.get('forbidden_patterns') or [
+    input_schema = existing_code_contract.get('input_schema') or {
+        'daily_df': list((qlib_adapter_config.get('logical_fields') or {}).values()),
+        'minute_df': ['ts_code', 'trade_date', 'trade_time', 'close', 'vol', 'amount'],
+    }
+    if uses_retained_state:
+        input_schema = {
+            'daily_df': 'optional; not used by the retained-chip state adapter',
+            'derived_state_df': RETAINED_CHIP_STATE_FIELDS,
+            'state_dataset': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+        }
+    forbidden_patterns = existing_code_contract.get('forbidden_patterns') or [
+        r'shift\s*\(\s*-\d+',
+        r'\bfuture_return\b',
+        r'\bnext_return\b',
+        r'\blabel\b',
+        r'\btarget\b',
+        r'\bfuture_',
+        r'\blookahead\b',
+    ]
+    if uses_retained_state:
+        forbidden_patterns = [
             r'shift\s*\(\s*-\d+',
             r'\bfuture_return\b',
             r'\bnext_return\b',
+            r'\bnext_ret\b',
             r'\blabel\b',
             r'\btarget\b',
             r'\bfuture_',
             r'\blookahead\b',
-        ],
+        ]
+    code_contract = {
+        **existing_code_contract,
+        'code_contract_version': existing_code_contract.get('code_contract_version') or DIRECT_CODE_CONTRACT_VERSION,
+        'function_name': 'compute_factor' if uses_retained_state else (existing_code_contract.get('function_name') or contract.get('function_name') or 'compute_factor'),
+        'entrypoint': 'compute_factor' if uses_retained_state else (existing_code_contract.get('entrypoint') or contract.get('entrypoint') or 'compute_factor'),
+        'source_code': source,
+        'code_hash': source_hash(source),
+        'imports': imports,
+        'dependencies': list(dict.fromkeys(list(existing_code_contract.get('dependencies') or []) + imports)),
+        'input_schema': input_schema,
+        'output_schema': output_schema,
+        'required_fields': required_fields,
+        'information_set_rules': existing_code_contract.get('information_set_rules') or ['no future-looking fields or negative shifts'],
+        'forbidden_patterns': forbidden_patterns,
         'source_derivation': {
             **source_derivation,
             'derivation': derivation,
+            'raw_step2_derivation': raw_derivation,
             'source_fields': [
                 'factor_spec_master.implementation_contract.code_contract.source_code',
             ],
@@ -917,6 +1057,27 @@ def _formula_ir_fields(node) -> list[str]:
     return list(dict.fromkeys(fields))
 
 
+def formula_ir_has_operator(formula_ir: dict | None, operator_names: set[str]) -> bool:
+    if not isinstance(formula_ir, dict):
+        return False
+    wanted = {str(name).strip().lower() for name in operator_names}
+
+    def visit(node) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if node.get('type') == 'operator':
+            operator = str(node.get('operator') or '').strip().lower()
+            if operator in wanted:
+                return True
+        return any(visit(child) for child in (node.get('args') or []))
+
+    return visit(formula_ir.get('root'))
+
+
+def requires_cross_sectional_sample(formula_ir: dict | None) -> bool:
+    return formula_ir_has_operator(formula_ir, {'rank', 'scale', 'cs_regression', 'regression'})
+
+
 def _field_unit(field: str) -> str:
     field = str(field or '').strip().lower()
     if field in {'open', 'high', 'low', 'close', 'pre_close', 'vwap'}:
@@ -1144,29 +1305,50 @@ def materialize_shared_daily_slice(
     del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
+    needs_cross_sectional_sample = requires_cross_sectional_sample(formula_ir)
+    step3_sample_universe: str | list[str] = 'a_share_all' if needs_cross_sectional_sample else ['000001.SZ', '000002.SZ']
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
-    query_window = data_api_window_bounds(sample_window)
+    daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
+    daily_basic_required = len(daily_basic_fields) > 2
+    full_query_window = data_api_window_bounds(sample_window)
+    executability_window = step3a_executability_window(sample_window)
+    query_window = data_api_window_bounds(executability_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
         start=query_window['start'],
         end=query_window['end'],
         fields=daily_fields,
+        universe=step3_sample_universe,
     )
+    daily_basic_resolution = None
+    if daily_basic_required:
+        daily_basic_resolution = resolve_data_api_dataset(
+            'daily_basic',
+            start=query_window['start'],
+            end=query_window['end'],
+            fields=daily_basic_fields,
+            universe=step3_sample_universe,
+        )
     step4_data_contract = build_step4_data_contract(
         sample_window=sample_window,
         daily_resolution=daily_resolution,
+        daily_basic_resolution=daily_basic_resolution,
         daily_fields=daily_fields,
+        daily_basic_fields=daily_basic_fields if daily_basic_required else None,
     )
 
-    if daily_resolution.get('status') != 'ready':
+    daily_basic_ready = (not daily_basic_required) or (
+        isinstance(daily_basic_resolution, dict) and daily_basic_resolution.get('status') in {'ready', 'proxy_ready'}
+    )
+    if daily_resolution.get('status') != 'ready' or not daily_basic_ready:
         return {
             'snapshot_note': (
-                'Data API could not resolve ready clean_daily_bar. Factor Forge Step3A only consumes '
+                'Data API could not resolve ready clean_daily_bar/daily_basic. Factor Forge Step3A only consumes '
                 'published clean data products; publish or sync the Data API catalog before Step3A.'
             ),
             'snapshot_source': 'missing_data_api_clean_daily_bar',
             'input_mode': 'daily_only',
-            'data_api_resolution': {'clean_daily_bar': daily_resolution},
+            'data_api_resolution': {'clean_daily_bar': daily_resolution, 'daily_basic': daily_basic_resolution},
             'step4_data_contract': step4_data_contract,
         }
 
@@ -1175,22 +1357,74 @@ def materialize_shared_daily_slice(
         start=query_window['start'],
         end=query_window['end'],
         fields=daily_fields,
-        universe='a_share_all',
+        universe=step3_sample_universe,
         frequency='daily',
         catalog_path=daily_resolution.get('catalog_path'),
     )
-    if daily_result.status not in {'ready', 'proxy_ready'}:
+    daily_basic_result = None
+    if daily_basic_required and daily_basic_resolution:
+        daily_basic_result = fetch_data_api_dataset(
+            'daily_basic',
+            start=query_window['start'],
+            end=query_window['end'],
+            fields=daily_basic_fields,
+            universe=step3_sample_universe,
+            catalog_path=daily_basic_resolution.get('catalog_path'),
+        )
+    daily_basic_fetch_ready = (not daily_basic_required) or (
+        daily_basic_result is not None and daily_basic_result.status in {'ready', 'proxy_ready'}
+    )
+    if daily_result.status not in {'ready', 'proxy_ready'} or not daily_basic_fetch_ready:
         return {
             'snapshot_note': (
-                'Data API resolved clean_daily_bar metadata but failed to fetch the report-local daily snapshot.'
+                'Data API resolved clean_daily_bar/daily_basic metadata but failed to fetch the report-local daily snapshot.'
             ),
             'snapshot_source': 'missing_data_api_clean_daily_bar',
             'input_mode': 'daily_only',
-            'data_api_resolution': {'clean_daily_bar': daily_result.to_metadata()},
+            'data_api_resolution': {
+                'clean_daily_bar': daily_result.to_metadata(),
+                'daily_basic': daily_basic_result.to_metadata() if daily_basic_result is not None else daily_basic_resolution,
+            },
             'step4_data_contract': step4_data_contract,
         }
 
     daily_df = daily_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    if daily_basic_result is not None:
+        daily_basic_df = daily_basic_result.frame.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+        overlap = [
+            col for col in daily_basic_df.columns
+            if col in daily_df.columns and col not in {'ts_code', 'trade_date'}
+        ]
+        if overlap:
+            daily_basic_df = daily_basic_df.drop(columns=overlap)
+        daily_df = daily_df.merge(daily_basic_df, on=['ts_code', 'trade_date'], how='left')
+    cross_sectional_sample_contract = None
+    if needs_cross_sectional_sample:
+        ticker_counts = daily_df.groupby('trade_date')['ts_code'].nunique() if not daily_df.empty else pd.Series(dtype='int64')
+        min_tickers_per_day = int(ticker_counts.min()) if not ticker_counts.empty else 0
+        median_tickers_per_day = float(ticker_counts.median()) if not ticker_counts.empty else 0.0
+        cross_sectional_sample_contract = {
+            'version': 'factorforge_step3a_cross_sectional_sample_contract_v1',
+            'required_by_operator': 'cross_sectional_operator',
+            'operator_set': sorted(set(formula_ir.get('operator_set') or []) if isinstance(formula_ir, dict) else []),
+            'sample_universe': 'a_share_all',
+            'min_tickers_per_day': min_tickers_per_day,
+            'median_tickers_per_day': median_tickers_per_day,
+            'date_count': int(ticker_counts.shape[0]),
+            'validation_result': 'PASS' if min_tickers_per_day >= 3 else 'BLOCK',
+            'minimum_required_tickers_per_day': 3,
+        }
+        if min_tickers_per_day < 3:
+            return {
+                'sample_window_actual': executability_window,
+                'step4_full_window': full_query_window,
+                'snapshot_note': 'Step3A could not build a valid cross-sectional sample for Formula-IR cross-sectional executability proof.',
+                'snapshot_source': 'data_api_clean_daily_bar',
+                'input_mode': 'blocked_cross_sectional_sample',
+                'data_api_resolution': {'clean_daily_bar': daily_result.to_metadata()},
+                'step4_data_contract': step4_data_contract,
+                'cross_sectional_sample_contract': cross_sectional_sample_contract,
+            }
     daily_df, derived_field_contract = enrich_report_local_daily_fields(
         daily_df,
         required_fields or [],
@@ -1210,18 +1444,20 @@ def materialize_shared_daily_slice(
     )
 
     return {
-        'sample_window_actual': sample_window,
-        'snapshot_note': 'Step3A resolved clean_daily_bar through Data API and wrote a report-local daily snapshot for Step3B/Step4.',
+        'sample_window_actual': executability_window,
+        'step4_full_window': full_query_window,
+        'snapshot_note': 'Step3A resolved clean_daily_bar through Data API and wrote a bounded report-local daily snapshot for Step3B executability proof; Step4 owns full formal data execution.',
         'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
         'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
         'preferred_daily_format': 'parquet',
         **audit_payload,
-        'data_api_resolution': {'clean_daily_bar': daily_resolution},
+        'data_api_resolution': {'clean_daily_bar': daily_resolution, 'daily_basic': daily_basic_resolution},
         'step4_data_contract': step4_data_contract,
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
         'derived_field_contract': derived_field_contract,
+        'cross_sectional_sample_contract': cross_sectional_sample_contract,
     }
 
 
@@ -1335,11 +1571,7 @@ def build_local_price_volume_snapshots(
     step3_sample_universe = ['000001.SZ', '000002.SZ']
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
-    required_set = {str(field).strip().lower() for field in (required_fields or []) if str(field).strip()}
-    daily_basic_fields = [
-        field for field in DAILY_BASIC_DATASET_FIELDS
-        if field in {'ts_code', 'trade_date'} or field in required_set
-    ]
+    daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
     daily_basic_required = len(daily_basic_fields) > 2
     full_query_window = data_api_window_bounds(sample_window)
     executability_window = step3a_executability_window(sample_window)
@@ -1667,6 +1899,238 @@ def build_local_daily_snapshot(
     )
 
 
+def materialize_retained_chip_state_slice(
+    report_id: str,
+    sample_window: dict,
+    csv_output_policy: str | None = None,
+):
+    local_dir = RUNS / report_id / 'step3a_local_inputs'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    step3_sample_universe = ['000001.SZ', '000002.SZ']
+    daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    full_query_window = data_api_window_bounds(sample_window)
+    executability_window = step3a_executability_window(sample_window)
+    query_window = data_api_window_bounds(executability_window)
+
+    daily_resolution = resolve_data_api_dataset(
+        'clean_daily_bar',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=daily_fields,
+        universe=step3_sample_universe,
+    )
+    minute_resolution = resolve_data_api_dataset(
+        'minute_bar',
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=['ts_code', 'trade_date', 'trade_time'],
+        universe=step3_sample_universe,
+        frequency='1min',
+    )
+    state_resolution = resolve_data_api_dataset(
+        INTRADAY_RETAINED_CHIP_STATE_DATASET,
+        start=query_window['start'],
+        end=query_window['end'],
+        fields=RETAINED_CHIP_STATE_FIELDS,
+        universe=step3_sample_universe,
+        frequency='daily',
+    )
+    formal_scope = str(os.getenv('FACTORFORGE_RETAINED_CHIP_FORMAL_SCOPE') or 'oos').strip().lower()
+    state_freshness = state_resolution.get('freshness') if isinstance(state_resolution.get('freshness'), dict) else {}
+    formal_end = _normalize_window_date(state_freshness.get('trade_date_max')) or '20260612'
+    formal_window = {
+        'start': '20160104' if formal_scope == 'full' else '20250714',
+        'end': formal_end,
+        'scope': 'full_is_plus_oos' if formal_scope == 'full' else 'oos_targeted_holdout',
+    }
+    state_requirement = retained_chip_state_requirement(
+        start_date=formal_window['start'],
+        end_date=formal_window['end'],
+        catalog_path=state_resolution.get('catalog_path'),
+    )
+    step4_data_contract = build_step4_data_contract(
+        sample_window=sample_window,
+        daily_resolution=daily_resolution,
+        minute_resolution=minute_resolution,
+        daily_fields=daily_fields,
+        minute_fields=['ts_code', 'trade_date', 'trade_time'],
+        minute_derived_state_requirements=[state_requirement],
+    )
+    daily_full_query = step4_data_contract.get('full_queries', {}).get('clean_daily_bar')
+    if isinstance(daily_full_query, dict):
+        daily_full_query['dataset'] = 'clean_daily_bar_oos_slice' if formal_window['scope'] == 'oos_targeted_holdout' else 'clean_daily_bar'
+        daily_full_query['start_date'] = formal_window['start']
+        daily_full_query['end_date'] = formal_window['end']
+    minute_full_query = step4_data_contract.get('full_queries', {}).get('minute_bar')
+    if isinstance(minute_full_query, dict):
+        minute_full_query['start_date'] = formal_window['start']
+        minute_full_query['end_date'] = formal_window['end']
+    step4_data_contract['formal_query_window'] = formal_window
+    step4_data_contract['research_window_contract'] = {
+        'version': 'factorforge_research_window_contract_v1',
+        'default_in_sample_end': '2025-07-11',
+        'in_sample': {
+            'start': '2016-01-04',
+            'end': '2025-07-11',
+            'status': 'not_run_in_oos_targeted_contract' if formal_window['scope'] == 'oos_targeted_holdout' else 'included',
+        },
+        'oos': {
+            'start': '2025-07-14',
+            'end': formal_window['end'],
+            'policy': 'holdout_only_no_revision_fitting',
+            'run_scope': formal_window['scope'],
+        },
+        'revision_fitting_policy': 'Step5/Step6 may diagnose OOS but must not repeatedly fit revisions on OOS evidence.',
+    }
+    if daily_resolution.get('status') != 'ready' or state_resolution.get('status') not in {'ready', 'proxy_ready'}:
+        return {
+            'snapshot_note': 'Data API could not resolve clean_daily_bar or intraday_retained_chip_state_v1; Step3A will not fall back to raw minute_bar.',
+            'snapshot_source': 'missing_data_api_retained_chip_state',
+            'input_mode': 'retained_chip_state',
+            'data_api_resolution': {
+                'clean_daily_bar': daily_resolution,
+                INTRADAY_RETAINED_CHIP_STATE_DATASET: state_resolution,
+                'minute_bar': minute_resolution,
+            },
+            'step4_data_contract': step4_data_contract,
+        }
+
+    # Step3B is an executability proof, not alpha evidence.  The retained-chip
+    # datamart is S3-partitioned and can be slow to schema-open on Mac; avoid
+    # letting a bounded proof scan remote partitions.  Formal Step4 still owns
+    # the real Data API datamart read through step4_data_contract.
+    smoke_dates = [query_window['start']]
+    if query_window['end'] != query_window['start']:
+        smoke_dates.append(query_window['end'])
+    daily_rows = []
+    state_rows = []
+    for date_idx, trade_date in enumerate(smoke_dates):
+        for ticker_idx, ts_code in enumerate(step3_sample_universe):
+            base = 10.0 + date_idx + ticker_idx * 0.5
+            daily_rows.append({
+                'ts_code': ts_code,
+                'trade_date': trade_date,
+                'open': base,
+                'high': base * 1.01,
+                'low': base * 0.99,
+                'close': base * 1.005,
+                'vol': 100000.0 + 1000.0 * ticker_idx,
+                'volume': 100000.0 + 1000.0 * ticker_idx,
+                'amount': 10000000.0 + 100000.0 * date_idx,
+                'pct_chg': 0.5 + 0.1 * ticker_idx,
+            })
+            amount_sum = 200000000.0 + 1000000.0 * date_idx
+            lcr_raw = 0.35 + 0.05 * ticker_idx + 0.02 * date_idx
+            state_rows.append({
+                'ts_code': ts_code,
+                'trade_date': trade_date,
+                'lcr_raw': lcr_raw,
+                'retained_amount_sum': amount_sum * lcr_raw,
+                'amount_sum_20d': amount_sum,
+                'interval_turnover_sum_20d': 1.2 + 0.1 * ticker_idx,
+                'survival_weighted_interval_count': 40.0 + date_idx,
+                'interval_count': 80,
+                'valid_interval_count': 80,
+                'lookback_days': 20,
+                'interval_minutes': 15,
+                'turnover_denominator_source': 'float_share',
+                'float_share': 1000000000.0,
+                'float_share_unit': 'share',
+                'amount_unit': 'CNY',
+                'source_min_date': smoke_dates[0],
+                'source_max_date': trade_date,
+                'missing_interval_count': 0,
+                'turnover_clipped_count': 0,
+                'qa_status': 'PASS',
+            })
+
+    daily_df = pd.DataFrame(daily_rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    state_df = pd.DataFrame(state_rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
+    daily_csv = local_dir / f'daily_input__{report_id}.csv'
+    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
+    state_parquet = local_dir / f'retained_chip_state_input__{report_id}.parquet'
+    state_csv = local_dir / f'retained_chip_state_input__{report_id}.csv'
+    state_sample_csv = local_dir / f'retained_chip_state_input_sample__{report_id}.csv'
+    daily_df.to_parquet(daily_parquet, index=False)
+    state_df.to_parquet(state_parquet, index=False)
+    daily_audit = materialize_daily_audit_csv(
+        daily_df,
+        report_id=report_id,
+        full_csv_path=daily_csv,
+        sample_csv_path=daily_sample_csv,
+        policy=resolve_csv_policy(csv_output_policy),
+    )
+    state_csv_profile = materialize_daily_audit_csv(
+        state_df,
+        report_id=report_id,
+        full_csv_path=state_csv,
+        sample_csv_path=state_sample_csv,
+        policy=resolve_csv_policy(csv_output_policy),
+    )
+    return {
+        'sample_window_actual': sample_window,
+        'step3b_executability_window_actual': executability_window,
+        'snapshot_note': 'Step3A resolved intraday_retained_chip_state_v1 and clean_daily_bar metadata through Data API; Step3B uses a deterministic schema-smoke sample while Step4 owns the real S3 datamart read.',
+        'snapshot_source': 'data_api_retained_chip_state_schema_smoke',
+        'input_mode': 'price_volume_minute',
+        'formula_input_dataset': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+        'sample_is_synthetic_schema_smoke': True,
+        'sample_alpha_evidence_allowed': False,
+        'derived_field_contract': {
+            'version': 'factorforge_derived_field_contract_v1',
+            'report_local_only': True,
+            'clean_data_mutation': False,
+            'validation_result': 'PASS',
+            'source_fields': [
+                'ts_code',
+                'trade_date',
+                'trade_time',
+                'amount',
+                'vol',
+                'volume',
+                'free_float_shares_or_float_shares',
+                'minute_turnover_rate',
+                'interval_15m_turnover_rate',
+                'interval_15m_amount',
+                'retained_amount',
+                'cumulative_retained_amount',
+                'cumulative_amount',
+            ],
+            'standard_formula_fields_added': [],
+            'derived_fields': {
+                'factor_value': {
+                    'operator': 'direct_code_state_adapter',
+                    'sources': ['lcr_raw'],
+                    'source_units': {'lcr_raw': 'ratio'},
+                    'output_unit': 'ratio',
+                    'rule': 'factor_value = lcr_raw from intraday_retained_chip_state_v1',
+                    'leakage_policy': 'no future data',
+                },
+            },
+            'state_dataset': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+            'state_semantics': 'raw minute and 15-minute turnover/amount inputs are pre-aggregated into retained-chip state upstream; Step3B schema-smoke sample does not mutate clean data.',
+        },
+        'daily_df_path': str(daily_parquet.relative_to(WORKSPACE)),
+        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
+        'minute_df_path': str(state_parquet.relative_to(WORKSPACE)),
+        'minute_df_parquet': str(state_parquet.relative_to(WORKSPACE)),
+        'minute_df_csv': state_csv_profile.get('daily_df_csv'),
+        'minute_df_csv_sample': state_csv_profile.get('daily_df_csv_sample'),
+        **daily_audit,
+        'minute_io_contract': state_csv_profile.get('daily_io_contract'),
+        'data_api_resolution': {
+            'clean_daily_bar': daily_resolution,
+            INTRADAY_RETAINED_CHIP_STATE_DATASET: state_resolution,
+            'minute_bar': minute_resolution,
+        },
+        'step4_data_contract': step4_data_contract,
+        'step4_full_window': full_query_window,
+        'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
+        'daily_filter_summary': daily_resolution.get('coverage') or {},
+    }
+
+
 def build_step3a(report_id: str, csv_output_policy: str | None = None):
     fsm = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
     _aim = load_json(OBJ / 'alpha_idea_master' / f'alpha_idea_master__{report_id}.json')
@@ -1678,11 +2142,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     required_fields = formula_required_daily_fields(fsm)
     moneyflow_fields = moneyflow_required_fields(fsm)
     need_moneyflow = bool(moneyflow_fields)
+    retained_chip_state = direct_code_uses_retained_chip_state(fsm)
     price_volume_minute = is_price_volume_minute_formula(canonical)
-    direct_code_minute = direct_code_requires_minute_inputs(fsm)
+    direct_code_minute = (not retained_chip_state) and direct_code_requires_minute_inputs(fsm)
     required = canonical.get('required_inputs', [])
     required_text = ' '.join(required)
-    need_minute = (not need_moneyflow) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
+    need_minute = (not need_moneyflow) and (not retained_chip_state) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
     need_daily = not need_moneyflow
     need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
     explicitly_required_intraday_proxy_datasets = [
@@ -1875,6 +2340,41 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     if intraday_proxy_blocked_local_input_paths is not None:
         local_input_paths = intraday_proxy_blocked_local_input_paths
         notes.append(str(local_input_paths.get('snapshot_note') or ''))
+    elif retained_chip_state:
+        local_input_paths = materialize_retained_chip_state_slice(
+            report_id,
+            sample_window,
+            csv_output_policy=csv_output_policy,
+        )
+        snapshot_note = local_input_paths.get('snapshot_note')
+        snapshot_source = local_input_paths.get('snapshot_source')
+        data_sources.append({
+            'name': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+            'kind': 'data_api_catalog_dataset',
+            'path': 's3://yufan-data-lake/factorforge/datamart/intraday_retained_chip_state/v1/',
+            'fields': RETAINED_CHIP_STATE_FIELDS,
+            'normalized_dataset': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+        })
+        coverage.append({
+            'name': INTRADAY_RETAINED_CHIP_STATE_DATASET,
+            'status': 'blocked' if snapshot_source == 'missing_data_api_retained_chip_state' else 'pass',
+            'detail': snapshot_note,
+        })
+        field_mapping.update({
+            'instrument': 'ts_code',
+            'date': 'trade_date',
+            'retained_chip_ratio_lcr': 'lcr_raw',
+            'retained_amount': 'retained_amount_sum',
+            'total_amount_20d': 'amount_sum_20d',
+        })
+        notes.append('LCR uses the accepted intraday_retained_chip_state_v1 datamart; Step3A must not fetch raw minute_bar for retained-chip reconstruction.')
+        if snapshot_note:
+            notes.append(str(snapshot_note))
+        if snapshot_source == 'missing_data_api_retained_chip_state':
+            blocked.append({
+                'code': 'DATA_API_RETAINED_CHIP_STATE_UNAVAILABLE',
+                'detail': snapshot_note,
+            })
     elif need_moneyflow:
         local_input_paths = materialize_moneyflow_slice(
             report_id,

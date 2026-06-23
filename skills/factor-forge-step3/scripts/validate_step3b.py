@@ -912,7 +912,37 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                     'amount': minute_close * volume,
                 })
     daily_df = add_direct_code_alias_columns(pd.DataFrame(daily_rows))
-    minute_df = add_direct_code_alias_columns(pd.DataFrame(minute_rows))
+    if str((code_contract or {}).get('state_dataset') or '') == 'intraday_retained_chip_state_v1' or 'lcr_raw' in required_fields:
+        state_rows = []
+        for stock_index, ts_code in enumerate(['000001.SZ', '000002.SZ']):
+            for day_index, trade_date in enumerate(dates):
+                amount_sum = 200000000.0 + 1000000.0 * day_index
+                lcr_raw = 0.35 + 0.04 * stock_index + 0.005 * day_index
+                state_rows.append({
+                    'ts_code': ts_code,
+                    'trade_date': trade_date,
+                    'lcr_raw': lcr_raw,
+                    'retained_amount_sum': amount_sum * lcr_raw,
+                    'amount_sum_20d': amount_sum,
+                    'interval_turnover_sum_20d': 1.2 + 0.05 * stock_index,
+                    'survival_weighted_interval_count': 40.0 + day_index,
+                    'interval_count': 80,
+                    'valid_interval_count': 80,
+                    'lookback_days': 20,
+                    'interval_minutes': 15,
+                    'turnover_denominator_source': 'float_share',
+                    'float_share': 1000000000.0,
+                    'float_share_unit': 'share',
+                    'amount_unit': 'CNY',
+                    'source_min_date': dates[0],
+                    'source_max_date': trade_date,
+                    'missing_interval_count': 0,
+                    'turnover_clipped_count': 0,
+                    'qa_status': 'PASS',
+                })
+        minute_df = pd.DataFrame(state_rows)
+    else:
+        minute_df = add_direct_code_alias_columns(pd.DataFrame(minute_rows))
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(daily_df, use_polars)
     minute_input = maybe_polars_frame(minute_df, use_polars)
@@ -972,9 +1002,20 @@ def validate_direct_code_mode(
 ) -> None:
     contract = spec.get('implementation_contract') or {}
     identity = spec.get('artifact_identity') or {}
-    assert contract.get('code_contract'), 'BLOCK_UNSUPPORTED_DIRECT_CODE_VALIDATION: direct_code requires code_contract'
+    code_contract: dict = {}
+    for source in [
+        contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {},
+        (plan.get('implementation_contract') or {}).get('code_contract') if isinstance((plan.get('implementation_contract') or {}).get('code_contract'), dict) else {},
+        plan.get('code_contract') if isinstance(plan.get('code_contract'), dict) else {},
+        qlib_data.get('code_contract') if isinstance(qlib_data.get('code_contract'), dict) else {},
+        hybrid_data.get('code_contract') if isinstance(hybrid_data.get('code_contract'), dict) else {},
+        (handoff.get('implementation_contract') or {}).get('code_contract') if isinstance((handoff.get('implementation_contract') or {}).get('code_contract'), dict) else {},
+        handoff.get('code_contract') if isinstance(handoff.get('code_contract'), dict) else {},
+    ]:
+        code_contract.update(source)
+    assert code_contract, 'BLOCK_UNSUPPORTED_DIRECT_CODE_VALIDATION: direct_code requires code_contract'
     assert identity.get('code_hash') or identity.get('code_contract_hash'), 'direct_code requires code_hash or code_contract_hash'
-    output_schema = plan.get('output_schema') or contract.get('output_schema') or {}
+    output_schema = plan.get('output_schema') or code_contract.get('output_schema') or contract.get('output_schema') or {}
     assert output_schema, 'direct_code requires declared output schema'
     candidates = candidate_direct_code_paths(
         manifest=manifest,
@@ -999,7 +1040,6 @@ def validate_direct_code_mode(
             )
 
     text = implementation_path.read_text(encoding='utf-8')
-    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
     extra_patterns = list(code_contract.get('forbidden_patterns') or contract.get('forbidden_patterns') or [])
     scan_direct_code_text(text, extra_patterns)
     scan_direct_code_ast(text)

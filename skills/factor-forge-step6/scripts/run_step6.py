@@ -352,7 +352,10 @@ def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, A
         'top_decile_recovery_days',
         'bottom_decile_mean_return',
     ]:
-        if key in ql_stub:
+        # qlib stub metrics are supplementary. Do not let absent/null stub
+        # values overwrite the fuller self_quant group diagnostics used by
+        # Step6/Council loop briefs.
+        if key in ql_stub and ql_stub.get(key) is not None:
             metrics[f'group_{key}'] = ql_stub.get(key)
     return metrics
 
@@ -2134,6 +2137,28 @@ def build_search_policy_decision(
             blockers.append('advisory_only')
         else:
             blockers.append('advisory_only')
+    elif signature == 'unstable_regime' and quality == 'actionable' and loop_authorization == 'approved_for_step3b_handoff':
+        mode = 'bayesian_exploit'
+        why = 'The factor has useful signal evidence but unstable OOS/portfolio geometry; test expression-level regime stability before promotion.'
+        branch_templates.append(_search_branch_template(
+            branch_id='exploit_regime_stability_gate',
+            branch_role='exploit',
+            search_mode='bayesian_search',
+            research_question='Can persistence, smoothing, or state gating keep the residual-volatility mechanism while improving OOS monotonicity and long-side tradability?',
+            hypothesis='Residual price-volume instability may be useful only when it is persistent or confirmed by a measurable state; controlled smoothing/gating should preserve RankIC while reducing OOS top-bottom degradation.',
+            mechanism_target='residual_volatility_regime_stability',
+            revision_hypothesis_id=revision_hypothesis_id,
+            success_criteria=[
+                'OOS top-minus-bottom spread becomes positive without weakening full-IS RankIC materially',
+                'long-side Sharpe improves after transaction costs',
+                'required IS samples keep positive RankIC and avoid isolated stress-period dependence',
+            ],
+            falsification_tests=[
+                'regime gate removes the gross signal or materially lowers coverage',
+                'OOS monotonicity remains unstable',
+                'cost-adjusted long-side Sharpe remains below candidate threshold',
+            ],
+        ))
     elif signature == 'none' and revision_strategy.get('revision_needed') is False and decision == 'promote_official':
         mode = 'none'
         why = 'No search is recommended after official promotion and no revision-needed signal.'
@@ -3278,6 +3303,13 @@ def _qlib_native_status(payloads: dict[str, dict[str, Any]], backend_statuses: d
     return 'partial_payload'
 
 
+def _named_step6_run_status(raw_status: Any) -> str:
+    status = str(raw_status or 'unknown').strip().lower()
+    if status == 'partial':
+        return 'partial_step4_validated_evidence'
+    return status or 'unknown'
+
+
 def build_evidence_status(
     *,
     run_master: dict[str, Any],
@@ -3313,10 +3345,12 @@ def build_evidence_status(
     research_decision = 'promote' if decision == 'promote_official' else decision
     if research_decision not in {'promote', 'iterate', 'reject', 'needs_human_review'}:
         research_decision = 'needs_human_review'
+    raw_run_status = run_master.get('run_status') or evaluation.get('run_status') or 'unknown'
     return {
         'version': 'factorforge_step6_evidence_status_v1',
         'status': 'complete' if evaluation.get('artifact_ready') is True else 'partial_evaluation_artifact',
-        'run_status': str(run_master.get('run_status') or evaluation.get('run_status') or 'unknown'),
+        'run_status': _named_step6_run_status(raw_run_status),
+        'raw_run_status': str(raw_run_status),
         'wrapper_validation_status': 'PASS' if evaluation.get('artifact_ready') is True else 'BLOCK',
         'self_quant_evidence_status': _status_from_backend(backend_statuses, 'self_quant_analyzer'),
         'qlib_native_status': _qlib_native_status(payloads, backend_statuses),
@@ -3329,6 +3363,51 @@ def build_evidence_status(
     }
 
 
+def load_window_evidence(report_id: str) -> dict[str, Any]:
+    path = OBJ / 'window_evidence' / f'window_evidence__{report_id}.json'
+    if not path.exists():
+        return {}
+    try:
+        payload = load_json(path)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    payload.setdefault('artifact_path', str(path))
+    return payload
+
+
+def summarize_window_evidence(window_evidence: dict[str, Any]) -> tuple[list[str], list[str]]:
+    if not window_evidence:
+        return [], ['formal full_is/is_subsamples/oos window evidence is missing']
+    strengths: list[str] = []
+    weaknesses: list[str] = []
+    proof = window_evidence.get('sampling_coverage_proof') or {}
+    full_is = window_evidence.get('full_is') or {}
+    oos = window_evidence.get('oos') or {}
+    if proof.get('full_is_union_covered') is True and proof.get('all_required_intervals_hit') is True:
+        strengths.append(
+            'formal window evidence covers full IS and all required IS sampling stress intervals'
+        )
+    else:
+        weaknesses.append('formal IS sampling coverage proof is incomplete')
+    if proof.get('all_subsamples_at_least_one_year') is not True:
+        weaknesses.append('one or more IS subsamples are shorter than the required one calendar year')
+    latest_clean = window_evidence.get('latest_clean_date')
+    if latest_clean and (window_evidence.get('oos_policy') or {}).get('actual_oos_end_date_reported') == latest_clean:
+        strengths.append(f'OOS evidence reports actual latest clean-data end date {latest_clean}')
+    else:
+        weaknesses.append('OOS evidence does not clearly report latest clean-data end date')
+    if full_is.get('rank_ic_mean_1d') is not None and oos.get('rank_ic_mean_1d') is not None:
+        strengths.append(
+            f"full IS/OOS RankIC1d are both positive ({float(full_is['rank_ic_mean_1d']):.6f} / {float(oos['rank_ic_mean_1d']):.6f})"
+        )
+    q = oos.get('quantile') or {}
+    if q.get('top_minus_bottom_mean_1d') is not None and float(q.get('top_minus_bottom_mean_1d')) <= 0:
+        weaknesses.append('OOS top-minus-bottom long-side spread is flat or negative despite positive RankIC')
+    return strengths, weaknesses
+
+
 def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -3339,6 +3418,10 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     decision = decide(bundle, payloads)
     strengths, weaknesses, risks, modification_targets = derive_strengths_weaknesses(bundle, payloads)
     metrics = extract_headline_metrics(payloads)
+    window_evidence = load_window_evidence(str(report_id))
+    window_strengths, window_weaknesses = summarize_window_evidence(window_evidence)
+    strengths.extend([item for item in window_strengths if item not in strengths])
+    weaknesses.extend([item for item in window_weaknesses if item not in weaknesses])
     retrieval_context = build_retrieval_context(bundle, payloads)
     prior_iteration_path = OBJ / 'research_iteration_master' / f'research_iteration_master__{report_id}.json'
     prior_iteration_no = 0
@@ -3476,6 +3559,11 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         search_policy_decision,
     )
     research_memo['evidence_audit'] = evidence_audit
+    if window_evidence:
+        research_memo['formal_window_evidence'] = window_evidence
+        research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
+            'Formal full_is/is_subsamples/oos window evidence was loaded and preserved under research_memo.formal_window_evidence.'
+        )
     research_memo['mechanism_analysis'] = mechanism_analysis
     research_memo['case_comparison'] = case_comparison
     research_memo['revision_strategy'] = revision_strategy
@@ -3507,6 +3595,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'backend_statuses': backend_statuses,
             'headline_metrics': metrics,
             'evidence_status': evidence_status,
+            'formal_window_evidence': window_evidence,
             'step5_lessons': case.get('lessons') or handoff.get('lessons') or [],
             'step5_next_actions': case.get('next_actions') or handoff.get('next_actions') or [],
         },

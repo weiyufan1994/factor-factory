@@ -101,3 +101,38 @@ def test_direct_code_smoke_accepts_keyword_interface_with_non_null_signal(tmp_pa
     )
 
     validate_step3b.run_direct_code_fixture_smoke(impl, {"columns": ["ts_code", "trade_date", "factor_value"]})
+
+
+def test_lcr_float_value_denominator_law_registry_entry_executes():
+    import pandas as pd
+
+    from factor_factory.factor_laws.moneyflow.registry import resolve_law
+
+    law = resolve_law("dim_scale_float_value_denominator_v1")
+    assert law.law_family == "retained_chip"
+    assert law.adapter_options["supports_intraday_retained_chip_state_v1"] is True
+
+    namespace: dict[str, object] = {}
+    exec(law.source_code, namespace)
+    daily = pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "trade_date": ["20250102", "20250102"],
+            "close": [10.0, 20.0],
+        }
+    )
+    state = pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "trade_date": ["20250102", "20250102"],
+            "retained_amount_sum": [50_000_000.0, 80_000_000.0],
+            "float_share": [1_000_000_000.0, 2_000_000_000.0],
+            "float_share_unit": ["share", "share"],
+            "amount_unit": ["CNY", "CNY"],
+        }
+    )
+    output = namespace["compute_factor"](daily_df=daily, minute_df=state)
+    assert list(output.columns) == ["ts_code", "trade_date", "factor_value"]
+    assert len(output) == 2
+    assert output["factor_value"].notna().all()
+    assert output["factor_value"].iloc[0] > output["factor_value"].iloc[1]

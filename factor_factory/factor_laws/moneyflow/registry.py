@@ -128,6 +128,91 @@ def compute_factor(daily_df=None, minute_df=None):
 '''.strip()
 
 
+_LCR_FLOAT_VALUE_DENOMINATOR_SOURCE = r'''
+def _factorforge_lcr_unit_multiplier(unit_value, *, kind):
+    text = str(unit_value or "").strip().lower()
+    if not text:
+        return 1.0
+    if "万" in text or "10k" in text or "wan" in text:
+        return 10000.0
+    if "thousand" in text or "千" in text:
+        return 1000.0
+    if "share" in text or "cny" in text or "yuan" in text or "rmb" in text:
+        return 1.0
+    return 1.0
+
+
+def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
+    """Compute retained-chip pressure scaled by current free-float value."""
+    import numpy as np
+    import pandas as pd
+
+    if derived_state_df is None:
+        raise ValueError("derived_state_df is required for intraday_retained_chip_state_v1")
+    if daily_df is None:
+        raise ValueError("daily_df with close is required for float-value denominator")
+
+    state = derived_state_df.copy()
+    daily = daily_df.copy()
+    required_state = {"ts_code", "trade_date", "retained_amount_sum", "float_share"}
+    missing_state = required_state.difference(state.columns)
+    if missing_state:
+        raise ValueError(f"intraday_retained_chip_state_v1 missing columns: {sorted(missing_state)}")
+    required_daily = {"ts_code", "trade_date", "close"}
+    missing_daily = required_daily.difference(daily.columns)
+    if missing_daily:
+        raise ValueError(f"daily_df missing columns for LCR V2: {sorted(missing_daily)}")
+
+    state_cols = [
+        c
+        for c in [
+            "ts_code",
+            "trade_date",
+            "retained_amount_sum",
+            "float_share",
+            "float_share_unit",
+            "amount_unit",
+            "qa_status",
+        ]
+        if c in state.columns
+    ]
+    state = state.loc[:, state_cols].copy()
+    daily = daily.loc[:, ["ts_code", "trade_date", "close"]].copy()
+    state["trade_date"] = state["trade_date"].astype(str).str.replace("-", "", regex=False)
+    daily["trade_date"] = daily["trade_date"].astype(str).str.replace("-", "", regex=False)
+    frame = state.merge(daily, on=["ts_code", "trade_date"], how="left", validate="many_to_one")
+
+    retained = pd.to_numeric(frame["retained_amount_sum"], errors="coerce").astype(float)
+    float_share = pd.to_numeric(frame["float_share"], errors="coerce").astype(float)
+    close = pd.to_numeric(frame["close"], errors="coerce").astype(float)
+    if "float_share_unit" in frame.columns:
+        share_scale = frame["float_share_unit"].map(
+            lambda x: _factorforge_lcr_unit_multiplier(x, kind="share")
+        ).astype(float)
+    else:
+        share_scale = 1.0
+    if "amount_unit" in frame.columns:
+        amount_scale = frame["amount_unit"].map(
+            lambda x: _factorforge_lcr_unit_multiplier(x, kind="amount")
+        ).astype(float)
+    else:
+        amount_scale = 1.0
+
+    retained_cny = retained * amount_scale
+    float_value = close * float_share * share_scale
+    ratio = retained_cny / float_value.replace(0.0, np.nan)
+    ratio = ratio.where((ratio > 0.0) & np.isfinite(ratio))
+    frame["factor_value"] = np.log1p(ratio)
+    out = frame.loc[:, ["ts_code", "trade_date", "factor_value"]].copy()
+    return out.dropna(subset=["factor_value"])
+
+
+def compute_factor(daily_df=None, minute_df=None, derived_state_df=None):
+    state_df = derived_state_df if derived_state_df is not None else minute_df
+    return compute_factor_from_derived_state(daily_df=daily_df, derived_state_df=state_df)
+'''.strip()
+
+
 register_law(
     DirectCodeLaw(
         law_id="moneyflow_registry_smoke_signed_amount_v1",
@@ -145,6 +230,24 @@ register_law(
         adapter_options={"requires_minute_or_derived_state": True},
         metadata={
             "description": "Smoke-test derived-state law entry. Production moneyflow laws must register their reviewed implementation under their own law_id."
+        },
+    )
+)
+register_law(
+    DirectCodeLaw(
+        law_id="dim_scale_float_value_denominator_v1",
+        source_code=_LCR_FLOAT_VALUE_DENOMINATOR_SOURCE,
+        law_family="retained_chip",
+        adapter_options={
+            "requires_minute_or_derived_state": True,
+            "supports_intraday_retained_chip_state_v1": True,
+            "requires_daily_close": True,
+        },
+        metadata={
+            "description": "LCR V2 retained-chip law: survival-weighted retained amount scaled by current free-float value.",
+            "formula_law": "factor_value = log1p(retained_amount_sum / (close * adjusted_float_share))",
+            "state_dataset": "intraday_retained_chip_state_v1",
+            "source_report": "huaxi_20250529_lcr_retained_chip_ratio",
         },
     )
 )

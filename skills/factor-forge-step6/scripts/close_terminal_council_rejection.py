@@ -103,6 +103,14 @@ def iteration_path(root: Path, report_id: str) -> Path:
     return root / "objects" / "research_iteration_master" / f"research_iteration_master__{report_id}.json"
 
 
+def factor_library_all_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "factor_library_all" / f"factor_record__{report_id}.json"
+
+
+def research_knowledge_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "research_knowledge_base" / f"knowledge_record__{report_id}.json"
+
+
 def handoff_path(root: Path, report_id: str) -> Path:
     return root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
 
@@ -517,6 +525,70 @@ def update_loop_brief(root: Path, report_id: str, iteration: dict[str, Any], res
         md_path.write_text(text, encoding="utf-8")
 
 
+def update_record_for_terminal_reject(
+    record: dict[str, Any],
+    *,
+    updated_iteration: dict[str, Any],
+    artifact_path: Path,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    updated = json.loads(json.dumps(record))
+    decision = "reject"
+    reason = reject_reason(results)
+    updated["decision"] = decision
+    updated["terminal_council_rejection"] = {
+        "terminal_rejection_version": TERMINAL_REJECTION_VERSION,
+        "terminal_council_rejection_path": str(artifact_path),
+        "selected_agent_result_ids": selected_ids(results),
+        "reason": reason,
+    }
+    updated["decision_lineage"] = updated_iteration.get("decision_lineage") or updated.get("decision_lineage") or {}
+    updated["knowledge_provenance"] = updated_iteration.get("knowledge_provenance") or updated.get("knowledge_provenance") or {}
+    updated["research_memo"] = (updated_iteration.get("research_judgment") or {}).get("research_memo") or updated.get("research_memo")
+    updated["learning_and_innovation"] = (updated_iteration.get("knowledge_writeback") or {}).get("learning_and_innovation", updated.get("learning_and_innovation"))
+    updated["revision_taxonomy"] = (updated_iteration.get("knowledge_writeback") or {}).get("revision_taxonomy", updated.get("revision_taxonomy"))
+    updated["program_search_policy"] = (updated_iteration.get("knowledge_writeback") or {}).get("program_search_policy", updated.get("program_search_policy"))
+    updated["diversity_position"] = (updated_iteration.get("knowledge_writeback") or {}).get("diversity_position", updated.get("diversity_position"))
+    chain = updated.get("experience_chain")
+    if isinstance(chain, dict):
+        attempt = chain.get("current_attempt")
+        if isinstance(attempt, dict):
+            attempt["decision"] = decision
+            attempt["terminal_council_rejection_path"] = str(artifact_path)
+            failures = attempt.setdefault("strongest_failure_signature", [])
+            if isinstance(failures, list) and reason not in failures:
+                failures.append(reason)
+    updated["loop_action"] = updated_iteration.get("loop_action") or updated.get("loop_action") or {}
+    updated["updated_at_utc"] = utc_now()
+    return updated
+
+
+def refresh_terminal_reject_library_records(
+    *,
+    root: Path,
+    report_id: str,
+    updated_iteration: dict[str, Any],
+    results: list[dict[str, Any]],
+    artifact_path: Path,
+) -> list[Path]:
+    refreshed: list[Path] = []
+    for path in (factor_library_all_path(root, report_id), research_knowledge_path(root, report_id)):
+        if not path.exists():
+            continue
+        record = load_json(path)
+        write_json(
+            path,
+            update_record_for_terminal_reject(
+                record,
+                updated_iteration=updated_iteration,
+                artifact_path=artifact_path,
+                results=results,
+            ),
+        )
+        refreshed.append(path)
+    return refreshed
+
+
 def run_validate_step6(root: Path, report_id: str) -> dict[str, Any]:
     env = dict(os.environ)
     env["FACTORFORGE_ROOT"] = str(root)
@@ -604,6 +676,8 @@ def main() -> int:
         "brief_json": read_text_if_exists(brief_json_path),
         "brief_md": read_text_if_exists(brief_md_path),
         "artifact": read_text_if_exists(artifact_path),
+        "factor_library_all": read_text_if_exists(factor_library_all_path(root, rid)),
+        "research_knowledge_base": read_text_if_exists(research_knowledge_path(root, rid)),
     }
     artifact = {
         "terminal_rejection_version": TERMINAL_REJECTION_VERSION,
@@ -641,6 +715,14 @@ def main() -> int:
     if out_handoff.exists():
         out_handoff.unlink()
     update_loop_brief(root, rid, updated, results, artifact_path)
+    refreshed_records = refresh_terminal_reject_library_records(
+        root=root,
+        report_id=rid,
+        updated_iteration=updated,
+        results=results,
+        artifact_path=artifact_path,
+    )
+    artifact["refreshed_terminal_reject_records"] = [str(path) for path in refreshed_records]
 
     validate_result: dict[str, Any] | None = None
     if not args.skip_validate_step6:
@@ -652,6 +734,8 @@ def main() -> int:
             restore_text_snapshot(brief_json_path, rollback["brief_json"])
             restore_text_snapshot(brief_md_path, rollback["brief_md"])
             restore_text_snapshot(artifact_path, rollback["artifact"])
+            restore_text_snapshot(factor_library_all_path(root, rid), rollback["factor_library_all"])
+            restore_text_snapshot(research_knowledge_path(root, rid), rollback["research_knowledge_base"])
             artifact["rolled_back_active_writes"] = True
             write_json(artifact_path, artifact)
             block(TOKEN_VALIDATION_FAILED, {"report_id": rid, "validate_step6": validate_result})

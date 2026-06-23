@@ -672,6 +672,20 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
         for item in components
         if isinstance(item, dict)
     )
+    falsification_tests = [
+        item.strip()
+        for item in re.split(r"[;\n]", str(qa.get("falsification_answer") or ""))
+        if item.strip()
+    ][:5]
+    if len(falsification_tests) < 2:
+        memo_tests = memo.get("falsification_tests")
+        if isinstance(memo_tests, list):
+            falsification_tests = [str(item).strip() for item in memo_tests if str(item).strip()][:5]
+    if len(falsification_tests) < 2:
+        falsification_tests = [
+            "Fail if long-side evidence contradicts the declared payoff.",
+            "Fail if component ablation contradicts the model.",
+        ]
     return {
         "version": "factorforge_formula_specific_derivation_v1",
         "economic_to_math_model_selection": {
@@ -721,11 +735,7 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
         "expected_metric_signature": str(qa.get("metric_signature_answer") or math.get("expected_metric_signature") or ""),
         "observed_metric_comparison": str(qa.get("metric_signature_answer") or ""),
         "metric_feedback_to_model": str(qa.get("falsification_answer") or ""),
-        "falsification_tests": [
-            item.strip()
-            for item in re.split(r"[;\n]", str(qa.get("falsification_answer") or ""))
-            if item.strip()
-        ][:5] or ["Fail if long-side evidence contradicts the declared payoff.", "Fail if component ablation contradicts the model."],
+        "falsification_tests": falsification_tests,
         "kill_criteria": [
             "Kill if no concrete payer remains after evidence review.",
             "Kill if long-only, cost-adjusted evidence stays negative after formula-level mutation.",

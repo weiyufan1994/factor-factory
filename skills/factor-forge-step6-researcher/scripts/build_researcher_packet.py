@@ -60,6 +60,52 @@ def fmt_pct(value: float | None) -> str:
     return f'{value:.2%}'
 
 
+def describe_formula_family(factor_id: str, operator_set: list[Any], required_fields: list[Any]) -> str:
+    ops = {str(op).lower() for op in operator_set}
+    fields = {str(field).lower() for field in required_fields}
+    if {'correlation', 'rank'} <= ops and {'high', 'volume'} <= fields:
+        return (
+            f'{factor_id} is a price-volume rank-correlation factor: it asks whether '
+            'the cross-sectional co-movement between ranked high-price location and ranked volume '
+            'contains a repeatable repair or pressure state.'
+        )
+    if {'covariance', 'rank'} <= ops and {'close', 'volume'} <= fields:
+        return (
+            f'{factor_id} is a price-volume rank-covariance factor: it asks whether '
+            'price location and volume jointly reveal crowding, absorption, or reversal pressure.'
+        )
+    if 'correlation' in ops or 'covariance' in ops:
+        return (
+            f'{factor_id} is a rank-dependence factor: it uses rolling dependence between '
+            'observable market fields as a candidate state variable.'
+        )
+    return (
+        f'{factor_id} is an operator-mode Alpha101-style factor: its current evidence must be '
+        'judged from its own formula, identity, and Step4 metrics rather than a borrowed template.'
+    )
+
+
+def describe_cost_monetization_gap(
+    *,
+    annual_return: float | None,
+    cogs_annual: float | None,
+    cost_adj_return: float | None,
+    max_dd: float | None,
+    recovery: float | None,
+) -> str:
+    if cost_adj_return is not None and cost_adj_return < 0:
+        return 'turnover cost currently consumes the long-side revenue.'
+    if cogs_annual is not None and annual_return is not None and cogs_annual > annual_return:
+        return 'estimated trading COGS exceed gross long-side revenue.'
+    if max_dd is not None and max_dd < -0.35:
+        return 'drawdown exceeds the soft capital-impairment limit.'
+    if recovery is not None and recovery > 252:
+        return 'recovery time is too long for the default risk-budget standard.'
+    if cost_adj_return is not None and cost_adj_return > 0:
+        return 'cost-adjusted long-side revenue is positive, but robustness and formal window proof still matter.'
+    return 'monetization remains incomplete until cost, drawdown, and formal window evidence are confirmed.'
+
+
 def build_researcher_memo(
     rid: str,
     paths: dict[str, Path],
@@ -149,8 +195,16 @@ def build_researcher_memo(
     elif sharpe is not None and sharpe >= 0.8 and max_dd is not None and max_dd >= -0.35 and recovery is not None and recovery <= 252 and (cost_adj_return or 0) > 0:
         decision = 'promote_official'
 
+    family_description = describe_formula_family(factor_id, operator_set, required_fields)
+    monetization_gap = describe_cost_monetization_gap(
+        annual_return=annual_return,
+        cogs_annual=cogs_annual,
+        cost_adj_return=cost_adj_return,
+        max_dd=max_dd,
+        recovery=recovery,
+    )
     revision_changes = [
-        'Test longer correlation and summation windows, e.g. corr window 3 -> 5/10 and sum window 3 -> 5/10, to reduce turnover and improve persistence.',
+        'Test nearby correlation and summation windows around the current expression to reduce turnover and improve persistence.',
         'Add a signal-stability transform such as rolling mean or hysteresis on the operator output before ranking, while preserving information-set legality.',
         'Test delayed execution variants of the expression to reduce same-day microstructure noise and turnover without changing portfolio mechanics.',
         'Keep revision scope inside the factor expression or Step3B code; do not repair adoption through long-short, decile trading, or portfolio-expression changes.',
@@ -164,9 +218,8 @@ def build_researcher_memo(
         'source_files': {key: str(path) for key, path in paths.items()},
         'researcher_decision': decision,
         'executive_summary': (
-            f'{factor_id} implements the canonical Alpha013 rank-correlation formula through operator mode. '
-            f'The signal has positive Rank IC and a candidate-level gross long-side Sharpe, but turnover cost, drawdown, and recovery make the current version unsuitable for official admission. '
-            'The correct next action is expression-level iteration, not portfolio or short-leg repair.'
+            f'{family_description} '
+            f'Current Step4 evidence gives Rank IC={rank_ic:.4f}' if rank_ic is not None else f'{family_description} Current Step4 evidence has missing Rank IC'
         ),
         'formula_review': {
             'plain_language': f'Formula: {formula_text}. It ranks high and volume cross-sectionally, measures short-window rolling correlation, ranks that correlation, sums it over time, and negates the result.',
@@ -202,7 +255,7 @@ def build_researcher_memo(
                 'Review rank IC, quantile NAV, long-side NAV, turnover, and cost-adjusted long-side NAV artifacts before approving any code change.',
                 'Long-short NAV is diagnostic only and should be treated as a warning source, not as an adoption metric.',
             ],
-            'monetization_gap': 'Gross long-side Sharpe is candidate-level, but annual turnover COGS and drawdown convert the factor into a negative economic-net-alpha business.',
+            'monetization_gap': monetization_gap,
             'metrics': {
                 'rank_ic_mean': rank_ic,
                 'rank_ic_ir': rank_ic_ir,
@@ -246,7 +299,10 @@ def build_researcher_memo(
                 'Do not promote factors whose gross signal is positive but economic net alpha is negative after turnover cost.',
                 'Treat long-short spread and short-leg strength as diagnostics only under the current long-only mandate.',
             ],
-            'novelty_vs_library': 'Alpha013 is a canonical formula case using operator mode; its lesson is mainly about turnover-cost fragility in short-window rank-correlation alphas.',
+            'novelty_vs_library': (
+                f'{factor_id} should be compared with similar price-volume Alpha101 cases, '
+                'but same-factor evidence requires matching identity/hash lineage.'
+            ),
         },
         'learning_and_innovation': {
             'transferable_patterns': [
@@ -265,25 +321,25 @@ def build_researcher_memo(
                 'Test a turnover-aware objective during formula search rather than optimizing IC alone.',
             ],
             'reuse_instruction_for_future_agents': [
-                'Retrieve this case when a short-window Alpha101-style formula has positive gross IC but weak cost-adjusted economics.',
+                f'Retrieve {factor_id} when a related Alpha101-style formula has positive gross IC but unresolved cost-adjusted or window-coverage evidence.',
                 'Start future revisions from the operator formula and preserve formula/hash lineage.',
                 'Require long-side cost-adjusted Sharpe, drawdown, and recovery evidence before promotion.',
             ],
         },
         'experience_chain': {
-            'current_attempt_summary': 'Canonical Alpha013 operator implementation generated valid factor values and Step4/5 evidence; Step6 should iterate due to cost and drawdown, not implementation contamination.',
-            'prior_cases_used': [],
-            'failed_branches_to_preserve': [
-                'Current raw Alpha013 formula: positive signal but poor cost-adjusted economics.',
+                'current_attempt_summary': f'{factor_id} operator implementation generated valid factor values and Step4/5 evidence; Step6 should judge this identity on its own metrics and provenance.',
+                'prior_cases_used': [],
+                'failed_branches_to_preserve': [
+                f'Current raw {factor_id} formula: preserve both the positive ordering evidence and unresolved formal-proof weaknesses.',
             ],
             'what_future_agents_should_retrieve': [
-                'Alpha013 cost-adjusted long-side failure mode.',
-                'Short-window rank-correlation turnover fragility.',
+                f'{factor_id} current evidence and revision loop outcome.',
+                'Price-volume rank-dependence turnover and robustness lessons.',
             ],
         },
         'revision_taxonomy': {
             'macro_revision_options': [
-                'Treat Alpha013 as a market microstructure/liquidity-pressure family and search for more persistent variants.',
+                f'Treat {factor_id} as a price-volume microstructure family and test whether its pressure/repair state is persistent enough for long-only use.',
             ],
             'micro_revision_options': revision_changes[:3],
             'portfolio_revision_options': ['Forbidden: do not repair by shorting low deciles, changing rebalance mechanics, or using long-short adoption.'],
@@ -335,7 +391,7 @@ def build_researcher_memo(
         },
         'knowledge_to_write_back': {
             'success_lessons': [
-                'The operator engine can faithfully implement Alpha013 without UBL/CPV fallback contamination.',
+                f'The operator engine can faithfully implement {factor_id} without sample-family fallback contamination.',
                 'Gross signal quality is nonzero and worth one revision round.',
             ],
             'failure_lessons': [

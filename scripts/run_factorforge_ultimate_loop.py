@@ -170,6 +170,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--subagent-provider", default=None)
     ap.add_argument("--subagent-model", default=None)
     ap.add_argument("--factorforge-root", default=None)
+    ap.add_argument("--factor-workspace", default=None)
     ap.add_argument("--runtime-manifest", default=None)
     ap.add_argument("--proof-path", default=None)
     ap.add_argument("--dry-run", action="store_true")
@@ -203,6 +204,19 @@ def run_command(command: list[str], *, env: dict[str, str], dry_run: bool) -> di
     return item
 
 
+def wrapper_factor_workspace(args: argparse.Namespace, factorforge_root: Path) -> Path | None:
+    if args.factor_workspace:
+        return Path(args.factor_workspace).expanduser()
+    if args.runtime_manifest:
+        manifest = load_json_if_exists(Path(args.runtime_manifest).expanduser())
+        raw_workspace = manifest.get("factor_workspace") if isinstance(manifest, dict) else None
+        if raw_workspace:
+            return Path(str(raw_workspace)).expanduser()
+    if (factorforge_root / "manifest.json").exists():
+        return factorforge_root
+    return None
+
+
 def ultimate_command(args: argparse.Namespace, report_id: str, start_step: str, factorforge_root: Path) -> list[str]:
     command = [
         sys.executable,
@@ -224,6 +238,9 @@ def ultimate_command(args: argparse.Namespace, report_id: str, start_step: str, 
         "--factorforge-root",
         str(factorforge_root),
     ]
+    factor_workspace = wrapper_factor_workspace(args, factorforge_root)
+    if factor_workspace is not None:
+        command.extend(["--factor-workspace", str(factor_workspace)])
     if args.runtime_dispatch:
         command.extend(["--runtime-dispatch", args.runtime_dispatch])
     if args.subagent_provider:

@@ -56,6 +56,9 @@ def manifest_report_id(manifest: dict[str, Any]) -> str:
 
 
 def manifest_factorforge_root(manifest: dict[str, Any]) -> Path:
+    workspace = manifest.get('factor_workspace')
+    if workspace:
+        return Path(workspace).expanduser()
     root = manifest.get('factorforge_root')
     if not root:
         raise ValueError('runtime manifest is missing factorforge_root')

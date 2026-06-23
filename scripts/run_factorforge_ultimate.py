@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -261,6 +262,177 @@ def load_json_if_exists(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return {}
+
+
+DATA_REQUEST_BLOCKER_PATTERNS = (
+    'missing_data_api',
+    'Data API could not resolve',
+    'Data API catalog',
+    'dataset_not_found',
+    'missing_intraday_flow_proxy_dataset',
+    'Required clean/precomputed intraday proxy dataset',
+    'BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED',
+    'raw minute',
+    'raw-minute',
+    'full-window IO',
+    'full window IO',
+    'datamart',
+)
+
+
+def safe_request_token(raw: str) -> str:
+    token = re.sub(r'[^A-Za-z0-9_.-]+', '_', raw.strip())
+    return token.strip('_') or 'unknown'
+
+
+def resolve_data_api_root(repo_root: Path) -> Path | None:
+    candidates = []
+    env_root = os.environ.get('FACTORFORGE_DATA_API_ROOT')
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    candidates.extend(
+        [
+            Path('/Users/humphrey/projects/factor-factory-data-api'),
+            repo_root.parent / 'factor-factory-data-api',
+            repo_root.parent / 'factorforge-data-api',
+        ]
+    )
+    for candidate in candidates:
+        if (candidate / 'scripts' / 'data_request_inbox.py').exists():
+            return candidate
+    return None
+
+
+def extract_missing_datasets(payload: Any) -> list[str]:
+    found: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'missing_datasets' and isinstance(item, list):
+                    found.extend(str(dataset) for dataset in item if str(dataset).strip())
+                elif key in {'dataset_id', 'requested_dataset_id'} and isinstance(item, str):
+                    if any(marker in item for marker in ('intraday_', 'daily_basic', 'minute_bar', 'clean_daily')):
+                        found.append(item)
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    deduped: list[str] = []
+    for item in found:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def data_request_candidate_from_failure(
+    *,
+    report_id: str,
+    command_name: str,
+    output: str,
+    ctx: Any,
+) -> dict[str, Any] | None:
+    if command_name not in {'run_step3', 'validate_step3', 'run_step3b', 'validate_step3b', 'run_step4', 'validate_step4'}:
+        return None
+    feasibility_path = ctx.objects_root / 'validation' / f'data_feasibility_report__{report_id}.json'
+    feasibility = load_json_if_exists(feasibility_path)
+    combined = output
+    if feasibility:
+        combined += '\n' + json.dumps(feasibility, ensure_ascii=False)
+    if not any(pattern in combined for pattern in DATA_REQUEST_BLOCKER_PATTERNS):
+        return None
+    missing_datasets = extract_missing_datasets(feasibility)
+    if 'intraday_flow_distribution_moments_v1' in combined and 'intraday_flow_distribution_moments_v1' not in missing_datasets:
+        missing_datasets.insert(0, 'intraday_flow_distribution_moments_v1')
+    if 'daily_basic_backtest_base' in combined and 'daily_basic_backtest_base' not in missing_datasets:
+        missing_datasets.append('daily_basic_backtest_base')
+    if not missing_datasets:
+        if 'minute' in combined.lower() or 'intraday' in combined.lower():
+            missing_datasets = ['intraday_derived_datamart']
+        elif 'clean_daily_bar' in combined:
+            missing_datasets = ['clean_daily_bar']
+        else:
+            missing_datasets = [f'{safe_request_token(report_id)}_data_dependency']
+    dataset_id = missing_datasets[0]
+    request_type = 'new_datamart' if any(token in dataset_id for token in ('intraday_', 'datamart', 'state')) else 'coverage_repair'
+    timestamp = utc_now().replace('-', '').replace(':', '').replace('T', '').replace('Z', '')
+    return {
+        'schema_version': 'data_request_v1',
+        'request_id': f'{safe_request_token(report_id)}__{safe_request_token(dataset_id)}__{timestamp}',
+        'created_at_utc': utc_now(),
+        'created_by': 'factorforge-ultimate-wrapper',
+        'report_id': report_id,
+        'priority': 'P0',
+        'requested_dataset_id': dataset_id,
+        'request_type': request_type,
+        'research_need': {
+            'economic_purpose': 'Automatically generated from Factor Forge Ultimate data blocker.',
+            'formula_or_state': '',
+            'upstream_datasets': missing_datasets,
+        },
+        'window': {
+            'is_start': '20160104',
+            'is_end': '20250711',
+            'oos_start': '20250714',
+            'research_window_rule': 'OOS marked holdout; do not fit parameters on OOS',
+        },
+        'information_set': {
+            'cutoff_times': [],
+            'no_future_data': True,
+            'state_continuity_required': 'state' in dataset_id or 'slow' in dataset_id,
+        },
+        'unique_key': ['ts_code', 'trade_date'],
+        'required_fields': ['ts_code', 'trade_date'],
+        'qa_requirements': [
+            'duplicate_key_count=0',
+            'missing_dates=[]',
+            'coverage_summary',
+            'representative_read_smoke',
+            'worker_read_smoke',
+        ],
+        'execution_preference': {
+            'preferred_executor': 'research_worker',
+            'batch_spot_allowed': True,
+            'requires_cost_estimate_before_full_run': True,
+        },
+        'boundaries': {
+            'do_not_start_clean_data': True,
+            'do_not_start_search_worker': True,
+            'do_not_start_official_promotion': True,
+            'do_not_write_factor_forge_research_artifacts': True,
+            'do_not_start_factor_loop': True,
+        },
+        'auto_generation_context': {
+            'command': command_name,
+            'feasibility_path': str(feasibility_path),
+            'source': 'run_factorforge_ultimate_failure_handler',
+        },
+    }
+
+
+def write_data_request_candidate(candidate: dict[str, Any], *, repo_root: Path, ctx: Any) -> dict[str, Any]:
+    paths: dict[str, str] = {}
+    local_dir = ctx.active_root / 'objects' / 'data_requests'
+    local_path = local_dir / f"data_request__{safe_request_token(candidate['request_id'])}.json"
+    write_json_atomic(local_path, candidate)
+    paths['local_request_path'] = str(local_path)
+    data_api_root = resolve_data_api_root(repo_root)
+    if data_api_root is not None:
+        inbox = data_api_root / 'factorforge' / 'data' / 'requests' / 'inbox'
+        inbox_path = inbox / f"data_request__{safe_request_token(candidate['request_id'])}.json"
+        write_json_atomic(inbox_path, candidate)
+        paths['data_api_inbox_path'] = str(inbox_path)
+        paths['data_api_root'] = str(data_api_root)
+    return {
+        'status': 'CREATED',
+        'request_id': candidate['request_id'],
+        'dataset_id': candidate['requested_dataset_id'],
+        'request_type': candidate['request_type'],
+        **paths,
+    }
 
 
 def research_memo_from_iteration(iteration: dict[str, Any]) -> dict[str, Any]:
@@ -577,6 +749,7 @@ def main() -> int:
     if ctx.factor_workspace:
         env['FACTORFORGE_FACTOR_WORKSPACE'] = str(ctx.factor_workspace)
         env['FACTORFORGE_FACTOR_WORKSPACE_MANIFEST'] = str(ctx.factor_workspace_manifest or (ctx.factor_workspace / 'manifest.json'))
+        env.setdefault('FACTORFORGE_DATA_CATALOG', str(ctx.factorforge_root / 'data' / 'catalog' / 'data_catalog.json'))
     env['FACTORFORGE_ULTIMATE_RUN'] = '1'
 
     py = sys.executable
@@ -643,6 +816,7 @@ def main() -> int:
         'expected_artifacts_before': collect_expected_artifacts(manifest),
         'expected_artifacts_after': {},
         'step3b_mode_decision': collect_step3b_mode_decision(manifest),
+        'runtime_manifest_refreshes': [],
         'revision_council': {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'status': 'skipped', 'reason': 'disabled'} if args.council_mode == 'off' else {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'subagent_provider': args.subagent_provider, 'subagent_model': args.subagent_model, 'status': 'pending'},
         'research_loop_policy': {
             'policy': args.research_loop_policy,
@@ -660,6 +834,33 @@ def main() -> int:
         'usage_rule': 'This proof report is the only acceptable evidence for a claimed factor-forge-ultimate run. Agents must not replace formal Step4/5/6 execution by ad-hoc metrics or post-hoc object writing.',
     }
     write_json_atomic(proof_path, proof)
+
+    def refresh_runtime_manifest_for_command(command_name: str) -> None:
+        nonlocal manifest
+        if args.manifest or args.dry_run:
+            return
+        if command_name not in {
+            'run_step3',
+            'validate_step3',
+            'run_step3b',
+            'validate_step3b',
+            'run_step4',
+            'run_step5',
+            'run_step6',
+        }:
+            return
+        manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
+        write_json_atomic(manifest_path, manifest)
+        refresh = {
+            'command': command_name,
+            'manifest_path': str(manifest_path),
+            'refreshed_at_utc': utc_now(),
+            'manifest_identity': manifest.get('manifest_identity') or {},
+        }
+        proof.setdefault('runtime_manifest_refreshes', []).append(refresh)
+        proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
+        proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
+        write_json_atomic(proof_path, proof)
 
     if args.council_mode == 'agentic':
         if args.agentic_council_executor == 'none':
@@ -713,6 +914,7 @@ def main() -> int:
             return 1
 
     for name, command in commands:
+        refresh_runtime_manifest_for_command(name)
         result = run_command(name, command, cwd=ctx.repo_root, env=env, dry_run=args.dry_run)
         proof['commands'].append(asdict(result))
         proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
@@ -736,8 +938,21 @@ def main() -> int:
                 return 0
             proof['status'] = 'FAIL'
             proof['failure'] = {'command': name, 'returncode': result.returncode}
+            data_request_candidate = data_request_candidate_from_failure(
+                report_id=args.report_id,
+                command_name=name,
+                output=output,
+                ctx=ctx,
+            )
+            if data_request_candidate:
+                proof['data_request'] = write_data_request_candidate(data_request_candidate, repo_root=ctx.repo_root, ctx=ctx)
+                proof['status'] = 'BLOCK_DATA_REQUEST_PENDING'
+                proof['failure']['data_request_id'] = proof['data_request']['request_id']
+                proof['failure']['block_class'] = 'data_request_pending'
             write_json_atomic(proof_path, proof)
             print(f'[FAIL] {name} rc={result.returncode}')
+            if proof.get('data_request'):
+                print(f"[DATA_REQUEST] {proof['data_request']['request_id']}")
             print(f'[PROOF] {proof_path}')
             return int(result.returncode or 1)
         write_json_atomic(proof_path, proof)

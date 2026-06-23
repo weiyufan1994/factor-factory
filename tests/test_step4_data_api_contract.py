@@ -48,8 +48,10 @@ def _write_catalog(tmp_path: Path) -> Path:
     return catalog_path
 
 
-def test_step4_materializes_full_inputs_from_data_api_contract(tmp_path):
+def test_step4_materializes_full_inputs_from_data_api_contract(tmp_path, monkeypatch):
     run_step4 = _load_run_step4()
+    monkeypatch.setenv("FACTORFORGE_BACKTEST_BASE_CACHE_ROOT", str(tmp_path / "backtest_base_cache"))
+    monkeypatch.setenv("FACTORFORGE_DISABLE_CLEAN_DAILY_LOCAL_PARQUET", "1")
     catalog_path = _write_catalog(tmp_path)
     contract = {
         "version": "factorforge_step4_data_contract_v1",
@@ -85,3 +87,43 @@ def test_step4_does_not_reuse_step3b_sample_or_legacy_factor_parquet():
 
     assert classified["source"] == "step3b_sample_or_legacy_factor_parquet"
     assert classified["upstream_recomputed_factor"] is False
+
+
+def test_step4_rejects_backtest_base_cache_with_polluted_daily_basic_controls(tmp_path, monkeypatch):
+    run_step4 = _load_run_step4()
+    monkeypatch.setenv("FACTORFORGE_BACKTEST_BASE_CACHE_ROOT", str(tmp_path / "backtest_base_cache"))
+    monkeypatch.setenv("FACTORFORGE_BACKTEST_BASE_MIN_CONTROL_TICKERS", "2")
+    contract = {
+        "version": "factorforge_step4_data_contract_v1",
+        "data_api_package": "factorforge_data_api",
+        "catalog_path": str(tmp_path / "catalog.json"),
+        "formal_factor_values_owner": "Step4",
+        "full_queries": {
+            "clean_daily_bar": {
+                "dataset": "clean_daily_bar",
+                "start_date": "20200101",
+                "end_date": "20200131",
+                "universe": "a_share_all",
+            },
+            "daily_basic": {
+                "dataset": "daily_basic",
+                "start_date": "20200101",
+                "end_date": "20200131",
+                "universe": "a_share_all",
+                "fields": ["turnover_rate"],
+            },
+        },
+    }
+    polluted_base = pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": "20200102", "close": 10.0, "turnover_rate": 1.0},
+            {"ts_code": "000002.SZ", "trade_date": "20200102", "close": 20.0, "turnover_rate": None},
+            {"ts_code": "000003.SZ", "trade_date": "20200102", "close": 30.0, "turnover_rate": None},
+        ]
+    )
+    run_step4._write_backtest_base_cache(polluted_base, contract, result_metadata={})
+
+    cached_path, profile = run_step4._load_backtest_base_cache(contract)
+
+    assert cached_path is None
+    assert profile is None

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .operators import (
+    cs_regression,
     cs_rank,
     cs_scale,
     rolling_corr,
@@ -168,6 +169,8 @@ def _eval(node: dict, frame: pd.DataFrame):
         return ts_argmax(args[0], _window(args[1]), frame)
     if op == 'scale':
         return cs_scale(args[0], frame)
+    if op == 'cs_regression':
+        return cs_regression(args[0], args[1], _window(args[2]), frame)
     if op == 'plus':
         return args[0] + args[1]
     if op == 'minus':
@@ -303,6 +306,8 @@ def _eval_cached(
                 result = ts_argmax(args[0], _window(args[1]), frame)
         elif op == 'scale':
             result = cs_scale(args[0], frame)
+        elif op == 'cs_regression':
+            result = cs_regression(args[0], args[1], _window(args[2]), frame)
         elif op == 'plus':
             result = args[0] + args[1]
         elif op == 'minus':

@@ -96,6 +96,14 @@ def _normalize_symbols(symbols: Iterable[str] | None) -> set[str] | None:
     return {str(symbol).strip() for symbol in symbols if str(symbol).strip()}
 
 
+def _full_universe_min_tickers() -> int:
+    raw = os.getenv('FACTORFORGE_DAILY_BASIC_FULL_UNIVERSE_MIN_TICKERS', '100')
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return 100
+
+
 def _stable_frame_hash(frame: pd.DataFrame, metadata: dict[str, Any] | None = None) -> str:
     data = frame.drop(columns=['artifact_hash'], errors='ignore').copy()
     sort_cols = [col for col in ['trade_date', 'ts_code'] if col in data.columns]
@@ -205,6 +213,7 @@ def write_daily_basic_parquet_partitions(
             'schema_version': DAILY_BASIC_PARQUET_SCHEMA_VERSION,
             'producer_version': DAILY_BASIC_PARQUET_PRODUCER_VERSION,
             'source_data_version': source_data_version,
+            'universe_scope': 'full_universe',
             'trade_date': date,
             'columns': [str(col) for col in part.columns],
         }
@@ -258,6 +267,8 @@ def load_daily_basic_parquet_partitions(
     scanned_partitions = 0
     selected_paths: list[str] = []
     cache_root_used: str | None = None
+    rejected_roots: list[dict[str, Any]] = []
+    min_full_universe_tickers = _full_universe_min_tickers() if symbol_set is None else 0
     for candidate_root in cache_roots:
         if not candidate_root.exists():
             continue
@@ -272,18 +283,38 @@ def load_daily_basic_parquet_partitions(
         if not part_paths:
             continue
         cache_root_used = str(candidate_root)
+        root_frames: list[pd.DataFrame] = []
+        root_selected_paths: list[str] = []
+        root_rejected: dict[str, Any] | None = None
         for path in part_paths:
             scanned_partitions += 1
             available_columns = pd.read_parquet(path).head(0).columns
             use_columns = [col for col in parquet_columns if col in available_columns]
             frame = pd.read_parquet(path, columns=use_columns)
+            if min_full_universe_tickers and 'ts_code' in frame.columns:
+                ticker_count = int(frame['ts_code'].nunique())
+                if ticker_count < min_full_universe_tickers:
+                    root_rejected = {
+                        'cache_root': str(candidate_root),
+                        'path': str(path),
+                        'reason': 'full_universe_partition_ticker_count_below_minimum',
+                        'ticker_count': ticker_count,
+                        'min_ticker_count': min_full_universe_tickers,
+                    }
+                    break
             if symbol_set and 'ts_code' in frame.columns:
                 frame = frame[frame['ts_code'].astype('string').isin(symbol_set)]
             for column in requested_columns:
                 if column not in frame.columns:
                     frame[column] = pd.NA
-            frames.append(frame[requested_columns])
-            selected_paths.append(str(path))
+            root_frames.append(frame[requested_columns])
+            root_selected_paths.append(str(path))
+        if root_rejected:
+            rejected_roots.append(root_rejected)
+            cache_root_used = None
+            continue
+        frames = root_frames
+        selected_paths = root_selected_paths
         break
     if not frames:
         return pd.DataFrame(columns=requested_columns), {
@@ -291,9 +322,10 @@ def load_daily_basic_parquet_partitions(
             'dataset_id': DAILY_BASIC_DATASET_ID,
             'selected_format': 'none',
             'cache_hit': False,
-            'cache_status': 'miss',
+            'cache_status': 'partial_partition_miss' if rejected_roots else 'miss',
             'cache_root': cache_root_used,
             'candidate_roots': [str(path) for path in cache_roots],
+            'rejected_roots': rejected_roots,
             'row_count': 0,
             'date_count': 0,
             'ticker_count': 0,
@@ -342,18 +374,34 @@ def get_daily_basic_with_profile(
     csv_started = time.perf_counter()
     frame = _read_daily_basic_from_csv(start=start, end=end, symbols=symbols, columns=columns, paths=paths)
     csv_seconds = time.perf_counter() - csv_started
-    write_profile = write_daily_basic_parquet_partitions(
-        frame,
-        root=parquet_root,
-        source_data_version=source_data_version,
-    ) if not frame.empty else {}
+    symbol_set = _normalize_symbols(symbols)
+    should_write_shared_cache = symbol_set is None
+    write_profile = (
+        write_daily_basic_parquet_partitions(
+            frame,
+            root=parquet_root,
+            source_data_version=source_data_version,
+        )
+        if should_write_shared_cache and not frame.empty
+        else {}
+    )
+    if symbol_set is not None and not frame.empty:
+        cache_status = 'csv_symbol_filtered_no_shared_cache_write'
+        selected_format = 'csv'
+    elif write_profile:
+        cache_status = 'backfilled_from_csv'
+        selected_format = 'parquet'
+    else:
+        cache_status = 'empty_source'
+        selected_format = 'csv_empty'
     profile = {
         'version': 'factorforge_daily_basic_cache_profile_v1',
         'dataset_id': DAILY_BASIC_DATASET_ID,
-        'selected_format': 'parquet' if write_profile else 'csv_empty',
+        'selected_format': selected_format,
         'cache_hit': False,
-        'cache_status': 'backfilled_from_csv' if write_profile else 'empty_source',
-        'cache_root': write_profile.get('root') if isinstance(write_profile, dict) else str(parquet_root or default_daily_basic_parquet_root()),
+        'cache_status': cache_status,
+        'cache_root': write_profile.get('root') if isinstance(write_profile, dict) and write_profile else str(parquet_root or default_daily_basic_parquet_root()),
+        'shared_cache_write_skipped': bool(symbol_set is not None and not frame.empty),
         'csv_load_seconds': csv_seconds,
         'write_profile': write_profile,
         'row_count': int(len(frame)),

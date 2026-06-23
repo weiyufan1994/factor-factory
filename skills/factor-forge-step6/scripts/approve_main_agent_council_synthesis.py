@@ -49,6 +49,25 @@ REQUIRED_REVISION_FORBIDDEN_CHANGES = [
     "no_decile_trading",
     "no_shared_clean_data_mutation",
 ]
+VALID_REVISION_MATH_OBJECTS = {
+    "estimator_kernel",
+    "lag_window",
+    "state_variable",
+    "projection_operator",
+    "smoothing_regularization",
+    "stopping_rule",
+    "threshold_boundary",
+    "model_family_challenge",
+}
+VALID_REVISION_MODEL_LAYERS = {
+    "economic_hypothesis",
+    "primary_mechanism_model",
+    "stochastic_projection",
+    "observable_estimator",
+    "implementation_contract",
+}
+VALID_IMPLEMENTATION_MODE_PREFERENCES = {"operator", "hybrid", "direct_code", "unknown"}
+VALID_OVERFIT_RISKS = {"low", "medium", "high", "unknown"}
 
 
 def utc_now() -> str:
@@ -276,10 +295,13 @@ def synthesis_revision_hypothesis(selected: dict[str, Any], implementation_mode:
     kill = selected.get("kill_criteria") if isinstance(selected.get("kill_criteria"), list) else []
     expression_change = nonempty_str(selected.get("formula_mutation_description")) or f"Apply selected Council synthesis law {selected.get('law_id')}"
     math_change = nonempty_str(selected.get("math_model_link")) or nonempty_str(selected.get("economic_mechanism_link"))
+    mechanism_target = nonempty_str(selected.get("economic_mechanism_link")) or "Refine the factor mechanism while preserving the parent economic direction."
+    if "mechanism" not in mechanism_target.lower():
+        mechanism_target = f"Mechanism challenge: {mechanism_target}"
     return {
         "hypothesis_id": safe_token(selected.get("law_id")),
         "hypothesis": nonempty_str(selected.get("why_selected")) or f"Test selected Council synthesis law {selected.get('law_id')}.",
-        "mechanism_target": nonempty_str(selected.get("economic_mechanism_link")) or "Refine the factor mechanism while preserving the parent economic direction.",
+        "mechanism_target": mechanism_target,
         "revision_model_layer": "observable_estimator",
         "revision_target_math_object": "estimator_kernel",
         "expression_change": expression_change,
@@ -294,6 +316,46 @@ def synthesis_revision_hypothesis(selected: dict[str, Any], implementation_mode:
         "why_not_portfolio_fix": "The failure is in the expression-level state estimator and math mechanism, so the revision must change Step3B factor construction rather than portfolio weights, long-short adoption, or decile trading.",
         "forbidden_changes": REQUIRED_REVISION_FORBIDDEN_CHANGES[:],
     }
+
+
+def revision_hypothesis_contract_ok(hypothesis: Any) -> bool:
+    if not isinstance(hypothesis, dict):
+        return False
+    forbidden_changes = set(hypothesis.get("forbidden_changes") or [])
+    required_strings = [
+        "hypothesis_id",
+        "hypothesis",
+        "mechanism_target",
+        "expression_change",
+        "math_change",
+        "why_not_portfolio_fix",
+    ]
+    if any(not nonempty_str(hypothesis.get(key)) for key in required_strings):
+        return False
+    required_lists = [
+        "expected_metric_effect",
+        "math_falsification_tests",
+        "expected_metric_change",
+        "falsification_tests",
+        "kill_criteria",
+    ]
+    if any(not nonempty_list(hypothesis.get(key)) for key in required_lists):
+        return False
+    if len(hypothesis.get("expected_metric_change") or []) < 2:
+        return False
+    if len(hypothesis.get("falsification_tests") or []) < 2:
+        return False
+    if len(hypothesis.get("kill_criteria") or []) < 2:
+        return False
+    if hypothesis.get("revision_model_layer") not in VALID_REVISION_MODEL_LAYERS:
+        return False
+    if hypothesis.get("revision_target_math_object") not in VALID_REVISION_MATH_OBJECTS:
+        return False
+    if hypothesis.get("implementation_mode_preference") not in VALID_IMPLEMENTATION_MODE_PREFERENCES:
+        return False
+    if hypothesis.get("risk_of_overfit") not in VALID_OVERFIT_RISKS:
+        return False
+    return set(REQUIRED_REVISION_FORBIDDEN_CHANGES).issubset(forbidden_changes)
 
 
 def build_revision_council_ref(root: Path, report_id: str, summary: dict[str, Any]) -> dict[str, Any]:
@@ -374,7 +436,11 @@ def approve_iteration(
     if primary_failure_signature not in VALID_PRIMARY_FAILURE_SIGNATURES:
         primary_failure_signature = "cost_too_high"
     revision_hypotheses = final.get("revision_hypotheses")
-    if not isinstance(revision_hypotheses, list) or not revision_hypotheses:
+    if (
+        not isinstance(revision_hypotheses, list)
+        or not revision_hypotheses
+        or not all(revision_hypothesis_contract_ok(item) for item in revision_hypotheses)
+    ):
         revision_hypotheses = [synthesis_revision_hypothesis(selected, implementation_mode)]
     final.update(
         {

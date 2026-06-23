@@ -40,7 +40,7 @@ from factor_factory.data_access import build_forward_return_frame, infer_signal_
 from factor_factory.data_access.minute_derived import (
     DEFAULT_MINUTE_CUTOFF_TIME,
     FLOW_STATE_REQUIRED_COLUMNS,
-    MINUTE_DERIVED_FLOW_STATE_V1,
+MINUTE_DERIVED_FLOW_STATE_V1,
     load_flow_state_partitions,
     normalize_cutoff_time,
     normalize_trade_date,
@@ -55,6 +55,7 @@ from factor_factory.runtime_context import (
 )
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
+TRADE_DATE_FETCH_STATE_DATASETS = {'intraday_retained_chip_state_v1'}
 
 STEP4_RUN_METADATA_OWNED_FIELDS = {
     'report_id',
@@ -247,7 +248,9 @@ def _frame_key_stats(df: Any) -> dict[str, Any]:
             'start': None,
             'end': None,
         }
-    normalized_dates = normalize_trade_date_series(df['trade_date']).dt.strftime('%Y%m%d')
+    # Step4 already consumes normalized daily snapshots. Avoid expensive
+    # full-column datetime formatting here; identity stats only need YYYYMMDD.
+    normalized_dates = df['trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
     return {
         'row_count': int(len(df)),
         'date_count': int(normalized_dates.nunique()),
@@ -956,11 +959,15 @@ def write_backend_payloads(
             if backend == 'qlib_backtest':
                 preflight = preflight_qlib_native(report_id, backend_cfg)
                 if preflight.get('status') != 'ready':
+                    preflight_status = 'preflight_blocked'
+                    if preflight.get('status') == 'ready':
+                        preflight_status = 'preflight_ready'
                     payload = {
                         'backend': backend,
                         'report_id': report_id,
                         'status': 'skipped',
                         'mode': backend_cfg.get('mode', 'native'),
+                        'qlib_native_status': preflight_status,
                         'summary': {'reason': preflight.get('reason')},
                         'qlib_preflight': preflight,
                         'shared_evaluation_context': {
@@ -1017,6 +1024,7 @@ def write_backend_payloads(
                     new_item['summary'] = payload.get('native_backtest_metrics') or payload.get('stub_backtest_metrics', payload)
                     if preflight is not None:
                         payload.setdefault('qlib_preflight', {**preflight, 'native_attempted': True})
+                        payload.setdefault('qlib_native_status', qlib_native_status_from_backend_runs([new_item], {'backends': {'qlib_native': {'status': preflight.get('status')}}}))
                         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
             timing_entry = {
                 'attempted': True,
@@ -1320,6 +1328,12 @@ def add_direct_code_alias_columns(df: Any) -> Any:
         out['volume'] = out['vol']
     if 'volume' in out.columns and 'vol' not in out.columns:
         out['vol'] = out['volume']
+    if 'pct_chg' in out.columns and 'returns' not in out.columns:
+        out['returns'] = pd.to_numeric(out['pct_chg'], errors='coerce') / 100.0
+    if 'returns' in out.columns and 'return' not in out.columns:
+        out['return'] = out['returns']
+    if 'return' in out.columns and 'returns' not in out.columns:
+        out['returns'] = out['return']
     if 'trade_time' in out.columns and 'datetime' not in out.columns:
         out['datetime'] = out['trade_time']
     if 'datetime' in out.columns and 'trade_time' not in out.columns:
@@ -1986,7 +2000,7 @@ def _minute_derived_state_requirements(contract: dict[str, Any], dpm: dict[str, 
 def _minute_flow_state_requirement(contract: dict[str, Any], dpm: dict[str, Any] | None = None) -> dict[str, Any] | None:
     for requirement in _minute_derived_state_requirements(contract, dpm):
         dataset_id = str(requirement.get('dataset_id') or '').strip()
-        if dataset_id in {MINUTE_DERIVED_FLOW_STATE_V1, 'intraday_flow_distribution_moments_v1'}:
+        if dataset_id:
             return requirement
     return None
 
@@ -2019,6 +2033,32 @@ def _generic_minute_full_window_forbidden(dates: list[str]) -> bool:
     return len(dates) > max_days
 
 
+def _catalog_dataset_columns(dataset_id: str, catalog_path: str | Path | None) -> set[str] | None:
+    if not catalog_path:
+        return None
+    path = Path(catalog_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    datasets = payload.get('datasets') if isinstance(payload, dict) else None
+    entry = datasets.get(dataset_id) if isinstance(datasets, dict) else None
+    if not isinstance(entry, dict):
+        entry = payload.get(dataset_id) if isinstance(payload, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    columns = entry.get('columns')
+    if columns is None and isinstance(entry.get('schema'), dict):
+        columns = entry['schema'].get('columns')
+    if isinstance(columns, dict):
+        columns = list(columns)
+    if not isinstance(columns, list):
+        return None
+    return {str(column) for column in columns}
+
+
 def _load_required_minute_flow_state(
     *,
     requirement: dict[str, Any],
@@ -2035,23 +2075,70 @@ def _load_required_minute_flow_state(
     source_data_version = requirement.get('source_data_version')
     fields = requirement.get('required_fields') or FLOW_STATE_REQUIRED_COLUMNS
     if dataset_id != MINUTE_DERIVED_FLOW_STATE_V1:
-        required_fields = list(dict.fromkeys([*fields, 'ts_code', 'trade_date', 'cutoff_time']))
+        catalog_path = requirement.get('catalog_path') or minute_query.get('catalog_path')
+        catalog_columns = _catalog_dataset_columns(dataset_id, catalog_path)
+        include_cutoff_field = 'cutoff_time' in fields
+        if catalog_columns is not None:
+            include_cutoff_field = include_cutoff_field or 'cutoff_time' in catalog_columns
+        else:
+            include_cutoff_field = bool(requirement.get('requires_cutoff_time_column'))
+        required_fields = list(dict.fromkeys([
+            *fields,
+            'ts_code',
+            'trade_date',
+            *(['cutoff_time'] if include_cutoff_field else []),
+        ]))
         started = time.perf_counter()
-        result = fetch_data_api_dataset(
-            dataset_id,
-            start=dates[0],
-            end=dates[-1],
-            fields=required_fields,
-            universe=minute_query.get('universe') or 'a_share_all',
-            frequency=requirement.get('frequency') or 'daily',
-            catalog_path=requirement.get('catalog_path') or minute_query.get('catalog_path'),
-        )
-        if result.status not in {'ready', 'proxy_ready'}:
-            raise SystemExit(
-                f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
-                f"status={result.status} reason={result.blocked_reason}"
+        if dataset_id in TRADE_DATE_FETCH_STATE_DATASETS:
+            frames: list[pd.DataFrame] = []
+            date_profiles: list[dict[str, Any]] = []
+            for date in dates:
+                date_result = fetch_data_api_dataset(
+                    dataset_id,
+                    start=date,
+                    end=date,
+                    fields=required_fields,
+                    universe=minute_query.get('universe') or 'a_share_all',
+                    frequency=requirement.get('frequency') or 'daily',
+                    catalog_path=catalog_path,
+                )
+                if date_result.status not in {'ready', 'proxy_ready'}:
+                    raise SystemExit(
+                        f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
+                        f"date={date} status={date_result.status} reason={date_result.blocked_reason}"
+                    )
+                if not date_result.frame.empty:
+                    frames.append(date_result.frame.copy())
+                date_profiles.append({
+                    'trade_date': date,
+                    'status': date_result.status,
+                    'row_count': int(len(date_result.frame)),
+                    'blocked_reason': date_result.blocked_reason,
+                })
+            frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=required_fields)
+            result_metadata = {
+                'date_fetch_count': len(date_profiles),
+                'date_fetch_empty_count': sum(1 for item in date_profiles if int(item.get('row_count') or 0) == 0),
+                'date_fetch_rows': sum(int(item.get('row_count') or 0) for item in date_profiles),
+                'date_fetch_profile_sample': date_profiles[:3] + date_profiles[-3:] if len(date_profiles) > 6 else date_profiles,
+            }
+        else:
+            result = fetch_data_api_dataset(
+                dataset_id,
+                start=dates[0],
+                end=dates[-1],
+                fields=required_fields,
+                universe=minute_query.get('universe') or 'a_share_all',
+                frequency=requirement.get('frequency') or 'daily',
+                catalog_path=catalog_path,
             )
-        frame = result.frame.copy()
+            if result.status not in {'ready', 'proxy_ready'}:
+                raise SystemExit(
+                    f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
+                    f"status={result.status} reason={result.blocked_reason}"
+                )
+            frame = result.frame.copy()
+            result_metadata = result.to_metadata()
         rows_before_cutoff = int(len(frame))
         if 'cutoff_time' in frame.columns:
             normalized_cutoff = normalize_cutoff_time(cutoff_time)
@@ -2068,7 +2155,7 @@ def _load_required_minute_flow_state(
                 f"BLOCK_STEP4_MINUTE_DERIVED_STATE_EMPTY: {dataset_id} cutoff_time={cutoff_time} "
                 f"date_window={dates[0]}..{dates[-1]}"
             )
-        profile = result.to_metadata()
+        profile = dict(result_metadata)
         profile.update({
             'dataset_id': dataset_id,
             'cutoff_time': normalize_cutoff_time(cutoff_time),
@@ -2077,7 +2164,9 @@ def _load_required_minute_flow_state(
             'date_count_after_filter': int(frame['trade_date'].nunique()) if 'trade_date' in frame.columns else None,
             'ticker_count_after_filter': int(frame['ts_code'].nunique()) if 'ts_code' in frame.columns else None,
             'load_seconds': time.perf_counter() - started,
-            'load_mode': 'data_api_minute_derived_state',
+            'load_mode': 'data_api_minute_derived_state_by_trade_date'
+            if dataset_id in TRADE_DATE_FETCH_STATE_DATASETS
+            else 'data_api_minute_derived_state',
         })
         return frame, profile
 
@@ -2206,7 +2295,7 @@ def compute_factor_from_minute_derived_state(
             raise SystemExit(
                 'BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED: '
                 'minute factor has derived-state requirement, but implementation cannot consume '
-                f'{MINUTE_DERIVED_FLOW_STATE_V1}; add compute_factor_from_derived_state or regenerate direct_code. '
+                f'{dataset_id}; add compute_factor_from_derived_state or regenerate direct_code. '
                 f'error={type(exc).__name__}:{exc}'
             ) from exc
     if not isinstance(result, pd.DataFrame):
@@ -2283,6 +2372,117 @@ def _contract_flag(contract: dict[str, Any], key: str) -> bool:
     return bool(value)
 
 
+def _backtest_base_min_control_tickers() -> int:
+    raw = os.getenv('FACTORFORGE_BACKTEST_BASE_MIN_CONTROL_TICKERS', '100')
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return 100
+
+
+def _backtest_base_min_control_date_ratio() -> float:
+    raw = os.getenv('FACTORFORGE_BACKTEST_BASE_MIN_CONTROL_DATE_RATIO', '0.95')
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except ValueError:
+        return 0.95
+
+
+def _daily_basic_control_columns_from_contract(contract: dict[str, Any]) -> list[str]:
+    daily_basic_query = _contract_query(contract, 'full_queries', 'daily_basic')
+    if not daily_basic_query:
+        return []
+    fields = daily_basic_query.get('fields')
+    candidates: list[str] = []
+    if isinstance(fields, list):
+        candidates.extend(str(field) for field in fields)
+    candidates.extend(['total_mv', 'turnover_rate', 'turnover_rate_f', 'volume_ratio'])
+    alias_map = {
+        'turnover': 'turnover_rate',
+        'market_cap': 'total_mv',
+        'circ_market_cap': 'circ_mv',
+    }
+    normalized: list[str] = []
+    for column in candidates:
+        resolved = alias_map.get(column, column)
+        if resolved not in {'ts_code', 'trade_date'} and resolved not in normalized:
+            normalized.append(resolved)
+    return normalized
+
+
+def _backtest_base_control_coverage(frame: pd.DataFrame, control_columns: list[str]) -> dict[str, Any]:
+    coverage: dict[str, Any] = {}
+    for column in control_columns:
+        if column not in frame.columns:
+            coverage[column] = {
+                'present': False,
+                'non_null_rows': 0,
+                'non_null_ticker_count': 0,
+                'non_null_date_count': 0,
+            }
+            continue
+        mask = frame[column].notna()
+        coverage[column] = {
+            'present': True,
+            'non_null_rows': int(mask.sum()),
+            'non_null_ticker_count': int(frame.loc[mask, 'ts_code'].nunique()) if 'ts_code' in frame.columns else 0,
+            'non_null_date_count': int(frame.loc[mask, 'trade_date'].nunique()) if 'trade_date' in frame.columns else 0,
+        }
+    return coverage
+
+
+def _backtest_base_cache_control_violation(
+    data_path: Path,
+    contract: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    control_columns = _daily_basic_control_columns_from_contract(contract)
+    if not control_columns:
+        return None
+    min_tickers = _backtest_base_min_control_tickers()
+    if min_tickers <= 0:
+        return None
+    available_columns = metadata.get('columns') if isinstance(metadata.get('columns'), list) else []
+    present_controls = [column for column in control_columns if column in available_columns]
+    if not present_controls:
+        return {
+            'reason': 'daily_basic_control_columns_missing_from_cache',
+            'required_control_columns': control_columns,
+            'min_ticker_count': min_tickers,
+        }
+    read_columns = list(dict.fromkeys(['ts_code', 'trade_date'] + present_controls))
+    try:
+        frame = pd.read_parquet(data_path, columns=read_columns)
+    except Exception as exc:
+        return {
+            'reason': 'daily_basic_control_coverage_read_failed',
+            'error': str(exc),
+            'required_control_columns': control_columns,
+            'min_ticker_count': min_tickers,
+        }
+    coverage = _backtest_base_control_coverage(frame, present_controls)
+    total_dates = int(frame['trade_date'].nunique()) if 'trade_date' in frame.columns and len(frame) else 0
+    min_date_count = int(total_dates * _backtest_base_min_control_date_ratio())
+    for column, stats in coverage.items():
+        if stats.get('non_null_ticker_count', 0) < min_tickers:
+            return {
+                'reason': 'daily_basic_control_ticker_coverage_below_minimum',
+                'column': column,
+                'coverage': coverage,
+                'min_ticker_count': min_tickers,
+            }
+        if stats.get('non_null_date_count', 0) < min_date_count:
+            return {
+                'reason': 'daily_basic_control_date_coverage_below_minimum',
+                'column': column,
+                'coverage': coverage,
+                'total_dates': total_dates,
+                'min_date_count': min_date_count,
+                'min_date_ratio': _backtest_base_min_control_date_ratio(),
+            }
+    return None
+
+
 def _backtest_base_cache_paths(contract: dict[str, Any]) -> tuple[Path, Path, dict[str, Any]]:
     identity = _backtest_base_identity(contract)
     identity_hash = _stable_json_hash(identity)
@@ -2303,6 +2503,9 @@ def _load_backtest_base_cache(contract: dict[str, Any]) -> tuple[Path | None, di
     except Exception:
         return None, None
     if metadata.get('identity_hash') != identity.get('identity_hash'):
+        return None, None
+    control_violation = _backtest_base_cache_control_violation(data_path, contract, metadata)
+    if control_violation:
         return None, None
     return data_path, {
         'version': 'factorforge_backtest_base_reuse_profile_v1',
@@ -2339,6 +2542,9 @@ def _write_backtest_base_cache(
         'result_metadata': result_metadata,
         'written_at_utc': utc_now(),
     }
+    control_columns = _daily_basic_control_columns_from_contract(contract)
+    if control_columns:
+        metadata['daily_basic_control_coverage'] = _backtest_base_control_coverage(daily_df, control_columns)
     write_json(meta_path, metadata)
     return data_path, {
         'version': 'factorforge_backtest_base_reuse_profile_v1',
@@ -3057,11 +3263,19 @@ def main() -> None:
         input_daily_end = _normal_date_value(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
         prepared_start = _normal_date_value(prepared_window.get('start'))
         prepared_end = _normal_date_value(prepared_window.get('end'))
-        effective_target_start = prepared_start or input_daily_start or target_start
-        if str(target_end_raw) == 'current':
-            effective_target_end = input_daily_end
+        # Step3B sample snapshots may leave a short sample_window_actual in
+        # data_prep_master. Once Step4 has materialized the formal Data API
+        # full-query input, that sample window must not cap Step4 coverage.
+        full_contract_input = bool(data_api_profile is not None and force_contract_inputs)
+        if full_contract_input:
+            effective_target_start = input_daily_start or target_start
+            effective_target_end = input_daily_end if str(target_end_raw) == 'current' else (input_daily_end or _normal_date_value(target_end_raw))
         else:
-            effective_target_end = prepared_end or _normal_date_value(target_end_raw)
+            effective_target_start = prepared_start or input_daily_start or target_start
+            if str(target_end_raw) == 'current':
+                effective_target_end = input_daily_end
+            else:
+                effective_target_end = prepared_end or _normal_date_value(target_end_raw)
         target_end = effective_target_end
         coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
         run_status = 'success' if coverage_complete else 'partial'

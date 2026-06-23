@@ -32,6 +32,20 @@ def _node(raw: ast.AST) -> dict[str, Any]:
     if isinstance(raw, ast.Call) and isinstance(raw.func, ast.Name):
         name = canonical_operator_name(raw.func.id)
         args = [_node(arg) for arg in raw.args]
+        for keyword in raw.keywords:
+            if keyword.arg is None:
+                raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_SYNTAX: starred keyword in {raw.func.id}')
+            key = str(keyword.arg).strip().lower()
+            if name == 'cs_regression' and key == 'out_type':
+                args.append(_node(keyword.value))
+            elif name == 'cs_regression' and key in {'with_one_col', 'fill_predict', 'dummies'}:
+                # Supported by the source operator contract but not needed by the
+                # current residual/predicted/beta evaluator. Defaults are enforced.
+                continue
+            else:
+                raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_KEYWORD: {raw.func.id}.{keyword.arg}')
+        if name == 'cs_regression' and len(args) == 2:
+            args.append({'type': 'constant', 'value': 0})
         validate_operator_call(name, args)
         return {'type': 'operator', 'operator': name, 'args': args}
     raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_SYNTAX: {ast.dump(raw)}')

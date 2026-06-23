@@ -179,6 +179,42 @@ def main() -> None:
     }
 
     step3b_runner = load_module('skills/factor-forge-step3/scripts/run_step3b.py', 'step3b_runner_smoke')
+    old_rows = step3b_runner.STEP3B_SAMPLE_MAX_ROWS
+    old_dates = step3b_runner.STEP3B_SAMPLE_MAX_DATES
+    old_tickers = step3b_runner.STEP3B_SAMPLE_MAX_TICKERS
+    try:
+        step3b_runner.STEP3B_SAMPLE_MAX_ROWS = 1000
+        step3b_runner.STEP3B_SAMPLE_MAX_DATES = 128
+        step3b_runner.STEP3B_SAMPLE_MAX_TICKERS = 10
+        rows = []
+        for date in pd.bdate_range('2020-01-01', periods=300):
+            trade_date = date.strftime('%Y%m%d')
+            for ticker_i in range(10):
+                rows.append({
+                    'ts_code': f'{ticker_i:06d}.SZ',
+                    'trade_date': trade_date,
+                    'close': 10.0 + ticker_i,
+                    'returns': 0.001 * ticker_i,
+                })
+        sampled, profile = step3b_runner.limit_step3b_sample_frame(
+            pd.DataFrame(rows),
+            label='clean_daily_bar',
+            formula_ir=alpha019_like_formula_ir,
+        )
+    finally:
+        step3b_runner.STEP3B_SAMPLE_MAX_ROWS = old_rows
+        step3b_runner.STEP3B_SAMPLE_MAX_DATES = old_dates
+        step3b_runner.STEP3B_SAMPLE_MAX_TICKERS = old_tickers
+    cases['step3b_alpha019_250_lookback_sampling_preserves_history'] = {
+        'ok': profile.get('sampling_strategy') == 'lookback_aware_date_ticker_cap'
+        and int(profile.get('formula_max_lookback') or 0) == 250
+        and int(sampled['trade_date'].nunique()) >= 250
+        and len(sampled) <= 1000,
+        'profile': profile,
+        'sampled_date_count': int(sampled['trade_date'].nunique()),
+        'sampled_rows': int(len(sampled)),
+    }
+
     alpha015_like_prep = {
         'data_api_resolution': {
             'clean_daily_bar': {

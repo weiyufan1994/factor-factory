@@ -731,17 +731,35 @@ def build_formal_signal_coverage_profile(
     effective_target_end: str | None,
     min_non_null_coverage: float = 0.90,
     sparse_signal_allowed: bool = False,
+    formula_max_lookback: int = 0,
 ) -> dict[str, Any]:
     row_count = int(len(result_df)) if result_df is not None else 0
     date_count = int(result_df['trade_date'].nunique()) if row_count and 'trade_date' in result_df.columns else 0
+    coverage_row_count = row_count
+    coverage_mask = None
+    coverage_target_start = effective_target_start
+    warmup_skipped_dates = 0
+    if row_count and 'trade_date' in result_df.columns and formula_max_lookback > 1:
+        normalized_trade_dates = result_df['trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
+        all_dates = sorted(normalized_trade_dates.dropna().unique().tolist())
+        if len(all_dates) > formula_max_lookback:
+            warmup_skipped_dates = formula_max_lookback - 1
+            coverage_target_start = all_dates[warmup_skipped_dates]
+            coverage_mask = normalized_trade_dates >= coverage_target_start
+            coverage_row_count = int(coverage_mask.sum())
     if row_count <= 0 or signal_col not in result_df.columns:
         non_null = 0
+        coverage_non_null = 0
         nonnull_date_count = 0
         nonnull_start = None
         nonnull_end = None
     else:
         mask = result_df[signal_col].notna()
         non_null = int(mask.sum())
+        if coverage_mask is not None:
+            coverage_non_null = int((mask & coverage_mask).sum())
+        else:
+            coverage_non_null = non_null
         if 'trade_date' in result_df.columns and non_null:
             nonnull_dates = result_df.loc[mask, 'trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
             nonnull_date_count = int(nonnull_dates.nunique())
@@ -751,7 +769,8 @@ def build_formal_signal_coverage_profile(
             nonnull_date_count = 0
             nonnull_start = None
             nonnull_end = None
-    coverage = float(non_null / row_count) if row_count else 0.0
+    raw_coverage = float(non_null / row_count) if row_count else 0.0
+    coverage = float(coverage_non_null / coverage_row_count) if coverage_row_count else 0.0
     reasons: list[str] = []
     if not sparse_signal_allowed and coverage < min_non_null_coverage:
         reasons.append('factor_value_non_null_coverage_below_minimum')
@@ -766,17 +785,72 @@ def build_formal_signal_coverage_profile(
         'row_count': row_count,
         'date_count': date_count,
         'factor_value_non_null': non_null,
+        'raw_factor_value_non_null_coverage': raw_coverage,
+        'coverage_row_count': coverage_row_count,
+        'coverage_non_null': coverage_non_null,
         'factor_value_non_null_coverage': coverage,
         'nonnull_date_count': nonnull_date_count,
         'nonnull_start': nonnull_start,
         'nonnull_end': nonnull_end,
         'actual_window': {'start': actual_start, 'end': actual_end},
         'effective_target_window': {'start': effective_target_start, 'end': effective_target_end},
+        'coverage_target_window': {'start': coverage_target_start, 'end': effective_target_end},
+        'formula_max_lookback': int(formula_max_lookback),
+        'warmup_skipped_dates': int(warmup_skipped_dates),
+        'coverage_basis': 'warmup_adjusted' if warmup_skipped_dates else 'full_output_window',
         'min_non_null_coverage': min_non_null_coverage,
         'sparse_signal_allowed': bool(sparse_signal_allowed),
         'coverage_gate_verdict': verdict,
         'block_reasons': reasons,
     }
+
+
+def _formula_ir_constants(node: Any) -> list[float]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'constant':
+        try:
+            return [float(node.get('value'))]
+        except (TypeError, ValueError):
+            return []
+    constants: list[float] = []
+    for child in node.get('args') or []:
+        constants.extend(_formula_ir_constants(child))
+    return constants
+
+
+def _operator_lookback(operator: str, constants: list[float]) -> int | None:
+    operator = str(operator or '').strip().lower()
+    if operator in {
+        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+    } and constants:
+        last = constants[-1]
+        if isinstance(last, float) and not last.is_integer():
+            return None
+        value = int(last)
+        return value if value > 0 else None
+    return None
+
+
+def max_formula_ir_lookback(formula_ir: dict[str, Any] | None) -> int:
+    if not isinstance(formula_ir, dict):
+        return 0
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    lookbacks: list[int] = []
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get('type') == 'operator':
+            lookback = _operator_lookback(str(node.get('operator') or ''), _formula_ir_constants(node))
+            if lookback is not None:
+                lookbacks.append(lookback)
+        for child in node.get('args') or []:
+            visit(child)
+
+    visit(root)
+    return max(lookbacks) if lookbacks else 0
 
 
 def add_formal_acceptance_envelope(
@@ -3344,6 +3418,9 @@ def main() -> None:
             or dpm.get('sparse_signal_allowed')
             or handoff.get('sparse_signal_allowed')
         )
+        canonical_spec = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+        formula_ir = canonical_spec.get('formula_ir') if isinstance(canonical_spec.get('formula_ir'), dict) else None
+        formula_max_lookback = max_formula_ir_lookback(formula_ir)
         formal_signal_coverage = build_formal_signal_coverage_profile(
             result_df=result_df,
             signal_col=signal_col,
@@ -3352,6 +3429,7 @@ def main() -> None:
             effective_target_start=effective_target_start,
             effective_target_end=effective_target_end,
             sparse_signal_allowed=sparse_signal_allowed,
+            formula_max_lookback=formula_max_lookback,
         )
         if formal_signal_coverage.get('coverage_gate_verdict') == 'BLOCK':
             token = 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW'

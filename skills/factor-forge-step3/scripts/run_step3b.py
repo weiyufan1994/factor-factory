@@ -165,7 +165,55 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
-def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+def _formula_ir_constants(node) -> list[float]:
+    if not isinstance(node, dict):
+        return []
+    if node.get('type') == 'constant':
+        try:
+            return [float(node.get('value'))]
+        except (TypeError, ValueError):
+            return []
+    constants: list[float] = []
+    for child in node.get('args') or []:
+        constants.extend(_formula_ir_constants(child))
+    return constants
+
+
+def _operator_lookback(operator: str, constants: list[float]) -> int | None:
+    operator = str(operator or '').strip().lower()
+    if operator in {
+        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
+        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
+    } and constants:
+        last = constants[-1]
+        if isinstance(last, float) and not last.is_integer():
+            return None
+        value = int(last)
+        return value if value > 0 else None
+    return None
+
+
+def max_formula_ir_lookback(formula_ir: dict | None) -> int:
+    if not isinstance(formula_ir, dict):
+        return 0
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    lookbacks: list[int] = []
+
+    def visit(node) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get('type') == 'operator':
+            lookback = _operator_lookback(str(node.get('operator') or ''), _formula_ir_constants(node))
+            if lookback is not None:
+                lookbacks.append(lookback)
+        for child in node.get('args') or []:
+            visit(child)
+
+    visit(root)
+    return max(lookbacks) if lookbacks else 0
+
+
+def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str, formula_ir: dict | None = None) -> tuple[pd.DataFrame, dict]:
     if df is None:
         return df, {
             'label': label,
@@ -187,6 +235,7 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
         'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
         'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
         'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
+        'formula_max_lookback': int(max_formula_ir_lookback(formula_ir)),
         'output_rows': int(len(df)),
         'date_count': None,
         'ticker_count': None,
@@ -198,23 +247,35 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
     if small_enough:
         return df, profile
 
-    # Step3B sample proof is an executability/schema proof, not formal factor
-    # evidence. Avoid full-universe normalization on very large minute panels;
-    # Step4 owns the full formal recompute.
-    candidate_rows = min(len(df), max(STEP3B_SAMPLE_MAX_ROWS * 2, STEP3B_SAMPLE_MAX_ROWS))
-    candidate = df.tail(candidate_rows).copy()
     if {'ts_code', 'trade_date'}.issubset(df.columns):
-        work = candidate
+        work = df
         normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
         dates = sorted(normalized_dates.dropna().unique().tolist())
-        tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
-        mask = normalized_dates.isin(set(dates[-STEP3B_SAMPLE_MAX_DATES:])) & work['ts_code'].astype(str).isin(set(tickers[:STEP3B_SAMPLE_MAX_TICKERS]))
+        formula_max_lookback = int(profile['formula_max_lookback'])
+        required_dates = max(STEP3B_SAMPLE_MAX_DATES, formula_max_lookback + 32 if formula_max_lookback else 0)
+        selected_dates = dates[-required_dates:]
+        date_count = max(1, len(selected_dates))
+        ticker_cap_by_rows = max(1, STEP3B_SAMPLE_MAX_ROWS // date_count)
+        ticker_cap = max(1, min(STEP3B_SAMPLE_MAX_TICKERS, ticker_cap_by_rows))
+        date_mask = normalized_dates.isin(set(selected_dates))
+        dated = work.loc[date_mask].copy()
+        counts = dated['ts_code'].dropna().astype(str).value_counts()
+        min_history = formula_max_lookback + 1 if formula_max_lookback else 1
+        eligible = counts[counts >= min_history]
+        if eligible.empty:
+            eligible = counts
+        tickers = sorted(eligible.index.astype(str).tolist()[:ticker_cap])
+        mask = date_mask & work['ts_code'].astype(str).isin(set(tickers))
         sampled = work.loc[mask].copy()
         if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
             sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
-        profile['sampling_strategy'] = 'tail_candidate_then_date_ticker_cap'
-        profile['candidate_rows'] = int(len(candidate))
+        profile['sampling_strategy'] = 'lookback_aware_date_ticker_cap' if formula_max_lookback else 'date_ticker_cap'
+        profile['selected_date_count_before_row_cap'] = int(len(selected_dates))
+        profile['ticker_cap_by_rows'] = int(ticker_cap_by_rows)
+        profile['eligible_ticker_count'] = int(len(eligible))
     else:
+        candidate_rows = min(len(df), max(STEP3B_SAMPLE_MAX_ROWS * 2, STEP3B_SAMPLE_MAX_ROWS))
+        candidate = df.tail(candidate_rows).copy()
         sampled = candidate.head(STEP3B_SAMPLE_MAX_ROWS).copy()
         profile['sampling_strategy'] = 'tail_candidate_head_cap'
         profile['candidate_rows'] = int(len(candidate))
@@ -1374,10 +1435,18 @@ def generate_first_run_factor_values(
         else:
             daily_df = read_df(daily_path)
     with timer.phase('sample_limit'):
-        daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+        daily_df, daily_limit_profile = limit_step3b_sample_frame(
+            daily_df,
+            label='clean_daily_bar',
+            formula_ir=module_formula_ir if isinstance(module_formula_ir, dict) else None,
+        )
         minute_limit_profile = None
         if minute_df is not None and len(minute_df) > 0:
-            minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
+            minute_df, minute_limit_profile = limit_step3b_sample_frame(
+                minute_df,
+                label='minute_bar',
+                formula_ir=module_formula_ir if isinstance(module_formula_ir, dict) else None,
+            )
     step3b_sample_limit_profile = {
         'clean_daily_bar': daily_limit_profile,
         **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),

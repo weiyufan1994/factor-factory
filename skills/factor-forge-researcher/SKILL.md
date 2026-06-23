@@ -27,6 +27,43 @@ For normal research, every factor must have:
 - learning writeback that extracts transferable patterns, anti-patterns, and innovative idea seeds,
 - and, if needed, a revision brief that sends the loop back to Step3B.
 
+## Research Quality Standard
+
+Researcher-led means hypothesis validation, not document completion. For every
+serious factor, the researcher must keep a `research_quality_gate` in the
+journal or Step6 memo with:
+
+- `mechanism_claim_level`: one of `none`, `narrative_only`, `math_framed`,
+  `metric_consistent`, `component_validated`, `stochastic_validated`, or
+  `payer_validated`;
+- `economic_payer_hypothesis`: who is expected to pay or receive the return,
+  plus the evidence or missing proxy;
+- `math_object_contract`: state variable or random object, target statistic,
+  information set, and formula-to-state mapping;
+- `evidence_tier_map`: classify each artifact as promotion-gate, robustness,
+  diagnostic, window-contract, or exploratory evidence;
+- `component_validation`: ablation, joint-state bucket, regime/liquidity split,
+  or parent-vs-revision information delta, or a clear reason it is missing;
+- `falsification_design`: the experiment or observation that would kill the
+  mechanism;
+- `overclaim_guard`: what the current evidence does not allow the agent to
+  claim.
+
+If the researcher invokes stochastic-process language, it must mark
+`stochastic_process_status=framing_only` unless state space, conditional return
+distribution, transition/persistence, barrier/tail risk, and
+revision-information delta are actually tested.
+
+If the researcher claims Dirac-style induction or a reusable symbolic law, it
+must write `dirac_induction_memo__<report_id>.json/md` under the active
+workspace with atomic state, invariant, estimator law, deleted-information
+audit, limiting cases, falsification design, reuse boundary, and overclaim
+guard. Without that memo, the claim remains a hypothesis.
+
+Never call a case research-complete only because Step6 PASS, Council artifacts,
+or a loop brief exists. Those prove process state; the quality gate proves
+research depth.
+
 ## Research Loop
 
 ```text

@@ -67,6 +67,38 @@ Direct `skills/factor-forge-step6/scripts/run_step6.py` or `validate_step6.py` c
 13. Recommend a program-search mode: genetic formula mutation, Bayesian parameter search, RL-policy advisory, or multi-agent parallel exploration.
 14. Do not use DD-view-edge-trade inside Factor Forge; this researcher layer is about factor search control, not individual-stock diligence.
 
+## Research Quality Gate
+
+The researcher memo must separate explanation from validation. Include:
+
+- `mechanism_claim_level`: `none`, `narrative_only`, `math_framed`,
+  `metric_consistent`, `component_validated`, `stochastic_validated`, or
+  `payer_validated`;
+- `evidence_tier_map`: mark each artifact as `promotion_gate_evidence`,
+  `robustness_evidence`, `diagnostic_evidence`,
+  `window_contract_evidence`, or `exploratory_evidence`;
+- `economic_payer_hypothesis`: payer/receiver, proxy evidence, and how to
+  falsify it;
+- `component_validation`: ablation, joint-state bucket, liquidity/regime split,
+  or parent-vs-revision information delta;
+- `stochastic_process_contract` when stochastic language is used, with status
+  `not_used`, `framing_only`, or `validated`;
+- `overclaim_guard`: statements the current evidence cannot support.
+
+If the memo claims stochastic validation, it must include state space,
+conditional return distribution, transition persistence or half-life,
+barrier/tail risk, and revision state-information delta. If these are missing,
+write `stochastic_process_status=framing_only`.
+
+If the memo claims Dirac-style induction, it must reference a
+`dirac_induction_memo__<report_id>.json/md` containing atomic state, invariant,
+estimator law, deleted-information audit, at least three limiting cases,
+falsification design, reuse boundary, and overclaim guard.
+
+Do not let `producer=local_mock`, deterministic scaffold output, or a
+main-agent-only sequential Council result support an independent
+research-quality claim. Mark its depth honestly.
+
 ## Hard Rules
 
 - Never promote because backends merely ran successfully.

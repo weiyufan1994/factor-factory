@@ -276,6 +276,32 @@ what was falsified, forbidden repeats, and next questions. Runs whose latest
 evidence only lives in `/tmp`, worker scratch directories, temporary S3
 prefixes, or untracked scripts are not fully deposited and must be marked as
 such before the agent continues.
+46. Formal Step6 must run a research-quality gate in addition to artifact
+validation. Step6 may be engineering-complete but research-quality-blocked. The
+research memo, researcher memo, or Council synthesis must declare
+`mechanism_claim_level`, `evidence_tier_map`, `economic_payer_hypothesis`,
+`math_object_contract`, `component_validation`, `falsification_design`, and
+`overclaim_guard`.
+47. `mechanism_claim_level` must be one of `none`, `narrative_only`,
+`math_framed`, `metric_consistent`, `component_validated`,
+`stochastic_validated`, or `payer_validated`. Step6 must not promote a
+`narrative_only`, `math_framed`, or merely `metric_consistent` mechanism into a
+validated research claim.
+48. If Step6 or Council uses stochastic-process language, it must declare
+`stochastic_process_status=not_used|framing_only|validated`. Validated status
+requires state space, conditional return distribution, transition persistence
+or half-life, barrier/tail-risk test, and revision state-information delta.
+Otherwise the claim is framing only.
+49. If Step6 or Council claims Dirac-style induction, symbolic law discovery,
+or reusable atomic law, it must reference
+`dirac_induction_memo__<report_id>.json/md` with atomic state, invariant,
+estimator law, deleted-information audit, at least three limiting cases,
+falsification design, reuse boundary, and overclaim guard.
+50. Every evidence artifact used in Step6 must be classified as
+`promotion_gate_evidence`, `robustness_evidence`, `diagnostic_evidence`,
+`window_contract_evidence`, or `exploratory_evidence`. Promotion decisions may
+use only promotion-gate evidence. Supplemental window or diagnostic evidence
+cannot overwrite weak or missing Step4 promotion evidence.
 
 ## Research Analyst Standard
 
@@ -614,6 +640,26 @@ A valid `derivation_record` must include:
 No explicit derivation record means no valid council proposal. No valid council
 proposal means no branch template. No accepted derivation means no Step3B
 revision brief.
+
+Every Council result must also declare `research_depth`:
+
+```text
+contract_placeholder_result
+deterministic_scaffold
+main_agent_sequential_result
+independent_agent_result
+human_reviewed_result
+```
+
+Only `independent_agent_result` and `human_reviewed_result` may support a formal
+research-quality claim. `deterministic_scaffold` and
+`contract_placeholder_result` may prove artifact shape only. A
+`main_agent_sequential_result` is useful research material, but it must not be
+described as independent Council validation.
+
+Each role must state what information the current formula preserves, deletes,
+or aliases; which metric should move if the claim is true; what observation
+would kill the claim; and whether it has a `dirac_atomic_law_candidate`.
 
 ### Council As Math-Mechanism Derivation Engine
 

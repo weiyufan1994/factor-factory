@@ -41,6 +41,80 @@ For every factor, the agent must behave like a researcher from the beginning:
 
 Only use a mechanical/lightweight run if the user explicitly says this is a smoke test.
 
+## Research Quality Gate
+
+Artifact completion is not research completion. A formal run can be
+engineering-complete while still research-quality-blocked. The main agent must
+not present Step6 PASS, Council files, window evidence, or library absence as
+proof that the factor was deeply researched.
+
+Every serious Step6, Council synthesis, or final research answer must declare a
+`mechanism_claim_level`:
+
+```text
+none
+narrative_only
+math_framed
+metric_consistent
+component_validated
+stochastic_validated
+payer_validated
+```
+
+The agent may claim only the level proven by evidence. `math_framed` means a
+mathematical object or tool was selected; it is not validation.
+`metric_consistent` means aggregate metrics fit the story; it is not component
+or payer validation. `component_validated` requires at least one real
+component, joint-state, regime/liquidity, or parent-vs-revision information
+delta test. `stochastic_validated` requires state-space, conditional return
+distribution, transition/persistence, or barrier/tail evidence.
+`payer_validated` requires falsifiable payer/receiver evidence.
+
+If a run lacks the evidence for the claimed level, label it
+`research_quality_blocked` or lower the claim level. Do not use polished prose,
+Council scaffolds, or deterministic templates to upgrade the claim.
+
+For each evidence artifact, state its role:
+
+```text
+promotion_gate_evidence
+robustness_evidence
+diagnostic_evidence
+window_contract_evidence
+exploratory_evidence
+```
+
+Only `promotion_gate_evidence` can support promotion. Window-contract and
+supplemental robustness evidence can prove coverage or stability, but cannot
+replace formal Step4 promotion evidence.
+
+When using stochastic-process language, declare
+`stochastic_process_status=not_used|framing_only|validated`. A validated claim
+must include state space, conditional return distribution, transition
+persistence or half-life, barrier/tail risk evidence, and parent-vs-revision
+state-information delta. Otherwise call it `framing_only`.
+
+When claiming Dirac-style induction or reusable symbolic law discovery, write a
+public `dirac_induction_memo__<report_id>.json/md` under the active factor
+workspace. It must contain `atomic_state`, `invariant`, `estimator_law`,
+`deleted_information_audit`, at least three `limiting_cases`,
+`falsification_design`, `reuse_boundary`, and `overclaim_guard`. Without this
+memo, say the run has a mechanism hypothesis, not Dirac induction.
+
+Council output must declare research depth:
+
+```text
+contract_placeholder_result
+deterministic_scaffold
+main_agent_sequential_result
+independent_agent_result
+human_reviewed_result
+```
+
+Only `independent_agent_result` or `human_reviewed_result` can support a formal
+research-quality claim. Scaffold and placeholder output can satisfy contract
+shape only; they cannot prove independent mechanism validation.
+
 ## Workspace And Git Hygiene Discipline
 
 Before any Factor Forge Ultimate work, inspect `git status --short --branch`.

@@ -41,6 +41,54 @@ evidence, knowledge comparison, next research direction, and the final loop
 conclusion. Long-short and decile evidence must be labeled diagnostic-only, and
 the next direction must explain why portfolio-expression repair is forbidden.
 
+## Research Quality Claim Ladder
+
+The research brain must grade every mechanism claim. Do not let a fluent
+explanation masquerade as validation.
+
+Use this ordered ladder:
+
+```text
+none
+narrative_only
+math_framed
+metric_consistent
+component_validated
+stochastic_validated
+payer_validated
+```
+
+`narrative_only` is a story. `math_framed` names a mathematical object or tool.
+`metric_consistent` means aggregate IC/NAV/group evidence points in the expected
+direction. `component_validated` requires ablation, joint-state buckets,
+liquidity/regime splits, or parent-vs-revision information delta.
+`stochastic_validated` requires state, conditional return distribution,
+transition/persistence, or barrier/tail evidence. `payer_validated` requires a
+falsifiable counterparty or payer proxy.
+
+Every serious review must also produce an evidence tier map:
+
+- `promotion_gate_evidence`
+- `robustness_evidence`
+- `diagnostic_evidence`
+- `window_contract_evidence`
+- `exploratory_evidence`
+
+Promotion can use only promotion-gate evidence. Diagnostic, supplemental, and
+window-contract evidence can explain or falsify, but cannot be promoted into
+adoption proof.
+
+If the review invokes stochastic processes, stopping times, hidden states, or
+barriers, explicitly state whether the claim is `framing_only` or `validated`.
+If it is validated, name the state space, conditional drift/return
+distribution, transition persistence or half-life, barrier/tail test, and what
+information each revision preserves or deletes.
+
+If the review claims Dirac-style induction or a reusable symbolic law, require a
+public memo with atomic state, invariant, estimator law, deleted-information
+audit, limiting cases, falsification design, reuse boundary, and overclaim
+guard. Without that artifact, call it a hypothesis, not an induction result.
+
 ## Current Trading Mandate
 
 The current Factor Forge mandate is **long-only**:

@@ -73,7 +73,7 @@
   "source_paths": [
     "knowledge/因子工厂/普通因子库/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md",
     "docs/operations/value-occupation-long-side-research-20260610.zh-CN.md",
-    "factor_research/vp_p0_baseline_20260610/docs/vp-support-overhang-full-window-test-plan-20260610.zh-CN.md"
+    "factor_research/vp_p0_baseline/vp_p0_baseline_20260610/docs/vp-support-overhang-full-window-test-plan-20260610.zh-CN.md"
   ],
   "relations": [
     {

@@ -1,6 +1,6 @@
 {
-  "created_at_utc": "2026-06-17T17:23:51.081530Z",
-  "graph_node_count": 11,
+  "created_at_utc": "2026-06-23T02:31:36.719784Z",
+  "graph_node_count": 13,
   "graph_nodes": [
     {
       "id": "node::alpha007_regime_kurt_skew_20260422",
@@ -242,9 +242,27 @@
       "source_node_path": "knowledge/因子工厂/graph/nodes/CS_RESIDUAL_VOL_20D_NEG_20260616.json",
       "source_paths": [
         "knowledge/因子工厂/普通因子库/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md",
-        "factor_research/cs_resid_vol_20260616/knowledge/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
+        "factor_research/_quarantine/legacy_unmanifested/cs_resid_vol_20260616/knowledge/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
       ],
       "title": "Cross-sectional close-volume residual volatility diagnostic"
+    },
+    {
+      "id": "node::lcr_retained_chip_scale_repair_microcap_failure_20260620",
+      "node_type": "anti_pattern",
+      "research_status": [
+        "standalone_rejected",
+        "feature_candidate",
+        "validated"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/LCR_RETAINED_CHIP_SCALE_REPAIR_MICROCAP_FAILURE_20260620.json",
+      "source_paths": [
+        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/docs/lcr-v2-and-microcap-index-enhancement-closeout-20260620.zh-CN.md",
+        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/docs/lcr-factorforge-completion-audit-20260620.zh-CN.md",
+        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/knowledge/canonical/lcr_retained_chip_v2_microcap_closeout_20260620.json",
+        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/objects/is_universe_period_grid/lcr_is_universe_period_grid__huaxi_20250529_lcr_retained_chip_ratio.json",
+        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/objects/microcap_incremental/lcr_microcap_incremental_oos__huaxi_20250529_lcr_retained_chip_ratio.json"
+      ],
+      "title": "LCR scale repair and microcap positive-enhancement failure"
     },
     {
       "id": "node::moneyflow_feature_candidates_v15_v18_v19_20260617",
@@ -257,11 +275,37 @@
       "source_paths": [
         "knowledge/因子工厂/普通因子库/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.md",
         "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md",
-        "factor_research/moneyflow_v18_long_edge_20260611/knowledge/canonical/moneyflow-v18-feature-candidates-20260617.json",
-        "factor_research/moneyflow_v19_payoff_calibration_20260615/knowledge/canonical/moneyflow-v19-lessons-20260615.json",
-        "factor_research/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
+        "factor_research/moneyflow_v18_long_edge/moneyflow_v18_long_edge_20260611/knowledge/canonical/moneyflow-v18-feature-candidates-20260617.json",
+        "factor_research/moneyflow_v19_payoff_calibration/moneyflow_v19_payoff_calibration_20260615/knowledge/canonical/moneyflow-v19-lessons-20260615.json",
+        "factor_research/moneyflow_v21_hysteresis_feature_policy/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
       ],
       "title": "Moneyflow repaired absorption and first-passage feature candidates"
+    },
+    {
+      "id": "node::raw_price_residual_stability_state_20260618",
+      "node_type": "mechanism",
+      "research_status": [
+        "mechanism_candidate",
+        "feature_candidate",
+        "needs_oos"
+      ],
+      "source_node_path": "knowledge/因子工厂/graph/nodes/RAW_PRICE_RESIDUAL_STABILITY_STATE_20260618.json",
+      "source_paths": [
+        "knowledge/因子工厂/知识库/RAW_PRICE_RESIDUAL_STABILITY_STATE_SEED_20260618.md",
+        "/Users/humphrey/projects/factorforge/factor_research/neg_cs_resid_vol20/formal_ultimate_20260618/knowledge/canonical/raw_price_residual_stability_state_seed__20260618.json",
+        "/Users/humphrey/projects/factorforge/factor_research/neg_cs_resid_vol20/formal_ultimate_20260618/objects/diagnostics/raw_residual_structure_alpha/diagnostic_raw_formula_neutralization__ORIG_RESIDUAL_VOLUME_DECOUPLED_STABILITY_FORMAL_20160101_V1.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/research_iteration_master__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_knowledge_base/knowledge_record__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/main_agent_mechanism_memo__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/diagnostics/structure_tradability_20260618/structure_tradability_diagnostic.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/diagnostics/state_decomposition_20260618/raw_price_residual_state_decomposition.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/diagnostics/child_state_tradability_20260618/raw_price_residual_child_state_tradability.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/child_formal_evidence/RAW_PRICE_RESIDUAL_MIXED_STATE_SELECTOR_CHILD_20160101_V1/raw_mixed_state_selector_child_formal_evidence.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/controlled_judge/RAW_PRICE_RESIDUAL_MIXED_STATE_SELECTOR_CHILD_20160101_V1/controlled_holdings_tradability_judge.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/terminal_research_brief__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
+        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/completion_audit__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json"
+      ],
+      "title": "Raw price residual stability state candidate"
     },
     {
       "id": "node::value_occupation_v18_lebesgue_closeout_20260615",
@@ -292,7 +336,7 @@
       "source_paths": [
         "knowledge/因子工厂/普通因子库/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md",
         "docs/operations/value-occupation-long-side-research-20260610.zh-CN.md",
-        "factor_research/vp_p0_baseline_20260610/docs/vp-support-overhang-full-window-test-plan-20260610.zh-CN.md"
+        "factor_research/vp_p0_baseline/vp_p0_baseline_20260610/docs/vp-support-overhang-full-window-test-plan-20260610.zh-CN.md"
       ],
       "title": "Value-profile support-overhang occupation measure"
     }
@@ -323,11 +367,11 @@
       ]
     },
     "ordinary_factor_library": {
-      "coverage_ratio": 0.2981,
+      "coverage_ratio": 0.2945,
       "covered_count": 48,
       "high_priority_missing_count": 0,
       "path": "knowledge/因子工厂/普通因子库",
-      "record_count": 161,
+      "record_count": 163,
       "records": [
         {
           "covered_by_graph": false,
@@ -1115,6 +1159,11 @@
           "path": "knowledge/因子工厂/普通因子库/FACTOR_LIBRARY_INDEX.md"
         },
         {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/LCR_RETAINED_CHIP_RATIO_FEATURE_CANDIDATE_20260619.md"
+        },
+        {
           "covered_by_graph": true,
           "high_priority": true,
           "path": "knowledge/因子工厂/普通因子库/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.md"
@@ -1130,6 +1179,11 @@
           "path": "knowledge/因子工厂/普通因子库/SIZE_MCAP_20160101_20250711.md"
         },
         {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/VOLUME_AMOUNT_RANK_MISMATCH_FEATURE_CANDIDATE_20260622.md"
+        },
+        {
           "covered_by_graph": true,
           "high_priority": true,
           "path": "knowledge/因子工厂/普通因子库/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md"
@@ -1137,11 +1191,11 @@
       ]
     },
     "research_iterations": {
-      "coverage_ratio": 0.3087,
+      "coverage_ratio": 0.3026,
       "covered_count": 46,
       "high_priority_missing_count": 0,
       "path": "knowledge/因子工厂/研究迭代",
-      "record_count": 149,
+      "record_count": 152,
       "records": [
         {
           "covered_by_graph": false,
@@ -1884,6 +1938,21 @@
           "path": "knowledge/因子工厂/研究迭代/DONGWU_TECH_ANALYSIS_20200619_02.md"
         },
         {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/LCR_RETAINED_CHIP_RATIO_OOS_DIAGNOSTIC_20260619.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/POST_DECLINE_QUIET_BASE_RDAGENT_QLIB_JUDGE_20260622.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/研究迭代/VOLUME_AMOUNT_RANK_MISMATCH_RDAGENT_QLIB_JUDGE_20260622.md"
+        },
+        {
           "covered_by_graph": true,
           "high_priority": true,
           "path": "knowledge/因子工厂/研究迭代/VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401.md"
@@ -1891,11 +1960,11 @@
       ]
     },
     "research_knowledge_base": {
-      "coverage_ratio": 0.3226,
-      "covered_count": 50,
+      "coverage_ratio": 0.3248,
+      "covered_count": 51,
       "high_priority_missing_count": 0,
       "path": "knowledge/因子工厂/知识库",
-      "record_count": 155,
+      "record_count": 157,
       "records": [
         {
           "covered_by_graph": false,
@@ -2663,9 +2732,19 @@
           "path": "knowledge/因子工厂/知识库/DONGWU_TECH_ANALYSIS_20200619_02.md"
         },
         {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/LCR_RETAINED_CHIP_RATIO_OOS_LESSONS_20260619.md"
+        },
+        {
           "covered_by_graph": true,
           "high_priority": true,
           "path": "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md"
+        },
+        {
+          "covered_by_graph": true,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/RAW_PRICE_RESIDUAL_STABILITY_STATE_SEED_20260618.md"
         },
         {
           "covered_by_graph": true,
@@ -2684,12 +2763,12 @@
   "node_status_counts": {
     "anti_pattern": 2,
     "candidate": 5,
-    "feature_candidate": 8,
-    "mechanism_candidate": 1,
+    "feature_candidate": 10,
+    "mechanism_candidate": 2,
     "needs_full_is": 1,
-    "needs_oos": 4,
-    "standalone_rejected": 2,
-    "validated": 3
+    "needs_oos": 5,
+    "standalone_rejected": 3,
+    "validated": 4
   },
   "schema_version": "factor_knowledge_graph_coverage_v1"
 }

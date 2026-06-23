@@ -96,9 +96,9 @@
   "source_paths": [
     "knowledge/因子工厂/普通因子库/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.md",
     "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md",
-    "factor_research/moneyflow_v18_long_edge_20260611/knowledge/canonical/moneyflow-v18-feature-candidates-20260617.json",
-    "factor_research/moneyflow_v19_payoff_calibration_20260615/knowledge/canonical/moneyflow-v19-lessons-20260615.json",
-    "factor_research/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
+    "factor_research/moneyflow_v18_long_edge/moneyflow_v18_long_edge_20260611/knowledge/canonical/moneyflow-v18-feature-candidates-20260617.json",
+    "factor_research/moneyflow_v19_payoff_calibration/moneyflow_v19_payoff_calibration_20260615/knowledge/canonical/moneyflow-v19-lessons-20260615.json",
+    "factor_research/moneyflow_v21_hysteresis_feature_policy/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
   ],
   "relations": [
     {

@@ -18,6 +18,9 @@
 | ALPHA006_PAPER_20160101_20250711 | Alpha006 | `(-1 * corr(open, volume, 10))` | 0.026 | 0.309 | +0.001% | ✅ iterate |
 | ALPHA007_PAPER_20160101_20250711 | Alpha007(kurt-skew) | `folded * (1 + 0.5*(kurt_zs - skew_zs))` | 0.057 | 0.678 | +0.022% | ✅ validated |
 | VP_SUPPORT_OVERHANG_BELOW_COST_GUARD_202401 | VP support-overhang | `lower_support_ratio - upper_overhang_ratio` | 0.189 / 0.168 / 0.040 | 2024-01 smoke only | top10 excess +0.883% / +1.501% / +2.058% | 🔬 exploratory_smoke |
+| MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617 | Moneyflow repaired absorption / first-passage features | `V18b`, `min(z18a,z18b)` | V19d raw rank IC 0.043 full / 0.060 fixed_small_20 | feature only | after-cost standalone failed | 🧩 feature_candidate |
+| LCR_RETAINED_CHIP_RATIO_FEATURE_CANDIDATE_20260619 | Retained chip ratio / survival inventory state | `sum(amount*survival(turnover))/sum(amount)` | OOS raw 5D IC 0.0476 full / 0.0704 CSI2000 | residual weak | raw long-side works in CSI2000/microcap, independent alpha weak | 🧩 feature_candidate |
+| VOLUME_AMOUNT_RANK_MISMATCH_FEATURE_CANDIDATE_20260622 | Volume-vs-Amount rank mismatch | `rank(sum(volume,30))/rank(sum(amount,30))` | IS RankIC5D 0.0388 / OOS 0.0065 | feature only | OOS Q10-Q1 NAV 0.872, direction unstable | 🧩 feature_candidate |
 
 ---
 
@@ -33,6 +36,9 @@
 | short_low_vol | 0.054 | **0.609** | +0.283% | +0.032% | 空头侧 |
 | Alpha007(kurt-skew) | **0.057** | **0.678** | +0.298% | +0.022% | regime-adap |
 | VP support-overhang | 0.189 / 0.168 / 0.040 | 2024-01 smoke only | +1.057% / +2.612% / +1.638% | top10 excess +0.883% / +1.501% / +2.058% | 研究线索，需 full-window |
+| Moneyflow V18b/V19d | 0.043-0.060 raw rank IC on V19d | feature candidate | gross/residual signal exists | after-cost standalone failed | 可用于模型组合，不是正式单因子 |
+| LCR retained chip ratio | OOS raw 5D IC 0.0476 full / 0.0704 CSI2000 | residual IC weak | raw top long positive in CSI2000/microcap | residualized independence insufficient | 筹码留存状态特征，不是正式独立因子 |
+| Volume-vs-Amount Rank Mismatch | IS 5D RankIC 0.0388 / OOS 0.0065 | feature candidate | IS Q10-Q1 NAV positive, OOS LS negative | OOS Q10-Q1 NAV 0.872 | 低价/散户参与/交易结构状态特征，不是正式独立因子 |
 
 ---
 

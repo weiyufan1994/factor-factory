@@ -720,6 +720,64 @@ def build_acceptance_summary(
     }
 
 
+def build_formal_signal_coverage_profile(
+    *,
+    result_df: Any,
+    signal_col: str,
+    actual_start: str | None,
+    actual_end: str | None,
+    effective_target_start: str | None,
+    effective_target_end: str | None,
+    min_non_null_coverage: float = 0.90,
+    sparse_signal_allowed: bool = False,
+) -> dict[str, Any]:
+    row_count = int(len(result_df)) if result_df is not None else 0
+    date_count = int(result_df['trade_date'].nunique()) if row_count and 'trade_date' in result_df.columns else 0
+    if row_count <= 0 or signal_col not in result_df.columns:
+        non_null = 0
+        nonnull_date_count = 0
+        nonnull_start = None
+        nonnull_end = None
+    else:
+        mask = result_df[signal_col].notna()
+        non_null = int(mask.sum())
+        if 'trade_date' in result_df.columns and non_null:
+            nonnull_dates = result_df.loc[mask, 'trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
+            nonnull_date_count = int(nonnull_dates.nunique())
+            nonnull_start = str(nonnull_dates.min())
+            nonnull_end = str(nonnull_dates.max())
+        else:
+            nonnull_date_count = 0
+            nonnull_start = None
+            nonnull_end = None
+    coverage = float(non_null / row_count) if row_count else 0.0
+    reasons: list[str] = []
+    if not sparse_signal_allowed and coverage < min_non_null_coverage:
+        reasons.append('factor_value_non_null_coverage_below_minimum')
+    if not sparse_signal_allowed and non_null > 0 and actual_end and nonnull_end and str(nonnull_end) != str(actual_end):
+        reasons.append('nonnull_signal_window_does_not_reach_actual_end')
+    if not sparse_signal_allowed and non_null == 0:
+        reasons.append('factor_value_all_null')
+    verdict = 'PASS' if not reasons else 'BLOCK'
+    return {
+        'version': 'factorforge_formal_signal_coverage_v1',
+        'signal_column': signal_col,
+        'row_count': row_count,
+        'date_count': date_count,
+        'factor_value_non_null': non_null,
+        'factor_value_non_null_coverage': coverage,
+        'nonnull_date_count': nonnull_date_count,
+        'nonnull_start': nonnull_start,
+        'nonnull_end': nonnull_end,
+        'actual_window': {'start': actual_start, 'end': actual_end},
+        'effective_target_window': {'start': effective_target_start, 'end': effective_target_end},
+        'min_non_null_coverage': min_non_null_coverage,
+        'sparse_signal_allowed': bool(sparse_signal_allowed),
+        'coverage_gate_verdict': verdict,
+        'block_reasons': reasons,
+    }
+
+
 def add_formal_acceptance_envelope(
     payload: dict[str, Any],
     *,
@@ -3280,6 +3338,30 @@ def main() -> None:
         coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
         run_status = 'success' if coverage_complete else 'partial'
         failure_reason = None
+        sparse_signal_allowed = bool(
+            step4_contract.get('sparse_signal_allowed')
+            or dpm.get('sparse_signal_allowed')
+            or handoff.get('sparse_signal_allowed')
+        )
+        formal_signal_coverage = build_formal_signal_coverage_profile(
+            result_df=result_df,
+            signal_col=signal_col,
+            actual_start=actual_start,
+            actual_end=actual_end,
+            effective_target_start=effective_target_start,
+            effective_target_end=effective_target_end,
+            sparse_signal_allowed=sparse_signal_allowed,
+        )
+        if formal_signal_coverage.get('coverage_gate_verdict') == 'BLOCK':
+            token = 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW'
+            issues.append({
+                'severity': 'error',
+                'code': token,
+                'message': 'formal Step4 factor values have insufficient non-null signal coverage for promotion-gate evidence',
+                'evidence': formal_signal_coverage,
+            })
+            run_status = 'failed'
+            failure_reason = token
         shared_context: dict[str, Any] | None = None
         shared_context_profile: dict[str, Any] = {
             'version': 'factorforge_shared_evaluation_context_v1',
@@ -3351,6 +3433,7 @@ def main() -> None:
             'run_status_candidate': run_status,
             'input_io_profile': input_io_profile,
             'step4_factor_io_profile': step4_factor_io_profile,
+            'formal_signal_coverage': formal_signal_coverage,
             'step4_formal_factor_identity': expected_reuse_identity,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
             'shared_evaluation_context': shared_context_profile,
@@ -3397,6 +3480,7 @@ def main() -> None:
                 'actual_end': actual_end,
                 'coverage_complete': coverage_complete,
             },
+            'formal_signal_coverage': formal_signal_coverage,
             'validation_pointer': str(diag_path),
             'handoff_to_step5_path': str(handoff_path),
         }
@@ -3455,10 +3539,12 @@ def main() -> None:
                 'date_count': date_count,
                 'ticker_count': ticker_count,
                 'signal_column': signal_col,
+                'formal_signal_coverage': formal_signal_coverage,
             },
             'quality_checks': {
                 'window_complete': coverage_complete,
                 'null_ratio': null_ratio,
+                'formal_signal_coverage': formal_signal_coverage,
                 'duplicate_ratio': duplicate_ratio,
                 'key_uniqueness': {'ts_code_trade_date_unique': duplicate_ratio.get('ts_code_trade_date', 0.0) == 0.0},
                 'sort_order_ok': sort_order_ok
@@ -3470,9 +3556,13 @@ def main() -> None:
                 'retryable': False
             },
             'recommendation': {
-                'can_handoff_to_step5': True,
+                'can_handoff_to_step5': run_status in {'success', 'partial'},
                 'recommended_status': run_status,
-                'next_action': 'Proceed to Step 5 using declared evaluation scope.'
+                'next_action': (
+                    'Proceed to Step 5 using declared evaluation scope.'
+                    if run_status in {'success', 'partial'}
+                    else 'Fix formal signal coverage and rerun Step 4 before Step 5/6.'
+                )
             }
         }
 
@@ -3499,10 +3589,22 @@ def main() -> None:
             'shared_evaluation_context': shared_context_profile,
             'implementation_mode_decision': implementation_mode_decision,
             'key_warnings': warnings,
-            'failure_reason': None,
-            'can_enter_step5': True,
-            'recommended_step5_scope': 'full' if run_status == 'success' else 'partial_scope_only',
-            'notes_for_step5': ['partial result: evaluate only covered window/instruments'] if run_status == 'partial' else ['full result ready for evaluation']
+            'failure_reason': failure_reason,
+            'can_enter_step5': run_status in {'success', 'partial'},
+            'recommended_step5_scope': (
+                'full'
+                if run_status == 'success'
+                else 'partial_scope_only'
+                if run_status == 'partial'
+                else None
+            ),
+            'notes_for_step5': (
+                ['partial result: evaluate only covered window/instruments']
+                if run_status == 'partial'
+                else ['full result ready for evaluation']
+                if run_status == 'success'
+                else ['Step4 formal signal coverage failed; do not evaluate or promote.']
+            )
         }
 
         acceptance_summary = build_acceptance_summary(

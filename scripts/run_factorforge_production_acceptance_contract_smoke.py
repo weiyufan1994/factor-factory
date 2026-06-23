@@ -70,6 +70,12 @@ def validate(module, summary: dict | None) -> list[dict]:
     return issues
 
 
+def validate_formal_signal_coverage(module, run_master: dict, diagnostics: dict) -> list[dict]:
+    issues: list[dict] = []
+    module.validate_formal_signal_coverage(run_master=run_master, diagnostics=diagnostics, issues=issues)
+    return issues
+
+
 def has(issues: list[dict], code: str) -> bool:
     return any(item.get('code') == code for item in issues)
 
@@ -127,6 +133,31 @@ def main() -> None:
 
     issues = validate(module, base_summary())
     cases['valid_acceptance_summary_passes'] = {'ok': not issues, 'issues': issues}
+
+    issues = validate_formal_signal_coverage(
+        module,
+        {'run_status': 'success', 'signal_column': 'factor_value'},
+        {'quality_checks': {'null_ratio': {'factor_value': 0.9884}}},
+    )
+    cases['formal_signal_sparse_null_ratio_blocks'] = {
+        'ok': has(issues, 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW'),
+        'issues': issues,
+    }
+
+    issues = validate_formal_signal_coverage(
+        module,
+        {
+            'run_status': 'success',
+            'formal_signal_coverage': {
+                'coverage_gate_verdict': 'PASS',
+                'factor_value_non_null_coverage': 0.98,
+                'nonnull_end': '20250711',
+                'actual_window': {'end': '20250711'},
+            },
+        },
+        {'quality_checks': {}},
+    )
+    cases['formal_signal_dense_coverage_passes'] = {'ok': not issues, 'issues': issues}
 
     with tempfile.TemporaryDirectory(prefix='factorforge_acceptance_summary_smoke_') as tmp:
         root = Path(tmp)

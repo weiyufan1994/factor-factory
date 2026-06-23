@@ -1,0 +1,48 @@
+{
+  "contract_version": "factorforge_formula_preflight_v1",
+  "created_at": "2026-06-24",
+  "factor_id": "Alpha019",
+  "parent_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+  "proposed_child_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101__LOOP01__ALPHA019_SMOOTHED_PULLBACK_PERSISTENCE_V1",
+  "status": "preflight_only_pending_human_approval",
+  "evidence_role": "exploratory_evidence",
+  "not_step3b_run": true,
+  "not_step4_evidence": true,
+  "formula_text": "mean(rank(((delay(close, 7) - close) / delay(close, 7))), 5) * (1 + rank((1 + sum(returns, 250))))",
+  "formula_ir_preflight": {
+    "parse_status": "success",
+    "formula_hash": "8cb8e209277990fb9bb5af3df4c240ade2e010144e16144943bd32d3a017a3e8",
+    "required_fields": [
+      "close",
+      "returns"
+    ],
+    "operator_set": [
+      "delay",
+      "divide",
+      "mean",
+      "minus",
+      "multiply",
+      "plus",
+      "rank",
+      "sum"
+    ],
+    "max_formula_ir_lookback": 250
+  },
+  "synthetic_evaluation_smoke": {
+    "engine": "optimized",
+    "rows": 3840,
+    "non_null_factor_rows": 852,
+    "nonnull_dates": 71,
+    "first_nonnull_date": "20201215",
+    "last_nonnull_date": "20210323",
+    "factor_value_min": 0.15555555555555553,
+    "factor_value_max": 1.672222222222223
+  },
+  "required_execution_boundary": {
+    "human_approval_required": true,
+    "execution_allowed_by_default": false,
+    "active_handoff_to_step3b": "absent",
+    "post_approval_action": "materialize child through formal Factor Forge revision path, then run wrapper Step3B through Step6"
+  },
+  "why_this_advances_goal": "Confirms the next Alpha101 child candidate is Formula-IR executable and covered by existing long-lookback safeguards without violating the Step6 human approval gate."
+}

@@ -1,0 +1,103 @@
+{
+  "schema_version": "alpha101_goal_progress_audit_v1",
+  "created_at": "2026-06-24",
+  "objective": "Use Factor Forge Ultimate to fully research the already-screened promising Alpha101 factors, with revision loops capped at <=5.",
+  "goal_complete": false,
+  "main_reason": "Alpha019 LOOP01 is ready but still pending human approval before Step3B execution.",
+  "current_branch": "codex/factor-knowledge-network-v1",
+  "remote_branch": "origin/codex/factor-knowledge-network-v1",
+  "latest_known_head": "c8e6f7b Sync Alpha101 batch research state",
+  "requirement_audit": [
+    {
+      "requirement": "Use Factor Forge Ultimate discipline",
+      "current_evidence": "Research workspaces, Step evidence, queue docs, candidate packets, and execution-readiness records exist under factor_research.",
+      "verdict": "partial_ongoing"
+    },
+    {
+      "requirement": "Focus on screened/promising Alpha101 factors",
+      "current_evidence": "Alpha005/007/013/015/019/040/042/044/083 have research state records.",
+      "verdict": "satisfied_for_current_batch"
+    },
+    {
+      "requirement": "Preserve revision loop cap <=5",
+      "current_evidence": "Alpha019 LOOP01 would consume 1 loop; no uncontrolled child execution is active.",
+      "verdict": "satisfied_so_far"
+    },
+    {
+      "requirement": "Complete research, not just metric collection",
+      "current_evidence": "Alpha015 candidate packet and Alpha019 readiness include economic hypothesis, math mechanism, evidence roles, kill criteria, and anti-patterns.",
+      "verdict": "partial"
+    },
+    {
+      "requirement": "Deposit failures and lessons",
+      "current_evidence": "Weak candidates and failed repairs are recorded in batch queue, addendum, and candidate packets.",
+      "verdict": "partial_improving"
+    },
+    {
+      "requirement": "Official promotion only with proof",
+      "current_evidence": "Alpha015 is explicitly candidate/feature only; no Alpha101 official promotion is claimed.",
+      "verdict": "satisfied"
+    },
+    {
+      "requirement": "Continue next promising branch",
+      "current_evidence": "Alpha019 LOOP01 is preflighted and ready, but not approved.",
+      "verdict": "blocked_by_explicit_approval_gate"
+    }
+  ],
+  "alpha015": {
+    "latest_docs": [
+      "factor_research/Alpha015/alpha015_ultimate_promising_20260622/docs/alpha015_candidate_packet_post_rerun_20260624.zh-CN.md",
+      "factor_research/Alpha015/alpha015_ultimate_promising_20260622/knowledge/canonical/alpha015_candidate_packet_post_rerun_20260624.json"
+    ],
+    "classification": {
+      "candidate_library": true,
+      "feature_candidate": true,
+      "official_factor_library": false,
+      "best_branch": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+      "mechanism_claim_level": "component_validated",
+      "stochastic_process_status": "framing_only",
+      "payer_validation": "not_validated"
+    },
+    "reading": "strongest current Alpha101 candidate but not official"
+  },
+  "alpha019": {
+    "latest_docs": [
+      "factor_research/Alpha019/alpha019_sign_reversal_winner_state_ultimate_20260623/docs/alpha019_loop01_execution_readiness_20260624.zh-CN.md",
+      "factor_research/Alpha019/alpha019_sign_reversal_winner_state_ultimate_20260623/knowledge/canonical/alpha019_loop01_execution_readiness_20260624.json"
+    ],
+    "proposed_child_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101__LOOP01__ALPHA019_SMOOTHED_PULLBACK_PERSISTENCE_V1",
+    "execution_status": "pending_human_approval",
+    "execution_allowed_by_default": false,
+    "active_handoff_to_step3b": false,
+    "preflight": {
+      "parse_status": "success",
+      "formula_hash": "8cb8e209277990fb9bb5af3df4c240ade2e010144e16144943bd32d3a017a3e8",
+      "alpha_quality_proven": false
+    }
+  },
+  "approval_gate": {
+    "required_user_decision": "approve_or_reject_alpha019_loop01_formal_execution",
+    "approval_phrase": "批准 Alpha019 LOOP01",
+    "if_approved_next_actions": [
+      "materialize_child_revision_package",
+      "generate_child_formal_artifacts_and_executable_revision_spec",
+      "run_single_factor_forge_wrapper_from_step3b_to_step6",
+      "compare_parent_vs_child",
+      "write_child_success_or_failure_knowledge"
+    ]
+  },
+  "integration_note": {
+    "branch_pushed": true,
+    "github_cli_authenticated": false,
+    "pr_created": false,
+    "scope_warning": "Branch contains earlier knowledge-network and framework-migration changes in addition to latest Alpha101 docs; review scope should not be described as Alpha101 only."
+  },
+  "forbidden_without_approval": [
+    "run_alpha019_child",
+    "mutate_baseline_step3",
+    "repair_via_portfolio_policy",
+    "claim_alpha015_official",
+    "treat_exploratory_evidence_as_promotion_gate",
+    "drop_failed_alpha101_lessons"
+  ]
+}

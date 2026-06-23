@@ -42,6 +42,23 @@
     "cost_adjusted_long_side_max_drawdown": -0.6679184568007397,
     "relative_to_parent": "not_improved"
   },
+  "loop02": {
+    "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PR__f726ea84d6__LOOP02__ALPHA015_TURNOVER_FRICTION_GATE_REPAIR_V2",
+    "run_status": "success",
+    "validator_verdict": "PASS",
+    "formal_signal_coverage": 0.9915650175046888,
+    "rank_ic_mean": 0.0568981184740599,
+    "rank_ic_ir": 0.5413254659534665,
+    "long_side_annual_return": 0.19959255955777666,
+    "long_side_sharpe": 0.8439756172555698,
+    "long_side_max_drawdown": -0.40027479578233627,
+    "long_side_recovery_days": 714,
+    "long_side_turnover_mean_daily": 0.24125600334014063,
+    "cost_adjusted_annual_return": 0.0172823553251597,
+    "cost_adjusted_long_side_sharpe": 0.07305062190136835,
+    "cost_adjusted_long_side_max_drawdown": -0.6706311569394311,
+    "relative_to_parent": "not_improved"
+  },
   "economic_hypothesis": "Persistent negative high-volume/high-price rank-correlation, when confirmed by sufficient participation and moderated by turnover, captures an active liquidity pressure state. The likely payer is the marginal participant forced by liquidity demand, mandate pressure, attention, or execution constraints.",
   "math_mechanism": {
     "primary_object": "ranked rolling high-volume correlation pressure path",
@@ -51,11 +68,17 @@
   "decision": {
     "status": "candidate_feature_needs_revision",
     "official_promotion": false,
-    "reason": "Gross long-side and RankIC evidence are strong, but drawdown, recovery, turnover cost, and LOOP01 failure prevent standalone promotion."
+    "best_current_branch": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+    "falsified_improvement_branches": [
+      "ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1",
+      "ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PR__f726ea84d6__LOOP02__ALPHA015_TURNOVER_FRICTION_GATE_REPAIR_V2"
+    ],
+    "reason": "Gross long-side and RankIC evidence are strong, but drawdown, recovery, turnover cost, and LOOP01/LOOP02 failures prevent standalone promotion."
   },
   "do_not_repeat": [
     "Do not use the old sparse formal artifact as promotion evidence.",
     "Do not treat LOOP01 as improved merely because RankIC increased.",
+    "Do not treat LOOP02 as improved merely because turnover is slightly lower.",
     "Do not repair the factor using portfolio mechanics, decile trading, or short-leg reliance.",
     "Do not add complexity unless OOS long-side or residual-information evidence pays for it."
   ],
@@ -69,6 +92,8 @@
     "parent_factor_run_master": "objects/factor_run_master/factor_run_master__ALPHA015_SWEEP_TURNPEN_A040_20160101.json",
     "parent_factor_record": "objects/factor_library_all/factor_record__ALPHA015_SWEEP_TURNPEN_A040_20160101.json",
     "loop01_factor_run_master": "objects/factor_run_master/factor_run_master__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1.json",
-    "loop01_factor_record": "objects/factor_library_all/factor_record__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1.json"
+    "loop01_factor_record": "objects/factor_library_all/factor_record__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1.json",
+    "loop02_factor_run_master": "objects/factor_run_master/factor_run_master__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PR__f726ea84d6__LOOP02__ALPHA015_TURNOVER_FRICTION_GATE_REPAIR_V2.json",
+    "loop02_factor_record": "objects/factor_library_all/factor_record__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PR__f726ea84d6__LOOP02__ALPHA015_TURNOVER_FRICTION_GATE_REPAIR_V2.json"
   }
 }

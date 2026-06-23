@@ -78,10 +78,35 @@ LOOP01 improves RankIC and RankIC IR, but it worsens the economic objective:
 lower gross long return, lower gross Sharpe, worse recovery, worse cost-adjusted
 Sharpe, and worse cost-adjusted drawdown. Treat this child as not improved.
 
+## LOOP02 Result
+
+`ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PR__f726ea84d6__LOOP02__ALPHA015_TURNOVER_FRICTION_GATE_REPAIR_V2`
+was also rerun through the official wrapper.
+
+```text
+formal_signal_coverage: 99.1565%
+validator: PASS
+RankIC mean: 0.056898
+RankIC IR: 0.541325
+long annual return: 19.9593%
+long Sharpe: 0.8440
+max drawdown: -40.03%
+recovery days: 714
+daily turnover: 24.13%
+cost-adjusted annual return: 1.7282%
+cost-adjusted Sharpe: 0.0731
+cost-adjusted max drawdown: -67.06%
+```
+
+LOOP02 slightly reduces turnover versus the parent, but it gives up RankIC,
+long-side return, Sharpe, drawdown, recovery, and cost-adjusted quality. It is
+also not improved.
+
 ## Current Research Judgment
 
 Alpha015 should remain a `candidate / feature_candidate / needs_revision`
-rather than official standalone alpha.
+rather than official standalone alpha. Among the current formal branches, the
+parent is the best branch. LOOP01 and LOOP02 are falsified as improvements.
 
 The mechanism is still useful:
 
@@ -125,6 +150,7 @@ not blindly maximize RankIC.
 
 - Do not reuse the old sparse formal artifact.
 - Do not treat LOOP01 as better merely because RankIC increased.
+- Do not treat LOOP02 as better merely because turnover is slightly lower.
 - Do not repair the factor through portfolio mechanics, decile trading, or
   short-leg reliance.
 - Do not add complexity unless it improves long-side OOS/cost-adjusted evidence

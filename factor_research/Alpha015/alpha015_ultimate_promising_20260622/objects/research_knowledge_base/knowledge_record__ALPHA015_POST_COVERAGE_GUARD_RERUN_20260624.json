@@ -8,7 +8,7 @@
   "repo_sha": "ff62325f39690e680e3b80b17098845a93f625ba",
   "title": "Alpha015 post coverage-guard rerun: valid parent candidate, LOOP01 not improved",
   "status": "candidate_feature_needs_revision",
-  "summary": "Step4 formal signal coverage is now valid for Alpha015 parent and LOOP01. Parent has strong gross long-side and RankIC evidence but fails official promotion on drawdown, recovery, turnover cost, and cost-adjusted Sharpe. LOOP01 improves RankIC but worsens the economic objective.",
+  "summary": "Step4 formal signal coverage is now valid for Alpha015 parent, LOOP01, and LOOP02. Parent has strong gross long-side and RankIC evidence but fails official promotion on drawdown, recovery, turnover cost, and cost-adjusted Sharpe. LOOP01 improves RankIC but worsens the economic objective; LOOP02 slightly reduces turnover but worsens the broader objective.",
   "tags": [
     "Alpha101",
     "Alpha015",
@@ -34,11 +34,16 @@
     "loop01_rank_ic_mean": 0.06420656578451336,
     "loop01_long_side_annual_return": 0.20096087810061244,
     "loop01_long_side_sharpe": 0.855723470772328,
-    "loop01_cost_adjusted_sharpe": 0.06843030281497607
+    "loop01_cost_adjusted_sharpe": 0.06843030281497607,
+    "loop02_rank_ic_mean": 0.0568981184740599,
+    "loop02_long_side_annual_return": 0.19959255955777666,
+    "loop02_long_side_sharpe": 0.8439756172555698,
+    "loop02_cost_adjusted_sharpe": 0.07305062190136835
   },
   "lessons": [
     "Formal non-null signal coverage is a prerequisite for promotion-gate evidence.",
     "Higher RankIC is not sufficient when long-side return, recovery, and cost-adjusted Sharpe worsen.",
+    "Slightly lower turnover is not sufficient when capital path and cost-adjusted quality remain worse than the parent.",
     "Alpha015 carries real ordinal information and should not be discarded as no-signal.",
     "The next revision should target capital path geometry and horizon stability, not pure IC maximization."
   ],

@@ -41,6 +41,44 @@ For every factor, the agent must behave like a researcher from the beginning:
 
 Only use a mechanical/lightweight run if the user explicitly says this is a smoke test.
 
+## Workspace And Git Hygiene Discipline
+
+Before any Factor Forge Ultimate work, inspect `git status --short --branch`.
+If the worktree is not clean, classify it before running research:
+
+- framework/skill/test changes;
+- repo-root `knowledge/因子工厂` export changes;
+- `factor_research` workspace artifacts;
+- clean/raw data changes;
+- unrelated user changes.
+
+Do not start a new factor run from a dirty framework worktree unless the user
+explicitly accepts that boundary. Do not clean or revert user changes without
+explicit approval.
+
+Every new factor research must start by creating a factor workspace:
+`factor_research/<factor_id>/<research_id>/` or the runtime equivalent selected
+by the workspace manifest. Step3 runtime copies, Step3B code, results, objects,
+human-readable notes, canonical knowledge, and retrieval artifacts belong under
+that workspace. Baseline Step3 code is a template only; factor-specific logic
+must never be written back into the baseline Step3 runtime.
+
+`factor_research/**` is runtime/artifact space by default. Large generated
+files, caches, PDFs, Parquet/HDF files, result CSVs, and `step3_runtime/` are
+not normal git inputs. Promote only reviewed small provenance files such as
+`manifest.json`, final reports, and canonical knowledge, and only with explicit
+paths, usually `git add -f <path>` when the file is intentionally ignored.
+Never use `git add .`.
+
+Repo-root `knowledge/因子工厂` is an explicit export/vault target only. A formal
+export must be user-approved, provenance-backed, and accompanied by an export
+manifest. Default knowledge writes stay inside the factor workspace.
+
+When multiple researcher threads are active, assume they may write new
+workspace files concurrently. Keep framework changes in a separate branch or
+worktree from live research runs; do not mix framework PRs, knowledge exports,
+and production factor artifacts in one commit.
+
 ## Knowledge-First Research Gate
 
 Every real Factor Forge research round must deposit knowledge before the next
@@ -461,6 +499,47 @@ The sync tool must verify the latest manifest sha256 before applying a bundle. P
 
 Full SOP: `docs/operations/factorforge-knowledge-sync-sop.zh-CN.md`.
 
+
+## Data Request Handoff
+
+When Step3/Step4/Step6 blocks on missing Data API coverage, missing fields,
+slow reusable minute state, absent full-window datamart proof, or an expensive
+raw-minute recomputation that should become a reusable derived state, the
+Ultimate agent must create a structured Data API request instead of asking the
+user to forward requirements.
+
+Use the Data API inbox contract:
+
+```bash
+python3 scripts/data_request_inbox.py new \
+  --report-id <report_id> \
+  --dataset-id <dataset_id> \
+  --request-type new_datamart \
+  --output factorforge/data/requests/inbox/data_request__<report_id>__<dataset_id>.json
+```
+
+The research loop should then report the `request_id` and wait for:
+
+```bash
+python3 scripts/data_request_inbox.py status <request_id>
+```
+
+Data API side should run the scanner instead of relying on the user to notify it:
+
+```bash
+python3 scripts/data_request_scanner.py once
+```
+
+Status handling:
+
+- `PENDING`: do not ask the user to relay the data request; Data API has not closed it.
+- `ACCEPT`: resume research only through the returned catalog/datamart/QA/worker-smoke proof.
+- `BLOCK`: report the blocker and do not run proxy/full-window research unless the user explicitly approves a degraded scope.
+- `INVALID` or `NOT_FOUND`: fix the request artifact or inbox sync before continuing.
+
+This handoff does not authorize clean data mutation, search worker, official
+promotion, Factor Forge production loop execution, or writing research
+artifacts outside the active factor workspace.
 
 ## Mandatory Single Entry Wrapper
 

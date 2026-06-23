@@ -23,6 +23,15 @@ data/report_ingestion/raw/
 data/report_ingestion/extracted/
 data/report_ingestion/report_registry.json
 
+# Factor research workspaces are runtime/artifact space by default.
+# Do not let concurrent Factor Forge Ultimate research threads dirty the repo
+# with results, Step3 runtime copies, caches, PDFs, or large intermediate data.
+# To promote a small manifest/report/knowledge file intentionally, use
+# explicit `git add -f <path>` after review; never use `git add .`.
+factor_research/**
+!factor_research/
+!factor_research/**/
+
 # OS/editor
 .DS_Store
 .vscode/

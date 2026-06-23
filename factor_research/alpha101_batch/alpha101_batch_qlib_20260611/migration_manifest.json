@@ -1,0 +1,12 @@
+{
+  "contract_version": "factorforge_workspace_migration_record_v1",
+  "destructive_actions": false,
+  "factor_id": "alpha101_batch",
+  "file_count_after_move": 8,
+  "migration_reason": "legacy_one_level_factor_research_workspace",
+  "moved_at_utc": "2026-06-23T01:48:20.752915Z",
+  "overwrite": false,
+  "research_id": "alpha101_batch_qlib_20260611",
+  "source_path": "/Users/humphrey/projects/factor-factory/factor_research/alpha101_batch_qlib_20260611",
+  "target_path": "/Users/humphrey/projects/factor-factory/factor_research/alpha101_batch/alpha101_batch_qlib_20260611"
+}

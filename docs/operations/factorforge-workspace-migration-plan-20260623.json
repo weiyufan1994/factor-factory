@@ -1,0 +1,191 @@
+{
+  "classification": {
+    "exists": true,
+    "invalid": [],
+    "legacy_one_level": [],
+    "proposed_moves": [],
+    "quarantine": [],
+    "root": "/Users/humphrey/projects/factor-factory/factor_research",
+    "two_level": [
+      {
+        "factor_id": "Alpha007",
+        "file_count": 582,
+        "relative_manifest": "Alpha007/alpha007_folded_reversal_ultimate_20260622/manifest.json",
+        "research_id": "alpha007_folded_reversal_ultimate_20260622",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/Alpha007/alpha007_folded_reversal_ultimate_20260622"
+      },
+      {
+        "factor_id": "Alpha013",
+        "file_count": 360,
+        "relative_manifest": "Alpha013/alpha013_abvol_norm_ultimate_20260622/manifest.json",
+        "research_id": "alpha013_abvol_norm_ultimate_20260622",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/Alpha013/alpha013_abvol_norm_ultimate_20260622"
+      },
+      {
+        "factor_id": "Alpha015",
+        "file_count": 450,
+        "relative_manifest": "Alpha015/alpha015_ultimate_promising_20260622/manifest.json",
+        "research_id": "alpha015_ultimate_promising_20260622",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/Alpha015/alpha015_ultimate_promising_20260622"
+      },
+      {
+        "factor_id": "Alpha040",
+        "file_count": 277,
+        "relative_manifest": "Alpha040/alpha040_lowvol_pv_state_ultimate_20260623/manifest.json",
+        "research_id": "alpha040_lowvol_pv_state_ultimate_20260623",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/Alpha040/alpha040_lowvol_pv_state_ultimate_20260623"
+      },
+      {
+        "factor_id": "TURNRATE_VOL_TREND_PENALTY_14_30",
+        "file_count": 420,
+        "relative_manifest": "TURNRATE_VOL_TREND_PENALTY_14_30/turnrate_vol_trend_penalty_20260623/manifest.json",
+        "research_id": "turnrate_vol_trend_penalty_20260623",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/TURNRATE_VOL_TREND_PENALTY_14_30/turnrate_vol_trend_penalty_20260623"
+      },
+      {
+        "factor_id": "alpha036",
+        "file_count": 4,
+        "relative_manifest": "alpha036/alpha036_production_acceptance_20260602/manifest.json",
+        "research_id": "alpha036_production_acceptance_20260602",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/alpha036/alpha036_production_acceptance_20260602"
+      },
+      {
+        "factor_id": "alpha101_batch",
+        "file_count": 9,
+        "relative_manifest": "alpha101_batch/alpha101_batch_qlib_20260611/manifest.json",
+        "research_id": "alpha101_batch_qlib_20260611",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/alpha101_batch/alpha101_batch_qlib_20260611"
+      },
+      {
+        "factor_id": "PV_CORR_STD_1430",
+        "file_count": 3072,
+        "relative_manifest": "dongwu_20241229_cpv_intraday_version/research_20260615/manifest.json",
+        "research_id": "research_20260615",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/dongwu_20241229_cpv_intraday_version/research_20260615"
+      },
+      {
+        "factor_id": null,
+        "file_count": 335,
+        "relative_manifest": "dongwu_20241229_cpv_price_path_occupation_v3/research_20260616/manifest.json",
+        "research_id": "research_20260616",
+        "status": "WARN_IDENTITY_INCOMPLETE",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/dongwu_20241229_cpv_price_path_occupation_v3/research_20260616"
+      },
+      {
+        "factor_id": "RET_VOL_CORR_STD20_1430",
+        "file_count": 34,
+        "relative_manifest": "dongwu_20241229_cpv_retvol_v2/research_20260616/manifest.json",
+        "research_id": "research_20260616",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/dongwu_20241229_cpv_retvol_v2/research_20260616"
+      },
+      {
+        "factor_id": "huaxi_20250529_lcr_retained_chip_ratio",
+        "file_count": 354,
+        "relative_manifest": "huaxi_20250529_lcr_retained_chip_ratio/research_20260618/manifest.json",
+        "research_id": "research_20260618",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618"
+      },
+      {
+        "factor_id": "kaiyuan_smart_money_v2",
+        "file_count": 128,
+        "relative_manifest": "kaiyuan_20200209_smart_money_v2/research_20260622/manifest.json",
+        "research_id": "research_20260622",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/kaiyuan_20200209_smart_money_v2/research_20260622"
+      },
+      {
+        "factor_id": "moneyflow_v18_long_edge",
+        "file_count": 27,
+        "relative_manifest": "moneyflow_v18_long_edge/moneyflow_v18_long_edge_20260611/manifest.json",
+        "research_id": "moneyflow_v18_long_edge_20260611",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/moneyflow_v18_long_edge/moneyflow_v18_long_edge_20260611"
+      },
+      {
+        "factor_id": "moneyflow_v19_payoff_calibration",
+        "file_count": 41,
+        "relative_manifest": "moneyflow_v19_payoff_calibration/moneyflow_v19_payoff_calibration_20260615/manifest.json",
+        "research_id": "moneyflow_v19_payoff_calibration_20260615",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/moneyflow_v19_payoff_calibration/moneyflow_v19_payoff_calibration_20260615"
+      },
+      {
+        "factor_id": "moneyflow_v20_slow_state_event_triggered",
+        "file_count": 16,
+        "relative_manifest": "moneyflow_v20_slow_state_event_triggered/moneyflow_v20_slow_state_event_triggered_20260615/manifest.json",
+        "research_id": "moneyflow_v20_slow_state_event_triggered_20260615",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/moneyflow_v20_slow_state_event_triggered/moneyflow_v20_slow_state_event_triggered_20260615"
+      },
+      {
+        "factor_id": "moneyflow_v21_hysteresis_feature_policy",
+        "file_count": 20,
+        "relative_manifest": "moneyflow_v21_hysteresis_feature_policy/moneyflow_v21_hysteresis_feature_policy_20260617/manifest.json",
+        "research_id": "moneyflow_v21_hysteresis_feature_policy_20260617",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/moneyflow_v21_hysteresis_feature_policy/moneyflow_v21_hysteresis_feature_policy_20260617"
+      },
+      {
+        "factor_id": "post_decline_quiet_base_volume_contraction_v2",
+        "file_count": 207,
+        "relative_manifest": "post_decline_quiet_base_volume_contraction_v2/research_20260622/manifest.json",
+        "research_id": "research_20260622",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/post_decline_quiet_base_volume_contraction_v2/research_20260622"
+      },
+      {
+        "factor_id": "value_occupation_v18",
+        "file_count": 24,
+        "relative_manifest": "value_occupation_v18/oos_incremental_20260615/manifest.json",
+        "research_id": "oos_incremental_20260615",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/value_occupation_v18/oos_incremental_20260615"
+      },
+      {
+        "factor_id": "vp_p0_baseline",
+        "file_count": 11,
+        "relative_manifest": "vp_p0_baseline/vp_p0_baseline_20260610/manifest.json",
+        "research_id": "vp_p0_baseline_20260610",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/vp_p0_baseline/vp_p0_baseline_20260610"
+      },
+      {
+        "factor_id": "vp_v18_value_occupation",
+        "file_count": 10,
+        "relative_manifest": "vp_v18_value_occupation/vp_v18_value_occupation_20260614/manifest.json",
+        "research_id": "vp_v18_value_occupation_20260614",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/vp_v18_value_occupation/vp_v18_value_occupation_20260614"
+      },
+      {
+        "factor_id": "vp_v19_return_volume",
+        "file_count": 18,
+        "relative_manifest": "vp_v19_return_volume/vp_v19_return_volume_20260612/manifest.json",
+        "research_id": "vp_v19_return_volume_20260612",
+        "status": "OK_TWO_LEVEL",
+        "workspace": "/Users/humphrey/projects/factor-factory/factor_research/vp_v19_return_volume/vp_v19_return_volume_20260612"
+      }
+    ]
+  },
+  "contract_version": "factorforge_workspace_migration_plan_v1",
+  "created_at_utc": "2026-06-23T01:50:03.255589Z",
+  "destructive_actions": false,
+  "dry_run_only": true,
+  "execution_policy": {
+    "block_on_existing_target": true,
+    "do_not_touch_global_factorforge_objects_or_runs": true,
+    "manual_review_required_before_move": true,
+    "no_git_add_dot": true
+  },
+  "root": "/Users/humphrey/projects/factor-factory/factor_research"
+}

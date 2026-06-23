@@ -1,0 +1,12 @@
+{
+  "contract_version": "factorforge_workspace_migration_record_v1",
+  "destructive_actions": false,
+  "factor_id": "vp_p0_baseline",
+  "file_count_after_move": 10,
+  "migration_reason": "legacy_one_level_factor_research_workspace",
+  "moved_at_utc": "2026-06-23T01:48:20.757147Z",
+  "overwrite": false,
+  "research_id": "vp_p0_baseline_20260610",
+  "source_path": "/Users/humphrey/projects/factor-factory/factor_research/vp_p0_baseline_20260610",
+  "target_path": "/Users/humphrey/projects/factor-factory/factor_research/vp_p0_baseline/vp_p0_baseline_20260610"
+}

@@ -1,0 +1,12 @@
+{
+  "contract_version": "factorforge_workspace_migration_record_v1",
+  "destructive_actions": false,
+  "factor_id": "alpha036",
+  "file_count_after_move": 3,
+  "migration_reason": "legacy_one_level_factor_research_workspace",
+  "moved_at_utc": "2026-06-23T01:48:20.752293Z",
+  "overwrite": false,
+  "research_id": "alpha036_production_acceptance_20260602",
+  "source_path": "/Users/humphrey/projects/factor-factory/factor_research/alpha036_production_acceptance_20260602",
+  "target_path": "/Users/humphrey/projects/factor-factory/factor_research/alpha036/alpha036_production_acceptance_20260602"
+}

@@ -1,0 +1,74 @@
+{
+  "version": "factorforge_research_knowledge_v1",
+  "created_at_local": "2026-06-24",
+  "factor_id": "Alpha015",
+  "workspace": "factor_research/Alpha015/alpha015_ultimate_promising_20260622",
+  "repo_sha": "ff62325f39690e680e3b80b17098845a93f625ba",
+  "knowledge_type": "post_coverage_guard_rerun",
+  "summary": "Alpha015 parent formal evidence is now valid after Step4 formal signal coverage guard; parent remains a strong candidate-level feature but not official standalone. LOOP01 improves RankIC but worsens long-side and cost-adjusted capital path.",
+  "parent": {
+    "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+    "run_status": "success",
+    "validator_verdict": "PASS",
+    "formal_signal_coverage": 0.9921556840767692,
+    "nonnull_date_count": 2301,
+    "nonnull_start": "20160120",
+    "nonnull_end": "20250711",
+    "rank_ic_mean": 0.06022535346386242,
+    "rank_ic_ir": 0.541871690131665,
+    "long_side_annual_return": 0.22251050029827757,
+    "long_side_sharpe": 0.9382413232490837,
+    "long_side_max_drawdown": -0.3954091950123346,
+    "long_side_recovery_days": 704,
+    "long_side_turnover_mean_daily": 0.24486676882382682,
+    "cost_adjusted_annual_return": 0.037471709709738746,
+    "cost_adjusted_long_side_sharpe": 0.15794826765966674,
+    "cost_adjusted_long_side_max_drawdown": -0.6115683912428227
+  },
+  "loop01": {
+    "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1",
+    "run_status": "success",
+    "validator_verdict": "PASS",
+    "formal_signal_coverage": 0.9915650175046888,
+    "rank_ic_mean": 0.06420656578451336,
+    "rank_ic_ir": 0.6003012093922243,
+    "long_side_annual_return": 0.20096087810061244,
+    "long_side_sharpe": 0.855723470772328,
+    "long_side_max_drawdown": -0.39440571009388514,
+    "long_side_recovery_days": 714,
+    "long_side_turnover_mean_daily": 0.2446617953713506,
+    "cost_adjusted_annual_return": 0.016077015048371075,
+    "cost_adjusted_long_side_sharpe": 0.06843030281497607,
+    "cost_adjusted_long_side_max_drawdown": -0.6679184568007397,
+    "relative_to_parent": "not_improved"
+  },
+  "economic_hypothesis": "Persistent negative high-volume/high-price rank-correlation, when confirmed by sufficient participation and moderated by turnover, captures an active liquidity pressure state. The likely payer is the marginal participant forced by liquidity demand, mandate pressure, attention, or execution constraints.",
+  "math_mechanism": {
+    "primary_object": "ranked rolling high-volume correlation pressure path",
+    "observable_estimator": "-sum_7(rank(corr_7(rank(high), rank(volume)))) * rank(amount) * (0.4 + 0.6 * (1-rank(turnover)))",
+    "conditional_return_projection": "Higher score should increase the conditional mean of next-horizon long-side return, but current evidence shows poor capital path geometry and high implementation cost."
+  },
+  "decision": {
+    "status": "candidate_feature_needs_revision",
+    "official_promotion": false,
+    "reason": "Gross long-side and RankIC evidence are strong, but drawdown, recovery, turnover cost, and LOOP01 failure prevent standalone promotion."
+  },
+  "do_not_repeat": [
+    "Do not use the old sparse formal artifact as promotion evidence.",
+    "Do not treat LOOP01 as improved merely because RankIC increased.",
+    "Do not repair the factor using portfolio mechanics, decile trading, or short-leg reliance.",
+    "Do not add complexity unless OOS long-side or residual-information evidence pays for it."
+  ],
+  "next_research_direction": [
+    "Regime stability guard tied to liquidity or volatility state, with explicit mechanism and complexity penalty.",
+    "Horizon repair to reduce turnover while preserving high-score long basket information.",
+    "Component validation for amount confirmation and turnover shrinkage.",
+    "OOS and IS subsample validation before promotion discussion."
+  ],
+  "evidence_paths": {
+    "parent_factor_run_master": "objects/factor_run_master/factor_run_master__ALPHA015_SWEEP_TURNPEN_A040_20160101.json",
+    "parent_factor_record": "objects/factor_library_all/factor_record__ALPHA015_SWEEP_TURNPEN_A040_20160101.json",
+    "loop01_factor_run_master": "objects/factor_run_master/factor_run_master__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1.json",
+    "loop01_factor_record": "objects/factor_library_all/factor_record__ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1.json"
+  }
+}

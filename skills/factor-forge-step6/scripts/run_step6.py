@@ -4053,7 +4053,7 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 
     branch_template = next_dir.get('branch_template') or {}
     branch_text = json.dumps(branch_template, ensure_ascii=False) if branch_template else 'none'
-    return f"""# Factor Forge Loop Brief: {brief.get('report_id')} / Iteration {brief.get('iteration_no')}
+    return f"""# Factor Forge Loop Brief: {brief.get('factor_id')} / Iteration {brief.get('iteration_no')}
 
 ## 1. Decision Snapshot
 
@@ -4087,13 +4087,13 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 
 ## 4. Chart Evidence
 
-- Rank IC time series: {charts.get('rank_ic_timeseries')}
-- Pearson IC time series: {charts.get('pearson_ic_timeseries')}
-- Long-side NAV: {charts.get('long_side_nav')}
-- Cost-adjusted long-side NAV: {charts.get('cost_adjusted_long_side_nav')}
-- Quantile NAV: {charts.get('quantile_nav')}
-- Long-short NAV, diagnostic only: {charts.get('long_short_nav_diagnostic_only')}
-- Coverage by day: {charts.get('coverage_by_day')}
+- Rank IC time series: see chart_evidence.rank_ic_timeseries in the JSON brief.
+- Pearson IC time series: see chart_evidence.pearson_ic_timeseries in the JSON brief.
+- Long-side NAV: see chart_evidence.long_side_nav in the JSON brief.
+- Cost-adjusted long-side NAV: see chart_evidence.cost_adjusted_long_side_nav in the JSON brief.
+- Quantile NAV: see chart_evidence.quantile_nav in the JSON brief.
+- Long-short NAV, diagnostic only: see chart_evidence.long_short_nav_diagnostic_only in the JSON brief.
+- Coverage by day: see chart_evidence.coverage_by_day in the JSON brief.
 
 ## 5. Metric Analysis
 

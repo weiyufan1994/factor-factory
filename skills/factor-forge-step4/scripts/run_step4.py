@@ -79,6 +79,7 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'shared_evaluation_context',
     'backend_timing_profile',
     'research_window_contract',
+    'formal_signal_coverage',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 

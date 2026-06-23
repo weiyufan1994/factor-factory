@@ -234,6 +234,11 @@ def split_frame(merged: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     return merged.loc[mask].copy()
 
 
+def safe_artifact_dir_name(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in value)
+    return safe.strip("._") or "window_evidence"
+
+
 def summarize_split(merged: pd.DataFrame, label: str, start: str, end: str, group_count: int, out_dir: Path) -> dict[str, Any]:
     split = split_frame(merged, start, end)
     date_count = int(split["trade_date"].nunique()) if len(split) else 0
@@ -327,8 +332,9 @@ def coverage_proof(trading_dates: pd.Series, full_start: str, full_end: str, sam
 
 def main() -> int:
     args = parse_args()
-    out_dir = args.workspace / "objects" / "window_evidence"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_dir = args.workspace / "objects" / "window_evidence"
+    artifact_dir = evidence_dir / safe_artifact_dir_name(args.report_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     schema_columns = parquet_columns(args.daily_clean)
     formula_ir = resolve_formula_fields_for_schema(parse_formula(args.formula, schema_columns, raise_on_error=True), schema_columns)
     raw = load_daily(args.daily_clean, args.full_is_start, formula_ir)
@@ -341,12 +347,12 @@ def main() -> int:
         on=["ts_code", "trade_date"],
         how="inner",
     )
-    full_is = summarize_split(merged, "full_is", args.full_is_start, args.full_is_end, args.group_count, out_dir)
+    full_is = summarize_split(merged, "full_is", args.full_is_start, args.full_is_end, args.group_count, artifact_dir)
     subsample_results = [
-        summarize_split(merged, label, start, end, args.group_count, out_dir)
+        summarize_split(merged, label, start, end, args.group_count, artifact_dir)
         for label, start, end in DEFAULT_SUBSAMPLES
     ]
-    oos = summarize_split(merged, "oos", args.oos_start, latest_clean, args.group_count, out_dir)
+    oos = summarize_split(merged, "oos", args.oos_start, latest_clean, args.group_count, artifact_dir)
     coverage = coverage_proof(raw["trade_date"], args.full_is_start, args.full_is_end, DEFAULT_SUBSAMPLES)
     payload = {
         "version": "factorforge_window_evidence_v1",
@@ -377,7 +383,7 @@ def main() -> int:
             "revision_fitting_allowed": False,
         },
     }
-    out_path = out_dir / f"window_evidence__{args.report_id}.json"
+    out_path = evidence_dir / f"window_evidence__{args.report_id}.json"
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(out_path)
     print(json.dumps({

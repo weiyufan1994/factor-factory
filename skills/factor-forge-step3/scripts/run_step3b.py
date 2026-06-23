@@ -973,6 +973,16 @@ def resolve_local_input_path(raw: str | None) -> Path | None:
         return None
     path = Path(raw).expanduser()
     if path.is_absolute():
+        if path.exists():
+            return path
+        parts = path.parts
+        for anchor in ('runs', 'objects', 'generated_code', 'knowledge'):
+            if anchor not in parts:
+                continue
+            idx = parts.index(anchor)
+            candidate = FF.joinpath(*parts[idx:])
+            if candidate.exists():
+                return candidate
         return path
     return WORKSPACE / path
 
@@ -1652,6 +1662,48 @@ def _add_schema_value(columns: set[str], value) -> None:
                 columns.add(str(value[key]))
 
 
+def _add_resolved_field_values(columns: set[str], value) -> None:
+    if not isinstance(value, dict):
+        return
+    for actual in value.values():
+        _add_schema_value(columns, actual)
+
+
+def _add_schema_columns_payload(columns: set[str], value) -> None:
+    if not value:
+        return
+    if isinstance(value, dict):
+        raw_columns = value.get('columns')
+        if isinstance(raw_columns, list):
+            for item in raw_columns:
+                _add_schema_value(columns, item)
+        sort_contract = value.get('sort_contract')
+        if isinstance(sort_contract, dict):
+            schema = sort_contract.get('schema')
+            if isinstance(schema, list):
+                for item in schema:
+                    _add_schema_value(columns, item)
+    elif isinstance(value, list):
+        for item in value:
+            _add_schema_value(columns, item)
+
+
+def _add_data_api_resolution_columns(columns: set[str], value) -> None:
+    if not isinstance(value, dict):
+        return
+    for resolution in value.values():
+        if not isinstance(resolution, dict):
+            continue
+        _add_resolved_field_values(columns, resolution.get('resolved_fields'))
+        _add_schema_columns_payload(columns, resolution.get('schema'))
+        request = resolution.get('request')
+        if isinstance(request, dict):
+            fields = request.get('fields')
+            if isinstance(fields, list):
+                for item in fields:
+                    _add_schema_value(columns, item)
+
+
 def explicit_step3a_schema_columns(prep: dict) -> list[str]:
     columns: set[str] = set()
     candidate_keys = [
@@ -1673,10 +1725,16 @@ def explicit_step3a_schema_columns(prep: dict) -> list[str]:
         elif isinstance(value, list):
             for item in value:
                 _add_schema_value(columns, item)
-    for key in ['field_mappings', 'resolved_fields']:
+    for key in ['field_mapping', 'field_mappings', 'resolved_fields']:
         value = prep.get(key)
         if isinstance(value, dict):
-            columns.update(str(item) for item in value.values() if item)
+            _add_resolved_field_values(columns, value)
+    _add_data_api_resolution_columns(columns, prep.get('data_api_resolution'))
+    local_inputs = prep.get('local_input_paths')
+    if isinstance(local_inputs, dict):
+        _add_data_api_resolution_columns(columns, local_inputs.get('data_api_resolution'))
+        for key in ['daily_io_contract', 'minute_io_contract', 'sort_contract']:
+            _add_schema_columns_payload(columns, local_inputs.get(key))
     return sorted(columns)
 
 

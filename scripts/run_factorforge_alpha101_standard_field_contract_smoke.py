@@ -148,6 +148,85 @@ def main() -> None:
     )
     cases['valid_alpha101_standard_field_contract_passes'] = {'ok': not failures, 'contract': valid, 'failures': failures}
 
+    step3b_runner = load_module('skills/factor-forge-step3/scripts/run_step3b.py', 'step3b_runner_smoke')
+    alpha015_like_prep = {
+        'data_api_resolution': {
+            'clean_daily_bar': {
+                'resolved_fields': {
+                    'amount': 'amount',
+                    'high': 'high',
+                    'vol': 'vol',
+                },
+                'request': {'fields': ['amount', 'high', 'vol']},
+            },
+            'daily_basic': {
+                'resolved_fields': {
+                    'ts_code': 'ts_code',
+                    'trade_date': 'trade_date',
+                    'turnover_rate': 'turnover_rate',
+                },
+                'request': {'fields': ['ts_code', 'trade_date', 'turnover_rate']},
+            },
+        },
+        'local_input_paths': {
+            'daily_io_contract': {
+                'sort_contract': {
+                    'schema': [
+                        'ts_code',
+                        'trade_date',
+                        'high',
+                        'vol',
+                        'amount',
+                        'turnover_rate',
+                    ]
+                }
+            }
+        },
+    }
+    schema = step3b_runner.infer_operator_schema(alpha015_like_prep)
+    formula_text = '(((-1 * mean(rank(correlation(rank(high), rank(volume), 10)), 5)) * rank(amount)) * (0.50 + (0.50 * (1 - rank(turnover)))))'
+    parsed = step3b_runner.parse_formula(formula_text)
+    resolved = step3b_runner.resolve_formula_fields_for_schema(parsed, schema['columns'])
+    cases['step3b_schema_infers_daily_basic_turnover_alias'] = {
+        'ok': schema.get('source') == 'step3a_schema'
+        and resolved.get('resolved_fields', {}).get('turnover') == 'turnover_rate'
+        and resolved.get('resolved_fields', {}).get('volume') == 'vol',
+        'schema': schema,
+        'resolved_fields': resolved.get('resolved_fields'),
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        workspace = Path(td) / 'factor_workspace'
+        target = workspace / 'runs' / 'RID' / 'step3a_local_inputs' / 'daily.parquet'
+        target.parent.mkdir(parents=True)
+        target.write_text('placeholder')
+        stale = Path(td) / 'factor_research' / 'old_workspace' / 'runs' / 'RID' / 'step3a_local_inputs' / 'daily.parquet'
+        original_ff = step3b_runner.FF
+        try:
+            step3b_runner.FF = workspace
+            relocated = step3b_runner.resolve_local_input_path(str(stale))
+        finally:
+            step3b_runner.FF = original_ff
+    cases['step3b_relocates_stale_workspace_local_input_path'] = {
+        'ok': relocated == target,
+        'relocated': str(relocated),
+        'expected': str(target),
+    }
+
+    materializer = load_module('skills/factor-forge-step6/scripts/materialize_step6_child_revision.py', 'step6_materializer_smoke')
+    with tempfile.TemporaryDirectory() as td:
+        workspace = Path(td) / 'factor_workspace'
+        target = workspace / 'runs' / 'PARENT' / 'step3a_local_inputs' / 'daily.parquet'
+        target.parent.mkdir(parents=True)
+        target.write_text('placeholder')
+        stale = Path(td) / 'factor_research' / 'old_workspace' / 'runs' / 'PARENT' / 'step3a_local_inputs' / 'daily.parquet'
+        relocated = materializer.resolved_path(workspace, str(stale))
+    cases['materializer_relocates_stale_workspace_daily_snapshot_path'] = {
+        'ok': relocated == target,
+        'relocated': str(relocated),
+        'expected': str(target),
+    }
+
     failed = [name for name, item in cases.items() if not item.get('ok')]
     summary = {'verdict': 'ACCEPT' if not failed else 'BLOCK', 'cases': cases, 'failed': failed}
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

@@ -92,6 +92,16 @@ def resolved_path(root: Path, raw: Any) -> Path | None:
         return None
     path = Path(str(raw)).expanduser()
     if path.is_absolute():
+        if path.exists():
+            return path
+        parts = path.parts
+        for anchor in ("runs", "objects", "generated_code", "knowledge"):
+            if anchor not in parts:
+                continue
+            idx = parts.index(anchor)
+            candidate = root.joinpath(*parts[idx:])
+            if candidate.exists():
+                return candidate
         return path
     candidates = [root / path]
     parts = path.parts

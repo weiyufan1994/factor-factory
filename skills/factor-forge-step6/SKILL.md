@@ -76,7 +76,7 @@ default write path.
 26. Revision must modify the factor expression and Step3B implementation itself. Do not “fix” a weak factor by changing portfolio expression, short-leg exposure, rebalance mechanics, or decile trading.
 27. Official promotion requires risk-adjusted positive long-side evidence. If a factor is strictly monotonic but the high-score long side does not make money with acceptable Sharpe/drawdown/recovery, Step6 must choose `iterate` or `reject`, not `promote_official`.
 28. Preferred revision direction is economic linearity: make higher factor values correspond more directly and monotonically to the economic state expected to earn risk-adjusted long-side returns.
-29. Treat every factor like a business: long-side return is revenue, trading COGS defaults to `turnover * 0.3%`, volatility is operating instability/risk-capital pressure, `-0.5 * sigma^2` is volatility drag on geometric growth, max drawdown is capital impairment, and recovery time is payback/depreciation. Risk budget follows Sharpe, drawdown, recovery, capacity, and confidence.
+29. Treat every factor like a business: long-side return is revenue, trading COGS defaults to `turnover * 0.3%`, volatility is operating instability/risk-capital pressure, `-0.5 * sigma^2` is volatility drag on geometric growth, max drawdown is capital impairment, and recovery time is payback/depreciation. Risk budget follows Sharpe, drawdown, recovery, capacity, and confidence. However, trading cost is a tradability and promotion gate, not a one-vote veto on whether the factor contains useful pre-cost information.
 30. Default Step6 promotion objective is `long_side_risk_adjusted_alpha`: candidate Sharpe >= `0.50`, official Sharpe >= `0.80`, max drawdown no worse than `-35%`, and recovery days preferably <= `252`.
 30a. For current minute-factor research, Step6 must preserve the Step4
 `research_window_contract`: in-sample ends at `2025-07-11` by default and later
@@ -105,6 +105,25 @@ occupation mass, latent state, or constraint pressure. If added complexity only
 improves in-sample raw IC, or cannot be linked to OOS long-side/residual
 evidence, Step6 must classify it as overfit risk and prefer a simpler
 expression.
+30c. Before rejecting a high-turnover factor, Step6 must complete a pre-cost
+information assessment. It must classify return source as `risk_premium`,
+`information_advantage`, `constraint_driven_arbitrage` /
+`market_structure_arbitrage`, or `mixed`; state the economic logic and profit
+payer; inspect IC/rank IC, grouped gross returns, long-end gross return, and
+Fama-MacBeth or cross-sectional regression evidence where available; assess
+monotonicity stability across full IS, IS subsamples, OOS diagnostics,
+liquidity buckets, and regimes; and attribute volatility/max drawdown to
+continuous sigma exposure, jump/tail events, regime transitions, liquidity
+crunch, crowding, or implementation noise. Cost can block official promotion,
+but if pre-cost premium and mechanism evidence are real, preserve the factor as
+`feature_candidate`, `state_descriptor`, `needs_horizon_repair`, or
+`execution_research_needed` rather than calling it no-information.
+30d. Evidence standards depend on return source. `risk_premium` requires strict
+monotonicity and Fama-MacBeth / cross-sectional regression support, because the
+premium should be priced broadly and stably. `information_advantage` may have
+weaker monotonicity, but the long end must show significant gross and
+risk-adjusted return. `constraint_driven_arbitrage` requires clear
+constraint/payer logic and evidence concentrated where the constraint binds.
 31. Every successful formal Step6 loop must write `loop_research_brief__<report_id>__iter<n>.md/json` and link it from `research_iteration_master.loop_research_brief`. The brief must answer economic interpretation, metrics/chart evidence, metric analysis, knowledge comparison, next research direction, and final loop conclusion. Missing brief, missing core metrics, missing required chart keys, or long-short chart evidence not labeled `diagnostic_only` is a validation block.
 32. Step6 must carry the `mechanism_math_contract` into `mechanism_analysis`,
 revision hypotheses, and the loop research brief. The math contract is an

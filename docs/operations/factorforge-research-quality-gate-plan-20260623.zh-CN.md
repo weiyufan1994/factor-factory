@@ -177,6 +177,27 @@ exploratory_evidence
 - `exploratory_evidence` 只能生成下一步假说；
 - supplemental evidence 不能覆盖原 Step4 promotion evidence。
 
+## Pre-Cost Premium And Tradability Split
+
+研究质量 gate 必须把“因子有没有信息”和“当前表达式能不能扣费后交易”分开。高 turnover / 高 trading cost 不能直接一票否决因子的信息结构。
+
+研究员必须先完成 pre-cost information assessment：
+
+- return source：`risk_premium` / `information_advantage` / `constraint_driven_arbitrage` / `market_structure_arbitrage` / `mixed`；
+- economic logic and profit payer：谁支付 premium，为什么行为可重复，什么观察会推翻 payer 假说；
+- pre-cost premium：IC / rank IC、分组 gross return、long-end gross return、Fama-MacBeth 或 cross-sectional regression；
+- monotonicity：全 IS、IS subsamples、OOS diagnostics、流动性分桶、regime split 下的方向和稳定性；
+- stochastic risk source：波动和最大回撤来自 continuous sigma、jump/tail、regime transition、liquidity crunch、crowding 还是 implementation noise；
+- disposition：standalone candidate、feature/state descriptor、needs horizon repair、execution research needed，还是 no-information。
+
+Source-specific evidence standard：
+
+- `risk_premium`：单调性和 Fama-MacBeth / cross-sectional regression 要严格，因为 risk premium 应在横截面上被广泛定价；
+- `information_advantage`：单调性可以适度放松，但 long end 必须有显著 gross 和 risk-adjusted return；
+- `constraint_driven_arbitrage` / `market_structure_arbitrage`：必须有清晰 constraint / payer 逻辑，并证明 premium 出现在约束真正 binding 的状态。
+
+Trading cost 仍然可以阻断 official promotion 和 live tradability，但不能把有 robust pre-cost premium 的因子直接判成没有研究价值。这类因子应优先写入 feature library、state descriptor、execution/horizon repair queue 或 negative-knowledge graph。
+
 ## 强化学习 agent 的位置
 
 强化学习 agent 应该放在第三阶段，而不是第一阶段：

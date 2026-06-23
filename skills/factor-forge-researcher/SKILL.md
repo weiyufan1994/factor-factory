@@ -205,9 +205,23 @@ Review:
 
 Review:
 - signal metrics: IC, rank IC, grouped spread, monotonicity,
+- pre-cost premium evidence: grouped gross returns, long-end gross return, and
+  Fama-MacBeth or cross-sectional regression evidence when available,
+- return-source fit: `risk_premium`, `information_advantage`,
+  `constraint_driven_arbitrage`, or `mixed`,
+- profit payer and economic logic: who pays, why the behavior repeats, and what
+  would falsify the payer hypothesis,
 - portfolio metrics: account/NAV, turnover, benchmark relation, drawdown if available,
+- stochastic risk attribution: whether volatility and maximum drawdown come
+  from continuous sigma exposure, jump/tail events, regime transitions,
+  liquidity crunch, crowding, or implementation noise,
 - charts and artifacts,
 - whether predictive evidence translates into tradable evidence.
+
+High turnover must not end the research review by itself. First decide whether
+the factor contains pre-cost information and which return source explains it.
+Then decide whether trading cost blocks promotion, suggests horizon/execution
+repair, or means the factor should be retained only as a feature/state.
 
 ### After Step5/Step6
 
@@ -216,6 +230,15 @@ Decide:
 - `iterate`: if signal is interesting but needs formula/implementation/portfolio improvement,
 - `reject`: if hypothesis is broken or research budget is not justified,
 - `needs_human_review`: if evidence is ambiguous or a non-obvious tradeoff needs approval.
+
+Apply source-specific standards:
+
+- `risk_premium`: require strict monotonicity plus Fama-MacBeth or
+  cross-sectional regression support.
+- `information_advantage`: allow weaker monotonicity, but require significant
+  long-end gross and risk-adjusted return.
+- `constraint_driven_arbitrage`: require clear constraint/payer logic and
+  premium concentrated where the constraint binds.
 
 Also extract:
 - transferable patterns,

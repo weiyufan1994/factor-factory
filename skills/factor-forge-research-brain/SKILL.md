@@ -130,6 +130,50 @@ Default working thresholds:
 
 These thresholds are research governance defaults, not eternal truths. They may be tightened by asset class, liquidity bucket, turnover, or portfolio context. A positive-return factor with low Sharpe, high volatility drag, deep drawdown, or slow recovery should be iterated or rejected, not promoted.
 
+## Pre-Cost Information First
+
+Do not let turnover or trading cost make the research decision before the
+factor's information content is understood. Cost can block official promotion;
+it should not automatically block learning, feature retention, or slower-horizon
+repair.
+
+Use a two-layer judgment:
+
+1. **Information layer:** decide whether the factor contains a pre-cost premium
+   and what market process produces it.
+2. **Tradability layer:** decide whether the current expression, horizon,
+   turnover, drawdown, and capacity can become a live long-only factor.
+
+The information layer must inspect:
+
+- return source: `risk_premium`, `information_advantage`,
+  `constraint_driven_arbitrage`, or `mixed`;
+- profit payer / counterparty: why the payer exists, why the behavior repeats,
+  and which observation would falsify the payer;
+- pre-cost premium: IC/rank IC, grouped gross returns, long-end gross return,
+  and Fama-MacBeth or cross-sectional regression where available;
+- monotonicity: shape, direction, and stability across full IS, IS subsamples,
+  OOS diagnostics, liquidity buckets, and regimes;
+- stochastic risk source: whether volatility and max drawdown come from
+  continuous sigma exposure, jump/tail events, regime switching, liquidity
+  crunch, crowding, or implementation noise.
+
+Tighten evidence by return source:
+
+- `risk_premium`: require strong monotonicity and Fama-MacBeth /
+  cross-sectional regression support, because compensation should be priced
+  broadly and stably.
+- `information_advantage`: allow weaker monotonicity if the long end has
+  significant gross and risk-adjusted return; the edge may be concentrated in
+  the highest-information tail.
+- `constraint_driven_arbitrage`: require clear constraint/payer logic and
+  evidence that the premium appears when the constraint binds.
+
+If cost overwhelms net performance but the information layer is strong, classify
+the result as `feature_candidate`, `state_descriptor`, `needs_horizon_repair`,
+or `execution_research_needed`. Do not call it no-information unless the
+pre-cost evidence and mechanism also fail.
+
 ## Factor Complexity Penalty
 
 Do not impose a hard limit such as "at most three primitives." A factor may be

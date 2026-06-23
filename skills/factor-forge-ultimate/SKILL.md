@@ -687,6 +687,46 @@ Default promotion objective is `long_side_risk_adjusted_alpha`:
 
 Raw positive long-side return is necessary but not sufficient. A high-revenue factor with excessive volatility drag, drawdown, or recovery time should be iterated or rejected.
 
+## Pre-Cost Information Before Trading-Cost Judgment
+
+High turnover and trading cost must not be a one-vote veto on whether a factor
+contains useful information. Step5/Step6 must first judge the factor's economic
+structure and pre-cost information, then judge tradability and promotion.
+
+Before rejecting a factor because turnover cost overwhelms current net NAV,
+answer these questions:
+
+- return source: is the factor mainly `risk_premium`,
+  `information_advantage`, `constraint_driven_arbitrage` /
+  `market_structure_arbitrage`, or `mixed`?
+- economic logic and profit payer: who pays the premium, why does that party
+  keep paying, and what observable proxy would falsify the payer story?
+- pre-cost premium: do IC/rank IC, grouped returns, long-end gross returns, and
+  Fama-MacBeth or cross-sectional regression evidence show a premium before
+  cost?
+- monotonicity: is the signal monotonic across groups and stable across full IS,
+  IS subsamples, and OOS diagnostics?
+- stochastic risk source: are volatility and max drawdown driven by continuous
+  diffusion-like `sigma` exposure, jump/tail events, regime transitions, or
+  liquidity/crowding state?
+- implementation implication: is the factor a standalone candidate, a feature
+  or risk state, a slower-horizon variant candidate, or a false mechanism?
+
+For `risk_premium` factors, require stricter monotonicity and Fama-MacBeth /
+cross-sectional regression support because the premium should be broadly priced
+across the cross-section. For `information_advantage` factors, monotonicity may
+be weaker, but the long end must show significant gross and risk-adjusted
+return because the edge should concentrate where information is strongest.
+For `constraint_driven_arbitrage` or market-structure arbitrage, require clear
+constraint/payer logic, regime or event conditioning, and evidence that the
+gross edge appears where the constraint binds.
+
+Trading cost remains decisive for official promotion and live tradability. It
+does not erase pre-cost information. A high-turnover factor with robust
+pre-cost premium should usually be classified as `feature_candidate`,
+`state_descriptor`, `needs_horizon_repair`, or `execution_research_needed`
+rather than dismissed as no-information.
+
 ## Runtime Manifest And Step I/O
 
 The top-level skill/agent owns path discovery. Individual step scripts should not independently search for artifacts when a runtime manifest is available.

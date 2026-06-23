@@ -1,0 +1,25 @@
+{
+  "knowledge_record_version": "factorforge_research_knowledge_record_v1",
+  "record_id": "ALPHA019_LONG_LOOKBACK_RERUN_20260624",
+  "report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+  "factor_id": "Alpha019",
+  "record_role": "post_rerun_experience_chain",
+  "source_paths": {
+    "human_readable": "knowledge/human_readable/alpha019_long_lookback_rerun_20260624.md",
+    "canonical": "knowledge/canonical/alpha019_long_lookback_rerun_20260624.json",
+    "factor_run_master": "objects/factor_run_master/factor_run_master__ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101.json",
+    "factor_evaluation": "objects/validation/factor_evaluation__ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101.json"
+  },
+  "classification": {
+    "candidate_status": "feature_candidate_needs_revision",
+    "promotion_status": "not_promoted",
+    "decision": "iterate",
+    "mechanism_claim_level": "metric_consistent"
+  },
+  "transferable_lesson": "Long-lookback Alpha101 formulas need lookback-aware Step3A windows, history-preserving Step3B samples, and warmup-adjusted Step4 signal coverage before their economics can be judged.",
+  "anti_patterns": [
+    "Treating rolling-window warmup nulls as sparse-signal failure.",
+    "Sampling recent rows without preserving per-instrument history for Step3B proof.",
+    "Rescuing weak long-side evidence through portfolio mechanics rather than expression-level revision."
+  ]
+}

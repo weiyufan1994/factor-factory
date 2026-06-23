@@ -1,0 +1,65 @@
+{
+  "record_type": "factor_research_knowledge",
+  "record_id": "ALPHA019_LONG_LOOKBACK_RERUN_20260624",
+  "report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+  "factor_id": "Alpha019",
+  "repo_sha": "3cd50eadfcfa0ca4de78a01411610ee4338974db",
+  "wrapper_verdict": "PASS",
+  "status": "feature_candidate_needs_revision",
+  "decision": "iterate",
+  "promotion_allowed": false,
+  "mechanism_claim_level": "metric_consistent",
+  "economic_hypothesis": {
+    "return_source": "mixed",
+    "summary": "Alpha019 estimates a slow winner state interacting with a short-horizon threshold displacement. The expected payer is a delayed updater or short-horizon liquidity/dislocation trader.",
+    "state_variables": {
+      "M_i_t": "250-day slow winner/attention state from sum(returns, 250)",
+      "B_i_t": "7-day sign threshold displacement from close, delay(close, 7), and delta(close, 7)",
+      "interaction": "M_i_t * B_i_t"
+    },
+    "conditional_return_object": "E[r_{i,t+1} | F_t, M_{i,t}, B_{i,t}] = beta0 + beta_M M + beta_B B + beta_MB M B"
+  },
+  "formula": "((-1 * sign(((close - delay(close, 7)) + delta(close, 7)))) * (1 + rank((1 + sum(returns, 250)))))",
+  "metrics": {
+    "rank_ic_mean": 0.028590355067965846,
+    "rank_ic_ir": 0.28093153875362037,
+    "pearson_ic_mean": 0.025259736900356336,
+    "long_side_annual_return": 0.07060870879143924,
+    "long_side_sharpe": 0.3101647156783311,
+    "long_side_max_drawdown": -0.4882542593817629,
+    "long_side_recovery_days": 1826,
+    "turnover_mean": 0.3069272578461837,
+    "cost_adjusted_annual_return": -0.16131582261582986,
+    "cost_adjusted_long_side_sharpe": -0.708717550161604,
+    "cost_adjusted_long_side_max_drawdown": -0.8450067815373239,
+    "cost_adjusted_long_side_recovery_days": 3048,
+    "top_decile_mean_return": 0.0002801932888549176,
+    "bottom_decile_mean_return": -0.0008824946880232498
+  },
+  "formal_signal_coverage": {
+    "raw_factor_value_non_null_coverage": 0.8472011788440309,
+    "factor_value_non_null_coverage": 0.9093215553829982,
+    "coverage_basis": "warmup_adjusted",
+    "formula_max_lookback": 250,
+    "warmup_skipped_dates": 249,
+    "coverage_target_start": "20170110",
+    "coverage_target_end": "20250711",
+    "coverage_gate_verdict": "PASS"
+  },
+  "framework_lessons": [
+    "Step3A proof windows must expand with formula lookback.",
+    "Step3B sample limiting must preserve enough per-instrument history for long rolling windows.",
+    "Step4 signal coverage gates must evaluate long-lookback formulas on the post-warmup target window."
+  ],
+  "research_lessons": [
+    "Alpha019 has positive but weak long-side information.",
+    "The current expression is not promotion-quality because cost-adjusted return is negative and drawdown/recovery are poor.",
+    "Revision should target the factor expression, especially sign-boundary smoothing or persistence confirmation, not portfolio mechanics."
+  ],
+  "next_actions": [
+    "Test a smoother signed-magnitude or persistence-confirmed replacement for the hard sign.",
+    "Ablate the 250-day winner state to confirm whether it contributes independent information.",
+    "Apply complexity penalty to any added hysteresis or smoothing parameter."
+  ]
+}
+

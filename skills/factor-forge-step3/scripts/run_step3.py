@@ -528,8 +528,23 @@ def data_api_window_bounds(sample_window: dict) -> dict:
     }
 
 
-def step3a_executability_window(sample_window: dict, *, max_calendar_days: int = 220) -> dict:
+def step3a_formula_sample_calendar_days(formula_ir: dict | None, *, default_calendar_days: int = 220) -> tuple[int, int]:
+    """Return a bounded Step3B proof span large enough for formula lookbacks."""
+    max_lookback = max_formula_ir_lookback(formula_ir)
+    if max_lookback <= 0:
+        return default_calendar_days, max_lookback
+    # Step3B is still only an executability proof, but a formula with long
+    # rolling windows needs enough trading days to produce non-null samples.
+    # Calendar days are a conservative proxy for A-share trading days.
+    calendar_days = int(max_lookback * 1.7) + 60
+    return max(default_calendar_days, min(calendar_days, 900)), max_lookback
+
+
+def step3a_executability_window(sample_window: dict, *, max_calendar_days: int | None = None, formula_ir: dict | None = None) -> dict:
     """Use a bounded real-data window for Step3B code proof; Step4 owns full execution."""
+    inferred_calendar_days, formula_max_lookback = step3a_formula_sample_calendar_days(formula_ir)
+    if max_calendar_days is None:
+        max_calendar_days = inferred_calendar_days
     bounds = data_api_window_bounds(sample_window)
     start = bounds['start']
     end = bounds['end']
@@ -549,6 +564,9 @@ def step3a_executability_window(sample_window: dict, *, max_calendar_days: int =
         },
         'bounded_for': 'step3b_executability_proof',
         'full_execution_owner': 'Step4',
+        'max_calendar_days': max_calendar_days,
+        'formula_max_lookback': formula_max_lookback,
+        'sample_window_policy': 'bounded_by_formula_lookback',
     }
 
 
@@ -1045,6 +1063,29 @@ def _operator_lookback(operator: str, constants: list[float]) -> int | None:
     return None
 
 
+def max_formula_ir_lookback(formula_ir: dict | None) -> int:
+    if not isinstance(formula_ir, dict):
+        return 0
+    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
+    lookbacks: list[int] = []
+
+    def visit(node) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get('type') == 'operator':
+            lookback = _operator_lookback(
+                str(node.get('operator') or ''),
+                _formula_ir_constants(node),
+            )
+            if lookback is not None:
+                lookbacks.append(lookback)
+        for child in node.get('args') or []:
+            visit(child)
+
+    visit(root)
+    return max(lookbacks) if lookbacks else 0
+
+
 def _formula_ir_fields(node) -> list[str]:
     if not isinstance(node, dict):
         return []
@@ -1311,7 +1352,7 @@ def materialize_shared_daily_slice(
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
     daily_basic_required = len(daily_basic_fields) > 2
     full_query_window = data_api_window_bounds(sample_window)
-    executability_window = step3a_executability_window(sample_window)
+    executability_window = step3a_executability_window(sample_window, formula_ir=formula_ir)
     query_window = data_api_window_bounds(executability_window)
     daily_resolution = resolve_data_api_dataset(
         'clean_daily_bar',
@@ -1574,7 +1615,7 @@ def build_local_price_volume_snapshots(
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
     daily_basic_required = len(daily_basic_fields) > 2
     full_query_window = data_api_window_bounds(sample_window)
-    executability_window = step3a_executability_window(sample_window)
+    executability_window = step3a_executability_window(sample_window, formula_ir=formula_ir)
     query_window = data_api_window_bounds(executability_window)
     minute_derived_requirement = minute_derived_flow_state_requirement(
         start_date=full_query_window['start'],
@@ -1909,7 +1950,7 @@ def materialize_retained_chip_state_slice(
     step3_sample_universe = ['000001.SZ', '000002.SZ']
     daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
     full_query_window = data_api_window_bounds(sample_window)
-    executability_window = step3a_executability_window(sample_window)
+    executability_window = step3a_executability_window(sample_window, formula_ir=formula_ir)
     query_window = data_api_window_bounds(executability_window)
 
     daily_resolution = resolve_data_api_dataset(

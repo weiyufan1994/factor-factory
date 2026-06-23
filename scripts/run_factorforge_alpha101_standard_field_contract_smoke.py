@@ -33,6 +33,7 @@ def has_token(failures: list[dict], token: str) -> bool:
 
 
 def main() -> None:
+    step3_runner = load_module('skills/factor-forge-step3/scripts/run_step3.py', 'step3_runner_smoke')
     step3_validator = load_module('skills/factor-forge-step3/scripts/validate_step3.py', 'step3_validator_smoke')
     step4_runner = load_module('skills/factor-forge-step4/scripts/run_step4.py', 'step4_runner_smoke')
     cases: dict[str, dict] = {}
@@ -147,6 +148,35 @@ def main() -> None:
         available_columns=['amount', 'vol', 'pct_chg'],
     )
     cases['valid_alpha101_standard_field_contract_passes'] = {'ok': not failures, 'contract': valid, 'failures': failures}
+
+    alpha019_like_formula_ir = {
+        'parse_status': 'success',
+        'root': {
+            'type': 'operator',
+            'operator': 'multiply',
+            'args': [
+                {'type': 'constant', 'value': -1},
+                {
+                    'type': 'operator',
+                    'operator': 'sum',
+                    'args': [
+                        {'type': 'field', 'name': 'returns'},
+                        {'type': 'constant', 'value': 250},
+                    ],
+                },
+            ],
+        },
+    }
+    alpha019_window = step3_runner.step3a_executability_window(
+        {'start': '20160101', 'end': '20250711', 'calendar': 'A-share trading days'},
+        formula_ir=alpha019_like_formula_ir,
+    )
+    cases['step3a_alpha019_250_lookback_window_expands'] = {
+        'ok': alpha019_window.get('formula_max_lookback') == 250
+        and int(alpha019_window.get('max_calendar_days') or 0) >= 480
+        and str(alpha019_window.get('end') or '') >= '20170401',
+        'window': alpha019_window,
+    }
 
     step3b_runner = load_module('skills/factor-forge-step3/scripts/run_step3b.py', 'step3b_runner_smoke')
     alpha015_like_prep = {

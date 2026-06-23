@@ -1,0 +1,198 @@
+{
+  "schema_version": "factorforge_candidate_packet_v1",
+  "created_at": "2026-06-24",
+  "factor_id": "Alpha015",
+  "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+  "workspace": "factor_research/Alpha015/alpha015_ultimate_promising_20260622",
+  "artifact_type": "post_rerun_candidate_packet",
+  "promotion_evidence": false,
+  "current_decision": {
+    "candidate_library": true,
+    "feature_candidate": true,
+    "official_factor_library": false,
+    "status": "candidate_factor_and_feature_candidate",
+    "best_branch": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+    "mechanism_claim_level": "component_validated",
+    "stochastic_process_status": "framing_only",
+    "payer_validation": "not_validated"
+  },
+  "evidence_roles": {
+    "promotion_gate_evidence": [
+      "official_wrapper_parent_step3b_step6_rerun_metrics"
+    ],
+    "robustness_evidence": [
+      "full_is_oos_window_evidence",
+      "component_ablation",
+      "size_liquidity_neutralization",
+      "size_bucket_diagnostic"
+    ],
+    "diagnostic_evidence": [
+      "loop01_rerun_falsified_as_improvement",
+      "loop02_rerun_falsified_as_improvement"
+    ],
+    "exploratory_evidence": [
+      "oos_and_bucket_results_explain_stability_but_do_not_replace_promotion_gate"
+    ]
+  },
+  "formula": {
+    "formula_text": "((-1 * sum(rank(correlation(rank(high), rank(volume), 7)), 7)) * rank(amount)) * (0.40 + 0.60 * (1 - rank(turnover)))",
+    "latex": "F^{015}_{i,t}=X_{i,t}L_{i,t}G_{i,t}",
+    "state_decomposition": {
+      "pressure_correlation": "C_{i,t}=corr_7(rank(H_i), rank(V_i))_t",
+      "pressure_state": "X_{i,t}=-sum_{k=1}^{7} rank(C_{i,t-k+1})",
+      "liquidity_participation": "L_{i,t}=rank(A_{i,t})",
+      "turnover_state": "G_{i,t}=0.40+0.60*(1-rank(T_{i,t}))"
+    },
+    "variables": {
+      "H": "high price",
+      "V": "volume",
+      "A": "amount or participation proxy",
+      "T": "turnover"
+    }
+  },
+  "economic_hypothesis": {
+    "name": "liquidity_participation_conditioned_price_volume_pressure",
+    "return_source": "mixed_market_structure_information_friction",
+    "summary": "The factor captures a short-window price-volume pressure state that matters when confirmed by participation and moderated by turnover crowding.",
+    "possible_payers": [
+      "late_attention_buyers",
+      "liquidity_demanders",
+      "marginal_participants_pay_after_pressure_state_forms"
+    ],
+    "payer_validation_status": "not_validated"
+  },
+  "math_mechanism": {
+    "conditional_return_projection": "E[r_{i,t+1}|F_t]=mu0+beta_X X_{i,t}+beta_XL X_{i,t}L_{i,t}+beta_XLG X_{i,t}L_{i,t}G_{i,t}+eps",
+    "validated_component": "pressure_times_amount",
+    "supported_claim": "beta_XL_positive",
+    "not_validated_as": [
+      "pure_size_residual_alpha",
+      "pure_liquidity_residual_alpha",
+      "payer_validated_alpha",
+      "stochastic_validated_process",
+      "official_promoted_factor"
+    ],
+    "claim_level": {
+      "math_framed": true,
+      "metric_consistent": true,
+      "component_validated": true,
+      "stochastic_validated": false,
+      "payer_validated": false
+    }
+  },
+  "official_wrapper_rerun_metrics": {
+    "parent": {
+      "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+      "validator": "PASS",
+      "formal_signal_coverage": 0.992156,
+      "nonnull_date_count": 2301,
+      "nonnull_start": "20160120",
+      "nonnull_end": "20250711",
+      "rank_ic_mean": 0.06022535346386242,
+      "rank_ic_ir": 0.541871690131665,
+      "long_annual_return": 0.22251050029827757,
+      "long_sharpe": 0.9382413232490837,
+      "max_drawdown": -0.3954091950123346,
+      "recovery_days": 704,
+      "daily_turnover": 0.24486676882382682,
+      "cost_adjusted_annual_return": 0.037471709709738746,
+      "cost_adjusted_sharpe": 0.15794826765966674,
+      "cost_adjusted_max_drawdown": -0.6116
+    },
+    "loop01": {
+      "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PRESSURE_REPAIR_PERSISTENCE_SYNTHESIS_V1",
+      "validator": "PASS",
+      "formal_signal_coverage": 0.991565,
+      "rank_ic_mean": 0.064207,
+      "rank_ic_ir": 0.600301,
+      "long_annual_return": 0.200961,
+      "long_sharpe": 0.8557,
+      "max_drawdown": -0.3944,
+      "recovery_days": 714,
+      "daily_turnover": 0.2447,
+      "cost_adjusted_annual_return": 0.016077,
+      "cost_adjusted_sharpe": 0.0684,
+      "decision": "rejected_as_not_economically_improved"
+    },
+    "loop02": {
+      "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101__LOOP01__ALPHA015_PR__f726ea84d6__LOOP02__ALPHA015_TURNOVER_FRICTION_GATE_REPAIR_V2",
+      "validator": "PASS",
+      "formal_signal_coverage": 0.991565,
+      "rank_ic_mean": 0.056898,
+      "rank_ic_ir": 0.541325,
+      "long_annual_return": 0.199593,
+      "long_sharpe": 0.844,
+      "max_drawdown": -0.4003,
+      "recovery_days": 714,
+      "daily_turnover": 0.2413,
+      "cost_adjusted_annual_return": 0.017282,
+      "cost_adjusted_sharpe": 0.0731,
+      "decision": "rejected_as_not_economically_improved"
+    }
+  },
+  "robustness_summary": {
+    "window_evidence": {
+      "full_is": {
+        "rank_ic_1d": 0.0571,
+        "rank_ic_5d": 0.0787,
+        "top_annual_return": 0.3398,
+        "top_sharpe": 1.3145,
+        "top_max_drawdown": -0.4073,
+        "top_turnover": 0.2449
+      },
+      "oos": {
+        "rank_ic_1d": 0.0496,
+        "rank_ic_5d": 0.0611,
+        "top_annual_return": 0.4244,
+        "top_sharpe": 2.0981,
+        "top_max_drawdown": -0.1362,
+        "top_turnover": 0.2132
+      }
+    },
+    "component_ablation_reading": [
+      "pressure_only_has_information",
+      "pressure_times_amount_is_strongest_raw_information_component",
+      "amount_only_is_not_the_factor",
+      "turnover_gate_only_is_informative_but_not_complete_alpha"
+    ],
+    "neutralization_reading": [
+      "size_residualization_preserves_much_of_rank_ic",
+      "liquidity_residualization_weakens_full_is_long_side",
+      "do_not_claim_pure_liquidity_residual_alpha"
+    ],
+    "bucket_reading": [
+      "strongest_in_low_and_mid_low_size",
+      "weakest_in_high_size",
+      "needs_investability_and_capacity_tests_before_promotion"
+    ]
+  },
+  "promotion_blockers": [
+    "max_drawdown_exceeds_soft_limit",
+    "recovery_days_too_long",
+    "cost_adjusted_sharpe_too_low",
+    "liquidity_residualization_weakens_full_is_long_side",
+    "payer_not_validated",
+    "stochastic_process_not_validated",
+    "model_combination_marginal_contribution_not_verified"
+  ],
+  "anti_patterns": [
+    "do_not_continue_scalar_turnover_gate_strengthening",
+    "do_not_promote_loop01_from_rank_ic_alone",
+    "do_not_promote_loop02_from_slight_turnover_reduction",
+    "do_not_call_alpha015_pure_size_or_liquidity_residual_alpha",
+    "do_not_replace_expression_research_with_portfolio_mechanics"
+  ],
+  "next_research_questions": [
+    "Can a regime stability guard reduce drawdown without fitting a scalar gate?",
+    "Can horizon repair lower churn while preserving pressure-state information?",
+    "Can a payer proxy validate late attention or liquidity demander behavior?",
+    "Does Alpha015 add marginal contribution in a model-combination setting?",
+    "Does the signal survive investability filters excluding hard-to-trade microcaps?"
+  ],
+  "source_artifacts": {
+    "post_coverage_guard_rerun_note": "knowledge/human_readable/alpha015_post_coverage_guard_rerun_20260624.md",
+    "promotion_readiness_audit": "docs/alpha015_promotion_readiness_audit_20260624.zh-CN.md",
+    "older_candidate_packet": "docs/alpha015_candidate_packet_20260623.zh-CN.md",
+    "canonical_post_rerun": "knowledge/canonical/alpha015_post_coverage_guard_rerun_20260624.json"
+  }
+}

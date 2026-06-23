@@ -65,6 +65,7 @@ knowledge/因子工厂/graph/factor_knowledge_nodes.jsonl
 knowledge/因子工厂/graph/factor_knowledge_edges.jsonl
 knowledge/因子工厂/graph/factor_knowledge_graph_manifest.json
 knowledge/因子工厂/graph/factor_knowledge_coverage.json
+knowledge/因子工厂/export_manifest/*.json
 knowledge/因子工厂/仪表盘/知识网络.md
 knowledge/因子工厂/仪表盘/知识网络覆盖率.md
 ```

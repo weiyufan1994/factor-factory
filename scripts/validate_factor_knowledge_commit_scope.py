@@ -13,6 +13,7 @@ KNOWLEDGE_ROOT = REPO_ROOT / "knowledge" / "因子工厂"
 GRAPH_ROOT = KNOWLEDGE_ROOT / "graph"
 NODES_DIR = GRAPH_ROOT / "nodes"
 TEMPLATES_DIR = GRAPH_ROOT / "templates"
+EXPORT_MANIFEST_DIR = KNOWLEDGE_ROOT / "export_manifest"
 
 STATIC_ALLOWED_PATHS = {
     "docs/architecture/factor-knowledge-network-v1.zh-CN.md",
@@ -67,6 +68,7 @@ def dynamic_force_add_paths() -> set[str]:
     }
     paths.update(repo_relative(path) for path in sorted(NODES_DIR.glob("*.json")))
     paths.update(repo_relative(path) for path in sorted(TEMPLATES_DIR.glob("*")) if path.is_file())
+    paths.update(repo_relative(path) for path in sorted(EXPORT_MANIFEST_DIR.glob("*.json")) if path.is_file())
     return paths
 
 

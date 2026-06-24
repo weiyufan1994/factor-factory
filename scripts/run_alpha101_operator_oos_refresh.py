@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sys
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from factor_factory.artifact_identity import stable_hash  # noqa: E402
+from factor_factory.data_api.client import default_catalog_path  # noqa: E402
 from factor_factory.data_api import fetch_data_api_dataset  # noqa: E402
 from factor_factory.formula.evaluator import evaluate_formula_frame  # noqa: E402
 from factor_factory.formula.parser import parse_formula, resolve_formula_fields_for_schema  # noqa: E402
@@ -45,6 +47,15 @@ FORBIDDEN_LABEL_COLUMN_TOKENS = (
     "lookahead",
 )
 FORBIDDEN_LABEL_COLUMN_EXACT = {"label", "target"}
+SOURCE_FIELD_ALIASES = {
+    "volume": ["vol"],
+    "vol": ["vol"],
+    "returns": ["pct_chg"],
+    "return": ["pct_chg"],
+    "ret": ["pct_chg"],
+    "turnover": ["turnover_rate"],
+    "vwap": ["amount", "vol"],
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-start", default="20250714")
     parser.add_argument("--target-end", default="20260612")
     parser.add_argument("--dataset-id", default="clean_daily_bar_oos_slice")
-    parser.add_argument("--catalog-path", default="data/catalog/data_catalog.json")
+    parser.add_argument("--catalog-path")
     parser.add_argument("--universe", default="a_share_all")
     parser.add_argument("--history-start", help="Optional explicit formula lookback fetch start.")
     parser.add_argument("--engine", default="optimized", choices=["optimized", "reference"])
@@ -160,6 +171,26 @@ def forbidden_label_columns(columns: list[str] | pd.Index) -> list[str]:
     return forbidden
 
 
+def source_fields_for_formula_field(field: str) -> list[str]:
+    key = str(field).strip().lower()
+    if re.fullmatch(r"adv[1-9][0-9]*", key):
+        return ["vol"]
+    return list(SOURCE_FIELD_ALIASES.get(key, [field]))
+
+
+def resolve_catalog_path(raw: str | Path | None) -> str | None:
+    if raw is None or str(raw).strip() == "":
+        default = default_catalog_path()
+        return str(default) if default is not None else None
+    path = Path(raw).expanduser()
+    if path.exists():
+        return str(path)
+    if str(raw) == "data/catalog/data_catalog.json":
+        default = default_catalog_path()
+        return str(default) if default is not None else str(path)
+    return str(path)
+
+
 def main() -> int:
     args = parse_args()
     contract = read_contract(args.contract)
@@ -175,9 +206,13 @@ def main() -> int:
     if dataset_id != "clean_daily_bar_oos_slice":
         raise SystemExit(f"BLOCK_OOS_REFRESH_UNSUPPORTED_DATASET:{dataset_id}")
     universe = parse_universe(coalesce(args.universe, contract.get("universe"), "a_share_all"))
+    catalog_path = resolve_catalog_path(coalesce(args.catalog_path, contract.get("catalog_path")))
 
     # Parse against catalog/read schema after fetching. Start with no schema to obtain required fields.
     provisional_ir = parse_formula(str(formula), raise_on_error=True)
+    formula_source_fields: list[str] = []
+    for field in provisional_ir.get("resolved_fields", {}).values():
+        formula_source_fields.extend(source_fields_for_formula_field(str(field)))
     requested_fields = list(
         dict.fromkeys(
             [
@@ -189,7 +224,7 @@ def main() -> int:
                 "amount",
                 "pct_chg",
                 "turnover_rate",
-                *[str(field) for field in provisional_ir.get("resolved_fields", {}).values() if field],
+                *[str(field) for field in formula_source_fields if field],
             ]
         )
     )
@@ -203,7 +238,7 @@ def main() -> int:
         fields=requested_fields,
         universe=universe,
         frequency="daily",
-        catalog_path=args.catalog_path,
+        catalog_path=catalog_path,
     )
     if result.status not in {"ready", "proxy_ready"}:
         raise SystemExit(f"BLOCK_OOS_REFRESH_DATA_NOT_READY:{result.status}:{result.blocked_reason}")
@@ -275,6 +310,7 @@ def main() -> int:
             "date_count": int(frame["trade_date"].nunique()),
             "ticker_count": int(frame["ts_code"].nunique()),
             "metadata": result.to_metadata(),
+            "catalog_path": catalog_path,
         },
         "lookback": {
             "formula_max_lookback": lookback,

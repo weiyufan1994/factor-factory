@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.run_alpha101_operator_oos_refresh import forbidden_label_columns  # noqa: E402
+from scripts.run_alpha101_operator_oos_refresh import forbidden_label_columns, resolve_catalog_path, source_fields_for_formula_field  # noqa: E402
 
 
 def main() -> int:
@@ -23,9 +23,6 @@ def main() -> int:
         shutil.rmtree(tmp_root)
     workspace = tmp_root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    catalog_path = ROOT / "data" / "catalog" / "data_catalog.json"
-    if not catalog_path.exists():
-        catalog_path = Path("/Users/humphrey/projects/factor-factory/data/catalog/data_catalog.json")
     cmd = [
         sys.executable,
         str(ROOT / "scripts" / "run_alpha101_operator_oos_refresh.py"),
@@ -45,8 +42,6 @@ def main() -> int:
         "20250714",
         "--universe",
         "000001.SZ,000002.SZ",
-        "--catalog-path",
-        str(catalog_path),
     ]
     env = dict(os.environ)
     env["FACTORFORGE_DATA_CACHE"] = str(tmp_root / "data_api_cache")
@@ -79,6 +74,15 @@ def main() -> int:
             ["ts_code", "trade_date", "factor_value", "future_return_1d", "next_return", "target", "label", "lookahead_flag"]
         )
         == ["future_return_1d", "next_return", "target", "label", "lookahead_flag"],
+        "default_catalog_resolves": bool(resolve_catalog_path(None)),
+        "formula_alias_sources": all(
+            {
+                "volume": source_fields_for_formula_field("volume") == ["vol"],
+                "returns": source_fields_for_formula_field("returns") == ["pct_chg"],
+                "turnover": source_fields_for_formula_field("turnover") == ["turnover_rate"],
+                "adv20": source_fields_for_formula_field("adv20") == ["vol"],
+            }.values()
+        ),
         "duplicate_key_count_zero": compatibility.get("duplicate_key_count") == 0,
         "rows_positive": payload.get("row_count", 0) > 0,
     }

@@ -60,6 +60,27 @@ metadata 必须证明：
 - 没有 future return label；
 - append compatibility proof 为 `ACCEPT`。
 
+## Catalog 与字段别名
+
+正式脚本不能依赖隔离 worktree 下存在 `data/catalog/data_catalog.json`。当
+调用者没有显式传入 catalog，或者只使用默认相对路径时，脚本会回落到
+Data API 的默认 catalog resolver；只有用户显式传入一个不存在的非默认路径时，
+才保留 Data API 的 catalog not found BLOCK。
+
+Alpha101 常用标准字段也必须映射到底层数据源列，而不是把公式别名直接传给
+Data API：
+
+```text
+volume  -> vol
+returns -> pct_chg
+turnover -> turnover_rate
+advN    -> vol
+vwap    -> amount + vol
+```
+
+随后脚本在真实返回 schema 上重新解析公式，让 Formula-IR parser 负责把
+`returns` / `volume` / `turnover` 映射到实际列。
+
 ## Smoke
 
 `scripts/run_alpha101_operator_oos_refresh_smoke.py` 使用小样本：
@@ -79,6 +100,8 @@ row_count: 4
 date_count: 2
 ticker_count: 2
 non_null_coverage: 1.0
+default catalog resolver: ACCEPT
+formula alias source mapping: ACCEPT
 ```
 
 ## Full OOS Cold-Cache Boundary

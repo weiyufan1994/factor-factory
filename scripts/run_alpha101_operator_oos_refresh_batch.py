@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-start", required=True)
     parser.add_argument("--target-end", required=True)
     parser.add_argument("--dataset-id", default="clean_daily_bar_oos_slice")
-    parser.add_argument("--catalog-path", default="data/catalog/data_catalog.json")
+    parser.add_argument("--catalog-path")
     parser.add_argument("--universe", default="a_share_all")
     parser.add_argument("--history-start", help="Optional global fetch history start used for every batch.")
     parser.add_argument("--engine", default="optimized", choices=["optimized", "reference"])
@@ -165,13 +165,13 @@ def run_batch(args: argparse.Namespace, window: BatchWindow) -> dict[str, Any]:
         window.end,
         "--dataset-id",
         args.dataset_id,
-        "--catalog-path",
-        args.catalog_path,
         "--universe",
         args.universe,
         "--engine",
         args.engine,
     ]
+    if args.catalog_path:
+        cmd.extend(["--catalog-path", args.catalog_path])
     if args.history_start:
         cmd.extend(["--history-start", args.history_start])
     started = time.perf_counter()
@@ -269,7 +269,7 @@ def build_manifest(args: argparse.Namespace, windows: list[BatchWindow], results
             ),
             "cache_identity": {
                 "factorforge_data_cache": data_cache,
-                "catalog_path": args.catalog_path,
+                "catalog_path": args.catalog_path or "factorforge_data_api_default_catalog",
             },
             "validation_sample_policy": "run_alpha101_operator_oos_refresh_batch_smoke.py",
         },

@@ -167,6 +167,8 @@ date_count_sum: 2
 batch_execution_plan.version: factorforge_batch_execution_plan_v1
 batch resume reuse proof: ACCEPT
 resume identity mismatch blocker: ACCEPT
+default catalog resolver: ACCEPT
+formula alias source mapping: ACCEPT
 ```
 
 另用 Alpha015 当前 best branch 公式做 2 ticker / 2 target dates 的贴近真实公式小样本复核：
@@ -194,6 +196,8 @@ aws s3 cp ...
 2026-06-24 继续硬化：
 
 - `run_alpha101_operator_oos_refresh.py` 现在对 forbidden label columns 直接 BLOCK；
+- `run_alpha101_operator_oos_refresh.py` 没有显式 catalog 时会使用 Data API 默认 catalog resolver，避免隔离 worktree 缺 `data/catalog/data_catalog.json` 时误失败；
+- Alpha101 标准字段请求会先映射到底层源列：`volume -> vol`、`returns -> pct_chg`、`turnover -> turnover_rate`、`advN -> vol`、`vwap -> amount + vol`；
 - 覆盖列包括 `future_return*`、`next_return`、`target_return`、`future_*`、`lookahead`、精确 `label`、精确 `target`；
 - compatibility proof 继续输出 `contains_future_return_label`，并新增 `contains_forbidden_label_columns` 与 `forbidden_label_columns`；
 - `run_alpha101_operator_oos_refresh_smoke.py` 增加负例 detector check。
@@ -214,6 +218,8 @@ single-window smoke: ACCEPT
 batch smoke: ACCEPT
 batch resume reuse proof: ACCEPT
 batch resume identity mismatch blocker: ACCEPT
+default catalog resolver: ACCEPT
+formula alias source mapping: ACCEPT
 git diff --check: PASS
 ```
 

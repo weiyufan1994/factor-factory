@@ -6,7 +6,8 @@
 
 ## Review 目的
 
-请 review `/tmp/factorforge-alpha101-oos-refresh-contract` 分支中的 generic Alpha101 operator OOS refresh contract。
+请 review `codex/alpha101-oos-refresh-integration` 分支中的 generic Alpha101
+operator OOS refresh contract。
 
 该合同是为了解决 Alpha015 当前正式阻塞：
 
@@ -25,31 +26,23 @@ BLOCK_ALPHA101_GENERIC_OOS_FACTOR_VALUE_REFRESH_MISSING
 ## 分支状态
 
 ```text
-worktree: /tmp/factorforge-alpha101-oos-refresh-contract
-branch: codex/alpha101-oos-refresh-contract
-review_scope_head_before_final_doc_fix: 6fe71c5 Update Alpha101 OOS refresh review request
-contract_implementation_commit: 64c5be6 Harden Alpha101 OOS refresh resume identity
+worktree: /private/tmp/factorforge-alpha101-oos-refresh-integration
+branch: codex/alpha101-oos-refresh-integration
+base: origin/codex/factor-knowledge-network-v1
+review_scope_head: 9e55d1d Add Alpha101 OOS refresh contract
+contract_implementation_commit: 9e55d1d Add Alpha101 OOS refresh contract
 status: clean
 ```
 
-说明：本 review request 自身可能继续产生 doc-only commit，因此不要把
-`branch_HEAD` 当成 runner 代码的审查锚点。实际代码合同审查锚点是
-`contract_implementation_commit=64c5be6`；后续 doc-only commit 只用于修正
-review 口径。
+说明：本分支是把已验收的 `/tmp/factorforge-alpha101-oos-refresh-contract`
+原型整理到当前 Alpha101 知识网络基线后的集成分支。审查时应以
+`origin/codex/factor-knowledge-network-v1...codex/alpha101-oos-refresh-integration`
+为 diff 边界。
 
 相关 commits：
 
 ```text
-54797fc Add Alpha101 OOS refresh contract prototype
-c1b15c7 Document Alpha101 OOS refresh cold-cache boundary
-4add795 Add Alpha101 OOS refresh batch checkpointing
-94b24a2 Harden Alpha101 OOS refresh batch manifest
-205c4da Add Alpha101 OOS refresh review request
-0dc611f Update Alpha101 OOS refresh review handoff
-c104e95 Harden Alpha101 OOS refresh label guard
-ca99a76 Prove Alpha101 OOS refresh batch resume
-64c5be6 Harden Alpha101 OOS refresh resume identity
-6fe71c5 Update Alpha101 OOS refresh review request
+9e55d1d Add Alpha101 OOS refresh contract
 ```
 
 ## 改动范围
@@ -151,7 +144,7 @@ interpretation: Data API S3 parquet partition hydration dominates cold-cache run
 
 ## 研究员复核补充
 
-2026-06-24 复核时重新运行：
+2026-06-24 在集成分支复核时重新运行：
 
 ```text
 python3 -m py_compile ...
@@ -172,6 +165,8 @@ failed_batch_count: 0
 row_count: 4
 date_count_sum: 2
 batch_execution_plan.version: factorforge_batch_execution_plan_v1
+batch resume reuse proof: ACCEPT
+resume identity mismatch blocker: ACCEPT
 ```
 
 另用 Alpha015 当前 best branch 公式做 2 ticker / 2 target dates 的贴近真实公式小样本复核：

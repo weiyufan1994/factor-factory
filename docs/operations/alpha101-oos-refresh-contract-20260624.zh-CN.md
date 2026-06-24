@@ -126,6 +126,12 @@ evaluation. Full OOS execution should therefore use one of:
 The small smoke remains valid for contract behavior, but it is not a
 performance proof for full OOS.
 
+After catalog resolver and Alpha101 field-alias hardening, a bounded Alpha015
+real-formula probe with 2 tickers / 2 target dates was also stopped after about
+150 seconds on Mac foreground. It reached the same `aws s3 cp` partition
+hydration stack, which confirms the remaining local blocker is cold-cache S3
+partition IO rather than formula parsing, field aliasing, or evaluator logic.
+
 ## Batch Checkpoint Contract
 
 To avoid a single unbounded full-window run, the branch adds:

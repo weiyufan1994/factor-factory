@@ -223,6 +223,29 @@ formula alias source mapping: ACCEPT
 git diff --check: PASS
 ```
 
+2026-06-24 在上述 catalog/alias 修复后，又用 Alpha015 当前 best branch 公式
+做 2 ticker / 2 target dates 的 bounded real-formula probe：
+
+```text
+formula: (((-1 * sum(rank(correlation(rank(high), rank(volume), 7)), 7)) * rank(amount)) * (0.40 + (0.60 * (1 - rank(turnover)))))
+target: 20250714-20250715
+history_start: 20250601
+universe: 000001.SZ,000002.SZ
+```
+
+该 probe 在 Mac foreground 超过约 150 秒后人工中断。中断栈仍停在 Data API
+S3 parquet partition hydration：
+
+```text
+factorforge_data_api/backends/s3_file.py
+_download_s3_parquet_to_path(...)
+aws s3 cp ...
+```
+
+结论：catalog resolver 和 Alpha101 字段别名已修，真实公式仍需要 true
+worker + persistent warm `FACTORFORGE_DATA_CACHE` 或预热 OOS slice 分区；不能把
+Mac cold-cache foreground probe 当作 full OOS 性能证明。
+
 ## Review 重点问题
 
 请重点判断：

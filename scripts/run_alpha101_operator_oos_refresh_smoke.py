@@ -59,6 +59,29 @@ def main() -> int:
     assert compatibility_path.exists(), compatibility_path
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     compatibility = json.loads(compatibility_path.read_text(encoding="utf-8"))
+    hash_mismatch_cmd = [
+        sys.executable,
+        str(ROOT / "scripts" / "run_alpha101_operator_oos_refresh.py"),
+        "--workspace",
+        str(workspace),
+        "--source-report-id",
+        "SMOKE_ALPHA101_OOS_REFRESH_HASH_MISMATCH",
+        "--factor-id",
+        "SMOKE",
+        "--formula",
+        "rank(close)",
+        "--target-start",
+        "20250714",
+        "--target-end",
+        "20250715",
+        "--history-start",
+        "20250714",
+        "--universe",
+        "000001.SZ,000002.SZ",
+        "--expected-formula-hash",
+        "definitely_not_the_rank_close_hash",
+    ]
+    hash_mismatch_completed = subprocess.run(hash_mismatch_cmd, cwd=ROOT, text=True, capture_output=True, env=env, check=False)
     parent_path = workspace / "runs" / "SMOKE_ALPHA101_OOS_REFRESH" / "factor_values__SMOKE_ALPHA101_OOS_REFRESH.parquet"
     checks = {
         "metadata_success": metadata.get("status") == "success",
@@ -83,6 +106,8 @@ def main() -> int:
                 "adv20": source_fields_for_formula_field("adv20") == ["vol"],
             }.values()
         ),
+        "expected_formula_hash_mismatch_blocks": hash_mismatch_completed.returncode != 0
+        and "BLOCK_OOS_REFRESH_FORMULA_HASH_MISMATCH" in hash_mismatch_completed.stderr,
         "duplicate_key_count_zero": compatibility.get("duplicate_key_count") == 0,
         "rows_positive": payload.get("row_count", 0) > 0,
     }

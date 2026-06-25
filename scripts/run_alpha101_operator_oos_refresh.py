@@ -73,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--catalog-path")
     parser.add_argument("--universe", default="a_share_all")
     parser.add_argument("--history-start", help="Optional explicit formula lookback fetch start.")
+    parser.add_argument("--expected-formula-hash", help="Optional parent/source formula hash that must match after schema resolution.")
     parser.add_argument("--engine", default="optimized", choices=["optimized", "reference"])
     return parser.parse_args()
 
@@ -207,6 +208,13 @@ def main() -> int:
         raise SystemExit(f"BLOCK_OOS_REFRESH_UNSUPPORTED_DATASET:{dataset_id}")
     universe = parse_universe(coalesce(args.universe, contract.get("universe"), "a_share_all"))
     catalog_path = resolve_catalog_path(coalesce(args.catalog_path, contract.get("catalog_path")))
+    step4_identity = contract.get("step4_formal_factor_identity") if isinstance(contract.get("step4_formal_factor_identity"), dict) else {}
+    expected_formula_hash = coalesce(
+        args.expected_formula_hash,
+        contract.get("expected_formula_hash"),
+        contract.get("formula_hash") if contract.get("formula_hash_must_match_parent") is True else None,
+        step4_identity.get("formula_hash"),
+    )
 
     # Parse against catalog/read schema after fetching. Start with no schema to obtain required fields.
     provisional_ir = parse_formula(str(formula), raise_on_error=True)
@@ -248,6 +256,12 @@ def main() -> int:
     frame["trade_date"] = frame["trade_date"].astype(str).str.replace("-", "", regex=False)
     frame = frame.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
     formula_ir = resolve_formula_fields_for_schema(parse_formula(str(formula), list(frame.columns), raise_on_error=True), list(frame.columns))
+    formula_hash = formula_ir.get("formula_hash")
+    if expected_formula_hash and formula_hash != str(expected_formula_hash):
+        raise SystemExit(
+            "BLOCK_OOS_REFRESH_FORMULA_HASH_MISMATCH:"
+            f"expected={expected_formula_hash}:observed={formula_hash}"
+        )
     evaluated, eval_profile = evaluate_formula_frame(formula_ir, frame, engine=args.engine, return_profile=True)
     evaluated["trade_date"] = evaluated["trade_date"].astype(str).str.replace("-", "", regex=False)
     oos_values = evaluated[(evaluated["trade_date"] >= target_start) & (evaluated["trade_date"] <= target_end)].copy()
@@ -269,7 +283,6 @@ def main() -> int:
     oos_values.to_parquet(factor_path, index=False)
     non_null = int(oos_values["factor_value"].notna().sum())
     row_count = int(len(oos_values))
-    formula_hash = formula_ir.get("formula_hash")
     identity = {
         "producer": "step4_oos_refresh_formal_compute",
         "refresh_mode": "generic_operator_oos_factor_values",
@@ -294,6 +307,8 @@ def main() -> int:
         "formula": formula,
         "formula_ir": formula_ir,
         "formula_hash_preserved": True,
+        "expected_formula_hash": expected_formula_hash,
+        "formula_hash_matches_expected": (formula_hash == str(expected_formula_hash)) if expected_formula_hash else None,
         "refresh_policy": {
             "window_scope": "oos_holdout_factor_values_only",
             "revision_fitting_allowed": False,

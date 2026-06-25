@@ -84,6 +84,9 @@ runs/<source_report_id>/oos_refresh/<start>_<end>/
 
 - `source_report_id` 不变；
 - formula hash 可追溯；
+- 可选 parent/source `expected_formula_hash` 与 schema resolution 后的
+  `formula_hash` 不一致时必须 BLOCK：
+  `BLOCK_OOS_REFRESH_FORMULA_HASH_MISMATCH`；
 - `revision_fitting_allowed=false`；
 - `same_report_id_parent_factor_parquet_overwrite=false`；
 - factor values 无 future return label；
@@ -169,6 +172,7 @@ batch resume reuse proof: ACCEPT
 resume identity mismatch blocker: ACCEPT
 default catalog resolver: ACCEPT
 formula alias source mapping: ACCEPT
+expected formula hash mismatch blocker: ACCEPT
 ```
 
 另用 Alpha015 当前 best branch 公式做 2 ticker / 2 target dates 的贴近真实公式小样本复核：

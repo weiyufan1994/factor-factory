@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--catalog-path")
     parser.add_argument("--universe", default="a_share_all")
     parser.add_argument("--history-start", help="Optional global fetch history start used for every batch.")
+    parser.add_argument("--expected-formula-hash", help="Optional parent/source formula hash that every batch must match.")
     parser.add_argument("--engine", default="optimized", choices=["optimized", "reference"])
     parser.add_argument("--batch-frequency", default="monthly", choices=["monthly"])
     parser.add_argument("--resume", action="store_true", help="Skip a batch when metadata and compatibility proof already exist.")
@@ -113,6 +114,9 @@ def resume_identity_mismatches(args: argparse.Namespace, window: BatchWindow, me
     if args.history_start:
         expected["history_start"] = yyyymmdd(args.history_start)
         observed["history_start"] = str(input_data.get("history_start") or "")
+    if args.expected_formula_hash:
+        expected["expected_formula_hash"] = args.expected_formula_hash
+        observed["expected_formula_hash"] = metadata.get("expected_formula_hash")
     mismatches = []
     for key, expected_value in expected.items():
         if observed.get(key) != expected_value:
@@ -174,6 +178,8 @@ def run_batch(args: argparse.Namespace, window: BatchWindow) -> dict[str, Any]:
         cmd.extend(["--catalog-path", args.catalog_path])
     if args.history_start:
         cmd.extend(["--history-start", args.history_start])
+    if args.expected_formula_hash:
+        cmd.extend(["--expected-formula-hash", args.expected_formula_hash])
     started = time.perf_counter()
     completed = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=os.environ.copy(), check=False)
     if completed.returncode != 0:

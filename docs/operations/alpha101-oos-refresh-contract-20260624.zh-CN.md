@@ -53,6 +53,9 @@ metadata 必须证明：
 
 - `source_report_id` 保持不变；
 - `formula_hash` 存在且可追溯；
+- 如果传入 parent/source `expected_formula_hash`，schema resolution 后的
+  `formula_hash` 必须匹配，否则 BLOCK：
+  `BLOCK_OOS_REFRESH_FORMULA_HASH_MISMATCH`；
 - `revision_fitting_allowed=false`；
 - `same_report_id_parent_factor_parquet_overwrite=false`；
 - 输出只覆盖 OOS target window；
@@ -102,6 +105,7 @@ ticker_count: 2
 non_null_coverage: 1.0
 default catalog resolver: ACCEPT
 formula alias source mapping: ACCEPT
+expected formula hash mismatch blocker: ACCEPT
 ```
 
 ## Full OOS Cold-Cache Boundary

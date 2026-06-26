@@ -107,7 +107,7 @@ def _screen_ready_candidate(packet: dict[str, Any], rows: list[dict[str, Any]], 
     coverage = len(rows)
     decision = "discard"
     if rank_ic_mean is not None and spread is not None:
-        if abs(rank_ic_mean) >= 0.05 and abs(spread) >= 0.5:
+        if rank_ic_mean >= 0.05 and spread >= 0.5:
             decision = "send_to_formal_research"
         elif abs(rank_ic_mean) >= 0.02 or abs(spread) >= 0.2:
             decision = "keep_as_feature"

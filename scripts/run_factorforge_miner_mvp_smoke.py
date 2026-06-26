@@ -39,6 +39,28 @@ def assert_under(path: Path, root: Path, label: str) -> None:
 def write_fixture_panel(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
+        ("20250102", "AAA", 1.0, -1.0, 10.0),
+        ("20250102", "BBB", 2.0, -0.5, 20.0),
+        ("20250102", "CCC", 3.0, 0.5, 30.0),
+        ("20250102", "DDD", 4.0, 1.0, 40.0),
+        ("20250103", "AAA", 1.2, -1.1, 11.0),
+        ("20250103", "BBB", 2.2, -0.4, 22.0),
+        ("20250103", "CCC", 3.2, 0.4, 32.0),
+        ("20250103", "DDD", 4.2, 1.1, 42.0),
+        ("20250104", "AAA", 1.4, -1.2, 12.0),
+        ("20250104", "BBB", 2.4, -0.3, 24.0),
+        ("20250104", "CCC", 3.4, 0.3, 34.0),
+        ("20250104", "DDD", 4.4, 1.2, 44.0),
+    ]
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["trade_date", "ts_code", "factor_ready_signal", "forward_return", "turnover"])
+        writer.writerows(rows)
+
+
+def write_negative_fixture_panel(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
         ("20250102", "AAA", 1.0, 1.0, 10.0),
         ("20250102", "BBB", 2.0, 0.5, 20.0),
         ("20250102", "CCC", 3.0, -0.5, 30.0),
@@ -229,6 +251,10 @@ def main() -> int:
     ready_result = next(row for row in result_rows if row["candidate_id"] == ready_candidate["candidate_id"])
     if ready_result["rank_ic_mean"] is None or ready_result["group_spread_gross"] is None:
         raise AssertionError(f"cheap screen missing metrics: {ready_result}")
+    if ready_result["rank_ic_mean"] <= 0 or ready_result["group_spread_gross"] <= 0:
+        raise AssertionError(f"ready candidate should be long-side positive in smoke: {ready_result}")
+    if ready_result["decision"] != "send_to_formal_research":
+        raise AssertionError(f"positive ready candidate should enter research queue: {ready_result}")
     if ready_result["monotonicity_score"] is None:
         raise AssertionError("cheap screen missing monotonicity")
     blocked_result = next(row for row in result_rows if row["candidate_id"] == blocked_candidate["candidate_id"])
@@ -246,6 +272,43 @@ def main() -> int:
         raise AssertionError("needs_data candidate entered research queue")
     if not (workspace / "objects" / "research_queue" / "research_queue.jsonl").exists():
         raise AssertionError("research queue jsonl missing")
+
+    negative_workspace = root / "factor_research" / "miner" / "negative_campaign"
+    negative_inventory = build_capability_inventory(
+        campaign_id="negative_campaign",
+        workspace_root=negative_workspace,
+        catalog_paths=[catalog],
+    )
+    negative_candidates = build_candidate_packets(
+        campaign_id="negative_campaign",
+        workspace_root=negative_workspace,
+        template_ids=["turnover_acceleration"],
+        inventory=negative_inventory,
+    )
+    negative_panel = root / "negative_cheap_screen_panel.csv"
+    write_negative_fixture_panel(negative_panel)
+    negative_summary = run_cheap_screen(
+        campaign_id="negative_campaign",
+        workspace_root=negative_workspace,
+        candidate_manifest_path=negative_workspace / "objects" / "candidates" / "candidate_manifest.json",
+        panel_path=negative_panel,
+        screen_window="20250102..20250104",
+        universe="smoke_universe",
+    )
+    negative_result = negative_summary["results"][0]
+    if negative_result["rank_ic_mean"] >= 0 or negative_result["group_spread_gross"] >= 0:
+        raise AssertionError(f"negative fixture should be short-side-only: {negative_result}")
+    if negative_result["decision"] == "send_to_formal_research":
+        raise AssertionError(f"short-side-only candidate must not enter formal queue: {negative_result}")
+    negative_queue = build_research_queue(
+        campaign_id="negative_campaign",
+        workspace_root=negative_workspace,
+        cheap_screen_summary=negative_summary,
+    )
+    if negative_queue["items"]:
+        raise AssertionError(f"short-side-only candidate entered research queue: {negative_queue}")
+    if len(negative_candidates) != 1:
+        raise AssertionError("negative campaign did not produce exactly one candidate")
 
     expected_paths = [
         inventory_path,

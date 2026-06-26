@@ -105,6 +105,148 @@ Protect holdout data. The default full IS window is `2016-01-01..2025-07-11`.
 Data after `2025-07-11` is OOS holdout-only and must not be used for repeated
 template selection or parameter mining.
 
+## Default Operating Workflow
+
+When the user asks to mine factors, generate ideas, explore templates, or build
+a candidate queue, do not stop at advice. Run a bounded Miner campaign unless
+the user explicitly asks for planning only.
+
+1. Inspect worktree status in the Miner workspace.
+2. Create or select an active campaign workspace:
+
+```text
+factor_research/miner/<campaign_id>/
+```
+
+3. Build capability inventory from the active Data API catalog.
+4. Select templates that are `ready` or intentionally useful as `needs_data`
+   probes.
+5. Generate candidate packets.
+6. Write data gap report and `factorforge_data_request_v1` files for missing
+   reusable state datamarts.
+7. Run cheap screen only for candidates whose dependencies are ready.
+8. Build research queue from `send_to_formal_research` candidates.
+9. Report results using the Reporting Template below.
+
+Do not launch Ultimate automatically from Miner. Queue items are invitations
+for formal research, not permission to start production Step1-6 unless the user
+explicitly asks.
+
+## MVP Command Path
+
+The current MVP adapter lives in the Factor Forge repo and should be run from
+the Miner worktree.
+
+Set variables:
+
+```bash
+cd /tmp/factorforge-miner-workspace
+CAMPAIGN_ID=<campaign_id>
+WORKSPACE=factor_research/miner/$CAMPAIGN_ID
+CATALOG=<path-to-data-api-catalog.json>
+```
+
+Build inventory:
+
+```bash
+python3 scripts/build_factorforge_miner_capability_inventory.py \
+  --campaign-id "$CAMPAIGN_ID" \
+  --workspace-root "$WORKSPACE" \
+  --catalog "$CATALOG"
+```
+
+Generate candidates:
+
+```bash
+python3 scripts/build_factorforge_miner_candidates.py \
+  --campaign-id "$CAMPAIGN_ID" \
+  --workspace-root "$WORKSPACE" \
+  --inventory "$WORKSPACE/objects/miner_capability_inventory.json" \
+  --template-id turnover_acceleration \
+  --template-id cutoff_flow_persistence
+```
+
+Write data gaps:
+
+```bash
+python3 scripts/build_factorforge_miner_data_gap_report.py \
+  --campaign-id "$CAMPAIGN_ID" \
+  --workspace-root "$WORKSPACE" \
+  --candidate-manifest "$WORKSPACE/objects/candidates/candidate_manifest.json" \
+  --inventory "$WORKSPACE/objects/miner_capability_inventory.json"
+```
+
+Run cheap screen when a ready panel exists:
+
+```bash
+python3 scripts/run_factorforge_miner_cheap_screen.py \
+  --campaign-id "$CAMPAIGN_ID" \
+  --workspace-root "$WORKSPACE" \
+  --candidate-manifest "$WORKSPACE/objects/candidates/candidate_manifest.json" \
+  --panel <cheap-screen-panel.csv> \
+  --screen-window 2016-01-01..2025-07-11 \
+  --universe <universe-id>
+```
+
+Build queue:
+
+```bash
+python3 scripts/build_factorforge_miner_research_queue.py \
+  --campaign-id "$CAMPAIGN_ID" \
+  --workspace-root "$WORKSPACE" \
+  --cheap-screen-summary "$WORKSPACE/objects/cheap_screen/cheap_screen_summary.json"
+```
+
+Run the built-in smoke when validating the adapter itself:
+
+```bash
+python3 scripts/run_factorforge_miner_mvp_smoke.py
+```
+
+## Result Reading Checklist
+
+Judge a Miner campaign by its outputs, not by prose.
+
+- `docs/miner_capability_inventory.md`: must show which templates are
+  `ready`, `needs_data`, `needs_operator`, or `partial`.
+- `objects/candidates/candidate_manifest.json`: must contain candidate packets
+  with lineage, economic prior, payer hypothesis, math object, expected metric
+  signature, falsification tests, and `promotion_forbidden_until_formal=true`.
+- `docs/data_gap_report.md` and `objects/data_requests/*.json`: must turn
+  missing reusable state datamarts into explicit data requests. Miner must not
+  raw-scan full-window minute data as fallback.
+- `objects/cheap_screen/cheap_screen_summary.json`: must mark
+  `evidence_role=exploratory_evidence`, include cheap metrics, and keep
+  `promotion_forbidden_until_formal=true`.
+- `objects/research_queue/research_queue.json`: must contain only candidates
+  whose cheap-screen decision is `send_to_formal_research`.
+
+If these files are missing, outside the campaign workspace, or internally
+inconsistent, do not ask the user to interpret partial results. Fix the
+campaign or report a BLOCK.
+
+## Built-In Template IDs
+
+MVP templates currently include:
+
+```text
+open_gap_intraday_continuation
+intraday_return_skew
+intraday_return_kurtosis
+realized_var_over_range
+volume_weighted_range
+high_location_volume_pressure
+low_location_absorption
+up_down_volume_imbalance_proxy
+cutoff_flow_persistence
+value_occupation_support_overhang
+turnover_acceleration
+residual_vol_liquidity_interaction
+```
+
+Prefer starting with templates that inventory marks `ready`. Keep `needs_data`
+templates in the campaign only when the point is to generate data requests.
+
 ## Candidate Packet
 
 Every generated candidate must have a durable packet. Minimum schema:

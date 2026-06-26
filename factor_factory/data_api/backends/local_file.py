@@ -31,5 +31,15 @@ def load_local_file(entry: CatalogDataset, query: DataQuery, columns: list[str])
                 raise
             partitioning = ds.partitioning(pa.schema([(column, pa.string()) for column in entry.partition_columns]), flavor='hive')
             dataset = ds.dataset(str(path), format='parquet', partitioning=partitioning)
-        return dataset.to_table(columns=columns or None).to_pandas()
+        return dataset.to_table(columns=columns or None, filter=_pyarrow_filter(entry, query)).to_pandas()
     return pd.read_parquet(path, columns=columns or None)
+
+
+def _pyarrow_filter(entry: CatalogDataset, query: DataQuery):
+    import pyarrow.dataset as ds
+
+    expr = ds.field(entry.date_column) >= str(query.start_date)
+    expr = expr & (ds.field(entry.date_column) <= str(query.end_date))
+    if query.symbols:
+        expr = expr & ds.field(entry.symbol_column).isin(list(query.symbols))
+    return expr

@@ -16,7 +16,7 @@ from factor_factory.data_access import (
     load_clean_daily_layer,
     resolve_clean_daily_layer_paths,
 )
-from scripts.build_report_qlib_provider import build_source_snapshot, dump_provider
+from scripts.build_report_qlib_provider import audit_dumped_provider, build_source_snapshot, dump_provider
 
 
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
@@ -124,11 +124,13 @@ def main() -> None:
         build_dir = provider_dir.parent / 'qlib_build'
         source_dir, stats = build_source_snapshot(args.report_id or 'adhoc', csv_path, build_dir)
         dump_provider(source_dir, provider_dir)
+        provider_audit = audit_dumped_provider(provider_dir)
         payload['provider'] = {
             'provider_dir': str(provider_dir),
             'build_dir': str(build_dir),
             'source_dir': str(source_dir),
             'stats': stats,
+            'audit': provider_audit,
         }
 
     meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')

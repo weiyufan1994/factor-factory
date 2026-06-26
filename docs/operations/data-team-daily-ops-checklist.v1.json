@@ -1,0 +1,344 @@
+{
+  "notes": [
+    "This checklist describes the daily work loop for the Data API/data team. It is not an active scheduler.",
+    "P0 task failure should block formal production research that depends on the affected dataset.",
+    "Active catalog writes remain an explicit controlled step after QA/read-smoke/closeout proof."
+  ],
+  "schema_version": "data_team_ops_registry_v1",
+  "tasks": [
+    {
+      "acceptance_rule": "Latest expected trade date is present, row counts are nonzero, duplicate keys are zero, and source-ready missing dates are explicitly reported.",
+      "automation": "scripted",
+      "blocks_research_on_fail": true,
+      "cadence": "daily",
+      "category": "source_freshness",
+      "commands": [
+        "python3 scripts/run_data_api_smoke.py --fresh",
+        "python3 scripts/qa_prepared_minute_bar.py --help"
+      ],
+      "datasets": [
+        "clean_daily_bar",
+        "daily_basic_backtest_base",
+        "minute_bar",
+        "prepared_minute_bar_v1"
+      ],
+      "description": "Verify daily/minute source freshness, coverage, duplicate keys, and source-ready partitions before derived datamarts are trusted.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_SOURCE_COVERAGE_INCOMPLETE",
+        "BLOCK_DATA_API_DERIVED_DATAMART_DUPLICATE_KEYS"
+      ],
+      "owner_role": "data_api_oncall",
+      "required_proofs": [
+        "coverage_summary",
+        "duplicate_key_count",
+        "missing_dates",
+        "source_ready_dates"
+      ],
+      "severity": "P0",
+      "task_id": "source_freshness_and_coverage",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Qlib provider calendar and instruments are refreshed after clean daily update and smoke can read at least one feature.",
+      "automation": "scripted",
+      "blocks_research_on_fail": true,
+      "cadence": "daily",
+      "category": "model_provider_publish",
+      "commands": [
+        "python3 scripts/run_qlib_native_report.py --help",
+        "python3 scripts/build_report_qlib_provider.py --help"
+      ],
+      "datasets": [
+        "qlib_daily_provider",
+        "clean_daily_bar"
+      ],
+      "description": "Maintain the Qlib provider used by Factor Forge Step4 and RD-Agent lite, including calendar, instruments, and feature bin outputs.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_PRODUCTION_CATALOG_NOT_PUBLISHED",
+        "BLOCK_DATA_API_SOURCE_COVERAGE_INCOMPLETE"
+      ],
+      "owner_role": "data_api_oncall",
+      "required_proofs": [
+        "qlib_calendar_range",
+        "instrument_count",
+        "feature_file_count",
+        "qlib_read_smoke"
+      ],
+      "severity": "P0",
+      "task_id": "qlib_provider_refresh",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "All formal backtest datasets have same-date tradability risk flags and universe filters with duplicate keys equal zero.",
+      "automation": "scripted",
+      "blocks_research_on_fail": true,
+      "cadence": "daily",
+      "category": "universe_investability",
+      "commands": [
+        "python3 scripts/build_tradability_risk_flags_daily.py --help",
+        "python3 scripts/build_standard_market_universe.py --help",
+        "python3 scripts/build_microcap_universe.py --help"
+      ],
+      "datasets": [
+        "tradability_risk_flags_daily",
+        "standard_full_market_universe",
+        "microcap_universe",
+        "index_weight_universe"
+      ],
+      "description": "Maintain investability filters, standard full-market universe, microcap universes, and index-weight universes used by formal backtests.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_SOURCE_COVERAGE_INCOMPLETE",
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED"
+      ],
+      "owner_role": "data_api_oncall",
+      "required_proofs": [
+        "tradability_join_smoke",
+        "universe_row_count",
+        "duplicate_key_count",
+        "representative_dates_ready"
+      ],
+      "severity": "P0",
+      "task_id": "universe_and_investability_refresh",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Feature precompute registry and feature-family registry validate ACCEPT; production candidates have current worker plan or closeout proof.",
+      "automation": "scripted",
+      "blocks_research_on_fail": false,
+      "cadence": "daily",
+      "category": "feature_state_planning",
+      "commands": [
+        "python3 scripts/validate_feature_precompute_registry.py docs/operations/feature-precompute-registry.v1.json",
+        "python3 scripts/validate_feature_family_registry.py docs/operations/feature-family-registry.v1.json",
+        "python3 scripts/validate_registry_crosslinks.py --output /tmp/registry_crosslinks.validation.json"
+      ],
+      "datasets": [
+        "daily_technical_state_v1",
+        "intraday_flow_distribution_moments_v1",
+        "daily_alpha360_lite_v1"
+      ],
+      "description": "Keep the precomputed feature/state roadmap current, separating production candidates, planned state families, model-specific wide tensors, and on-demand transforms.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED"
+      ],
+      "owner_role": "data_api_architect",
+      "required_proofs": [
+        "feature_precompute_registry_validation",
+        "feature_family_registry_validation",
+        "registry_crosslink_validation"
+      ],
+      "severity": "P1",
+      "task_id": "feature_registry_review",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Production candidate datamart has QA, catalog candidate, worker read smoke, closeout artifact, and no future-data violation.",
+      "automation": "scripted",
+      "blocks_research_on_fail": true,
+      "cadence": "on_demand",
+      "category": "datamart_production_closeout",
+      "commands": [
+        "python3 scripts/closeout_daily_technical_state.py --help",
+        "python3 scripts/closeout_intraday_flow_distribution_moments.py --help"
+      ],
+      "datasets": [
+        "daily_technical_state_v1",
+        "intraday_flow_distribution_moments_v1"
+      ],
+      "description": "Convert final QA, catalog candidate, worker read smoke, and batch manifests into standard datamart_closeout_v1 ACCEPT/BLOCK artifacts.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED",
+        "BLOCK_DATA_API_WORKER_READ_SMOKE_MISSING",
+        "BLOCK_DATA_API_LOOKAHEAD_CONTRACT_MISSING"
+      ],
+      "owner_role": "data_api_reviewer",
+      "required_proofs": [
+        "datamart_closeout_v1",
+        "worker_read_smoke",
+        "information_set_legality",
+        "performance_profile"
+      ],
+      "severity": "P0",
+      "task_id": "feature_datamart_closeout",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Representative read workloads have bounded warm-read times and no row-count drift versus reference.",
+      "automation": "scripted",
+      "blocks_research_on_fail": false,
+      "cadence": "weekly",
+      "category": "performance_engineering",
+      "commands": [
+        "python3 scripts/benchmark_duckdb_data_api.py --help",
+        "python3 scripts/run_intraday_array_kernel_benchmark_gate.py --help"
+      ],
+      "datasets": [
+        "tradability_risk_flags_daily",
+        "standard_full_market_universe",
+        "intraday_flow_distribution_moments_v1",
+        "daily_technical_state_v1"
+      ],
+      "description": "Track Data API IO, projection, partition pruning, kernel, and DuckDB acceleration regressions with comparable proof files.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED"
+      ],
+      "owner_role": "data_api_performance",
+      "required_proofs": [
+        "benchmark_proof_json",
+        "reference_row_count_match",
+        "warm_read_seconds",
+        "input_bytes"
+      ],
+      "severity": "P1",
+      "task_id": "performance_regression_check",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Researchers receive a dataset status of ACCEPT/BLOCK with exact paths, usage snippet, row counts, coverage, and known blockers.",
+      "automation": "manual",
+      "blocks_research_on_fail": false,
+      "cadence": "on_demand",
+      "category": "research_handoff",
+      "commands": [
+        "python3 scripts/data_request_inbox.py status --help",
+        "python3 scripts/data_request_scanner.py --help"
+      ],
+      "datasets": [],
+      "description": "Publish clear handoff notes so researchers do not continue fake production research when a datamart is still PENDING or BLOCK.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_PRODUCTION_CATALOG_NOT_PUBLISHED",
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED"
+      ],
+      "owner_role": "data_api_oncall",
+      "required_proofs": [
+        "request_status",
+        "resolution_artifact",
+        "usage_snippet",
+        "known_blockers"
+      ],
+      "severity": "P1",
+      "task_id": "research_handoff_status",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "No benchmark or worker plan creates AWS resources without explicit approval; cost-sensitive jobs have resume/retry and output-prefix boundaries.",
+      "automation": "manual",
+      "blocks_research_on_fail": false,
+      "cadence": "on_demand",
+      "category": "cost_and_safety",
+      "commands": [
+        "python3 scripts/build_intraday_flow_distribution_worker_bundle.py --help",
+        "python3 scripts/build_daily_feature_worker_resume_bundle.py --help"
+      ],
+      "datasets": [],
+      "description": "Keep EC2/Batch/Spot and benchmark usage cost-aware, plan-only by default, and isolated from live Factor Forge artifacts.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_BACKFILL_NOT_RESUMABLE",
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED"
+      ],
+      "owner_role": "data_api_architect",
+      "required_proofs": [
+        "plan_only_bundle",
+        "resume_manifest",
+        "safety_flags",
+        "explicit_user_approval"
+      ],
+      "severity": "P1",
+      "task_id": "cost_and_execution_guardrails",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Official and candidate factor library registry/exposure/return panels are refreshed from accepted research outputs, published to S3, and readable through Data API with duplicate keys equal zero.",
+      "automation": "scripted",
+      "blocks_research_on_fail": true,
+      "cadence": "daily",
+      "category": "factor_library_maintenance",
+      "commands": [
+        "python3 scripts/build_factor_library_exposure_return_panel.py --help",
+        "python3 scripts/run_data_api_read_smoke.py --help"
+      ],
+      "datasets": [
+        "factor_library_registry_v1",
+        "factor_library_exposure_panel_v1",
+        "factor_library_factor_return_panel_v1"
+      ],
+      "description": "Maintain the shared Factor Library layers used for redundancy checks, candidate feature reuse, and incremental factor evidence. The Data API owner maintains the datamart/catalog/proof layer; Step6/researcher owns alpha promotion decisions.",
+      "failure_tokens": [
+        "BLOCK_FACTOR_LIBRARY_REFRESH_MISSING",
+        "BLOCK_FACTOR_LIBRARY_S3_SYNC_INCOMPLETE",
+        "BLOCK_DATA_API_PRODUCTION_CATALOG_NOT_PUBLISHED"
+      ],
+      "owner_role": "data_api_oncall",
+      "required_proofs": [
+        "registry_row_count",
+        "exposure_panel_row_count",
+        "factor_return_panel_row_count",
+        "duplicate_key_count",
+        "s3_sync_summary",
+        "data_api_read_smoke"
+      ],
+      "severity": "P0",
+      "task_id": "factor_library_daily_refresh",
+      "writes_active_catalog": true
+    },
+    {
+      "acceptance_rule": "Research interim factor values and derived research features produced on Mac or worker are copied to S3 research_interim_datamart with manifest, provenance, and non-official status before they are referenced by other agents.",
+      "automation": "scripted",
+      "blocks_research_on_fail": false,
+      "cadence": "on_demand",
+      "category": "research_interim_data_publish",
+      "commands": [
+        "aws s3 cp --recursive --help",
+        "python3 scripts/build_factor_library_bootstrap_panels.py --help"
+      ],
+      "datasets": [
+        "research_interim_factor_values",
+        "research_interim_feature_panels"
+      ],
+      "description": "Keep researcher-produced factor values, state features, and temporary panels durable and discoverable without confusing them with candidate or official Factor Library data.",
+      "failure_tokens": [
+        "BLOCK_RESEARCH_INTERIM_S3_SYNC_INCOMPLETE",
+        "BLOCK_RESEARCH_INTERIM_MANIFEST_MISSING",
+        "BLOCK_RESEARCH_INTERIM_OFFICIAL_STATUS_AMBIGUOUS"
+      ],
+      "owner_role": "data_api_oncall",
+      "required_proofs": [
+        "s3_uri",
+        "manifest_json",
+        "source_research_run",
+        "status_not_official",
+        "row_count_or_file_count"
+      ],
+      "severity": "P1",
+      "task_id": "research_interim_data_s3_sync",
+      "writes_active_catalog": false
+    },
+    {
+      "acceptance_rule": "Active catalog changes are only made after accepted closeout proof and reviewer approval; catalog diff is explicit.",
+      "automation": "manual",
+      "blocks_research_on_fail": true,
+      "cadence": "on_demand",
+      "category": "catalog_governance",
+      "commands": [
+        "python3 scripts/datamart_contract.py inventory --help"
+      ],
+      "datasets": [],
+      "description": "Govern production catalog publication separately from build proof so experimental datamarts cannot silently become formal data.",
+      "failure_tokens": [
+        "BLOCK_DATA_API_PRODUCTION_CATALOG_NOT_PUBLISHED",
+        "BLOCK_DATA_API_DERIVED_DATAMART_QA_FAILED"
+      ],
+      "owner_role": "data_api_reviewer",
+      "required_proofs": [
+        "accepted_closeout",
+        "catalog_diff",
+        "reviewer_approval",
+        "rollback_or_tombstone_plan"
+      ],
+      "severity": "P0",
+      "task_id": "active_catalog_publication_gate",
+      "writes_active_catalog": true
+    }
+  ],
+  "updated_date": "2026-06-26"
+}

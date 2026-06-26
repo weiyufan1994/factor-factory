@@ -146,6 +146,47 @@ Default behavior:
 
 Never treat `build_clean_daily_layer.py` as a mandatory per-factor step.
 
+## Data Request Handoff
+
+When Step3/Step4/Step6 blocks on missing Data API coverage, missing fields,
+slow reusable minute state, absent full-window datamart proof, or an expensive
+raw-minute recomputation that should become a reusable derived state, the
+Ultimate agent must create a structured Data API request instead of asking the
+user to forward requirements.
+
+Use the Data API inbox contract:
+
+```bash
+python3 scripts/data_request_inbox.py new \
+  --report-id <report_id> \
+  --dataset-id <dataset_id> \
+  --request-type new_datamart \
+  --output factorforge/data/requests/inbox/data_request__<report_id>__<dataset_id>.json
+```
+
+The research loop should then report the `request_id` and wait for:
+
+```bash
+python3 scripts/data_request_inbox.py status <request_id>
+```
+
+Data API side should run the scanner instead of relying on the user to notify it:
+
+```bash
+python3 scripts/data_request_scanner.py once
+```
+
+Status handling:
+
+- `PENDING`: do not ask the user to relay the data request; Data API has not closed it.
+- `ACCEPT`: resume research only through the returned catalog/datamart/QA/worker-smoke proof.
+- `BLOCK`: report the blocker and do not run proxy/full-window research unless the user explicitly approves a degraded scope.
+- `INVALID` or `NOT_FOUND`: fix the request artifact or inbox sync before continuing.
+
+This handoff does not authorize clean data mutation, search worker, official
+promotion, Factor Forge production loop execution, or writing research
+artifacts outside the active factor workspace.
+
 
 ## Mandatory Single Entry Wrapper
 

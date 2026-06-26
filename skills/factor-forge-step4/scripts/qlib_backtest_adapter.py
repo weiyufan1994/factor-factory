@@ -159,11 +159,11 @@ def _resolve_provider_uri(report_id: str) -> str:
     if env_uri:
         candidates.append(Path(env_uri).expanduser())
     candidates.extend([
-        Path('/home/ubuntu/.qlib/qlib_data/cn_tushare_full_adj'),
-        Path('/home/ubuntu/.qlib/qlib_data/cn_data'),
-        Path.home() / '.qlib' / 'qlib_data' / 'cn_tushare_full_adj',
-        Path.home() / '.qlib' / 'qlib_data' / 'cn_data',
         RUNS / report_id / 'qlib_provider',
+        Path('/home/ubuntu/.qlib/qlib_data/cn_data'),
+        Path.home() / '.qlib' / 'qlib_data' / 'cn_data',
+        Path('/home/ubuntu/.qlib/qlib_data/cn_tushare_full_adj'),
+        Path.home() / '.qlib' / 'qlib_data' / 'cn_tushare_full_adj',
     ])
     for item in candidates:
         if item.exists() and any(item.iterdir()):

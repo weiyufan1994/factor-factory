@@ -131,6 +131,31 @@ def test_universe_filter_and_duplicate_detection(tmp_path):
     assert validate_data_api_result(allowed).result == 'PASS'
 
 
+def test_metadata_unique_key_is_projected_and_used_for_duplicate_detection(tmp_path):
+    data_path = tmp_path / 'index_universe.parquet'
+    pd.DataFrame([
+        {'universe_id': 'csi300', 'ts_code': '000001.SZ', 'trade_date': '20260102', 'weight': 1.0},
+        {'universe_id': 'csi500', 'ts_code': '000001.SZ', 'trade_date': '20260102', 'weight': 0.5},
+    ]).to_parquet(data_path, index=False)
+    catalog = tmp_path / 'catalog.json'
+    write_catalog(catalog, {
+        'index_weight_universe': {
+            'uri': str(data_path),
+            'format': 'parquet',
+            'columns': ['universe_id', 'ts_code', 'trade_date', 'weight'],
+            'metadata': {'unique_key': ['universe_id', 'trade_date', 'ts_code']},
+        },
+    })
+
+    result = DataApiClient.from_catalog(catalog).fetch(
+        DataQuery('index_weight_universe', '20260102', '20260102', 'a_share_all', ['weight'])
+    )
+
+    assert result.status == 'ready'
+    assert result.coverage.duplicate_key_count == 0
+    assert result.frame.columns.tolist() == ['universe_id', 'trade_date', 'ts_code', 'weight']
+
+
 def test_allow_duplicate_keys_does_not_mask_zero_row_block(tmp_path):
     data_path = tmp_path / 'daily.parquet'
     pd.DataFrame([
@@ -172,3 +197,28 @@ def test_partitioned_minute_parquet_uses_string_partition_schema(tmp_path):
     )
     assert result.status == 'ready'
     assert result.frame['trade_date'].tolist() == ['20260102']
+
+
+def test_partitioned_local_parquet_filters_date_range_before_return(tmp_path):
+    for date, close in [('20260102', 10.0), ('20260103', 20.0)]:
+        part = tmp_path / 'daily' / f'trade_date={date}'
+        part.mkdir(parents=True)
+        pd.DataFrame([
+            {'ts_code': '000001.SZ', 'close': close},
+        ]).to_parquet(part / 'part.parquet', index=False)
+    catalog = tmp_path / 'catalog.json'
+    write_catalog(catalog, {
+        'clean_daily_bar': {
+            'uri': str(tmp_path / 'daily'),
+            'format': 'parquet',
+            'columns': ['ts_code', 'trade_date', 'close'],
+            'partition_columns': ['trade_date'],
+        },
+    })
+
+    result = DataApiClient.from_catalog(catalog).fetch(
+        DataQuery('clean_daily_bar', '20260103', '20260103', 'a_share_all', ['close'])
+    )
+
+    assert result.status == 'ready'
+    assert result.frame.to_dict('records') == [{'ts_code': '000001.SZ', 'trade_date': '20260103', 'close': 20.0}]

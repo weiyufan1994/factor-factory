@@ -37,6 +37,23 @@ Every serious Step4 run should separate:
 
 These distinctions must be visible enough for Step5/6 to judge whether the metrics support the return source or only the current implementation.
 
+## Investability Filter
+
+Formal backtests must apply the Data API `tradability_risk_flags_daily`
+investability table before IC/NAV/portfolio evaluation. Raw universe datasets
+such as `standard_full_market_universe`, `index_weight_universe`, and
+`microcap_universe` preserve membership definitions; Step4 must join
+`tradability_risk_flags_daily` on `trade_date + ts_code` and filter with an
+explicit policy:
+
+- `is_investable_core` for ST/new-stock/untradable/major-risk exclusions.
+- `is_investable_500m` when the strategy or default institutional backtest
+  policy also requires the 5e8 CNY market-cap floor.
+
+If this table is unavailable, incomplete for the run window, or not joined into
+the evaluation universe, Step4 must BLOCK rather than report official backtest
+evidence on an unfiltered universe.
+
 ## Inputs
 
 - `factorforge/objects/factor_spec_master/factor_spec_master__{report_id}.json`
@@ -116,6 +133,7 @@ Mandatory `self_quant_analyzer` artifacts:
 10. qlib-native evaluators must treat signal formatting as a first-class contract item; if `instrument` / `datetime` naming or market-code normalization is unresolved, the run should be marked blocked rather than silently coercing inconsistent semantics.
 11. Manual/temporary plotting is forbidden for official evidence. If a plot/table is needed, add it to the Step4 backend contract and rerun Step4.
 12. Decile NAV and long-short NAV must be computed from daily group returns/spreads and normalized to start at `1.0`; subtracting NAV levels is invalid.
+13. If Step4 cannot proceed because a reusable Data API datamart/state is missing, too slow to recompute from raw minute data, or lacks full-window proof, write a `data_request_v1` artifact through `scripts/data_request_inbox.py new`; do not ask the user to relay requirements between researcher and Data API / data group.
 
 ## Execution chain
 

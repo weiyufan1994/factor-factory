@@ -74,7 +74,7 @@ def run_native(
     n_drop: int = 5,
     output_dir: str | Path | None = None,
 ) -> dict:
-    provider_uri = RUNS / report_id / "qlib_provider"
+    provider_uri = Path(os.getenv("QLIB_PROVIDER_URI", "")).expanduser() if os.getenv("QLIB_PROVIDER_URI") else RUNS / report_id / "qlib_provider"
     if not provider_uri.exists():
         raise SystemExit(f"missing qlib provider: {provider_uri}")
 

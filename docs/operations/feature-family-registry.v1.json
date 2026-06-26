@@ -1,0 +1,246 @@
+{
+  "feature_families": [
+    {
+      "alpha360_related": false,
+      "cost_tier": "low",
+      "description": "Daily return, range, moving-average, volatility, downside volatility, distribution-shape, liquidity, and Amihud-style state variables.",
+      "domain": "daily",
+      "example_features": [
+        "ret_1d",
+        "ret_5d",
+        "ret_20d",
+        "ma5_close_ratio",
+        "ma20_close_ratio",
+        "volatility_20d",
+        "ret_skew_20d",
+        "ret_excess_kurtosis_20d",
+        "amihud_20d"
+      ],
+      "family_id": "daily_technical_state",
+      "information_set_legality": "Uses current and prior daily bars only; rolling windows are trailing by stock and end at trade_date.",
+      "not_for": [
+        "factor-specific nonlinear transforms that are cheap and used once",
+        "training-time normalization fitted on IS only"
+      ],
+      "precompute_policy": "precompute_now",
+      "reasoning": "Broad reuse, low storage cost, and common Step3/Step4 controls make this the first daily feature datamart candidate.",
+      "recommended_dataset": "daily_technical_state_v1",
+      "requires_state_continuity": false,
+      "reuse_tier": "broad",
+      "source_datasets": [
+        "clean_daily_bar"
+      ]
+    },
+    {
+      "alpha360_related": true,
+      "cost_tier": "high",
+      "description": "Qlib Alpha360-style 60-lag OHLCV/VWAP tensor normalized by current price or volume.",
+      "domain": "daily",
+      "example_features": [
+        "CLOSE0",
+        "CLOSE1",
+        "CLOSE59",
+        "OPEN0",
+        "HIGH59",
+        "LOW59",
+        "VWAP59",
+        "VOLUME59"
+      ],
+      "family_id": "daily_alpha360_lag_tensor",
+      "information_set_legality": "Uses current and prior daily bars only; no future dates or label-side normalization in the datamart.",
+      "not_for": [
+        "manual factor formulas that only need a few lags",
+        "researchers loading all 360 columns without projection",
+        "global minute-level materialization"
+      ],
+      "precompute_policy": "model_specific_only",
+      "reasoning": "Useful as standardized model-ready temporal context, especially for tree/deep models, but wide and heavier than engineered daily state.",
+      "recommended_dataset": "daily_alpha360_lite_v1",
+      "requires_state_continuity": false,
+      "reuse_tier": "medium",
+      "source_datasets": [
+        "clean_daily_bar"
+      ]
+    },
+    {
+      "alpha360_related": false,
+      "cost_tier": "medium",
+      "description": "Cutoff-time intraday return, amount, signed-flow, HHI, entropy, skewness, kurtosis, tail asymmetry, and large/small proxy states.",
+      "domain": "intraday",
+      "example_features": [
+        "ret_skew",
+        "ret_excess_kurtosis",
+        "amount_hhi",
+        "amount_entropy",
+        "signed_flow_hhi",
+        "signed_flow_tail_asymmetry",
+        "large_proxy_amount",
+        "small_proxy_amount"
+      ],
+      "family_id": "intraday_distribution_moments",
+      "information_set_legality": "Each cutoff row uses only minute rows with trade_time <= cutoff_time; large/small thresholds use prior-date rolling history.",
+      "not_for": [
+        "true order-flow imbalance without tick or order data",
+        "full-day features used before market close"
+      ],
+      "precompute_policy": "precompute_after_source_ready",
+      "reasoning": "This is a high-reuse sufficient-statistics layer for moneyflow, microstructure, terminal-shape, and liquidity-regime factors.",
+      "recommended_dataset": "intraday_flow_distribution_moments_v1",
+      "requires_state_continuity": false,
+      "reuse_tier": "broad",
+      "source_datasets": [
+        "prepared_minute_bar_v1",
+        "minute_bar"
+      ]
+    },
+    {
+      "alpha360_related": false,
+      "cost_tier": "medium",
+      "description": "Cutoff-time compact state pack for intraday return, volume, amount, volatility, drawdown, terminal return, and liquidity state.",
+      "domain": "intraday",
+      "example_features": [
+        "cutoff_ret",
+        "cutoff_amount_sum",
+        "cutoff_volume_ratio",
+        "intraday_realized_vol",
+        "terminal_ret_20m",
+        "terminal_amount_share",
+        "terminal_volatility"
+      ],
+      "family_id": "intraday_cutoff_state_pack",
+      "information_set_legality": "Each cutoff state uses only trade_time <= cutoff_time; no full-day aggregation unless cutoff is market close.",
+      "not_for": [
+        "factor formulas requiring raw minute sequence",
+        "features with unstable researcher-specific window definitions"
+      ],
+      "precompute_policy": "precompute_after_source_ready",
+      "reasoning": "Many minute factors repeatedly rebuild the same basic cutoff states; precomputing the compact pack reduces IO and boilerplate.",
+      "recommended_dataset": "intraday_cutoff_state_pack_v1",
+      "requires_state_continuity": false,
+      "reuse_tier": "broad",
+      "source_datasets": [
+        "prepared_minute_bar_v1",
+        "minute_bar"
+      ]
+    },
+    {
+      "alpha360_related": false,
+      "cost_tier": "medium",
+      "description": "Terminal-window correlation and co-movement states such as price-volume correlation, signed-volume correlation, and terminal reversal/acceleration summaries.",
+      "domain": "intraday",
+      "example_features": [
+        "terminal_price_volume_corr_20m",
+        "terminal_price_amount_corr_20m",
+        "terminal_signed_amount_corr_20m",
+        "terminal_ret_acceleration",
+        "terminal_volume_acceleration"
+      ],
+      "family_id": "intraday_terminal_corr_state",
+      "information_set_legality": "Terminal windows must end at or before cutoff_time and never inspect future intraday minutes.",
+      "not_for": [
+        "raw minute factors with custom nonlinear path transforms",
+        "cross-sectional neutralization performed after feature production"
+      ],
+      "precompute_policy": "precompute_after_source_ready",
+      "reasoning": "CPV-like factors showed repeated cost in terminal correlation scans; direct-array kernels plus per-stock map-reduce make this a reusable state candidate.",
+      "recommended_dataset": "intraday_terminal_corr_state_v1",
+      "requires_state_continuity": false,
+      "reuse_tier": "medium",
+      "source_datasets": [
+        "prepared_minute_bar_v1",
+        "minute_bar"
+      ]
+    },
+    {
+      "alpha360_related": false,
+      "cost_tier": "medium",
+      "description": "Recursive slow-state features such as exponentially smoothed score history, event memory, and lambda-state accumulators.",
+      "domain": "intraday",
+      "example_features": [
+        "h_slow_state_lambda_070",
+        "h_slow_state_lambda_085",
+        "h_slow_state_lambda_093",
+        "state_age",
+        "state_warmup_days"
+      ],
+      "family_id": "recursive_slow_state",
+      "information_set_legality": "State recursion must carry previous chunk final state or use explicit warmup with discarded warmup metrics; no independent yearly reset can be claimed full-window.",
+      "not_for": [
+        "one-off alpha formulas with no reuse",
+        "stateful transforms without continuity proof"
+      ],
+      "precompute_policy": "precompute_after_source_ready",
+      "reasoning": "State recursion is hard for researchers to implement safely in ad hoc Step4 code; it belongs in Data API once the source score datamart is accepted.",
+      "recommended_dataset": "intraday_ema_slow_state_v1",
+      "requires_state_continuity": true,
+      "reuse_tier": "medium",
+      "source_datasets": [
+        "intraday_flow_distribution_moments_v1"
+      ]
+    },
+    {
+      "alpha360_related": false,
+      "cost_tier": "high",
+      "description": "Pseudo dollar/event buckets derived from 1-minute bars rather than tick prints.",
+      "domain": "event_bar",
+      "example_features": [
+        "bucket_id",
+        "bucket_amount",
+        "bucket_return",
+        "bucket_vwap",
+        "bucket_signed_amount",
+        "bucket_hhi"
+      ],
+      "family_id": "intraday_pseudo_dollar_bar",
+      "information_set_legality": "Only buckets completed before cutoff_time may be used for cutoff signals; the dataset must be labeled pseudo from 1m bars, not true tick dollar bars.",
+      "not_for": [
+        "claims about true tick dollar bars",
+        "production before research demand and cost are clear"
+      ],
+      "precompute_policy": "model_specific_only",
+      "reasoning": "Potentially useful for event-time models, but cost and conceptual ambiguity are higher than cutoff sufficient statistics.",
+      "recommended_dataset": "intraday_pseudo_dollar_bar_v1",
+      "requires_state_continuity": false,
+      "reuse_tier": "experimental",
+      "source_datasets": [
+        "minute_bar",
+        "prepared_minute_bar_v1"
+      ]
+    },
+    {
+      "alpha360_related": false,
+      "cost_tier": "low",
+      "description": "Cross-sectional ranks, z-scores, neutralized residuals, and universe-relative transforms.",
+      "domain": "cross_sectional",
+      "example_features": [
+        "date_rank",
+        "date_zscore",
+        "industry_neutral_residual",
+        "size_neutral_residual"
+      ],
+      "family_id": "cross_sectional_post_transforms",
+      "information_set_legality": "Cross-sectional transforms must be computed after applying the relevant universe and tradability filters for the same trade_date.",
+      "not_for": [
+        "global factual datamart shared across incompatible universes",
+        "precomputed values before final universe/investability filters"
+      ],
+      "precompute_policy": "on_demand_only",
+      "reasoning": "These transforms depend on the chosen universe, industry map, neutralization controls, and research split; storing one global version is usually misleading.",
+      "recommended_dataset": "research_side_transform_only",
+      "requires_state_continuity": false,
+      "reuse_tier": "narrow",
+      "source_datasets": [
+        "any_feature_datamart",
+        "standard_full_market_universe",
+        "tradability_risk_flags_daily"
+      ]
+    }
+  ],
+  "notes": [
+    "This registry describes feature families, not active Data API datasets.",
+    "Precompute broad and medium-reuse sufficient statistics; keep universe-dependent cross-sectional transforms on the research side.",
+    "Alpha360 is treated as standardized temporal context, not as a mandatory global feature table for every workflow."
+  ],
+  "schema_version": "feature_family_registry_v1",
+  "updated_date": "2026-06-17"
+}

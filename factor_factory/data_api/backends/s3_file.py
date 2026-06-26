@@ -28,7 +28,8 @@ def load_s3_file(entry: CatalogDataset, query: DataQuery, columns: list[str]) ->
     region = os.getenv('FACTORFORGE_S3_REGION') or os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION')
     if not region:
         region = fs.resolve_s3_region(bucket)
-    filesystem = fs.S3FileSystem(region=region) if region else fs.S3FileSystem()
+    timeout_kwargs = _s3_timeout_kwargs()
+    filesystem = fs.S3FileSystem(region=region, **timeout_kwargs) if region else fs.S3FileSystem(**timeout_kwargs)
     partitioning = 'hive'
     if entry.partition_columns:
         partition_schema = pa.schema([(column, pa.large_string()) for column in entry.partition_columns])
@@ -61,6 +62,13 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
     if not bucket or not key:
         raise DataBackendUnavailable(f'invalid s3 uri: {uri}')
     return bucket, key
+
+
+def _s3_timeout_kwargs() -> dict[str, float]:
+    return {
+        'request_timeout': float(os.getenv('FACTORFORGE_S3_REQUEST_TIMEOUT') or '60'),
+        'connect_timeout': float(os.getenv('FACTORFORGE_S3_CONNECT_TIMEOUT') or '10'),
+    }
 
 
 def _download_s3_object_to_temp(uri: str) -> Path:

@@ -22,6 +22,9 @@ step4 = [
 s3 = [
   "pyarrow>=14.0",
 ]
+numba = [
+  "numba>=0.65",
+]
 qlib = [
   "pyarrow>=14.0",
   "pyqlib>=0.9.7",

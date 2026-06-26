@@ -5,7 +5,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from .backends import load_local_file, load_s3_file
+from .backends import load_duckdb_file, load_local_file, load_s3_file
 from .catalog import CatalogDataset, DataCatalog, resolve_default_catalog_path
 from .contracts import DataApiResult, DataCoverage, DataFreshness, DataSourceRef, ProxyRule
 from .datasets import CLEAN_DAILY_BAR, DAILY_BASIC, HELPER_FIELDS, MINUTE_BAR, SORT_KEYS, FIELD_ALIASES
@@ -119,12 +119,12 @@ class DataApiClient:
         return resolved, missing, proxy_rules
 
     def _projection_columns(self, entry: CatalogDataset, query: DataQuery, resolved_fields: dict[str, str]) -> list[str]:
-        helpers = [entry.symbol_column, entry.date_column]
-        if query.dataset == MINUTE_BAR and 'trade_time' in entry.columns:
-            helpers.append('trade_time')
+        helpers = self._key_columns(entry, query)
         return list(dict.fromkeys([*helpers, *resolved_fields.values()]))
 
     def _load(self, entry: CatalogDataset, query: DataQuery, columns: list[str]) -> pd.DataFrame:
+        if self._backend_name(entry) == 'duckdb':
+            return load_duckdb_file(entry, query, columns)
         if entry.storage == 's3' or entry.uri.startswith('s3://'):
             return load_s3_file(entry, query, columns)
         return load_local_file(entry, query, columns)
@@ -139,7 +139,7 @@ class DataApiClient:
         wanted = self._projection_columns(entry, query, resolved_fields)
         existing = [column for column in wanted if column in out.columns]
         out = out[existing]
-        sort_keys = [key for key in SORT_KEYS.get(query.dataset, (entry.symbol_column, entry.date_column)) if key in out.columns]
+        sort_keys = [key for key in self._sort_columns(entry, query) if key in out.columns]
         if sort_keys:
             out = out.sort_values(sort_keys)
         return out.reset_index(drop=True)
@@ -147,9 +147,7 @@ class DataApiClient:
     def _coverage(self, entry: CatalogDataset, query: DataQuery, frame: pd.DataFrame, missing_fields: list[str]) -> DataCoverage:
         dates = frame[entry.date_column].astype(str) if entry.date_column in frame.columns and not frame.empty else pd.Series(dtype=str)
         tickers = frame[entry.symbol_column].astype(str) if entry.symbol_column in frame.columns and not frame.empty else pd.Series(dtype=str)
-        key_cols = [entry.symbol_column, entry.date_column]
-        if query.dataset == MINUTE_BAR and 'trade_time' in frame.columns:
-            key_cols.append('trade_time')
+        key_cols = [column for column in self._key_columns(entry, query) if column in frame.columns]
         duplicate_count = int(frame.duplicated(key_cols).sum()) if all(column in frame.columns for column in key_cols) else 0
         return DataCoverage(
             row_count=int(len(frame)),
@@ -166,9 +164,45 @@ class DataApiClient:
             duplicate_key_count=duplicate_count,
         )
 
+    def _key_columns(self, entry: CatalogDataset, query: DataQuery) -> list[str]:
+        metadata_key = entry.metadata.get('unique_key') or entry.metadata.get('key_columns')
+        if metadata_key:
+            if isinstance(metadata_key, str):
+                candidates = [item.strip() for item in metadata_key.split(',') if item.strip()]
+            else:
+                candidates = [str(item).strip() for item in metadata_key if str(item).strip()]
+            key = [column for column in candidates if column in entry.columns]
+            if key:
+                return key
+        helpers = [entry.symbol_column, entry.date_column]
+        if query.dataset == MINUTE_BAR and 'trade_time' in entry.columns:
+            helpers.append('trade_time')
+        return helpers
+
+    def _sort_columns(self, entry: CatalogDataset, query: DataQuery) -> list[str]:
+        metadata_sort = entry.metadata.get('sort_keys') or entry.metadata.get('sort_columns')
+        if metadata_sort:
+            if isinstance(metadata_sort, str):
+                candidates = [item.strip() for item in metadata_sort.split(',') if item.strip()]
+            else:
+                candidates = [str(item).strip() for item in metadata_sort if str(item).strip()]
+            sort_keys = [column for column in candidates if column in entry.columns]
+            if sort_keys:
+                return sort_keys
+        return list(SORT_KEYS.get(query.dataset, tuple(self._key_columns(entry, query))))
+
     def _source(self, entry: CatalogDataset) -> DataSourceRef:
-        backend = 's3_file' if entry.storage == 's3' or entry.uri.startswith('s3://') else 'local_file'
-        return DataSourceRef(entry.dataset_id, entry.uri, 's3' if backend == 's3_file' else 'local', entry.format, backend, str(self.catalog.path))
+        backend = self._backend_name(entry)
+        storage = 's3' if backend == 's3_file' else 'local'
+        return DataSourceRef(entry.dataset_id, entry.uri, storage, entry.format, backend, str(self.catalog.path))
+
+    def _backend_name(self, entry: CatalogDataset) -> str:
+        acceleration = entry.metadata.get('acceleration') if isinstance(entry.metadata, dict) else None
+        if isinstance(acceleration, dict) and str(acceleration.get('default_backend') or '').lower() == 'duckdb':
+            return 'duckdb'
+        if entry.storage == 's3' or entry.uri.startswith('s3://'):
+            return 's3_file'
+        return 'local_file'
 
     def _freshness(self, entry: CatalogDataset) -> DataFreshness:
         latest = entry.freshness.get('latest_trade_date') or entry.freshness.get('trade_date_max')

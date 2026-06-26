@@ -113,11 +113,17 @@ Duplicate keys default to BLOCK unless the query explicitly allows duplicate key
 
 ## v1 Dataset Scope
 
-v1 supports the contracts for:
+v1 code-level convenience wrappers support the contracts for:
 
 - `clean_daily_bar`
 - `daily_basic`
 - `minute_bar`
+
+The production catalog may register additional research datamarts such as `intraday_flow_state_v2`, `intraday_pseudo_dollar_bar_v1`, and `intraday_flow_distribution_moments_v1`. The maintained dataset dictionary is:
+
+```text
+docs/data-api-data-dictionary.zh-CN.md
+```
 
 If a dataset is not registered in the active catalog, `fetch()` returns `status=blocked`. `daily_basic` is not silently derived from `clean_daily_bar`.
 

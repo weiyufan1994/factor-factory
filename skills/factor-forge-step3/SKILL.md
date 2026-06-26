@@ -88,6 +88,7 @@ Optional:
 4. Step 3B must emit real code-related artifacts; a pure plan without code artifacts is not enough.
 5. If Step 3A has local execution snapshots, Step 3B must produce a first factor-value run artifact. A plan-only PASS is not enough for business acceptance.
 6. Step 3B must carry `step2_research_context` through implementation plan, generated code comments, qlib expression draft, hybrid scaffold, `handoff_to_step4`, and first-run metadata if generated.
+7. If Step 3A/3B is blocked by missing Data API coverage, missing fields, full-window IO cost, or a reusable derived state need, write a `data_request_v1` artifact through `scripts/data_request_inbox.py new`; do not ask the user to manually forward data requirements to Data API / data group.
 7. Step 3B validation must reject `missing_*` Step2 research-context sentinels; rerun Step2 rather than letting old or incomplete specs pass.
 8. No silent guessing. Missing critical fields must be surfaced as `blocked` or `proxy_ready` with explicit rationale.
 9. Step 3 must reject mixed sample/full execution packages. If minute and daily snapshots have materially inconsistent ticker coverage or sample scope, validation must fail explicitly rather than producing a deceptively small successful run.

@@ -1,0 +1,297 @@
+{
+  "datasets": [
+    {
+      "builder_script": "scripts/build_daily_technical_state.py",
+      "dataset_id": "daily_technical_state_v1",
+      "feature_family": "daily_technical_state",
+      "frequency": "daily",
+      "full_window_strategy": "worker_partitioned_resume",
+      "information_set_legality": "Uses current and prior daily bars only; no OOS fitting; rolling features use per-stock past windows ending at trade_date.",
+      "notes": "First daily feature-state candidate to productionize. Local bounded and 2024H1 resume proofs are ACCEPT; true worker full-window build and read smoke are still required before active catalog registration.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P0",
+      "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+      "proof_paths": {
+        "bounded_202401_catalog_candidate": "/tmp/daily_technical_state_202401_partitioned.catalog.json",
+        "bounded_202401_qa": "/tmp/daily_technical_state_202401_partitioned.qa.json",
+        "bounded_202401_read_smoke": "/tmp/daily_technical_state_202401_partitioned.read_smoke.json",
+        "bounded_202401_validation": "/tmp/daily_technical_state_202401_partitioned.validation.json",
+        "resume_2024h1_read_smoke": "/tmp/daily_technical_state_2024h1.read_smoke.json",
+        "resume_2024h1_validation": "/tmp/daily_technical_state_2024h1.validation.json",
+        "worker_closeout_script": "scripts/closeout_daily_technical_state.py",
+        "worker_resume_bundle": "/tmp/daily_feature_worker/daily_technical_state_full_is.resume_bundle.json",
+        "worker_resume_bundle_validation": "/tmp/daily_feature_worker/daily_technical_state_full_is.resume_bundle.validation.json"
+      },
+      "recommended_first_production": true,
+      "registration_blockers": [
+        "true worker full-window build 20160104-20250711",
+        "true worker DataApiClient read smoke",
+        "production QA/catalog review"
+      ],
+      "source_datasets": [
+        "clean_daily_bar"
+      ],
+      "status": "production_candidate",
+      "unique_key": [
+        "ts_code",
+        "trade_date"
+      ],
+      "validator_script": "scripts/validate_daily_technical_state.py"
+    },
+    {
+      "builder_script": "scripts/build_daily_alpha360_lite.py",
+      "dataset_id": "daily_alpha360_lite_v1",
+      "feature_family": "daily_alpha360_style_lag_tensor",
+      "frequency": "daily",
+      "full_window_strategy": "full IS worker resume plan is available; run explicit worker batch1+batch2 before active catalog registration",
+      "information_set_legality": "Uses current and prior daily OHLCV/VWAP lags only; normalization is factual per row and does not use future dates.",
+      "notes": "Useful as standardized model-ready temporal context, not as a universal formula library. One-month partitioned proof and full IS worker-plan bundle are ACCEPT, but the dataset is wide and should be projected column-first. Actual full-window worker build/read-smoke is still required before production use.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P1",
+      "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+      "proof_paths": {
+        "bounded_202401_catalog_candidate": "/tmp/daily_alpha360_lite_202401_partitioned.catalog.json",
+        "bounded_202401_qa": "/tmp/daily_alpha360_lite_202401_partitioned.qa.json",
+        "bounded_202401_read_smoke": "/tmp/daily_alpha360_lite_202401_partitioned.read_smoke.json",
+        "bounded_202401_validation": "/tmp/daily_alpha360_lite_202401_partitioned.validation.json",
+        "worker_full_is_bundle": "/tmp/daily_alpha360_lite_v1.full_is.worker_bundle.json",
+        "worker_full_is_bundle_validation": "/tmp/daily_alpha360_lite_v1.full_is.worker_bundle.validation.json"
+      },
+      "recommended_first_production": false,
+      "registration_blockers": [
+        "full-window worker build",
+        "full-window worker validation",
+        "true worker read smoke",
+        "model pipeline that actually requires full 360-column tensor"
+      ],
+      "source_datasets": [
+        "clean_daily_bar"
+      ],
+      "status": "production_candidate",
+      "unique_key": [
+        "ts_code",
+        "trade_date"
+      ],
+      "validator_script": "scripts/validate_daily_alpha360_lite.py"
+    },
+    {
+      "builder_script": "scripts/build_intraday_flow_distribution_moments.py",
+      "dataset_id": "intraday_flow_distribution_moments_v1",
+      "feature_family": "intraday_distribution_moments",
+      "frequency": "intraday_cutoff",
+      "full_window_strategy": "worker_partitioned_resume_by_trade_date",
+      "information_set_legality": "Each cutoff row must use only minute rows with trade_time <= cutoff_time; OOS rows must be labeled and excluded from fitting.",
+      "notes": "High-priority source datamart for moneyflow slow-state research. It should publish skewness, excess kurtosis, tail asymmetry, HHI, entropy, large/small proxy, and signed-flow moments by cutoff_time.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P0",
+      "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+      "proof_paths": {
+        "worker_closeout_script": "scripts/closeout_intraday_flow_distribution_moments.py",
+        "worker_full_is_bundle": "/tmp/intraday_flow_distribution_moments_v1.full_is.worker_bundle.json",
+        "worker_full_is_bundle_validation": "/tmp/intraday_flow_distribution_moments_v1.full_is.worker_bundle.validation.json"
+      },
+      "recommended_first_production": false,
+      "registration_blockers": [
+        "full IS backfill 20160104-20250711",
+        "QA summary",
+        "catalog candidate",
+        "true worker read smoke",
+        "performance proof"
+      ],
+      "source_datasets": [
+        "minute_bar",
+        "prepared_minute_bar"
+      ],
+      "status": "production_candidate",
+      "unique_key": [
+        "ts_code",
+        "trade_date",
+        "cutoff_time"
+      ],
+      "validator_script": "scripts/validate_flow_distribution_operator_comparison.py"
+    },
+    {
+      "builder_script": "scripts/build_intraday_cutoff_state_pack.py",
+      "dataset_id": "intraday_cutoff_state_pack_v1",
+      "feature_family": "intraday_cutoff_state",
+      "frequency": "intraday_cutoff",
+      "full_window_strategy": "full IS worker resume plan is available; run explicit worker batch1+batch2 before active catalog registration",
+      "information_set_legality": "Each cutoff must use only trade_time <= cutoff_time and prior-date thresholds where thresholds are learned.",
+      "notes": "Compact feature pack for repeated Step3/Step4 minute factors: return, volume, amount, volatility, liquidity, and terminal-state summaries at standard cutoffs. Builder/validator, single-day full-market real-minute bounded proof, and full IS worker-plan bundle are ACCEPT; actual full-window worker build/read-smoke is still required before production use.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P1",
+      "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+      "proof_paths": {
+        "bounded_real_20240102_catalog_candidate": "/tmp/intraday_cutoff_state_pack_real_20240102.catalog.json",
+        "bounded_real_20240102_manifest": "/tmp/intraday_cutoff_state_pack_real_20240102.manifest.json",
+        "bounded_real_20240102_qa": "/tmp/intraday_cutoff_state_pack_real_20240102.qa.json",
+        "bounded_real_20240102_read_smoke": "/tmp/intraday_cutoff_state_pack_real_20240102.read_smoke.json",
+        "bounded_real_20240102_validation": "/tmp/intraday_cutoff_state_pack_real_20240102.validation.json",
+        "worker_full_is_bundle": "/tmp/intraday_cutoff_state_pack_v1.full_is.worker_bundle.json",
+        "worker_full_is_bundle_validation": "/tmp/intraday_cutoff_state_pack_v1.full_is.worker_bundle.validation.json"
+      },
+      "recommended_first_production": false,
+      "registration_blockers": [
+        "full-window worker build",
+        "full-window worker validation",
+        "true worker read smoke",
+        "production QA/catalog review"
+      ],
+      "source_datasets": [
+        "minute_bar",
+        "prepared_minute_bar"
+      ],
+      "status": "production_candidate",
+      "unique_key": [
+        "ts_code",
+        "trade_date",
+        "cutoff_time"
+      ],
+      "validator_script": "scripts/validate_intraday_cutoff_state_pack.py"
+    },
+    {
+      "builder_script": "scripts/build_intraday_terminal_corr_state.py",
+      "dataset_id": "intraday_terminal_corr_state_v1",
+      "feature_family": "intraday_terminal_correlation",
+      "frequency": "intraday_cutoff",
+      "full_window_strategy": "full IS worker plan is available; run explicit worker build/validate/read-smoke before active catalog registration",
+      "information_set_legality": "Terminal correlation windows must be bounded by cutoff_time and must not inspect future intraday minutes.",
+      "notes": "Reusable state for CPV-like and terminal-shape factors. It uses terminal-only rolling correlation kernels and returns one row per ts_code/trade_date/cutoff/window without materializing full per-minute rolling vectors. Builder/validator, bounded read-smoke proof, and full IS worker-plan bundle are ACCEPT; actual full-window worker build/read-smoke is still required before production use.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P1",
+      "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+      "proof_paths": {
+        "bounded_sample_catalog_candidate": "/tmp/intraday_terminal_corr_state_v1_sample.catalog.json",
+        "bounded_sample_manifest": "/tmp/intraday_terminal_corr_state_v1_sample.manifest.json",
+        "bounded_sample_qa": "/tmp/intraday_terminal_corr_state_v1_sample.qa.json",
+        "bounded_sample_read_smoke": "/tmp/intraday_terminal_corr_state_v1_sample.read_smoke.json",
+        "bounded_sample_validation": "/tmp/intraday_terminal_corr_state_v1_sample.validation.json",
+        "worker_full_is_bundle": "/tmp/intraday_terminal_corr_state_v1.full_is.worker_bundle.json",
+        "worker_full_is_bundle_validation": "/tmp/intraday_terminal_corr_state_v1.full_is.worker_bundle.validation.json"
+      },
+      "recommended_first_production": false,
+      "registration_blockers": [
+        "full-window worker build",
+        "full-window worker validation",
+        "true worker read smoke",
+        "production QA/catalog review"
+      ],
+      "source_datasets": [
+        "minute_bar",
+        "prepared_minute_bar"
+      ],
+      "status": "production_candidate",
+      "unique_key": [
+        "ts_code",
+        "trade_date",
+        "cutoff_time",
+        "window_id"
+      ],
+      "validator_script": "scripts/validate_intraday_terminal_corr_state.py"
+    },
+    {
+      "builder_script": "scripts/build_intraday_ema_slow_state.py",
+      "dataset_id": "intraday_ema_slow_state_v1",
+      "feature_family": "recursive_slow_state",
+      "frequency": "intraday_cutoff",
+      "full_window_strategy": "full IS worker plan is available; source intraday_flow_distribution_moments_v1 must be production-ready before execution",
+      "information_set_legality": "State recursion must carry previous chunk final state or use explicit warmup with discarded warmup metrics; no yearly reset may be claimed as full-window.",
+      "notes": "Reusable state family for lambda-smoothed signals such as Moneyflow V20. It consumes accepted source datamarts instead of scanning raw minute bars. Builder/validator, bounded recurrence/read-smoke proof, and full IS worker-plan bundle are ACCEPT; actual full-window worker build/read-smoke is still required before production use.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P1",
+      "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+      "proof_paths": {
+        "bounded_sample_catalog_candidate": "/tmp/intraday_ema_slow_state_v1_sample.catalog.json",
+        "bounded_sample_manifest": "/tmp/intraday_ema_slow_state_v1_sample.manifest.json",
+        "bounded_sample_qa": "/tmp/intraday_ema_slow_state_v1_sample.qa.json",
+        "bounded_sample_read_smoke": "/tmp/intraday_ema_slow_state_v1_sample.read_smoke.json",
+        "bounded_sample_validation": "/tmp/intraday_ema_slow_state_v1_sample.validation.json",
+        "worker_full_is_bundle": "/tmp/intraday_ema_slow_state_v1.full_is.worker_bundle.json",
+        "worker_full_is_bundle_validation": "/tmp/intraday_ema_slow_state_v1.full_is.worker_bundle.validation.json"
+      },
+      "recommended_first_production": false,
+      "registration_blockers": [
+        "accepted source moments datamart",
+        "full-window worker build",
+        "full-window worker validation",
+        "true worker read smoke",
+        "production QA/catalog review"
+      ],
+      "source_datasets": [
+        "intraday_flow_distribution_moments_v1"
+      ],
+      "status": "production_candidate",
+      "unique_key": [
+        "ts_code",
+        "trade_date",
+        "cutoff_time",
+        "lambda"
+      ],
+      "validator_script": "scripts/validate_intraday_ema_slow_state.py"
+    },
+    {
+      "builder_script": "scripts/probe_clickhouse_intraday_pseudo_dollar_bar.py",
+      "dataset_id": "intraday_pseudo_dollar_bar_v1",
+      "feature_family": "pseudo_dollar_event_bar",
+      "frequency": "event_bar",
+    "full_window_strategy": "Exploratory worker probe plan is available for one partition only. Do not claim full-window production until a real resumable builder, cost estimate, QA, and read-smoke contract exist.",
+      "information_set_legality": "Pseudo dollar bars are derived from 1-minute bars, not tick prints; cutoff-specific signals must use only buckets completed before cutoff.",
+    "notes": "Bounded exploratory proof plus plan-only worker probe bundle are available. This remains pseudo dollar bar from 1m bars, not true tick dollar bar, and is not a full-window production datamart.",
+      "partition_columns": [
+        "trade_date"
+      ],
+      "priority": "P2",
+    "production_readiness": "worker_plan_accept",
+      "projection_required": true,
+    "proof_paths": {
+      "bounded_probe_script": "scripts/probe_clickhouse_intraday_pseudo_dollar_bar.py",
+      "exploratory_worker_bundle": "/tmp/intraday_pseudo_dollar_bar_v1.exploratory.worker_bundle.json",
+      "exploratory_worker_bundle_validation": "/tmp/intraday_pseudo_dollar_bar_v1.exploratory.worker_bundle.validation.json"
+      },
+      "recommended_first_production": false,
+    "registration_blockers": [
+      "full-window cost estimate",
+      "real full-window builder",
+      "research demand confirmation",
+      "QA/read smoke contract",
+      "true worker partition probe"
+      ],
+      "source_datasets": [
+        "minute_bar",
+        "prepared_minute_bar"
+      ],
+      "status": "exploratory",
+      "unique_key": [
+        "ts_code",
+        "trade_date",
+        "bucket_id"
+      ],
+      "validator_script": ""
+    }
+  ],
+  "notes": [
+    "This registry is a planning and handoff surface, not the active Data API catalog.",
+    "production_ready requires worker full-window proof, QA, catalog, and worker read smoke.",
+    "Researchers should prefer production_ready datasets and may use production_candidate datasets only with explicit bounded-proof language."
+  ],
+  "schema_version": "feature_precompute_registry_v1",
+  "updated_date": "2026-06-17"
+}

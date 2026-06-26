@@ -113,6 +113,31 @@ python3 <data-script>.py ... --operator codex
 4. 因子研究任务默认不得调用临时数据处理脚本；Step3A 只 materialize report-scoped inputs，不能重洗全量数据。
 5. 如果数据缺字段或过期，agent 必须报告缺口并等待 Codex 数据更新，不得自行改数据。
 
+## 数据需求交接硬规则
+
+研究员遇到数据缺口、full-window IO 过慢、或需要可复用 derived state 时，不得要求用户手工转发需求给 Data API / data 组。
+
+必须写标准 data request：
+
+```text
+objects/data_requests/data_request__<report_id>__<dataset_id>__<yyyymmddhhmmss>.json
+```
+
+Data API / data 组从 request inbox 主动消费，并用 resolution 关闭：
+
+```text
+factorforge/data/requests/inbox/
+factorforge/data/requests/resolved/
+```
+
+协议见：
+
+```text
+docs/operations/data-request-inbox-contract.zh-CN.md
+```
+
+用户只审批高成本执行、降级研究口径或生产发布边界，不承担需求搬运。
+
 ## 示例
 ### 示例 1：只做 Step4 判断
 ```text

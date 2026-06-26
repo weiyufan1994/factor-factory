@@ -17,6 +17,22 @@ run_with_lock() {
   /usr/bin/flock -n "/tmp/${lock_name}.lock" "$@"
 }
 
+latest_open_trade_date() {
+  "$PYTHON_BIN" - <<'PY'
+import pandas as pd
+from datetime import datetime
+from pathlib import Path
+
+root = Path("/home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取")
+today = datetime.now().strftime("%Y%m%d")
+cal = pd.read_csv(root / "trade_cal.csv", dtype=str)
+open_days = cal[(cal["is_open"] == "1") & (cal["cal_date"] <= today)]["cal_date"]
+if open_days.empty:
+    raise SystemExit("no open trade date found")
+print(open_days.max())
+PY
+}
+
 case "${1:-}" in
   daily)
     run_with_lock tushare_daily_self_update \
@@ -57,8 +73,15 @@ case "${1:-}" in
         --only cyq_chips --end-date "$TODAY" --recent-days 1 --overwrite-existing --max-per-minute 30 \
       >> "$LOG_ROOT/chips.log" 2>&1
     ;;
+  minute-daily)
+    TRADE_DATE="$(latest_open_trade_date)"
+    run_with_lock tushare_minute_daily \
+      "$PYTHON_BIN" ./19_stk_mins_incremental_to_s3.py \
+        --trade-date "$TRADE_DATE" --max-per-minute 380 --base-sleep 0.15 \
+      >> "$LOG_ROOT/minute_daily.log" 2>&1
+    ;;
   *)
-    echo "usage: $0 {daily|close-core|hot|report-rc|finance|chips}" >&2
+    echo "usage: $0 {daily|close-core|hot|report-rc|finance|chips|minute-daily}" >&2
     exit 2
     ;;
 esac

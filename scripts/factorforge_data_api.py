@@ -106,6 +106,9 @@ def cmd_publish_clean_daily(args: argparse.Namespace) -> None:
             '$close': 'close',
             '$volume': 'vol',
             '$amount': 'amount',
+            '$ret': 'pct_chg',
+            '$turnover': 'turnover_rate',
+            '$market_cap': 'total_mv',
         },
         freshness={
             'trade_date_min': str(frame['trade_date'].min()) if not frame.empty else None,

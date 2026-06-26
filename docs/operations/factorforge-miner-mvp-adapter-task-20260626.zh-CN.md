@@ -427,7 +427,31 @@ Reviewer 应重点检查：
 7. 输出是否都在 miner workspace；
 8. smoke 是否覆盖缺数据、正常候选、queue、Ultimate 未修改。
 
-## 14. Forwardable Coder Brief
+## 14. 独立 Review Gate
+
+实现 agent 不能自己给自己 ACCEPT。
+
+完成实现和自测后，必须安排独立 reviewer subagent 复审。主实现 agent 可以
+修复 review findings，但最终 acceptance 需要来自 reviewer subagent 的明确
+结论。
+
+Reviewer packet 至少包含：
+
+- worktree / branch / HEAD；
+- changed files；
+- 实现范围；
+- 未触碰边界声明：Ultimate、production research、worker、formal Step3B /
+  Step4 / Step6、clean data、Alpha101 dirty state；
+- 验证命令和结果；
+- 针对本任务书每个 Phase 的覆盖判断；
+- P0 / P1 / P2 findings；
+- 最终 verdict：`ACCEPT` 或 `BLOCK`。
+
+主实现 agent 只有在 reviewer subagent 返回 `ACCEPT` 且无 P0/P1 时，才能向用户
+报告“可以收口”。如果 reviewer 返回 `BLOCK`，必须修复后再次交给 reviewer
+subagent，而不是自判关闭。
+
+## 15. Forwardable Coder Brief
 
 可以直接转给 coder：
 
@@ -454,4 +478,6 @@ Reviewer 应重点检查：
 - run_factorforge_miner_mvp_smoke.py PASS
 - git diff --check PASS
 - git status 显示只包含 Miner MVP 相关文件；不得包含 Alpha101 状态文件。
+- 实现完成后必须安排独立 reviewer subagent 复审；实现 agent 不得自己给 ACCEPT。
+- 只有 reviewer subagent 明确 ACCEPT 且无 P0/P1，才算可以收口。
 ```

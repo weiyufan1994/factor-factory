@@ -385,6 +385,25 @@ operator_request
 negative_knowledge
 ```
 
+## Independent Review Gate
+
+For Miner implementation work, the implementation agent must not review or
+accept its own work.
+
+After implementation and self-tests, arrange an independent reviewer subagent
+to inspect the diff, task scope, smoke coverage, and boundary claims. The
+reviewer must return an explicit verdict:
+
+```text
+ACCEPT
+BLOCK
+```
+
+The implementation agent may fix findings, but it may report final acceptance
+only after the independent reviewer returns `ACCEPT` with no P0/P1 findings. If
+the reviewer returns `BLOCK`, fix the issue and send it back to an independent
+reviewer again. Do not self-close review findings.
+
 ## Reporting Template
 
 When reporting a Miner result to the user, use this structure:

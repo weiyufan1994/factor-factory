@@ -29,6 +29,33 @@ data products
 
 Miner must never present a cheap-screen result as an official factor proof.
 
+## Coexistence With Report-Led Ultimate
+
+Miner is additive. It must not weaken the existing report-led Ultimate path.
+
+If the user provides a research report, PDF, paper, broker note, or named
+source idea and asks to research it, preserve the current direct route:
+
+```text
+report/source idea -> Factor Forge Ultimate -> Step1-6 formal research
+```
+
+Do not force that request through Miner unless the user explicitly asks for
+candidate mining, template sweeps, cheap screening, or a pre-research candidate
+factory step.
+
+Miner can support report-led work only as an optional sidecar:
+
+- extract extra candidate variants from a report after the canonical factor is
+  preserved;
+- create cheap-screen candidates for follow-on exploration;
+- queue non-canonical variants for later formal research.
+
+The canonical report factor remains owned by Ultimate and the Step1-6 workflow.
+Miner output must not overwrite Step1 author-intent extraction, Step2 canonical
+spec, Step3 formal runtime, Step4 official evidence, or Step6 research
+judgment.
+
 ## When To Use
 
 Use this skill when the user asks to:

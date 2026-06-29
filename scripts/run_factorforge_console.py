@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.console.static_app import serve_console  # noqa: E402
+from factor_factory.console.static_app import build_console_server, serve_console_server  # noqa: E402
 
 
 def main() -> None:
@@ -20,8 +20,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
+    server = build_console_server([Path(root) for root in args.root], args.host, args.port)
     print(f"Factor Forge Console running at http://{args.host}:{args.port}", flush=True)
-    serve_console([Path(root) for root in args.root], args.host, args.port)
+    serve_console_server(server)
 
 
 if __name__ == "__main__":

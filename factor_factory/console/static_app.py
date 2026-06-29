@@ -35,8 +35,16 @@ def make_handler(roots: list[Path]) -> type[BaseHTTPRequestHandler]:
 
 
 def serve_console(roots: list[str | Path], host: str, port: int) -> None:
+    server = build_console_server(roots, host, port)
+    serve_console_server(server)
+
+
+def build_console_server(roots: list[str | Path], host: str, port: int) -> ThreadingHTTPServer:
     root_paths = [Path(root) for root in roots]
-    server = ThreadingHTTPServer((host, port), make_handler(root_paths))
+    return ThreadingHTTPServer((host, port), make_handler(root_paths))
+
+
+def serve_console_server(server: ThreadingHTTPServer) -> None:
     try:
         server.serve_forever()
     finally:

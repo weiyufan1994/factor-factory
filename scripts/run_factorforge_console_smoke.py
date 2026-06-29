@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.console.readers import read_miner_campaign  # noqa: E402
+from factor_factory.console.static_app import build_console_html  # noqa: E402
 
 
 REAL_WORKSPACE = Path(
@@ -35,6 +36,9 @@ def main() -> None:
     assert summary.verdict == "BLOCK", summary.to_dict()
     assert cheap_screen.get("promotion_forbidden_until_formal") is True
     _assert_artifact_links_under_workspace(workspace, summary.artifact_paths)
+    html = build_console_html([workspace.parents[2]])
+    for needle in ("Task Launcher", "Create Miner Campaign Task", "Task Log"):
+        assert needle in html, needle
 
     print("FACTORFORGE_CONSOLE_SMOKE PASS")
 

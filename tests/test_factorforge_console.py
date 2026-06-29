@@ -1,5 +1,8 @@
 import json
+import threading
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -205,6 +208,24 @@ def test_write_console_task_and_result_under_console_root(tmp_path):
     assert json.loads(result_path.read_text(encoding="utf-8"))["verdict"] == "BLOCK"
 
 
+def test_create_miner_campaign_task_manifest(tmp_path):
+    from factor_factory.console.task_manifest import create_miner_campaign_task, read_console_tasks
+
+    path = create_miner_campaign_task(
+        root=tmp_path,
+        campaign_id="current data api catalog 20260629",
+        execution_workspace="/tmp/factorforge-miner-workspace",
+        catalogs=["/tmp/catalog.json"],
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert path == tmp_path / "factor_research" / "console" / "tasks" / "task_miner_current_data_api_catalog_20260629.json"
+    assert payload["task_type"] == "factorforge_miner_campaign"
+    assert payload["campaign_id"] == "current_data_api_catalog_20260629"
+    assert payload["workspace_root"] == "factor_research/miner/current_data_api_catalog_20260629"
+    assert payload["boundaries"]["production_research_allowed"] is False
+    assert read_console_tasks(tmp_path)[0].task_id == "task_miner_current_data_api_catalog_20260629"
+
+
 def test_reject_console_manifest_path_traversal(tmp_path):
     from factor_factory.console.models import ConsoleTask
     from factor_factory.console.task_manifest import (
@@ -241,6 +262,8 @@ def test_render_dashboard_contains_campaign_metrics(tmp_path):
     assert "46" in html
     assert "research queue" in html.lower()
     assert "artifact" in html.lower()
+    assert "Task Launcher" in html
+    assert "Create Miner Campaign Task" in html
 
 
 def test_build_console_html_from_root(tmp_path):
@@ -250,3 +273,35 @@ def test_build_console_html_from_root(tmp_path):
     html = build_console_html([tmp_path])
     assert "Factor Forge Console" in html
     assert CAMPAIGN_ID in html
+
+
+def test_console_post_creates_miner_task(tmp_path):
+    from factor_factory.console.static_app import build_console_server, serve_console_server
+
+    make_miner_fixture(tmp_path)
+    server = build_console_server([tmp_path], "127.0.0.1", 0)
+    thread = threading.Thread(target=serve_console_server, args=(server,), daemon=True)
+    thread.start()
+    host, port = server.server_address
+    payload = urlencode(
+        {
+            "campaign_id": "posted_campaign",
+            "execution_workspace": "/tmp/factorforge-miner-workspace",
+            "catalogs": "/tmp/catalog_a.json\n/tmp/catalog_b.json",
+            "screen_window": "2016-01-01..2025-07-11",
+            "universe": "current_data_api_catalog",
+        }
+    ).encode("utf-8")
+    try:
+        request = Request(f"http://{host}:{port}/tasks/miner", data=payload, method="POST")
+        response = urlopen(request, timeout=3)
+        assert response.status == 200
+        html = response.read().decode("utf-8")
+        assert "task_miner_posted_campaign" in html
+        task_path = tmp_path / "factor_research" / "console" / "tasks" / "task_miner_posted_campaign.json"
+        assert task_path.exists()
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        assert task["inputs"]["catalogs"] == ["/tmp/catalog_a.json", "/tmp/catalog_b.json"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)

@@ -3,10 +3,11 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
-from factor_factory.console.models import CampaignSummary
+from factor_factory.console.models import CampaignSummary, ConsoleTask
 
 
-def render_dashboard(summaries: list[CampaignSummary]) -> str:
+def render_dashboard(summaries: list[CampaignSummary], tasks: list[ConsoleTask] | None = None) -> str:
+    tasks = tasks or []
     body = [
         "<!doctype html>",
         '<html lang="en">',
@@ -21,10 +22,12 @@ def render_dashboard(summaries: list[CampaignSummary]) -> str:
         "<body>",
         "<main>",
         "<h1>Factor Forge Console</h1>",
+        _render_task_launcher(),
         '<section id="dashboard">',
         "<h2>Dashboard</h2>",
         _render_dashboard_table(summaries),
         "</section>",
+        _render_tasks(tasks),
     ]
     for summary in summaries:
         body.append(_render_campaign(summary))
@@ -33,6 +36,60 @@ def render_dashboard(summaries: list[CampaignSummary]) -> str:
         body.append(_render_artifacts(summary))
     body.extend(["</main>", "</body>", "</html>"])
     return "\n".join(body)
+
+
+def _render_task_launcher() -> str:
+    default_catalog = "/Users/humphrey/projects/factorforge-data-api-runtime/catalogs/manus_data_catalog.json"
+    return "\n".join(
+        [
+            '<section id="task-launcher">',
+            "<h2>Task Launcher</h2>",
+            '<form method="post" action="/tasks/miner">',
+            '<label>Campaign ID<input name="campaign_id" value="current_data_api_catalog_20260629" required></label>',
+            '<label>Execution workspace<input name="execution_workspace" value="/tmp/factorforge-miner-workspace" required></label>',
+            '<label>Catalogs<textarea name="catalogs" rows="3" required>'
+            f"{escape(default_catalog)}</textarea></label>",
+            '<label>Screen window<input name="screen_window" value="2016-01-01..2025-07-11" required></label>',
+            '<label>Universe<input name="universe" value="current_data_api_catalog" required></label>',
+            '<button type="submit">Create Miner Campaign Task</button>',
+            "</form>",
+            '<p class="hint">Creates a task manifest only. Agent execution remains explicit and boundary-guarded.</p>',
+            "</section>",
+        ]
+    )
+
+
+def _render_tasks(tasks: list[ConsoleTask]) -> str:
+    rows = [
+        '<section id="task-log">',
+        "<h2>Task Log</h2>",
+    ]
+    if not tasks:
+        rows.extend(["<p>No pending Console tasks.</p>", "</section>"])
+        return "\n".join(rows)
+    rows.extend(
+        [
+            "<table>",
+            "<thead><tr><th>Task</th><th>Type</th><th>Campaign</th><th>Workspace</th><th>Agent handoff</th></tr></thead>",
+            "<tbody>",
+        ]
+    )
+    for task in tasks:
+        handoff = (
+            "Use factor-forge-miner to execute "
+            f"{task.task_id} from {Path(task.repo_root) / 'factor_research' / 'console' / 'tasks' / (task.task_id + '.json')}"
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{escape(task.task_id)}</td>"
+            f"<td>{escape(task.task_type)}</td>"
+            f"<td>{escape(task.campaign_id)}</td>"
+            f"<td>{escape(task.workspace_root)}</td>"
+            f"<td><code>{escape(handoff)}</code></td>"
+            "</tr>"
+        )
+    rows.extend(["</tbody>", "</table>", "</section>"])
+    return "\n".join(rows)
 
 
 def _render_dashboard_table(summaries: list[CampaignSummary]) -> str:
@@ -147,5 +204,11 @@ table { width: 100%; border-collapse: collapse; background: #ffffff; }
 th, td { padding: 10px 12px; border: 1px solid #d9d9d0; text-align: left; }
 th { background: #ecece5; }
 a { color: #155e75; }
+form { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; background: #ffffff; border: 1px solid #d9d9d0; padding: 16px; }
+label { display: grid; gap: 6px; font-weight: 600; }
+input, textarea { font: inherit; padding: 8px 10px; border: 1px solid #b8b8ad; background: #fff; }
+button { width: fit-content; padding: 9px 14px; border: 1px solid #155e75; background: #155e75; color: #fff; font-weight: 700; cursor: pointer; }
+code { overflow-wrap: anywhere; }
+.hint { color: #555; }
 .boundary { padding: 12px; background: #fff8e1; border: 1px solid #ebd28a; }
 """

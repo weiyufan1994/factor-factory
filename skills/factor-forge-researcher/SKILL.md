@@ -49,6 +49,26 @@ journal or Step6 memo with:
 - `overclaim_guard`: what the current evidence does not allow the agent to
   claim.
 
+The researcher must create or refresh this gate before expensive Step3/Step4
+work for every non-smoke idea, including report-led ideas, formula-only ideas,
+oral ideas, Miner candidates, and Council revision proposals. The gate is not a
+style section; it determines the allowed next action:
+
+```text
+narrative_only or math_framed -> return to Miner, rewrite the idea, or stop
+metric_candidate -> cheap screen only
+metric_consistent -> formal Ultimate can proceed, but no promotion claim
+component_validated -> formal revision/promotion discussion can start
+stochastic_validated or payer_validated -> strong mechanism claim can be made
+```
+
+A complete gate must include `economic_mechanism_contract`,
+`mathematical_object_contract`, `alias_elimination_matrix`,
+`falsification_plan`, `claim_level_assessment`, and `reviewer_attack_memo`.
+If any of payer/receiver hypothesis, random object or state variable,
+information set, alias tests, or kill criteria are missing, mark
+`research_quality_blocked` and do not launch formal Step3/Step4.
+
 If the researcher invokes stochastic-process language, it must mark
 `stochastic_process_status=framing_only` unless state space, conditional return
 distribution, transition/persistence, barrier/tail risk, and

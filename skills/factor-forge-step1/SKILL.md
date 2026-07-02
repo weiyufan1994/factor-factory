@@ -265,3 +265,26 @@ is trying to recover. It is not enough to restate inputs such as `close`,
 `volume`, or the factor expression. Step2 will turn this into
 `formula_implied_information` and block if the result is just raw-field or
 formula-call restatement.
+
+Step1 also seeds the universal `research_quality_gate` for the idea. The seed
+may be incomplete, but it must explicitly state `allowed_next_step` and must
+not pretend an idea is ready for Step3 when the economic mechanism or
+mathematical object is still missing. Include:
+
+- `economic_mechanism_contract`: payer/receiver hypothesis, persistence
+  reason, expected sign, and observable proxy;
+- `mathematical_object_contract`: random object or state variable, target
+  statistic, information set, horizon, and formula-to-state mapping;
+- `alias_elimination_matrix`: plausible lookalike explanations and the test
+  that would separate each one from the preferred mechanism;
+- `falsification_plan`: at least one kill criterion and one component or
+  regime diagnostic;
+- `claim_level_assessment`: normally `narrative_only`, `math_framed`, or
+  `metric_candidate` at Step1;
+- `reviewer_attack_memo`: the strongest skeptical interpretation of the idea.
+
+If the source is oral, formula-only, or a mined candidate rather than a report,
+Step1 is still responsible for this seed. Missing payer, random object,
+information set, alias tests, or falsification design should set
+`research_quality_blocked` or `allowed_next_step=miner_only`, not a formal
+Step3 handoff.

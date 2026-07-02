@@ -406,6 +406,25 @@ Factor Forge uses a Dirac-style research discipline: a factor must be tied to a 
 
 Step2 writes mechanism_math_contract_v2 at factor_spec_master, canonical_spec, and handoff_to_step3. The v2 contract maps formula components or direct-code observable estimators to model roles and stochastic price-process projection roles. Operator, direct_code, and hybrid modes all need an estimator mapping; unsupported or vague mappings should be under-specified or blocked rather than replaced with a generic model. Legacy v1 contracts remain readable for older artifacts.
 
+Step2 is the hardening point for the universal `research_quality_gate`. It must
+convert the Step1 seed into an auditable contract before handoff to Step3. The
+handoff is not valid unless the gate contains:
+
+- `economic_mechanism_contract`;
+- `mathematical_object_contract`;
+- `alias_elimination_matrix`;
+- `falsification_plan`;
+- `claim_level_assessment`;
+- `reviewer_attack_memo`.
+
+If the factor is still only `narrative_only` or `math_framed`, Step2 should
+write `allowed_next_step=miner_only` or `allowed_next_step=stop`, not a formal
+Step3 handoff. `metric_candidate` may go to cheap screen. Formal Ultimate
+Step3/Step4 requires at least `metric_consistent` or explicit human approval to
+run an exploratory formal pass. Missing payer/receiver hypothesis, random
+object, information set, alias-discriminating tests, or kill criteria is a
+research-quality BLOCK.
+
 Step2 must not default every factor to a stochastic process. It must choose the
 primary mathematical model from the economic hypothesis, then use stochastic
 return projection, Ito calculus, linear algebra, optimization, information

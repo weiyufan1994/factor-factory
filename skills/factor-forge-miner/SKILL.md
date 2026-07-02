@@ -105,6 +105,36 @@ Protect holdout data. The default full IS window is `2016-01-01..2025-07-11`.
 Data after `2025-07-11` is OOS holdout-only and must not be used for repeated
 template selection or parameter mining.
 
+## Idea Quality Packet
+
+Miner is allowed to generate many candidates, but every queued candidate must
+carry a compact idea-quality packet. This packet is the bridge into formal
+Factor Forge Ultimate research and prevents cheap template sweeps from being
+mistaken for deep research.
+
+For each candidate marked `send_to_formal_research`, write or embed:
+
+- `economic_mechanism_contract`: payer/receiver hypothesis, persistence
+  reason, expected sign, horizon, and currently available proxy evidence;
+- `mathematical_object_contract`: random object or state variable, target
+  statistic, information set, formula-to-state mapping, and estimator status;
+- `alias_elimination_matrix`: at least the major confounds relevant to the
+  candidate family, such as size, liquidity, volatility, reversal, beta,
+  industry, microcap, missing-data, limit-up/down, and rebalance artifacts;
+- `falsification_plan`: cheap kill test, component/ablation test, and one
+  regime or payer/receiver test when data exists;
+- `claim_level_assessment`: one of `narrative_only`, `math_framed`,
+  `metric_candidate`, or `metric_consistent`;
+- `reviewer_attack_memo`: the best skeptical explanation.
+
+Miner must not output `component_validated`, `stochastic_validated`, or
+`payer_validated` unless those tests were actually run and stored as evidence.
+Normally Miner outputs `metric_candidate`; `metric_consistent` requires cheap
+screen metrics plus at least one alias or component diagnostic. A candidate
+without payer hypothesis, mathematical object, alias tests, and falsification
+plan can be listed as `needs_research_design`, but it must not enter the formal
+research queue.
+
 ## Default Operating Workflow
 
 When the user asks to mine factors, generate ideas, explore templates, or build

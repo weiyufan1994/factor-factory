@@ -48,6 +48,62 @@ engineering-complete while still research-quality-blocked. The main agent must
 not present Step6 PASS, Council files, window evidence, or library absence as
 proof that the factor was deeply researched.
 
+### Universal Idea Quality Gate
+
+Every non-smoke factor idea must pass an idea-quality checkpoint before it is
+allowed to consume expensive Step3/Step4/Step6 runtime. This applies to report
+intake, oral ideas, formula-only intake, Miner candidates promoted from a
+campaign, and Council revision ideas.
+
+The checkpoint is universal; it is not specific to crowding, moneyflow, or any
+other factor family. The active factor workspace must carry an auditable
+`research_quality_gate` packet, either inside Step1/Step2/Step6 artifacts or as
+workspace objects under `objects/idea_quality_gate/`:
+
+```text
+idea_quality_gate__<idea_id>.json
+economic_mechanism_contract__<idea_id>.json
+mathematical_object_contract__<idea_id>.json
+alias_elimination_matrix__<idea_id>.json
+falsification_plan__<idea_id>.json
+claim_level_assessment__<idea_id>.json
+reviewer_attack_memo__<idea_id>.md
+```
+
+The packet must answer:
+
+- `economic_mechanism_contract`: who pays or receives the return, why the
+  behavior should persist, what institutional, liquidity, information, risk, or
+  behavioral constraint creates the effect, and what observable proxy would
+  falsify it;
+- `mathematical_object_contract`: the random object or state variable, target
+  statistic, information set, horizon, formula-to-state mapping, and whether
+  the formula is an estimator rather than a restatement of raw fields;
+- `alias_elimination_matrix`: plausible lookalike explanations such as size,
+  liquidity, volatility, reversal, beta, industry, microcap, missing-data,
+  limit-up/down, or rebalance artifacts, plus the discriminating test for each;
+- `falsification_plan`: at least one test that would kill the mechanism, one
+  component or ablation test, and one regime or payer/receiver proxy test when
+  data exists;
+- `claim_level_assessment`: current allowed claim level and the evidence still
+  missing for the next level;
+- `reviewer_attack_memo`: the strongest skeptical explanation and how the run
+  will distinguish it from the preferred mechanism.
+
+Allowed next step is determined by claim level:
+
+```text
+narrative_only or math_framed -> Miner queue or stop; no formal Step3/Step4.
+metric_candidate -> cheap screen or bounded exploratory screen only.
+metric_consistent -> formal Ultimate may proceed, but no promotion claim.
+component_validated -> formal revision/promotion discussion may start.
+stochastic_validated or payer_validated -> strong mechanism claim may be made.
+```
+
+Missing payer hypothesis, mathematical object, alias-elimination tests, or
+falsification design means `research_quality_blocked`. Do not continue to
+formal Step3/Step4 by filling prose templates with generic market language.
+
 Every serious Step6, Council synthesis, or final research answer must declare a
 `mechanism_claim_level`:
 

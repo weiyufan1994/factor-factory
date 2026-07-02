@@ -321,6 +321,17 @@ falsification design, reuse boundary, and overclaim guard.
 `window_contract_evidence`, or `exploratory_evidence`. Promotion decisions may
 use only promotion-gate evidence. Supplemental window or diagnostic evidence
 cannot overwrite weak or missing Step4 promotion evidence.
+51. Step6 must close the universal `research_quality_gate`, not merely produce
+process-complete artifacts. The final memo must restate the
+`economic_mechanism_contract`, `mathematical_object_contract`,
+`alias_elimination_matrix`, `falsification_plan`, `claim_level_assessment`, and
+`reviewer_attack_memo`, then mark which parts are proven, weakened, rejected,
+or still missing. If the run only reached `narrative_only`, `math_framed`, or
+`metric_candidate`, Step6 must not recommend promotion and must not send a
+Step3B revision as if the mechanism were validated. If the run reached only
+`metric_consistent`, it may recommend further component, alias, stochastic, or
+payer validation, but the final label remains `research_quality_blocked` for
+promotion.
 
 ## Research Analyst Standard
 

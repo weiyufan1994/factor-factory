@@ -61,7 +61,7 @@ retain the evidence as falsifiable research and do not label the obligation
 
 ## Factor Proof Policy
 
-Read `docs/contracts/factorforge-factor-proof-certificate-v1.zh-CN.md`.
+Read `docs/contracts/factorforge-factor-proof-certificate-v2.zh-CN.md`.
 
 Common proof obligations:
 
@@ -74,6 +74,9 @@ Common proof obligations:
   SHA256 binding;
 - one shared dataset-snapshot and window hash across required metrics;
 - actual observed OOS dates and at least 60 daily periods;
+- `verification_scope=production` plus an explicit calendar snapshot id bound
+  to the approved trusted-registry Git commit/blob; `SMOKE` naming is never an
+  authority;
 - frozen search-trial ledger, locked threshold registration and one-time OOS
   release manifest in strict sequence;
 - trusted metric-verifier identity and verifier-report contract;

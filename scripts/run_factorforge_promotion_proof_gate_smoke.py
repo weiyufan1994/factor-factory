@@ -144,6 +144,9 @@ def main() -> int:
         report_id=REPORT_ID,
         factor_id=FACTOR_ID,
     )
+    env["FACTORFORGE_TRUSTED_TRADE_CAL_CSV"] = os.environ[
+        "FACTORFORGE_TRUSTED_TRADE_CAL_CSV"
+    ]
     write_json(factor_proof_certificate_path(root, REPORT_ID), certificate)
     obligations = replace_identity(valid_obligations(root))
     missing_component = deepcopy(obligations)

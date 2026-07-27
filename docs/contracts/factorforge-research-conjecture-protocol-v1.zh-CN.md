@@ -90,7 +90,7 @@ Council root synthesis 与显式批准位于当前 workspace 的
 
 `claim_class` 在 FORMULATE 阶段冻结。它决定最终证明义务；尤其只有
 `risk_premium` 才强制 Fama-MacBeth 与 quintile/decile 单调性。完整证书合同见
-`docs/contracts/factorforge-factor-proof-certificate-v1.zh-CN.md`。
+`docs/contracts/factorforge-factor-proof-certificate-v2.zh-CN.md`。
 
 `task_statement` 必须定义：
 
@@ -334,6 +334,40 @@ component ablation、反例覆盖和 terminal semantics；Council 最终 synthes
 
 Verifier 不能判断隐藏 chain-of-thought，也不能证明经济规律。它只验证公开推导、执行证据、
 权限、信息集和结论之间是否一致。
+
+### 9.1 Return Label 与 Portfolio Path
+
+预测标签、执行路径和组合 NAV 是三个不同对象。`t+5` 横截面标签可以验证
+IC、Fama-MacBeth 和条件分布，但不能按每日观测直接复利，也不能据此推导每日
+turnover、volatility 或 drawdown。
+
+正式 metric-verifier v2 只接受 disjoint one-day path：
+
+- horizon 与 holding period 都为 1 个交易日；
+- execution timestamp 等于 label start；
+- daily rebalance；
+- `return_path_mode=daily_one_period_forward_return`；
+- 原子面板提供 signal date、label start/end date、label start/end price；
+- spec 必须声明 `verification_scope=production`，只引用
+  `factorforge_data_access.trade_cal_csv` authority，并锁定由 operator/Data API
+  独立解析的原始文件 SHA、规范化 open-date snapshot SHA、显式 snapshot id，
+  以及 trusted registry 的 Git anchor commit/blob/SHA；该路径不得位于 factor
+  workspace，当前工作树 registry 必须与独立 anchor blob 完全一致；
+- kernel 按该日历证明日期及 daily signal coverage 连续，并重算
+  `label_end_price/label_start_price-1`。
+
+threshold registration 与 OOS release 必须绑定完整
+`evaluation_contract_hash`。该 hash 覆盖 window/label、panel mapping、
+portfolio、annualization、cost、Fama-MacBeth 和 bucket 合同。任何多日
+overlapping cohort 在缺少独立逐日 holdings/NAV engine 时必须 BLOCK。
+仅把 spec 中的 `horizon_days` 改写成 1、用稀疏面板自身日期冒充完整交易日历，
+或让 workspace/外部临时目录自己提供未登记的所谓 authoritative calendar、修改
+当前 registry 后自报新的 production snapshot、靠 report id 中的 `SMOKE` 改变 scope，
+都不构成证明；真实 label 日期、价格、独立日历身份、Git-anchored trusted snapshot
+registry 和
+forward-return reconciliation 任何一项不一致都
+必须 BLOCK。已存在的 threshold registration 只能同内容幂等读取，不能被新合同
+覆盖。
 
 ## 10. Miner 的 FunSearch 适配
 

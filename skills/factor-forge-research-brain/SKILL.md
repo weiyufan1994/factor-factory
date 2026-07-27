@@ -91,6 +91,21 @@ daily periods and the panel hash. Formal long-end judgment uses net geometric
 return and positive terminal/minimum wealth; arithmetic return is only the
 gross-to-cost reconciliation.
 
+Do not interpret an overlapping `t+5` forward-return panel as 217 independent
+daily portfolio returns. Formal verifier v2 supports only a disjoint one-day
+return path with execution equal to label start. It must verify actual label
+start/end dates and prices against the full
+`factorforge_data_access.trade_cal_csv` calendar independently resolved
+outside the factor workspace. Its normalized open-date snapshot must match the
+explicit snapshot id in the Git-anchored trusted calendar registry, and the
+proof binds `verification_scope=production`, the raw file, normalized snapshot,
+registry SHA, anchor commit/blob, and snapshot id before recomputing the return.
+A narrative horizon, workspace-provided or unregistered sparse calendar, or
+renamed `fwd_ret_5d` column is not proof. Neither a `SMOKE` name nor a modified
+worktree registry changes this authority. Multi-day labels remain
+predictive diagnostics until a valid daily cohort/NAV path or supported
+non-overlapping stride contract exists.
+
 If the review invokes stochastic processes, stopping times, hidden states, or
 barriers, explicitly state whether the claim is `framing_only` or `validated`.
 If it is validated, name the state space, conditional drift/return

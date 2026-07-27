@@ -51,7 +51,7 @@ Every non-smoke run uses
 `factorforge_research_conjecture_protocol_v1`. Read:
 
 - `docs/contracts/factorforge-research-conjecture-protocol-v1.zh-CN.md`
-- `docs/contracts/factorforge-factor-proof-certificate-v1.zh-CN.md`
+- `docs/contracts/factorforge-factor-proof-certificate-v2.zh-CN.md`
 
 The current agent must author the semantic artifacts. Deterministic scripts may
 validate and materialize them, but must not invent the hypothesis, payer,
@@ -172,6 +172,28 @@ panel/spec with the current verifier source. Do not hand-author passed metric
 evidence. This is a tamper-evident local ordering contract, not an external
 trusted timestamp; hard OOS secrecy requires an independently controlled data
 release service.
+
+Formal metric-verifier v2 accepts only a disjoint one-trading-day return path:
+`forward_return_horizon_days=1`, `holding_period_days=1`,
+`return_path_mode=daily_one_period_forward_return`, daily rebalance, and
+`execution_timestamp=label_start_timestamp`. The atomic panel must also carry
+signal date, label start/end dates, and label start/end prices. The verifier
+must use the complete authoritative calendar independently resolved by
+`factorforge_data_access.trade_cal_csv`; its actual file must be outside the
+factor workspace. Its normalized open-date snapshot must match the repo-tracked
+trusted calendar registry as read from its approved Git anchor commit/blob.
+Formal specs must declare `verification_scope=production`, and the release/proof
+chain must bind the raw file SHA, normalized snapshot SHA, registry SHA, anchor
+commit/blob, and explicit snapshot id. A task or directory name containing
+`SMOKE` cannot relax this scope. The verifier must
+prove consecutive trading dates and daily signal coverage, and recompute
+`label_end_price/label_start_price-1`; self-reporting horizon 1 is insufficient.
+Multi-day rolling labels may
+support IC/Fama-MacBeth/mechanism diagnostics, but must not be compounded as
+daily long-end returns. Until a daily holding/NAV cohort engine or an explicit
+non-overlapping stride contract exists, a `t+5` formal portfolio proof is
+BLOCK. A locked threshold registration is immutable: identical retry is
+idempotent, while different content at the same path is BLOCK.
 
 Long-end admission uses geometrically compounded net return plus positive
 terminal/minimum wealth. Arithmetic gross-minus-cost return is reconciliation,

@@ -57,6 +57,28 @@ materialize a same-window full-versus-ablated panel with legal forward return
 for `scripts/build_factorforge_component_obligation_report.py`; an ablation
 summary written in prose is diagnostic only.
 
+Metric-verifier v2 formal portfolio evidence is limited to a disjoint one-day
+return path. Step4 must declare horizon days, label start/end, execution time,
+holding period and return-path mode, and materialize signal date, label
+start/end date, and label start/end price columns. The kernel must verify
+consecutive trading dates and daily signal coverage against the complete
+`factorforge_data_access.trade_cal_csv` authority independently resolved
+outside the factor workspace. Formal specs must declare
+`verification_scope=production`. The normalized open-date snapshot must match
+an explicit snapshot id in the Git-anchored trusted calendar registry; bind the
+raw file SHA, normalized snapshot SHA, registry SHA, anchor commit/blob, and
+snapshot id, then recompute
+`label_end_price/label_start_price-1`. If execution is `t+1`, the label must
+start at `t+1`; renaming a multi-day return column or supplying an unregistered
+sparse calendar does not satisfy the gate. Report or directory names containing
+`SMOKE` never grant a different verification scope.
+A rolling five-day forward label may be used for IC,
+Fama-MacBeth or bucket diagnostics, but Step4 must not feed it into daily
+geometric NAV, turnover, volatility or drawdown. Multi-day formal portfolio
+evidence is BLOCK until a supported daily cohort/NAV engine or non-overlapping
+stride contract is present. Threshold registration is write-once except for
+an identical idempotent retry.
+
 ## Inputs
 
 - `factorforge/objects/factor_spec_master/factor_spec_master__{report_id}.json`

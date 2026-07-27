@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_proof import (
+    CERTIFICATE_VERSION,
     factor_proof_certificate_path,
     load_json,
     validate_factor_proof_certificate,
@@ -35,7 +36,7 @@ def main() -> int:
     )
     if not certificate_path.is_file():
         report = {
-            "certificate_version": "factorforge_factor_proof_certificate_v1",
+            "certificate_version": CERTIFICATE_VERSION,
             "report_id": args.report_id,
             "verdict": "BLOCK",
             "block_reasons": [

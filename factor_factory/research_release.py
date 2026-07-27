@@ -16,10 +16,10 @@ from factor_factory.research_evidence import (
 
 SEARCH_TRIAL_LEDGER_VERSION = "factorforge_search_trial_ledger_v1"
 OOS_RELEASE_MANIFEST_VERSION = "factorforge_oos_release_manifest_v1"
-METRIC_VERIFIER_SPEC_VERSION = "factorforge_metric_verifier_spec_v1"
+METRIC_VERIFIER_SPEC_VERSION = "factorforge_metric_verifier_spec_v2"
 COMPONENT_VERIFIER_SPEC_VERSION = "factorforge_component_obligation_spec_v1"
 METRIC_THRESHOLD_REGISTRATION_VERSION = (
-    "factorforge_threshold_registration_v1"
+    "factorforge_threshold_registration_v2"
 )
 COMPONENT_THRESHOLD_REGISTRATION_VERSION = (
     "factorforge_component_obligation_threshold_registration_v1"
@@ -126,6 +126,66 @@ def stable_hash(payload: Any) -> str:
             "utf-8"
         )
     ).hexdigest()
+
+
+def _write_immutable_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    block_token: str,
+) -> None:
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(encoded)
+        return
+    except FileExistsError:
+        pass
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(block_token) from exc
+    if existing != payload:
+        raise ValueError(block_token)
+
+
+def evaluation_contract_hash(spec: dict[str, Any]) -> str:
+    version = spec.get("version")
+    common = {
+        "version": version,
+        "report_id": spec.get("report_id"),
+        "factor_id": spec.get("factor_id"),
+        "window_contract": spec.get("window_contract"),
+        "panel": spec.get("panel"),
+        "threshold_registration_ref": spec.get(
+            "threshold_registration_ref"
+        ),
+    }
+    if version == METRIC_VERIFIER_SPEC_VERSION:
+        common.update(
+            {
+                "claim_class": spec.get("claim_class"),
+                "cost_policy_id": spec.get("cost_policy_id"),
+                "portfolio": spec.get("portfolio"),
+                "label_contract": spec.get("label_contract"),
+                "fama_macbeth": spec.get("fama_macbeth"),
+                "bucket_monotonicity": spec.get("bucket_monotonicity"),
+            }
+        )
+    elif version == COMPONENT_VERIFIER_SPEC_VERSION:
+        common.update(
+            {
+                "obligation_id": spec.get("obligation_id"),
+                "obligation_kind": spec.get("obligation_kind"),
+                "test": spec.get("test"),
+            }
+        )
+    else:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_RESEARCH_RELEASE_VERIFIER_SPEC_UNSUPPORTED"
+        )
+    return stable_hash(common)
 
 
 def valid_sha256(value: Any) -> bool:
@@ -325,10 +385,12 @@ def write_search_trial_ledger(
         "candidate_space_sha256": stable_hash(candidate_space),
         "selected_hypothesis_sha256": stable_hash(selected_hypothesis),
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    _write_immutable_json(
+        path,
+        payload,
+        block_token=(
+            "BLOCK_FACTORFORGE_RESEARCH_RELEASE_SEARCH_LEDGER_IMMUTABLE"
+        ),
     )
     return payload
 
@@ -408,6 +470,7 @@ def write_threshold_registration(
         "report_id": spec.get("report_id"),
         "factor_id": spec.get("factor_id"),
         "window_hash": stable_hash(window),
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
         "registered_before_evaluation": True,
         "registration_sequence": registration_sequence,
         "search_trial_ledger_ref": str(ledger_path.relative_to(root)),
@@ -416,10 +479,18 @@ def write_threshold_registration(
         "rule_set_sha256": stable_hash(decision_rules),
     }
     if version == METRIC_VERIFIER_SPEC_VERSION:
+        if spec.get("verification_scope") != "production":
+            raise ValueError(
+                "BLOCK_FACTORFORGE_RESEARCH_RELEASE_VERIFICATION_SCOPE_INVALID"
+            )
         payload.update(
             {
                 "version": METRIC_THRESHOLD_REGISTRATION_VERSION,
                 "claim_class": spec.get("claim_class"),
+                "verification_scope": "production",
+                "label_contract_hash": stable_hash(
+                    spec.get("label_contract")
+                ),
             }
         )
     elif version == COMPONENT_VERIFIER_SPEC_VERSION:
@@ -434,10 +505,12 @@ def write_threshold_registration(
         raise ValueError(
             "BLOCK_FACTORFORGE_RESEARCH_RELEASE_VERIFIER_SPEC_UNSUPPORTED"
         )
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    _write_immutable_json(
+        resolved_path,
+        payload,
+        block_token=(
+            "BLOCK_FACTORFORGE_RESEARCH_RELEASE_THRESHOLD_REGISTRATION_IMMUTABLE"
+        ),
     )
     return payload
 
@@ -503,13 +576,22 @@ def write_oos_release_manifest(
         "report_id": spec.get("report_id"),
         "factor_id": spec.get("factor_id"),
         "window_hash": stable_hash(window),
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
         "registered_before_evaluation": True,
         "search_trial_ledger_ref": str(ledger_path.relative_to(root)),
         "search_trial_ledger_sha256": sha256_file(ledger_path),
         "rule_set_sha256": stable_hash(rules),
     }
     if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
-        expected_threshold["claim_class"] = spec.get("claim_class")
+        expected_threshold.update(
+            {
+                "claim_class": spec.get("claim_class"),
+                "verification_scope": "production",
+                "label_contract_hash": identities.get(
+                    "label_contract_hash"
+                ),
+            }
+        )
     elif spec.get("version") == COMPONENT_VERIFIER_SPEC_VERSION:
         expected_threshold.update(
             {
@@ -552,17 +634,71 @@ def write_oos_release_manifest(
         "threshold_registration_sha256": sha256_file(resolved_threshold),
         "dataset_snapshot_hash": identities["dataset_snapshot_hash"],
         "window_hash": identities["window_hash"],
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
         "oos_window": window["oos_window"],
         "observed_start_date": identities["observed_start_date"],
         "observed_end_date": identities["observed_end_date"],
         "observed_period_count": identities["observed_period_count"],
         "oos_release_token_hash": window["oos_release_token_hash"],
     }
+    if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
+        payload.update(
+            {
+                "label_contract_hash": identities.get(
+                    "label_contract_hash"
+                ),
+                "trading_calendar_sha256": identities.get(
+                    "trading_calendar_sha256"
+                ),
+                "trading_calendar_file_sha256": identities.get(
+                    "trading_calendar_file_sha256"
+                ),
+                "trading_calendar_registry_sha256": identities.get(
+                    "trading_calendar_registry_sha256"
+                ),
+                "trading_calendar_registry_git_commit": identities.get(
+                    "trading_calendar_registry_git_commit"
+                ),
+                "trading_calendar_registry_git_blob": identities.get(
+                    "trading_calendar_registry_git_blob"
+                ),
+                "trading_calendar_snapshot_id": identities.get(
+                    "trading_calendar_snapshot_id"
+                ),
+                "trading_calendar_source_snapshot_hash": identities.get(
+                    "trading_calendar_source_snapshot_hash"
+                ),
+                "calendar_period_count": identities.get(
+                    "calendar_period_count"
+                ),
+                "label_observed_start_date": identities.get(
+                    "label_observed_start_date"
+                ),
+                "label_observed_end_date": identities.get(
+                    "label_observed_end_date"
+                ),
+                "signal_period_count": identities.get(
+                    "signal_period_count"
+                ),
+                "independent_path_period_count": identities.get(
+                    "independent_path_period_count"
+                ),
+                "signal_coverage_ratio": identities.get(
+                    "signal_coverage_ratio"
+                ),
+                "return_reconciliation_max_abs_error": identities.get(
+                    "return_reconciliation_max_abs_error"
+                ),
+                "verification_scope": identities.get("verification_scope"),
+            }
+        )
     payload["release_manifest_sha256"] = stable_hash(payload)
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    _write_immutable_json(
+        resolved_path,
+        payload,
+        block_token=(
+            "BLOCK_FACTORFORGE_RESEARCH_RELEASE_OOS_MANIFEST_IMMUTABLE"
+        ),
     )
     return payload
 
@@ -754,11 +890,20 @@ def validate_evaluation_release_chain(
         "report_id": spec.get("report_id"),
         "factor_id": spec.get("factor_id"),
         "window_hash": identities.get("window_hash"),
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
         "registered_before_evaluation": True,
         "rule_set_sha256": stable_hash(rules),
     }
     if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
-        expected_threshold["claim_class"] = spec.get("claim_class")
+        expected_threshold.update(
+            {
+                "claim_class": spec.get("claim_class"),
+                "verification_scope": "production",
+                "label_contract_hash": identities.get(
+                    "label_contract_hash"
+                ),
+            }
+        )
     elif spec.get("version") == COMPONENT_VERIFIER_SPEC_VERSION:
         expected_threshold.update(
             {
@@ -796,12 +941,64 @@ def validate_evaluation_release_chain(
         "threshold_registration_sha256": sha256_file(threshold_path),
         "dataset_snapshot_hash": identities.get("dataset_snapshot_hash"),
         "window_hash": identities.get("window_hash"),
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
         "oos_window": window.get("oos_window"),
         "observed_start_date": identities.get("observed_start_date"),
         "observed_end_date": identities.get("observed_end_date"),
         "observed_period_count": identities.get("observed_period_count"),
         "oos_release_token_hash": window.get("oos_release_token_hash"),
     }
+    if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
+        expected_release.update(
+            {
+                "label_contract_hash": identities.get(
+                    "label_contract_hash"
+                ),
+                "trading_calendar_sha256": identities.get(
+                    "trading_calendar_sha256"
+                ),
+                "trading_calendar_file_sha256": identities.get(
+                    "trading_calendar_file_sha256"
+                ),
+                "trading_calendar_registry_sha256": identities.get(
+                    "trading_calendar_registry_sha256"
+                ),
+                "trading_calendar_registry_git_commit": identities.get(
+                    "trading_calendar_registry_git_commit"
+                ),
+                "trading_calendar_registry_git_blob": identities.get(
+                    "trading_calendar_registry_git_blob"
+                ),
+                "trading_calendar_snapshot_id": identities.get(
+                    "trading_calendar_snapshot_id"
+                ),
+                "trading_calendar_source_snapshot_hash": identities.get(
+                    "trading_calendar_source_snapshot_hash"
+                ),
+                "calendar_period_count": identities.get(
+                    "calendar_period_count"
+                ),
+                "label_observed_start_date": identities.get(
+                    "label_observed_start_date"
+                ),
+                "label_observed_end_date": identities.get(
+                    "label_observed_end_date"
+                ),
+                "signal_period_count": identities.get(
+                    "signal_period_count"
+                ),
+                "independent_path_period_count": identities.get(
+                    "independent_path_period_count"
+                ),
+                "signal_coverage_ratio": identities.get(
+                    "signal_coverage_ratio"
+                ),
+                "return_reconciliation_max_abs_error": identities.get(
+                    "return_reconciliation_max_abs_error"
+                ),
+                "verification_scope": identities.get("verification_scope"),
+            }
+        )
     for field, expected in expected_release.items():
         if release.get(field) != expected:
             raise ValueError(
@@ -834,6 +1031,15 @@ def validate_evaluation_release_chain(
         "threshold_registration_sha256": sha256_file(threshold_path),
         "oos_release_manifest_ref": str(release_path.relative_to(root)),
         "oos_release_manifest_sha256": sha256_file(release_path),
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
+        "label_contract_hash": identities.get("label_contract_hash"),
+        "verification_scope": identities.get("verification_scope"),
+        "trading_calendar_registry_git_commit": identities.get(
+            "trading_calendar_registry_git_commit"
+        ),
+        "trading_calendar_registry_git_blob": identities.get(
+            "trading_calendar_registry_git_blob"
+        ),
         "freeze_sequence": freeze_sequence,
         "registration_sequence": registration_sequence,
         "release_sequence": release_sequence,

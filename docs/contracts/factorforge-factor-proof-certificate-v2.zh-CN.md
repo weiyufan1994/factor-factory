@@ -1,8 +1,8 @@
-# Factor Forge Factor Proof Certificate v1
+# Factor Forge Factor Proof Certificate v2
 
 ## 1. 定位
 
-`factorforge_factor_proof_certificate_v1` 是 Factor Forge 的可机检研究证书。
+`factorforge_factor_proof_certificate_v2` 是 Factor Forge 的可机检研究证书。
 它借鉴 Lean 的思路，把结论拆成明确前提、可重算等式、已冻结阈值和确定性
 verifier；但它不是金融市场的定理证明器。
 
@@ -83,7 +83,7 @@ production proof 共同约束。
 
 ```json
 {
-  "certificate_version": "factorforge_factor_proof_certificate_v1",
+  "certificate_version": "factorforge_factor_proof_certificate_v2",
   "report_id": "REPORT_ID",
   "factor_id": "FACTOR_ID",
   "claim_class": "information_rent",
@@ -107,14 +107,49 @@ verifier 会重新计算规则结果；声明与推导不一致时直接 BLOCK�
 - `universe`
 - `sample_frequency`
 - `forward_return_horizon`
+- `forward_return_horizon_days`
+- `label_start_timestamp`
+- `label_end_timestamp`
+- `forward_return_formula=label_end_price/label_start_price-1`
+- `path_is_disjoint=true`
+- `label_contract_version=factorforge_daily_return_label_contract_v1`
+- `signal_date_column`
+- `label_start_date_column`
+- `label_end_date_column`
+- `label_start_price_column`
+- `label_end_price_column`
+- `forward_return_column`
+- `return_tolerance`
+- `trading_calendar_ref`
+- `trading_calendar_id`
+- `trading_calendar_sha256`
+- `trading_calendar_file_sha256`
+- `trading_calendar_registry_sha256`
+- `trading_calendar_registry_git_commit`
+- `trading_calendar_registry_git_blob`
+- `trading_calendar_snapshot_id`
+- `trading_calendar_source_snapshot_hash`
+- `verification_scope=production`
+- `return_path_mode`
+- `holding_period_days`
+- `rebalance_frequency`
 - `signal_timestamp`
 - `execution_timestamp`
 - `cost_policy_id`
 - `label_definition`
 - `dataset_snapshot_hash`
 - `window_hash`
+- `evaluation_contract_hash`
+- `label_contract_hash`
 - `observed_start_date`
 - `observed_end_date`
+- `label_observed_start_date`
+- `label_observed_end_date`
+- `signal_period_count`
+- `independent_path_period_count`
+- `calendar_period_count`
+- `signal_coverage_ratio=1`
+- `return_reconciliation_max_abs_error`
 - `minimum_periods>=60`
 - `search_trial_ledger_ref`
 - `oos_release_manifest_ref`
@@ -124,10 +159,16 @@ verifier 会重新计算规则结果；声明与推导不一致时直接 BLOCK�
 IC、ICIR、成本、回撤和多头收益必须来自同一受控样本合同。不同 mask、
 不同日期或不同 execution convention 的结果不能拼成一张证书。每个
 `evidence_bindings.<metric>` 必须同时绑定该 metric 名称、相同
-`dataset_snapshot_hash` 和相同 `window_hash`；不能用另一个 verifier 的 PASS
+`dataset_snapshot_hash`、`window_hash` 和 `evaluation_contract_hash`；不能用另一个 verifier 的 PASS
 文件替代当前 metric，也不能跨窗口拼接证据。evidence JSON 内的
 `metric_payload` 还必须与证书 `metrics.<metric>` 逐字段完全一致，禁止在
 保留 PASS 文件的同时替换证书数值。
+
+日历 registry 不能只信任当前工作树文件。verifier 必须从已批准的独立 Git
+anchor commit 读取 registry blob，要求工作树 registry 与该 blob 完全一致，并把
+commit、blob、registry SHA 和显式 snapshot id 一起绑定到 label、release、evidence
+和 certificate。正式 verifier 只接受 `verification_scope=production`；任务名或目录名
+包含 `SMOKE` 不得改变信任范围。
 
 搜索期间必须保持 `oos_status=sealed`。要推导 `ACCEPT`，还必须记录：
 
@@ -136,7 +177,7 @@ IC、ICIR、成本、回撤和多头收益必须来自同一受控样本合同�
 - `oos_window`
 - `observed_start_date` 与 panel 实际最早日期完全一致
 - `observed_end_date` 与 panel 实际最晚日期完全一致
-- 实际交易期数不少于 `minimum_periods`；v1 日频正式证据最低为 60 期
+- 实际交易期数不少于 `minimum_periods`；v2 日频正式证据最低为 60 期
 - `search_frozen_before_oos_release=true`
 - `oos_evidence_included=true`
 - `oos_release_token_hash`
@@ -145,6 +186,53 @@ IC、ICIR、成本、回撤和多头收益必须来自同一受控样本合同�
   release_sequence`
 
 因此 IS-only 证书即使算术完全一致，也不能得到最终 ACCEPT。
+
+### 4.1 Return-Path v2 边界
+
+正式 v2 组合路径只支持：
+
+```text
+forward_return_horizon_days = 1
+holding_period_days = 1
+return_path_mode = daily_one_period_forward_return
+rebalance_frequency = daily
+path_is_disjoint = true
+execution_timestamp = label_start_timestamp
+```
+
+`label_start_timestamp`、`label_end_timestamp` 和
+`forward_return_formula` 必须显式声明。若执行发生在 `t+1 close`，标签不能从
+`t close` 开始。正式面板还必须包含 label start/end date 与 price 列；kernel
+根据 Data API/data-access 独立解析完整 authoritative trading calendar，并同时
+绑定原始文件 SHA、规范化 open-date snapshot SHA、repo-tracked trusted snapshot
+registry SHA 与 snapshot id，再验证
+`signal -> label start -> label end` 恰好各前进一个交易日，并按
+`label_end_price/label_start_price-1` 重算 forward return。不能从 panel
+自身稀疏日期推导交易日序列，也不能把 workspace 内文件配置为 trusted
+calendar。workspace 外的任意自报 calendar 也不自动可信，其规范化 snapshot 必须
+已进入受代码审查的
+`docs/contracts/factorforge-trusted-trading-calendar-snapshots-v1.json`。
+正式逻辑引用固定 authority
+`factorforge_data_access.trade_cal_csv`；实际路径由 operator/Data API 环境解析。
+缺少这些列、日历路径落在 workspace、文件/快照/registry SHA 或身份不匹配、
+snapshot 未登记、收益无法重算、
+日期不是相邻交易日、signal 日期不逐交易日连续，或 `signal_period_count !=
+independent_path_period_count` 时一律 BLOCK。
+
+多日滚动 forward label 可以用于 IC、Fama-MacBeth 或机制诊断，但不能被当成
+逐日 portfolio return 重复复利。v2 对 `t+5`、重叠 cohort 或
+`holding_period_days>1` 直接
+`BLOCK_FACTORFORGE_METRIC_VERIFIER_MULTI_PERIOD_PORTFOLIO_PATH_REQUIRED`。
+只有独立的逐日持仓/NAV 引擎，或未来明确实现的非重叠 stride 合同，才能为
+多日 horizon 生成正式 long-end、成本、波动和回撤证据。
+
+`evaluation_contract_hash` 同时冻结 return/window、panel column mapping、
+label contract、portfolio path、annualization、cost policy、Fama-MacBeth 和
+bucket 合同。
+OOS release 后修改成本、持有期或路径模式会导致 replay BLOCK。
+threshold registration 是不可覆盖的：同路径同内容允许幂等读取，任何不同内容
+必须命中
+`BLOCK_FACTORFORGE_RESEARCH_RELEASE_THRESHOLD_REGISTRATION_IMMUTABLE`。
 
 ## 5. 通用 Metric Obligations
 
@@ -222,6 +310,9 @@ net_return_annual
 - `selection_rule`
 - `weighting`
 - `rebalance_frequency`
+- `return_path_mode`
+- `holding_period_days`
+- `observation_frequency=daily`
 - `short_leg_used_for_acceptance=false`
 - `evidence_role=promotion_gate_evidence`
 
@@ -244,10 +335,13 @@ simple return 小于等于 `-1`，或 terminal/minimum wealth 非正，必须 BL
 - `controls`
 - `exposure_timing`
 - `return_horizon`
+- `return_horizon_days`
 - `required_for_acceptance=true`
 - `evidence_role=promotion_gate_evidence`
 
 该检验回答的是横截面暴露是否获得价格，而不是一个交易信号是否可盈利。
+当多日标签只作为诊断时，`newey_west_lags` 至少为
+`forward_return_horizon_days-1`。
 非 risk-premium claim 可附加 Fama-MacBeth 诊断，但必须使用
 `required_for_acceptance=false` 与 `evidence_role=diagnostic_evidence`，不得参与
 promotion verdict。
@@ -286,7 +380,7 @@ verifier 会从 `bucket_returns` 重新计算相邻组总数、违反次数和
     "window_hash": "<64 hex>",
     "threshold_registration_sha256": "<64 hex>",
     "threshold_rule_set_sha256": "<64 hex>",
-    "verifier_id": "factorforge_step4_metric_verifier_v1",
+    "verifier_id": "factorforge_step4_metric_verifier_v2",
     "verifier_status": "PASS"
   }
 }
@@ -302,7 +396,7 @@ verifier 会检查：
 6. evidence JSON 内嵌的 verifier、dataset snapshot、window 和 status 与
    reference 完全一致；
 7. evidence JSON 声明
-   `verifier_contract_version=factorforge_metric_verifier_report_v1`；
+   `verifier_contract_version=factorforge_metric_verifier_report_v2`；
 8. evidence reference 与 evidence JSON 同时绑定评估时使用的 threshold
    registration hash 和 rule-set hash；
 9. evidence JSON 的 `metric_payload` 与证书中同名 metric 完全一致；
@@ -408,12 +502,13 @@ python3 scripts/build_factorforge_metric_verifier_reports.py \
 也不能阻止拥有文件系统权限的恶意操作者提前查看 OOS。需要更强隔离时，必须由独立
 数据服务/执行者持有 OOS 并在注册凭据确认后才释放。
 
-`factorforge_metric_verifier_spec_v1` 必须指定 report/factor/claim/cost policy、
+`factorforge_metric_verifier_spec_v2` 必须指定 report/factor/claim/cost policy、
 日期/证券/signal/forward-return 列、risk-premium controls、OOS
 release/window contract、universe、investability mask、simple-return convention、
-long-only quantile、年化、成本和执行假设。verifier 从原子面板重算：
+long-only quantile、年化、成本、执行假设和可重算
+`factorforge_daily_return_label_contract_v1`。verifier 从原子面板重算：
 
-v1 verifier 的原子面板频率是 `daily`；分钟状态可以生成日频 legal-time signal，
+v2 verifier 的原子面板频率是 `daily`；分钟状态可以生成日频 legal-time signal，
 但不能把分钟行直接冒充独立横截面观测。
 
 - daily rank IC 与未年化 ICIR；

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import sys
 from copy import deepcopy
@@ -19,8 +20,12 @@ from factor_factory.research_evidence import sha256_file
 from factor_factory.research_release import (
     write_oos_release_manifest,
     write_search_trial_ledger,
+    write_threshold_registration,
 )
 from factor_factory.metric_verifier import (
+    TRADING_CALENDAR_REGISTRY_PATH,
+    TRADING_CALENDAR_REGISTRY_TRUST_BLOB,
+    TRADING_CALENDAR_REGISTRY_TRUST_COMMIT,
     metric_verifier_identities,
     run_metric_verifier,
     verifier_source_sha256,
@@ -31,6 +36,8 @@ from factor_factory.research_proof import (
     validate_factor_proof_certificate,
 )
 
+FIXTURE_SEQUENCE = 0
+
 
 def write_evidence(
     root: Path,
@@ -40,7 +47,7 @@ def write_evidence(
     metric: str | None = None,
     dataset_snapshot_hash: str = "d" * 64,
     window_hash: str = "e" * 64,
-    verifier_id: str = "factorforge_step4_metric_verifier_v1",
+    verifier_id: str = "factorforge_step4_metric_verifier_v2",
     threshold_registration_sha256: str,
     threshold_rule_set_sha256: str,
 ) -> dict[str, Any]:
@@ -50,7 +57,7 @@ def write_evidence(
     path.write_text(
         json.dumps(
             {
-                "verifier_contract_version": "factorforge_metric_verifier_report_v1",
+                "verifier_contract_version": "factorforge_metric_verifier_report_v2",
                 "metric": metric,
                 "metric_payload": metric_payload,
                 "verifier_id": verifier_id,
@@ -94,12 +101,18 @@ def rewrite_threshold_registration(
     registration_path.write_text(
         json.dumps(
             {
-                "version": "factorforge_threshold_registration_v1",
+                "version": "factorforge_threshold_registration_v2",
                 "registration_status": "LOCKED",
                 "report_id": certificate["report_id"],
                 "factor_id": certificate["factor_id"],
                 "claim_class": certificate["claim_class"],
                 "window_hash": data_contract["window_hash"],
+                "evaluation_contract_hash": data_contract[
+                    "evaluation_contract_hash"
+                ],
+                "label_contract_hash": data_contract[
+                    "label_contract_hash"
+                ],
                 "registered_before_evaluation": True,
                 "registration_sequence": 20,
                 "search_trial_ledger_ref": data_contract[
@@ -127,39 +140,101 @@ def valid_certificate(
     report_id: str = "FACTOR_PROOF_SMOKE",
     factor_id: str = "SMOKE_FACTOR",
 ) -> dict[str, Any]:
+    global FIXTURE_SEQUENCE
+    FIXTURE_SEQUENCE += 1
+    fixture_id = f"{claim_class}_{FIXTURE_SEQUENCE:03d}"
     panel_path = (
         root
         / "runs"
         / report_id
-        / claim_class
+        / fixture_id
         / "frozen_oos_panel.csv"
     )
     panel_path.parent.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
-    trade_dates = pd.bdate_range("2025-01-06", periods=64)
+    trusted_calendar_fixture = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "trusted_calendar"
+        / "tushare_sse_trade_cal_19901219_20261231.csv"
+    )
+    authority_calendar_frame = pd.read_csv(
+        trusted_calendar_fixture,
+        encoding="utf-8-sig",
+        dtype={"exchange": "string", "cal_date": "string", "is_open": "string"},
+    )
+    open_calendar_rows = authority_calendar_frame["is_open"] == "1"
+    if "exchange" in authority_calendar_frame.columns:
+        open_calendar_rows &= authority_calendar_frame["exchange"] == "SSE"
+    authority_calendar_dates = pd.DatetimeIndex(
+        pd.to_datetime(
+            authority_calendar_frame.loc[
+                open_calendar_rows,
+                "cal_date",
+            ],
+            format="%Y%m%d",
+        ).sort_values()
+    )
+    calendar_start = int(
+        authority_calendar_dates.searchsorted(pd.Timestamp("2025-01-06"))
+    )
+    calendar_dates = authority_calendar_dates[
+        calendar_start : calendar_start + 66
+    ]
+    authority_calendar_sha256 = stable_hash(
+        [
+            value.strftime("%Y-%m-%d")
+            for value in authority_calendar_dates
+        ]
+    )
+    registry_sha256 = sha256_file(TRADING_CALENDAR_REGISTRY_PATH)
+    trade_dates = calendar_dates[:64]
     for date_index, date_value in enumerate(trade_dates):
         slope = 0.0015 + 0.00025 * math.sin(date_index)
+        label_start_date = calendar_dates[date_index + 1].strftime(
+            "%Y-%m-%d"
+        )
+        label_end_date = calendar_dates[date_index + 2].strftime(
+            "%Y-%m-%d"
+        )
         for asset_index in range(12):
             signal = float(asset_index - 5.5)
             control = float((asset_index * 5 + date_index * 2) % 11 - 5)
             noise = 0.0015 * math.sin(
                 (date_index + 1) * (asset_index + 1)
             )
+            forward_return = slope * signal + 0.00005 * control + noise
+            label_start_price = 100.0 + asset_index + date_index * 0.1
             rows.append(
                 {
                     "trade_date": date_value.strftime("%Y-%m-%d"),
                     "asset": f"A{asset_index:03d}",
                     "signal": signal + 0.02 * math.cos(date_index + asset_index),
-                    "forward_return": slope * signal + 0.00005 * control + noise,
+                    "forward_return": forward_return,
+                    "label_start_date": label_start_date,
+                    "label_end_date": label_end_date,
+                    "label_start_price": label_start_price,
+                    "label_end_price": label_start_price
+                    * (1.0 + forward_return),
                     "size_control": control,
                 }
             )
     pd.DataFrame(rows).to_csv(panel_path, index=False)
+    calendar_path = (
+        Path("/tmp/factorforge_data_api_calendar_authority_proof_smoke")
+        / f"trade_cal__{report_id}__{fixture_id}.csv"
+    )
+    calendar_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(trusted_calendar_fixture, calendar_path)
+    os.environ["FACTORFORGE_TRUSTED_TRADE_CAL_CSV"] = str(
+        calendar_path
+    )
     ledger_path = (
         root
         / "objects"
         / "research_protocol"
-        / f"search_trial_ledger__{report_id}__{claim_class}.json"
+        / f"search_trial_ledger__{report_id}__{fixture_id}.json"
     )
     write_search_trial_ledger(
         ledger_path,
@@ -173,7 +248,7 @@ def valid_certificate(
         root
         / "objects"
         / "research_protocol"
-        / f"oos_release_manifest__{report_id}__{claim_class}.json"
+        / f"oos_release_manifest__{report_id}__{fixture_id}.json"
     )
     window_contract = {
         "evaluation_window_role": "OOS_FINAL",
@@ -185,10 +260,15 @@ def valid_certificate(
         "observed_end_date": trade_dates[-1].strftime("%Y-%m-%d"),
         "minimum_periods": 60,
         "oos_release_token_hash": "f" * 64,
-        "forward_return_horizon": "t+1 close-to-close",
+        "forward_return_horizon": "t+1 close to t+2 close",
+        "forward_return_horizon_days": 1,
         "sample_frequency": "daily",
         "signal_timestamp": "t close",
         "execution_timestamp": "t+1 close",
+        "label_start_timestamp": "t+1 close",
+        "label_end_timestamp": "t+2 close",
+        "forward_return_formula": "label_end_price/label_start_price-1",
+        "path_is_disjoint": True,
         "universe_id": "factor_proof_smoke_universe",
         "investability_mask_id": "factor_proof_smoke_mask",
         "search_frozen_before_oos_release": True,
@@ -197,7 +277,8 @@ def valid_certificate(
         "oos_release_manifest_ref": str(release_path.relative_to(root)),
     }
     spec: dict[str, Any] = {
-        "version": "factorforge_metric_verifier_spec_v1",
+        "version": "factorforge_metric_verifier_spec_v2",
+        "verification_scope": "production",
         "report_id": report_id,
         "factor_id": factor_id,
         "claim_class": claim_class,
@@ -209,6 +290,37 @@ def valid_certificate(
             "forward_return_column": "forward_return",
             "control_columns": ["size_control"],
         },
+        "label_contract": {
+            "version": "factorforge_daily_return_label_contract_v1",
+            "signal_date_column": "trade_date",
+            "label_start_date_column": "label_start_date",
+            "label_end_date_column": "label_end_date",
+            "label_start_price_column": "label_start_price",
+            "label_end_price_column": "label_end_price",
+            "forward_return_column": "forward_return",
+            "return_formula": "label_end_price/label_start_price-1",
+            "return_tolerance": 1e-12,
+            "signal_to_label_start_trading_days": 1,
+            "holding_period_trading_days": 1,
+            "path_is_disjoint": True,
+            "label_start_timestamp": "t+1 close",
+            "label_end_timestamp": "t+2 close",
+            "trading_calendar_ref": (
+                "factorforge_data_access.trade_cal_csv"
+            ),
+            "trading_calendar_sha256": authority_calendar_sha256,
+            "trading_calendar_registry_sha256": registry_sha256,
+            "trading_calendar_registry_git_commit": (
+                TRADING_CALENDAR_REGISTRY_TRUST_COMMIT
+            ),
+            "trading_calendar_registry_git_blob": (
+                TRADING_CALENDAR_REGISTRY_TRUST_BLOB
+            ),
+            "trading_calendar_snapshot_id": (
+                "tushare_sse_open_days_19901219_20261231"
+            ),
+            "trading_calendar_id": "cn_a_share_tushare_open_days",
+        },
         "window_contract": window_contract,
         "portfolio": {
             "annualization_factor": 252,
@@ -218,6 +330,8 @@ def valid_certificate(
             "cost_scope": "zero-cost smoke boundary",
             "execution_assumption": "verified t+1 close forward return",
             "rebalance_frequency": "daily",
+            "return_path_mode": "daily_one_period_forward_return",
+            "holding_period_days": 1,
         },
         "fama_macbeth": {"newey_west_lags": 3},
         "bucket_monotonicity": {
@@ -225,12 +339,6 @@ def valid_certificate(
             "expected_direction": "ascending",
         },
     }
-    identities = metric_verifier_identities(
-        workspace_root=root,
-        panel_path=panel_path,
-        spec=spec,
-    )
-    spec.update(identities)
     decision_rules = [
         {
             "rule_id": "ic_floor",
@@ -299,31 +407,23 @@ def valid_certificate(
         root
         / "objects"
         / "research_protocol"
-        / f"thresholds_smoke__{report_id}__{claim_class}.json"
+        / f"thresholds_smoke__{report_id}__{fixture_id}.json"
     )
-    registration_path.parent.mkdir(parents=True, exist_ok=True)
-    registration_path.write_text(
-        json.dumps(
-            {
-                "version": "factorforge_threshold_registration_v1",
-                "registration_status": "LOCKED",
-                "report_id": report_id,
-            "factor_id": factor_id,
-            "claim_class": claim_class,
-            "window_hash": identities["window_hash"],
-            "registered_before_evaluation": True,
-            "registration_sequence": 20,
-            "search_trial_ledger_ref": str(ledger_path.relative_to(root)),
-            "search_trial_ledger_sha256": sha256_file(ledger_path),
-            "rule_set_sha256": rule_set_sha256,
-                "decision_rules": decision_rules,
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    spec["threshold_registration_ref"] = str(
+        registration_path.relative_to(root)
     )
-    spec["threshold_registration_ref"] = str(registration_path.relative_to(root))
+    write_threshold_registration(
+        registration_path,
+        workspace_root=root,
+        spec=spec,
+        decision_rules=decision_rules,
+    )
+    identities = metric_verifier_identities(
+        workspace_root=root,
+        panel_path=panel_path,
+        spec=spec,
+    )
+    spec.update(identities)
     write_oos_release_manifest(
         release_path,
         workspace_root=root,
@@ -359,9 +459,33 @@ def valid_certificate(
             "universe_id": "factor_proof_smoke_universe",
             "investability_mask_id": "factor_proof_smoke_mask",
             "sample_frequency": "daily",
-            "forward_return_horizon": "t+1 close-to-close",
+            "forward_return_horizon": "t+1 close to t+2 close",
+            "forward_return_horizon_days": 1,
+            "return_path_mode": "daily_one_period_forward_return",
+            "holding_period_days": 1,
+            "rebalance_frequency": "daily",
             "signal_timestamp": "t close",
             "execution_timestamp": "t+1 close",
+            "label_start_timestamp": "t+1 close",
+            "label_end_timestamp": "t+2 close",
+            "forward_return_formula": (
+                "label_end_price/label_start_price-1"
+            ),
+            "path_is_disjoint": True,
+            "label_contract_version": (
+                "factorforge_daily_return_label_contract_v1"
+            ),
+            "signal_date_column": "trade_date",
+            "label_start_date_column": "label_start_date",
+            "label_end_date_column": "label_end_date",
+            "label_start_price_column": "label_start_price",
+            "label_end_price_column": "label_end_price",
+            "forward_return_column": "forward_return",
+            "return_tolerance": 1e-12,
+            "trading_calendar_ref": (
+                "factorforge_data_access.trade_cal_csv"
+            ),
+            "trading_calendar_id": "cn_a_share_tushare_open_days",
             "cost_policy_id": "cost_policy_smoke_v1",
             "label_definition": "net investable forward return",
             "return_convention": "simple_return",
@@ -659,7 +783,8 @@ def main() -> int:
         "newey_west_lags": 5,
         "cross_sectional_regression": "forward_return ~ signal + controls",
         "exposure_timing": "signal at t close",
-        "return_horizon": "t+1 close-to-close",
+        "return_horizon": "t+1 close to t+2 close",
+        "return_horizon_days": 1,
         "controls": ["size", "beta", "liquidity"],
         "required_for_acceptance": True,
         "evidence_role": "promotion_gate_evidence",
@@ -686,7 +811,8 @@ def main() -> int:
         "newey_west_lags": 5,
         "cross_sectional_regression": "forward_return ~ signal + controls",
         "exposure_timing": "signal at t close",
-        "return_horizon": "t+1 close-to-close",
+        "return_horizon": "t+1 close to t+2 close",
+        "return_horizon_days": 1,
         "controls": ["size", "beta", "liquidity"],
         "required_for_acceptance": False,
         "evidence_role": "diagnostic_evidence",

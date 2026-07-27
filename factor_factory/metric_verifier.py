@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -15,17 +17,40 @@ from factor_factory.research_evidence import (
 )
 from factor_factory.research_release import (
     MINIMUM_FORMAL_DAILY_PERIODS,
+    evaluation_contract_hash,
     observed_panel_dates,
     validate_evaluation_release_chain,
     validate_observed_oos_window,
 )
 
 
-VERIFIER_ID = "factorforge_step4_metric_verifier_v1"
-VERIFIER_CONTRACT_VERSION = "factorforge_metric_verifier_report_v1"
-VERIFIER_SPEC_VERSION = "factorforge_metric_verifier_spec_v1"
-THRESHOLD_REGISTRATION_VERSION = "factorforge_threshold_registration_v1"
+VERIFIER_ID = "factorforge_step4_metric_verifier_v2"
+VERIFIER_CONTRACT_VERSION = "factorforge_metric_verifier_report_v2"
+VERIFIER_SPEC_VERSION = "factorforge_metric_verifier_spec_v2"
+THRESHOLD_REGISTRATION_VERSION = "factorforge_threshold_registration_v2"
 SHA256_HEX_LENGTH = 64
+FORMAL_RETURN_PATH_MODE = "daily_one_period_forward_return"
+LABEL_CONTRACT_VERSION = "factorforge_daily_return_label_contract_v1"
+FORMAL_RETURN_FORMULA = "label_end_price/label_start_price-1"
+TRADING_CALENDAR_REGISTRY_VERSION = (
+    "factorforge_trusted_trading_calendar_registry_v1"
+)
+TRADING_CALENDAR_REGISTRY_RELATIVE_PATH = (
+    "docs/contracts/factorforge-trusted-trading-calendar-snapshots-v1.json"
+)
+TRADING_CALENDAR_REGISTRY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / TRADING_CALENDAR_REGISTRY_RELATIVE_PATH
+)
+TRADING_CALENDAR_REGISTRY_TRUST_COMMIT = (
+    "f3809e2c9610f2b434357d16fa53389aae07bcda"
+)
+TRADING_CALENDAR_REGISTRY_TRUST_BLOB = (
+    "3cc5b79f62da35330be4b9b30ce1d759af0fd152"
+)
+TRADING_CALENDAR_REGISTRY_TRUST_SHA256 = (
+    "81816dc7fac1213a9ba8442ac729e32447b25fd215b5a1a8dfcc26e55936d4d5"
+)
 
 
 def _stable_hash(payload: Any) -> str:
@@ -40,6 +65,59 @@ def _stable_hash(payload: Any) -> str:
 
 def verifier_source_sha256() -> str:
     return sha256_file(Path(__file__))
+
+
+def _load_trusted_calendar_registry() -> tuple[dict[str, Any], dict[str, str]]:
+    repo_root = Path(__file__).resolve().parents[1]
+    commit_ref = (
+        f"{TRADING_CALENDAR_REGISTRY_TRUST_COMMIT}:"
+        f"{TRADING_CALENDAR_REGISTRY_RELATIVE_PATH}"
+    )
+    try:
+        anchored_content = subprocess.run(
+            ["git", "-C", str(repo_root), "show", commit_ref],
+            check=True,
+            capture_output=True,
+        ).stdout
+        anchored_blob = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", commit_ref],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_TRUST_ANCHOR_MISSING"
+        ) from exc
+    anchored_sha256 = hashlib.sha256(anchored_content).hexdigest()
+    if (
+        anchored_blob != TRADING_CALENDAR_REGISTRY_TRUST_BLOB
+        or anchored_sha256 != TRADING_CALENDAR_REGISTRY_TRUST_SHA256
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_TRUST_ANCHOR_INVALID"
+        )
+    if not TRADING_CALENDAR_REGISTRY_PATH.is_file():
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_REGISTRY_MISSING"
+        )
+    if sha256_file(TRADING_CALENDAR_REGISTRY_PATH) != anchored_sha256:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_REGISTRY_DIVERGED"
+        )
+    try:
+        registry = json.loads(anchored_content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_REGISTRY_INVALID"
+        ) from exc
+    return registry, {
+        "trading_calendar_registry_sha256": anchored_sha256,
+        "trading_calendar_registry_git_commit": (
+            TRADING_CALENDAR_REGISTRY_TRUST_COMMIT
+        ),
+        "trading_calendar_registry_git_blob": anchored_blob,
+    }
 
 
 def _load_panel(path: Path) -> pd.DataFrame:
@@ -58,6 +136,10 @@ def metric_verifier_identities(
     panel_path: Path,
     spec: dict[str, Any],
 ) -> dict[str, Any]:
+    if spec.get("verification_scope") != "production":
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_VERIFICATION_SCOPE_INVALID"
+        )
     root = workspace_root.expanduser().resolve(strict=False)
     panel = panel_path.expanduser().resolve(strict=False)
     if panel != root and root not in panel.parents:
@@ -81,14 +163,20 @@ def metric_verifier_identities(
         raise ValueError(
             "BLOCK_FACTORFORGE_METRIC_VERIFIER_SPEC_INVALID:panel.date_column"
         )
-    observed = observed_panel_dates(
-        _load_panel(panel),
-        date_column=date_column,
+    frame = _prepare_panel(_load_panel(panel), spec)
+    observed = observed_panel_dates(frame, date_column=date_column)
+    label_path = _validate_label_path(
+        frame,
+        spec,
+        workspace_root=root,
     )
     return {
         "dataset_snapshot_hash": sha256_file(panel),
         "window_hash": _stable_hash(window_contract),
+        "evaluation_contract_hash": evaluation_contract_hash(spec),
+        "label_contract_hash": _stable_hash(spec.get("label_contract")),
         **observed,
+        **label_path,
     }
 
 
@@ -99,6 +187,10 @@ def _validate_spec(
 ) -> None:
     if spec.get("version") != VERIFIER_SPEC_VERSION:
         raise ValueError("BLOCK_FACTORFORGE_METRIC_VERIFIER_SPEC_INVALID:version")
+    if spec.get("verification_scope") != "production":
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_VERIFICATION_SCOPE_INVALID"
+        )
     for field in ("report_id", "factor_id"):
         if not isinstance(spec.get(field), str) or not spec[field].strip():
             raise ValueError(
@@ -124,6 +216,10 @@ def _validate_spec(
     if spec.get("window_hash") != identities["window_hash"]:
         raise ValueError(
             "BLOCK_FACTORFORGE_METRIC_VERIFIER_WINDOW_HASH_MISMATCH"
+        )
+    if spec.get("label_contract_hash") != identities["label_contract_hash"]:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_HASH_MISMATCH"
         )
     window = spec.get("window_contract")
     if window.get("evaluation_window_role") != "OOS_FINAL":
@@ -152,6 +248,100 @@ def _validate_spec(
             raise ValueError(
                 f"BLOCK_FACTORFORGE_METRIC_VERIFIER_SPEC_INVALID:panel.{field}"
             )
+    label_contract = spec.get("label_contract")
+    if not isinstance(label_contract, dict):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_MISSING"
+        )
+    if label_contract.get("version") != LABEL_CONTRACT_VERSION:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_INVALID:version"
+        )
+    for field in (
+        "signal_date_column",
+        "label_start_date_column",
+        "label_end_date_column",
+        "label_start_price_column",
+        "label_end_price_column",
+        "forward_return_column",
+        "return_formula",
+        "label_start_timestamp",
+        "label_end_timestamp",
+        "trading_calendar_ref",
+        "trading_calendar_id",
+        "trading_calendar_snapshot_id",
+        "trading_calendar_registry_git_commit",
+        "trading_calendar_registry_git_blob",
+    ):
+        if (
+            not isinstance(label_contract.get(field), str)
+            or not label_contract[field].strip()
+        ):
+            raise ValueError(
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_INVALID:"
+                f"{field}"
+            )
+    if (
+        label_contract["signal_date_column"] != panel["date_column"]
+        or label_contract["forward_return_column"]
+        != panel["forward_return_column"]
+        or label_contract["return_formula"] != FORMAL_RETURN_FORMULA
+        or label_contract["label_start_timestamp"]
+        != window.get("label_start_timestamp")
+        or label_contract["label_end_timestamp"]
+        != window.get("label_end_timestamp")
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_MAPPING_INVALID"
+        )
+    return_tolerance = label_contract.get("return_tolerance")
+    if (
+        isinstance(return_tolerance, bool)
+        or not isinstance(return_tolerance, (int, float))
+        or not 0 < float(return_tolerance) <= 1e-8
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_INVALID:"
+            "return_tolerance"
+        )
+    calendar_sha256 = label_contract.get("trading_calendar_sha256")
+    if (
+        not isinstance(calendar_sha256, str)
+        or len(calendar_sha256) != SHA256_HEX_LENGTH
+        or any(
+            char not in "0123456789abcdef"
+            for char in calendar_sha256.lower()
+        )
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_INVALID:"
+            "trading_calendar_sha256"
+        )
+    registry_sha256 = label_contract.get(
+        "trading_calendar_registry_sha256"
+    )
+    if (
+        not isinstance(registry_sha256, str)
+        or len(registry_sha256) != SHA256_HEX_LENGTH
+        or any(
+            char not in "0123456789abcdef"
+            for char in registry_sha256.lower()
+        )
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_INVALID:"
+            "trading_calendar_registry_sha256"
+        )
+    if (
+        label_contract.get("trading_calendar_registry_git_commit")
+        != TRADING_CALENDAR_REGISTRY_TRUST_COMMIT
+        or label_contract.get("trading_calendar_registry_git_blob")
+        != TRADING_CALENDAR_REGISTRY_TRUST_BLOB
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_INVALID:"
+            "trading_calendar_registry_git_identity"
+        )
     portfolio = spec.get("portfolio")
     if not isinstance(portfolio, dict):
         raise ValueError(
@@ -178,6 +368,7 @@ def _validate_spec(
         "cost_scope",
         "execution_assumption",
         "rebalance_frequency",
+        "return_path_mode",
     ):
         if (
             not isinstance(portfolio.get(field), str)
@@ -187,12 +378,25 @@ def _validate_spec(
                 "BLOCK_FACTORFORGE_METRIC_VERIFIER_SPEC_INVALID:"
                 f"portfolio.{field}"
             )
+    holding_period_days = portfolio.get("holding_period_days")
+    if (
+        isinstance(holding_period_days, bool)
+        or not isinstance(holding_period_days, int)
+        or holding_period_days < 1
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_SPEC_INVALID:"
+            "portfolio.holding_period_days"
+        )
     window = spec["window_contract"]
     for field in (
         "oos_window",
         "observed_start_date",
         "observed_end_date",
         "forward_return_horizon",
+        "label_start_timestamp",
+        "label_end_timestamp",
+        "forward_return_formula",
         "signal_timestamp",
         "execution_timestamp",
         "universe_id",
@@ -224,6 +428,39 @@ def _validate_spec(
         raise ValueError(
             "BLOCK_FACTORFORGE_METRIC_VERIFIER_SAMPLE_FREQUENCY_UNSUPPORTED"
         )
+    forward_return_horizon_days = window.get("forward_return_horizon_days")
+    if (
+        isinstance(forward_return_horizon_days, bool)
+        or not isinstance(forward_return_horizon_days, int)
+        or forward_return_horizon_days < 1
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_SPEC_INVALID:"
+            "window_contract.forward_return_horizon_days"
+        )
+    if window.get("execution_timestamp") != window.get(
+        "label_start_timestamp"
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_EXECUTION_LABEL_START_MISMATCH"
+        )
+    if window.get("path_is_disjoint") is not True:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_RETURN_PATH_NOT_DISJOINT"
+        )
+    if (
+        forward_return_horizon_days != 1
+        or holding_period_days != 1
+        or portfolio.get("return_path_mode") != FORMAL_RETURN_PATH_MODE
+        or portfolio.get("rebalance_frequency") != "daily"
+        or label_contract.get("signal_to_label_start_trading_days") != 1
+        or label_contract.get("holding_period_trading_days") != 1
+        or label_contract.get("path_is_disjoint") is not True
+        or window.get("forward_return_formula") != FORMAL_RETURN_FORMULA
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_MULTI_PERIOD_PORTFOLIO_PATH_REQUIRED"
+        )
     validate_observed_oos_window(window, identities)
     if spec.get("claim_class") == "risk_premium":
         controls = panel.get("control_columns")
@@ -246,16 +483,60 @@ def _validate_spec(
             raise ValueError(
                 "BLOCK_FACTORFORGE_METRIC_VERIFIER_BUCKET_DIRECTION_INVALID"
             )
+        fmb = spec.get("fama_macbeth")
+        fmb = fmb if isinstance(fmb, dict) else {}
+        lags = fmb.get("newey_west_lags")
+        if (
+            isinstance(lags, bool)
+            or not isinstance(lags, int)
+            or lags < forward_return_horizon_days - 1
+        ):
+            raise ValueError(
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_FAMA_MACBETH_LAGS_INSUFFICIENT"
+            )
 
 
 def _prepare_panel(frame: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
     panel = spec["panel"]
+    label_contract = spec.get("label_contract")
+    if not isinstance(label_contract, dict):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_MISSING"
+        )
     date_col = panel["date_column"]
     asset_col = panel["asset_column"]
     signal_col = panel["signal_column"]
     return_col = panel["forward_return_column"]
     controls = list(panel.get("control_columns") or [])
-    required = [date_col, asset_col, signal_col, return_col, *controls]
+    label_start_date_col = label_contract.get("label_start_date_column")
+    label_end_date_col = label_contract.get("label_end_date_column")
+    label_start_price_col = label_contract.get("label_start_price_column")
+    label_end_price_col = label_contract.get("label_end_price_column")
+    label_columns = [
+        label_start_date_col,
+        label_end_date_col,
+        label_start_price_col,
+        label_end_price_col,
+    ]
+    if any(
+        not isinstance(column, str) or not column.strip()
+        for column in label_columns
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CONTRACT_COLUMNS_INVALID"
+        )
+    required = list(
+        dict.fromkeys(
+            [
+                date_col,
+                asset_col,
+                signal_col,
+                return_col,
+                *controls,
+                *label_columns,
+            ]
+        )
+    )
     missing = sorted(set(required) - set(frame.columns))
     if missing:
         raise ValueError(
@@ -263,14 +544,31 @@ def _prepare_panel(frame: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
             + ",".join(missing)
         )
     work = frame[required].copy()
-    parsed_dates = pd.to_datetime(work[date_col], errors="coerce", utc=True)
-    if parsed_dates.isna().any():
-        raise ValueError(
-            "BLOCK_FACTORFORGE_METRIC_VERIFIER_PANEL_DATE_INVALID"
+    for column in (date_col, label_start_date_col, label_end_date_col):
+        parsed_dates = pd.to_datetime(
+            work[column],
+            errors="coerce",
+            utc=True,
         )
-    work[date_col] = parsed_dates.dt.strftime("%Y-%m-%d")
+        if parsed_dates.isna().any():
+            raise ValueError(
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_PANEL_DATE_INVALID:"
+                f"{column}"
+            )
+        work[column] = parsed_dates.dt.strftime("%Y-%m-%d")
     work[asset_col] = work[asset_col].astype(str)
-    for column in [signal_col, return_col, *controls]:
+    numeric_columns = list(
+        dict.fromkeys(
+            [
+                signal_col,
+                return_col,
+                *controls,
+                label_start_price_col,
+                label_end_price_col,
+            ]
+        )
+    )
+    for column in numeric_columns:
         work[column] = pd.to_numeric(work[column], errors="coerce")
     work = work.replace([np.inf, -np.inf], np.nan)
     work = work.dropna(subset=required)
@@ -306,7 +604,280 @@ def _prepare_panel(frame: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
         raise ValueError(
             "BLOCK_FACTORFORGE_METRIC_VERIFIER_SIMPLE_RETURN_RANGE_INVALID"
         )
+    if (
+        (work[label_start_price_col] <= 0).any()
+        or (work[label_end_price_col] <= 0).any()
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_PRICE_INVALID"
+        )
     return work.sort_values([date_col, asset_col]).reset_index(drop=True)
+
+
+def _validate_label_path(
+    frame: pd.DataFrame,
+    spec: dict[str, Any],
+    *,
+    workspace_root: Path,
+) -> dict[str, Any]:
+    panel = spec["panel"]
+    label = spec["label_contract"]
+    signal_date_col = label["signal_date_column"]
+    start_date_col = label["label_start_date_column"]
+    end_date_col = label["label_end_date_column"]
+    start_price_col = label["label_start_price_column"]
+    end_price_col = label["label_end_price_column"]
+    return_col = label["forward_return_column"]
+    asset_col = panel["asset_column"]
+
+    date_mapping = (
+        frame[
+            [
+                signal_date_col,
+                start_date_col,
+                end_date_col,
+            ]
+        ]
+        .drop_duplicates()
+        .sort_values(signal_date_col)
+    )
+    if date_mapping.duplicated(signal_date_col).any():
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_DATE_MAPPING_AMBIGUOUS"
+        )
+    if (
+        label.get("trading_calendar_ref")
+        != "factorforge_data_access.trade_cal_csv"
+        or label.get("trading_calendar_id")
+        != "cn_a_share_tushare_open_days"
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_AUTHORITY_INVALID"
+        )
+    configured_calendar = os.getenv(
+        "FACTORFORGE_TRUSTED_TRADE_CAL_CSV"
+    )
+    if configured_calendar:
+        calendar_path = Path(configured_calendar).expanduser().resolve(
+            strict=False
+        )
+    else:
+        from factor_factory.data_access.paths import (
+            resolve_local_tushare_paths,
+        )
+
+        calendar_path = Path(
+            resolve_local_tushare_paths().trade_cal_csv
+        ).expanduser().resolve(strict=False)
+    root = workspace_root.expanduser().resolve(strict=False)
+    if calendar_path == root or root in calendar_path.parents:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_NOT_INDEPENDENT"
+        )
+    if not calendar_path.is_file():
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_MISSING"
+        )
+    calendar_file_sha256 = sha256_file(calendar_path)
+    calendar_frame = pd.read_csv(
+        calendar_path,
+        usecols=lambda column: column
+        in {"exchange", "cal_date", "is_open"},
+        dtype={
+            "exchange": "string",
+            "cal_date": "string",
+            "is_open": "string",
+        },
+    )
+    if not {"cal_date", "is_open"}.issubset(calendar_frame.columns):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_DATES_INVALID"
+        )
+    if (
+        "exchange" in calendar_frame.columns
+        and (calendar_frame["exchange"] == "SSE").any()
+    ):
+        calendar_frame = calendar_frame[
+            calendar_frame["exchange"] == "SSE"
+        ]
+    raw_dates = (
+        calendar_frame.loc[
+            calendar_frame["is_open"].astype(str) == "1",
+            "cal_date",
+        ]
+        .astype(str)
+        .str.replace(".0", "", regex=False)
+        .str.zfill(8)
+        .tolist()
+    )
+    if not raw_dates:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_DATES_INVALID"
+        )
+    parsed_calendar = pd.to_datetime(
+        pd.Series(raw_dates, dtype="object"),
+        errors="coerce",
+        utc=True,
+    )
+    if parsed_calendar.isna().any():
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_DATES_INVALID"
+        )
+    calendar = parsed_calendar.dt.strftime("%Y-%m-%d").tolist()
+    if calendar != sorted(set(calendar)):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_DATES_INVALID"
+        )
+    source_snapshot_hash = _stable_hash(calendar)
+    if source_snapshot_hash != label.get("trading_calendar_sha256"):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_HASH_MISMATCH"
+        )
+    registry, registry_identity = _load_trusted_calendar_registry()
+    registry_sha256 = registry_identity[
+        "trading_calendar_registry_sha256"
+    ]
+    if (
+        registry_sha256 != label.get("trading_calendar_registry_sha256")
+        or registry_identity["trading_calendar_registry_git_commit"]
+        != label.get("trading_calendar_registry_git_commit")
+        or registry_identity["trading_calendar_registry_git_blob"]
+        != label.get("trading_calendar_registry_git_blob")
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_REGISTRY_HASH_MISMATCH"
+        )
+    if (
+        registry.get("version") != TRADING_CALENDAR_REGISTRY_VERSION
+        or registry.get("authority_id")
+        != label.get("trading_calendar_id")
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_REGISTRY_INVALID"
+        )
+    snapshot_id = label.get("trading_calendar_snapshot_id")
+    matching_snapshots = [
+        row
+        for row in registry.get("snapshots") or []
+        if isinstance(row, dict)
+        and row.get("snapshot_id") == snapshot_id
+    ]
+    if len(matching_snapshots) != 1:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_SNAPSHOT_ID_INVALID"
+        )
+    trusted_snapshot = matching_snapshots[0]
+    if (
+        trusted_snapshot.get("scope") != "production"
+        or trusted_snapshot.get("open_dates_sha256")
+        != source_snapshot_hash
+        or trusted_snapshot.get("raw_file_sha256") != calendar_file_sha256
+        or trusted_snapshot.get("date_count") != len(calendar)
+        or trusted_snapshot.get("date_min") != calendar[0]
+        or trusted_snapshot.get("date_max") != calendar[-1]
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_TRADING_CALENDAR_SNAPSHOT_UNTRUSTED"
+        )
+    calendar_index = {
+        value: index for index, value in enumerate(calendar)
+    }
+    required_dates = (
+        set(frame[signal_date_col])
+        | set(frame[start_date_col])
+        | set(frame[end_date_col])
+    )
+    if not required_dates.issubset(calendar_index):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_DATE_OUTSIDE_TRADING_CALENDAR"
+        )
+    for signal_date, start_date, end_date in date_mapping.itertuples(
+        index=False,
+        name=None,
+    ):
+        signal_index = calendar_index[signal_date]
+        start_index = calendar_index[start_date]
+        end_index = calendar_index[end_date]
+        if start_index != signal_index + 1 or end_index != start_index + 1:
+            raise ValueError(
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_PERIOD_NOT_ONE_TRADING_DAY"
+            )
+    signal_indices = [
+        calendar_index[value]
+        for value in date_mapping[signal_date_col].tolist()
+    ]
+    if any(
+        current != previous + 1
+        for previous, current in zip(signal_indices, signal_indices[1:])
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_DAILY_SIGNAL_COVERAGE_INCOMPLETE"
+        )
+
+    expected_return = (
+        frame[end_price_col].to_numpy(dtype=float)
+        / frame[start_price_col].to_numpy(dtype=float)
+        - 1.0
+    )
+    observed_return = frame[return_col].to_numpy(dtype=float)
+    tolerance = float(label["return_tolerance"])
+    absolute_error = np.abs(observed_return - expected_return)
+    if not np.all(
+        np.isclose(
+            observed_return,
+            expected_return,
+            rtol=0.0,
+            atol=tolerance,
+        )
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_FORWARD_RETURN_RECONCILIATION_FAILED"
+        )
+
+    intervals = list(
+        date_mapping[
+            [start_date_col, end_date_col]
+        ].itertuples(index=False, name=None)
+    )
+    if len(set(intervals)) != len(intervals):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_INTERVAL_DUPLICATE"
+        )
+    for previous, current in zip(intervals, intervals[1:]):
+        if current[0] < previous[1]:
+            raise ValueError(
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_PATH_OVERLAPS"
+            )
+    if frame.groupby(signal_date_col)[asset_col].nunique().min() < 1:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_LABEL_CROSS_SECTION_EMPTY"
+        )
+    return {
+        "label_contract_hash": _stable_hash(label),
+        "trading_calendar_sha256": source_snapshot_hash,
+        "trading_calendar_file_sha256": calendar_file_sha256,
+        "trading_calendar_registry_sha256": registry_sha256,
+        "trading_calendar_registry_git_commit": registry_identity[
+            "trading_calendar_registry_git_commit"
+        ],
+        "trading_calendar_registry_git_blob": registry_identity[
+            "trading_calendar_registry_git_blob"
+        ],
+        "trading_calendar_snapshot_id": snapshot_id,
+        "trading_calendar_source_snapshot_hash": source_snapshot_hash,
+        "verification_scope": "production",
+        "calendar_period_count": int(len(calendar)),
+        "label_observed_start_date": str(
+            date_mapping[start_date_col].min()
+        ),
+        "label_observed_end_date": str(date_mapping[end_date_col].max()),
+        "signal_period_count": int(len(date_mapping)),
+        "independent_path_period_count": int(len(set(intervals))),
+        "signal_coverage_ratio": 1.0,
+        "return_reconciliation_max_abs_error": float(
+            absolute_error.max(initial=0.0)
+        ),
+    }
 
 
 def _daily_rank_ic(
@@ -539,6 +1110,8 @@ def _build_metrics(
     long_quantile = float(portfolio["long_quantile"])
     cost_bps = float(portfolio["cost_bps_per_turnover"])
     other_annual_costs = float(portfolio["other_annual_costs"])
+    holding_period_days = int(portfolio["holding_period_days"])
+    return_path_mode = str(portfolio["return_path_mode"])
 
     ic_series = _daily_rank_ic(
         frame,
@@ -620,6 +1193,9 @@ def _build_metrics(
             "std_definition": "population_std_over_daily_rank_ic",
             "period_count": int(len(ic_series)),
             "horizon": str(spec["window_contract"]["forward_return_horizon"]),
+            "horizon_days": int(
+                spec["window_contract"]["forward_return_horizon_days"]
+            ),
             "evidence_role": "promotion_gate_evidence",
         },
         "icir": {
@@ -639,6 +1215,9 @@ def _build_metrics(
                 "constant daily arithmetic-mean growth benchmark versus actual "
                 f"daily geometric compounding, annualized by {annualization}"
             ),
+            "return_path_mode": return_path_mode,
+            "holding_period_days": holding_period_days,
+            "observation_frequency": "daily",
             "reconciliation_tolerance": 1e-10,
         },
         "transaction_cost": {
@@ -656,6 +1235,9 @@ def _build_metrics(
             "execution_assumption": str(portfolio["execution_assumption"]),
             "reconciliation_tolerance": 1e-10,
             "annual_return_convention": "arithmetic_mean_times_annualization",
+            "return_path_mode": return_path_mode,
+            "holding_period_days": holding_period_days,
+            "observation_frequency": "daily",
         },
         "drawdown": {
             "max_drawdown": max_drawdown,
@@ -664,6 +1246,9 @@ def _build_metrics(
             "nav_definition": (
                 "cumulative long-only net-of-cost NAV from verified forward returns"
             ),
+            "return_path_mode": return_path_mode,
+            "holding_period_days": holding_period_days,
+            "observation_frequency": "daily",
         },
         "long_end": {
             "gross_return_annual": gross_return_annual,
@@ -680,6 +1265,9 @@ def _build_metrics(
             ),
             "weighting": "equal_weight",
             "rebalance_frequency": str(portfolio["rebalance_frequency"]),
+            "return_path_mode": return_path_mode,
+            "holding_period_days": holding_period_days,
+            "observation_frequency": "daily",
             "annual_return_convention": (
                 "net_daily_simple_returns_geometrically_compounded"
             ),
@@ -760,6 +1348,9 @@ def _build_metrics(
             "return_horizon": str(
                 spec["window_contract"]["forward_return_horizon"]
             ),
+            "return_horizon_days": int(
+                spec["window_contract"]["forward_return_horizon_days"]
+            ),
             "controls": controls,
             "required_for_acceptance": True,
             "evidence_role": "promotion_gate_evidence",
@@ -787,6 +1378,10 @@ def _load_threshold_registration(
         "factor_id": spec["factor_id"],
         "claim_class": spec["claim_class"],
         "window_hash": identities["window_hash"],
+        "evaluation_contract_hash": identities[
+            "evaluation_contract_hash"
+        ],
+        "label_contract_hash": identities["label_contract_hash"],
     }
     for field, value in expected.items():
         if payload.get(field) != value:
@@ -877,6 +1472,47 @@ def run_metric_verifier(
             "metric_payload": metric_payload,
             "dataset_snapshot_hash": identities["dataset_snapshot_hash"],
             "window_hash": identities["window_hash"],
+            "evaluation_contract_hash": identities[
+                "evaluation_contract_hash"
+            ],
+            "label_contract_hash": identities["label_contract_hash"],
+            "trading_calendar_sha256": identities[
+                "trading_calendar_sha256"
+            ],
+            "trading_calendar_file_sha256": identities[
+                "trading_calendar_file_sha256"
+            ],
+            "trading_calendar_registry_sha256": identities[
+                "trading_calendar_registry_sha256"
+            ],
+            "trading_calendar_registry_git_commit": identities[
+                "trading_calendar_registry_git_commit"
+            ],
+            "trading_calendar_registry_git_blob": identities[
+                "trading_calendar_registry_git_blob"
+            ],
+            "trading_calendar_snapshot_id": identities[
+                "trading_calendar_snapshot_id"
+            ],
+            "trading_calendar_source_snapshot_hash": identities[
+                "trading_calendar_source_snapshot_hash"
+            ],
+            "calendar_period_count": identities["calendar_period_count"],
+            "label_observed_start_date": identities[
+                "label_observed_start_date"
+            ],
+            "label_observed_end_date": identities[
+                "label_observed_end_date"
+            ],
+            "signal_period_count": identities["signal_period_count"],
+            "independent_path_period_count": identities[
+                "independent_path_period_count"
+            ],
+            "signal_coverage_ratio": identities["signal_coverage_ratio"],
+            "return_reconciliation_max_abs_error": identities[
+                "return_reconciliation_max_abs_error"
+            ],
+            "verification_scope": identities["verification_scope"],
             "threshold_registration_sha256": threshold_sha256,
             "threshold_rule_set_sha256": rule_set_sha256,
             "source_panel_ref": str(resolved_panel.relative_to(root)),
@@ -896,6 +1532,10 @@ def run_metric_verifier(
             "sha256": sha256_file(evidence_path),
             "dataset_snapshot_hash": identities["dataset_snapshot_hash"],
             "window_hash": identities["window_hash"],
+            "evaluation_contract_hash": identities[
+                "evaluation_contract_hash"
+            ],
+            "label_contract_hash": identities["label_contract_hash"],
             "threshold_registration_sha256": threshold_sha256,
             "threshold_rule_set_sha256": rule_set_sha256,
             "verifier_id": VERIFIER_ID,
@@ -903,7 +1543,7 @@ def run_metric_verifier(
             "verifier_status": "PASS",
         }
     bundle = {
-        "version": "factorforge_metric_verifier_bundle_v1",
+        "version": "factorforge_metric_verifier_bundle_v2",
         "report_id": spec["report_id"],
         "factor_id": spec["factor_id"],
         "claim_class": spec["claim_class"],
@@ -912,6 +1552,43 @@ def run_metric_verifier(
         "verifier_status": "PASS",
         "dataset_snapshot_hash": identities["dataset_snapshot_hash"],
         "window_hash": identities["window_hash"],
+        "evaluation_contract_hash": identities[
+            "evaluation_contract_hash"
+        ],
+        "label_contract_hash": identities["label_contract_hash"],
+        "trading_calendar_sha256": identities["trading_calendar_sha256"],
+        "trading_calendar_file_sha256": identities[
+            "trading_calendar_file_sha256"
+        ],
+        "trading_calendar_registry_sha256": identities[
+            "trading_calendar_registry_sha256"
+        ],
+        "trading_calendar_registry_git_commit": identities[
+            "trading_calendar_registry_git_commit"
+        ],
+        "trading_calendar_registry_git_blob": identities[
+            "trading_calendar_registry_git_blob"
+        ],
+        "trading_calendar_snapshot_id": identities[
+            "trading_calendar_snapshot_id"
+        ],
+        "trading_calendar_source_snapshot_hash": identities[
+            "trading_calendar_source_snapshot_hash"
+        ],
+        "calendar_period_count": identities["calendar_period_count"],
+        "label_observed_start_date": identities[
+            "label_observed_start_date"
+        ],
+        "label_observed_end_date": identities["label_observed_end_date"],
+        "signal_period_count": identities["signal_period_count"],
+        "independent_path_period_count": identities[
+            "independent_path_period_count"
+        ],
+        "signal_coverage_ratio": identities["signal_coverage_ratio"],
+        "return_reconciliation_max_abs_error": identities[
+            "return_reconciliation_max_abs_error"
+        ],
+        "verification_scope": identities["verification_scope"],
         "threshold_registration_ref": str(threshold_path.relative_to(root)),
         "threshold_registration_sha256": threshold_sha256,
         "threshold_rule_set_sha256": rule_set_sha256,
@@ -997,6 +1674,43 @@ def validate_metric_verifier_report(
         "metric_payload": metrics[metric_name],
         "dataset_snapshot_hash": identities["dataset_snapshot_hash"],
         "window_hash": identities["window_hash"],
+        "evaluation_contract_hash": identities[
+            "evaluation_contract_hash"
+        ],
+        "label_contract_hash": identities["label_contract_hash"],
+        "trading_calendar_sha256": identities["trading_calendar_sha256"],
+        "trading_calendar_file_sha256": identities[
+            "trading_calendar_file_sha256"
+        ],
+        "trading_calendar_registry_sha256": identities[
+            "trading_calendar_registry_sha256"
+        ],
+        "trading_calendar_registry_git_commit": identities[
+            "trading_calendar_registry_git_commit"
+        ],
+        "trading_calendar_registry_git_blob": identities[
+            "trading_calendar_registry_git_blob"
+        ],
+        "trading_calendar_snapshot_id": identities[
+            "trading_calendar_snapshot_id"
+        ],
+        "trading_calendar_source_snapshot_hash": identities[
+            "trading_calendar_source_snapshot_hash"
+        ],
+        "calendar_period_count": identities["calendar_period_count"],
+        "label_observed_start_date": identities[
+            "label_observed_start_date"
+        ],
+        "label_observed_end_date": identities["label_observed_end_date"],
+        "signal_period_count": identities["signal_period_count"],
+        "independent_path_period_count": identities[
+            "independent_path_period_count"
+        ],
+        "signal_coverage_ratio": identities["signal_coverage_ratio"],
+        "return_reconciliation_max_abs_error": identities[
+            "return_reconciliation_max_abs_error"
+        ],
+        "verification_scope": identities["verification_scope"],
         "threshold_registration_sha256": sha256_file(threshold_path),
         "threshold_rule_set_sha256": threshold_payload.get("rule_set_sha256"),
         "source_panel_sha256": identities["dataset_snapshot_hash"],

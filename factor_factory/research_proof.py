@@ -13,6 +13,8 @@ from factor_factory.research_evidence import (
     validate_evidence_reference,
 )
 from factor_factory.metric_verifier import (
+    TRADING_CALENDAR_REGISTRY_TRUST_BLOB,
+    TRADING_CALENDAR_REGISTRY_TRUST_COMMIT,
     validate_metric_verifier_report,
     verifier_source_sha256,
 )
@@ -25,7 +27,7 @@ from factor_factory.research_release import (
 )
 
 
-CERTIFICATE_VERSION = "factorforge_factor_proof_certificate_v1"
+CERTIFICATE_VERSION = "factorforge_factor_proof_certificate_v2"
 VERDICTS = {"ACCEPT", "REJECT", "INCONCLUSIVE", "BLOCK"}
 COMMON_REQUIRED_METRICS = {
     "ic",
@@ -38,10 +40,10 @@ COMMON_REQUIRED_METRICS = {
 RISK_PREMIUM_REQUIRED_METRICS = {"fama_macbeth", "bucket_monotonicity"}
 PROMOTION_EVIDENCE_ROLE = "promotion_gate_evidence"
 SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
-THRESHOLD_REGISTRATION_VERSION = "factorforge_threshold_registration_v1"
-METRIC_VERIFIER_REPORT_VERSION = "factorforge_metric_verifier_report_v1"
+THRESHOLD_REGISTRATION_VERSION = "factorforge_threshold_registration_v2"
+METRIC_VERIFIER_REPORT_VERSION = "factorforge_metric_verifier_report_v2"
 TRUSTED_FACTOR_PROOF_VERIFIERS = {
-    "factorforge_step4_metric_verifier_v1",
+    "factorforge_step4_metric_verifier_v2",
 }
 
 
@@ -233,6 +235,14 @@ def _validate_evidence_bindings(
                     ),
                     ("threshold_rule_set_sha256", expected_threshold_rule_set_hash),
                     ("verifier_source_sha256", expected_verifier_source_hash),
+                    (
+                        "evaluation_contract_hash",
+                        data_contract.get("evaluation_contract_hash"),
+                    ),
+                    (
+                        "label_contract_hash",
+                        data_contract.get("label_contract_hash"),
+                    ),
                 ):
                     if evidence_payload.get(field) != expected:
                         reasons.append(
@@ -256,6 +266,10 @@ def _validate_evidence_bindings(
                     ("factor_id", payload.get("factor_id")),
                     ("claim_class", payload.get("claim_class")),
                     ("cost_policy_id", data_contract.get("cost_policy_id")),
+                    (
+                        "verification_scope",
+                        data_contract.get("verification_scope"),
+                    ),
                 ):
                     if verifier_spec.get(field) != expected:
                         reasons.append(
@@ -271,8 +285,16 @@ def _validate_evidence_bindings(
                 for certificate_field, verifier_field in (
                     ("sample_frequency", "sample_frequency"),
                     ("forward_return_horizon", "forward_return_horizon"),
+                    (
+                        "forward_return_horizon_days",
+                        "forward_return_horizon_days",
+                    ),
                     ("signal_timestamp", "signal_timestamp"),
                     ("execution_timestamp", "execution_timestamp"),
+                    ("label_start_timestamp", "label_start_timestamp"),
+                    ("label_end_timestamp", "label_end_timestamp"),
+                    ("forward_return_formula", "forward_return_formula"),
+                    ("path_is_disjoint", "path_is_disjoint"),
                     ("evaluation_window_role", "evaluation_window_role"),
                     ("oos_window", "oos_window"),
                     ("observed_start_date", "observed_start_date"),
@@ -296,6 +318,91 @@ def _validate_evidence_bindings(
                             "BLOCK_FACTORFORGE_FACTOR_PROOF_EVIDENCE_WINDOW_CONTRACT_MISMATCH:"
                             f"{metric_name}:{certificate_field}"
                         )
+                verifier_portfolio = verifier_spec.get("portfolio")
+                verifier_portfolio = (
+                    verifier_portfolio
+                    if isinstance(verifier_portfolio, dict)
+                    else {}
+                )
+                for certificate_field, verifier_field in (
+                    ("return_path_mode", "return_path_mode"),
+                    ("holding_period_days", "holding_period_days"),
+                    ("rebalance_frequency", "rebalance_frequency"),
+                ):
+                    if data_contract.get(
+                        certificate_field
+                    ) != verifier_portfolio.get(verifier_field):
+                        reasons.append(
+                            "BLOCK_FACTORFORGE_FACTOR_PROOF_EVIDENCE_PORTFOLIO_CONTRACT_MISMATCH:"
+                            f"{metric_name}:{certificate_field}"
+                        )
+                verifier_label = verifier_spec.get("label_contract")
+                verifier_label = (
+                    verifier_label
+                    if isinstance(verifier_label, dict)
+                    else {}
+                )
+                for certificate_field, verifier_field in (
+                    ("label_contract_version", "version"),
+                    ("signal_date_column", "signal_date_column"),
+                    ("label_start_date_column", "label_start_date_column"),
+                    ("label_end_date_column", "label_end_date_column"),
+                    ("label_start_price_column", "label_start_price_column"),
+                    ("label_end_price_column", "label_end_price_column"),
+                    ("forward_return_column", "forward_return_column"),
+                    ("return_tolerance", "return_tolerance"),
+                    ("trading_calendar_ref", "trading_calendar_ref"),
+                    ("trading_calendar_id", "trading_calendar_id"),
+                    (
+                        "trading_calendar_sha256",
+                        "trading_calendar_sha256",
+                    ),
+                    (
+                        "trading_calendar_registry_sha256",
+                        "trading_calendar_registry_sha256",
+                    ),
+                    (
+                        "trading_calendar_registry_git_commit",
+                        "trading_calendar_registry_git_commit",
+                    ),
+                    (
+                        "trading_calendar_registry_git_blob",
+                        "trading_calendar_registry_git_blob",
+                    ),
+                    (
+                        "trading_calendar_snapshot_id",
+                        "trading_calendar_snapshot_id",
+                    ),
+                ):
+                    if data_contract.get(
+                        certificate_field
+                    ) != verifier_label.get(verifier_field):
+                        reasons.append(
+                            "BLOCK_FACTORFORGE_FACTOR_PROOF_EVIDENCE_LABEL_CONTRACT_MISMATCH:"
+                            f"{metric_name}:{certificate_field}"
+                        )
+                for field in (
+                    "trading_calendar_sha256",
+                    "trading_calendar_file_sha256",
+                    "trading_calendar_registry_sha256",
+                    "trading_calendar_registry_git_commit",
+                    "trading_calendar_registry_git_blob",
+                    "trading_calendar_snapshot_id",
+                    "label_observed_start_date",
+                    "label_observed_end_date",
+                    "signal_period_count",
+                    "independent_path_period_count",
+                    "calendar_period_count",
+                    "signal_coverage_ratio",
+                    "trading_calendar_source_snapshot_hash",
+                    "return_reconciliation_max_abs_error",
+                    "verification_scope",
+                ):
+                    if data_contract.get(field) != evidence_payload.get(field):
+                        reasons.append(
+                            "BLOCK_FACTORFORGE_FACTOR_PROOF_EVIDENCE_LABEL_PATH_MISMATCH:"
+                            f"{metric_name}:{field}"
+                        )
                 for replay_reason in validate_metric_verifier_report(
                     evidence_payload,
                     workspace_root=workspace_root,
@@ -316,21 +423,56 @@ def _validate_data_contract(payload: dict[str, Any]) -> list[str]:
         "investability_mask_id",
         "sample_frequency",
         "forward_return_horizon",
+        "return_path_mode",
+        "rebalance_frequency",
         "signal_timestamp",
         "execution_timestamp",
+        "label_start_timestamp",
+        "label_end_timestamp",
+        "forward_return_formula",
+        "label_contract_version",
+        "signal_date_column",
+        "label_start_date_column",
+        "label_end_date_column",
+        "label_start_price_column",
+        "label_end_price_column",
+        "forward_return_column",
+        "trading_calendar_ref",
+        "trading_calendar_id",
         "cost_policy_id",
         "label_definition",
         "return_convention",
         "dataset_snapshot_hash",
         "window_hash",
+        "evaluation_contract_hash",
+        "label_contract_hash",
+        "trading_calendar_sha256",
+        "trading_calendar_file_sha256",
+        "trading_calendar_registry_sha256",
+        "trading_calendar_registry_git_commit",
+        "trading_calendar_registry_git_blob",
+        "trading_calendar_snapshot_id",
+        "trading_calendar_source_snapshot_hash",
         "observed_start_date",
         "observed_end_date",
+        "label_observed_start_date",
+        "label_observed_end_date",
         "search_trial_ledger_ref",
         "oos_release_manifest_ref",
+        "verification_scope",
     ):
         if not nonempty_str(contract.get(field)):
             reasons.append(f"BLOCK_FACTORFORGE_FACTOR_PROOF_DATA_CONTRACT_MISSING:{field}")
-    for field in ("dataset_snapshot_hash", "window_hash"):
+    for field in (
+        "dataset_snapshot_hash",
+        "window_hash",
+        "evaluation_contract_hash",
+        "label_contract_hash",
+        "trading_calendar_sha256",
+        "trading_calendar_file_sha256",
+        "trading_calendar_registry_sha256",
+        "trading_calendar_source_snapshot_hash",
+    ):
         value = contract.get(field)
         if (
             isinstance(value, str)
@@ -340,6 +482,81 @@ def _validate_data_contract(payload: dict[str, Any]) -> list[str]:
             reasons.append(
                 f"BLOCK_FACTORFORGE_FACTOR_PROOF_DATA_CONTRACT_HASH_INVALID:{field}"
             )
+    for field in (
+        "forward_return_horizon_days",
+        "holding_period_days",
+        "signal_period_count",
+        "independent_path_period_count",
+        "calendar_period_count",
+    ):
+        value = contract.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            reasons.append(
+                f"BLOCK_FACTORFORGE_FACTOR_PROOF_DATA_CONTRACT_INVALID:{field}"
+            )
+    return_tolerance = contract.get("return_tolerance")
+    if (
+        isinstance(return_tolerance, bool)
+        or not isinstance(return_tolerance, (int, float))
+        or not 0 < float(return_tolerance) <= 1e-8
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FACTOR_PROOF_DATA_CONTRACT_INVALID:"
+            "return_tolerance"
+        )
+    signal_coverage_ratio = contract.get("signal_coverage_ratio")
+    if (
+        isinstance(signal_coverage_ratio, bool)
+        or not isinstance(signal_coverage_ratio, (int, float))
+        or not math.isfinite(float(signal_coverage_ratio))
+        or not close_enough(float(signal_coverage_ratio), 1.0)
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FACTOR_PROOF_DATA_CONTRACT_INVALID:"
+            "signal_coverage_ratio"
+        )
+    reconciliation_error = contract.get(
+        "return_reconciliation_max_abs_error"
+    )
+    if (
+        isinstance(reconciliation_error, bool)
+        or not isinstance(reconciliation_error, (int, float))
+        or not math.isfinite(float(reconciliation_error))
+        or float(reconciliation_error) < 0
+        or (
+            isinstance(return_tolerance, (int, float))
+            and not isinstance(return_tolerance, bool)
+            and float(reconciliation_error) > float(return_tolerance)
+        )
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FACTOR_PROOF_DATA_CONTRACT_INVALID:"
+            "return_reconciliation_max_abs_error"
+        )
+    if (
+        contract.get("forward_return_horizon_days") != 1
+        or contract.get("holding_period_days") != 1
+        or contract.get("return_path_mode")
+        != "daily_one_period_forward_return"
+        or contract.get("rebalance_frequency") != "daily"
+        or contract.get("path_is_disjoint") is not True
+        or contract.get("forward_return_formula")
+        != "label_end_price/label_start_price-1"
+        or contract.get("label_contract_version")
+        != "factorforge_daily_return_label_contract_v1"
+        or contract.get("signal_period_count")
+        != contract.get("independent_path_period_count")
+        or contract.get("trading_calendar_sha256")
+        != contract.get("trading_calendar_source_snapshot_hash")
+        or contract.get("verification_scope") != "production"
+        or contract.get("trading_calendar_registry_git_commit")
+        != TRADING_CALENDAR_REGISTRY_TRUST_COMMIT
+        or contract.get("trading_calendar_registry_git_blob")
+        != TRADING_CALENDAR_REGISTRY_TRUST_BLOB
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FACTOR_PROOF_MULTI_PERIOD_PORTFOLIO_PATH_REQUIRED"
+        )
     if contract.get("oos_status") not in {
         "sealed",
         "released_once_for_final_evaluation",
@@ -392,6 +609,14 @@ def _validate_ic(payload: dict[str, Any]) -> list[str]:
         reasons.append("BLOCK_FACTORFORGE_FACTOR_PROOF_IC_PERIOD_COUNT_INVALID")
     if not nonempty_str(ic.get("horizon")):
         reasons.append("BLOCK_FACTORFORGE_FACTOR_PROOF_IC_HORIZON_MISSING")
+    if ic.get("horizon_days") != (
+        (payload.get("data_contract") or {}).get(
+            "forward_return_horizon_days"
+        )
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FACTOR_PROOF_IC_HORIZON_DAYS_MISMATCH"
+        )
     if ic.get("evidence_role") != PROMOTION_EVIDENCE_ROLE:
         reasons.append("BLOCK_FACTORFORGE_FACTOR_PROOF_IC_EVIDENCE_ROLE_INVALID")
     return reasons
@@ -468,6 +693,14 @@ def _validate_fama_macbeth(payload: dict[str, Any], claim_class: str) -> list[st
     for field in ("cross_sectional_regression", "exposure_timing", "return_horizon"):
         if not nonempty_str(fmb.get(field)):
             reasons.append(f"BLOCK_FACTORFORGE_FAMA_MACBETH_FIELD_MISSING:{field}")
+    if fmb.get("return_horizon_days") != (
+        (payload.get("data_contract") or {}).get(
+            "forward_return_horizon_days"
+        )
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FAMA_MACBETH_HORIZON_DAYS_MISMATCH"
+        )
     if not nonempty_list(fmb.get("controls")):
         reasons.append("BLOCK_FACTORFORGE_FAMA_MACBETH_CONTROLS_MISSING")
     if required and fmb.get("evidence_role") != PROMOTION_EVIDENCE_ROLE:
@@ -482,6 +715,43 @@ def _validate_fama_macbeth(payload: dict[str, Any], claim_class: str) -> list[st
     ic_period_count = _metric(payload, "ic").get("period_count")
     if required and fmb.get("period_count") != ic_period_count:
         reasons.append("BLOCK_FACTORFORGE_FAMA_MACBETH_SAMPLE_MISMATCH")
+    return reasons
+
+
+def _validate_return_path_binding(
+    payload: dict[str, Any],
+    metric_name: str,
+) -> list[str]:
+    reasons: list[str] = []
+    metric = _metric(payload, metric_name)
+    contract = payload.get("data_contract") or {}
+    for field in ("return_path_mode", "observation_frequency"):
+        if not nonempty_str(metric.get(field)):
+            reasons.append(
+                "BLOCK_FACTORFORGE_RETURN_PATH_CONTRACT_MISSING:"
+                f"{metric_name}:{field}"
+            )
+    holding_period_days = metric.get("holding_period_days")
+    if (
+        isinstance(holding_period_days, bool)
+        or not isinstance(holding_period_days, int)
+        or holding_period_days < 1
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_RETURN_PATH_CONTRACT_INVALID:"
+            f"{metric_name}:holding_period_days"
+        )
+    for field in ("return_path_mode", "holding_period_days"):
+        if metric.get(field) != contract.get(field):
+            reasons.append(
+                "BLOCK_FACTORFORGE_RETURN_PATH_CONTRACT_MISMATCH:"
+                f"{metric_name}:{field}"
+            )
+    if metric.get("observation_frequency") != "daily":
+        reasons.append(
+            "BLOCK_FACTORFORGE_RETURN_PATH_OBSERVATION_UNSUPPORTED:"
+            f"{metric_name}"
+        )
     return reasons
 
 
@@ -518,6 +788,7 @@ def _validate_volatility_cost(payload: dict[str, Any]) -> list[str]:
         reasons.append("BLOCK_FACTORFORGE_HALF_VARIANCE_BENCHMARK_RECONCILIATION_FAILED")
     if not nonempty_str(metric.get("return_compounding_convention")):
         reasons.append("BLOCK_FACTORFORGE_VOLATILITY_COST_CONVENTION_MISSING")
+    reasons.extend(_validate_return_path_binding(payload, "volatility_cost"))
     return reasons
 
 
@@ -561,6 +832,7 @@ def _validate_transaction_cost(payload: dict[str, Any]) -> list[str]:
     ):
         if not nonempty_str(metric.get(field)):
             reasons.append(f"BLOCK_FACTORFORGE_TRANSACTION_COST_CONVENTION_MISSING:{field}")
+    reasons.extend(_validate_return_path_binding(payload, "transaction_cost"))
     return reasons
 
 
@@ -578,6 +850,7 @@ def _validate_drawdown(payload: dict[str, Any]) -> list[str]:
         reasons.append("BLOCK_FACTORFORGE_DRAWDOWN_GEOMETRY_INVALID")
     if not nonempty_str(metric.get("nav_definition")):
         reasons.append("BLOCK_FACTORFORGE_DRAWDOWN_NAV_DEFINITION_MISSING")
+    reasons.extend(_validate_return_path_binding(payload, "drawdown"))
     return reasons
 
 
@@ -628,6 +901,7 @@ def _validate_long_end(payload: dict[str, Any]) -> list[str]:
         and not close_enough(coverage, 1.0)
     ):
         reasons.append("BLOCK_FACTORFORGE_LONG_END_SAMPLE_COVERAGE_MISMATCH")
+    reasons.extend(_validate_return_path_binding(payload, "long_end"))
     return reasons
 
 
@@ -780,6 +1054,10 @@ def _validate_threshold_registration(
         "factor_id": payload.get("factor_id"),
         "claim_class": payload.get("claim_class"),
         "window_hash": data_contract.get("window_hash"),
+        "evaluation_contract_hash": data_contract.get(
+            "evaluation_contract_hash"
+        ),
+        "label_contract_hash": data_contract.get("label_contract_hash"),
         "search_trial_ledger_ref": data_contract.get(
             "search_trial_ledger_ref"
         ),

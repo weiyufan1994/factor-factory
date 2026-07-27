@@ -510,15 +510,38 @@ def main() -> None:
         "command": packet,
     })
 
-    taskbook = run_cmd([sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", RID, "--executor", "dispatch_manifest"], root)
+    taskbook = run_cmd([sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", RID, "--executor", "dispatch_manifest", "--research-protocol", "off"], root)
     taskbook_path = root / "objects" / "research_iteration_master" / "revision_council" / RID / f"agentic_taskbook__{RID}.json"
     taskbook_payload = load_json(taskbook_path) if taskbook_path.exists() else {}
     tasks = taskbook_payload.get("agent_tasks") or []
+    blind_tasks = [
+        task
+        for task in tasks
+        if (task.get("blind_context_policy") or {}).get("blind_phase") is True
+    ]
+    critique_tasks = [
+        task
+        for task in tasks
+        if (task.get("blind_context_policy") or {}).get("blind_phase") is False
+    ]
     cases.append({
-        "case": "taskbook_requires_memo_critique",
+        "case": "taskbook_enforces_blind_then_memo_critique",
         "ok": taskbook["rc"] == 0
         and tasks
-        and all(task.get("main_agent_mechanism_memo_ref") for task in tasks)
+        and blind_tasks
+        and critique_tasks
+        and all(task.get("main_agent_mechanism_memo_ref") is None for task in blind_tasks)
+        and all(
+            "favored thesis is intentionally withheld"
+            in str(task.get("research_question") or "")
+            for task in blind_tasks
+        )
+        and all(task.get("main_agent_mechanism_memo_ref") for task in critique_tasks)
+        and all(
+            "Critique the main agent mechanism memo"
+            in str(task.get("research_question") or "")
+            for task in critique_tasks
+        )
         and all("main_agent_memo_agreement" in (task.get("required_outputs") or []) for task in tasks)
         and "main_agent_mechanism_memo_ref" in (taskbook_payload.get("shared_context") or {}),
         "command": taskbook,

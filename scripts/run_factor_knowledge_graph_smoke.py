@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,20 +37,44 @@ def main() -> None:
     if missing_template_keys:
         raise SystemExit(f"template missing keys: {missing_template_keys}")
 
-    build = run([sys.executable, "scripts/build_factor_knowledge_graph.py"])
+    tmp_dir = tempfile.TemporaryDirectory(
+        prefix="factorforge_knowledge_graph_smoke_"
+    )
+    graph_root = Path(tmp_dir.name)
+    node_index = graph_root / "factor_knowledge_nodes.jsonl"
+    edge_index = graph_root / "factor_knowledge_edges.jsonl"
+    manifest_path = graph_root / "factor_knowledge_graph_manifest.json"
+    query_paths = [
+        "--node-index",
+        str(node_index),
+        "--edge-index",
+        str(edge_index),
+    ]
+    build = run(
+        [
+            sys.executable,
+            "scripts/build_factor_knowledge_graph.py",
+            "--node-index",
+            str(node_index),
+            "--edge-index",
+            str(edge_index),
+            "--manifest",
+            str(manifest_path),
+        ]
+    )
     manifest = json.loads(build.stdout)
     if manifest.get("node_count", 0) < 4:
         raise SystemExit("expected at least four graph nodes covering multiple mechanisms")
     if manifest.get("edge_count", 0) < 10:
         raise SystemExit("expected at least ten graph edges")
 
-    query = run([sys.executable, "scripts/query_factor_knowledge_graph.py", "--tag", "first_passage", "--text", "moneyflow", "--top-k", "3"])
+    query = run([sys.executable, "scripts/query_factor_knowledge_graph.py", *query_paths, "--tag", "first_passage", "--text", "moneyflow", "--top-k", "3"])
     payload = json.loads(query.stdout)
     ids = [row.get("id") for row in payload.get("results") or []]
     if "node::moneyflow_feature_candidates_v15_v18_v19_20260617" not in ids:
         raise SystemExit(f"moneyflow first_passage node not found: {ids}")
 
-    occupation = run([sys.executable, "scripts/query_factor_knowledge_graph.py", "--tag", "occupation_measure", "--text", "support", "--top-k", "3"])
+    occupation = run([sys.executable, "scripts/query_factor_knowledge_graph.py", *query_paths, "--tag", "occupation_measure", "--text", "support", "--top-k", "3"])
     occupation_payload = json.loads(occupation.stdout)
     occupation_ids = [row.get("id") for row in occupation_payload.get("results") or []]
     if "node::vp_support_overhang_occupation_20260610" not in occupation_ids:
@@ -58,6 +83,7 @@ def main() -> None:
     residual = run([
         sys.executable,
         "scripts/query_factor_knowledge_graph.py",
+        *query_paths,
         "--tag",
         "math_mechanism:residualization",
         "--top-k",
@@ -68,7 +94,7 @@ def main() -> None:
     if "node::cs_residual_vol_20d_neg_20260616" not in residual_ids:
         raise SystemExit(f"residualization node not found: {residual_ids}")
 
-    buyside = run([sys.executable, "scripts/query_factor_knowledge_graph.py", "--tag", "buyside_style:microstructure_alpha", "--top-k", "20"])
+    buyside = run([sys.executable, "scripts/query_factor_knowledge_graph.py", *query_paths, "--tag", "buyside_style:microstructure_alpha", "--top-k", "20"])
     buyside_payload = json.loads(buyside.stdout)
     buyside_ids = [row.get("id") for row in buyside_payload.get("results") or []]
     expected_buyside_nodes = {
@@ -78,7 +104,7 @@ def main() -> None:
     if not expected_buyside_nodes <= set(buyside_ids):
         raise SystemExit(f"buyside microstructure nodes not found: {buyside_ids}")
 
-    flow_alpha = run([sys.executable, "scripts/query_factor_knowledge_graph.py", "--tag", "buyside_style:flow_alpha", "--top-k", "20"])
+    flow_alpha = run([sys.executable, "scripts/query_factor_knowledge_graph.py", *query_paths, "--tag", "buyside_style:flow_alpha", "--top-k", "20"])
     flow_alpha_payload = json.loads(flow_alpha.stdout)
     flow_alpha_ids = [row.get("id") for row in flow_alpha_payload.get("results") or []]
     expected_flow_alpha_nodes = {
@@ -88,7 +114,7 @@ def main() -> None:
     if not expected_flow_alpha_nodes <= set(flow_alpha_ids):
         raise SystemExit(f"buyside flow-alpha nodes not found: {flow_alpha_ids}")
 
-    edge_query = run([sys.executable, "scripts/query_factor_knowledge_graph.py", "--edge-type", "shares_failure_with", "--top-k", "5"])
+    edge_query = run([sys.executable, "scripts/query_factor_knowledge_graph.py", *query_paths, "--edge-type", "shares_failure_with", "--top-k", "5"])
     edge_payload = json.loads(edge_query.stdout)
     if not edge_payload.get("results"):
         raise SystemExit("expected shares_failure_with edge")
@@ -96,6 +122,8 @@ def main() -> None:
     context = run([
         sys.executable,
         "scripts/retrieve_factor_knowledge_context.py",
+        *query_paths,
+        "--no-build",
         "--tag",
         "first_passage",
         "--text",
@@ -113,7 +141,13 @@ def main() -> None:
         raise SystemExit("retrieved context must include mechanism")
     if not first_node.get("reuse_guidance"):
         raise SystemExit("retrieved context must include reuse_guidance")
-    module_context = retrieve_factor_knowledge_context(text="moneyflow first passage", tags=["first_passage"], top_k=2)
+    module_context = retrieve_factor_knowledge_context(
+        text="moneyflow first passage",
+        tags=["first_passage"],
+        top_k=2,
+        node_index=node_index,
+        edge_index=edge_index,
+    )
     if module_context.get("node_count", 0) < 1:
         raise SystemExit("module retrieval returned no graph nodes")
     similar_case = graph_node_to_similar_case(module_context["nodes"][0], score=3.0)
@@ -154,6 +188,7 @@ def main() -> None:
         "step2_context_integration_found": True,
         "step6_context_integration_found": True,
     }, ensure_ascii=False, indent=2))
+    tmp_dir.cleanup()
 
 
 if __name__ == "__main__":

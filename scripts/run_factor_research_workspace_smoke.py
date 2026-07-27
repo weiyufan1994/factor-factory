@@ -195,6 +195,62 @@ def main() -> int:
         '--research-id', research_id,
         '--dry-run',
     ]), 1, BLOCK_WORKSPACE_IDENTITY_INVALID))
+    results.append(expect_rc('ultimate_workspace_dry_run_proof_scoped', run([
+        sys.executable,
+        'scripts/run_factorforge_ultimate.py',
+        '--report-id', report_id,
+        '--start-step', '3',
+        '--end-step', '3',
+        '--factorforge-root', str(factorforge_root),
+        '--factor-workspace', str(workspace),
+        '--factor-id', factor_id,
+        '--research-id', research_id,
+        '--dry-run',
+    ]), 0))
+    ultimate_proof = (
+        workspace
+        / 'objects'
+        / 'runtime_context'
+        / f'ultimate_run_report__{report_id}.json'
+    )
+    if not ultimate_proof.is_file():
+        raise AssertionError(
+            f'workspace-scoped Ultimate proof missing: {ultimate_proof}'
+        )
+    dry_run_proof = json.loads(
+        ultimate_proof.read_text(encoding='utf-8')
+    )
+    if (
+        dry_run_proof.get('status') != 'DRY_RUN'
+        or dry_run_proof.get('formal_proof_eligible') is not False
+        or dry_run_proof.get('proof_semantics') != 'execution_plan_only'
+        or any(
+            row.get('status') != 'DRY_RUN'
+            for row in dry_run_proof.get('commands') or []
+            if isinstance(row, dict)
+        )
+    ):
+        raise AssertionError(
+            f'dry-run proof was exposed as formal PASS: {dry_run_proof}'
+        )
+    escaped_proof = root / 'outside_ultimate_proof.json'
+    results.append(expect_rc('ultimate_workspace_proof_escape_blocks', run([
+        sys.executable,
+        'scripts/run_factorforge_ultimate.py',
+        '--report-id', report_id,
+        '--start-step', '3',
+        '--end-step', '3',
+        '--factorforge-root', str(factorforge_root),
+        '--factor-workspace', str(workspace),
+        '--factor-id', factor_id,
+        '--research-id', research_id,
+        '--proof-output', str(escaped_proof),
+        '--dry-run',
+    ]), 1, BLOCK_OUTPUT_OUTSIDE_WORKSPACE))
+    if escaped_proof.exists():
+        raise AssertionError(
+            f'Ultimate wrote escaped proof despite blocker: {escaped_proof}'
+        )
 
     summary = {
         'verdict': 'ACCEPT',

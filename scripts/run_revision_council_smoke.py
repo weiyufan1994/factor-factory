@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.revision_council.validator import validate_revision_council_proposal
+from factor_factory.mechanism_math.main_agent_memo import build_main_agent_mechanism_memo
 
 CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
 
@@ -105,6 +106,111 @@ def run_cmd(root: Path, cmd: list[str]) -> dict[str, Any]:
     return {"command": cmd, "rc": proc.returncode, "stdout_tail": proc.stdout[-1600:], "stderr_tail": proc.stderr[-1600:]}
 
 
+def write_current_agent_memo_fixture(root: Path, rid: str) -> None:
+    obj = root / "objects"
+    spec = load_json(obj / "factor_spec_master" / f"factor_spec_master__{rid}.json")
+    case = load_json(obj / "factor_case_master" / f"factor_case_master__{rid}.json")
+    evaluation = load_json(obj / "validation" / f"factor_evaluation__{rid}.json")
+    iteration = load_json(obj / "research_iteration_master" / f"research_iteration_master__{rid}.json")
+    memo = build_main_agent_mechanism_memo(
+        report_id=rid,
+        factor_spec=spec,
+        factor_case=case,
+        evaluation_summary=evaluation,
+        step6_iteration=iteration,
+    )
+    memo["producer"] = "current_main_agent"
+    memo["agent_authorship"] = {
+        "authoring_mode": "current_agent_freeform",
+        "agent_role": "main_agent",
+        "runtime": "revision_council_smoke",
+        "answered_without_deterministic_template": True,
+    }
+    memo["mechanism_qa"] = {
+        "formula_state_answer": (
+            "The high and volume inputs enter rank and correlation operators, so the observable state is a short-window "
+            "cross-sectional price-volume rank association rather than a label imported from another factor family."
+        ),
+        "economic_hypothesis_answer": (
+            "The hypothesis is that temporary participation pressure and constrained liquidity transfer leave a conditional "
+            "next-period return when ranked intraday price location and ranked trading volume move together."
+        ),
+        "math_model_answer": (
+            "A copula rank-dependence model is the baseline because the expression contains an explicit correlation of ranked "
+            "high and ranked volume; its persistence and payoff sign must be estimated rather than narrated."
+        ),
+        "payer_answer": (
+            "Liquidity demanders and delayed inventory rebalancers are the proposed counterparties because they trade through "
+            "the observed participation-pressure state and may transfer immediacy or inventory-risk compensation."
+        ),
+        "payoff_answer": (
+            "The payoff object is E[r_i,t+1 | F_t, C_i,t], where C_i,t is the legal short-window rank association; the declared "
+            "sign must survive the high-score long side and explicit transaction costs."
+        ),
+        "estimator_mapping_answer": (
+            "Rank(high) and rank(volume) define marginal orderings, correlation measures their short-window association, and "
+            "the outer rank maps that association into the cross-sectional state C_i,t using only information in F_t."
+        ),
+        "metric_signature_answer": (
+            "The expected signature is aligned rank IC, positive high-score long-side return after costs, stable ordering in "
+            "the relevant risk-premium buckets, and turnover low enough to preserve the hypothesized payoff."
+        ),
+        "falsification_answer": (
+            "Falsify if rank IC changes sign out of sample; falsify if the high-score long side remains non-positive after "
+            "costs; kill the payer story if component ablation or turnover evidence contradicts the association state."
+        ),
+    }
+    signature = {
+        "rank_ic": "rank IC sign must match the declared payoff direction",
+        "long_side": "the high-score long side must be positive",
+        "cost_adjusted": "the long side must remain positive after transaction costs",
+        "monotonicity": "bucket ordering is required only if the claim is a risk premium",
+        "turnover": "turnover must not consume the expected payoff",
+    }
+    memo["economic_hypothesis"] = {
+        "return_source_class": "mixed",
+        "payer_or_counterparty": "liquidity demanders and delayed inventory rebalancers",
+        "why_they_pay": "immediacy demand and inventory constraints can transfer compensation through the observed price-volume association state",
+        "necessary_market_structure": "the state must persist into the legal forecast horizon and survive turnover and implementation costs",
+    }
+    memo["math_hypothesis"] = {
+        "selected_model_family": "copula_rank_dependence",
+        "why_this_model": "the expression explicitly applies correlation to ranked high and ranked volume observations",
+        "why_not_generic_template": "the model is selected from the actual high, volume, rank, correlation, sum, and outer-rank components",
+        "random_object": "security-day forward return conditional on F_t and the measured rank-association state",
+        "latent_state": "short-window price-volume rank-association and participation-pressure state",
+        "process_or_distribution": "C_i,t follows a conditional rank-association process and r_i,t+1 is distributed conditional on F_t and C_i,t",
+        "target_functional": "E[r_i,t+1 | F_t, C_i,t]",
+        "formula_as_estimator": memo["mechanism_qa"]["estimator_mapping_answer"],
+        "expected_metric_signature": signature,
+    }
+    memo["math_model_selection"] = {
+        "model_family": "copula_rank_dependence",
+        "baseline_model": "conditional forward return indexed by the rank-association state C_i,t",
+        "model_mutation": "separate association persistence, payoff sign, and component ablation before revising the expression",
+    }
+    memo["payer"] = {
+        "payer_or_counterparty": memo["economic_hypothesis"]["payer_or_counterparty"],
+        "why_they_pay": memo["economic_hypothesis"]["why_they_pay"],
+        "necessary_market_structure": memo["economic_hypothesis"]["necessary_market_structure"],
+    }
+    memo["formula_state_estimator"] = {
+        "latent_state": memo["math_hypothesis"]["latent_state"],
+        "observable_mapping": memo["mechanism_qa"]["estimator_mapping_answer"],
+        "component_links": memo.get("formula_component_map") or [],
+    }
+    memo["expected_metric_signature"] = signature
+    memo["falsification_tests"] = [
+        "Reject if OOS rank IC contradicts the declared payoff direction.",
+        "Reject if the high-score long side remains non-positive after costs.",
+        "Reject if component ablation removes the claimed association-state effect.",
+    ]
+    write_json(
+        obj / "research_iteration_master" / f"main_agent_mechanism_memo__{rid}.json",
+        memo,
+    )
+
+
 def make_fixture(root: Path, rid: str, *, signature: str, mechanism_fit: str = "partial", cost_adjusted: float = -0.1, loop_auth: str = "advisory_only") -> None:
     obj = root / "objects"
     identity = {
@@ -175,6 +281,7 @@ def make_fixture(root: Path, rid: str, *, signature: str, mechanism_fit: str = "
     write_json(obj / "factor_run_master" / f"factor_run_master__{rid}.json", {"report_id": rid, "factor_id": rid, "artifact_identity": {**identity, "artifact_role": "factor_run_master"}, "evaluation_results": {"backend_runs": []}})
     write_json(obj / "handoff" / f"handoff_to_step6__{rid}.json", {"report_id": rid, "factor_id": rid, "artifact_identity": {**identity, "artifact_role": "handoff_to_step6"}})
     write_json(obj / "factor_spec_master" / f"factor_spec_master__{rid}.json", {"report_id": rid, "factor_id": rid, "canonical_spec": {"formula_text": brief["economic_interpretation"]["formula"]}, "mechanism_math_contract": research_memo["mechanism_analysis"]["mechanism_math_contract"]})
+    write_current_agent_memo_fixture(root, rid)
 
 
 def council_flow(root: Path, rid: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -227,6 +334,8 @@ def supplemental_context_packet_case(root: Path) -> dict[str, Any]:
             "dispatch_manifest",
             "--runtime-dispatch",
             "manual_file",
+            "--research-protocol",
+            "off",
         ],
     )
     packet_payload = load_json(council_packet_path(root, rid)) if council_packet_path(root, rid).exists() else {}

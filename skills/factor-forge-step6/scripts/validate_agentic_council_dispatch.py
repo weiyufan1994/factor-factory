@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +30,14 @@ REQUIRED_OUTPUTS = {
     "kill_criteria",
     "overclaim_guard",
 }
+RESEARCH_PROTOCOL_REQUIRED_OUTPUTS = {
+    "approach_route",
+    "proof_obligation_updates",
+    "counterexamples",
+    "route_status",
+    "reopen_criteria",
+    "independence_attestation",
+}
 PRIOR_REVISION_REQUIRED_OUTPUTS = {
     "prior_revision_outcome_review",
     "repeated_revision_guard",
@@ -44,6 +53,14 @@ REQUIRED_FORBIDDEN_TARGET_SUFFIXES = {
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def resolve(path: str | None) -> Path:
@@ -147,6 +164,22 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_PACKET_VERSION_INVALID:{idx}")
     if packet.get("report_id") != report_id or manifest_task.get("task_id") != packet.get("task_id"):
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_PACKET_REPORT_ID_MISMATCH:{idx}")
+    for field in (
+        "agent_role",
+        "route_id",
+        "route_family",
+        "route_fingerprint",
+        "blind_context_hash",
+        "expected_agent_identifier",
+    ):
+        if manifest_task.get(field) != packet.get(field):
+            reasons.append(
+                f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_IDENTITY_MISMATCH:{idx}:{field}"
+            )
+    if manifest_task.get("task_packet_sha256") != sha256_file(packet_path):
+        reasons.append(
+            f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_PACKET_HASH_MISMATCH:{idx}"
+        )
     if packet.get("canonical_write_permission") is True:
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_CANONICAL_WRITE_PERMISSION:{idx}")
     if packet.get("execution_allowed_by_default") is True:
@@ -170,6 +203,39 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
     required_outputs = set(packet.get("required_outputs") or [])
     if not REQUIRED_OUTPUTS.issubset(required_outputs):
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_REQUIRED_OUTPUTS_MISSING")
+    if packet.get("research_protocol_version") == "factorforge_research_conjecture_protocol_v1":
+        if not RESEARCH_PROTOCOL_REQUIRED_OUTPUTS.issubset(required_outputs):
+            reasons.append(
+                "BLOCK_AGENTIC_COUNCIL_DISPATCH_RESEARCH_PROTOCOL_OUTPUTS_MISSING"
+            )
+        for field in ("route_id", "route_family"):
+            if not nonempty_str(packet.get(field)):
+                reasons.append(
+                    f"BLOCK_AGENTIC_COUNCIL_DISPATCH_RESEARCH_ROUTE_MISSING:{idx}:{field}"
+                )
+        if manifest_task.get("route_id") != packet.get("route_id"):
+            reasons.append(
+                f"BLOCK_AGENTIC_COUNCIL_DISPATCH_RESEARCH_ROUTE_MISMATCH:{idx}"
+            )
+        blind = packet.get("blind_context_policy")
+        blind = blind if isinstance(blind, dict) else {}
+        if blind.get("blind_phase") is True:
+            forbidden_context = {
+                "main_agent_mechanism_memo_ref",
+                "main_agent_math_hypothesis",
+                "final_revision_strategy",
+                "favored_route_id",
+            }
+            leaked = sorted(forbidden_context & set((packet.get("shared_context") or {}).keys()))
+            if leaked:
+                reasons.append(
+                    "BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_CONTEXT_LEAK:"
+                    + ",".join(leaked)
+                )
+            if blind.get("favored_thesis_visible") is not False:
+                reasons.append(
+                    f"BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_POLICY_INVALID:{idx}"
+                )
     shared_context = packet.get("shared_context") if isinstance(packet.get("shared_context"), dict) else {}
     prior_revision = shared_context.get("prior_revision_memory") if isinstance(shared_context.get("prior_revision_memory"), dict) else {}
     if prior_revision.get("required_for_next_council") is True:
@@ -195,6 +261,10 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_RESULT_CONTRACT_INVALID:{idx}")
     if "real_agent" not in (contract.get("producer_allowed") or []):
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_REAL_AGENT_NOT_ALLOWED:{idx}")
+    if contract.get("identity_binding_required") is not True:
+        reasons.append(
+            f"BLOCK_AGENTIC_COUNCIL_DISPATCH_RESULT_IDENTITY_BINDING_MISSING:{idx}"
+        )
     return reasons
 
 

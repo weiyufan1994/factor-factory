@@ -17,7 +17,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.runtime_context import resolve_factorforge_context
 from validate_agentic_council_collection import validate_collection
-from validate_agentic_council_result import validate_agentic_result
+from validate_agentic_council_result import (
+    expected_manifest_task,
+    validate_agentic_result,
+)
 
 TERMINAL_REJECTION_VERSION = "factorforge_terminal_council_rejection_v1"
 TOKEN_SUMMARY_MISSING = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_SUMMARY_MISSING"
@@ -187,7 +190,14 @@ def load_valid_terminal_results(root: Path, collection: dict[str, Any]) -> tuple
         except Exception as exc:
             invalid.append({"result_path": str(path), "block_reasons": [f"unreadable:{exc}"]})
             continue
-        reasons = validate_agentic_result(payload)
+        reasons = validate_agentic_result(
+            payload,
+            expected_task=expected_manifest_task(
+                str(collection.get("report_id") or ""),
+                path,
+            ),
+            expected_report_id=str(collection.get("report_id") or ""),
+        )
         if reasons:
             invalid.append({"result_path": str(path), "block_reasons": reasons})
             continue

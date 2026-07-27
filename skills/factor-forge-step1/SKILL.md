@@ -288,3 +288,30 @@ Step1 is still responsible for this seed. Missing payer, random object,
 information set, alias tests, or falsification design should set
 `research_quality_blocked` or `allowed_next_step=miner_only`, not a formal
 Step3 handoff.
+
+## Research Conjecture Protocol v1
+
+Step1 must also draft the semantic content for
+`factorforge_research_conjecture_protocol_v1`. This is not another prose
+summary. Freeze:
+
+- `claim_class`, before any metric is seen;
+- preferred, null and at least one alternative hypothesis;
+- economic-game participants, binding constraints, observable proxies and
+  falsifiers;
+- latent state, observation equation, estimator, return equation and legal
+  information set;
+- terminal success, reject and block conditions;
+- IS/OOS windows, sealed-OOS policy, purge/embargo, trial budget,
+  multiplicity, cost, impact and capacity policies;
+- at least three mechanism-distinct research-route questions, including a
+  null/alias attack.
+
+The default Step1 claim level is `narrative_only` or `math_framed`. Do not
+pretend that Step1 has validated metrics. A deterministic builder may preserve
+the current agent's authored packet, but it may not generate a payer, equation
+or route from a fixed family template and call that research.
+
+Knowledge retrieval occurs before this draft. Record matched cases, rejected
+analogies and cold-start status in the knowledge-reference contract; prior
+cases are priors and counterexample sources, never proof of the current factor.

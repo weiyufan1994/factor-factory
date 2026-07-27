@@ -417,11 +417,12 @@ handoff is not valid unless the gate contains:
 - `claim_level_assessment`;
 - `reviewer_attack_memo`.
 
-If the factor is still only `narrative_only` or `math_framed`, Step2 should
-write `allowed_next_step=miner_only` or `allowed_next_step=stop`, not a formal
-Step3 handoff. `metric_candidate` may go to cheap screen. Formal Ultimate
-Step3/Step4 requires at least `metric_consistent` or explicit human approval to
-run an exploratory formal pass. Missing payer/receiver hypothesis, random
+If the factor is still only `narrative_only`, Step2 should normally write
+`allowed_next_step=miner_only` or `allowed_next_step=stop`. `math_framed` or
+`metric_candidate` may enter a bounded formal exploratory pass only after the
+pre-Council conjecture protocol passes and the trial budget is frozen.
+`metric_consistent` cannot be claimed before executed metric evidence and an
+accepted factor-proof certificate. Missing payer/receiver hypothesis, random
 object, information set, alias-discriminating tests, or kill criteria is a
 research-quality BLOCK.
 
@@ -454,3 +455,31 @@ The v2 contract must include:
 Validators must block contracts that lack these fields, use generic SDE text,
 map formula components back to themselves, or claim a latent state that is only
 `close`, `volume`, a raw field, or a formula call such as `rank(close)`.
+
+## Research Conjecture Protocol v1
+
+Step2 is the formalization boundary. The current agent must harden the Step1
+draft into agent-authored:
+
+```text
+research_state
+research_conjecture
+approach_registry
+```
+
+The conjecture freezes `claim_class`, identity/hash lineage, dual hypotheses,
+economic game, mathematical mechanism, evidence controls and terminal
+conditions. The approach registry must contain at least three distinct route
+families, at least two blind early routes, executable proof-obligation targets,
+route fingerprints, blind-context hashes and explicit blocked/reopen semantics.
+
+Materialize these artifacts with
+`scripts/write_factorforge_research_protocol.py`; the command validates inputs
+but never invents semantics. `scripts/run_factorforge_ultimate.py` must run the
+`pre_council` gate before Council or later formal work. A complete Step2
+factor-spec artifact does not compensate for a missing or generic conjecture.
+
+Step2 must not choose `risk_premium` after seeing attractive monotonic buckets.
+The claim class comes from the economic hypothesis. Fama-MacBeth and
+quintile/decile monotonicity become mandatory final obligations only for a
+frozen `risk_premium` claim.

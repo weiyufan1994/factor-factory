@@ -121,10 +121,12 @@ def run_ultimate(root: Path, rid: str, executor: str, extra_env: dict[str, str] 
         "--skip-researcher-packets",
         "--factorforge-root",
         str(root),
+        "--allow-legacy-global-runtime",
         "--council-mode",
         "agentic",
         "--agentic-council-executor",
         executor,
+        "--allow-legacy-research-protocol-smoke",
     ]
     proc = run_cmd(root, cmd, extra_env=extra_env)
     return proc, load_json(proof_path(root, rid))
@@ -175,6 +177,11 @@ def case_ignores_stale_scaffold(root: Path) -> dict[str, Any]:
     branches = summary.get("recommended_branch_templates") or []
     deterministic_ids = {"cost_turnover_001", "economic_mechanism_001"}
     branch_source_ids = [branch.get("source_proposal_id") for branch in branches if isinstance(branch, dict)]
+    agentic_ids = {
+        str(item.get("task_id"))
+        for item in summary.get("valid_agent_results") or []
+        if isinstance(item, dict) and item.get("task_id")
+    }
     ok = (
         all(item["rc"] == 0 for item in setup_runs)
         and bool(stale_paths)
@@ -183,11 +190,9 @@ def case_ignores_stale_scaffold(root: Path) -> dict[str, Any]:
         and summary.get("deterministic_fallback_used") is False
         and len(summary.get("valid_agent_results") or []) == 5
         and bool(summary.get("ignored_deterministic_proposals"))
-        and selected_ids
-        and all(isinstance(item, str) and item.startswith("agent_") for item in selected_ids)
+        and set(selected_ids) == agentic_ids
         and not (deterministic_ids & set(selected_ids))
-        and branch_source_ids
-        and all(isinstance(item, str) and item.startswith("agent_") for item in branch_source_ids)
+        and set(branch_source_ids).issubset(agentic_ids)
         and not (deterministic_ids & set(branch_source_ids))
         and final_strategy.get("source") == "revision_council"
     )
@@ -241,7 +246,9 @@ def case_all_invalid_merge(root: Path) -> dict[str, Any]:
     env = {"FACTORFORGE_ROOT": str(root)}
     cmds = [
         [sys.executable, "skills/factor-forge-step6/scripts/build_revision_council_packet.py", "--report-id", rid],
-        [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", rid],
+        [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", rid, "--research-protocol", "off"],
+        [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py", "--report-id", rid],
+        [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py", "--report-id", rid],
         [sys.executable, "skills/factor-forge-step6/scripts/run_agentic_council_local_mock.py", "--report-id", rid],
     ]
     runs = [run_cmd(root, cmd, env) for cmd in cmds]

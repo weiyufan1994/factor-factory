@@ -37,12 +37,25 @@ Current practical backend maturity:
 Step 4 produces evidence; it does not declare victory.
 
 Every serious Step4 run should separate:
-- signal evidence: IC, rank IC, grouped spread, decile monotonicity,
+- signal evidence: IC, rank IC, grouped spread, and diagnostic bucket shape
+  (formal monotonicity only for a frozen risk-premium claim),
 - portfolio evidence: NAV/account, turnover, cost sensitivity, drawdown, benchmark relation,
 - robustness evidence: window, year, regime, universe, and liquidity buckets,
 - evidence gaps: positive IC but weak portfolio, backend success but missing payload, good spread driven only by short side.
 
 These distinctions must be visible enough for Step5/6 to judge whether the metrics support the return source or only the current implementation.
+
+For a final factor-proof certificate, preregister through
+`scripts/write_factorforge_evaluation_release_chain.py` before releasing a
+workspace-local OOS panel with date, asset, signal, legal forward return and
+risk controls. Actual dates and at least 60 daily periods are checked at
+release. Then run `scripts/build_factorforge_metric_verifier_reports.py`. This deterministic
+verifier, not Step4 narrative output, supplies the hash-bound IC/ICIR,
+long-only cost/risk/return and claim-specific risk-premium evidence used by the
+promotion kernel. When Step6 may claim component validation, Step4 must also
+materialize a same-window full-versus-ablated panel with legal forward return
+for `scripts/build_factorforge_component_obligation_report.py`; an ablation
+summary written in prose is diagnostic only.
 
 ## Inputs
 

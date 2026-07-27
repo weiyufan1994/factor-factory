@@ -594,8 +594,10 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
         '--skip-researcher-packets',
         '--factorforge-root',
         str(root),
+        '--allow-legacy-global-runtime',
         '--council-mode',
         'off',
+        '--allow-legacy-research-protocol-smoke',
         '--proof-output',
         str(proof),
     ]
@@ -603,6 +605,7 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
     env['FACTORFORGE_ROOT'] = str(root)
     env['FACTORFORGE_RETRIEVAL_INDEX'] = str(retrieval_index)
     env['FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL'] = '1'
+    env['FACTORFORGE_DISABLE_GRAPH_KNOWLEDGE_CONTEXT'] = '1'
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, text=True, capture_output=True)
     output = proc.stdout + '\n' + proc.stderr
     if proof.exists():
@@ -1805,11 +1808,23 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
     taxonomy_brief.setdefault('formula_specific_derivation', {})['selected_model_family'] = 'stochastic_process'
     write_json(iteration_path, taxonomy_iteration)
     write_json(json_path, taxonomy_brief)
-    md_path.write_text(
-        original_md
-        + "\n\nPhase Q taxonomy: price_volume_microstructure uses stochastic_process math_tool_family and conditional_diffusion_with_flow_impact equations.\n",
-        encoding='utf-8',
+    taxonomy_md = original_md
+    for old, new in {
+        '- Economic mechanism family: price_volume_microstructure':
+            '- Economic mechanism family: transient_impact',
+        '- Math tool family: price_volume_microstructure':
+            '- Math tool family: stochastic_process',
+        '- Model equation family: under_specified':
+            '- Model equation family: conditional_diffusion_with_flow_impact',
+        '- Selected model family: transient_impact':
+            '- Selected model family: stochastic_process',
+    }.items():
+        taxonomy_md = taxonomy_md.replace(old, new)
+    taxonomy_md += (
+        "\n\nPhase Q taxonomy: the selected stochastic_process model is retained; "
+        "valuation_identity is recorded only as a rejected alternative.\n"
     )
+    md_path.write_text(taxonomy_md, encoding='utf-8')
     taxonomy_proc = validate_step6_report(root, source_report_id)
     taxonomy_output = taxonomy_proc.stdout + '\n' + taxonomy_proc.stderr
     cases['loop_research_brief_allows_math_tool_family_token'] = {

@@ -405,7 +405,7 @@ def case_missing_metrics_blocks(root: Path) -> dict[str, Any]:
 
 
 def case_non_tmp_root_blocks() -> dict[str, Any]:
-    root = REPO_ROOT / "_factorforge_multibranch_comparison_non_tmp_probe"
+    root = Path.home() / ".factorforge_multibranch_comparison_non_tmp_probe"
     proc = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "run_factorforge_multibranch_comparison_smoke.py"), "--root", str(root)],
         cwd=str(REPO_ROOT),

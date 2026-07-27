@@ -213,6 +213,16 @@ def build_derivation_record(packet: dict[str, Any], proposal: dict[str, Any]) ->
                 ],
             }
         ],
+        "limiting_cases": [
+            {
+                "polarity": "positive",
+                "case": "If the proposed state is persistent and its payer mechanism is real, OOS long-side evidence should improve without a disproportionate increase in turnover.",
+            },
+            {
+                "polarity": "negative",
+                "case": "If the state is noise, an alias, or too transient to monetize, the gross effect should disappear or become non-positive after costs.",
+            },
+        ],
         "revision_hypotheses": [
             {
                 "hypothesis": first_law.get("law_statement") or "Test the expression-level direction only after human approval.",

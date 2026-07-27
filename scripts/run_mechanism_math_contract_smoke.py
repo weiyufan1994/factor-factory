@@ -552,6 +552,7 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
     }
     results: dict[str, Any] = {}
     ok = True
+    awaiting_main_agent_memo = False
     for name, cmd in commands.items():
         command_env = debug_env if name in {"run_step5", "run_step6"} else validate_env
         proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=command_env, text=True, capture_output=True)
@@ -561,6 +562,11 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
             "stdout_tail": proc.stdout[-1600:],
             "stderr_tail": proc.stderr[-1600:],
         }
+        if name == "run_step6" and proc.returncode != 0:
+            output = proc.stdout + proc.stderr
+            awaiting_main_agent_memo = "AWAITING_MAIN_AGENT_MECHANISM_MEMO" in output
+            if awaiting_main_agent_memo:
+                break
         if proc.returncode != 0:
             ok = False
             break
@@ -577,11 +583,21 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
     contract = spec_after.get("mechanism_math_contract") or {}
     case_path = root / "objects" / "factor_case_master" / f"factor_case_master__{rid}.json"
     iteration_path = root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json"
-    ok = ok and all(preserved.values()) and bool(contract) and case_path.exists() and iteration_path.exists()
+    questionnaire_path = root / "objects" / "research_iteration_master" / f"main_agent_mechanism_questionnaire__{rid}.json"
+    questionnaire = json.loads(questionnaire_path.read_text(encoding="utf-8")) if questionnaire_path.exists() else {}
+    ok = (
+        ok
+        and awaiting_main_agent_memo
+        and all(preserved.values())
+        and bool(contract)
+        and case_path.exists()
+        and questionnaire.get("report_id") == rid
+        and questionnaire.get("execution_allowed_by_default") is False
+    )
     return case_result(
-        "legacy_step2_missing_mechanism_math_backfill_step5_step6_pass",
+        "legacy_step2_missing_mechanism_math_backfill_reaches_main_agent_gate",
         ok,
-        "legacy factor_spec missing mechanism_math_contract -> backfill top-level only -> Step5/6 PASS with lineage preserved",
+        "legacy factor_spec missing mechanism_math_contract -> backfill top-level only -> Step5 PASS -> Step6 writes questionnaire and awaits a current-agent memo",
         {
             "commands": results,
             "lineage_preserved": preserved,
@@ -589,8 +605,10 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
             "model_family": contract.get("model_family"),
             "factor_case_exists": case_path.exists(),
             "research_iteration_exists": iteration_path.exists(),
+            "awaiting_main_agent_memo": awaiting_main_agent_memo,
+            "questionnaire_exists": questionnaire_path.exists(),
         },
-        str(iteration_path) if iteration_path.exists() else str(case_path),
+        str(questionnaire_path) if questionnaire_path.exists() else str(case_path),
     )
 
 

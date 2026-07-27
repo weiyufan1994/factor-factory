@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_workspace import (
+    BLOCK_OUTPUT_OUTSIDE_WORKSPACE,
     BLOCK_WORKSPACE_MISSING,
     build_workspace_manifest,
     default_workspace_root,
@@ -662,6 +663,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--subagent-provider', default=None)
     ap.add_argument('--subagent-model', default=None)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--allow-legacy-research-protocol-smoke', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--proof-output', default=None)
     return ap.parse_args()
 
@@ -727,20 +729,59 @@ def main() -> int:
             print('\n'.join(failures))
             return 1
     ctx = resolve_factorforge_context(args.factorforge_root, factor_workspace=factor_workspace)
+    legacy_protocol_smoke = bool(
+        args.allow_legacy_research_protocol_smoke
+        and (
+            str(ctx.active_root).startswith('/tmp/')
+            or str(ctx.active_root).startswith('/private/tmp/')
+        )
+        and ('SMOKE' in args.report_id or args.report_id.startswith('STEP6_INTEL_'))
+    )
+    if args.allow_legacy_research_protocol_smoke and not legacy_protocol_smoke:
+        print('BLOCK_FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE_SCOPE_INVALID')
+        return 1
     if args.manifest:
         manifest_path = Path(args.manifest).expanduser()
         manifest = runtime_manifest_from_args if runtime_manifest_from_args else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
     else:
         manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
-        manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
+        if ctx.factor_workspace:
+            manifest_path = (
+                ctx.objects_root
+                / 'runtime_context'
+                / f'factorforge_runtime_manifest__{args.report_id}.json'
+            )
+        else:
+            manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
         write_json_atomic(manifest_path, manifest)
 
     if args.proof_output:
-        proof_path = Path(args.proof_output).expanduser()
+        proof_path = Path(args.proof_output).expanduser().resolve(
+            strict=False
+        )
+    elif ctx.factor_workspace:
+        proof_path = (
+            ctx.objects_root
+            / 'runtime_context'
+            / f'ultimate_run_report__{args.report_id}.json'
+        )
     elif args.dry_run:
         proof_path = Path(tempfile.gettempdir()) / f'ultimate_run_report__{args.report_id}.json'
     else:
         proof_path = ctx.objects_root / 'runtime_context' / f'ultimate_run_report__{args.report_id}.json'
+    if ctx.factor_workspace:
+        active_root = ctx.active_root.resolve(strict=False)
+        resolved_proof = proof_path.resolve(strict=False)
+        if (
+            resolved_proof != active_root
+            and active_root not in resolved_proof.parents
+        ):
+            print(
+                f'{BLOCK_OUTPUT_OUTSIDE_WORKSPACE}: '
+                f'proof_output={resolved_proof}'
+            )
+            return 1
+        proof_path = resolved_proof
     env = os.environ.copy()
     env.pop('FACTORFORGE_ALLOW_DIRECT_STEP', None)
     env.pop('FACTORFORGE_ALLOW_LEGACY_STEP6_HANDOFF', None)
@@ -751,6 +792,8 @@ def main() -> int:
         env['FACTORFORGE_FACTOR_WORKSPACE_MANIFEST'] = str(ctx.factor_workspace_manifest or (ctx.factor_workspace / 'manifest.json'))
         env.setdefault('FACTORFORGE_DATA_CATALOG', str(ctx.factorforge_root / 'data' / 'catalog' / 'data_catalog.json'))
     env['FACTORFORGE_ULTIMATE_RUN'] = '1'
+    if legacy_protocol_smoke:
+        env['FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE'] = '1'
 
     py = sys.executable
     commands: list[tuple[str, list[str]]] = []
@@ -758,6 +801,7 @@ def main() -> int:
     if runtime_dispatch is None:
         runtime_dispatch = 'manual_file' if args.agentic_dispatch_adapter == 'manual_file' else 'unknown'
     taskbook_runtime_args = ['--runtime-dispatch', runtime_dispatch]
+    taskbook_protocol_mode = 'off' if legacy_protocol_smoke else 'required'
     if args.subagent_provider:
         taskbook_runtime_args.extend(['--subagent-provider', args.subagent_provider])
     if args.subagent_model:
@@ -769,6 +813,38 @@ def main() -> int:
     if '2' in steps:
         commands.append(('run_step2', [py, 'skills/factor-forge-step2/scripts/run_step2.py', '--report-id', args.report_id]))
         commands.append(('validate_step2', [py, 'skills/factor-forge-step2/scripts/validate_step2.py', '--report-id', args.report_id]))
+        if '6' in steps and not legacy_protocol_smoke:
+            commands.append(
+                (
+                    'validate_research_protocol_pre_council',
+                    [
+                        py,
+                        'scripts/validate_factorforge_research_protocol.py',
+                        '--workspace-root',
+                        str(ctx.active_root),
+                        '--report-id',
+                        args.report_id,
+                        '--stage',
+                        'pre_council',
+                    ],
+                )
+            )
+    elif '6' in steps and not legacy_protocol_smoke:
+        commands.append(
+            (
+                'validate_research_protocol_pre_council',
+                [
+                    py,
+                    'scripts/validate_factorforge_research_protocol.py',
+                    '--workspace-root',
+                    str(ctx.active_root),
+                    '--report-id',
+                    args.report_id,
+                    '--stage',
+                    'pre_council',
+                ],
+            )
+        )
 
     if '3' in steps and not args.skip_step3a:
         commands.append(('run_step3', [py, 'skills/factor-forge-step3/scripts/run_step3.py', '--manifest', str(manifest_path)]))
@@ -807,8 +883,21 @@ def main() -> int:
         'end_step': end,
         'requested_steps': steps,
         'dry_run': bool(args.dry_run),
+        'contract_smoke_only': bool(legacy_protocol_smoke),
+        'formal_proof_eligible': False,
         'status': 'RUNNING',
         'commands': [],
+        'formal_command_contract': {
+            'required_command_names': [name for name, _ in commands],
+            'research_protocol_verifier_required': (
+                '6' in steps and not legacy_protocol_smoke
+            ),
+            'research_protocol_verifier_name': (
+                'validate_research_protocol_pre_council'
+            ),
+            'all_commands_must_execute_and_pass': True,
+            'satisfied': False,
+        },
         'child_env_policy': {
             'FACTORFORGE_ULTIMATE_RUN': '1',
             'removed': ['FACTORFORGE_ALLOW_DIRECT_STEP', 'FACTORFORGE_ALLOW_LEGACY_STEP6_HANDOFF'],
@@ -1039,14 +1128,32 @@ def main() -> int:
                 provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(council_root, args.report_id)
                 side_effect_before = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
                 if effective_mode in {'agentic_dispatch_manifest', 'agentic_contract_mock'}:
+                    council_dir = (
+                        council_root
+                        / 'objects'
+                        / 'research_iteration_master'
+                        / 'revision_council'
+                        / args.report_id
+                    )
+                    existing_dispatch_manifest = (
+                        council_dir / f'dispatch_manifest__{args.report_id}.json'
+                    )
                     if effective_mode == 'agentic_dispatch_manifest':
-                        council_commands = [
-                            ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
-                            ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'dispatch_manifest', *taskbook_runtime_args]),
-                            ('build_agentic_council_dispatch_manifest', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py', '--report-id', args.report_id]),
-                            ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
-                        ]
-                        if args.agentic_dispatch_adapter == 'manual_file':
+                        if existing_dispatch_manifest.exists():
+                            council_commands = [
+                                ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
+                            ]
+                        else:
+                            council_commands = [
+                                ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
+                                ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'dispatch_manifest', '--research-protocol', taskbook_protocol_mode, *taskbook_runtime_args]),
+                                ('build_agentic_council_dispatch_manifest', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py', '--report-id', args.report_id]),
+                                ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
+                            ]
+                        if (
+                            args.agentic_dispatch_adapter == 'manual_file'
+                            and not existing_dispatch_manifest.exists()
+                        ):
                             council_commands.extend(
                                 [
                                     ('build_agentic_council_manual_dispatch_bundle', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_manual_dispatch_bundle.py', '--report-id', args.report_id]),
@@ -1055,16 +1162,35 @@ def main() -> int:
                                 ]
                             )
                     else:
-                        council_commands = [
-                            ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
-                            ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'local_mock', *taskbook_runtime_args]),
-                            ('run_agentic_council_local_mock', [py, 'skills/factor-forge-step6/scripts/run_agentic_council_local_mock.py', '--report-id', args.report_id]),
-                            ('validate_agentic_council_result', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_result.py', '--report-id', args.report_id]),
-                            ('merge_revision_council', [py, 'skills/factor-forge-step6/scripts/merge_revision_council.py', '--report-id', args.report_id]),
-                            ('build_council_derivation_appendix', [py, 'skills/factor-forge-step6/scripts/build_council_derivation_appendix.py', '--report-id', args.report_id]),
-                            ('attach_revision_council_to_step6', [py, 'skills/factor-forge-step6/scripts/attach_revision_council_to_step6.py', '--report-id', args.report_id]),
-                            ('validate_step6_after_council_attach', [py, 'skills/factor-forge-step6/scripts/validate_step6.py', '--report-id', args.report_id]),
-                        ]
+                        council_commands = []
+                        if not existing_dispatch_manifest.exists():
+                            council_commands.extend(
+                                [
+                                    ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
+                                    ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'local_mock', '--research-protocol', taskbook_protocol_mode, *taskbook_runtime_args]),
+                                    ('build_agentic_council_dispatch_manifest', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py', '--report-id', args.report_id]),
+                                ]
+                            )
+                        council_commands.append(
+                            ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id])
+                        )
+                        result_dir = council_dir / 'agent_results'
+                        existing_results = (
+                            result_dir.exists() and any(result_dir.glob('agent_result__*.json'))
+                        )
+                        if not existing_results:
+                            council_commands.append(
+                                ('run_agentic_council_local_mock', [py, 'skills/factor-forge-step6/scripts/run_agentic_council_local_mock.py', '--report-id', args.report_id])
+                            )
+                        council_commands.extend(
+                            [
+                                ('validate_agentic_council_result', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_result.py', '--report-id', args.report_id]),
+                                ('merge_revision_council', [py, 'skills/factor-forge-step6/scripts/merge_revision_council.py', '--report-id', args.report_id]),
+                                ('build_council_derivation_appendix', [py, 'skills/factor-forge-step6/scripts/build_council_derivation_appendix.py', '--report-id', args.report_id]),
+                                ('attach_revision_council_to_step6', [py, 'skills/factor-forge-step6/scripts/attach_revision_council_to_step6.py', '--report-id', args.report_id]),
+                                ('validate_step6_after_council_attach', [py, 'skills/factor-forge-step6/scripts/validate_step6.py', '--report-id', args.report_id]),
+                            ]
+                        )
                 else:
                     council_commands = [
                         ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
@@ -1139,7 +1265,11 @@ def main() -> int:
                 else:
                     proof['revision_council'].update(summarize_council_attachment(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'completed'
-                    proof['revision_council']['formal_council_status'] = 'agentic_completed' if effective_mode == 'agentic_contract_mock' else 'scaffold_only'
+                    proof['revision_council']['formal_council_status'] = (
+                        'contract_mock_completed'
+                        if effective_mode == 'agentic_contract_mock'
+                        else 'scaffold_only'
+                    )
                     proof['revision_council']['attached'] = proof['revision_council'].get('attached') is True
                 write_json_atomic(proof_path, proof)
     elif args.council_mode != 'off':
@@ -1150,12 +1280,47 @@ def main() -> int:
         }
         write_json_atomic(proof_path, proof)
 
-    proof['status'] = 'PASS'
+    command_contract = proof['formal_command_contract']
+    executed_names = [
+        str(row.get('name') or '')
+        for row in proof.get('commands') or []
+        if isinstance(row, dict)
+    ]
+    required_names = list(command_contract['required_command_names'])
+    commands_passed = (
+        executed_names == required_names
+        and all(
+            row.get('status') == 'PASS'
+            and row.get('returncode') == 0
+            for row in proof.get('commands') or []
+            if isinstance(row, dict)
+        )
+    )
+    command_contract['executed_command_names'] = executed_names
+    command_contract['satisfied'] = bool(commands_passed)
+    if args.dry_run:
+        proof['status'] = 'DRY_RUN'
+        proof['formal_proof_eligible'] = False
+        proof['proof_semantics'] = 'execution_plan_only'
+    else:
+        proof['status'] = 'PASS'
+        proof['formal_proof_eligible'] = bool(
+            commands_passed and not legacy_protocol_smoke
+        )
+        proof['proof_semantics'] = (
+            'contract_smoke_only'
+            if legacy_protocol_smoke
+            else 'formal_execution_proof'
+        )
     proof['finished_at_utc'] = utc_now()
     proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
     proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
     write_json_atomic(proof_path, proof)
-    print(f'[PASS] factor-forge-ultimate wrapper completed for {args.report_id}')
+    result_label = 'DRY_RUN' if args.dry_run else 'PASS'
+    print(
+        f'[{result_label}] factor-forge-ultimate wrapper completed '
+        f'for {args.report_id}'
+    )
     print(f'[MANIFEST] {manifest_path}')
     print(f'[PROOF] {proof_path}')
     return 0

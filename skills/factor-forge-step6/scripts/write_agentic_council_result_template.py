@@ -62,13 +62,60 @@ def main() -> int:
         "task_id": packet.get("task_id"),
         "agent_role": packet.get("agent_role"),
         "producer": "real_agent",
-        "agent_identifier": "",
+        "agent_identifier": packet.get("expected_agent_identifier") or "",
+        "dispatch_identity": {
+            "source_task_packet_path": task.get("task_packet_path"),
+            "source_task_packet_sha256": task.get("task_packet_sha256"),
+            "route_fingerprint": packet.get("route_fingerprint"),
+            "blind_context_hash": packet.get("blind_context_hash"),
+        },
         "research_depth": "medium",
         "proposal_generation_mode": "agentic",
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "research_protocol_version": packet.get("research_protocol_version"),
+        "approach_route": {
+            "route_id": packet.get("route_id"),
+            "route_family": packet.get("route_family"),
+            "core_hypothesis": "",
+            "distinct_from_other_routes": "",
+            "exact_gap_after_analysis": "",
+        },
+        "proof_obligation_updates": [
+            {
+                "obligation_id": obligation_id,
+                "status": "open",
+                "finding": "",
+                "evidence_refs": [],
+            }
+            for obligation_id in packet.get("proof_obligation_ids") or []
+        ],
+        "counterexamples": [
+            {
+                "attack_type": "",
+                "construction_or_scenario": "",
+                "predicted_failure": "",
+                "discriminating_test": "",
+                "status": "proposed",
+                "evidence_refs": [],
+            }
+        ],
+        "route_status": "open",
+        "reopen_criteria": [],
+        "independence_attestation": {
+            "blind_phase": (
+                (packet.get("blind_context_policy") or {}).get("blind_phase")
+                is True
+            ),
+            "favored_thesis_seen_before_submission": None,
+            "derived_from_visible_facts_only": None,
+        },
+        "economic_hypothesis_review": {},
+        "math_mechanism_derivation": {},
+        "model_to_formula_translation": {},
         "public_derivation_record": {
+            "research_question": packet.get("research_question") or "",
             "assumptions": [],
             "mathematical_objects": [],
             "selected_tools": [],

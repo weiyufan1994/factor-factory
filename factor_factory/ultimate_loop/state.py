@@ -9,6 +9,12 @@ from typing import Any
 from factor_factory.ultimate_loop.proof import load_json_if_exists
 
 
+BLOCK_DRY_RUN_NOT_FORMAL = "BLOCK_FACTORFORGE_LOOP_DRY_RUN_NOT_FORMAL"
+BLOCK_WRAPPER_PROOF_NOT_FORMAL = (
+    "BLOCK_FACTORFORGE_LOOP_WRAPPER_PROOF_NOT_FORMAL"
+)
+
+
 @dataclass(frozen=True)
 class LoopState:
     outcome: str
@@ -79,9 +85,124 @@ def _prewrite_block_exists(root: Path, report_id: str) -> bool:
     if not matches:
         return False
     wrapper_proof = load_json_if_exists(_wrapper_proof_path(root, report_id))
-    if wrapper_proof.get("status") == "PASS":
+    if not validate_wrapper_proof_for_loop(wrapper_proof):
         return False
     return True
+
+
+def validate_wrapper_proof_for_loop(
+    proof: Any,
+    *,
+    contract_smoke_mode: bool = False,
+) -> list[str]:
+    if not isinstance(proof, dict) or not proof:
+        return [f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:missing"]
+    if proof.get("dry_run") is True or proof.get("status") == "DRY_RUN":
+        return [BLOCK_DRY_RUN_NOT_FORMAL]
+    reasons: list[str] = []
+    if proof.get("status") != "PASS":
+        reasons.append(f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:status")
+    if proof.get("dry_run") is not False:
+        reasons.append(f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:dry_run_binding")
+    contract_smoke_only = proof.get("contract_smoke_only") is True
+    if contract_smoke_mode:
+        if not contract_smoke_only:
+            reasons.append(
+                f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:"
+                "contract_smoke_binding"
+            )
+    else:
+        if contract_smoke_only:
+            reasons.append(
+                f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:contract_smoke_only"
+            )
+        if proof.get("formal_proof_eligible") is not True:
+            reasons.append(
+                f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:formal_eligibility"
+            )
+
+    commands = proof.get("commands")
+    command_contract = proof.get("formal_command_contract")
+    if not isinstance(commands, list) or not commands:
+        reasons.append(f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:commands")
+        commands = []
+    if not isinstance(command_contract, dict):
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:command_contract"
+        )
+        command_contract = {}
+    required_names = command_contract.get("required_command_names")
+    if not isinstance(required_names, list) or not required_names:
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:required_commands"
+        )
+        required_names = []
+    actual_names = [
+        str(row.get("name") or "")
+        for row in commands
+        if isinstance(row, dict)
+    ]
+    if actual_names != required_names:
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:command_sequence"
+        )
+    if len(actual_names) != len(commands) or any(
+        not isinstance(row, dict)
+        or row.get("status") != "PASS"
+        or row.get("returncode") != 0
+        for row in commands
+    ):
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:command_not_executed_pass"
+        )
+    if command_contract.get("satisfied") is not True:
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:command_contract_unsatisfied"
+        )
+
+    requested_steps = proof.get("requested_steps")
+    if not isinstance(requested_steps, list) or not requested_steps:
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:requested_steps"
+        )
+        requested_steps = []
+    minimum_by_step = {
+        "2": {"run_step2", "validate_step2"},
+        "3": {
+            "run_step3",
+            "validate_step3",
+            "run_step3b",
+            "validate_step3b",
+        },
+        "3b": {"run_step3b", "validate_step3b"},
+        "4": {"run_step4", "validate_step4"},
+        "5": {"run_step5", "validate_step5"},
+        "6": {"run_step6", "validate_step6"},
+    }
+    minimum_names: set[str] = set()
+    for step in requested_steps:
+        minimum_names.update(minimum_by_step.get(str(step), set()))
+    missing = sorted(minimum_names - set(actual_names))
+    if missing:
+        reasons.append(
+            f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:"
+            f"required_step_commands_missing:{','.join(missing)}"
+        )
+    protocol_required = "6" in requested_steps and not contract_smoke_mode
+    if protocol_required:
+        protocol_name = "validate_research_protocol_pre_council"
+        if (
+            command_contract.get("research_protocol_verifier_required")
+            is not True
+            or command_contract.get("research_protocol_verifier_name")
+            != protocol_name
+            or protocol_name not in actual_names
+        ):
+            reasons.append(
+                f"{BLOCK_WRAPPER_PROOF_NOT_FORMAL}:"
+                "research_protocol_verifier_missing"
+            )
+    return list(dict.fromkeys(reasons))
 
 
 def _research_memo(iteration: dict[str, Any]) -> dict[str, Any]:
@@ -138,6 +259,7 @@ def classify_loop_state(
     wrapper_rc: int,
     *,
     max_reached: bool = False,
+    contract_smoke_mode: bool = False,
 ) -> dict[str, Any]:
     iteration = load_json_if_exists(_iteration_path(root, report_id))
     decision = _decision(iteration)
@@ -172,6 +294,26 @@ def classify_loop_state(
             proof_status="PAUSED",
             can_continue=False,
             stop_reason="awaiting_main_agent_mechanism_memo",
+            decision=decision,
+            loop_authorization=loop_authorization,
+            revision_needed=revision_needed if isinstance(revision_needed, bool) else None,
+            council_status=council_status,
+            official_record_exists=official_exists,
+            handoff_to_step3b_exists=handoff_exists,
+            prewrite_block_exists=prewrite_blocked,
+        ).to_dict()
+
+    proof_reasons = validate_wrapper_proof_for_loop(
+        wrapper_proof,
+        contract_smoke_mode=contract_smoke_mode,
+    )
+    if proof_reasons:
+        dry_run_only = BLOCK_DRY_RUN_NOT_FORMAL in proof_reasons
+        return LoopState(
+            outcome="dry_run" if dry_run_only else "blocked",
+            proof_status="DRY_RUN" if dry_run_only else "FAIL",
+            can_continue=False,
+            stop_reason=proof_reasons[0],
             decision=decision,
             loop_authorization=loop_authorization,
             revision_needed=revision_needed if isinstance(revision_needed, bool) else None,

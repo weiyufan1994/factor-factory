@@ -144,6 +144,8 @@ def main() -> int:
             report_id,
             "--factorforge-root",
             str(root),
+            "--approval-source",
+            "direct_code_revision_bridge_smoke_explicit_approval",
             "--skip-validate-step6",
         ],
         env,

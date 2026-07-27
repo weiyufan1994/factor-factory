@@ -135,6 +135,8 @@ def run_ultimate(root: Path, report_id: str, mode: str, extra_env: dict[str, str
         "--skip-researcher-packets",
         "--factorforge-root",
         str(root),
+        "--allow-legacy-global-runtime",
+        "--allow-legacy-research-protocol-smoke",
         "--council-mode",
         mode,
     ]

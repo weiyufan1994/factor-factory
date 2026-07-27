@@ -19,12 +19,14 @@ def main() -> int:
     ap.add_argument("--campaign-id", required=True)
     ap.add_argument("--workspace-root", required=True)
     ap.add_argument("--inventory", required=True)
+    ap.add_argument("--data-split-manifest", required=True)
     ap.add_argument("--template-id", action="append", default=[])
     args = ap.parse_args()
     inventory = read_json(Path(args.inventory))
     packets = build_candidate_packets(
         campaign_id=args.campaign_id,
         workspace_root=Path(args.workspace_root),
+        data_split_manifest_path=Path(args.data_split_manifest),
         template_ids=list(args.template_id),
         inventory=inventory,
     )

@@ -64,7 +64,11 @@ def main() -> int:
             continue
         try:
             payload = load_json(path)
-            reasons = validate_agentic_result(payload)
+            reasons = validate_agentic_result(
+                payload,
+                expected_task=task,
+                expected_report_id=rid,
+            )
         except Exception as exc:
             reasons = [f"agentic_result_unreadable:{exc}"]
             payload = {}
@@ -81,8 +85,37 @@ def main() -> int:
             invalid_results.append(entry)
         else:
             valid_results.append(entry)
-    ready = not missing_results and not invalid_results and len(valid_results) == len(required_tasks)
-    status = "complete" if ready else ("blocked" if invalid_results else "partial")
+    blind_identifiers = [
+        str(entry.get("agent_identifier"))
+        for entry in valid_results
+        if next(
+            (
+                task.get("blind_phase")
+                for task in required_tasks
+                if task.get("task_id") == entry.get("task_id")
+            ),
+            False,
+        )
+        and entry.get("agent_identifier")
+    ]
+    independence_block_reasons: list[str] = []
+    if len(blind_identifiers) >= 2 and len(set(blind_identifiers)) != len(
+        blind_identifiers
+    ):
+        independence_block_reasons.append(
+            "BLOCK_COUNCIL_BLIND_ROUTES_SHARE_AGENT_IDENTITY"
+        )
+    ready = (
+        not missing_results
+        and not invalid_results
+        and not independence_block_reasons
+        and len(valid_results) == len(required_tasks)
+    )
+    status = (
+        "complete"
+        if ready
+        else ("blocked" if invalid_results or independence_block_reasons else "partial")
+    )
     collection = {
         "collection_version": COLLECTION_VERSION,
         "report_id": rid,
@@ -95,6 +128,7 @@ def main() -> int:
         "valid_results": valid_results,
         "invalid_results": invalid_results,
         "missing_results": missing_results,
+        "independence_block_reasons": independence_block_reasons,
         "ready_for_finalize": ready,
         "created_at_utc": utc_now(),
     }

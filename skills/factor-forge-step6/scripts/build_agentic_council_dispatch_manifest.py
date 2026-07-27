@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +30,14 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def utc_now() -> str:
@@ -88,6 +97,17 @@ def main() -> None:
             "factor_id": taskbook.get("factor_id") or rid,
             "task_id": task_id,
             "agent_role": agent_role,
+            "research_protocol_version": task.get("research_protocol_version"),
+            "route_id": task.get("route_id"),
+            "route_family": task.get("route_family"),
+            "route_status_at_dispatch": task.get("route_status_at_dispatch"),
+            "route_fingerprint": task.get("route_fingerprint"),
+            "blind_context_hash": task.get("blind_context_hash"),
+            "expected_agent_identifier": task.get("expected_agent_identifier"),
+            "blind_context_policy": task.get("blind_context_policy") or {},
+            "proof_obligation_ids": task.get("proof_obligation_ids") or [],
+            "exact_gap": task.get("exact_gap"),
+            "reopen_only_if": task.get("reopen_only_if") or [],
             "source_taskbook_path": relpath(taskbook_path),
             "source_packet_path": taskbook.get("source_packet_path"),
             "expected_result_path": relpath(expected_result_path),
@@ -97,7 +117,7 @@ def main() -> None:
             "human_approval_required": True,
             "runtime_dispatch_policy": runtime_dispatch_policy,
             "research_question": task.get("research_question"),
-            "shared_context": taskbook.get("shared_context") or {},
+            "shared_context": task.get("visible_context") or {},
             "required_outputs": task.get("required_outputs") or [],
             "allowed_tools": task.get("allowed_tools") or [],
             "forbidden_changes": task.get("forbidden_changes") or [],
@@ -107,14 +127,26 @@ def main() -> None:
                 "producer_allowed": ["real_agent"],
                 "proposal_generation_mode_allowed": ["agentic"],
                 "research_depth_allowed": ["medium", "high"],
+                "identity_binding_required": True,
             },
         }
         write_json(task_packet_path, packet)
+        task_packet_sha256 = sha256_file(task_packet_path)
         task_packet_paths.append(relpath(task_packet_path))
         manifest_tasks.append(
             {
                 "task_id": task_id,
                 "agent_role": agent_role,
+                "route_id": task.get("route_id"),
+                "route_family": task.get("route_family"),
+                "route_fingerprint": task.get("route_fingerprint"),
+                "blind_context_hash": task.get("blind_context_hash"),
+                "expected_agent_identifier": task.get("expected_agent_identifier"),
+                "task_packet_sha256": task_packet_sha256,
+                "blind_phase": (
+                    (task.get("blind_context_policy") or {}).get("blind_phase")
+                    is True
+                ),
                 "task_packet_path": relpath(task_packet_path),
                 "expected_result_path": relpath(expected_result_path),
                 "status": "awaiting_result",
@@ -133,6 +165,9 @@ def main() -> None:
         "execution_allowed_by_default": False,
         "human_approval_required": True,
         "runtime_dispatch_policy": runtime_dispatch_policy,
+        "research_protocol_version": taskbook.get("research_protocol_version"),
+        "research_protocol_gate": taskbook.get("research_protocol_gate") or {},
+        "route_selection_policy": taskbook.get("route_selection_policy") or {},
         "agent_task_count": len(manifest_tasks),
         "agent_tasks": manifest_tasks,
         "forbidden_write_targets": forbidden_write_targets,

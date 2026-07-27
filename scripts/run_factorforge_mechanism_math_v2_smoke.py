@@ -380,7 +380,14 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
     bridge_chief_prompt = STEP1_BRIDGE.chief_prompt()
     prep_chief_prompt = FORMAL_PREP.step1_chief_prompt()
     step2_prompt_reference = (REPO_ROOT / "skills/factor-forge-step2/references/prompts.md").read_text(encoding="utf-8")
-    step6_skill = (REPO_ROOT / "skills/factor-forge-step6/SKILL.md").read_text(encoding="utf-8")
+    step6_skill = (
+        (REPO_ROOT / "skills/factor-forge-step6/SKILL.md").read_text(encoding="utf-8")
+        + "\n"
+        + (
+            REPO_ROOT
+            / "skills/factor-forge-step6/references/legacy-operations-reference.md"
+        ).read_text(encoding="utf-8")
+    )
 
     def has_all(text: str, terms: list[str]) -> bool:
         lowered = text.lower()

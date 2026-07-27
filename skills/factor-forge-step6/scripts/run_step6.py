@@ -46,6 +46,11 @@ from factor_factory.mechanism_math.main_agent_memo import (
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 from factor_factory.mechanism_math.factor_discovery_queue import build_default_discovery_queue
+from factor_factory.research_conjecture import (
+    research_protocol_paths,
+    validate_protocol_bundle,
+)
+from factor_factory.research_proof import validate_factor_proof_certificate
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
@@ -4594,6 +4599,111 @@ def main() -> None:
     )
     research_memo['mechanism_analysis'] = mechanism_analysis
 
+    factor_proof_failures: list[str] = []
+    formal_protocol_required = (
+        os.getenv('FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE') != '1'
+        and (
+            os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1'
+            or iteration['research_judgment']['decision'] == 'promote_official'
+        )
+    )
+    if (
+        formal_protocol_required
+        and iteration['research_judgment']['decision'] == 'promote_official'
+    ):
+        protocol_paths = research_protocol_paths(FF, str(report_id))
+        pre_revision_protocol_report = validate_protocol_bundle(
+            root=FF,
+            report_id=str(report_id),
+            stage='pre_revision',
+        )
+        if pre_revision_protocol_report.get('verdict') == 'PASS':
+            obligation_payload = load_json(protocol_paths['obligations'])
+            verified_kinds = {
+                str(row.get('obligation_kind'))
+                for row in obligation_payload.get('obligations') or []
+                if isinstance(row, dict)
+                and row.get('status') == 'passed'
+                and row.get('status_source') == 'verifier'
+            }
+            if {
+                'measurement_validity',
+                'component_ablation',
+            }.issubset(verified_kinds):
+                iteration['mechanism_claim_level'] = 'component_validated'
+                research_memo = (
+                    iteration['research_judgment'].get('research_memo') or {}
+                )
+                research_memo['mechanism_claim_level'] = (
+                    'component_validated'
+                )
+                iteration['research_judgment']['research_memo'] = (
+                    research_memo
+                )
+        proof_path = protocol_paths['factor_proof']
+        proof_report: dict[str, Any]
+        if not proof_path.exists():
+            proof_report = {
+                'verdict': 'BLOCK',
+                'block_reasons': [
+                    'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_MISSING'
+                ],
+            }
+        else:
+            try:
+                factor_proof = load_json(proof_path)
+                proof_report = validate_factor_proof_certificate(
+                    factor_proof,
+                    workspace_root=FF,
+                    expected_report_id=str(report_id),
+                    expected_factor_id=str(iteration.get('factor_id') or ''),
+                )
+                conjecture_path = protocol_paths['conjecture']
+                if conjecture_path.exists():
+                    conjecture = load_json(conjecture_path)
+                    if factor_proof.get('claim_class') != conjecture.get('claim_class'):
+                        proof_report.setdefault('block_reasons', []).append(
+                            'BLOCK_FACTORFORGE_RESEARCH_PROTOCOL_CLAIM_CLASS_MISMATCH'
+                        )
+                        proof_report['verdict'] = 'BLOCK'
+            except Exception as exc:
+                proof_report = {
+                    'verdict': 'BLOCK',
+                    'block_reasons': [
+                        f'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_INVALID:{exc}'
+                    ],
+                }
+        if proof_report.get('verdict') != 'ACCEPT':
+            factor_proof_failures.extend(
+                proof_report.get('block_reasons')
+                or ['BLOCK_FACTORFORGE_PROMOTION_WITHOUT_ACCEPTED_FACTOR_PROOF']
+            )
+        iteration['factor_proof_gate'] = {
+            'required': True,
+            'proof_path': str(proof_path),
+            'verdict': proof_report.get('verdict'),
+            'block_reasons': proof_report.get('block_reasons') or [],
+        }
+        promotion_protocol_report = validate_protocol_bundle(
+            root=FF,
+            report_id=str(report_id),
+            stage='pre_promotion',
+            iteration_payload=iteration,
+        )
+        iteration['research_protocol_promotion_gate'] = {
+            'required': True,
+            'stage': 'pre_promotion',
+            'verdict': promotion_protocol_report.get('verdict'),
+            'block_reasons': (
+                promotion_protocol_report.get('block_reasons') or []
+            ),
+        }
+        if promotion_protocol_report.get('verdict') != 'PASS':
+            factor_proof_failures.extend(
+                promotion_protocol_report.get('block_reasons')
+                or ['BLOCK_FACTORFORGE_PROMOTION_PROTOCOL_GATE_FAILED']
+            )
+
     all_record = build_factor_record(iteration, bundle)
     all_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_all')
     all_record['evidence_identity'] = iteration['evidence_identity']
@@ -4640,6 +4750,7 @@ def main() -> None:
         mechanism_analysis.get('formula_specific_derivation') or {},
     )
     contract_failures: list[str] = []
+    contract_failures.extend(factor_proof_failures)
     if formula_derivation_failures:
         contract_failures.append('formula_specific_derivation_invalid:' + json.dumps(formula_derivation_failures, ensure_ascii=False))
     if mechanism_formula_consistency.get('failures'):

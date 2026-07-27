@@ -117,7 +117,7 @@ def clean_results(root: Path, rid: str) -> None:
 def build_dispatch(root: Path, rid: str) -> list[dict[str, Any]]:
     return [
         run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_revision_council_packet.py", "--report-id", rid]),
-        run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", rid, "--executor", "dispatch_manifest"]),
+        run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", rid, "--executor", "dispatch_manifest", "--research-protocol", "off"]),
         run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py", "--report-id", rid]),
         run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py", "--report-id", rid]),
     ]
@@ -130,6 +130,11 @@ def manifest_tasks(root: Path, rid: str) -> list[dict[str, Any]]:
 def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bool = True) -> dict[str, Any]:
     packet = load_json(root / task["task_packet_path"])
     task_id = task["task_id"]
+    proof_obligation_ids = [
+        str(item)
+        for item in packet.get("proof_obligation_ids") or []
+        if isinstance(item, str) and item
+    ]
     payload = {
         "result_version": "factorforge_agentic_revision_council_result_v1",
         "status": "final",
@@ -137,12 +142,47 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
         "task_id": task_id,
         "agent_role": task["agent_role"],
         "producer": "real_agent",
-        "agent_identifier": f"agent_test_{task['agent_role']}",
+        "agent_identifier": task.get("expected_agent_identifier") or f"agent_test_{task_id}",
         "research_depth": "medium",
         "proposal_generation_mode": "agentic",
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "approach_route": {
+            "route_id": task.get("route_id"),
+            "route_family": task.get("route_family"),
+            "core_hypothesis": "The assigned route may explain a distinct part of the factor mechanism.",
+            "distinct_from_other_routes": "This result uses only the assigned route and its visible task packet.",
+            "exact_gap_after_analysis": "The route remains inconclusive until empirical evidence is attached.",
+        },
+        "dispatch_identity": {
+            "source_task_packet_sha256": task.get("task_packet_sha256"),
+            "route_fingerprint": task.get("route_fingerprint"),
+            "blind_context_hash": task.get("blind_context_hash"),
+        },
+        "proof_obligation_updates": [
+            {
+                "obligation_id": obligation_id,
+                "status": "open",
+                "finding": "The obligation remains open in this operating-protocol smoke.",
+                "evidence_refs": [],
+            }
+            for obligation_id in proof_obligation_ids
+        ],
+        "counterexamples": [
+            {
+                "attack_type": "null_mechanism",
+                "construction_or_scenario": "The observed metric pattern is noise rather than the assigned mechanism.",
+                "predicted_failure": "The effect disappears out of sample or after costs.",
+                "discriminating_test": "Run preregistered OOS and after-cost checks before support is claimed.",
+            }
+        ],
+        "route_status": "inconclusive",
+        "reopen_criteria": [],
+        "independence_attestation": {
+            "favored_thesis_seen_before_submission": False,
+            "derived_from_visible_facts_only": True,
+        },
         "economic_hypothesis_review": {
             "preserve_broad_direction": True,
             "refined_second_layer_mechanism": "The packet mechanism is reviewed as a testable estimator-state hypothesis.",
@@ -328,13 +368,17 @@ def case_finalize_complete_valid(root: Path) -> dict[str, Any]:
     iteration = load_json(root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json")
     final = (((iteration.get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
     selected_ids = final.get("selected_council_proposal_ids") or []
+    expected_selected_ids = {
+        str(task.get("task_id"))
+        for task in manifest_tasks(root, rid)
+        if isinstance(task, dict) and task.get("task_id")
+    }
     ok = (
         collect_proc["rc"] == 0
         and collection.get("ready_for_finalize") is True
         and finalize["rc"] == 0
         and final.get("source") == "revision_council"
-        and selected_ids
-        and all(isinstance(item, str) and item.startswith("agent_") for item in selected_ids)
+        and set(selected_ids) == expected_selected_ids
         and not (root / "objects" / "handoff" / f"handoff_to_step3b__{rid}.json").exists()
         and not (root / "objects" / "factor_library_official" / f"factor_record__{rid}.json").exists()
         and before_code == after_code

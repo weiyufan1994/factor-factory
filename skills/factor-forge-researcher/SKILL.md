@@ -62,6 +62,12 @@ component_validated -> formal revision/promotion discussion can start
 stochastic_validated or payer_validated -> strong mechanism claim can be made
 ```
 
+The label `component_validated` requires replayable full-versus-ablated evidence
+from `factorforge_component_obligation_verifier_v1`, not only a chart or memo.
+The current v1 kernel has no trusted payer or stochastic verifier; those higher
+labels therefore remain unavailable until a dedicated executable verifier is
+implemented and registered.
+
 A complete gate must include `economic_mechanism_contract`,
 `mathematical_object_contract`, `alias_elimination_matrix`,
 `falsification_plan`, `claim_level_assessment`, and `reviewer_attack_memo`.
@@ -259,6 +265,24 @@ Apply source-specific standards:
   long-end gross and risk-adjusted return.
 - `constraint_driven_arbitrage`: require clear constraint/payer logic and
   premium concentrated where the constraint binds.
+
+Write and maintain the universal research protocol throughout the run:
+
+- initial preferred/null/alternative conjectures and frozen `claim_class`;
+- economic-game and mathematical-mechanism contracts;
+- a diverse approach registry with blind critic routes;
+- executable proof obligations and counterexample results;
+- a factor proof certificate with evidence hashes, frozen search-trial ledger,
+  preregistered rules and one-time OOS release;
+- route-complete root synthesis and explicit main-agent approval.
+
+Common certificate metrics are IC, ICIR, volatility cost, transaction cost,
+maximum drawdown and long-end return. Fama-MacBeth and quintile/decile
+monotonicity are mandatory only for a frozen `risk_premium` claim. Do not use
+those two diagnostics as a universal rejection rule.
+Formal daily evidence requires actual OOS date binding and at least 60 periods.
+Long-end admission uses net geometric return and positive terminal/minimum
+wealth; arithmetic gross-minus-cost return is only a reconciliation field.
 
 Also extract:
 - transferable patterns,

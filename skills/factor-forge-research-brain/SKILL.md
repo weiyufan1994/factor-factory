@@ -59,12 +59,19 @@ payer_validated
 ```
 
 `narrative_only` is a story. `math_framed` names a mathematical object or tool.
-`metric_consistent` means aggregate IC/NAV/group evidence points in the expected
-direction. `component_validated` requires ablation, joint-state buckets,
-liquidity/regime splits, or parent-vs-revision information delta.
+`metric_consistent` requires an accepted, replayable factor-proof certificate;
+aggregate IC/NAV/group evidence without that certificate remains
+`metric_candidate`. `component_validated` requires the trusted full-versus-
+ablated verifier, not a narrative ablation claim.
 `stochastic_validated` requires state, conditional return distribution,
 transition/persistence, or barrier/tail evidence. `payer_validated` requires a
 falsifiable counterparty or payer proxy.
+
+For a formal claim, `component_validated` specifically requires the replayable
+full-versus-ablated panel verifier. Joint buckets or regime splits remain useful
+diagnostics unless a trusted verifier contract covers them. The current v1
+kernel does not mechanically certify payer or stochastic claims, so do not use
+those labels merely because the memo contains the corresponding fields.
 
 Every serious review must also produce an evidence tier map:
 
@@ -77,6 +84,12 @@ Every serious review must also produce an evidence tier map:
 Promotion can use only promotion-gate evidence. Diagnostic, supplemental, and
 window-contract evidence can explain or falsify, but cannot be promoted into
 adoption proof.
+
+Promotion-gate metrics require the frozen-search -> locked-threshold ->
+one-time-OOS-release chain. The release binds actual panel dates, at least 60
+daily periods and the panel hash. Formal long-end judgment uses net geometric
+return and positive terminal/minimum wealth; arithmetic return is only the
+gross-to-cost reconciliation.
 
 If the review invokes stochastic processes, stopping times, hidden states, or
 barriers, explicitly state whether the claim is `framing_only` or `validated`.
@@ -97,12 +110,15 @@ The current Factor Forge mandate is **long-only**:
 - no adoption based on long-short spread,
 - no revision by changing portfolio expression, rebalance mechanics, or decile trading.
 
-Deciles are allowed only as diagnostics for:
+For non-risk-premium claims, deciles are allowed only as diagnostics for:
 - whether higher factor values map monotonically to higher future returns,
 - whether the high-score long side earns positive return,
 - whether the expression direction is economically coherent.
 
 If a factor is monotonic only because the short side loses money, it is not adoptable. If the long side is weak or negative, revise the factor expression/Step3B code or reject the factor.
+For `risk_premium`, quintile/decile monotonicity is a formal obligation. Use
+value-based quantiles and BLOCK if ties collapse the required 5/10 buckets;
+never split ties by asset order.
 
 ## Long-Side Performance Economics
 
@@ -168,6 +184,21 @@ Tighten evidence by return source:
   the highest-information tail.
 - `constraint_driven_arbitrage`: require clear constraint/payer logic and
   evidence that the premium appears when the constraint binds.
+
+These standards are enforced through the factor proof certificate:
+
+- every claim class must reconcile IC, ICIR, volatility cost, transaction
+  cost, maximum drawdown and executable long-end return;
+- Fama-MacBeth and quintile/decile monotonicity are acceptance obligations only
+  for `claim_class=risk_premium`;
+- for all other claim classes, monotonicity is diagnostic and cannot be marked
+  as universal promotion-gate evidence;
+- every passed result must bind a workspace-local evidence file, verifier ID
+  and SHA256, with thresholds registered before evaluation;
+- formal metric proof must come from the deterministic frozen-panel verifier,
+  not a researcher-authored JSON carrying a trusted verifier name.
+- formal component proof must come from the deterministic component-obligation
+  verifier and be replayable against its source panel/spec.
 
 If cost overwhelms net performance but the information layer is strong, classify
 the result as `feature_candidate`, `state_descriptor`, `needs_horizon_repair`,
@@ -254,7 +285,10 @@ A proper review should answer:
 A proper revision proposal should answer:
 1. Which return source is this modification trying to strengthen?
 2. Which objective constraints is it exploiting or adapting to?
-3. Why does the revised factor expression map more linearly/monotonically to risk-adjusted long-side expected returns?
+3. Why should the revised factor expression improve the claim-specific
+   long-side return shape? Require broad monotonicity only for risk-premium
+   claims; for other claims state the predicted tail, threshold or regime
+   shape instead.
 4. What is the `revision_operator` and why should it improve generalization?
 5. What are the `overfit_risk` and `kill_criteria`?
 6. What complexity was added or removed, and is the marginal benefit worth the
@@ -423,6 +457,12 @@ time, information theory, or other justified tools. It should select tools based
 on the factor and evidence, not apply a fixed checklist. Mathematical
 plausibility is not evidence and must be checked against Step4/5/6 evidence and
 provenance gates before any future human-approved implementation work.
+
+Council is route-based, not title-based. Generate routes from the active
+approach registry; preserve at least one blind null/alias attack; bind each
+dispatch/result to route fingerprint, blind-context hash, expected agent
+identity and packet/result hashes. Root synthesis compares incompatible
+assumptions and discriminating evidence. Majority vote cannot choose a law.
 
 ## Mechanism Math Contract v2
 

@@ -522,6 +522,8 @@ def ultimate_command(factorforge_root: Path, report_id: str, start_step: str, en
         start_step,
         "--end-step",
         end_step,
+        "--allow-legacy-global-runtime",
+        "--allow-legacy-research-protocol-smoke",
         "--skip-researcher-packets",
         "--proof-output",
         str(proof_path),

@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from factor_factory.console.agent_adapter import (
     BLOCK_AGENT_RUNTIME_FAILED,
@@ -95,6 +97,21 @@ class ContainerizedOpenClawResearchAgentAdapter:
             names = list(self._active)
         for name in names:
             self._stop_container(name)
+
+    def healthcheck(self) -> bool:
+        proxy = urlsplit(self.config.container_proxy_url)
+        try:
+            with socket.create_connection((str(proxy.hostname), int(proxy.port or 0)), timeout=1):
+                pass
+            proc = subprocess.run(
+                [self.config.container_runtime, "info", "--format", "{{.ServerVersion}}"],
+                text=True,
+                capture_output=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return proc.returncode == 0 and bool(proc.stdout.strip())
 
     def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
         worktree = worktree.resolve(strict=True)

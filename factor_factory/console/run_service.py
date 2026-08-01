@@ -46,6 +46,7 @@ class ResearchRunService:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        self._expected_base_commit = self.allocator.validate_ready()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -65,10 +66,18 @@ class ResearchRunService:
             self._thread.join(timeout=timeout)
 
     def healthcheck(self) -> bool:
+        adapter_health = getattr(self.agent_adapter, "healthcheck", None)
+        try:
+            source_ready = self.allocator.validate_ready() == self._expected_base_commit
+            runtime_ready = bool(adapter_health()) if callable(adapter_health) else True
+        except (OSError, RuntimeError, ValueError):
+            return False
         return bool(
             self._thread
             and self._thread.is_alive()
             and not self._stop.is_set()
+            and source_ready
+            and runtime_ready
         )
 
     def submit(self, request: ResearchRequest) -> ResearchJob:

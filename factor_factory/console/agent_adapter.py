@@ -42,6 +42,9 @@ class ResearchAgentAdapter(Protocol):
     def stop_all(self) -> None:
         ...
 
+    def healthcheck(self) -> bool:
+        ...
+
 
 class OpenClawResearchAgentAdapter:
     def __init__(self, config: ConsoleConfig) -> None:
@@ -72,6 +75,9 @@ class OpenClawResearchAgentAdapter:
 
     def stop_all(self) -> None:
         return None
+
+    def healthcheck(self) -> bool:
+        return True
 
     def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
         agent_id = job.agent_id or f"factorforge-web-{job.job_id.removeprefix('job_')}"

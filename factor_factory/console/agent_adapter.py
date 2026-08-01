@@ -381,10 +381,19 @@ def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
 def validate_auth_database(path: Path | None, *, provider: str, label: str) -> None:
     if path is None or path.is_symlink() or not path.is_file():
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is missing or not a regular file")
-    if path.stat().st_mode & 0o077:
+    metadata = path.stat()
+    if metadata.st_mode & 0o077 or metadata.st_uid != os.geteuid():
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} permissions are too broad")
+    current = path.parent
+    while current != current.parent:
+        if current.is_symlink():
+            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has a symlink ancestor")
+        current = current.parent
+    for suffix in ("-wal", "-shm"):
+        if Path(f"{path}{suffix}").exists() or Path(f"{path}{suffix}").is_symlink():
+            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has SQLite sidecars")
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True) as connection:
             row = connection.execute(
                 "SELECT store_json FROM auth_profile_store WHERE store_key = 'primary'"
             ).fetchone()
@@ -409,7 +418,7 @@ def copy_auth_database(source: Path, destination: Path) -> None:
     if destination.exists():
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: auth copy destination already exists")
     try:
-        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as source_db:
+        with sqlite3.connect(f"{source.as_uri()}?mode=ro&immutable=1", uri=True) as source_db:
             with sqlite3.connect(destination) as destination_db:
                 source_db.backup(destination_db)
     except sqlite3.Error as exc:

@@ -517,3 +517,123 @@ class FactorWorktreeAllocator:
                 )
                 manifest_file.write("\n")
             return allocation
+
+    def validate_allocation(
+        self,
+        *,
+        factor_id: str,
+        research_id: str,
+        report_id: str,
+        persisted_worktree_path: str | Path,
+        persisted_workspace_path: str | Path,
+        persisted_base_commit: str,
+    ) -> WorktreeAllocation:
+        """Revalidate every persisted allocation boundary before a resumed agent starts."""
+
+        factor_id = _validate_identity(factor_id, label="factor_id")
+        research_id = _validate_identity(research_id, label="research_id")
+        report_id = _validate_identity(report_id, label="report_id")
+        with self._worktree_lock():
+            run_root, expected_worktree, state_root = self._allocation_paths(
+                factor_id,
+                research_id,
+            )
+            expected_workspace = expected_worktree / "factor_research" / factor_id / research_id
+            supplied_worktree = Path(persisted_worktree_path).expanduser().resolve(strict=True)
+            supplied_workspace = Path(persisted_workspace_path).expanduser().resolve(strict=True)
+            if supplied_worktree != expected_worktree.resolve(strict=True):
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: persisted worktree path mismatch"
+                )
+            if supplied_workspace != expected_workspace.resolve(strict=True):
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: persisted workspace path mismatch"
+                )
+            for path, label in (
+                (run_root, "run_root"),
+                (supplied_worktree, "worktree_path"),
+                (supplied_workspace, "workspace_path"),
+                (state_root, "state_root"),
+            ):
+                if path.is_symlink() or path.stat().st_uid != os.geteuid():
+                    raise WorktreeAllocationError(
+                        f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: {label} ownership or symlink mismatch"
+                    )
+
+            manifest_path = state_root / "worktree_allocation.json"
+            if manifest_path.is_symlink() or not manifest_path.is_file():
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: allocation manifest missing"
+                )
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: allocation manifest invalid"
+                ) from exc
+            expected_manifest = {
+                "factor_id": factor_id,
+                "research_id": research_id,
+                "report_id": report_id,
+                "source_repo": str(self.source_repo),
+                "base_commit": self.base_commit,
+                "worktree_path": str(supplied_worktree),
+                "workspace_path": str(supplied_workspace),
+            }
+            if not isinstance(manifest, dict) or any(
+                str(manifest.get(key) or "") != expected
+                for key, expected in expected_manifest.items()
+            ):
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: allocation manifest identity mismatch"
+                )
+            if str(persisted_base_commit or "").lower() != self.base_commit:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_GIT_FAILED}: persisted base commit mismatch"
+                )
+            checked_out_commit = _git(supplied_worktree, "rev-parse", "HEAD")
+            if checked_out_commit.lower() != self.base_commit:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_GIT_FAILED}: resumed worktree commit mismatch"
+                )
+            symbolic_ref = subprocess.run(
+                ["git", "-C", str(supplied_worktree), "symbolic-ref", "--quiet", "HEAD"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if symbolic_ref.returncode == 0:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_GIT_FAILED}: resumed worktree is not detached"
+                )
+            registered = _git(
+                self.source_repo,
+                "worktree",
+                "list",
+                "--porcelain",
+                failure_token=BLOCK_WORKTREE_GIT_FAILED,
+            )
+            expected_record = f"worktree {supplied_worktree}\nHEAD {self.base_commit}\ndetached"
+            if expected_record not in registered:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_GIT_FAILED}: resumed worktree registration mismatch"
+                )
+            self._validate_initialized_workspace(
+                worktree_path=supplied_worktree,
+                workspace_path=supplied_workspace,
+                factor_id=factor_id,
+                research_id=research_id,
+                report_id=report_id,
+                base_commit=self.base_commit,
+            )
+            return WorktreeAllocation(
+                factor_id=factor_id,
+                research_id=research_id,
+                report_id=report_id,
+                source_repo=self.source_repo,
+                base_commit=self.base_commit,
+                worktree_path=supplied_worktree,
+                workspace_path=supplied_workspace,
+                manifest_path=manifest_path,
+                created_at=str(manifest.get("created_at") or ""),
+            )

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import tempfile
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -166,6 +169,56 @@ def test_invite_auth_session_expiry_csrf_and_cookie_flags():
     assert "HttpOnly" in header
     assert "SameSite=Lax" in header
     assert "Secure" in header
+
+
+def test_server_side_session_registration_and_revocation(tmp_path):
+    from factor_factory.console.store import ResearchJobStore
+
+    store = ResearchJobStore(tmp_path / "state")
+    token = "signed-session-token-for-test"
+    store.register_session(token, max_age_seconds=60)
+    assert store.session_is_active(token) is True
+    store.revoke_session(token)
+    assert store.session_is_active(token) is False
+
+
+def test_runner_health_socket_binds_queue_to_exact_engine(tmp_path):
+    from factor_factory.console.run_service import ResearchQueueService
+    from factor_factory.console.runner_health import RunnerHealthSocket
+    from factor_factory.console.store import ResearchJobStore
+
+    with tempfile.TemporaryDirectory(prefix="ff-runner-", dir="/tmp") as socket_root:
+        socket_path = Path(socket_root) / "health.sock"
+        server = RunnerHealthSocket(
+            socket_path,
+            lambda: {"ok": True, "engine_commit": "a" * 40},
+        )
+        server.start()
+        try:
+            store = ResearchJobStore(tmp_path / "state")
+            matching = ResearchQueueService(
+                store=store,
+                runner_health_socket=socket_path,
+                expected_engine_commit="a" * 40,
+            )
+            mismatch = ResearchQueueService(
+                store=store,
+                runner_health_socket=socket_path,
+                expected_engine_commit="b" * 40,
+            )
+            assert matching.healthcheck() is True
+            assert mismatch.healthcheck() is False
+        finally:
+            server.stop()
+
+
+def test_auth_database_rejects_sqlite_sidecars(tmp_path):
+    from factor_factory.console.agent_adapter import validate_auth_database
+
+    seed = _auth_seed(tmp_path / "seed.sqlite")
+    Path(f"{seed}-wal").write_bytes(b"stale")
+    with pytest.raises(RuntimeError, match="SQLite sidecars"):
+        validate_auth_database(seed, provider="deepseek", label="credential seed")
 
 
 def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
@@ -353,7 +406,9 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     catalog.parent.mkdir(parents=True)
     catalog.write_text("{}\n", encoding="utf-8")
     data_api = tmp_path / "data-api"
-    data_api.mkdir()
+    data_api_package = data_api / "factor_factory" / "data_api"
+    data_api_package.mkdir(parents=True)
+    (data_api_package / "__init__.py").write_text("\n", encoding="utf-8")
     config = ConsoleConfig(
         source_repo=source,
         state_root=tmp_path / "state",
@@ -429,6 +484,9 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    git_view = config.state_root / "jobs" / job.job_id / "container-agent" / "engine.git"
+    git_view.mkdir(parents=True)
+    monkeypatch.setattr(adapter, "_prepare_git_view", lambda **_: git_view)
     assert adapter.validate_ready() == "container:factorforge-agent:test"
     result = adapter.run(job, worktree=source, workspace=workspace, resume=False)
     assert result.returncode == 0
@@ -437,7 +495,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         for command in calls
         if len(command) > 1 and command[1] == "run" and "python3" in command
     ]
-    assert len(probe_commands) == 5
+    assert len(probe_commands) == 6
     assert any("https://example.com" in command for command in probe_commands)
     assert any("169.254.169.254" in " ".join(command) for command in probe_commands)
     run_commands = [
@@ -451,11 +509,24 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert "--local" in research_command
     assert research_command[research_command.index("--network") + 1] == config.container_network
     assert f"HTTPS_PROXY={config.container_proxy_url}" in research_command
+    assert f"NO_PROXY={urlsplit(config.container_model_broker_url).hostname}" in research_command
     assert "AWS_EC2_METADATA_DISABLED=true" in research_command
     assert f"type=bind,src={source.resolve()},dst={source.resolve()},readonly" in research_command
     assert f"type=bind,src={workspace.resolve()},dst={workspace.resolve()}" in research_command
     assert f"type=bind,src={catalog_root.resolve()},dst={catalog_root.resolve()},readonly" in research_command
-    assert f"type=bind,src={data_api.resolve()},dst={data_api.resolve()},readonly" in research_command
+    assert (
+        f"type=bind,src={data_api_package.resolve()},dst={data_api_package.resolve()},readonly"
+        in research_command
+    )
+    assert f"FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT={data_api_package.resolve()}" in research_command
+    assert f"FACTORFORGE_DATA_CATALOG={catalog.resolve()}" in research_command
+    python_path = next(item for item in research_command if item.startswith("PYTHONPATH="))
+    assert str(data_api.resolve()) not in python_path
+    assert str(source.resolve() / "deploy" / "factorforge-console" / "data-api-bridge") in python_path
+    assert f"type=bind,src={git_view.resolve()},dst={git_view.resolve()},readonly" in research_command
+    assert f"GIT_DIR={git_view.resolve()}" in research_command
+    assert f"GIT_WORK_TREE={source.resolve()}" in research_command
+    assert "GIT_OPTIONAL_LOCKS=0" in research_command
     profile_path = (
         config.state_root
         / "jobs"
@@ -468,6 +539,57 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert f"type=bind,src={profile_path},dst={profile_path},readonly" in research_command
     tmpfs_index = research_command.index("--tmpfs")
     assert research_command[tmpfs_index + 1].startswith("/tmp:rw,nosuid,nodev,size=")
+
+
+def test_container_agent_git_view_is_shallow_exact_and_reusable(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import ContainerizedOpenClawResearchAgentAdapter
+
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init"], cwd=source, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "console@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Console Test"], cwd=source, check=True)
+    (source / "engine.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "engine.py"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-m", "engine"], cwd=source, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    runtime_root = config.state_root / "jobs" / "job_git" / "container-agent"
+    runtime_root.mkdir(parents=True)
+
+    first = adapter._prepare_git_view(
+        runtime_root=runtime_root,
+        worktree=source.resolve(),
+        base_commit=commit,
+    )
+    second = adapter._prepare_git_view(
+        runtime_root=runtime_root,
+        worktree=source.resolve(),
+        base_commit=commit,
+    )
+    assert first == second
+    assert subprocess.run(
+        ["git", f"--git-dir={first}", "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip() == commit
+    assert (first / "shallow").is_file()
 
 
 def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
@@ -485,6 +607,40 @@ def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
     with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
         _validate_profile_policy(payload)
 
+
+def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, monkeypatch):
+    import factor_factory.console.container_agent_adapter as adapter_module
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+        _AwsCredentialLease,
+    )
+
+    config = ConsoleConfig(
+        source_repo=tmp_path / "source",
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "_load_aws_credentials",
+        lambda _role: _AwsCredentialLease(
+            access_key="ASIATESTACCESSKEY0000",
+            secret_key="temporary-secret-for-test",
+            token="temporary-session-token-for-test",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            method="iam-role",
+            caller_arn="arn:aws:sts::123456789012:assumed-role/test-role/session",
+        ),
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    lease_path, values = adapter._prepare_aws_environment("job_credential")
+    assert lease_path == config.state_root / "credential-leases" / "job_credential.env"
+    assert config.state_root / "jobs" not in lease_path.parents
+    assert lease_path.stat().st_mode & 0o077 == 0
+    assert "temporary-session-token-for-test" in values
+    lease_path.unlink()
 
 def test_secret_redaction(monkeypatch):
     from factor_factory.console.agent_adapter import redact_secrets

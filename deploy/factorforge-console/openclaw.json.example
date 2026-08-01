@@ -3,14 +3,8 @@
     "mode": "merge",
     "providers": {
       "deepseek": {
-        "baseUrl": "https://api.deepseek.com",
+        "baseUrl": "http://172.29.0.1:8781",
         "api": "openai-completions",
-        "request": {
-          "proxy": {
-            "mode": "explicit-proxy",
-            "url": "http://172.29.0.1:3128"
-          }
-        },
         "models": [
           {
             "id": "deepseek-reasoner",

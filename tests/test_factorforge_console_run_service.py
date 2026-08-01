@@ -67,6 +67,7 @@ class _TerminalRejectAdapter:
             {
                 **identity,
                 "declared_verdict": "REJECT",
+                "formal_proof_eligible": True,
                 "metrics": {
                     "rank_ic": {"mean": -0.01},
                     "long_side_after_cost": {"net_return_annual": -0.08},
@@ -78,9 +79,20 @@ class _TerminalRejectAdapter:
             workspace / "objects" / "research_protocol" / f"factor_proof_verifier_report__{report_id}.json",
             {
                 **identity,
+                "verifier_contract_version": "factorforge_console_bound_factor_proof_verifier_v1",
                 "verdict": "REJECT",
+                "formal_proof_eligible": True,
                 "block_reasons": [],
             },
+        )
+        council_root = workspace / "objects" / "research_iteration_master" / "revision_council" / report_id
+        _write_json(
+            council_root / f"revision_council_summary__{report_id}.json",
+            {**identity, "status": "PASS"},
+        )
+        _write_json(
+            council_root / f"main_agent_council_synthesis__{report_id}.json",
+            {**identity, "status": "PASS", "selected_revision": "reject"},
         )
         _write_json(
             workspace / "objects" / "research_protocol" / f"research_quality_gate__{report_id}.json",

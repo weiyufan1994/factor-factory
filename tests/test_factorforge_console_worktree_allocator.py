@@ -148,6 +148,67 @@ def test_allocates_detached_isolated_worktrees_and_workspaces(tmp_path):
     assert _git(source, "status", "--porcelain=v1", "--untracked-files=all").stdout == ""
 
 
+def test_resume_revalidates_exact_allocation_and_rejects_tampering(tmp_path):
+    from factor_factory.console.worktree_allocator import WorktreeAllocationError
+
+    source = _make_source_repo(tmp_path)
+    allocator = _allocator(tmp_path, source)
+    allocation = allocator.allocate(
+        factor_id="FACTOR_RESUME",
+        research_id="research_resume",
+        report_id="report_resume",
+    )
+    validated = allocator.validate_allocation(
+        factor_id=allocation.factor_id,
+        research_id=allocation.research_id,
+        report_id=allocation.report_id,
+        persisted_worktree_path=allocation.worktree_path,
+        persisted_workspace_path=allocation.workspace_path,
+        persisted_base_commit=allocation.base_commit,
+    )
+    assert validated.worktree_path == allocation.worktree_path
+    assert validated.workspace_path == allocation.workspace_path
+
+    payload = json.loads(allocation.manifest_path.read_text(encoding="utf-8"))
+    payload["report_id"] = "report_tampered"
+    allocation.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(WorktreeAllocationError, match="allocation manifest identity mismatch"):
+        allocator.validate_allocation(
+            factor_id=allocation.factor_id,
+            research_id=allocation.research_id,
+            report_id=allocation.report_id,
+            persisted_worktree_path=allocation.worktree_path,
+            persisted_workspace_path=allocation.workspace_path,
+            persisted_base_commit=allocation.base_commit,
+        )
+
+
+def test_resume_rejects_persisted_cross_factor_paths(tmp_path):
+    from factor_factory.console.worktree_allocator import WorktreeAllocationError
+
+    source = _make_source_repo(tmp_path)
+    allocator = _allocator(tmp_path, source)
+    first = allocator.allocate(
+        factor_id="FACTOR_FIRST",
+        research_id="research_first",
+        report_id="report_first",
+    )
+    second = allocator.allocate(
+        factor_id="FACTOR_SECOND",
+        research_id="research_second",
+        report_id="report_second",
+    )
+    with pytest.raises(WorktreeAllocationError, match="persisted worktree path mismatch"):
+        allocator.validate_allocation(
+            factor_id=first.factor_id,
+            research_id=first.research_id,
+            report_id=first.report_id,
+            persisted_worktree_path=second.worktree_path,
+            persisted_workspace_path=second.workspace_path,
+            persisted_base_commit=first.base_commit,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe_value"),
     [

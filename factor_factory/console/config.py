@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import secrets
 import ipaddress
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ class ConsoleConfig:
     worktree_root: Path
     base_ref: str = "HEAD"
     data_catalogs: tuple[Path, ...] = field(default_factory=tuple)
+    catalog_receipt: Path | None = None
     data_api_pythonpath: Path | None = None
     invite_password: str = ""
     cookie_secret: str = ""
@@ -31,6 +33,9 @@ class ConsoleConfig:
     container_network: str = "factorforge-console-egress"
     container_network_subnet: str = "172.29.0.0/24"
     container_proxy_url: str = "http://172.29.0.1:3128"
+    container_model_broker_url: str = "http://172.29.0.1:8781"
+    aws_readonly_role_name: str = ""
+    installation_id: str = ""
     agent_container_image: str = "factorforge-console-agent:2026.08.01"
     openclaw_profile_template: Path | None = None
     container_memory: str = "16g"
@@ -51,10 +56,16 @@ class ConsoleConfig:
             "data_catalogs",
             tuple(path.expanduser().resolve() for path in self.data_catalogs),
         )
+        if self.catalog_receipt is not None:
+            object.__setattr__(self, "catalog_receipt", self.catalog_receipt.expanduser().resolve())
         if self.data_api_pythonpath is not None:
             object.__setattr__(self, "data_api_pythonpath", self.data_api_pythonpath.expanduser().resolve())
         if self.openclaw_auth_seed_db is not None:
-            object.__setattr__(self, "openclaw_auth_seed_db", self.openclaw_auth_seed_db.expanduser().resolve())
+            object.__setattr__(
+                self,
+                "openclaw_auth_seed_db",
+                self.openclaw_auth_seed_db.expanduser().absolute(),
+            )
         if self.openclaw_profile_template is None:
             object.__setattr__(
                 self,
@@ -67,6 +78,9 @@ class ConsoleConfig:
                 "openclaw_profile_template",
                 self.openclaw_profile_template.expanduser().resolve(),
             )
+        if not self.installation_id:
+            identity_seed = f"{self.source_repo}\0{self.state_root}".encode("utf-8")
+            object.__setattr__(self, "installation_id", hashlib.sha256(identity_seed).hexdigest()[:16])
         if not self.cookie_secret and self.auth_disabled:
             object.__setattr__(self, "cookie_secret", secrets.token_urlsafe(48))
         if self.max_concurrent_jobs != 1:
@@ -86,6 +100,24 @@ class ConsoleConfig:
             raise ValueError("invalid agent container resource limits")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}", self.container_network):
             raise ValueError("invalid agent container network name")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{7,62}", self.installation_id):
+            raise ValueError("invalid Console installation identity")
+        if (
+            self.execution_mode == "container"
+            and self.data_catalogs
+            and not self.auth_disabled
+            and not re.fullmatch(r"[A-Za-z0-9+=,.@_-]{1,64}", self.aws_readonly_role_name)
+        ):
+            raise ValueError("a pinned read-only AWS role name is required")
+        if self.execution_mode == "container" and self.data_catalogs and not self.auth_disabled:
+            if self.catalog_receipt is None or self.data_api_pythonpath is None:
+                raise ValueError("production Data API requires a catalog receipt and package root")
+        if (
+            self.execution_mode == "container"
+            and not self.auth_disabled
+            and not re.fullmatch(r"sha256:[0-9a-f]{64}", self.agent_container_image)
+        ):
+            raise ValueError("production agent image must be pinned by local image digest")
         network = ipaddress.ip_network(self.container_network_subnet, strict=True)
         if network.version != 4 or network.prefixlen < 24 or network.is_global:
             raise ValueError("agent container network must use a dedicated private IPv4 /24 or smaller")
@@ -103,6 +135,21 @@ class ConsoleConfig:
             or proxy_address != network.network_address + 1
         ):
             raise ValueError("agent container proxy must be the dedicated bridge gateway on port 3128")
+        model_broker = urlsplit(self.container_model_broker_url)
+        try:
+            model_broker_address = ipaddress.ip_address(model_broker.hostname or "")
+        except ValueError as exc:
+            raise ValueError("agent model broker must use a literal bridge address") from exc
+        if (
+            model_broker.scheme != "http"
+            or model_broker.username
+            or model_broker.password
+            or model_broker.path not in {"", "/"}
+            or model_broker.query
+            or model_broker.port != 8781
+            or model_broker_address != network.network_address + 1
+        ):
+            raise ValueError("agent model broker must be the dedicated bridge gateway on port 8781")
 
     @classmethod
     def from_env(
@@ -122,6 +169,11 @@ class ConsoleConfig:
             worktree_root=Path(worktree_root),
             base_ref=base_ref,
             data_catalogs=tuple(Path(item) for item in (data_catalogs or [])),
+            catalog_receipt=(
+                Path(os.environ["FACTORFORGE_CONSOLE_CATALOG_RECEIPT"])
+                if os.getenv("FACTORFORGE_CONSOLE_CATALOG_RECEIPT")
+                else None
+            ),
             data_api_pythonpath=Path(data_api_pythonpath) if data_api_pythonpath else None,
             invite_password=os.getenv("FACTORFORGE_CONSOLE_INVITE_PASSWORD", ""),
             cookie_secret=os.getenv("FACTORFORGE_CONSOLE_COOKIE_SECRET", ""),
@@ -147,6 +199,11 @@ class ConsoleConfig:
             container_proxy_url=os.getenv(
                 "FACTORFORGE_CONSOLE_CONTAINER_PROXY_URL", "http://172.29.0.1:3128"
             ),
+            container_model_broker_url=os.getenv(
+                "FACTORFORGE_CONSOLE_MODEL_BROKER_URL", "http://172.29.0.1:8781"
+            ),
+            aws_readonly_role_name=os.getenv("FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME", ""),
+            installation_id=os.getenv("FACTORFORGE_CONSOLE_INSTALLATION_ID", ""),
             agent_container_image=os.getenv(
                 "FACTORFORGE_CONSOLE_AGENT_IMAGE", "factorforge-console-agent:2026.08.01"
             ),

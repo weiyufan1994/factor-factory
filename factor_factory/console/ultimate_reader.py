@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -24,6 +26,7 @@ BLOCK_FORMAL_VERIFIER_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISSI
 BLOCK_FORMAL_VERIFIER_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISMATCH"
 BLOCK_FORMAL_VERDICT_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERDICT_MISMATCH"
 BLOCK_EVIDENCE_LINEAGE_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_LINEAGE_MISMATCH"
+BOUND_VERIFIER_VERSION = "factorforge_console_bound_factor_proof_verifier_v1"
 
 ROLE_PATTERNS: dict[str, tuple[str, ...]] = {
     "loop_report": ("objects/runtime_context/ultimate_loop_report*.json",),
@@ -199,6 +202,7 @@ _BLOCK_KEYS = {
     "failure_reasons",
     "blocked_reason",
     "block_reason",
+    "block_reasons",
     "errors",
 }
 _NEXT_ACTION_KEYS = {
@@ -212,7 +216,7 @@ _NEXT_ACTION_KEYS = {
 _DENIED_PUBLIC_KEYS = re.compile(
     r"(?i)(?:^|_)(?:"
     r"path|paths|root|uri|url|source_code|command|commands|stdout|stderr|env|"
-    r"secret|token|password|credential|api_key|private_key"
+    r"secret|token|password|credential|api_key|access_key|access_key_id|private_key"
     r")(?:$|_)"
 )
 _PUBLIC_INTERNAL_PATH = re.compile(
@@ -315,6 +319,9 @@ def read_ultimate_workspace(
     report = selected_report_id or _identifier(selected, "report_id")
     factor_id = _identifier(selected, "factor_id")
     research_id = _identifier(selected, "research_id")
+    workspace_identity = _workspace_identity(root)
+    factor_id = factor_id or _string(workspace_identity.get("factor_id"))
+    research_id = research_id or _string(workspace_identity.get("research_id"))
 
     proof = _payload(selected, "proof_certificate")
     wrapper = _payload(selected, "wrapper_report")
@@ -340,6 +347,7 @@ def read_ultimate_workspace(
         selected=selected,
         report_id=report,
         factor_id=factor_id,
+        research_id=research_id,
         factor_verdict=factor_verdict,
         pause_state=pause_state,
         dry_run=dry_run,
@@ -354,10 +362,16 @@ def read_ultimate_workspace(
     )
     blockers = _collect_blockers(
         selected.values(),
-        [*evidence_errors, *formal_validation.blockers],
+        [
+            *evidence_errors,
+            *_explicit_evidence_blockers(selected),
+            *formal_validation.blockers,
+        ],
     )
     next_actions = _collect_next_actions(selected.values())
     blocked = _is_blocked(loop, wrapper, blockers, factor_verdict)
+    if blocked:
+        factor_verdict = "BLOCK"
     failed = _is_failed(loop, wrapper)
     protocol_status = _protocol_status(
         selected=selected,
@@ -462,8 +476,7 @@ def _load_evidence(root: Path) -> tuple[dict[str, list[_Evidence]], list[str]]:
                     continue
                 seen.add(identity)
                 try:
-                    safe_path = _resolve_internal_evidence_path(root, candidate)
-                    payload = json.loads(safe_path.read_text(encoding="utf-8"))
+                    payload, modified_ns = _read_internal_json(root, candidate)
                     if not isinstance(payload, dict):
                         raise ValueError("expected a JSON object")
                     evidence[role].append(
@@ -471,7 +484,7 @@ def _load_evidence(root: Path) -> tuple[dict[str, list[_Evidence]], list[str]]:
                             role=role,
                             artifact_id=artifact_id,
                             payload=payload,
-                            modified_ns=safe_path.stat().st_mtime_ns,
+                            modified_ns=modified_ns,
                         )
                     )
                 except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
@@ -479,26 +492,67 @@ def _load_evidence(root: Path) -> tuple[dict[str, list[_Evidence]], list[str]]:
     return evidence, _dedupe(errors)
 
 
-def _resolve_internal_evidence_path(root: Path, candidate: Path) -> Path:
-    """Resolve trusted backend evidence without applying public-output redaction."""
+def _workspace_identity(root: Path) -> dict[str, Any]:
+    manifest = root / "manifest.json"
+    try:
+        payload, _ = _read_internal_json(root, manifest)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
+
+def _read_internal_json(root: Path, candidate: Path) -> tuple[Any, int]:
     try:
         relative = candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError("evidence outside workspace") from exc
-    current = root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ValueError("symlink evidence is forbidden")
-    resolved = candidate.resolve(strict=True)
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("invalid evidence path")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    directories: list[int] = []
+    descriptor = -1
     try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("evidence outside workspace") from exc
-    if not resolved.is_file() or resolved.stat().st_size > MAX_EVIDENCE_BYTES:
-        raise ValueError("invalid evidence file")
-    return resolved
+        current = os.open(root, directory_flags)
+        directories.append(current)
+        for part in relative.parts[:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            directories.append(current)
+        descriptor = os.open(relative.parts[-1], file_flags, dir_fd=current)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_EVIDENCE_BYTES:
+            raise ValueError("invalid evidence file")
+        chunks: list[bytes] = []
+        remaining = MAX_EVIDENCE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise ValueError("unreadable evidence") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        for item in reversed(directories):
+            os.close(item)
+    data = b"".join(chunks)
+    if (
+        len(data) > MAX_EVIDENCE_BYTES
+        or before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or len(data) != after.st_size
+    ):
+        raise ValueError("evidence changed during read")
+    return json.loads(data.decode("utf-8")), after.st_mtime_ns
 
 
 def _latest(records: Iterable[_Evidence]) -> _Evidence | None:
@@ -675,10 +729,13 @@ def _council_status(
         return "PAUSED"
     if any(value.startswith("awaiting_") or value == "paused" for value in normalized):
         return "PAUSED"
+    synthesis_status = _string(_payload(selected, "council_synthesis").get("status")).lower()
+    summary_status = _string(_payload(selected, "council_summary").get("status")).lower()
+    terminal_council_statuses = {"pass", "passed", "complete", "completed", "finalized"}
     if (
         formal_validation.protocol_verdict == "PASS"
-        and selected.get("council_synthesis")
-        and selected.get("council_summary")
+        and synthesis_status in terminal_council_statuses
+        and summary_status in terminal_council_statuses
     ):
         return "PASS"
     if any(value in {"pass", "passed", "complete", "completed", "finalized"} for value in normalized):
@@ -690,6 +747,22 @@ def _council_status(
     if selected.get("council_dispatch"):
         return "RUNNING"
     return "NOT_STARTED"
+
+
+def _explicit_evidence_blockers(selected: dict[str, _Evidence]) -> list[str]:
+    blockers: list[str] = []
+    status_keys = ("status", "verdict", "protocol_status", "validation_status", "proof_status")
+    for role, record in selected.items():
+        payload = record.payload
+        if payload.get("blocked") is True:
+            blockers.append(f"BLOCK_FACTORFORGE_CONSOLE_EXPLICIT_BLOCKED_EVIDENCE:{role}")
+        for key in status_keys:
+            status = _string(payload.get(key)).upper()
+            if status in {"BLOCK", "BLOCKED", "FAIL", "FAILED", "ERROR"} or status.startswith("BLOCK_"):
+                blockers.append(
+                    f"BLOCK_FACTORFORGE_CONSOLE_EXPLICIT_BLOCKED_EVIDENCE:{role}:{key}"
+                )
+    return _dedupe(blockers)
 
 
 def _collect_blockers(records: Iterable[_Evidence], evidence_errors: list[str]) -> list[str]:
@@ -809,6 +882,7 @@ def _run_formal_validation(
     selected: dict[str, _Evidence],
     report_id: str,
     factor_id: str,
+    research_id: str,
     factor_verdict: str,
     pause_state: str,
     dry_run: bool,
@@ -817,7 +891,7 @@ def _run_formal_validation(
     terminal_candidate = factor_verdict in {"ACCEPT", "REJECT", "ITERATE"}
     if not terminal_candidate or pause_state or running or dry_run:
         return _FormalValidation()
-    if not report_id or not factor_id:
+    if not report_id or not factor_id or not research_id:
         return _FormalValidation(
             attempted=True,
             protocol_verdict="BLOCK",
@@ -853,20 +927,30 @@ def _run_formal_validation(
             report_id=report_id,
             stage="final",
         )
-        if _string(protocol_report.get("verdict")).upper() != "PASS":
-            blockers.extend(_human_strings(protocol_report.get("block_reasons")))
+        protocol_verdict = _string(protocol_report.get("verdict")).upper()
+        if protocol_verdict != "PASS":
+            protocol_blockers = _human_strings(protocol_report.get("block_reasons"))
+            blockers.extend(
+                protocol_blockers
+                or [f"BLOCK_FACTORFORGE_CONSOLE_PROTOCOL_VALIDATOR_NONPASS:{protocol_verdict or 'UNKNOWN'}"]
+            )
 
         verifier = _payload(selected, "proof_verifier")
         if not verifier:
             blockers.append(BLOCK_FORMAL_VERIFIER_MISSING)
         else:
-            persisted_verdict = _normalize_verdict(
-                verifier.get("verdict") or verifier.get("status")
+            persisted_status = _normalize_verdict(verifier.get("status"))
+            persisted_verdict = (
+                "BLOCK"
+                if persisted_status == "BLOCK"
+                else _normalize_verdict(verifier.get("verdict"))
             )
             persisted_blockers = _human_strings(verifier.get("block_reasons"))
             if (
-                verifier.get("report_id") != report_id
+                verifier.get("verifier_contract_version") != BOUND_VERIFIER_VERSION
+                or verifier.get("report_id") != report_id
                 or verifier.get("factor_id") != factor_id
+                or verifier.get("research_id") != research_id
                 or persisted_verdict != proof_verdict
                 or persisted_blockers
             ):
@@ -929,18 +1013,23 @@ def _formal_proof_eligible(
         or failed
         or dry_run
         or pause_state
-        or council_status in {"PAUSED", "BLOCKED"}
+        or council_status not in {"PASS", "REJECTED"}
         or not proof
         or factor_verdict == "UNKNOWN"
         or formal_validation.protocol_verdict != "PASS"
     ):
         return False
+    verifier = _payload(selected, "proof_verifier")
     explicit = [
-        payload.get("formal_proof_eligible")
-        for payload in (loop, wrapper, proof, _payload(selected, "proof_verifier"))
-        if "formal_proof_eligible" in payload
+        record.payload.get("formal_proof_eligible")
+        for record in selected.values()
+        if "formal_proof_eligible" in record.payload
     ]
-    return bool(explicit) and all(value is True for value in explicit)
+    return (
+        proof.get("formal_proof_eligible") is True
+        and verifier.get("formal_proof_eligible") is True
+        and all(value is True for value in explicit)
+    )
 
 
 def _execution_status(

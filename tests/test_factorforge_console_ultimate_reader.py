@@ -8,6 +8,8 @@ import pytest
 
 
 REPORT_ID = "factor_report_001"
+RESEARCH_ID = "research_001"
+VERIFIER_VERSION = "factorforge_console_bound_factor_proof_verifier_v1"
 
 
 def _write_json(path: Path, payload: dict) -> Path:
@@ -41,6 +43,30 @@ def _mock_formal_validation(monkeypatch: pytest.MonkeyPatch, *, verdict: str) ->
         "validate_protocol_bundle",
         lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
     )
+
+
+def _write_council_pass(workspace: Path) -> None:
+    root = workspace / "objects" / "research_iteration_master" / "revision_council" / REPORT_ID
+    _write_json(
+        root / f"revision_council_summary__{REPORT_ID}.json",
+        {"report_id": REPORT_ID, "status": "PASS"},
+    )
+    _write_json(
+        root / f"main_agent_council_synthesis__{REPORT_ID}.json",
+        {"report_id": REPORT_ID, "status": "PASS", "selected_revision": "terminal"},
+    )
+
+
+def _bound_verifier(*, factor_id: str, verdict: str, formal: bool = True) -> dict:
+    return {
+        "verifier_contract_version": VERIFIER_VERSION,
+        "report_id": REPORT_ID,
+        "factor_id": factor_id,
+        "research_id": RESEARCH_ID,
+        "verdict": verdict,
+        "formal_proof_eligible": formal,
+        "block_reasons": [],
+    }
 
 
 def test_wrapper_pass_does_not_override_paused_council(tmp_path: Path) -> None:
@@ -114,6 +140,7 @@ def test_formal_reject_is_not_reported_as_completed(
         {
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_REJECTED",
+            "research_id": RESEARCH_ID,
             "status": "PASS",
             "formal_proof_eligible": True,
             "dry_run": False,
@@ -126,17 +153,13 @@ def test_formal_reject_is_not_reported_as_completed(
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_REJECTED",
             "declared_verdict": "REJECT",
+            "formal_proof_eligible": True,
             "metrics": {"ic": {"method": "rank_ic", "mean": -0.01}},
         },
     )
     _write_json(
         _verifier_path(workspace),
-        {
-            "report_id": REPORT_ID,
-            "factor_id": "FACTOR_REJECTED",
-            "verdict": "REJECT",
-            "block_reasons": [],
-        },
+        _bound_verifier(factor_id="FACTOR_REJECTED", verdict="REJECT"),
     )
     _write_json(
         workspace
@@ -179,6 +202,7 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(
         {
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_METRICS",
+            "research_id": RESEARCH_ID,
             "status": "PASS",
             "formal_proof_eligible": True,
             "revision_council": {"status": "skipped"},
@@ -188,12 +212,7 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(
     )
     _write_json(
         _verifier_path(workspace),
-        {
-            "report_id": REPORT_ID,
-            "factor_id": "FACTOR_METRICS",
-            "verdict": "ACCEPT",
-            "block_reasons": [],
-        },
+        _bound_verifier(factor_id="FACTOR_METRICS", verdict="ACCEPT"),
     )
     _write_json(
         _proof_path(workspace),
@@ -201,6 +220,7 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_METRICS",
             "declared_verdict": "ACCEPT",
+            "formal_proof_eligible": True,
             "data_contract": {
                 "is_window": "2018-01-01/2024-12-31",
                 "oos_window": "2025-01-01/2025-12-31",
@@ -252,6 +272,7 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(
             "falsification_plan": {"kill_mechanism_if": ["after-cost long side is non-positive"]},
         },
     )
+    _write_council_pass(workspace)
     _write_json(
         workspace
         / "objects"
@@ -322,7 +343,9 @@ def test_internal_evidence_with_host_paths_is_read_but_public_text_is_redacted(
                 "preferred_claim": (
                     "workspace: /var/lib/factorforge/private and "
                     "api_key: sk-public-copy-must-redact"
-                )
+                ),
+                "access_key_id": "AKIAEXAMPLE1234567890",
+                "access_key": "must-not-be-public",
             },
         },
     )
@@ -334,6 +357,8 @@ def test_internal_evidence_with_host_paths_is_read_but_public_text_is_redacted(
     assert summary.evidence_errors == []
     assert "/var/lib/factorforge" not in serialized
     assert "sk-public-copy-must-redact" not in serialized
+    assert "must-not-be-public" not in serialized
+    assert "access_key_id" not in serialized
     assert "[internal-path]" in serialized
     assert "[redacted]" in serialized
 
@@ -347,6 +372,7 @@ def test_invalid_certificate_cannot_forge_formal_pass(tmp_path: Path) -> None:
         {
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_FORGED",
+            "research_id": RESEARCH_ID,
             "status": "PASS",
             "formal_proof_eligible": True,
             "revision_council": {"status": "skipped"},
@@ -363,12 +389,7 @@ def test_invalid_certificate_cannot_forge_formal_pass(tmp_path: Path) -> None:
     )
     _write_json(
         _verifier_path(workspace),
-        {
-            "report_id": REPORT_ID,
-            "factor_id": "FACTOR_FORGED",
-            "verdict": "ACCEPT",
-            "block_reasons": [],
-        },
+        _bound_verifier(factor_id="FACTOR_FORGED", verdict="ACCEPT"),
     )
 
     summary = read_ultimate_workspace(workspace)
@@ -393,6 +414,7 @@ def test_verifier_block_overrides_other_true_flags(
         {
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_CONTRADICTION",
+            "research_id": RESEARCH_ID,
             "status": "PASS",
             "formal_proof_eligible": True,
             "revision_council": {"status": "skipped"},
@@ -410,9 +432,12 @@ def test_verifier_block_overrides_other_true_flags(
     _write_json(
         _verifier_path(workspace),
         {
-            "report_id": REPORT_ID,
-            "factor_id": "FACTOR_CONTRADICTION",
-            "verdict": "BLOCK",
+            **_bound_verifier(
+                factor_id="FACTOR_CONTRADICTION",
+                verdict="BLOCK",
+                formal=False,
+            ),
+            "status": "BLOCK",
             "block_reasons": ["BLOCK_REVIEW_PROBE"],
         },
     )
@@ -469,6 +494,7 @@ def test_explicit_false_formal_flag_prevents_terminal_reject_completion(
         {
             "report_id": REPORT_ID,
             "factor_id": "FACTOR_FALSE_FLAG",
+            "research_id": RESEARCH_ID,
             "status": "PASS",
             "formal_proof_eligible": False,
             "revision_council": {"status": "skipped"},
@@ -484,12 +510,7 @@ def test_explicit_false_formal_flag_prevents_terminal_reject_completion(
     )
     _write_json(
         _verifier_path(workspace),
-        {
-            "report_id": REPORT_ID,
-            "factor_id": "FACTOR_FALSE_FLAG",
-            "verdict": "REJECT",
-            "block_reasons": [],
-        },
+        _bound_verifier(factor_id="FACTOR_FALSE_FLAG", verdict="REJECT"),
     )
 
     summary = read_ultimate_workspace(workspace)
@@ -497,7 +518,144 @@ def test_explicit_false_formal_flag_prevents_terminal_reject_completion(
     assert summary.protocol_status == "PASS"
     assert summary.factor_verdict == "REJECT"
     assert summary.formal_proof_eligible is False
+
+
+def test_running_council_cannot_be_formal_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    _mock_formal_validation(monkeypatch, verdict="ACCEPT")
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_COUNCIL_RUNNING",
+            "research_id": RESEARCH_ID,
+            "status": "PASS",
+            "formal_proof_eligible": True,
+            "revision_council": {"status": "running"},
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_COUNCIL_RUNNING",
+            "declared_verdict": "ACCEPT",
+            "formal_proof_eligible": True,
+        },
+    )
+    _write_json(
+        _verifier_path(workspace),
+        _bound_verifier(factor_id="FACTOR_COUNCIL_RUNNING", verdict="ACCEPT"),
+    )
+    _write_json(
+        workspace
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / REPORT_ID
+        / f"agentic_council_dispatch_manifest__{REPORT_ID}.json",
+        {"report_id": REPORT_ID, "status": "RUNNING"},
+    )
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.protocol_status == "PASS"
+    assert summary.council_status == "RUNNING"
+    assert summary.formal_proof_eligible is False
     assert summary.execution_status == "REVIEW_REQUIRED"
+
+
+def test_factor_case_explicit_block_overrides_positive_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    _mock_formal_validation(monkeypatch, verdict="ACCEPT")
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CASE_BLOCK",
+            "research_id": RESEARCH_ID,
+            "status": "PASS",
+            "formal_proof_eligible": True,
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CASE_BLOCK",
+            "declared_verdict": "ACCEPT",
+            "formal_proof_eligible": True,
+        },
+    )
+    _write_json(
+        _verifier_path(workspace),
+        _bound_verifier(factor_id="FACTOR_CASE_BLOCK", verdict="ACCEPT"),
+    )
+    _write_json(
+        workspace / "objects" / "factor_case_master" / f"factor_case_master__{REPORT_ID}.json",
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CASE_BLOCK",
+            "status": "BLOCK",
+            "formal_proof_eligible": False,
+        },
+    )
+    _write_council_pass(workspace)
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.execution_status == "BLOCKED"
+    assert summary.protocol_status == "BLOCK"
+    assert summary.factor_verdict == "BLOCK"
+    assert summary.formal_proof_eligible is False
+
+
+def test_verifier_research_binding_mismatch_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    _mock_formal_validation(monkeypatch, verdict="REJECT")
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_VERIFIER_BINDING",
+            "research_id": RESEARCH_ID,
+            "status": "PASS",
+            "formal_proof_eligible": True,
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_VERIFIER_BINDING",
+            "declared_verdict": "REJECT",
+            "formal_proof_eligible": True,
+        },
+    )
+    verifier = _bound_verifier(factor_id="FACTOR_VERIFIER_BINDING", verdict="REJECT")
+    verifier["research_id"] = "another_research"
+    _write_json(_verifier_path(workspace), verifier)
+    _write_council_pass(workspace)
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.execution_status == "BLOCKED"
+    assert "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISMATCH" in summary.blockers
 
 
 def test_artifact_service_lists_only_user_safe_files(tmp_path: Path) -> None:

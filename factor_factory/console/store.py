@@ -4,7 +4,9 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,9 +29,9 @@ def _compact_json(value: Any) -> str:
 class ResearchJobStore:
     def __init__(self, state_root: str | Path) -> None:
         self.state_root = Path(state_root).expanduser().resolve()
-        self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.state_root.mkdir(parents=True, exist_ok=True, mode=0o770)
         try:
-            self.state_root.chmod(0o700)
+            self.state_root.chmod(0o770)
         except OSError:
             pass
         self.path = self.state_root / "console.sqlite3"
@@ -87,10 +89,16 @@ class ResearchJobStore:
                 );
                 CREATE INDEX IF NOT EXISTS research_events_job
                     ON research_events(job_id, event_id);
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    token_sha256 TEXT PRIMARY KEY,
+                    created_at_utc TEXT NOT NULL,
+                    expires_at_epoch INTEGER NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
         try:
-            os.chmod(self.path, 0o600)
+            os.chmod(self.path, 0o660)
         except OSError:
             pass
 
@@ -101,6 +109,40 @@ class ResearchJobStore:
             return bool(row and row["ok"] == 1)
         except sqlite3.Error:
             return False
+
+    def register_session(self, token: str, *, max_age_seconds: int) -> None:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        expires = int(time.time()) + int(max_age_seconds)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO auth_sessions VALUES (?,?,?,0)",
+                (digest, utc_now(), expires),
+            )
+            connection.execute(
+                "DELETE FROM auth_sessions WHERE revoked=1 OR expires_at_epoch<?",
+                (int(time.time()) - 60,),
+            )
+
+    def session_is_active(self, token: str) -> bool:
+        if not token:
+            return False
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT expires_at_epoch, revoked FROM auth_sessions WHERE token_sha256=?",
+                (digest,),
+            ).fetchone()
+        return bool(row and not row["revoked"] and int(row["expires_at_epoch"]) >= int(time.time()))
+
+    def revoke_session(self, token: str) -> None:
+        if not token:
+            return
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE auth_sessions SET revoked=1 WHERE token_sha256=?",
+                (digest,),
+            )
 
     def create_job(self, request: ResearchRequest) -> ResearchJob:
         now = utc_now()

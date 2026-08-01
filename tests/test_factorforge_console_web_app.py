@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import re
 import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from http.cookiejar import CookieJar
 from pathlib import Path
@@ -37,12 +40,38 @@ def research_console(tmp_path):
     )
     from factor_factory.console.store import ResearchJobStore
 
+    catalog = tmp_path / "data-runtime" / "catalogs" / "data_catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog_data = json.dumps(
+        {"schema_version": "test_v1", "datasets": [{"dataset_id": "clean_daily_bar"}]}
+    ).encode("utf-8")
+    catalog.write_bytes(catalog_data)
+    receipt = catalog.with_name("data_catalog.receipt.json")
+    receipt.write_text(
+        json.dumps(
+            {
+                "version": "factorforge_console_active_catalog_receipt_v1",
+                "role_name": "console-test-role",
+                "catalog_sha256": hashlib.sha256(catalog_data).hexdigest(),
+                "dataset_count": 1,
+                "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    data_api = tmp_path / "data-api"
+    data_api.mkdir()
     config = ConsoleConfig(
         source_repo=tmp_path / "source",
         state_root=tmp_path / "state",
         worktree_root=tmp_path / "worktrees",
         invite_password="friend-invite-2026-test",
         cookie_secret="test-cookie-signing-secret-2026-at-least-32-bytes",
+        data_catalogs=(catalog,),
+        catalog_receipt=receipt,
+        data_api_pythonpath=data_api,
+        aws_readonly_role_name="console-test-role",
+        agent_container_image=f"sha256:{'a' * 64}",
     )
     store = ResearchJobStore(config.state_root)
     service = _FakeService(store)
@@ -127,8 +156,17 @@ def test_rate_limiter_trusts_forwarded_address_only_from_loopback_proxy():
         headers={"X-Forwarded-For": "203.0.113.9"},
     )
 
-    assert _rate_limit_address(proxied) == "203.0.113.9"
+    assert _rate_limit_address(proxied) == "127.0.0.1"
     assert _rate_limit_address(direct) == "198.51.100.7"
+
+
+def test_catalog_health_fails_when_receipt_hash_is_stale(research_console):
+    from factor_factory.console.static_app import _catalogs_healthy
+
+    _base_url, app = research_console
+    assert _catalogs_healthy(app.config) is True
+    app.config.data_catalogs[0].write_text('{"schema_version":"tampered","datasets":[]}', encoding="utf-8")
+    assert _catalogs_healthy(app.config) is False
 
 
 def test_submit_research_and_api_hide_private_paths(research_console):
@@ -177,9 +215,10 @@ def test_csrf_blocks_forged_submission(research_console):
     assert failure.value.code == 403
 
 
-def test_artifact_endpoint_serves_only_workspace_relative_safe_file(research_console, tmp_path):
+def test_artifact_endpoint_serves_only_published_official_artifact(research_console, tmp_path):
     base_url, app = research_console
     opener, _html = _login_opener(base_url)
+    from factor_factory.console.artifact_service import publish_official_artifacts
     from factor_factory.console.models import ResearchRequest
 
     job = app.store.create_job(ResearchRequest(title="Artifact factor", hypothesis="test hypothesis"))
@@ -191,11 +230,26 @@ def test_artifact_endpoint_serves_only_workspace_relative_safe_file(research_con
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         )
     )
+    internal = workspace / "objects" / "internal_but_safe.json"
+    internal.parent.mkdir(parents=True)
+    internal.write_text('{"status":"internal"}\n', encoding="utf-8")
+    publication_id, _ = publish_official_artifacts(
+        workspace,
+        app.config.state_root / "public" / job.job_id,
+        role_artifact_ids={"rank_ic_chart": "evaluations/rank_ic_timeseries.png"},
+        identity={
+            "job_id": job.job_id,
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+        },
+    )
     app.store.update_job(
         job.job_id,
         workspace_path=str(workspace),
         worktree_path=str(tmp_path / "worktree"),
         result={
+            "public_artifact_set_id": publication_id,
             "artifacts": [
                 {
                     "artifact_id": "evaluations/rank_ic_timeseries.png",
@@ -211,7 +265,15 @@ def test_artifact_endpoint_serves_only_workspace_relative_safe_file(research_con
         timeout=3,
     )
     assert response.headers["Content-Type"] == "image/png"
+    assert "filename*=UTF-8''rank_ic_timeseries.png" in response.headers["Content-Disposition"]
     assert response.read().startswith(b"\x89PNG")
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            f"{base_url}/artifact/{job.job_id}/objects/internal_but_safe.json",
+            timeout=3,
+        )
+    assert failure.value.code == 404
 
     with pytest.raises(HTTPError) as failure:
         opener.open(f"{base_url}/artifact/{job.job_id}/../outside.json", timeout=3)

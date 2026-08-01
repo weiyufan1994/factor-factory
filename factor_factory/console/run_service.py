@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from factor_factory.console.agent_adapter import ResearchAgentAdapter
-from factor_factory.console.artifact_service import list_safe_artifacts
+from factor_factory.console.artifact_service import SafeArtifact, publish_official_artifacts
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.models import ResearchJob, ResearchRequest, validate_public_source_url
+from factor_factory.console.runner_health import probe_runner_health
 from factor_factory.console.store import ResearchJobStore, utc_now
 from factor_factory.console.ultimate_reader import UltimateRunSummary, read_ultimate_workspace
 from factor_factory.console.worktree_allocator import (
@@ -26,6 +27,51 @@ from factor_factory.research_workspace import load_workspace_manifest, validate_
 BLOCK_ISOLATION_AUDIT_FAILED = "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED"
 BLOCK_EVIDENCE_IDENTITY_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_IDENTITY_MISMATCH"
 BLOCK_FORMAL_EVIDENCE_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_EVIDENCE_MISSING"
+
+
+class ResearchQueueService:
+    """Unprivileged web-side queue facade; execution lives in the runner process."""
+
+    def __init__(
+        self,
+        *,
+        store: ResearchJobStore,
+        runner_health_socket: str | Path,
+        expected_engine_commit: str = "",
+    ) -> None:
+        self.store = store
+        self.runner_health_socket = Path(runner_health_socket).expanduser().resolve(strict=False)
+        self.expected_engine_commit = expected_engine_commit
+
+    def start(self) -> None:
+        return None
+
+    def stop(self, timeout: float = 10.0) -> None:
+        return None
+
+    def healthcheck(self) -> bool:
+        payload = probe_runner_health(self.runner_health_socket)
+        return bool(
+            payload
+            and payload.get("ok") is True
+            and (
+                not self.expected_engine_commit
+                or payload.get("engine_commit") == self.expected_engine_commit
+            )
+        )
+
+    def submit(self, request: ResearchRequest) -> ResearchJob:
+        if request.source_url:
+            raise ValueError(
+                "source URL ingestion is disabled until the read-only fetch broker is available"
+            )
+        return self.store.create_job(request)
+
+    def request_resume(self, job_id: str) -> ResearchJob:
+        return self.store.request_resume(job_id)
+
+    def cancel_queued(self, job_id: str) -> ResearchJob:
+        return self.store.cancel_queued(job_id)
 
 
 class ResearchRunService:
@@ -118,9 +164,16 @@ class ResearchRunService:
             validate_public_source_url(job.request.source_url)
             resume = bool(job.workspace_path and job.worktree_path)
             if resume:
-                worktree = Path(job.worktree_path).resolve(strict=True)
-                workspace = Path(job.workspace_path).resolve(strict=True)
-                allocation = None
+                allocation = self.allocator.validate_allocation(
+                    factor_id=job.factor_id,
+                    research_id=job.research_id,
+                    report_id=job.report_id,
+                    persisted_worktree_path=job.worktree_path,
+                    persisted_workspace_path=job.workspace_path,
+                    persisted_base_commit=job.base_commit,
+                )
+                worktree = allocation.worktree_path
+                workspace = allocation.workspace_path
                 self._write_resume_authorization(job, workspace)
             else:
                 allocation = self.allocator.allocate(
@@ -183,7 +236,22 @@ class ResearchRunService:
                 raise RuntimeError(f"{BLOCK_ISOLATION_AUDIT_FAILED}: {'; '.join(isolation_failures)}")
             summary = read_ultimate_workspace(workspace, report_id=job.report_id)
             self._validate_summary_identity(job, summary)
-            result = build_web_result(summary, workspace)
+            publication_id, public_artifacts = publish_official_artifacts(
+                workspace,
+                self.config.state_root / "public" / job.job_id,
+                role_artifact_ids=summary.artifact_ids,
+                identity={
+                    "job_id": job.job_id,
+                    "report_id": job.report_id,
+                    "factor_id": job.factor_id,
+                    "research_id": job.research_id,
+                },
+            )
+            result = build_web_result(
+                summary,
+                publication_id=publication_id,
+                public_artifacts=public_artifacts,
+            )
             execution_status = _web_execution_status(summary, agent_result.returncode)
             finished = utc_now() if execution_status in {"COMPLETED", "BLOCKED", "FAILED", "CANCELLED"} else ""
             error_code = ""
@@ -367,9 +435,14 @@ def audit_factor_worktree(worktree: Path, workspace: Path) -> list[str]:
     return list(dict.fromkeys(failures))
 
 
-def build_web_result(summary: UltimateRunSummary, workspace: Path) -> dict[str, Any]:
+def build_web_result(
+    summary: UltimateRunSummary,
+    *,
+    publication_id: str,
+    public_artifacts: list[SafeArtifact],
+) -> dict[str, Any]:
     artifacts = []
-    for item in list_safe_artifacts(workspace)[:300]:
+    for item in public_artifacts[:300]:
         kind = "image" if item.media_type.startswith("image/") and item.content_disposition == "inline" else "document"
         artifacts.append(
             {
@@ -388,6 +461,7 @@ def build_web_result(summary: UltimateRunSummary, workspace: Path) -> dict[str, 
     data_implementation = {**summary.data_contract, **summary.implementation_contract}
     return {
         "contract_version": "factorforge_console_web_result_v1",
+        "public_artifact_set_id": publication_id,
         "summary": _result_summary(summary),
         "execution_status": summary.execution_status,
         "protocol_status": summary.protocol_status,

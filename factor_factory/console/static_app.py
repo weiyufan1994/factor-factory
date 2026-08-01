@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import hashlib
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from factor_factory.console.artifact_service import (
     ArtifactAccessError,
@@ -17,11 +19,12 @@ from factor_factory.console.artifact_service import (
     read_artifact_bytes,
 )
 from factor_factory.console.auth import InviteAuth
+from factor_factory.console.auth import SESSION_MAX_AGE_SECONDS
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.discovery import discover_miner_campaigns
 from factor_factory.console.models import ResearchRequest
 from factor_factory.console.readers import read_miner_campaign
-from factor_factory.console.run_service import ResearchRunService
+from factor_factory.console.run_service import ResearchQueueService, ResearchRunService
 from factor_factory.console.store import ResearchJobStore
 from factor_factory.console.task_manifest import create_miner_campaign_task, read_console_tasks
 from factor_factory.console.summary import render_dashboard
@@ -30,6 +33,7 @@ from factor_factory.console.web_ui import render_job, render_login, render_not_f
 
 
 _JOB_ID = re.compile(r"job_[a-f0-9]{10}\Z")
+_PUBLICATION_ID = re.compile(r"pub_[a-f0-9]{32}\Z")
 
 
 @dataclass
@@ -59,7 +63,7 @@ class _LoginRateLimiter:
 class ResearchConsoleApplication:
     config: ConsoleConfig
     store: ResearchJobStore
-    service: ResearchRunService
+    service: ResearchRunService | ResearchQueueService
     auth: InviteAuth
     engine_commit: str = ""
     agent_runtime: str = ""
@@ -262,6 +266,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 self._send_json(403, {"error": "csrf_invalid"})
                 return
             if path == "/logout":
+                application.store.revoke_session(session)
                 self.send_response(303)
                 self._security_headers(public=True)
                 self.send_header("Set-Cookie", application.auth.clear_cookie_header())
@@ -306,6 +311,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 return
             application.login_limiter.clear(address)
             token = application.auth.issue_session()
+            application.store.register_session(token, max_age_seconds=SESSION_MAX_AGE_SECONDS)
             self.send_response(303)
             self._security_headers(public=True)
             self.send_header("Set-Cookie", application.auth.set_cookie_header(token))
@@ -338,13 +344,23 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 self._send_json(404, {"error": "not_found"})
                 return
             job = application.store.get_job(parts[2])
-            if job is None or not job.workspace_path:
+            if job is None:
                 self._send_json(404, {"error": "not_found"})
                 return
             artifact_id = unquote(parts[3])
+            publication_id = str(job.result.get("public_artifact_set_id") or "")
+            allowed_artifacts = {
+                str(item.get("artifact_id") or "")
+                for item in (job.result.get("artifacts") or [])
+                if isinstance(item, dict)
+            }
+            if not _PUBLICATION_ID.fullmatch(publication_id) or artifact_id not in allowed_artifacts:
+                self._send_json(404, {"error": "artifact_not_available"})
+                return
+            public_root = application.config.state_root / "public" / job.job_id / publication_id
             try:
-                description = describe_artifact(job.workspace_path, artifact_id)
-                data = read_artifact_bytes(job.workspace_path, artifact_id)
+                description = describe_artifact(public_root, artifact_id)
+                data = read_artifact_bytes(public_root, artifact_id)
             except ArtifactAccessError:
                 self._send_json(404, {"error": "artifact_not_available"})
                 return
@@ -352,9 +368,13 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             self._security_headers()
             self.send_header("Content-Type", description.media_type)
             self.send_header("Content-Length", str(len(data)))
-            filename = Path(description.artifact_id).name.replace('"', "")
+            filename = Path(description.artifact_id).name
+            fallback = f"artifact{Path(filename).suffix.lower()}"
             disposition = description.content_disposition
-            self.send_header("Content-Disposition", f'{disposition}; filename="{filename}"')
+            self.send_header(
+                "Content-Disposition",
+                f'{disposition}; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}',
+            )
             self.send_header("Cache-Control", "private, max-age=60")
             self.end_headers()
             self.wfile.write(data)
@@ -375,17 +395,22 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
 
         def _authenticated(self) -> bool:
             token = application.auth.session_from_cookie(self.headers.get("Cookie"))
-            return application.auth.verify_session(token)
+            return self._session_valid(token)
 
         def _require_auth(self) -> str | None:
             token = application.auth.session_from_cookie(self.headers.get("Cookie"))
-            if application.auth.verify_session(token):
+            if self._session_valid(token):
                 return token
             if self.headers.get("Accept", "").startswith("application/json") or self.path.startswith("/api/"):
                 self._send_json(401, {"error": "authentication_required"}, public=True)
             else:
                 self._redirect("/login")
             return None
+
+        def _session_valid(self, token: str) -> bool:
+            if application.config.auth_disabled:
+                return application.auth.verify_session(token)
+            return application.auth.verify_session(token) and application.store.session_is_active(token)
 
         def _redirect(self, location: str) -> None:
             self.send_response(303)
@@ -464,8 +489,41 @@ def _health_checks(application: ResearchConsoleApplication) -> dict[str, bool]:
             else True
         ),
         "agent_runtime": bool(application.agent_runtime) if application.agent_runtime else True,
-        "data_catalogs": all(path.is_file() for path in application.config.data_catalogs),
+        "data_catalogs": _catalogs_healthy(application.config),
     }
+
+
+def _catalogs_healthy(config: ConsoleConfig) -> bool:
+    if not config.data_catalogs:
+        return config.auth_disabled
+    if not all(path.is_file() and not path.is_symlink() for path in config.data_catalogs):
+        return False
+    if config.auth_disabled and config.catalog_receipt is None:
+        return True
+    receipt_path = config.catalog_receipt
+    if receipt_path is None or receipt_path.is_symlink() or not receipt_path.is_file():
+        return False
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        catalog_data = config.data_catalogs[0].read_bytes()
+        fetched_at = datetime.fromisoformat(
+            str(receipt.get("fetched_at_utc") or "").replace("Z", "+00:00")
+        )
+        catalog = json.loads(catalog_data)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError):
+        return False
+    datasets = catalog.get("datasets") if isinstance(catalog, dict) else None
+    now = datetime.now(timezone.utc)
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("version") == "factorforge_console_active_catalog_receipt_v1"
+        and receipt.get("role_name") == config.aws_readonly_role_name
+        and receipt.get("catalog_sha256") == hashlib.sha256(catalog_data).hexdigest()
+        and isinstance(datasets, list)
+        and len(datasets) == receipt.get("dataset_count")
+        and fetched_at.tzinfo is not None
+        and now - timedelta(hours=24) <= fetched_at <= now + timedelta(minutes=5)
+    )
 
 
 def _rate_limit_address(handler: BaseHTTPRequestHandler) -> str:
@@ -475,7 +533,14 @@ def _rate_limit_address(handler: BaseHTTPRequestHandler) -> str:
     except ValueError:
         return "unknown"
     if peer_address.is_loopback:
-        forwarded = handler.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        forwarded_values = [
+            item.strip()
+            for item in handler.headers.get("X-Forwarded-For", "").split(",")
+            if item.strip()
+        ]
+        if len(forwarded_values) != 1:
+            return peer_address.compressed
+        forwarded = forwarded_values[0]
         try:
             forwarded_address = ipaddress.ip_address(forwarded)
         except ValueError:

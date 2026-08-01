@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim
+FROM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7
 
 ARG OPENCLAW_VERSION=2026.7.1
 
@@ -6,10 +6,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git python3 python3-pip procps \
     && npm install --global "openclaw@${OPENCLAW_VERSION}" \
     && python3 -m pip install --break-system-packages --no-cache-dir \
-       boto3 duckdb numpy pandas polars pyarrow pyqlib s3fs scikit-learn scipy statsmodels \
+       boto3==1.43.62 duckdb==1.5.5 numpy==1.26.4 pandas==2.2.3 \
+       polars==1.43.2 pyarrow==25.0.0 pyqlib==0.9.7 s3fs==2026.7.0 \
+       scikit-learn==1.7.2 scipy==1.16.3 statsmodels==0.14.6 \
     && apt-get clean
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+
+RUN openclaw --version \
+    && python3 -c "import boto3, duckdb, numpy, pandas, polars, pyarrow, qlib, s3fs, sklearn, scipy, statsmodels"
 
 ENTRYPOINT []

@@ -1,29 +1,31 @@
 [Unit]
-Description=Factor Forge invitation research Console
-After=network-online.target docker.service factorforge-console-network.service factorforge-console-proxy.service
+Description=Factor Forge invitation research Console web
+After=network-online.target factorforge-console-runner.service
 Wants=network-online.target
-Requires=docker.service factorforge-console-network.service factorforge-console-proxy.service
+Requires=factorforge-console-runner.service
 
 [Service]
 Type=simple
-User=factorforge
-Group=factorforge
-SupplementaryGroups=docker
+User=factorforge-web
+Group=factorforge-console
 WorkingDirectory=/srv/factorforge/control
-Environment=HOME=/var/lib/factorforge-console
+Environment=HOME=/var/lib/factorforge-console/web-home
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=/etc/factorforge-console/console.env
-ExecStartPre=/usr/bin/mkdir -p /var/lib/factorforge-console/data-api-runtime/catalogs
-ExecStartPre=/usr/bin/aws s3 cp s3://yufan-data-lake/factorforge/data/catalog/data_catalog.json /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --region ap-southeast-1 --only-show-errors
-ExecStart=/usr/bin/python3 scripts/run_factorforge_console.py --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
+ExecStart=/usr/bin/python3 scripts/run_factorforge_console.py --mode web --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=5
-UMask=0077
+UMask=0007
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/factorforge-console /srv/factorforge/control/.git
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/factorforge-console/state
 
 [Install]
 WantedBy=multi-user.target

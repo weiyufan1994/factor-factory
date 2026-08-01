@@ -7,11 +7,12 @@
 必须同时满足：
 
 1. `source_repo` 是 clean、固定 commit 的专用控制 worktree。
-2. worktree root 和 state root 位于 repo 外部，目录权限为 `0700`。
-3. Data API catalog 存在且仅作为读取输入。
+2. worktree root 和 state root 位于 repo 外部；共享 state 根目录属于 `factorforge-console` group，任务私有目录保持 `0700`。
+3. 固定 Data API checkout 的 `factor_factory/data_api` 子包存在；active catalog 只能从固定 S3 key 刷新并带 receipt。
 4. Docker agent image、专用 egress bridge 和 `DOCKER-USER` 私网阻断规则已就绪。
-5. auth seed SQLite 只含一个指定 provider 的静态 `api_key`，不含 OAuth/session。
-6. 邀请口令和 cookie secret 已通过环境或 Secrets Manager 注入。
+5. auth seed SQLite 只含 broker 占位 key，不含真实模型 key、OAuth 或 session；真实模型 key 只对 `factorforge-model` 可读。
+6. 专用 EC2 role 是短期 assumed-role，S3 读取绑定专用 VPC endpoint，IAM 显式拒绝写删。
+7. 邀请口令和 cookie secret 已注入 Web 环境，且与模型 key 分离。
 
 ## 2. 必需环境变量
 
@@ -29,11 +30,16 @@ FACTORFORGE_CONSOLE_CONTAINER_RUNTIME=docker
 FACTORFORGE_CONSOLE_CONTAINER_NETWORK=factorforge-console-egress
 FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET=172.29.0.0/24
 FACTORFORGE_CONSOLE_CONTAINER_PROXY_URL=http://172.29.0.1:3128
-FACTORFORGE_CONSOLE_AGENT_IMAGE=factorforge-console-agent:2026.08.01
+FACTORFORGE_CONSOLE_MODEL_BROKER_URL=http://172.29.0.1:8781
+FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME=factorforge-console-pilot-role
+FACTORFORGE_CONSOLE_INSTALLATION_ID=factorforge-console-pilot-20260801
+FACTORFORGE_CONSOLE_ENGINE_COMMIT=<exact 40-char deployment commit>
+FACTORFORGE_CONSOLE_AGENT_IMAGE=sha256:<exact local Docker image id>
 FACTORFORGE_CONSOLE_OPENCLAW_PROFILE_TEMPLATE=<committed profile template>
 FACTORFORGE_CONSOLE_STATE_ROOT=<external private state root>
 FACTORFORGE_CONSOLE_WORKTREE_ROOT=<external worktree root>
 FACTORFORGE_DATA_CATALOGS=<comma separated approved catalog paths>
+FACTORFORGE_CONSOLE_CATALOG_RECEIPT=<active catalog receipt path>
 FACTORFORGE_DATA_API_PYTHONPATH=<clean committed Data API package root>
 ```
 
@@ -49,6 +55,9 @@ Linux Pilot 主机先构建固定 agent image，并配置隔离网络：
 ```bash
 docker build -f deploy/factorforge-console/Dockerfile.agent \
   -t factorforge-console-agent:2026.08.01 .
+
+docker image inspect factorforge-console-agent:2026.08.01 --format '{{.Id}}'
+# 把输出的 sha256 image id 写入 FACTORFORGE_CONSOLE_AGENT_IMAGE。
 
 sudo -E deploy/factorforge-console/configure-container-network.sh
 # 将 squid-factorforge-console.conf 安装到 /etc/squid/，再启动 proxy unit。
@@ -72,16 +81,20 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 
 - 控制 worktree clean、base commit 可解析。
 - agent image、专用 bridge 的 subnet/IPv6/internal 属性。
-- `DOCKER-USER` 只允许 bridge -> `172.29.0.1:3128`，Squid 仅允许 DeepSeek 与指定 S3 bucket host。
+- `DOCKER-USER` 只允许 bridge -> `172.29.0.1:3128/8781`；Squid 仅允许指定 S3 bucket host，模型原站只能由 broker 访问。
 - OpenClaw profile 的 model endpoint、plugin 和 tool allowlist。
-- auth seed provider/type/key 合法。
-- 启动时回收 Console 标签下的遗留 agent 容器。
+- auth seed provider/type/key 合法，且不含 SQLite WAL/SHM sidecar。
+- active catalog receipt 的 role、hash、dataset count 和刷新时间有效。
+- 启动时只回收相同 installation id 的遗留 agent 容器；回收失败则 runner 不启动。
+- 容器 Data API read smoke 能从 active S3 catalog 对 `clean_daily_bar` 做真实单日读取。
 
 运行中检查：
 
 - `/healthz` 同时报告 ledger、worker、engine、agent runtime 和 catalog；任一失败返回 503。
 - 任务详情不出现服务器绝对路径、session key 或原始日志。
+- 浏览器下载只能命中任务结果白名单中的不可变 publication set，不能直接读取 workspace。
 - `worktree_root/<factor>/<research>/repo` 与 workspace 一一对应。
+- 容器内 `git rev-parse HEAD` 必须命中任务 base commit，且 `GIT_DIR` 指向任务私有 shallow Git view，不指向控制仓库 `.git`。
 - 每个任务结束后 Git changed/untracked/ignored 路径全部位于当前 workspace。
 
 ## 5. AWS Pilot
@@ -93,13 +106,13 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 1. Region 使用 `ap-southeast-1`，与现有 Data API/S3 同区。
 2. 加密 EBS；使用 SSM 管理，不开放 22。
 3. Security Group 只允许公网 80/443，Console 只监听 `127.0.0.1`。
-4. Instance profile 只允许读取 approved catalog/datamart prefix；明确拒绝对象写入/删除。
+4. 新建专用 S3 Gateway VPC endpoint；instance profile 只允许经该 endpoint 读取 approved catalog/datamart prefix，并明确拒绝对象写入/删除。
 5. `/srv/factorforge/control` 是 clean、固定 commit 的部署 checkout。
 6. `/var/lib/factorforge-console` 存任务账本、agent state 和 factor worktrees。
 7. `/etc/factorforge-console` 只存 root-readable 配置或 Secrets Manager materialization。
-8. Caddy 负责 HTTPS 和反向代理；systemd 管理 network、allowlisted proxy 和 Console 三个 unit。
+8. Caddy 负责 HTTPS 和覆盖 `X-Forwarded-For`；systemd 管理 network、S3 proxy、model broker、runner、Web 五个 unit。Web 用户不得进入 Docker group。
 9. EC2 metadata hop limit 设为 1；容器环境固定 `AWS_EC2_METADATA_DISABLED=true`，并验证 `169.254.169.254` 不可达。
-10. 在开放邀请前执行容器内网络负例、Data API read smoke、一个真实 factor workspace E2E 和浏览器路径/secret 扫描。
+10. 在开放邀请前执行容器内六项网络正负例、Data API read smoke、一个真实 factor workspace E2E、正式 evidence verifier 和浏览器路径/secret 扫描。
 
 域名、证书和实例就绪后才能向朋友开放；未配置 HTTPS 时禁止把共享口令站点暴露到公网。
 

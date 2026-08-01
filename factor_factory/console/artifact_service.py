@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import os
 import re
+import shutil
 import stat
 import struct
+import uuid
 import zlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -90,6 +93,104 @@ class SafeArtifact:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def publish_official_artifacts(
+    workspace_root: str | Path,
+    public_job_root: str | Path,
+    *,
+    role_artifact_ids: dict[str, str],
+    identity: dict[str, str],
+    max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+) -> tuple[str, list[SafeArtifact]]:
+    """Copy only selected formal roles into an immutable public artifact set."""
+
+    workspace = _workspace_root(workspace_root)
+    public_base = Path(public_job_root).expanduser().resolve(strict=False)
+    public_base.mkdir(parents=True, exist_ok=True, mode=0o750)
+    public_base.chmod(0o750)
+    publication_id = f"pub_{uuid.uuid4().hex}"
+    publication_root = public_base / publication_id
+    publication_root.mkdir(mode=0o750)
+    published: list[SafeArtifact] = []
+    records: list[dict[str, object]] = []
+    omitted: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        for role, artifact_id in sorted(role_artifact_ids.items()):
+            if artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            try:
+                source_description = describe_artifact(
+                    workspace,
+                    artifact_id,
+                    max_file_bytes=max_file_bytes,
+                )
+                data = read_artifact_bytes(
+                    workspace,
+                    artifact_id,
+                    max_file_bytes=max_file_bytes,
+                )
+            except ArtifactAccessError as exc:
+                omitted.append(
+                    {
+                        "role": role,
+                        "artifact_id": artifact_id,
+                        "reason": str(exc),
+                    }
+                )
+                continue
+            relative = _validate_artifact_id(artifact_id)
+            destination = publication_root.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+            destination.parent.chmod(0o750)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(destination, flags, 0o640)
+            try:
+                offset = 0
+                while offset < len(data):
+                    offset += os.write(descriptor, data[offset:])
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            destination.chmod(0o640)
+            public_description = describe_artifact(
+                publication_root,
+                artifact_id,
+                max_file_bytes=max_file_bytes,
+            )
+            if (
+                public_description.size_bytes != source_description.size_bytes
+                or read_artifact_bytes(publication_root, artifact_id, max_file_bytes=max_file_bytes) != data
+            ):
+                raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+            published.append(public_description)
+            records.append(
+                {
+                    "role": role,
+                    "artifact_id": artifact_id,
+                    "size_bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+            )
+        manifest = {
+            "version": "factorforge_console_public_artifact_manifest_v1",
+            "publication_id": publication_id,
+            "identity": dict(identity),
+            "artifacts": records,
+            "omitted_artifacts": omitted,
+        }
+        manifest_path = publication_root / ".publication.json"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        manifest_path.chmod(0o640)
+    except Exception:
+        shutil.rmtree(publication_root, ignore_errors=True)
+        raise
+    return publication_id, sorted(published, key=lambda item: item.artifact_id)
 
 
 def list_safe_artifacts(
@@ -220,14 +321,15 @@ def read_artifact_bytes(
     *,
     max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
 ) -> bytes:
-    path = resolve_artifact_path(
-        workspace_root,
-        artifact_id,
-        max_file_bytes=max_file_bytes,
-    )
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    root = _workspace_root(workspace_root)
+    relative = _validate_artifact_id(artifact_id)
+    if not _safe_artifact_name(relative):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    extension = relative.suffix.lower()
+    if extension not in SAFE_ARTIFACT_EXTENSIONS:
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_TYPE_FORBIDDEN)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = _open_artifact_descriptor(root, relative)
         try:
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode) or before.st_size > max_file_bytes:
@@ -254,7 +356,6 @@ def read_artifact_bytes(
         or len(data) != after.st_size
     ):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
-    extension = path.suffix.lower()
     if extension in TEXT_ARTIFACT_EXTENSIONS and _contains_secret_bytes(data, extension=extension):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
     if extension == ".png" and not _valid_public_png_bytes(data):
@@ -284,7 +385,36 @@ def _validate_artifact_id(artifact_id: str) -> PurePosixPath:
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_PATH_INVALID)
     if any(part in {"", ".", ".."} for part in relative.parts):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_PATH_INVALID)
+    if any(any(ord(character) < 32 or ord(character) == 127 for character in part) for part in relative.parts):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_PATH_INVALID)
     return relative
+
+
+def _open_artifact_descriptor(root: Path, relative: PurePosixPath) -> int:
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.open(root, directory_flags)
+        descriptors.append(current)
+        for part in relative.parts[:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            descriptors.append(current)
+        descriptor = os.open(relative.parts[-1], file_flags, dir_fd=current)
+    except OSError as exc:
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE) from exc
+    finally:
+        for item in reversed(descriptors):
+            try:
+                os.close(item)
+            except OSError:
+                pass
+    return descriptor
 
 
 def _reject_symlink_segments(root: Path, candidate: Path) -> None:

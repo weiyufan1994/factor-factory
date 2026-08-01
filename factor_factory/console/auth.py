@@ -10,7 +10,7 @@ from http.cookies import SimpleCookie
 
 
 SESSION_COOKIE = "factorforge_console_session"
-SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+SESSION_MAX_AGE_SECONDS = 12 * 60 * 60
 
 
 def _b64encode(value: bytes) -> str:

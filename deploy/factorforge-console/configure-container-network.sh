@@ -31,6 +31,7 @@ chain="FF_CONSOLE_EGRESS"
 iptables -w 5 -N "${chain}" 2>/dev/null || true
 iptables -w 5 -F "${chain}"
 iptables -w 5 -A "${chain}" -d "${proxy_gateway}/32" -p tcp --dport 3128 -j ACCEPT
+iptables -w 5 -A "${chain}" -d "${proxy_gateway}/32" -p tcp --dport 8781 -j ACCEPT
 iptables -w 5 -A "${chain}" -j REJECT
 
 while iptables -w 5 -C DOCKER-USER -s "${NETWORK_SUBNET}" -j "${chain}" 2>/dev/null; do
@@ -41,4 +42,5 @@ iptables -w 5 -I DOCKER-USER 1 -s "${NETWORK_SUBNET}" -j "${chain}"
 # Fail closed if the only allowed route is the host proxy.
 iptables -w 5 -C DOCKER-USER -s "${NETWORK_SUBNET}" -j "${chain}"
 iptables -w 5 -C "${chain}" -d "${proxy_gateway}/32" -p tcp --dport 3128 -j ACCEPT
+iptables -w 5 -C "${chain}" -d "${proxy_gateway}/32" -p tcp --dport 8781 -j ACCEPT
 iptables -w 5 -C "${chain}" -j REJECT

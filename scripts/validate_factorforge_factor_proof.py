@@ -17,6 +17,10 @@ from factor_factory.research_proof import (
     validate_factor_proof_certificate,
     write_json,
 )
+from factor_factory.research_workspace import load_workspace_manifest
+
+
+BOUND_VERIFIER_VERSION = "factorforge_console_bound_factor_proof_verifier_v1"
 
 
 def main() -> int:
@@ -52,6 +56,17 @@ def main() -> int:
             expected_report_id=args.report_id,
         )
         report["certificate_path"] = str(certificate_path)
+    try:
+        workspace_manifest = load_workspace_manifest(workspace_root / "manifest.json")
+    except (OSError, ValueError):
+        workspace_manifest = {}
+    report["verifier_contract_version"] = BOUND_VERIFIER_VERSION
+    report["research_id"] = workspace_manifest.get("research_id")
+    report["formal_proof_eligible"] = report.get("verdict") in {
+        "ACCEPT",
+        "REJECT",
+        "ITERATE",
+    } and not report.get("block_reasons")
     verifier_path = (
         workspace_root
         / "objects"

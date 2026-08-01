@@ -76,15 +76,18 @@ worktree 内独立 factor workspace
 ```mermaid
 flowchart LR
   U["浏览器"] --> P["Caddy HTTPS"]
-  P --> W["Console Web"]
+  P --> W["无特权 Console Web"]
   W --> L["SQLite WAL 任务账本"]
-  W --> Q["单并发队列"]
+  L --> Q["独立单并发 Runner"]
   Q --> A["Worktree Allocator"]
   A --> FW["因子专属 Git worktree + workspace"]
   Q --> C["任务专属只读根文件系统容器"]
   C --> AG["任务专属 OpenClaw local agent/session/state"]
   AG --> FW
-  AG --> D["Data API / approved datamarts 只读"]
+  AG --> S["S3 allowlist proxy"]
+  S --> D["Data API / approved datamarts 只读"]
+  AG --> B["固定模型 broker"]
+  B --> M["DeepSeek Reasoner"]
   FW --> V["官方 protocol/proof validator + isolation audit"]
   V --> L
   L --> W
@@ -93,10 +96,12 @@ flowchart LR
 ### 3.1 Web 层
 
 - Python 标准库 HTTP server，避免给现有仓库引入新的前端构建链。
-- 共享邀请口令登录；签名 `HttpOnly`、`SameSite=Lax` cookie。
+- 共享邀请口令登录；签名 `Secure`、`HttpOnly`、`SameSite=Lax` cookie，最长 12 小时，并在服务端保存 session 哈希以支持立即注销。
 - 所有写操作要求 CSRF token。
 - 请求体和字段长度有限制，登录有基础限速。
-- 只公开安全扩展名和经过全文扫描的 workspace-relative artifact；PNG 必须通过结构、CRC、尾随载荷和 metadata 检查。
+- Web 进程属于 `factorforge-web`，不在 `docker` group，也不能写控制 checkout、worktree 或 agent 私有目录；它只写共享任务账本并通过 runner health socket 核验固定 engine commit。
+- 研究结束后 runner 只把正式角色引用的 artifact 复制到不可变 publication set；Web 不直接读取可变 workspace。复制和下载均逐层使用 `openat/O_NOFOLLOW`，并核对 inode、长度和内容。
+- 只公开安全扩展名和经过全文扫描的 artifact；PNG 必须通过结构、CRC、尾随载荷和 metadata 检查。
 - HTML/SVG 强制下载，服务端绝对路径、日志、凭据和疑似 secret 不公开。
 
 ### 3.2 任务账本
@@ -106,6 +111,7 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 - 防止多个完整 Ultimate 同时耗尽本机资源。
 - 服务重启时，运行中任务转为 `REVIEW_REQUIRED`，不自动重复执行。
 - 失败现场、worktree 和 workspace 默认保留，不自动破坏性清理。
+- Web 与 runner 是两个 systemd 用户；共享目录使用 `factorforge-console` group，任务 agent state 和临时凭证目录保持 runner 私有。
 
 ### 3.3 Agent 层
 
@@ -113,14 +119,15 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 
 - 无聊天频道、无 cron、无 heartbeat。
 - 不挂载用户 HOME、其他 agent state、其他 factor worktree 或共享 OAuth 数据库。
-- engine worktree、Data API 源码和 catalog/datamart root 只读挂载；仅当前 factor workspace 和当前任务 agent state 可写。
+- engine worktree、固定 Data API 子包和 catalog root 只读挂载；仅当前 factor workspace 和当前任务 agent state 可写。Data API 经容器专用 bridge 加载，不能用旧 Data API checkout 覆盖当前 Factor Forge package。
+- 每个任务生成只含固定 base commit 的 shallow Git view，并以只读 `GIT_DIR` 挂载；正式脚本可以执行 `rev-parse/show/status`，但 agent 不读取控制仓库完整 Git 历史。
 - 容器使用只读 rootfs、drop all capabilities、no-new-privileges、pids/memory/CPU 限额和独立 tmpfs。
 - OpenClaw profile 在研究容器内再次只读挂载；禁用 bootstrap/global skills/elevated/agent-to-agent，只允许固定工具集合。
-- 认证 seed 必须是非 symlink、权限不宽于 `0600`、且只含一个指定 provider 的静态 `api_key`；使用 SQLite backup 复制，避免 WAL 不一致。
-- 现有 Data API 仍通过只读 IAM 使用；主机取得的短期只读 AWS 凭证经 `0600` 临时 env file 注入当前任务，容器内禁用 metadata，任务结束删除临时文件。
-- 服务重启先回收带 `factorforge.console=research-agent` 标签的遗留容器，再把中断任务置为待复核，禁止旧 turn 与新 turn 重叠。
+- 认证 seed 必须是非 symlink、权限不宽于 `0600`、且只含一个指定 provider 的静态占位 `api_key`；研究容器不持有真实模型 key。真实 key 只由独立 `factorforge-model` broker 读取并注入固定上游请求。
+- 现有 Data API 通过专用 EC2 role 的短期只读 AWS 凭证访问；凭证必须含 session token、有效期和精确 assumed-role ARN，经容器外 `0600` lease 注入当前任务，容器内禁用 metadata，任务结束删除。S3 policy 将访问绑定到专用 VPC endpoint，并显式拒绝 mutation。
+- 服务重启只回收同时带 managed 和本 installation id 标签的遗留容器；任何停止/删除失败都使 runner readiness BLOCK。中断任务转为待复核，禁止旧 turn 与新 turn 重叠。
 
-容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 将该子网的全部直接出口拒绝，只允许访问 bridge gateway 上的 Squid CONNECT proxy。Squid 仅放行 `api.deepseek.com` 与 `yufan-data-lake` 的两个精确 S3 hostname，并再次拒绝私网、link-local 和 metadata 目标。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现，不能直接交给研究 agent。应用 URL 校验不是网络隔离的替代品。
+容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口，只允许访问 bridge gateway 的 S3 proxy 和模型 broker。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-reasoner`，并在主机侧注入 key。私网、link-local、metadata、任意公网和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
 
 当前 Pilot 固定使用 `deepseek/deepseek-reasoner` 和 `thinking=high`。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 
@@ -138,6 +145,8 @@ Agent 先读取仓库内正式 skills，然后：
 Console 不信任 completion、wrapper exit code 或 artifact 的“自报状态”。终态必须重新调用仓库已有的 `validate_protocol_bundle(stage="final")` 和 `validate_factor_proof_certificate()`；持久化 verifier 必须与重算 verdict、report/factor identity 一致。任何来源的显式 false/BLOCK 或相互矛盾均优先，dry-run 永远没有 formal proof eligibility。
 
 内部证据读取与浏览器发布是两条独立路径：内部读取允许合法 artifact 记录服务器路径，但只接受当前 workspace 内的非 symlink、限长 JSON；对外字段、blocker、next action 和下载 artifact 再单独脱敏。禁止用“公开扫描失败”代替正式证据验证。
+
+Council 只有 synthesis 和 summary 都达到正式终态，且 certificate 与重新计算的 protocol/factor/research/report identity 完全一致时，才可能 `formal_proof_eligible=true`。任一显式 `BLOCK/FAIL/false` 优先于自报 `PASS`。
 
 ## 4. 任务生命周期
 
@@ -178,9 +187,10 @@ QUEUED
 - 新 EC2、新 security group、新 instance profile、新加密 EBS。
 - SSM 管理，不开放 SSH；公网只开放 80/443。
 - Caddy 终止 HTTPS；Console 只监听 loopback。
-- systemd 管理 Docker 隔离网络 oneshot 和 Console；agent 容器由 Console 按任务创建和回收。
+- systemd 分别管理隔离网络、S3 proxy、模型 broker、runner 和无特权 Web；只有 runner 通过 supplementary group 获得 Docker 权限。
 - Data API 通过现有 approved catalog/datamart 只读访问。
-- 模型 key、邀请口令和 cookie secret 来自 Secrets Manager 或 root-only 环境文件。
+- active catalog 每次 runner 启动从固定 S3 key 只读刷新，并保存 ETag、版本、哈希、role 和时间 receipt；过期或被改写时 `/healthz` 失败。
+- 模型 key、邀请口令和 cookie secret 以各自最小权限的本机文件/环境注入；模型 key 不进入 Console 环境、SQLite、容器或 artifact。
 
 单机是 Pilot 的成本/复杂度选择，不是长期多租户架构。达到多用户并发、按用户隔离或计费需求后，再拆成 Web/API、队列、worker 和对象存储。
 
@@ -191,6 +201,7 @@ QUEUED
 - Console 全量单测和 legacy smoke PASS。
 - 源 worktree clean，固定 commit 可解析。
 - Agent image、专用 bridge、profile policy 和无遗留容器 readiness PASS。
+- Agent image 必须以本机 `sha256:<image-id>` 固定；基础镜像和 Python 依赖版本固定，并通过真实 Linux build/import smoke。
 - 静态 auth seed 仅含一个指定 provider 的 `api_key` profile。
 - 桌面和手机 Playwright 截图无重叠、无路径泄漏。
 
@@ -203,7 +214,7 @@ QUEUED
 - 页面能区分 protocol、factor、Council 和 proof eligibility。
 - REJECT/BLOCK/pause 仍展示完整研究方法和证据链。
 - Git 写入审计没有 workspace 外路径。
-- 容器无法访问 metadata、localhost 或 RFC1918 地址；能访问公开模型端点和 allowlisted S3/Data API。
+- 容器无法访问 metadata、localhost、RFC1918、任意公网或 proxy 上的模型原站；只能通过固定 broker 使用模型，并通过 allowlisted proxy 读取 S3/Data API。
 - 容器无法绕过 allowlisted proxy 访问任意公网 host，S3 IAM 仍无写入/删除权限。
 - 伪造 certificate、verifier BLOCK、空 Council summary、dry-run REJECT、report identity 混用均不能产生正式 PASS。
 

@@ -81,7 +81,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 
 - 控制 worktree clean、base commit 可解析。
 - agent image、专用 bridge 的 subnet/IPv6/internal 属性。
-- `DOCKER-USER` 只允许 bridge -> `172.29.0.1:3128/8781`；Squid 仅允许指定 S3 bucket host，模型原站只能由 broker 访问。
+- `DOCKER-USER` 只允许 bridge -> `172.29.0.1:3128/8781`；容器外部 DNS 解析必须失败；Squid 仅允许指定 S3 bucket host，模型原站只能由 broker 访问。
 - OpenClaw profile 的 model endpoint、plugin 和 tool allowlist。
 - auth seed provider/type/key 合法，且不含 SQLite WAL/SHM sidecar。
 - active catalog receipt 的 role、hash、dataset count 和刷新时间有效。

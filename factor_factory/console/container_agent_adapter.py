@@ -488,6 +488,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             f"factorforge.console.installation={self.config.installation_id}",
             "--network",
             self.config.container_network,
+            "--dns",
+            "127.0.0.1",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
@@ -754,11 +756,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
     def _validate_egress_policy(self) -> None:
         script = r"""
 import json
+import socket
 import sys
 import urllib.error
 import urllib.request
 
 mode, url = sys.argv[1], sys.argv[2]
+if mode == "blocked-dns":
+    try:
+        socket.getaddrinfo(url, 443)
+    except socket.gaierror:
+        raise SystemExit(0)
+    raise SystemExit(1)
 opener = (
     urllib.request.build_opener(urllib.request.ProxyHandler({}))
     if mode in {"blocked-direct", "allowed-model"}
@@ -798,6 +807,7 @@ raise SystemExit(0 if accepted else 1)
             ("blocked-proxy", "https://example.com"),
             ("blocked-direct", "https://example.com"),
             ("blocked-direct", "http://169.254.169.254/latest/meta-data/"),
+            ("blocked-dns", "factorforge-console-egress-probe.example.com"),
         )
         for mode, url in probes:
             self._run_runtime(
@@ -807,6 +817,8 @@ raise SystemExit(0 if accepted else 1)
                     "--rm",
                     "--network",
                     self.config.container_network,
+                    "--dns",
+                    "127.0.0.1",
                     "--read-only",
                     "--cap-drop=ALL",
                     "--security-opt=no-new-privileges",
@@ -875,6 +887,8 @@ print(json.dumps({'status': 'PASS', 'dataset_count': len(datasets), 'row_count':
             f"factorforge.console.installation={self.config.installation_id}",
             "--network",
             self.config.container_network,
+            "--dns",
+            "127.0.0.1",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",

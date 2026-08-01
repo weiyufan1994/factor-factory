@@ -127,7 +127,7 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 - 现有 Data API 通过专用 EC2 role 的短期只读 AWS 凭证访问；凭证必须含 session token、有效期和精确 assumed-role ARN，经容器外 `0600` lease 注入当前任务，容器内禁用 metadata，任务结束删除。S3 policy 将访问绑定到专用 VPC endpoint，并显式拒绝 mutation。
 - 服务重启只回收同时带 managed 和本 installation id 标签的遗留容器；任何停止/删除失败都使 runner readiness BLOCK。中断任务转为待复核，禁止旧 turn 与新 turn 重叠。
 
-容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口，只允许访问 bridge gateway 的 S3 proxy 和模型 broker。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-reasoner`，并在主机侧注入 key。私网、link-local、metadata、任意公网和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
+容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口，只允许访问 bridge gateway 的 S3 proxy 和模型 broker。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-reasoner`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
 
 当前 Pilot 固定使用 `deepseek/deepseek-reasoner` 和 `thinking=high`。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 

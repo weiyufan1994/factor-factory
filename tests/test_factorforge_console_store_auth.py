@@ -495,9 +495,11 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         for command in calls
         if len(command) > 1 and command[1] == "run" and "python3" in command
     ]
-    assert len(probe_commands) == 6
+    assert len(probe_commands) == 7
     assert any("https://example.com" in command for command in probe_commands)
     assert any("169.254.169.254" in " ".join(command) for command in probe_commands)
+    assert any("factorforge-console-egress-probe.example.com" in command for command in probe_commands)
+    assert all(command[command.index("--dns") + 1] == "127.0.0.1" for command in probe_commands)
     run_commands = [
         command
         for command in calls
@@ -508,6 +510,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert "--read-only" in research_command
     assert "--local" in research_command
     assert research_command[research_command.index("--network") + 1] == config.container_network
+    assert research_command[research_command.index("--dns") + 1] == "127.0.0.1"
     assert f"HTTPS_PROXY={config.container_proxy_url}" in research_command
     assert f"NO_PROXY={urlsplit(config.container_model_broker_url).hostname}" in research_command
     assert "AWS_EC2_METADATA_DISABLED=true" in research_command

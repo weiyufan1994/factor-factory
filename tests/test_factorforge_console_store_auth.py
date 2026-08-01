@@ -432,7 +432,19 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert adapter.validate_ready() == "container:factorforge-agent:test"
     result = adapter.run(job, worktree=source, workspace=workspace, resume=False)
     assert result.returncode == 0
-    run_commands = [command for command in calls if len(command) > 1 and command[1] == "run"]
+    probe_commands = [
+        command
+        for command in calls
+        if len(command) > 1 and command[1] == "run" and "python3" in command
+    ]
+    assert len(probe_commands) == 5
+    assert any("https://example.com" in command for command in probe_commands)
+    assert any("169.254.169.254" in " ".join(command) for command in probe_commands)
+    run_commands = [
+        command
+        for command in calls
+        if len(command) > 1 and command[1] == "run" and config.openclaw_binary in command
+    ]
     assert len(run_commands) == 2
     research_command = run_commands[-1]
     assert "--read-only" in research_command

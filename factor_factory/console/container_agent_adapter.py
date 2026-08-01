@@ -87,6 +87,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: scoped AWS credentials are unavailable"
                 )
         self._reconcile_stale_containers()
+        self._validate_egress_policy()
         return f"container:{self.config.agent_container_image}"
 
     def stop_all(self) -> None:
@@ -455,6 +456,66 @@ class ContainerizedOpenClawResearchAgentAdapter:
             value = container_id.strip()
             if value:
                 self._stop_container(value)
+
+    def _validate_egress_policy(self) -> None:
+        script = r"""
+import sys
+import urllib.error
+import urllib.request
+
+mode, url = sys.argv[1], sys.argv[2]
+opener = (
+    urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if mode == "blocked-direct"
+    else urllib.request.build_opener()
+)
+try:
+    with opener.open(url, timeout=8) as response:
+        reached_remote = 100 <= int(response.status) < 600
+except urllib.error.HTTPError:
+    reached_remote = True
+except Exception:
+    reached_remote = False
+expected = mode == "allowed-proxy"
+raise SystemExit(0 if reached_remote is expected else 1)
+"""
+        probes = (
+            ("allowed-proxy", "https://api.deepseek.com"),
+            (
+                "allowed-proxy",
+                "https://yufan-data-lake.s3.ap-southeast-1.amazonaws.com",
+            ),
+            ("blocked-proxy", "https://example.com"),
+            ("blocked-direct", "https://example.com"),
+            ("blocked-direct", "http://169.254.169.254/latest/meta-data/"),
+        )
+        for mode, url in probes:
+            self._run_runtime(
+                [
+                    self.config.container_runtime,
+                    "run",
+                    "--rm",
+                    "--network",
+                    self.config.container_network,
+                    "--read-only",
+                    "--cap-drop=ALL",
+                    "--security-opt=no-new-privileges",
+                    "--env",
+                    f"HTTP_PROXY={self.config.container_proxy_url}",
+                    "--env",
+                    f"HTTPS_PROXY={self.config.container_proxy_url}",
+                    "--env",
+                    "NO_PROXY=",
+                    self.config.agent_container_image,
+                    "python3",
+                    "-c",
+                    script,
+                    mode,
+                    url,
+                ],
+                timeout=20,
+                label=f"egress policy probe {mode}",
+            )
 
 
 def _mount(path: Path, *, readonly: bool) -> str:

@@ -38,6 +38,9 @@ FACTORFORGE_DATA_API_PYTHONPATH=<clean committed Data API package root>
 
 禁止把真实值写入 Git、网页、artifact 或 agent prompt。
 
+生产服务每次启动只读下载 active catalog
+`s3://yufan-data-lake/factorforge/data/catalog/data_catalog.json` 到 Console 私有 state；不得用 repo 内旧 catalog 或 Mac 本地绝对路径替代 production truth。
+
 ## 3. 构建与本地 UI 开发
 
 Linux Pilot 主机先构建固定 agent image，并配置隔离网络：

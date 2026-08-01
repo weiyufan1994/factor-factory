@@ -13,7 +13,9 @@ WorkingDirectory=/srv/factorforge/control
 Environment=HOME=/var/lib/factorforge-console
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=/etc/factorforge-console/console.env
-ExecStart=/usr/bin/python3 scripts/run_factorforge_console.py --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /srv/factorforge/data-api-runtime/catalogs/manus_data_catalog.json --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
+ExecStartPre=/usr/bin/mkdir -p /var/lib/factorforge-console/data-api-runtime/catalogs
+ExecStartPre=/usr/bin/aws s3 cp s3://yufan-data-lake/factorforge/data/catalog/data_catalog.json /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --region ap-southeast-1 --only-show-errors
+ExecStart=/usr/bin/python3 scripts/run_factorforge_console.py --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=5
 UMask=0077

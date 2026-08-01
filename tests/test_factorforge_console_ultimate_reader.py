@@ -456,6 +456,50 @@ def test_dry_run_reject_stays_dry_run(tmp_path: Path) -> None:
     assert summary.formal_proof_eligible is False
 
 
+def test_explicit_false_formal_flag_prevents_terminal_reject_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    _mock_formal_validation(monkeypatch, verdict="REJECT")
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_FALSE_FLAG",
+            "status": "PASS",
+            "formal_proof_eligible": False,
+            "revision_council": {"status": "skipped"},
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_FALSE_FLAG",
+            "declared_verdict": "REJECT",
+        },
+    )
+    _write_json(
+        _verifier_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_FALSE_FLAG",
+            "verdict": "REJECT",
+            "block_reasons": [],
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.protocol_status == "PASS"
+    assert summary.factor_verdict == "REJECT"
+    assert summary.formal_proof_eligible is False
+    assert summary.execution_status == "REVIEW_REQUIRED"
+
+
 def test_artifact_service_lists_only_user_safe_files(tmp_path: Path) -> None:
     from factor_factory.console.artifact_service import list_artifact_ids
 

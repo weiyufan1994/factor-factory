@@ -963,9 +963,15 @@ def _execution_status(
         return "FAILED"
     if dry_run:
         return "DRY_RUN"
-    if factor_verdict == "REJECT":
+    if factor_verdict in {"ACCEPT", "REJECT", "ITERATE"} and not formal_proof_eligible:
+        return "REVIEW_REQUIRED"
+    if factor_verdict == "REJECT" and council_status in {
+        "PASS",
+        "NOT_REQUIRED",
+        "REJECTED",
+    }:
         return "REJECTED"
-    if factor_verdict == "ITERATE":
+    if factor_verdict == "ITERATE" and council_status in {"PASS", "NOT_REQUIRED"}:
         return "ITERATING"
     wrapper_status = _string(_payload(selected, "wrapper_report").get("status")).upper()
     loop_status = _string(_payload(selected, "loop_report").get("status")).upper()

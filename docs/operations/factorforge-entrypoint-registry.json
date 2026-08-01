@@ -37,6 +37,11 @@
     "scripts/run_factorforge_miner_cheap_screen.py",
     "scripts/write_factorforge_miner_data_split_manifest.py"
   ],
+  "console_web_pilot": [
+    "scripts/refresh_factorforge_console_catalog.py",
+    "scripts/run_factorforge_console.py",
+    "scripts/run_factorforge_model_broker.py"
+  ],
   "step4_backend_helpers": [
     "scripts/build_report_qlib_provider.py",
     "scripts/run_qlib_backtest_wrapper.py",
@@ -71,6 +76,7 @@
     "scripts/run_factorforge_alpha101_standard_field_contract_smoke.py",
     "scripts/run_factorforge_component_council_packet_smoke.py",
     "scripts/run_factorforge_component_obligation_smoke.py",
+    "scripts/run_factorforge_console_smoke.py",
     "scripts/run_factorforge_daily_basic_parquet_cache_smoke.py",
     "scripts/run_factorforge_derived_field_contract_smoke.py",
     "scripts/run_factorforge_dirac_research_report_contract_smoke.py",

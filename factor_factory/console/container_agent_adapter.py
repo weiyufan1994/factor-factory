@@ -1015,42 +1015,46 @@ raise SystemExit(0 if accepted else 1)
             ),
             ("blocked-dns", "factorforge-console-egress-probe.example.com"),
         )
-        for mode, url in probes:
-            self._run_runtime(
-                [
-                    self.config.container_runtime,
-                    "run",
-                    "--rm",
-                    "--network",
-                    self.config.container_network,
-                    "--dns",
-                    "127.0.0.1",
-                    "--read-only",
-                    "--cap-drop=ALL",
-                    "--security-opt=no-new-privileges",
-                    "--label",
-                    "factorforge.console.managed=true",
-                    "--label",
-                    f"factorforge.console.installation={self.config.installation_id}",
-                    "--env",
-                    f"HTTP_PROXY={self.config.container_proxy_url}",
-                    "--env",
-                    f"HTTPS_PROXY={self.config.container_proxy_url}",
-                    "--env",
-                    f"NO_PROXY={urlsplit(self.config.container_model_broker_url).hostname}",
-                    "--mount",
-                    _mount(self.config.model_broker_client_token_file, readonly=True),
-                    self.config.agent_container_image,
-                    "python3",
-                    "-c",
-                    script,
-                    mode,
-                    url,
-                    str(self.config.model_broker_client_token_file),
-                ],
-                timeout=20,
-                label=f"egress policy probe {mode}",
-            )
+        readiness_env, _, readiness_registry = self._prepare_aws_environment("readiness")
+        try:
+            for mode, url in probes:
+                self._run_runtime(
+                    [
+                        self.config.container_runtime,
+                        "run",
+                        "--rm",
+                        "--network",
+                        self.config.container_network,
+                        "--dns",
+                        "127.0.0.1",
+                        "--read-only",
+                        "--cap-drop=ALL",
+                        "--security-opt=no-new-privileges",
+                        "--label",
+                        "factorforge.console.managed=true",
+                        "--label",
+                        f"factorforge.console.installation={self.config.installation_id}",
+                        "--env",
+                        f"HTTP_PROXY={self.config.container_proxy_url}",
+                        "--env",
+                        f"HTTPS_PROXY={self.config.container_proxy_url}",
+                        "--env",
+                        f"NO_PROXY={urlsplit(self.config.container_model_broker_url).hostname}",
+                        "--mount",
+                        _mount(self.config.model_broker_client_token_file, readonly=True),
+                        self.config.agent_container_image,
+                        "python3",
+                        "-c",
+                        script,
+                        mode,
+                        url,
+                        str(self.config.model_broker_client_token_file),
+                    ],
+                    timeout=20,
+                    label=f"egress policy probe {mode}",
+                )
+        finally:
+            self._cleanup_aws_environment(readiness_env, readiness_registry)
 
     def _validate_data_api_read_smoke(self) -> None:
         if not self.config.data_catalogs or self.config.data_api_pythonpath is None:

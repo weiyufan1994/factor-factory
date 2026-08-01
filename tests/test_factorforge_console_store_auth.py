@@ -512,8 +512,10 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         request=_request(),
     )
     calls: list[list[str]] = []
+    broker_readiness_registry_seen = False
 
     def fake_run(command, **kwargs):
+        nonlocal broker_readiness_registry_seen
         calls.append(command)
         if "network" in command and "inspect" in command:
             return subprocess.CompletedProcess(
@@ -561,6 +563,14 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
                 }
             ]
             profile.write_text(json.dumps(payload), encoding="utf-8")
+        if f"{config.container_model_broker_url}/healthz" in command:
+            active_registry = broker_scan_root / "active.registry"
+            assert active_registry.is_file()
+            active_name = active_registry.read_text(encoding="utf-8").strip()
+            readiness_registry = broker_scan_root / active_name
+            assert active_name == f"{config.installation_id}.readiness.secrets"
+            assert broker_client_token in readiness_registry.read_text(encoding="utf-8")
+            broker_readiness_registry_seen = True
         return subprocess.CompletedProcess(command, 0, stdout='{"status":"ok"}', stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -569,6 +579,9 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     git_view.mkdir(parents=True)
     monkeypatch.setattr(adapter, "_prepare_git_view", lambda **_: git_view)
     assert adapter.validate_ready() == "container:factorforge-agent:test"
+    assert broker_readiness_registry_seen
+    assert not (broker_scan_root / "active.registry").exists()
+    assert not (broker_scan_root / f"{config.installation_id}.readiness.secrets").exists()
     result = adapter.run(job, worktree=source, workspace=workspace, resume=False)
     assert result.returncode == 0
     probe_commands = [

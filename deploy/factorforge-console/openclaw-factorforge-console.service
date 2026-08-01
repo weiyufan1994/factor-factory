@@ -1,0 +1,22 @@
+[Unit]
+Description=Dedicated OpenClaw gateway for Factor Forge Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=factorforge
+Group=factorforge
+Environment=HOME=/var/lib/factorforge-console
+ExecStart=/usr/local/bin/openclaw --profile factorforge-console gateway run
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/factorforge-console
+
+[Install]
+WantedBy=multi-user.target

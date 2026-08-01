@@ -222,6 +222,19 @@ class FactorWorktreeAllocator:
         self.configured_root.mkdir(parents=True, exist_ok=True)
         self.run_state_root.mkdir(parents=True, exist_ok=True)
 
+    def validate_ready(self) -> str:
+        """Fail closed before the web service accepts research submissions."""
+
+        with self._worktree_lock():
+            self._validate_git_source()
+            self._assert_source_clean()
+            current = self._resolve_base_commit()
+            if current != self.base_commit:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_SOURCE_INVALID}: pinned base commit changed during startup"
+                )
+            return current
+
     @contextmanager
     def _worktree_lock(self) -> Iterator[None]:
         lock_path = self.run_state_root / ".git-worktree-allocation.lock"

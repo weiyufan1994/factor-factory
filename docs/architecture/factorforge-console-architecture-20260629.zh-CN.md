@@ -4,6 +4,8 @@
 
 状态：MVP 立项
 
+> 版本说明：本文描述 2026-06-29 的本地只读 Miner Viewer。可提交并执行完整 Ultimate 研究的邀请制 Web Pilot，见 `factorforge-console-web-pilot-architecture-20260801.zh-CN.md`。两者的证据语义相同，但后者新增了任务账本、独立 worktree、独立 agent、认证和云部署边界。
+
 对象：Factor Forge 架构师 / Console coder / reviewer / 后续 agent
 
 ## 1. 背景

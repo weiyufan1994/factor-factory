@@ -1,0 +1,68 @@
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "deepseek": {
+        "baseUrl": "https://api.deepseek.com",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "deepseek-reasoner",
+            "name": "DeepSeek Reasoner",
+            "api": "openai-completions",
+            "reasoning": true,
+            "input": ["text"],
+            "contextWindow": 131072,
+            "maxTokens": 65536
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/var/lib/factorforge-console/openclaw-workspace",
+      "model": {
+        "primary": "deepseek/deepseek-reasoner",
+        "fallbacks": []
+      },
+      "models": {
+        "deepseek/deepseek-reasoner": {}
+      },
+      "maxConcurrent": 1,
+      "subagents": {
+        "maxConcurrent": 1,
+        "archiveAfterMinutes": 60
+      },
+      "heartbeat": {
+        "every": "0m",
+        "target": "none"
+      }
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "port": 19061,
+    "auth": {
+      "mode": "token",
+      "token": "replace-via-secrets-manager"
+    }
+  },
+  "plugins": {
+    "allow": ["memory-core", "web-readability"],
+    "entries": {
+      "memory-core": {
+        "config": {}
+      }
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {"enabled": false},
+      "fetch": {"enabled": true},
+      "x_search": {"enabled": false}
+    },
+    "agentToAgent": {"enabled": false}
+  }
+}

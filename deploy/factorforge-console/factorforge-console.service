@@ -1,0 +1,26 @@
+[Unit]
+Description=Factor Forge invitation research Console
+After=network-online.target openclaw-factorforge-console.service
+Wants=network-online.target
+Requires=openclaw-factorforge-console.service
+
+[Service]
+Type=simple
+User=factorforge
+Group=factorforge
+WorkingDirectory=/srv/factorforge/control
+Environment=HOME=/var/lib/factorforge-console
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/factorforge-console/console.env
+ExecStart=/usr/bin/python3 scripts/run_factorforge_console.py --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /srv/factorforge/data-api-runtime/catalogs/manus_data_catalog.json --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/factorforge-console /srv/factorforge/control/.git
+
+[Install]
+WantedBy=multi-user.target

@@ -8,9 +8,11 @@ Before=factorforge-console-runner.service
 [Service]
 Type=simple
 User=factorforge-model
-Group=factorforge-model
+Group=factorforge-secret-scan
 WorkingDirectory=/srv/factorforge/control
-ExecStart=/usr/bin/python3 scripts/run_factorforge_model_broker.py --api-key-file /etc/factorforge-console/deepseek-api-key
+RuntimeDirectory=factorforge-console-model-broker
+RuntimeDirectoryMode=2770
+ExecStart=/usr/bin/python3 scripts/run_factorforge_model_broker.py --api-key-file /etc/factorforge-console/deepseek-api-key --denied-secret-root /run/factorforge-console-model-broker/denied-secrets
 Restart=on-failure
 RestartSec=3
 UMask=0077

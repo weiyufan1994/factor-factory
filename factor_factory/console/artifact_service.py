@@ -50,7 +50,9 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?imx)"
     r"(?:\"|')?"
     r"(?:api[_-]?key|access[_-]?key|secret(?:[_-]?key)?|private[_-]?key|"
-    r"auth(?:orization)?[_-]?token|bearer[_-]?token|password|passwd)"
+    r"auth(?:orization)?[_-]?token|bearer[_-]?token|session[_-]?token|"
+    r"access[_-]?token|refresh[_-]?token|id[_-]?token|aws[_-]?session[_-]?token|"
+    r"token|password|passwd)"
     r"(?:\"|')?\s*[:=]\s*"
     r"(?:[\"']([^\"'\r\n]{8,})[\"']|([^\s,;#\]\)}]{8,}))"
 )
@@ -557,6 +559,12 @@ def _json_contains_secret(value: object) -> bool:
                 "privatekey",
                 "authtoken",
                 "authorizationtoken",
+                "token",
+                "sessiontoken",
+                "awssessiontoken",
+                "accesstoken",
+                "refreshtoken",
+                "idtoken",
                 "password",
                 "passwd",
             } and _looks_like_secret_value(child):

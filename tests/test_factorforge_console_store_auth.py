@@ -417,6 +417,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         worktree_root=tmp_path / "runs",
         data_catalogs=(catalog,),
         data_api_pythonpath=data_api,
+        aws_host_role_name="console-test-host-role",
         openclaw_auth_seed_db=_auth_seed(tmp_path / "seed.sqlite"),
         openclaw_profile_template=(
             Path(__file__).resolve().parents[1] / "deploy" / "factorforge-console" / "openclaw.json.example"
@@ -621,16 +622,19 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
         _AwsCredentialLease,
     )
 
+    scan_root = tmp_path / "broker-scan"
+    scan_root.mkdir(mode=0o770)
     config = ConsoleConfig(
         source_repo=tmp_path / "source",
         state_root=tmp_path / "state",
         worktree_root=tmp_path / "runs",
+        model_broker_secret_scan_root=scan_root,
         auth_disabled=True,
     )
     monkeypatch.setattr(
         adapter_module,
         "_load_aws_credentials",
-        lambda _role: _AwsCredentialLease(
+        lambda _role, _host_role: _AwsCredentialLease(
             access_key="ASIATESTACCESSKEY0000",
             secret_key="temporary-secret-for-test",
             token="temporary-session-token-for-test",
@@ -640,12 +644,17 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
         ),
     )
     adapter = ContainerizedOpenClawResearchAgentAdapter(config)
-    lease_path, values = adapter._prepare_aws_environment("job_credential")
+    lease_path, values, scan_path = adapter._prepare_aws_environment("job_credential")
     assert lease_path == config.state_root / "credential-leases" / "job_credential.env"
+    assert scan_path == scan_root / f"{config.installation_id}.job_credential.secrets"
     assert config.state_root / "jobs" not in lease_path.parents
     assert lease_path.stat().st_mode & 0o077 == 0
+    assert scan_path.stat().st_mode & 0o007 == 0
     assert "temporary-session-token-for-test" in values
-    lease_path.unlink()
+    assert "temporary-session-token-for-test" in scan_path.read_text(encoding="utf-8")
+    adapter._cleanup_aws_environment(lease_path, scan_path)
+    assert not lease_path.exists()
+    assert not scan_path.exists()
 
 
 def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):
@@ -694,10 +703,11 @@ def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):
     monkeypatch.setitem(sys.modules, "botocore", package)
     monkeypatch.setitem(sys.modules, "botocore.session", session_module)
 
-    lease = _load_aws_credentials(expected_role)
+    lease = _load_aws_credentials(expected_role, "factorforge-console-pilot-host-role")
     assert lease.method == "assume-role"
     assert lease.caller_arn.endswith(f"assumed-role/{expected_role}/session")
     assert lease.token == "temporary-session-token-for-assume-role-test"
+
 
 def test_secret_redaction(monkeypatch):
     from factor_factory.console.agent_adapter import redact_secrets

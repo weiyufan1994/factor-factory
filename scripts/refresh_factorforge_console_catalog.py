@@ -55,11 +55,15 @@ def main() -> int:
         "--role-name",
         default=os.getenv("FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME", ""),
     )
+    parser.add_argument(
+        "--host-role-name",
+        default=os.getenv("FACTORFORGE_CONSOLE_AWS_HOST_ROLE_NAME", ""),
+    )
     args = parser.parse_args()
 
-    if not args.role_name:
-        raise RuntimeError("pinned Console read-only role name is required")
-    credentials = _load_aws_credentials(args.role_name)
+    if not args.role_name or not args.host_role_name:
+        raise RuntimeError("pinned Console host and read-only role names are required")
+    credentials = _load_aws_credentials(args.role_name, args.host_role_name)
     import botocore.session
 
     client = botocore.session.get_session().create_client(

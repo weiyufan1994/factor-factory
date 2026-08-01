@@ -71,6 +71,7 @@ def research_console(tmp_path):
         catalog_receipt=receipt,
         data_api_pythonpath=data_api,
         aws_readonly_role_name="console-test-role",
+        aws_host_role_name="console-test-host-role",
         agent_container_image=f"sha256:{'a' * 64}",
     )
     store = ResearchJobStore(config.state_root)

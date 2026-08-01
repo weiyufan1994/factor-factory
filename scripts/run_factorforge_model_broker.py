@@ -19,12 +19,17 @@ def main() -> None:
     parser.add_argument("--host", default="172.29.0.1")
     parser.add_argument("--port", type=int, default=8781)
     parser.add_argument("--allowed-network", default="172.29.0.0/24")
+    parser.add_argument(
+        "--denied-secret-root",
+        default="/run/factorforge-console-model-broker/denied-secrets",
+    )
     args = parser.parse_args()
     config = ModelBrokerConfig(
         api_key_file=Path(args.api_key_file),
         listen_host=args.host,
         listen_port=args.port,
         allowed_network=args.allowed_network,
+        denied_secret_root=Path(args.denied_secret_root),
     )
     serve_model_broker(config)
 

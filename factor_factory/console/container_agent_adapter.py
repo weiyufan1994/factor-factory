@@ -105,7 +105,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self._reconcile_stale_containers()
         self._reconcile_orphan_credentials()
         if self.config.data_catalogs and not self.config.auth_disabled:
-            _load_aws_credentials(self.config.aws_readonly_role_name)
+            _load_aws_credentials(
+                self.config.aws_readonly_role_name,
+                self.config.aws_host_role_name,
+            )
         self._validate_egress_policy()
         if self.config.data_catalogs and not self.config.auth_disabled:
             self._validate_data_api_read_smoke()
@@ -132,7 +135,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 expected_model_broker_url=self.config.container_model_broker_url,
             )
             if self.config.data_catalogs and not self.config.auth_disabled:
-                _load_aws_credentials(self.config.aws_readonly_role_name)
+                _load_aws_credentials(
+                    self.config.aws_readonly_role_name,
+                    self.config.aws_host_role_name,
+                )
             with socket.create_connection((str(proxy.hostname), int(proxy.port or 0)), timeout=1):
                 pass
             with socket.create_connection(
@@ -228,7 +234,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self._run_runtime(add_command, timeout=120, label="container agent initialization", allow_exists=True)
         self._validate_agent_binding(profile_config, agent_id, worktree, agent_dir, model)
 
-        aws_env_file, credential_values = self._prepare_aws_environment(job.job_id)
+        aws_env_file, credential_values, denied_secret_file = self._prepare_aws_environment(
+            job.job_id
+        )
         research_common = self._container_prefix(
             container_name=container_name,
             job_id=job.job_id,
@@ -287,8 +295,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             returncode = 124
             error_code = BLOCK_AGENT_RUNTIME_TIMEOUT
         finally:
-            if aws_env_file is not None:
-                aws_env_file.unlink(missing_ok=True)
+            self._cleanup_aws_environment(aws_env_file, denied_secret_file)
             with self._lock:
                 self._active.discard(container_name)
 
@@ -591,13 +598,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
             )
         return resolved
 
-    def _prepare_aws_environment(self, job_id: str) -> tuple[Path | None, tuple[str, ...]]:
+    def _prepare_aws_environment(
+        self,
+        job_id: str,
+    ) -> tuple[Path | None, tuple[str, ...], Path | None]:
         try:
-            credentials = _load_aws_credentials(self.config.aws_readonly_role_name)
+            credentials = _load_aws_credentials(
+                self.config.aws_readonly_role_name,
+                self.config.aws_host_role_name,
+            )
         except RuntimeError:
             if self.config.data_catalogs and not self.config.auth_disabled:
                 raise
-            return None, ()
+            return None, (), None
         credential_root = self.config.state_root / "credential-leases"
         credential_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         credential_root.chmod(0o700)
@@ -618,11 +631,48 @@ class ContainerizedOpenClawResearchAgentAdapter:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        return env_path, (
+        secret_values = (
             credentials.access_key,
             credentials.secret_key,
             credentials.token,
         )
+        scan_root = self.config.model_broker_secret_scan_root
+        scan_path = scan_root / f"{self.config.installation_id}.{job_id}.secrets"
+        try:
+            if (
+                scan_root.is_symlink()
+                or not scan_root.is_dir()
+                or scan_root.stat().st_mode & 0o007
+            ):
+                raise RuntimeError("model broker denied-secret root is unsafe")
+            scan_descriptor = os.open(
+                scan_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o640,
+            )
+            try:
+                os.write(
+                    scan_descriptor,
+                    ("\n".join(secret_values) + "\n").encode("utf-8"),
+                )
+                os.fsync(scan_descriptor)
+            finally:
+                os.close(scan_descriptor)
+            scan_path.chmod(0o640)
+        except (OSError, RuntimeError) as exc:
+            env_path.unlink(missing_ok=True)
+            scan_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: model broker secret scanner registration failed"
+            ) from exc
+        return env_path, secret_values, scan_path
+
+    @staticmethod
+    def _cleanup_aws_environment(env_path: Path | None, scan_path: Path | None) -> None:
+        if env_path is not None:
+            env_path.unlink(missing_ok=True)
+        if scan_path is not None:
+            scan_path.unlink(missing_ok=True)
 
     def _validate_agent_binding(
         self,
@@ -739,19 +789,31 @@ class ContainerizedOpenClawResearchAgentAdapter:
             )
 
     def _reconcile_orphan_credentials(self) -> None:
-        root = self.config.state_root / "credential-leases"
-        if not root.exists():
-            return
-        if root.is_symlink() or not root.is_dir():
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: credential lease root is unsafe"
-            )
-        for candidate in root.iterdir():
-            if candidate.is_symlink() or not candidate.is_file() or candidate.suffix != ".env":
+        roots = (
+            (self.config.state_root / "credential-leases", ".env", "credential lease"),
+            (
+                self.config.model_broker_secret_scan_root,
+                ".secrets",
+                "model broker denied-secret",
+            ),
+        )
+        for root, suffix, label in roots:
+            if not root.exists():
+                if suffix == ".secrets" and self.config.data_catalogs and not self.config.auth_disabled:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} root is missing"
+                    )
+                continue
+            if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o007:
                 raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unexpected credential lease entry"
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} root is unsafe"
                 )
-            candidate.unlink()
+            for candidate in root.iterdir():
+                if candidate.is_symlink() or not candidate.is_file() or candidate.suffix != suffix:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unexpected {label} entry"
+                    )
+                candidate.unlink()
 
     def _validate_egress_policy(self) -> None:
         script = r"""
@@ -852,7 +914,7 @@ raise SystemExit(0 if accepted else 1)
         data_api_package = self._data_api_package_root()
         bridge_root = self.config.source_repo / DATA_API_BRIDGE_RELATIVE
         catalog_root = catalog.parent.parent if catalog.parent.name == "catalogs" else catalog.parent
-        env_file, _ = self._prepare_aws_environment("readiness")
+        env_file, _, denied_secret_file = self._prepare_aws_environment("readiness")
         if env_file is None:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API readiness credentials are missing"
@@ -940,7 +1002,7 @@ print(json.dumps({'status': 'PASS', 'dataset_count': len(datasets), 'row_count':
         try:
             self._run_runtime(command, timeout=180, label="Data API container read smoke")
         finally:
-            env_file.unlink(missing_ok=True)
+            self._cleanup_aws_environment(env_file, denied_secret_file)
 
 
 def _mount(path: Path, *, readonly: bool) -> str:
@@ -966,7 +1028,10 @@ def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
     temp.replace(path)
 
 
-def _load_aws_credentials(expected_role_name: str) -> _AwsCredentialLease:
+def _load_aws_credentials(
+    expected_role_name: str,
+    expected_host_role_name: str,
+) -> _AwsCredentialLease:
     try:
         import botocore.session
 
@@ -985,6 +1050,8 @@ def _load_aws_credentials(expected_role_name: str) -> _AwsCredentialLease:
             or len(account_id) != 12
             or ":assumed-role/" not in source_arn
             or not expected_role_name
+            or not expected_host_role_name
+            or f":assumed-role/{expected_host_role_name}/" not in source_arn
             or f":assumed-role/{expected_role_name}/" in source_arn
         ):
             raise RuntimeError("source credentials are not a distinct host role")

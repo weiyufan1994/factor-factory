@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,6 +48,14 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
     key_file = tmp_path / "deepseek-api-key"
     key_file.write_text("server-side-deepseek-key-test", encoding="utf-8")
     key_file.chmod(0o600)
+    denied_root = tmp_path / "denied-secrets"
+    denied_root.mkdir(mode=0o770)
+    denied_file = denied_root / "job_test.secrets"
+    denied_file.write_text(
+        "temporary-secret-for-broker-test\ntemporary-session-token-for-broker-test\n",
+        encoding="utf-8",
+    )
+    denied_file.chmod(0o640)
     broker = FactorForgeModelBrokerServer(
         ModelBrokerConfig(
             api_key_file=key_file,
@@ -54,6 +63,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
             listen_port=0,
             allowed_network="127.0.0.0/24",
             upstream_url=f"http://127.0.0.1:{upstream.server_port}",
+            denied_secret_root=denied_root,
         )
     )
     broker_thread = threading.Thread(target=broker.serve_forever, daemon=True)
@@ -102,6 +112,26 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
                 timeout=3,
             )
         assert failure.value.code == 404
+
+        for leaked_value in (
+            "AWS_SESSION_TOKEN=temporary-session-token-for-broker-test",
+            base64.b64encode(b"temporary-secret-for-broker-test").decode("ascii"),
+            "ASIAABCDEFGHIJKLMNOP",
+        ):
+            leaked = Request(
+                f"{base_url}/chat/completions",
+                data=json.dumps(
+                    {
+                        "model": "deepseek-reasoner",
+                        "messages": [{"role": "user", "content": leaked_value}],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with pytest.raises(HTTPError) as failure:
+                urlopen(leaked, timeout=3)
+            assert failure.value.code == 400
         assert len(_UpstreamHandler.requests) == 1
     finally:
         broker.shutdown()

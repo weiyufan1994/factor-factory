@@ -34,7 +34,11 @@ class ConsoleConfig:
     container_network_subnet: str = "172.29.0.0/24"
     container_proxy_url: str = "http://172.29.0.1:3128"
     container_model_broker_url: str = "http://172.29.0.1:8781"
+    model_broker_secret_scan_root: Path = Path(
+        "/run/factorforge-console-model-broker/denied-secrets"
+    )
     aws_readonly_role_name: str = ""
+    aws_host_role_name: str = ""
     installation_id: str = ""
     agent_container_image: str = "factorforge-console-agent:2026.08.01"
     openclaw_profile_template: Path | None = None
@@ -60,6 +64,11 @@ class ConsoleConfig:
             object.__setattr__(self, "catalog_receipt", self.catalog_receipt.expanduser().resolve())
         if self.data_api_pythonpath is not None:
             object.__setattr__(self, "data_api_pythonpath", self.data_api_pythonpath.expanduser().resolve())
+        object.__setattr__(
+            self,
+            "model_broker_secret_scan_root",
+            self.model_broker_secret_scan_root.expanduser().resolve(strict=False),
+        )
         if self.openclaw_auth_seed_db is not None:
             object.__setattr__(
                 self,
@@ -109,6 +118,13 @@ class ConsoleConfig:
             and not re.fullmatch(r"[A-Za-z0-9+=,.@_-]{1,64}", self.aws_readonly_role_name)
         ):
             raise ValueError("a pinned read-only AWS role name is required")
+        if (
+            self.execution_mode == "container"
+            and self.data_catalogs
+            and not self.auth_disabled
+            and not re.fullmatch(r"[A-Za-z0-9+=,.@_-]{1,64}", self.aws_host_role_name)
+        ):
+            raise ValueError("a pinned Console host AWS role name is required")
         if self.execution_mode == "container" and self.data_catalogs and not self.auth_disabled:
             if self.catalog_receipt is None or self.data_api_pythonpath is None:
                 raise ValueError("production Data API requires a catalog receipt and package root")
@@ -202,7 +218,14 @@ class ConsoleConfig:
             container_model_broker_url=os.getenv(
                 "FACTORFORGE_CONSOLE_MODEL_BROKER_URL", "http://172.29.0.1:8781"
             ),
+            model_broker_secret_scan_root=Path(
+                os.getenv(
+                    "FACTORFORGE_CONSOLE_MODEL_BROKER_SECRET_SCAN_ROOT",
+                    "/run/factorforge-console-model-broker/denied-secrets",
+                )
+            ),
             aws_readonly_role_name=os.getenv("FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME", ""),
+            aws_host_role_name=os.getenv("FACTORFORGE_CONSOLE_AWS_HOST_ROLE_NAME", ""),
             installation_id=os.getenv("FACTORFORGE_CONSOLE_INSTALLATION_ID", ""),
             agent_container_image=os.getenv(
                 "FACTORFORGE_CONSOLE_AGENT_IMAGE", "factorforge-console-agent:2026.08.01"

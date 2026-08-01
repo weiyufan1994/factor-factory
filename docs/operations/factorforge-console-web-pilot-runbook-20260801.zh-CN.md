@@ -31,7 +31,9 @@ FACTORFORGE_CONSOLE_CONTAINER_NETWORK=factorforge-console-egress
 FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET=172.29.0.0/24
 FACTORFORGE_CONSOLE_CONTAINER_PROXY_URL=http://172.29.0.1:3128
 FACTORFORGE_CONSOLE_MODEL_BROKER_URL=http://172.29.0.1:8781
+FACTORFORGE_CONSOLE_MODEL_BROKER_SECRET_SCAN_ROOT=/run/factorforge-console-model-broker/denied-secrets
 FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME=factorforge-console-pilot-data-read-role
+FACTORFORGE_CONSOLE_AWS_HOST_ROLE_NAME=factorforge-console-pilot-host-role
 FACTORFORGE_CONSOLE_INSTALLATION_ID=factorforge-console-pilot-20260801
 FACTORFORGE_CONSOLE_ENGINE_COMMIT=<exact 40-char deployment commit>
 FACTORFORGE_CONSOLE_AGENT_IMAGE=sha256:<exact local Docker image id>
@@ -84,6 +86,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 - `DOCKER-USER` 只允许 bridge -> `172.29.0.1:3128/8781`；容器外部 DNS 解析必须失败；Squid 仅允许指定 S3 bucket host，模型原站只能由 broker 访问。
 - OpenClaw profile 的 model endpoint、plugin 和 tool allowlist。
 - auth seed provider/type/key 合法，且不含 SQLite WAL/SHM sidecar。
+- model broker denied-secret 目录只对 `factorforge-model` 与 runner 的专用 group 开放；当前 AWS lease 原值和常见编码不得通过模型请求。
 - active catalog receipt 的 role、hash、dataset count 和刷新时间有效。
 - 启动时只回收相同 installation id 的遗留 agent 容器；回收失败则 runner 不启动。
 - 容器 Data API read smoke 能从 active S3 catalog 对 `clean_daily_bar` 做真实单日读取。

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from typing import Any, Protocol
 
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.models import ResearchJob
+from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import utc_now
 
 
@@ -343,10 +345,11 @@ def redact_secrets(text: str, *, extra_values: tuple[str, ...] = ()) -> str:
         upper = key.upper()
         if any(token in upper for token in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")) and len(raw) >= 8:
             secret_values.append(raw)
-    for raw in sorted(secret_values, key=len, reverse=True):
-        value = value.replace(raw, "[REDACTED]")
-    for raw in sorted((item for item in extra_values if len(item) >= 8), key=len, reverse=True):
-        value = value.replace(raw, "[REDACTED]")
+    value = redact_secret_values(
+        value,
+        (*secret_values, *extra_values),
+        replacement="[REDACTED]",
+    )
     patterns = (
         (r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+", r"\1[REDACTED]"),
         (
@@ -378,7 +381,13 @@ def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
     temp.replace(path)
 
 
-def validate_auth_database(path: Path | None, *, provider: str, label: str) -> None:
+def validate_auth_database(
+    path: Path | None,
+    *,
+    provider: str,
+    label: str,
+    expected_key: str | None = None,
+) -> str:
     if path is None or path.is_symlink() or not path.is_file():
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is missing or not a regular file")
     metadata = path.stat()
@@ -412,6 +421,11 @@ def validate_auth_database(path: Path | None, *, provider: str, label: str) -> N
         )
     if not isinstance(profile.get("key"), str) or len(profile["key"]) < 8:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has an invalid API key")
+    if expected_key is not None and not secrets.compare_digest(profile["key"], expected_key):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is not bound to the model broker"
+        )
+    return profile["key"]
 
 
 def copy_auth_database(source: Path, destination: Path) -> None:

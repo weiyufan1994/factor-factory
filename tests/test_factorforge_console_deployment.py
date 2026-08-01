@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -42,12 +44,17 @@ def test_container_data_api_bridge_loads_only_pinned_subpackage(tmp_path):
     runtime.mkdir()
     (runtime / "__init__.py").write_text(
         """
+from .catalog import resolve_default_catalog_path
 class DataApiClient: pass
 class DataCatalogNotFound(Exception): pass
 class DataQuery: pass
 class DataQueryInvalid(Exception): pass
-__all__ = ['DataApiClient', 'DataCatalogNotFound', 'DataQuery', 'DataQueryInvalid']
+__all__ = ['DataApiClient', 'DataCatalogNotFound', 'DataQuery', 'DataQueryInvalid', 'resolve_default_catalog_path']
 """.lstrip(),
+        encoding="utf-8",
+    )
+    (runtime / "catalog.py").write_text(
+        "def resolve_default_catalog_path(): return 'pinned-catalog'\n",
         encoding="utf-8",
     )
     bridge = REPO_ROOT / "deploy" / "factorforge-console" / "data-api-bridge"
@@ -59,7 +66,9 @@ __all__ = ['DataApiClient', 'DataCatalogNotFound', 'DataQuery', 'DataQueryInvali
             sys.executable,
             "-c",
             "from factorforge_data_api import DataApiClient; "
-            "assert DataApiClient.__module__ == '_factorforge_console_data_api_runtime'",
+            "from factorforge_data_api.catalog import resolve_default_catalog_path; "
+            "assert DataApiClient.__module__ == '_factorforge_console_data_api_runtime'; "
+            "assert resolve_default_catalog_path() == 'pinned-catalog'",
         ],
         env=environment,
         text=True,
@@ -67,3 +76,74 @@ __all__ = ['DataApiClient', 'DataCatalogNotFound', 'DataQuery', 'DataQueryInvali
         timeout=20,
     )
     assert probe.returncode == 0, probe.stderr
+
+
+def test_catalog_fetch_is_bound_to_head_version_and_etag() -> None:
+    module = _load_catalog_refresh_module()
+    payload = b'{"schema_version":1,"datasets":[{"dataset_id":"clean_daily_bar"}]}'
+
+    class Client:
+        def __init__(self, *, response_version: str = "version-7") -> None:
+            self.get_request = None
+            self.response_version = response_version
+
+        def head_object(self, **kwargs):
+            return {"ETag": '"' + "a" * 32 + '"', "VersionId": "version-7"}
+
+        def get_object(self, **kwargs):
+            self.get_request = kwargs
+            return {
+                "ETag": '"' + "a" * 32 + '"',
+                "VersionId": self.response_version,
+                "Body": io.BytesIO(payload),
+            }
+
+    client = Client()
+    data, _head = module._fetch_catalog_object(client)
+    assert data == payload
+    assert client.get_request["VersionId"] == "version-7"
+    assert "IfMatch" not in client.get_request
+
+    with pytest.raises(RuntimeError, match="changed between HEAD and GET"):
+        module._fetch_catalog_object(Client(response_version="version-8"))
+
+
+def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
+    web_unit = (REPO_ROOT / "deploy/factorforge-console/factorforge-console.service").read_text()
+    runner_unit = (
+        REPO_ROOT / "deploy/factorforge-console/factorforge-console-runner.service"
+    ).read_text()
+    broker_unit = (
+        REPO_ROOT / "deploy/factorforge-console/factorforge-console-model-broker.service"
+    ).read_text()
+    network_script = (
+        REPO_ROOT / "deploy/factorforge-console/configure-container-network.sh"
+    ).read_text()
+    policy = json.loads(
+        (
+            REPO_ROOT / "deploy/factorforge-console/iam-s3-readonly-policy.json.template"
+        ).read_text()
+    )
+
+    assert "ReadWritePaths=/var/lib/factorforge-console/ledger" in web_unit
+    assert "ReadOnlyPaths=/var/lib/factorforge-console/state/public" in web_unit
+    assert "/var/lib/factorforge-console/secret-scan" in broker_unit
+    assert "/run/factorforge-console-model-broker/denied-secrets" not in broker_unit
+    assert "--mode web" in web_unit and "--mode worker" in runner_unit
+    assert "com.docker.network.bridge.name" in network_script
+    assert "FF_CONSOLE_HOST" in network_script
+    assert (
+        'iptables -w 5 -I INPUT 1 -i "${BRIDGE_NAME}" -s "${NETWORK_SUBNET}" '
+        '-j "${host_chain}"'
+    ) in network_script
+    assert (
+        'iptables -w 5 -A "${host_chain}" -i "${BRIDGE_NAME}" '
+        '-s "${NETWORK_SUBNET}" -j REJECT'
+    ) in network_script
+    assert "-j REJECT" in network_script
+    assert (REPO_ROOT / "deploy/factorforge-console/requirements-host.txt").is_file()
+
+    statements = {item["Sid"]: item for item in policy["Statement"]}
+    assert statements["DenyAnyS3UseOutsideDedicatedEndpoint"]["Resource"] == "*"
+    assert statements["DenyMutationEvenIfAnotherPolicyIsAttached"]["Resource"] == "*"
+    assert statements["DenyReadOutsideApprovedBucket"]["Effect"] == "Deny"

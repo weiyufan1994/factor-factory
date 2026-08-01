@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import ipaddress
-import hashlib
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,10 +13,11 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from factor_factory.console.artifact_service import (
     ArtifactAccessError,
-    describe_artifact,
-    read_artifact_bytes,
+    read_verified_publication_artifact,
 )
 from factor_factory.console.auth import InviteAuth
+from factor_factory.console.bounded_http import BoundedThreadingHTTPServer
+from factor_factory.console.catalog_health import catalogs_healthy
 from factor_factory.console.auth import SESSION_MAX_AGE_SECONDS
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.discovery import discover_miner_campaigns
@@ -160,9 +159,8 @@ def build_research_console_server(
     host: str,
     port: int,
 ) -> ThreadingHTTPServer:
-    class ConsoleHTTPServer(ThreadingHTTPServer):
-        daemon_threads = True
-        allow_reuse_address = True
+    class ConsoleHTTPServer(BoundedThreadingHTTPServer):
+        max_request_threads = 32
 
     return ConsoleHTTPServer((host, port), make_research_handler(application))
 
@@ -290,6 +288,9 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 except ValueError as exc:
                     self._send_json(409, {"error": "invalid_state", "message": str(exc)})
                     return
+                except RuntimeError:
+                    self._send_json(503, {"error": "research_runtime_unavailable"})
+                    return
                 self._redirect(f"/research/{job_id}")
                 return
             self._send_json(404, {"error": "not_found"})
@@ -336,6 +337,9 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             except (ValueError, OverflowError) as exc:
                 self._send_json(400, {"error": "invalid_research_request", "message": str(exc)})
                 return
+            except RuntimeError:
+                self._send_json(503, {"error": "research_runtime_unavailable"})
+                return
             self._redirect(f"/research/{job.job_id}")
 
         def _serve_artifact(self, path: str) -> None:
@@ -359,8 +363,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 return
             public_root = application.config.state_root / "public" / job.job_id / publication_id
             try:
-                description = describe_artifact(public_root, artifact_id)
-                data = read_artifact_bytes(public_root, artifact_id)
+                description, data = read_verified_publication_artifact(public_root, artifact_id)
             except ArtifactAccessError:
                 self._send_json(404, {"error": "artifact_not_available"})
                 return
@@ -489,41 +492,12 @@ def _health_checks(application: ResearchConsoleApplication) -> dict[str, bool]:
             else True
         ),
         "agent_runtime": bool(application.agent_runtime) if application.agent_runtime else True,
-        "data_catalogs": _catalogs_healthy(application.config),
+        "data_catalogs": catalogs_healthy(application.config),
     }
 
 
 def _catalogs_healthy(config: ConsoleConfig) -> bool:
-    if not config.data_catalogs:
-        return config.auth_disabled
-    if not all(path.is_file() and not path.is_symlink() for path in config.data_catalogs):
-        return False
-    if config.auth_disabled and config.catalog_receipt is None:
-        return True
-    receipt_path = config.catalog_receipt
-    if receipt_path is None or receipt_path.is_symlink() or not receipt_path.is_file():
-        return False
-    try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        catalog_data = config.data_catalogs[0].read_bytes()
-        fetched_at = datetime.fromisoformat(
-            str(receipt.get("fetched_at_utc") or "").replace("Z", "+00:00")
-        )
-        catalog = json.loads(catalog_data)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError):
-        return False
-    datasets = catalog.get("datasets") if isinstance(catalog, dict) else None
-    now = datetime.now(timezone.utc)
-    return bool(
-        isinstance(receipt, dict)
-        and receipt.get("version") == "factorforge_console_active_catalog_receipt_v1"
-        and receipt.get("role_name") == config.aws_readonly_role_name
-        and receipt.get("catalog_sha256") == hashlib.sha256(catalog_data).hexdigest()
-        and isinstance(datasets, list)
-        and len(datasets) == receipt.get("dataset_count")
-        and fetched_at.tzinfo is not None
-        and now - timedelta(hours=24) <= fetched_at <= now + timedelta(minutes=5)
-    )
+    return catalogs_healthy(config)
 
 
 def _rate_limit_address(handler: BaseHTTPRequestHandler) -> str:

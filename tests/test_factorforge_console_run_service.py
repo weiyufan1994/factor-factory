@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -59,6 +60,41 @@ class _TerminalRejectAdapter:
                 "status": "PASS",
                 "dry_run": False,
                 "formal_proof_eligible": True,
+                "requested_steps": ["3", "4", "5", "6"],
+                "commands": [
+                    {"name": name, "returncode": 0, "status": "PASS"}
+                    for name in (
+                        "run_step3",
+                        "validate_step3",
+                        "run_step3b",
+                        "validate_step3b",
+                        "run_step4",
+                        "validate_step4",
+                        "run_step5",
+                        "validate_step5",
+                        "run_step6",
+                        "validate_step6",
+                        "validate_research_protocol_pre_council",
+                    )
+                ],
+                "formal_command_contract": {
+                    "required_command_names": [
+                        "run_step3",
+                        "validate_step3",
+                        "run_step3b",
+                        "validate_step3b",
+                        "run_step4",
+                        "validate_step4",
+                        "run_step5",
+                        "validate_step5",
+                        "run_step6",
+                        "validate_step6",
+                        "validate_research_protocol_pre_council",
+                    ],
+                    "research_protocol_verifier_required": True,
+                    "research_protocol_verifier_name": "validate_research_protocol_pre_council",
+                    "satisfied": True,
+                },
                 "revision_council": {"status": "skipped"},
             },
         )
@@ -175,6 +211,32 @@ class _EscapingAdapter(_TerminalRejectAdapter):
         return result
 
 
+class _CredentialEchoAdapter(_TerminalRejectAdapter):
+    secret = "temporary-session-value-for-run-service-test"
+
+    def __init__(self) -> None:
+        self.cleared = False
+
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        result = super().run(job, worktree=worktree, workspace=workspace, resume=resume)
+        quality = (
+            workspace
+            / "objects"
+            / "research_protocol"
+            / f"research_quality_gate__{job.report_id}.json"
+        )
+        payload = json.loads(quality.read_text(encoding="utf-8"))
+        payload["economic_mechanism_contract"]["ordinary_note"] = self.secret
+        _write_json(quality, payload)
+        return result
+
+    def denied_secret_values(self, job_id: str):
+        return (self.secret,)
+
+    def clear_denied_secrets(self, job_id: str):
+        self.cleared = True
+
+
 def _service(tmp_path: Path, adapter):
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.run_service import ResearchRunService
@@ -288,3 +350,94 @@ def test_service_rejects_direct_source_url_until_fetch_broker_exists(tmp_path):
     else:
         raise AssertionError("source URL should be rejected before job creation")
     assert store.list_jobs() == []
+
+
+def test_service_redacts_exact_temporary_credentials_and_clears_registry(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.ultimate_reader as reader
+
+    monkeypatch.setattr(
+        reader,
+        "validate_factor_proof_certificate",
+        lambda *args, **kwargs: {"verdict": "REJECT", "block_reasons": []},
+    )
+    monkeypatch.setattr(
+        reader,
+        "validate_protocol_bundle",
+        lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
+    )
+    adapter = _CredentialEchoAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Credential echo factor"))
+
+    service.run_once()
+    completed = store.get_job(job.job_id)
+    serialized = json.dumps(completed.to_dict(), ensure_ascii=False)
+
+    assert completed.execution_status == "COMPLETED"
+    assert adapter.secret not in serialized
+    assert adapter.cleared is True
+    public_root = service.config.state_root / "public" / job.job_id
+    assert adapter.secret.encode("utf-8") not in b"".join(
+        path.read_bytes() for path in public_root.rglob("*") if path.is_file()
+    )
+
+
+def test_web_result_redacts_exact_and_base64_temporary_credentials():
+    import base64
+
+    from factor_factory.console.run_service import _redact_public_payload
+
+    secret = "temporary-session-value-for-result-test"
+    encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
+    unpadded = encoded.rstrip("=")
+    escaped = "".join(f"\\u{ord(character):04x}" for character in secret)
+    payload = {
+        "ordinary_note": secret,
+        "nested": [f"prefix:{encoded}", f"prefix:{unpadded}", escaped],
+    }
+
+    redacted = _redact_public_payload(payload, (secret,))
+
+    serialized = json.dumps(redacted)
+    assert secret not in serialized
+    assert encoded not in serialized
+    assert unpadded not in serialized
+    assert escaped not in serialized
+    assert serialized.count("[redacted]") >= 4
+
+
+def test_runner_health_is_single_flight_cached_under_concurrency(tmp_path):
+    class HealthAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def healthcheck(self):
+            self.calls += 1
+            return True
+
+        def stop_all(self):
+            return None
+
+    adapter = HealthAdapter()
+    _source, _store, service = _service(tmp_path, adapter)
+    allocator_calls = 0
+    original_validate = service.allocator.validate_ready
+
+    def counted_validate():
+        nonlocal allocator_calls
+        allocator_calls += 1
+        return original_validate()
+
+    service.allocator.validate_ready = counted_validate
+    service.start()
+    try:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(lambda _: service.healthcheck(), range(64)))
+        assert all(results)
+        assert adapter.calls == 1
+        assert allocator_calls == 1
+    finally:
+        service.stop()

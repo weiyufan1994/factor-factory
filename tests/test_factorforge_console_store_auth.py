@@ -25,7 +25,13 @@ def _request(title: str = "Overnight information diffusion"):
     )
 
 
-def _auth_seed(path: Path, *, provider: str = "deepseek", profile_type: str = "api_key") -> Path:
+def _auth_seed(
+    path: Path,
+    *,
+    provider: str = "deepseek",
+    profile_type: str = "api_key",
+    key: str = "test-provider-api-key",
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as connection:
         connection.execute(
@@ -42,7 +48,7 @@ def _auth_seed(path: Path, *, provider: str = "deepseek", profile_type: str = "a
                             f"{provider}:console": {
                                 "provider": provider,
                                 "type": profile_type,
-                                "key": "test-provider-api-key",
+                                "key": key,
                             }
                         },
                     }
@@ -223,6 +229,25 @@ def test_auth_database_rejects_sqlite_sidecars(tmp_path):
         validate_auth_database(seed, provider="deepseek", label="credential seed")
 
 
+def test_auth_database_must_match_model_broker_client_token(tmp_path):
+    from factor_factory.console.agent_adapter import validate_auth_database
+
+    seed = _auth_seed(tmp_path / "seed.sqlite", key="broker-client-token-alpha-123456")
+    assert validate_auth_database(
+        seed,
+        provider="deepseek",
+        label="credential seed",
+        expected_key="broker-client-token-alpha-123456",
+    ) == "broker-client-token-alpha-123456"
+    with pytest.raises(RuntimeError, match="not bound to the model broker"):
+        validate_auth_database(
+            seed,
+            provider="deepseek",
+            label="credential seed",
+            expected_key="real-provider-key-must-not-be-used",
+        )
+
+
 def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     from factor_factory.console.agent_adapter import build_agent_prompt
     from factor_factory.console.config import ConsoleConfig
@@ -393,6 +418,48 @@ def test_console_config_rejects_weak_or_placeholder_production_secrets(
         )
 
 
+def test_console_config_rejects_non_pilot_aws_account(tmp_path):
+    from factor_factory.console.config import ConsoleConfig
+
+    with pytest.raises(ValueError, match="pinned Pilot account"):
+        ConsoleConfig(
+            source_repo=tmp_path / "source",
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            invite_password="strong-invite-secret-2026",
+            cookie_secret="strong-cookie-secret-2026-with-entropy-value",
+            data_catalogs=(tmp_path / "catalog.json",),
+            catalog_receipt=tmp_path / "catalog.receipt.json",
+            data_api_pythonpath=tmp_path / "data-api",
+            data_api_commit="d" * 40,
+            aws_readonly_role_name="console-test-role",
+            aws_host_role_name="console-test-host-role",
+            aws_account_id="123456789012",
+            agent_container_image=f"sha256:{'a' * 64}",
+        )
+
+
+def test_console_config_rejects_multiple_production_catalogs(tmp_path):
+    from factor_factory.console.config import ConsoleConfig
+
+    with pytest.raises(ValueError, match="exactly one active catalog"):
+        ConsoleConfig(
+            source_repo=tmp_path / "source",
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            invite_password="strong-invite-secret-2026",
+            cookie_secret="strong-cookie-secret-2026-with-entropy-value",
+            data_catalogs=(tmp_path / "catalog-a.json", tmp_path / "catalog-b.json"),
+            catalog_receipt=tmp_path / "catalog.receipt.json",
+            data_api_pythonpath=tmp_path / "data-api",
+            data_api_commit="d" * 40,
+            aws_readonly_role_name="console-test-role",
+            aws_host_role_name="console-test-host-role",
+            aws_account_id="525164180577",
+            agent_container_image=f"sha256:{'a' * 64}",
+        )
+
+
 def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_path, monkeypatch):
     import subprocess
 
@@ -411,6 +478,12 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     data_api_package = data_api / "factor_factory" / "data_api"
     data_api_package.mkdir(parents=True)
     (data_api_package / "__init__.py").write_text("\n", encoding="utf-8")
+    broker_client_token = "broker-client-token-for-container-test"
+    broker_client_token_file = tmp_path / "broker-client-token"
+    broker_client_token_file.write_text(broker_client_token, encoding="utf-8")
+    broker_client_token_file.chmod(0o600)
+    broker_scan_root = tmp_path / "broker-scan"
+    broker_scan_root.mkdir(mode=0o770)
     config = ConsoleConfig(
         source_repo=source,
         state_root=tmp_path / "state",
@@ -418,7 +491,12 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         data_catalogs=(catalog,),
         data_api_pythonpath=data_api,
         aws_host_role_name="console-test-host-role",
-        openclaw_auth_seed_db=_auth_seed(tmp_path / "seed.sqlite"),
+        openclaw_auth_seed_db=_auth_seed(
+            tmp_path / "seed.sqlite",
+            key=broker_client_token,
+        ),
+        model_broker_client_token_file=broker_client_token_file,
+        model_broker_secret_scan_root=broker_scan_root,
         openclaw_profile_template=(
             Path(__file__).resolve().parents[1] / "deploy" / "factorforge-console" / "openclaw.json.example"
         ),
@@ -498,7 +576,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         for command in calls
         if len(command) > 1 and command[1] == "run" and "python3" in command
     ]
-    assert len(probe_commands) == 7
+    assert len(probe_commands) == 8
     assert any("https://example.com" in command for command in probe_commands)
     assert any("169.254.169.254" in " ".join(command) for command in probe_commands)
     assert any("factorforge-console-egress-probe.example.com" in command for command in probe_commands)
@@ -598,6 +676,46 @@ def test_container_agent_git_view_is_shallow_exact_and_reusable(tmp_path):
     assert (first / "shallow").is_file()
 
 
+def test_data_api_checkout_must_match_pinned_clean_commit(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    package = checkout / "factor_factory" / "data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "console@example.invalid"], cwd=checkout, check=True)
+    subprocess.run(["git", "config", "user.name", "Console Test"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "factor_factory/data_api/__init__.py"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-m", "data api"], cwd=checkout, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    config = ConsoleConfig(
+        source_repo=tmp_path / "source",
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        data_api_pythonpath=checkout,
+        data_api_commit=commit,
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    assert adapter._data_api_package_root() == package.resolve()
+
+    (checkout / "dirty.txt").write_text("drift\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not the pinned clean commit"):
+        adapter._data_api_package_root()
+
+
 def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
     from factor_factory.console.agent_adapter import BLOCK_AGENT_RUNTIME_UNAVAILABLE
     from factor_factory.console.container_agent_adapter import _validate_profile_policy
@@ -624,17 +742,22 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
 
     scan_root = tmp_path / "broker-scan"
     scan_root.mkdir(mode=0o770)
+    broker_client_token = "broker-client-token-for-lease-test"
+    broker_client_token_file = tmp_path / "broker-client-token"
+    broker_client_token_file.write_text(broker_client_token, encoding="utf-8")
+    broker_client_token_file.chmod(0o600)
     config = ConsoleConfig(
         source_repo=tmp_path / "source",
         state_root=tmp_path / "state",
         worktree_root=tmp_path / "runs",
+        model_broker_client_token_file=broker_client_token_file,
         model_broker_secret_scan_root=scan_root,
         auth_disabled=True,
     )
     monkeypatch.setattr(
         adapter_module,
         "_load_aws_credentials",
-        lambda _role, _host_role: _AwsCredentialLease(
+        lambda _role, _host_role, _account: _AwsCredentialLease(
             access_key="ASIATESTACCESSKEY0000",
             secret_key="temporary-secret-for-test",
             token="temporary-session-token-for-test",
@@ -644,17 +767,93 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
         ),
     )
     adapter = ContainerizedOpenClawResearchAgentAdapter(config)
-    lease_path, values, scan_path = adapter._prepare_aws_environment("job_credential")
-    assert lease_path == config.state_root / "credential-leases" / "job_credential.env"
-    assert scan_path == scan_root / f"{config.installation_id}.job_credential.secrets"
+    job_id = "job_1234567890"
+    lease_path, values, scan_path = adapter._prepare_aws_environment(job_id)
+    assert lease_path == config.state_root / "credential-leases" / f"{job_id}.env"
+    assert scan_path == scan_root / f"{config.installation_id}.{job_id}.secrets"
+    assert (scan_root / "active.registry").read_text(encoding="utf-8").strip() == scan_path.name
     assert config.state_root / "jobs" not in lease_path.parents
     assert lease_path.stat().st_mode & 0o077 == 0
     assert scan_path.stat().st_mode & 0o007 == 0
+    assert broker_client_token in values
+    assert broker_client_token in scan_path.read_text(encoding="utf-8")
     assert "temporary-session-token-for-test" in values
     assert "temporary-session-token-for-test" in scan_path.read_text(encoding="utf-8")
-    adapter._cleanup_aws_environment(lease_path, scan_path)
+    adapter._cleanup_aws_environment(lease_path, None)
     assert not lease_path.exists()
+    assert scan_path.exists()
+    assert adapter.denied_secret_values(job_id) == values
+    adapter.clear_denied_secrets(job_id)
     assert not scan_path.exists()
+    assert not (scan_root / "active.registry").exists()
+
+
+def test_crash_resume_retains_and_merges_prior_denied_secret_values(tmp_path, monkeypatch):
+    import factor_factory.console.container_agent_adapter as adapter_module
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+        _AwsCredentialLease,
+    )
+
+    token_file = tmp_path / "broker-client-token"
+    token_file.write_text("broker-client-token-for-resume-test", encoding="utf-8")
+    token_file.chmod(0o600)
+    scan_root = tmp_path / "broker-scan"
+    scan_root.mkdir(mode=0o770)
+    config = ConsoleConfig(
+        source_repo=tmp_path / "source",
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        model_broker_client_token_file=token_file,
+        model_broker_secret_scan_root=scan_root,
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    job_id = "job_abcdef1234"
+    registry = scan_root / f"{config.installation_id}.{job_id}.secrets"
+    registry.write_text("prior-session-secret-for-resume-test\n", encoding="utf-8")
+    registry.chmod(0o640)
+    active_registry = scan_root / "active.registry"
+    active_registry.write_text(f"{registry.name}\n", encoding="utf-8")
+    active_registry.chmod(0o640)
+    readiness = scan_root / f"{config.installation_id}.readiness.secrets"
+    readiness.write_text("stale-readiness-secret-for-test\n", encoding="utf-8")
+    readiness.chmod(0o640)
+    lease_root = config.state_root / "credential-leases"
+    lease_root.mkdir(parents=True, mode=0o700)
+    stale_lease = lease_root / f"{job_id}.env"
+    stale_lease.write_text("expired\n", encoding="utf-8")
+    stale_lease.chmod(0o600)
+
+    adapter._reconcile_orphan_credentials()
+
+    assert registry.exists()
+    assert active_registry.read_text(encoding="utf-8").strip() == registry.name
+    assert not readiness.exists()
+    assert not stale_lease.exists()
+    monkeypatch.setattr(
+        adapter_module,
+        "_load_aws_credentials",
+        lambda _role, _host_role, _account: _AwsCredentialLease(
+            access_key="ASIARESUMEACCESS00000",
+            secret_key="new-secret-for-resume-test",
+            token="new-session-token-for-resume-test",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            method="assume-role",
+            caller_arn="arn:aws:sts::525164180577:assumed-role/test-role/session",
+        ),
+    )
+
+    lease_path, values, scan_path = adapter._prepare_aws_environment(job_id)
+
+    assert scan_path == registry
+    assert "prior-session-secret-for-resume-test" in values
+    assert "new-session-token-for-resume-test" in values
+    assert "prior-session-secret-for-resume-test" in registry.read_text(encoding="utf-8")
+    assert "new-session-token-for-resume-test" in registry.read_text(encoding="utf-8")
+    adapter._cleanup_aws_environment(lease_path, None)
+    adapter.clear_denied_secrets(job_id)
 
 
 def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):
@@ -703,27 +902,49 @@ def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):
     monkeypatch.setitem(sys.modules, "botocore", package)
     monkeypatch.setitem(sys.modules, "botocore.session", session_module)
 
-    lease = _load_aws_credentials(expected_role, "factorforge-console-pilot-host-role")
+    lease = _load_aws_credentials(
+        expected_role,
+        "factorforge-console-pilot-host-role",
+        "123456789012",
+    )
     assert lease.method == "assume-role"
     assert lease.caller_arn.endswith(f"assumed-role/{expected_role}/session")
     assert lease.token == "temporary-session-token-for-assume-role-test"
+    with pytest.raises(RuntimeError, match="scoped AWS credentials are unavailable"):
+        _load_aws_credentials(
+            expected_role,
+            "factorforge-console-pilot-host-role",
+            "999999999999",
+        )
 
 
 def test_secret_redaction(monkeypatch):
+    import base64
+
     from factor_factory.console.agent_adapter import redact_secrets
 
     monkeypatch.setenv("TEST_API_KEY", "super-secret-provider-key")
+    encoded_secret = "~~~~~~~~?"
+    standard_unpadded = base64.b64encode(encoded_secret.encode("utf-8")).decode("ascii").rstrip("=")
+    unicode_escaped = "".join(f"\\u{ord(character):04x}" for character in encoded_secret)
     raw = json.dumps(
         {
             "api_key": "super-secret-provider-key",
             "authorization": "Bearer sk-example-secret-123456789",
             "aws_access_key_id": "AKIAABCDEFGHIJKLMNOP",
             "aws_secret_access_key": "aws-secret-material-for-test",
+            "encoded": standard_unpadded,
+            "escaped": unicode_escaped,
         }
     )
-    redacted = redact_secrets(raw, extra_values=("aws-secret-material-for-test",))
+    redacted = redact_secrets(
+        raw,
+        extra_values=("aws-secret-material-for-test", encoded_secret),
+    )
     assert "super-secret-provider-key" not in redacted
     assert "sk-example-secret-123456789" not in redacted
     assert "AKIAABCDEFGHIJKLMNOP" not in redacted
     assert "aws-secret-material-for-test" not in redacted
+    assert standard_unpadded not in redacted
+    assert unicode_escaped not in redacted
     assert "[REDACTED]" in redacted

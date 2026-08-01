@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,10 +16,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.console.container_agent_adapter import _load_aws_credentials  # noqa: E402
+from factor_factory.console.catalog_health import (  # noqa: E402
+    CATALOG_BUCKET,
+    CATALOG_KEY,
+    CATALOG_RECEIPT_VERSION,
+)
 
 
-CATALOG_BUCKET = "yufan-data-lake"
-CATALOG_KEY = "factorforge/data/catalog/data_catalog.json"
 MAX_CATALOG_BYTES = 32 * 1024 * 1024
 
 
@@ -47,6 +51,41 @@ def _validate_catalog_payload(payload: object) -> list[dict[str, object]]:
     return datasets
 
 
+def _fetch_catalog_object(client: object) -> tuple[bytes, dict[str, object]]:
+    head = client.head_object(Bucket=CATALOG_BUCKET, Key=CATALOG_KEY)
+    head_etag = str(head.get("ETag") or "")
+    head_version = str(head.get("VersionId") or "")
+    if not head_etag:
+        raise RuntimeError("active catalog HEAD response is missing ETag")
+    get_request: dict[str, object] = {"Bucket": CATALOG_BUCKET, "Key": CATALOG_KEY}
+    if head_version:
+        get_request["VersionId"] = head_version
+    else:
+        get_request["IfMatch"] = head_etag
+    response = client.get_object(**get_request)
+    response_etag = str(response.get("ETag") or "")
+    response_version = str(response.get("VersionId") or "")
+    if response_etag != head_etag or (head_version and response_version != head_version):
+        raise RuntimeError("active catalog changed between HEAD and GET")
+    body = response["Body"]
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while True:
+            chunk = body.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_CATALOG_BYTES:
+                raise RuntimeError("active catalog exceeds the Console size limit")
+            chunks.append(chunk)
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+    return b"".join(chunks), dict(head)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Refresh the pinned Console Data API catalog read-only.")
     parser.add_argument("--destination", required=True)
@@ -59,11 +98,19 @@ def main() -> int:
         "--host-role-name",
         default=os.getenv("FACTORFORGE_CONSOLE_AWS_HOST_ROLE_NAME", ""),
     )
+    parser.add_argument(
+        "--account-id",
+        default=os.getenv("FACTORFORGE_CONSOLE_AWS_ACCOUNT_ID", ""),
+    )
     args = parser.parse_args()
 
-    if not args.role_name or not args.host_role_name:
-        raise RuntimeError("pinned Console host and read-only role names are required")
-    credentials = _load_aws_credentials(args.role_name, args.host_role_name)
+    if not args.role_name or not args.host_role_name or not re.fullmatch(r"[0-9]{12}", args.account_id):
+        raise RuntimeError("pinned Console account, host role, and read-only role are required")
+    credentials = _load_aws_credentials(
+        args.role_name,
+        args.host_role_name,
+        args.account_id,
+    )
     import botocore.session
 
     client = botocore.session.get_session().create_client(
@@ -73,20 +120,9 @@ def main() -> int:
         aws_secret_access_key=credentials.secret_key,
         aws_session_token=credentials.token,
     )
-    head = client.head_object(Bucket=CATALOG_BUCKET, Key=CATALOG_KEY)
-    response = client.get_object(Bucket=CATALOG_BUCKET, Key=CATALOG_KEY)
-    body = response["Body"]
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = body.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > MAX_CATALOG_BYTES:
-            raise RuntimeError("active catalog exceeds the Console size limit")
-        chunks.append(chunk)
-    data = b"".join(chunks)
+    data, head = _fetch_catalog_object(client)
+    head_etag = str(head.get("ETag") or "")
+    head_version = str(head.get("VersionId") or "")
     payload = json.loads(data)
     datasets = _validate_catalog_payload(payload)
 
@@ -106,11 +142,11 @@ def main() -> int:
 
     last_modified = head.get("LastModified")
     receipt = {
-        "version": "factorforge_console_active_catalog_receipt_v1",
+        "version": CATALOG_RECEIPT_VERSION,
         "bucket": CATALOG_BUCKET,
         "key": CATALOG_KEY,
-        "etag": str(head.get("ETag") or "").strip('"'),
-        "version_id": str(head.get("VersionId") or ""),
+        "etag": head_etag.strip('"'),
+        "version_id": head_version,
         "source_last_modified_utc": (
             last_modified.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
             if isinstance(last_modified, datetime)

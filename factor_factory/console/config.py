@@ -10,6 +10,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
+PILOT_AWS_ACCOUNT_ID = "525164180577"
+
+
 @dataclass(frozen=True)
 class ConsoleConfig:
     source_repo: Path
@@ -19,6 +22,7 @@ class ConsoleConfig:
     data_catalogs: tuple[Path, ...] = field(default_factory=tuple)
     catalog_receipt: Path | None = None
     data_api_pythonpath: Path | None = None
+    data_api_commit: str = ""
     invite_password: str = ""
     cookie_secret: str = ""
     cookie_secure: bool = False
@@ -34,11 +38,15 @@ class ConsoleConfig:
     container_network_subnet: str = "172.29.0.0/24"
     container_proxy_url: str = "http://172.29.0.1:3128"
     container_model_broker_url: str = "http://172.29.0.1:8781"
+    model_broker_client_token_file: Path = Path(
+        "/etc/factorforge-console/model-broker-client-token"
+    )
     model_broker_secret_scan_root: Path = Path(
-        "/run/factorforge-console-model-broker/denied-secrets"
+        "/var/lib/factorforge-console/secret-scan"
     )
     aws_readonly_role_name: str = ""
     aws_host_role_name: str = ""
+    aws_account_id: str = ""
     installation_id: str = ""
     agent_container_image: str = "factorforge-console-agent:2026.08.01"
     openclaw_profile_template: Path | None = None
@@ -47,7 +55,7 @@ class ConsoleConfig:
     container_pids_limit: int = 512
     container_tmpfs_size: str = "8g"
     max_concurrent_jobs: int = 1
-    agent_timeout_seconds: int = 21_600
+    agent_timeout_seconds: int = 3_300
     max_request_bytes: int = 65_536
     auth_disabled: bool = False
 
@@ -68,6 +76,11 @@ class ConsoleConfig:
             self,
             "model_broker_secret_scan_root",
             self.model_broker_secret_scan_root.expanduser().resolve(strict=False),
+        )
+        object.__setattr__(
+            self,
+            "model_broker_client_token_file",
+            self.model_broker_client_token_file.expanduser().absolute(),
         )
         if self.openclaw_auth_seed_db is not None:
             object.__setattr__(
@@ -101,6 +114,8 @@ class ConsoleConfig:
                 raise ValueError("invite password and cookie secret must differ")
         if self.agent_timeout_seconds < 60:
             raise ValueError("agent timeout must be at least 60 seconds")
+        if not self.auth_disabled and self.agent_timeout_seconds > 3_300:
+            raise ValueError("production agent timeout exceeds the temporary AWS lease budget")
         if self.openclaw_thinking not in {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}:
             raise ValueError("unsupported OpenClaw thinking level")
         if self.execution_mode not in {"container", "shared_gateway"}:
@@ -126,8 +141,14 @@ class ConsoleConfig:
         ):
             raise ValueError("a pinned Console host AWS role name is required")
         if self.execution_mode == "container" and self.data_catalogs and not self.auth_disabled:
+            if len(self.data_catalogs) != 1:
+                raise ValueError("production Console requires exactly one active catalog")
             if self.catalog_receipt is None or self.data_api_pythonpath is None:
                 raise ValueError("production Data API requires a catalog receipt and package root")
+            if self.aws_account_id != PILOT_AWS_ACCOUNT_ID:
+                raise ValueError("production AWS account must match the pinned Pilot account")
+            if not re.fullmatch(r"[0-9a-f]{40}", self.data_api_commit):
+                raise ValueError("production Data API package must be pinned by exact commit")
         if (
             self.execution_mode == "container"
             and not self.auth_disabled
@@ -191,6 +212,7 @@ class ConsoleConfig:
                 else None
             ),
             data_api_pythonpath=Path(data_api_pythonpath) if data_api_pythonpath else None,
+            data_api_commit=os.getenv("FACTORFORGE_CONSOLE_DATA_API_COMMIT", "").lower(),
             invite_password=os.getenv("FACTORFORGE_CONSOLE_INVITE_PASSWORD", ""),
             cookie_secret=os.getenv("FACTORFORGE_CONSOLE_COOKIE_SECRET", ""),
             cookie_secure=os.getenv("FACTORFORGE_CONSOLE_COOKIE_SECURE", "0") == "1",
@@ -218,14 +240,21 @@ class ConsoleConfig:
             container_model_broker_url=os.getenv(
                 "FACTORFORGE_CONSOLE_MODEL_BROKER_URL", "http://172.29.0.1:8781"
             ),
+            model_broker_client_token_file=Path(
+                os.getenv(
+                    "FACTORFORGE_CONSOLE_MODEL_BROKER_CLIENT_TOKEN_FILE",
+                    "/etc/factorforge-console/model-broker-client-token",
+                )
+            ),
             model_broker_secret_scan_root=Path(
                 os.getenv(
                     "FACTORFORGE_CONSOLE_MODEL_BROKER_SECRET_SCAN_ROOT",
-                    "/run/factorforge-console-model-broker/denied-secrets",
+                    "/var/lib/factorforge-console/secret-scan",
                 )
             ),
             aws_readonly_role_name=os.getenv("FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME", ""),
             aws_host_role_name=os.getenv("FACTORFORGE_CONSOLE_AWS_HOST_ROLE_NAME", ""),
+            aws_account_id=os.getenv("FACTORFORGE_CONSOLE_AWS_ACCOUNT_ID", ""),
             installation_id=os.getenv("FACTORFORGE_CONSOLE_INSTALLATION_ID", ""),
             agent_container_image=os.getenv(
                 "FACTORFORGE_CONSOLE_AGENT_IMAGE", "factorforge-console-agent:2026.08.01"
@@ -239,7 +268,7 @@ class ConsoleConfig:
             container_cpus=float(os.getenv("FACTORFORGE_CONSOLE_CONTAINER_CPUS", "4")),
             container_pids_limit=int(os.getenv("FACTORFORGE_CONSOLE_CONTAINER_PIDS", "512")),
             container_tmpfs_size=os.getenv("FACTORFORGE_CONSOLE_CONTAINER_TMPFS", "8g"),
-            agent_timeout_seconds=int(os.getenv("FACTORFORGE_CONSOLE_AGENT_TIMEOUT", "21600")),
+            agent_timeout_seconds=int(os.getenv("FACTORFORGE_CONSOLE_AGENT_TIMEOUT", "3300")),
             auth_disabled=auth_disabled,
         )
 

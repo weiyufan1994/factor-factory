@@ -1,0 +1,25 @@
+[Unit]
+Description=Refresh Factor Forge Console active Data API catalog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=factorforge-runner
+Group=factorforge-console
+SupplementaryGroups=factorforge-secret-scan
+WorkingDirectory=/srv/factorforge/control
+Environment=HOME=/var/lib/factorforge-console/runner-home
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/factorforge-console/console.env
+ExecStart=/opt/factorforge-console/venv/bin/python scripts/refresh_factorforge_console_catalog.py --destination /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --receipt /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.receipt.json
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/factorforge-console/data-api-runtime

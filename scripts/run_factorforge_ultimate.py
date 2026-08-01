@@ -872,6 +872,8 @@ def main() -> int:
     proof: dict[str, Any] = {
         'contract_version': 'factorforge_ultimate_wrapper_v1',
         'report_id': args.report_id,
+        'factor_id': ctx.factor_id,
+        'research_id': ctx.research_id,
         'started_at_utc': utc_now(),
         'finished_at_utc': None,
         'factorforge_root': str(ctx.factorforge_root),

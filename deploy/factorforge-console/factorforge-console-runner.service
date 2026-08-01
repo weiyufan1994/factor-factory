@@ -16,8 +16,10 @@ Environment=HOME=/var/lib/factorforge-console/runner-home
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=/etc/factorforge-console/console.env
 ExecStartPre=/usr/bin/mkdir -p /var/lib/factorforge-console/data-api-runtime/catalogs
-ExecStartPre=/usr/bin/python3 scripts/refresh_factorforge_console_catalog.py --destination /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --receipt /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.receipt.json
-ExecStart=/usr/bin/python3 scripts/run_factorforge_console.py --mode worker --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --data-api-pythonpath /srv/factorforge/data-api
+ExecStartPre=/usr/bin/install -d -m 0750 /var/lib/factorforge-console/state/public
+ExecStartPre=/usr/bin/install -d -m 0770 /var/lib/factorforge-console/ledger
+ExecStartPre=/opt/factorforge-console/venv/bin/python scripts/refresh_factorforge_console_catalog.py --destination /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --receipt /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.receipt.json
+ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_console.py --mode worker --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --ledger-root /var/lib/factorforge-console/ledger --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --data-api-pythonpath /srv/factorforge/data-api
 Restart=on-failure
 RestartSec=5
 UMask=0007

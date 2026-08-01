@@ -2,7 +2,7 @@
 Description=Factor Forge Console isolated container network
 Requires=docker.service
 After=docker.service
-Before=factorforge-console.service
+Before=factorforge-console-runner.service factorforge-console.service
 
 [Service]
 Type=oneshot

@@ -16,16 +16,18 @@ from factor_factory.console.model_broker import ModelBrokerConfig, serve_model_b
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the fixed-destination Factor Forge model broker.")
     parser.add_argument("--api-key-file", required=True)
+    parser.add_argument("--client-token-file", required=True)
     parser.add_argument("--host", default="172.29.0.1")
     parser.add_argument("--port", type=int, default=8781)
     parser.add_argument("--allowed-network", default="172.29.0.0/24")
     parser.add_argument(
         "--denied-secret-root",
-        default="/run/factorforge-console-model-broker/denied-secrets",
+        default="/var/lib/factorforge-console/secret-scan",
     )
     args = parser.parse_args()
     config = ModelBrokerConfig(
         api_key_file=Path(args.api_key_file),
+        client_token_file=Path(args.client_token_file),
         listen_host=args.host,
         listen_port=args.port,
         allowed_network=args.allowed_network,

@@ -13,8 +13,7 @@ from typing import Callable
 _MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES = 99
 
 
-class _RunnerHealthServer(socketserver.ThreadingUnixStreamServer):
-    daemon_threads = True
+class _RunnerHealthServer(socketserver.UnixStreamServer):
 
     def __init__(self, path: str, callback: Callable[[], dict[str, object]]) -> None:
         self.health_callback = callback
@@ -23,6 +22,7 @@ class _RunnerHealthServer(socketserver.ThreadingUnixStreamServer):
 
 class _RunnerHealthHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
+        self.connection.settimeout(1.0)
         request = self.rfile.readline(64)
         if request != b"health\n":
             return

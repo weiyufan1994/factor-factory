@@ -11,9 +11,11 @@ from typing import Any
 
 from factor_factory.console.agent_adapter import ResearchAgentAdapter
 from factor_factory.console.artifact_service import SafeArtifact, publish_official_artifacts
+from factor_factory.console.catalog_health import catalogs_healthy, require_catalogs_healthy
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.models import ResearchJob, ResearchRequest, validate_public_source_url
 from factor_factory.console.runner_health import probe_runner_health
+from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import ResearchJobStore, utc_now
 from factor_factory.console.ultimate_reader import UltimateRunSummary, read_ultimate_workspace
 from factor_factory.console.worktree_allocator import (
@@ -38,10 +40,12 @@ class ResearchQueueService:
         store: ResearchJobStore,
         runner_health_socket: str | Path,
         expected_engine_commit: str = "",
+        config: ConsoleConfig | None = None,
     ) -> None:
         self.store = store
         self.runner_health_socket = Path(runner_health_socket).expanduser().resolve(strict=False)
         self.expected_engine_commit = expected_engine_commit
+        self.config = config
 
     def start(self) -> None:
         return None
@@ -54,6 +58,7 @@ class ResearchQueueService:
         return bool(
             payload
             and payload.get("ok") is True
+            and (self.config is None or catalogs_healthy(self.config))
             and (
                 not self.expected_engine_commit
                 or payload.get("engine_commit") == self.expected_engine_commit
@@ -65,9 +70,17 @@ class ResearchQueueService:
             raise ValueError(
                 "source URL ingestion is disabled until the read-only fetch broker is available"
             )
+        if self.config is not None:
+            require_catalogs_healthy(self.config)
+        if not self.healthcheck():
+            raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_RUNNER_UNAVAILABLE")
         return self.store.create_job(request)
 
     def request_resume(self, job_id: str) -> ResearchJob:
+        if self.config is not None:
+            require_catalogs_healthy(self.config)
+        if not self.healthcheck():
+            raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_RUNNER_UNAVAILABLE")
         return self.store.request_resume(job_id)
 
     def cancel_queued(self, job_id: str) -> ResearchJob:
@@ -93,6 +106,10 @@ class ResearchRunService:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._expected_base_commit = self.allocator.validate_ready()
+        self._health_lock = threading.Lock()
+        self._health_checked_at = 0.0
+        self._health_cached = False
+        self._health_ttl_seconds = 30.0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -112,6 +129,17 @@ class ResearchRunService:
             self._thread.join(timeout=timeout)
 
     def healthcheck(self) -> bool:
+        if not self._thread or not self._thread.is_alive() or self._stop.is_set():
+            return False
+        now = time.monotonic()
+        with self._health_lock:
+            if now - self._health_checked_at < self._health_ttl_seconds:
+                return self._health_cached
+            self._health_cached = self._compute_healthcheck()
+            self._health_checked_at = time.monotonic()
+            return self._health_cached
+
+    def _compute_healthcheck(self) -> bool:
         adapter_health = getattr(self.agent_adapter, "healthcheck", None)
         try:
             source_ready = self.allocator.validate_ready() == self._expected_base_commit
@@ -119,11 +147,9 @@ class ResearchRunService:
         except (OSError, RuntimeError, ValueError):
             return False
         return bool(
-            self._thread
-            and self._thread.is_alive()
-            and not self._stop.is_set()
-            and source_ready
+            source_ready
             and runtime_ready
+            and catalogs_healthy(self.config)
         )
 
     def submit(self, request: ResearchRequest) -> ResearchJob:
@@ -131,11 +157,13 @@ class ResearchRunService:
             raise ValueError(
                 "source URL ingestion is disabled until the read-only fetch broker is available"
             )
+        require_catalogs_healthy(self.config)
         job = self.store.create_job(request)
         self._wake.set()
         return job
 
     def request_resume(self, job_id: str) -> ResearchJob:
+        require_catalogs_healthy(self.config)
         job = self.store.request_resume(job_id)
         self._wake.set()
         return job
@@ -144,6 +172,8 @@ class ResearchRunService:
         return self.store.cancel_queued(job_id)
 
     def run_once(self) -> ResearchJob | None:
+        if not catalogs_healthy(self.config):
+            return None
         job = self.store.claim_next_job()
         if job is None:
             return None
@@ -152,6 +182,10 @@ class ResearchRunService:
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
+            if not catalogs_healthy(self.config) or not self.healthcheck():
+                self._wake.wait(self.poll_seconds)
+                self._wake.clear()
+                continue
             job = self.store.claim_next_job()
             if job is None:
                 self._wake.wait(self.poll_seconds)
@@ -160,6 +194,7 @@ class ResearchRunService:
             self._run_job(job)
 
     def _run_job(self, job: ResearchJob) -> None:
+        denied_values: tuple[str, ...] = ()
         try:
             validate_public_source_url(job.request.source_url)
             resume = bool(job.workspace_path and job.worktree_path)
@@ -217,6 +252,7 @@ class ResearchRunService:
                 workspace=workspace,
                 resume=resume,
             )
+            denied_values = _adapter_denied_values(self.agent_adapter, job.job_id)
             self.store.update_job(
                 job.job_id,
                 agent_id=agent_result.agent_id,
@@ -246,11 +282,15 @@ class ResearchRunService:
                     "factor_id": job.factor_id,
                     "research_id": job.research_id,
                 },
+                denied_values=denied_values,
             )
-            result = build_web_result(
-                summary,
-                publication_id=publication_id,
-                public_artifacts=public_artifacts,
+            result = _redact_public_payload(
+                build_web_result(
+                    summary,
+                    publication_id=publication_id,
+                    public_artifacts=public_artifacts,
+                ),
+                denied_values,
             )
             execution_status = _web_execution_status(summary, agent_result.returncode)
             finished = utc_now() if execution_status in {"COMPLETED", "BLOCKED", "FAILED", "CANCELLED"} else ""
@@ -284,6 +324,11 @@ class ResearchRunService:
             )
         except (WorktreeAllocationError, FileNotFoundError, ValueError, RuntimeError) as exc:
             message = str(exc)
+            if not denied_values:
+                try:
+                    denied_values = _adapter_denied_values(self.agent_adapter, job.job_id)
+                except (OSError, RuntimeError, ValueError):
+                    message = "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID"
             token = message.split(":", 1)[0] if message.startswith("BLOCK_") else "BLOCK_FACTORFORGE_CONSOLE_RUN_FAILED"
             self.store.update_job(
                 job.job_id,
@@ -292,10 +337,15 @@ class ResearchRunService:
                 factor_verdict="BLOCK" if token.startswith("BLOCK_") else "UNKNOWN",
                 current_stage="blocked" if token.startswith("BLOCK_") else "failed",
                 error_code=token,
-                error_message=_public_error_message(message),
+                error_message=_public_error_message(message, denied_values=denied_values),
                 finished_at_utc=utc_now(),
             )
-            self.store.append_event(job.job_id, "RUN_BLOCKED", _public_error_message(message), {"code": token})
+            self.store.append_event(
+                job.job_id,
+                "RUN_BLOCKED",
+                _public_error_message(message, denied_values=denied_values),
+                {"code": token},
+            )
         except Exception as exc:
             token = "BLOCK_FACTORFORGE_CONSOLE_INTERNAL_ERROR"
             self.store.update_job(
@@ -314,6 +364,23 @@ class ResearchRunService:
                 "研究服务发生未预期错误；任务证据已保留，未自动重试。",
                 {"code": token, "exception_type": type(exc).__name__},
             )
+        finally:
+            clear = getattr(self.agent_adapter, "clear_denied_secrets", None)
+            if callable(clear):
+                try:
+                    clear(job.job_id)
+                except (OSError, RuntimeError, ValueError):
+                    self.store.update_job(
+                        job.job_id,
+                        execution_status="BLOCKED",
+                        protocol_status="BLOCK",
+                        factor_verdict="BLOCK",
+                        formal_proof_eligible=False,
+                        current_stage="blocked",
+                        error_code="BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_CLEANUP_FAILED",
+                        error_message="临时数据访问凭证未能按合同销毁，任务已阻断。",
+                        finished_at_utc=utc_now(),
+                    )
 
     @staticmethod
     def _validate_summary_identity(job: ResearchJob, summary: UltimateRunSummary) -> None:
@@ -561,7 +628,11 @@ def _artifact_label(artifact_id: str) -> str:
     return name[:120]
 
 
-def _public_error_message(message: str) -> str:
+def _public_error_message(
+    message: str,
+    *,
+    denied_values: tuple[str, ...] = (),
+) -> str:
     text = str(message).replace("\n", " ")[:1200]
     text = re.sub(
         r"(?i)(?:file://\S+|s3://\S+|/(?:Users|home|srv|private|tmp|var/lib|root|etc|opt)/\S+)",
@@ -573,7 +644,41 @@ def _public_error_message(message: str) -> str:
         r"\1[redacted]",
         text,
     )
+    text = _redact_public_text(text, denied_values)
     return text
+
+
+def _adapter_denied_values(
+    adapter: ResearchAgentAdapter,
+    job_id: str,
+) -> tuple[str, ...]:
+    reader = getattr(adapter, "denied_secret_values", None)
+    if not callable(reader):
+        return ()
+    values = reader(job_id)
+    return tuple(str(value) for value in values if len(str(value)) >= 8)
+
+
+def _redact_public_payload(value: Any, denied_values: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        return {
+            _redact_public_text(str(key), denied_values): _redact_public_payload(
+                child,
+                denied_values,
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_public_payload(child, denied_values) for child in value]
+    if isinstance(value, tuple):
+        return [_redact_public_payload(child, denied_values) for child in value]
+    if isinstance(value, str):
+        return _redact_public_text(value, denied_values)
+    return value
+
+
+def _redact_public_text(value: str, denied_values: tuple[str, ...]) -> str:
+    return redact_secret_values(value, denied_values, replacement="[redacted]")
 
 
 def _sha256(path: Path) -> str:

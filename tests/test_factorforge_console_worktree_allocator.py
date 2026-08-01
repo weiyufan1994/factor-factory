@@ -183,6 +183,52 @@ def test_resume_revalidates_exact_allocation_and_rejects_tampering(tmp_path):
         )
 
 
+def test_allocate_adopts_complete_orphan_manifest_after_ledger_crash(tmp_path):
+    source = _make_source_repo(tmp_path)
+    allocator = _allocator(tmp_path, source)
+    original = allocator.allocate(
+        factor_id="FACTOR_ORPHAN",
+        research_id="research_orphan",
+        report_id="report_orphan",
+    )
+
+    adopted = allocator.allocate(
+        factor_id="FACTOR_ORPHAN",
+        research_id="research_orphan",
+        report_id="report_orphan",
+    )
+
+    assert adopted == original
+    assert adopted.manifest_path.is_file()
+    assert _git(source, "worktree", "list", "--porcelain").stdout.count(
+        str(adopted.worktree_path)
+    ) == 1
+
+
+def test_allocate_recovers_valid_workspace_created_before_allocation_manifest(tmp_path):
+    source = _make_source_repo(tmp_path)
+    allocator = _allocator(tmp_path, source)
+    original = allocator.allocate(
+        factor_id="FACTOR_PRE_MANIFEST",
+        research_id="research_pre_manifest",
+        report_id="report_pre_manifest",
+    )
+    original.manifest_path.unlink()
+
+    recovered = allocator.allocate(
+        factor_id="FACTOR_PRE_MANIFEST",
+        research_id="research_pre_manifest",
+        report_id="report_pre_manifest",
+    )
+
+    assert recovered.manifest_path.is_file()
+    assert recovered.worktree_path == original.worktree_path
+    assert recovered.workspace_path == original.workspace_path
+    assert _git(source, "worktree", "list", "--porcelain").stdout.count(
+        str(recovered.worktree_path)
+    ) == 1
+
+
 def test_resume_rejects_persisted_cross_factor_paths(tmp_path):
     from factor_factory.console.worktree_allocator import WorktreeAllocationError
 

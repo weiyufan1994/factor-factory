@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 from factor_factory.research_conjecture import validate_protocol_bundle
 from factor_factory.research_proof import validate_factor_proof_certificate
+from factor_factory.ultimate_loop.state import validate_wrapper_proof_for_loop
 
 
 SUMMARY_CONTRACT_VERSION = "factorforge_console_ultimate_summary_v1"
@@ -25,6 +26,7 @@ BLOCK_FORMAL_VALIDATION_EXCEPTION = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VALIDATION
 BLOCK_FORMAL_VERIFIER_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISSING"
 BLOCK_FORMAL_VERIFIER_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISMATCH"
 BLOCK_FORMAL_VERDICT_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERDICT_MISMATCH"
+BLOCK_FORMAL_WRAPPER_INVALID = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_WRAPPER_INVALID"
 BLOCK_EVIDENCE_LINEAGE_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_LINEAGE_MISMATCH"
 BOUND_VERIFIER_VERSION = "factorforge_console_bound_factor_proof_verifier_v1"
 
@@ -315,6 +317,7 @@ def read_ultimate_workspace(
             evidence_errors.append(
                 f"{BLOCK_EVIDENCE_LINEAGE_MISMATCH}:{role}:report_id={selected_report_id}"
             )
+    matching_records = _matching_records(evidence_by_role, selected_report_id)
 
     report = selected_report_id or _identifier(selected, "report_id")
     factor_id = _identifier(selected, "factor_id")
@@ -361,10 +364,11 @@ def read_ultimate_workspace(
         formal_validation=formal_validation,
     )
     blockers = _collect_blockers(
-        selected.values(),
+        matching_records,
         [
             *evidence_errors,
-            *_explicit_evidence_blockers(selected),
+            *_explicit_evidence_blockers(matching_records),
+            *_conflicting_evidence_verdict_blockers(matching_records),
             *formal_validation.blockers,
         ],
     )
@@ -573,6 +577,20 @@ def _latest_for_report(records: list[_Evidence], report_id: str) -> _Evidence | 
     return _latest(records)
 
 
+def _matching_records(
+    evidence_by_role: dict[str, list[_Evidence]],
+    report_id: str,
+) -> list[_Evidence]:
+    if not report_id:
+        return [record for records in evidence_by_role.values() for record in records]
+    return [
+        record
+        for records in evidence_by_role.values()
+        for record in records
+        if report_id in _record_report_ids(record.payload)
+    ]
+
+
 def _record_report_ids(payload: dict[str, Any]) -> set[str]:
     values = {
         _string(payload.get("report_id")),
@@ -749,10 +767,11 @@ def _council_status(
     return "NOT_STARTED"
 
 
-def _explicit_evidence_blockers(selected: dict[str, _Evidence]) -> list[str]:
+def _explicit_evidence_blockers(records: Iterable[_Evidence]) -> list[str]:
     blockers: list[str] = []
     status_keys = ("status", "verdict", "protocol_status", "validation_status", "proof_status")
-    for role, record in selected.items():
+    for record in records:
+        role = record.role
         payload = record.payload
         if payload.get("blocked") is True:
             blockers.append(f"BLOCK_FACTORFORGE_CONSOLE_EXPLICIT_BLOCKED_EVIDENCE:{role}")
@@ -763,6 +782,21 @@ def _explicit_evidence_blockers(selected: dict[str, _Evidence]) -> list[str]:
                     f"BLOCK_FACTORFORGE_CONSOLE_EXPLICIT_BLOCKED_EVIDENCE:{role}:{key}"
                 )
     return _dedupe(blockers)
+
+
+def _conflicting_evidence_verdict_blockers(records: Iterable[_Evidence]) -> list[str]:
+    verdicts: set[str] = set()
+    for record in records:
+        for key in ("declared_verdict", "factor_verdict", "final_verdict", "decision"):
+            verdict = _normalize_verdict(record.payload.get(key))
+            if verdict in {"ACCEPT", "REJECT", "ITERATE", "BLOCK"}:
+                verdicts.add(verdict)
+    if len(verdicts) <= 1:
+        return []
+    return [
+        f"{BLOCK_FORMAL_VERDICT_MISMATCH}:conflicting_evidence="
+        f"{','.join(sorted(verdicts))}"
+    ]
 
 
 def _collect_blockers(records: Iterable[_Evidence], evidence_errors: list[str]) -> list[str]:
@@ -908,6 +942,31 @@ def _run_formal_validation(
 
     blockers: list[str] = []
     try:
+        wrapper = _payload(selected, "wrapper_report")
+        wrapper_reasons = validate_wrapper_proof_for_loop(wrapper)
+        requested_steps = {
+            _string(step)
+            for step in (wrapper.get("requested_steps") or [])
+        }
+        if not {"3", "4", "5", "6"}.issubset(requested_steps):
+            wrapper_reasons.append(
+                f"{BLOCK_FORMAL_WRAPPER_INVALID}:complete_step3_step6_chain_required"
+            )
+        wrapper_identity = {
+            "report_id": report_id,
+            "factor_id": factor_id,
+            "research_id": research_id,
+        }
+        wrapper_identity_mismatch = any(
+            _string(wrapper.get(key)) != expected
+            for key, expected in wrapper_identity.items()
+        )
+        if wrapper_reasons or wrapper_identity_mismatch:
+            blockers.append(BLOCK_FORMAL_WRAPPER_INVALID)
+            blockers.extend(wrapper_reasons)
+            if wrapper_identity_mismatch:
+                blockers.append(f"{BLOCK_EVIDENCE_LINEAGE_MISMATCH}:wrapper_identity")
+
         proof_report = validate_factor_proof_certificate(
             proof,
             workspace_root=root,

@@ -48,6 +48,11 @@ def main() -> None:
         default=os.getenv("FACTORFORGE_CONSOLE_WORKTREE_ROOT", "~/.local/share/factorforge-runs"),
         help="Server-owned per-factor worktree root.",
     )
+    parser.add_argument(
+        "--ledger-root",
+        default=os.getenv("FACTORFORGE_CONSOLE_LEDGER_ROOT", ""),
+        help="Shared queue/session ledger root; defaults to STATE_ROOT/ledger.",
+    )
     parser.add_argument("--base-ref", default=os.getenv("FACTORFORGE_CONSOLE_BASE_REF", "HEAD"))
     parser.add_argument("--catalog", action="append", default=[], help="Read-only Data API catalog path.")
     parser.add_argument("--data-api-pythonpath", default=os.getenv("FACTORFORGE_DATA_API_PYTHONPATH"))
@@ -56,7 +61,7 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         choices=("combined", "web", "worker"),
-        default=os.getenv("FACTORFORGE_CONSOLE_SERVICE_MODE", "combined"),
+        default=os.getenv("FACTORFORGE_CONSOLE_SERVICE_MODE", "web"),
     )
     parser.add_argument(
         "--runner-health-socket",
@@ -84,6 +89,10 @@ def main() -> None:
 
     if args.auth_disabled and args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("--auth-disabled is only allowed on loopback")
+    if args.mode == "combined" and (
+        not args.auth_disabled or args.host not in {"127.0.0.1", "localhost", "::1"}
+    ):
+        raise SystemExit("combined mode is restricted to explicit auth-disabled loopback development")
     env_catalogs = [item for item in os.getenv("FACTORFORGE_DATA_CATALOGS", "").split(",") if item.strip()]
     catalogs = [*env_catalogs, *args.catalog]
     config = ConsoleConfig.from_env(
@@ -95,7 +104,8 @@ def main() -> None:
         data_api_pythonpath=args.data_api_pythonpath,
         auth_disabled=args.auth_disabled,
     )
-    store = ResearchJobStore(config.state_root)
+    ledger_root = Path(args.ledger_root).expanduser() if args.ledger_root else config.state_root / "ledger"
+    store = ResearchJobStore(ledger_root)
 
     if args.mode == "web":
         if not config.auth_disabled and not config.cookie_secure:
@@ -107,6 +117,7 @@ def main() -> None:
             store=store,
             runner_health_socket=args.runner_health_socket,
             expected_engine_commit=pinned_commit,
+            config=config,
         )
         application = ResearchConsoleApplication(
             config=config,

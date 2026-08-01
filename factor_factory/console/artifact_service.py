@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from factor_factory.console.secret_safety import contains_secret_values
+
 
 SAFE_ARTIFACT_EXTENSIONS = frozenset(
     {".json", ".md", ".txt", ".csv", ".png", ".svg", ".html"}
@@ -103,14 +105,13 @@ def publish_official_artifacts(
     *,
     role_artifact_ids: dict[str, str],
     identity: dict[str, str],
+    denied_values: tuple[str, ...] = (),
     max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
 ) -> tuple[str, list[SafeArtifact]]:
     """Copy only selected formal roles into an immutable public artifact set."""
 
     workspace = _workspace_root(workspace_root)
-    public_base = Path(public_job_root).expanduser().resolve(strict=False)
-    public_base.mkdir(parents=True, exist_ok=True, mode=0o750)
-    public_base.chmod(0o750)
+    public_base = _prepare_public_job_root(public_job_root)
     publication_id = f"pub_{uuid.uuid4().hex}"
     publication_root = public_base / publication_id
     publication_root.mkdir(mode=0o750)
@@ -128,11 +129,13 @@ def publish_official_artifacts(
                     workspace,
                     artifact_id,
                     max_file_bytes=max_file_bytes,
+                    denied_values=denied_values,
                 )
                 data = read_artifact_bytes(
                     workspace,
                     artifact_id,
                     max_file_bytes=max_file_bytes,
+                    denied_values=denied_values,
                 )
             except ArtifactAccessError as exc:
                 omitted.append(
@@ -161,10 +164,16 @@ def publish_official_artifacts(
                 publication_root,
                 artifact_id,
                 max_file_bytes=max_file_bytes,
+                denied_values=denied_values,
             )
             if (
                 public_description.size_bytes != source_description.size_bytes
-                or read_artifact_bytes(publication_root, artifact_id, max_file_bytes=max_file_bytes) != data
+                or read_artifact_bytes(
+                    publication_root,
+                    artifact_id,
+                    max_file_bytes=max_file_bytes,
+                    denied_values=denied_values,
+                ) != data
             ):
                 raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
             published.append(public_description)
@@ -189,10 +198,127 @@ def publish_official_artifacts(
             encoding="utf-8",
         )
         manifest_path.chmod(0o640)
+        for published_path in sorted(publication_root.rglob("*"), reverse=True):
+            published_path.chmod(0o550 if published_path.is_dir() else 0o440)
+        publication_root.chmod(0o550)
     except Exception:
         shutil.rmtree(publication_root, ignore_errors=True)
         raise
     return publication_id, sorted(published, key=lambda item: item.artifact_id)
+
+
+def read_verified_publication_artifact(
+    publication_root: str | Path,
+    artifact_id: str,
+    *,
+    max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+) -> tuple[SafeArtifact, bytes]:
+    root = _workspace_root(publication_root)
+    try:
+        manifest_descriptor = _open_artifact_descriptor(
+            root,
+            _validate_artifact_id(".publication.json"),
+        )
+        try:
+            before = os.fstat(manifest_descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size > 2 * 1024 * 1024
+            ):
+                raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+            manifest_data = b""
+            while len(manifest_data) <= 2 * 1024 * 1024:
+                chunk = os.read(manifest_descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                manifest_data += chunk
+            after = os.fstat(manifest_descriptor)
+            if (
+                len(manifest_data) != before.st_size
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+            ):
+                raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+        finally:
+            os.close(manifest_descriptor)
+        manifest = json.loads(manifest_data)
+    except (ArtifactAccessError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE) from exc
+    records = manifest.get("artifacts") if isinstance(manifest, dict) else None
+    matches = [
+        item
+        for item in (records or [])
+        if isinstance(item, dict) and item.get("artifact_id") == artifact_id
+    ]
+    if (
+        manifest.get("version") != "factorforge_console_public_artifact_manifest_v1"
+        or manifest.get("publication_id") != root.name
+        or not isinstance(records, list)
+        or len(records) > 300
+        or len(matches) != 1
+    ):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    expected = matches[0]
+    description = describe_artifact(root, artifact_id, max_file_bytes=max_file_bytes)
+    data = read_artifact_bytes(root, artifact_id, max_file_bytes=max_file_bytes)
+    if (
+        expected.get("size_bytes") != len(data)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(expected.get("sha256") or ""))
+        or expected.get("sha256") != hashlib.sha256(data).hexdigest()
+    ):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    return description, data
+
+
+def _prepare_public_job_root(public_job_root: str | Path) -> Path:
+    requested = Path(public_job_root).expanduser().absolute()
+    if ".." in requested.parts or not re.fullmatch(r"job_[a-f0-9]{10}", requested.name):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_PATH_INVALID)
+    parent = requested.parent
+    parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    current = Path(parent.anchor)
+    for part in parent.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    parent.chmod(0o750)
+    parent_metadata = parent.stat()
+    if (
+        not stat.S_ISDIR(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.geteuid()
+        or parent_metadata.st_mode & 0o022
+    ):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    parent_descriptor = os.open(parent, directory_flags)
+    try:
+        try:
+            os.mkdir(requested.name, 0o750, dir_fd=parent_descriptor)
+        except FileExistsError:
+            pass
+        job_descriptor = os.open(requested.name, directory_flags, dir_fd=parent_descriptor)
+        try:
+            metadata = os.fstat(job_descriptor)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o022
+            ):
+                raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+        finally:
+            os.close(job_descriptor)
+    finally:
+        os.close(parent_descriptor)
+    requested.chmod(0o750)
+    return requested
 
 
 def list_safe_artifacts(
@@ -249,11 +375,13 @@ def describe_artifact(
     artifact_id: str,
     *,
     max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+    denied_values: tuple[str, ...] = (),
 ) -> SafeArtifact:
     path = resolve_artifact_path(
         workspace_root,
         artifact_id,
         max_file_bytes=max_file_bytes,
+        denied_values=denied_values,
     )
     stat = path.stat()
     extension = path.suffix.lower()
@@ -282,6 +410,7 @@ def resolve_artifact_path(
     artifact_id: str,
     *,
     max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+    denied_values: tuple[str, ...] = (),
 ) -> Path:
     """Resolve an artifact ID for backend use after strict containment checks."""
 
@@ -310,7 +439,10 @@ def resolve_artifact_path(
     size = resolved.stat().st_size
     if size > max_file_bytes:
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
-    if resolved.suffix.lower() in TEXT_ARTIFACT_EXTENSIONS and _contains_secret(resolved):
+    if resolved.suffix.lower() in TEXT_ARTIFACT_EXTENSIONS and _contains_secret(
+        resolved,
+        denied_values=denied_values,
+    ):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
     if resolved.suffix.lower() == ".png" and not _valid_public_png(resolved):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
@@ -322,6 +454,7 @@ def read_artifact_bytes(
     artifact_id: str,
     *,
     max_file_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+    denied_values: tuple[str, ...] = (),
 ) -> bytes:
     root = _workspace_root(workspace_root)
     relative = _validate_artifact_id(artifact_id)
@@ -358,7 +491,13 @@ def read_artifact_bytes(
         or len(data) != after.st_size
     ):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
-    if extension in TEXT_ARTIFACT_EXTENSIONS and _contains_secret_bytes(data, extension=extension):
+    if _contains_denied_values(data, denied_values):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    if extension in TEXT_ARTIFACT_EXTENSIONS and _contains_secret_bytes(
+        data,
+        extension=extension,
+        denied_values=denied_values,
+    ):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
     if extension == ".png" and not _valid_public_png_bytes(data):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
@@ -461,15 +600,26 @@ def _safe_artifact_name(relative: PurePosixPath) -> bool:
     )
 
 
-def _contains_secret(path: Path) -> bool:
+def _contains_secret(path: Path, *, denied_values: tuple[str, ...] = ()) -> bool:
     try:
         sample = path.read_bytes()
     except OSError:
         return True
-    return _contains_secret_bytes(sample, extension=path.suffix.lower())
+    return _contains_secret_bytes(
+        sample,
+        extension=path.suffix.lower(),
+        denied_values=denied_values,
+    )
 
 
-def _contains_secret_bytes(sample: bytes, *, extension: str) -> bool:
+def _contains_secret_bytes(
+    sample: bytes,
+    *,
+    extension: str,
+    denied_values: tuple[str, ...] = (),
+) -> bool:
+    if _contains_denied_values(sample, denied_values):
+        return True
     text = sample.decode("utf-8", errors="ignore")
     if (
         _PRIVATE_KEY.search(text)
@@ -487,8 +637,19 @@ def _contains_secret_bytes(sample: bytes, *, extension: str) -> bool:
             payload = json.loads(text)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return False
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if _contains_denied_values(canonical, denied_values):
+            return True
         return _json_contains_secret(payload)
     return False
+
+
+def _contains_denied_values(sample: bytes, denied_values: tuple[str, ...]) -> bool:
+    return contains_secret_values(sample, denied_values)
 
 
 def _valid_public_png(path: Path) -> bool:

@@ -34,6 +34,15 @@ def _load_runtime_package():
 
 _runtime = _load_runtime_package()
 
+# The runtime package imports its own submodules under the private package
+# name. Alias those exact module objects so public compatibility imports do
+# not create a second, divergent copy of the Data API types.
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name.startswith(f"{_MODULE_NAME}."):
+        sys.modules[f"{__name__}{_module_name[len(_MODULE_NAME):]}"] = _module
+
+__path__ = list(getattr(_runtime, "__path__", ()))
+
 for _name in getattr(_runtime, "__all__", ()):
     globals()[_name] = getattr(_runtime, _name)
 

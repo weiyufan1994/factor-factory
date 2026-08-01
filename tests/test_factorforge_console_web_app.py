@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from http.cookiejar import CookieJar
@@ -47,14 +48,22 @@ def research_console(tmp_path):
     ).encode("utf-8")
     catalog.write_bytes(catalog_data)
     receipt = catalog.with_name("data_catalog.receipt.json")
+    refreshed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     receipt.write_text(
         json.dumps(
             {
                 "version": "factorforge_console_active_catalog_receipt_v1",
+                "bucket": "yufan-data-lake",
+                "key": "factorforge/data/catalog/data_catalog.json",
+                "etag": "a" * 32,
+                "version_id": "",
                 "role_name": "console-test-role",
                 "catalog_sha256": hashlib.sha256(catalog_data).hexdigest(),
+                "catalog_bytes": len(catalog_data),
                 "dataset_count": 1,
-                "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "schema_version": "test_v1",
+                "source_last_modified_utc": refreshed_at,
+                "fetched_at_utc": refreshed_at,
             }
         ),
         encoding="utf-8",
@@ -70,8 +79,10 @@ def research_console(tmp_path):
         data_catalogs=(catalog,),
         catalog_receipt=receipt,
         data_api_pythonpath=data_api,
+        data_api_commit="d" * 40,
         aws_readonly_role_name="console-test-role",
         aws_host_role_name="console-test-host-role",
+        aws_account_id="525164180577",
         agent_container_image=f"sha256:{'a' * 64}",
     )
     store = ResearchJobStore(config.state_root)
@@ -95,6 +106,31 @@ def research_console(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_catalog_health_validation_is_single_flight_cached(research_console, monkeypatch):
+    import factor_factory.console.catalog_health as catalog_health
+
+    _base_url, application = research_console
+    calls = 0
+    original = catalog_health._evaluate_catalogs
+
+    def counted(config, *, now):
+        nonlocal calls
+        calls += 1
+        return original(config, now=now)
+
+    monkeypatch.setattr(catalog_health, "_evaluate_catalogs", counted)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(
+            pool.map(
+                lambda _item: catalog_health.catalogs_healthy(application.config),
+                range(64),
+            )
+        )
+
+    assert all(results)
+    assert calls == 1
 
 
 def _login_opener(base_url: str):
@@ -170,6 +206,26 @@ def test_catalog_health_fails_when_receipt_hash_is_stale(research_console):
     assert _catalogs_healthy(app.config) is False
 
 
+def test_queue_admission_blocks_stale_catalog_before_creating_job(research_console):
+    from factor_factory.console.models import ResearchRequest
+    from factor_factory.console.run_service import ResearchQueueService
+
+    _base_url, app = research_console
+    app.config.data_catalogs[0].write_text(
+        '{"schema_version":"tampered","datasets":[]}',
+        encoding="utf-8",
+    )
+    service = ResearchQueueService(
+        store=app.store,
+        runner_health_socket=app.config.state_root / "missing.sock",
+        config=app.config,
+    )
+
+    with pytest.raises(RuntimeError, match="DATA_CATALOG_UNAVAILABLE"):
+        service.submit(ResearchRequest(title="Blocked catalog", hypothesis="test"))
+    assert app.store.list_jobs() == []
+
+
 def test_submit_research_and_api_hide_private_paths(research_console):
     base_url, app = research_console
     opener, html = _login_opener(base_url)
@@ -234,10 +290,16 @@ def test_artifact_endpoint_serves_only_published_official_artifact(research_cons
     internal = workspace / "objects" / "internal_but_safe.json"
     internal.parent.mkdir(parents=True)
     internal.write_text('{"status":"internal"}\n', encoding="utf-8")
+    summary = workspace / "reports" / "summary.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_text('{"status":"PASS"}\n', encoding="utf-8")
     publication_id, _ = publish_official_artifacts(
         workspace,
         app.config.state_root / "public" / job.job_id,
-        role_artifact_ids={"rank_ic_chart": "evaluations/rank_ic_timeseries.png"},
+        role_artifact_ids={
+            "rank_ic_chart": "evaluations/rank_ic_timeseries.png",
+            "summary": "reports/summary.json",
+        },
         identity={
             "job_id": job.job_id,
             "report_id": job.report_id,
@@ -256,7 +318,12 @@ def test_artifact_endpoint_serves_only_published_official_artifact(research_cons
                     "artifact_id": "evaluations/rank_ic_timeseries.png",
                     "label": "Rank IC",
                     "kind": "image",
-                }
+                },
+                {
+                    "artifact_id": "reports/summary.json",
+                    "label": "Summary",
+                    "kind": "document",
+                },
             ]
         },
     )
@@ -268,6 +335,22 @@ def test_artifact_endpoint_serves_only_published_official_artifact(research_cons
     assert response.headers["Content-Type"] == "image/png"
     assert "filename*=UTF-8''rank_ic_timeseries.png" in response.headers["Content-Disposition"]
     assert response.read().startswith(b"\x89PNG")
+
+    summary_url = f"{base_url}/artifact/{job.job_id}/reports/summary.json"
+    assert json.loads(opener.open(summary_url, timeout=3).read()) == {"status": "PASS"}
+    published_summary = (
+        app.config.state_root
+        / "public"
+        / job.job_id
+        / publication_id
+        / "reports"
+        / "summary.json"
+    )
+    published_summary.chmod(0o640)
+    published_summary.write_text('{"status":"REJECT"}\n', encoding="utf-8")
+    with pytest.raises(HTTPError) as failure:
+        opener.open(summary_url, timeout=3)
+    assert failure.value.code == 404
 
     with pytest.raises(HTTPError) as failure:
         opener.open(

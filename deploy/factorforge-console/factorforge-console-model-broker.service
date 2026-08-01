@@ -9,10 +9,9 @@ Before=factorforge-console-runner.service
 Type=simple
 User=factorforge-model
 Group=factorforge-secret-scan
+SupplementaryGroups=factorforge-console
 WorkingDirectory=/srv/factorforge/control
-RuntimeDirectory=factorforge-console-model-broker
-RuntimeDirectoryMode=2770
-ExecStart=/usr/bin/python3 scripts/run_factorforge_model_broker.py --api-key-file /etc/factorforge-console/deepseek-api-key --denied-secret-root /run/factorforge-console-model-broker/denied-secrets
+ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_model_broker.py --api-key-file /etc/factorforge-console/deepseek-api-key --client-token-file /etc/factorforge-console/model-broker-client-token --denied-secret-root /var/lib/factorforge-console/secret-scan
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -25,6 +24,7 @@ ProcSubset=pid
 RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
+ReadWritePaths=/var/lib/factorforge-console/secret-scan
 
 [Install]
 WantedBy=multi-user.target

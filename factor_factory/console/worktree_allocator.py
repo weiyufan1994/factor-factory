@@ -418,6 +418,28 @@ class FactorWorktreeAllocator:
                 f"{BLOCK_WORKTREE_IDENTITY_INVALID}: invalid implementation_mode={implementation_mode!r}"
             )
 
+        run_root, existing_worktree, existing_state = self._allocation_paths(
+            factor_id,
+            research_id,
+        )
+        existing_workspace = (
+            existing_worktree / "factor_research" / factor_id / research_id
+        )
+        existing_manifest = existing_state / "worktree_allocation.json"
+        if (
+            existing_worktree.is_dir()
+            and existing_workspace.is_dir()
+            and existing_manifest.is_file()
+        ):
+            return self.validate_allocation(
+                factor_id=factor_id,
+                research_id=research_id,
+                report_id=report_id,
+                persisted_worktree_path=existing_worktree,
+                persisted_workspace_path=existing_workspace,
+                persisted_base_commit=self.base_commit,
+            )
+
         with self._worktree_lock():
             self._validate_git_source()
             self._assert_source_clean()
@@ -427,6 +449,74 @@ class FactorWorktreeAllocator:
                 research_id,
             )
             if run_root.exists() or state_root.exists():
+                workspace_path = (
+                    worktree_path / "factor_research" / factor_id / research_id
+                ).resolve(strict=False)
+                manifest_path = state_root / "worktree_allocation.json"
+                recoverable = (
+                    run_root.is_dir()
+                    and worktree_path.is_dir()
+                    and workspace_path.is_dir()
+                    and state_root.is_dir()
+                    and not manifest_path.exists()
+                    and not manifest_path.is_symlink()
+                )
+                if recoverable:
+                    for candidate, label in (
+                        (run_root, "run_root"),
+                        (worktree_path, "worktree_path"),
+                        (workspace_path, "workspace_path"),
+                        (state_root, "state_root"),
+                    ):
+                        if candidate.is_symlink() or candidate.stat().st_uid != os.geteuid():
+                            raise WorktreeAllocationError(
+                                f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: {label} ownership mismatch"
+                            )
+                    checked_out_commit = _git(worktree_path, "rev-parse", "HEAD")
+                    registered = _git(
+                        self.source_repo,
+                        "worktree",
+                        "list",
+                        "--porcelain",
+                        failure_token=BLOCK_WORKTREE_GIT_FAILED,
+                    )
+                    symbolic_ref = subprocess.run(
+                        ["git", "-C", str(worktree_path), "symbolic-ref", "--quiet", "HEAD"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    expected_record = f"worktree {worktree_path.resolve()}\nHEAD {base_commit}\ndetached"
+                    if (
+                        checked_out_commit.lower() != base_commit
+                        or symbolic_ref.returncode == 0
+                        or expected_record not in registered
+                    ):
+                        raise WorktreeAllocationError(
+                            f"{BLOCK_WORKTREE_GIT_FAILED}: partial allocation Git identity mismatch"
+                        )
+                    self._validate_initialized_workspace(
+                        worktree_path=worktree_path,
+                        workspace_path=workspace_path,
+                        factor_id=factor_id,
+                        research_id=research_id,
+                        report_id=report_id,
+                        base_commit=base_commit,
+                    )
+                    self._assert_source_clean()
+                    recovered = WorktreeAllocation(
+                        factor_id=factor_id,
+                        research_id=research_id,
+                        report_id=report_id,
+                        source_repo=self.source_repo,
+                        base_commit=base_commit,
+                        worktree_path=worktree_path.resolve(),
+                        workspace_path=workspace_path,
+                        manifest_path=manifest_path,
+                        created_at=_utc_now(),
+                    )
+                    self._persist_allocation_manifest(recovered)
+                    return recovered
                 raise WorktreeAllocationError(
                     f"{BLOCK_WORKTREE_PATH_EXISTS}: allocation path already exists"
                 )
@@ -507,16 +597,22 @@ class FactorWorktreeAllocator:
                 manifest_path=state_root / "worktree_allocation.json",
                 created_at=_utc_now(),
             )
-            with allocation.manifest_path.open("x", encoding="utf-8") as manifest_file:
-                json.dump(
-                    allocation.to_dict(),
-                    manifest_file,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                manifest_file.write("\n")
+            self._persist_allocation_manifest(allocation)
             return allocation
+
+    @staticmethod
+    def _persist_allocation_manifest(allocation: WorktreeAllocation) -> None:
+        with allocation.manifest_path.open("x", encoding="utf-8") as manifest_file:
+            json.dump(
+                allocation.to_dict(),
+                manifest_file,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            manifest_file.write("\n")
+            manifest_file.flush()
+            os.fsync(manifest_file.fileno())
 
     def validate_allocation(
         self,

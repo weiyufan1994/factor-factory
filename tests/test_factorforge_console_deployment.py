@@ -147,3 +147,17 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     assert statements["DenyAnyS3UseOutsideDedicatedEndpoint"]["Resource"] == "*"
     assert statements["DenyMutationEvenIfAnotherPolicyIsAttached"]["Resource"] == "*"
     assert statements["DenyReadOutsideApprovedBucket"]["Effect"] == "Deny"
+
+
+def test_agent_image_uses_a_resolvable_pinned_s3_dependency_set() -> None:
+    dockerfile = (
+        REPO_ROOT / "deploy/factorforge-console/Dockerfile.agent"
+    ).read_text(encoding="utf-8")
+
+    for requirement in (
+        "aiobotocore==3.9.0",
+        "boto3==1.43.56",
+        "botocore==1.43.56",
+        "s3fs==2026.7.0",
+    ):
+        assert requirement in dockerfile

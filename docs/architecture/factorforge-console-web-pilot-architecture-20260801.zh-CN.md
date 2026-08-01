@@ -124,7 +124,7 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 - 容器使用只读 rootfs、drop all capabilities、no-new-privileges、pids/memory/CPU 限额和独立 tmpfs。
 - OpenClaw profile 在研究容器内再次只读挂载；禁用 bootstrap/global skills/elevated/agent-to-agent，只允许固定工具集合。
 - 认证 seed 必须是非 symlink、权限不宽于 `0600`、且只含一个指定 provider 的静态占位 `api_key`；研究容器不持有真实模型 key。真实 key 只由独立 `factorforge-model` broker 读取并注入固定上游请求。
-- 现有 Data API 通过专用 EC2 role 的短期只读 AWS 凭证访问；凭证必须含 session token、有效期和精确 assumed-role ARN，经容器外 `0600` lease 注入当前任务，容器内禁用 metadata，任务结束删除。S3 policy 将访问绑定到专用 VPC endpoint，并显式拒绝 mutation。
+- EC2 host role 只承担 SSM 管理和 `AssumeRole`，不直接拥有 S3 数据权限。runner 每次通过 STS 获取独立 data-read role 的一小时 lease；凭证必须含 session token、有效期和精确 assumed-role ARN，经容器外 `0600` lease 注入当前任务，容器内禁用 metadata，任务结束删除。data-read role 没有 SSM 权限，S3 policy 将读取绑定到专用 VPC endpoint，并显式拒绝 mutation。
 - 服务重启只回收同时带 managed 和本 installation id 标签的遗留容器；任何停止/删除失败都使 runner readiness BLOCK。中断任务转为待复核，禁止旧 turn 与新 turn 重叠。
 
 容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口，只允许访问 bridge gateway 的 S3 proxy 和模型 broker。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-reasoner`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。

@@ -11,7 +11,7 @@
 3. 固定 Data API checkout 的 `factor_factory/data_api` 子包存在；active catalog 只能从固定 S3 key 刷新并带 receipt。
 4. Docker agent image、专用 egress bridge 和 `DOCKER-USER` 私网阻断规则已就绪。
 5. auth seed SQLite 只含 broker 占位 key，不含真实模型 key、OAuth 或 session；真实模型 key 只对 `factorforge-model` 可读。
-6. 专用 EC2 role 是短期 assumed-role，S3 读取绑定专用 VPC endpoint，IAM 显式拒绝写删。
+6. EC2 host role 只有 SSM 与假设 data-read role 的权限；容器只取得一小时 data-read lease。S3 读取绑定专用 VPC endpoint，IAM 显式拒绝写删。
 7. 邀请口令和 cookie secret 已注入 Web 环境，且与模型 key 分离。
 
 ## 2. 必需环境变量
@@ -31,7 +31,7 @@ FACTORFORGE_CONSOLE_CONTAINER_NETWORK=factorforge-console-egress
 FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET=172.29.0.0/24
 FACTORFORGE_CONSOLE_CONTAINER_PROXY_URL=http://172.29.0.1:3128
 FACTORFORGE_CONSOLE_MODEL_BROKER_URL=http://172.29.0.1:8781
-FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME=factorforge-console-pilot-role
+FACTORFORGE_CONSOLE_AWS_READONLY_ROLE_NAME=factorforge-console-pilot-data-read-role
 FACTORFORGE_CONSOLE_INSTALLATION_ID=factorforge-console-pilot-20260801
 FACTORFORGE_CONSOLE_ENGINE_COMMIT=<exact 40-char deployment commit>
 FACTORFORGE_CONSOLE_AGENT_IMAGE=sha256:<exact local Docker image id>
@@ -106,7 +106,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 1. Region 使用 `ap-southeast-1`，与现有 Data API/S3 同区。
 2. 加密 EBS；使用 SSM 管理，不开放 22。
 3. Security Group 只允许公网 80/443，Console 只监听 `127.0.0.1`。
-4. 新建专用 S3 Gateway VPC endpoint；instance profile 只允许经该 endpoint 读取 approved catalog/datamart prefix，并明确拒绝对象写入/删除。
+4. 新建专用 S3 Gateway VPC endpoint；instance profile 的 host role 只允许 SSM 与假设 data-read role，data-read role 只允许经该 endpoint 读取 approved catalog/datamart prefix，并明确拒绝对象写入/删除。
 5. `/srv/factorforge/control` 是 clean、固定 commit 的部署 checkout。
 6. `/var/lib/factorforge-console` 存任务账本、agent state 和 factor worktrees。
 7. `/etc/factorforge-console` 只存 root-readable 配置或 Secrets Manager materialization。

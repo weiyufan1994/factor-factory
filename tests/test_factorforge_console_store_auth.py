@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -644,6 +646,58 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
     assert lease_path.stat().st_mode & 0o077 == 0
     assert "temporary-session-token-for-test" in values
     lease_path.unlink()
+
+
+def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):
+    from factor_factory.console.container_agent_adapter import _load_aws_credentials
+
+    expected_role = "factorforge-console-pilot-data-read-role"
+
+    class SourceCredentials:
+        method = "iam-role"
+
+    class FakeSts:
+        def __init__(self, *, assumed: bool = False):
+            self.assumed = assumed
+
+        def get_caller_identity(self):
+            role = expected_role if self.assumed else "factorforge-console-pilot-host-role"
+            return {
+                "Account": "123456789012",
+                "Arn": f"arn:aws:sts::123456789012:assumed-role/{role}/session",
+            }
+
+        def assume_role(self, **kwargs):
+            assert kwargs["RoleArn"] == f"arn:aws:iam::123456789012:role/{expected_role}"
+            assert kwargs["DurationSeconds"] == 3600
+            return {
+                "Credentials": {
+                    "AccessKeyId": "ASIATEMPORARYKEY0000",
+                    "SecretAccessKey": "temporary-secret-for-assume-role-test",
+                    "SessionToken": "temporary-session-token-for-assume-role-test",
+                    "Expiration": datetime.now(timezone.utc) + timedelta(minutes=59),
+                }
+            }
+
+    class FakeSession:
+        def get_credentials(self):
+            return SourceCredentials()
+
+        def create_client(self, service, **kwargs):
+            assert service == "sts"
+            return FakeSts(assumed=bool(kwargs.get("aws_session_token")))
+
+    session_module = types.ModuleType("botocore.session")
+    session_module.get_session = lambda: FakeSession()
+    package = types.ModuleType("botocore")
+    package.session = session_module
+    monkeypatch.setitem(sys.modules, "botocore", package)
+    monkeypatch.setitem(sys.modules, "botocore.session", session_module)
+
+    lease = _load_aws_credentials(expected_role)
+    assert lease.method == "assume-role"
+    assert lease.caller_arn.endswith(f"assumed-role/{expected_role}/session")
+    assert lease.token == "temporary-session-token-for-assume-role-test"
 
 def test_secret_redaction(monkeypatch):
     from factor_factory.console.agent_adapter import redact_secrets

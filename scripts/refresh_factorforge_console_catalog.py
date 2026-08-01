@@ -59,10 +59,16 @@ def main() -> int:
 
     if not args.role_name:
         raise RuntimeError("pinned Console read-only role name is required")
-    _load_aws_credentials(args.role_name)
+    credentials = _load_aws_credentials(args.role_name)
     import botocore.session
 
-    client = botocore.session.get_session().create_client("s3", region_name="ap-southeast-1")
+    client = botocore.session.get_session().create_client(
+        "s3",
+        region_name="ap-southeast-1",
+        aws_access_key_id=credentials.access_key,
+        aws_secret_access_key=credentials.secret_key,
+        aws_session_token=credentials.token,
+    )
     head = client.head_object(Bucket=CATALOG_BUCKET, Key=CATALOG_KEY)
     response = client.get_object(Bucket=CATALOG_BUCKET, Key=CATALOG_KEY)
     body = response["Body"]

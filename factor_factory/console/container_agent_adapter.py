@@ -971,21 +971,46 @@ def _load_aws_credentials(expected_role_name: str) -> _AwsCredentialLease:
         import botocore.session
 
         session = botocore.session.get_session()
-        credentials = session.get_credentials()
-        if credentials is None:
-            raise RuntimeError("credentials unavailable")
-        frozen = credentials.get_frozen_credentials()
-        expiry = getattr(credentials, "_expiry_time", None)
-        method = str(getattr(credentials, "method", "") or "")
-        identity = session.create_client("sts").get_caller_identity()
+        source_credentials = session.get_credentials()
+        if source_credentials is None:
+            raise RuntimeError("source credentials unavailable")
+        source_method = str(getattr(source_credentials, "method", "") or "")
+        source_sts = session.create_client("sts")
+        source_identity = source_sts.get_caller_identity()
+        account_id = str(source_identity.get("Account") or "")
+        source_arn = str(source_identity.get("Arn") or "")
+        if (
+            source_method not in {"iam-role", "container-role"}
+            or not account_id.isdigit()
+            or len(account_id) != 12
+            or ":assumed-role/" not in source_arn
+            or not expected_role_name
+            or f":assumed-role/{expected_role_name}/" in source_arn
+        ):
+            raise RuntimeError("source credentials are not a distinct host role")
+        assumed = source_sts.assume_role(
+            RoleArn=f"arn:aws:iam::{account_id}:role/{expected_role_name}",
+            RoleSessionName=f"factorforge-console-read-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+            DurationSeconds=3600,
+        )
+        raw_credentials = assumed.get("Credentials") if isinstance(assumed, dict) else None
+        if not isinstance(raw_credentials, dict):
+            raise RuntimeError("assumed credentials unavailable")
+        access_key = str(raw_credentials.get("AccessKeyId") or "")
+        secret_key = str(raw_credentials.get("SecretAccessKey") or "")
+        token = str(raw_credentials.get("SessionToken") or "")
+        expiry = raw_credentials.get("Expiration")
+        assumed_identity = session.create_client(
+            "sts",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            aws_session_token=token,
+        ).get_caller_identity()
     except Exception as exc:
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: scoped AWS credentials are unavailable"
         ) from exc
-    access_key = str(frozen.access_key or "")
-    secret_key = str(frozen.secret_key or "")
-    token = str(frozen.token or "")
-    caller_arn = str(identity.get("Arn") or "") if isinstance(identity, dict) else ""
+    caller_arn = str(assumed_identity.get("Arn") or "") if isinstance(assumed_identity, dict) else ""
     if isinstance(expiry, str):
         try:
             expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
@@ -1001,8 +1026,7 @@ def _load_aws_credentials(expected_role_name: str) -> _AwsCredentialLease:
         or not token
         or not isinstance(expiry, datetime)
         or expiry <= now + timedelta(minutes=5)
-        or expiry > now + timedelta(hours=12, minutes=5)
-        or method not in {"iam-role", "container-role"}
+        or expiry > now + timedelta(hours=1, minutes=5)
         or not expected_role_name
         or expected_arn_token not in caller_arn
     ):
@@ -1014,7 +1038,7 @@ def _load_aws_credentials(expected_role_name: str) -> _AwsCredentialLease:
         secret_key=secret_key,
         token=token,
         expires_at=expiry,
-        method=method,
+        method="assume-role",
         caller_arn=caller_arn,
     )
 

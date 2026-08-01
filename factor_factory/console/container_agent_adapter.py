@@ -24,7 +24,8 @@ from factor_factory.console.models import ResearchJob
 from factor_factory.console.store import utc_now
 
 
-REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process", "web_fetch"]
+REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
+REQUIRED_PROXY_URL = "http://172.29.0.1:3128"
 
 
 class ContainerizedOpenClawResearchAgentAdapter:
@@ -48,7 +49,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             payload = json.loads(template.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: OpenClaw profile template is invalid") from exc
-        _validate_profile_policy(payload)
+        _validate_profile_policy(payload, expected_proxy_url=self.config.container_proxy_url)
         self._run_runtime(
             [self.config.container_runtime, "image", "inspect", self.config.agent_container_image],
             timeout=30,
@@ -250,7 +251,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
             shutil.copy2(self.config.openclaw_profile_template, profile_config)
             profile_config.chmod(0o600)
         try:
-            _validate_profile_policy(json.loads(profile_config.read_text(encoding="utf-8")))
+            _validate_profile_policy(
+                json.loads(profile_config.read_text(encoding="utf-8")),
+                expected_proxy_url=self.config.container_proxy_url,
+            )
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: per-task OpenClaw profile is invalid"
@@ -315,6 +319,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "PYTHONUNBUFFERED=1",
             "--env",
             "AWS_EC2_METADATA_DISABLED=true",
+            "--env",
+            f"HTTP_PROXY={self.config.container_proxy_url}",
+            "--env",
+            f"HTTPS_PROXY={self.config.container_proxy_url}",
+            "--env",
+            f"http_proxy={self.config.container_proxy_url}",
+            "--env",
+            f"https_proxy={self.config.container_proxy_url}",
+            "--env",
+            "NO_PROXY=",
+            "--env",
+            "no_proxy=",
         ]
         if aws_env_file is not None:
             command.extend(["--env-file", str(aws_env_file)])
@@ -482,7 +498,11 @@ def _load_aws_credentials() -> tuple[str, str, str] | None:
     return access_key, secret_key, token
 
 
-def _validate_profile_policy(payload: object) -> None:
+def _validate_profile_policy(
+    payload: object,
+    *,
+    expected_proxy_url: str = REQUIRED_PROXY_URL,
+) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile is not an object")
     defaults = ((payload.get("agents") or {}).get("defaults") or {})
@@ -504,10 +524,13 @@ def _validate_profile_policy(payload: object) -> None:
         or (tools.get("sessions") or {}).get("visibility") != "self"
     ):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container tool policy is invalid")
-    if plugins.get("allow") != ["web-readability"]:
+    if plugins.get("allow") != []:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container plugin policy is invalid")
     if set(providers) != {"deepseek"}:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model provider policy is invalid")
     deepseek = providers.get("deepseek") or {}
     if deepseek.get("baseUrl") != "https://api.deepseek.com":
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model endpoint is invalid")
+    proxy = ((deepseek.get("request") or {}).get("proxy") or {})
+    if proxy != {"mode": "explicit-proxy", "url": expected_proxy_url}:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model proxy is invalid")

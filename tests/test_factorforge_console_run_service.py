@@ -257,3 +257,22 @@ def test_write_outside_factor_workspace_blocks_even_with_formal_reject(tmp_path)
     assert blocked.execution_status == "BLOCKED"
     assert blocked.factor_verdict == "BLOCK"
     assert blocked.error_code == "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED"
+
+
+def test_service_rejects_direct_source_url_until_fetch_broker_exists(tmp_path):
+    from factor_factory.console.models import ResearchRequest
+
+    _source, store, service = _service(tmp_path, _PausedAdapter())
+    request = ResearchRequest(
+        title="External source factor",
+        hypothesis="test hypothesis",
+        source_url="https://example.com/research",
+    )
+
+    try:
+        service.submit(request)
+    except ValueError as exc:
+        assert "source URL ingestion is disabled" in str(exc)
+    else:
+        raise AssertionError("source URL should be rejected before job creation")
+    assert store.list_jobs() == []

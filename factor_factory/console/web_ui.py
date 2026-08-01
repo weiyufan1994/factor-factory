@@ -132,7 +132,6 @@ def _research_form(csrf_token: str) -> str:
       <input type="hidden" name="csrf" value="{escape(csrf_token)}">
       <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
       <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" placeholder="由系统生成也可以"></div>
-      <div class="field"><label for="source-url">参考链接（可选）</label><input id="source-url" name="source_url" type="url" placeholder="https://"></div>
       <div class="field span-2"><label for="hypothesis">因子想法与经济假设</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="描述现象、可能的付款方、信息形成时间、希望检验的数学关系和你认为会失败的条件。" required></textarea></div>
       <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_core">A 股核心可投资池</option><option value="csi300">沪深 300</option><option value="csi500">中证 500</option><option value="all_a_share">全部 A 股（按 Data API 过滤）</option></select></div>
       <div class="field"><label for="horizon">收益观察期</label><select id="horizon" name="forward_horizon"><option value="1d">下一交易日</option><option value="5d">未来 5 日</option><option value="20d">未来 20 日</option></select></div>

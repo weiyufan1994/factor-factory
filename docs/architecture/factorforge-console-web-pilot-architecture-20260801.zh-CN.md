@@ -120,7 +120,7 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 - 现有 Data API 仍通过只读 IAM 使用；主机取得的短期只读 AWS 凭证经 `0600` 临时 env file 注入当前任务，容器内禁用 metadata，任务结束删除临时文件。
 - 服务重启先回收带 `factorforge.console=research-agent` 标签的遗留容器，再把中断任务置为待复核，禁止旧 turn 与新 turn 重叠。
 
-容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 规则按该 bridge 子网拒绝 loopback、RFC1918、carrier-grade NAT、link-local/cloud metadata、保留和文档地址；用户 URL 同时要求 HTTPS、无凭据、443 端口、规范化 IP 为 global，且 DNS 的全部解析结果均为 global。应用校验不是网络隔离的替代品。
+容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 将该子网的全部直接出口拒绝，只允许访问 bridge gateway 上的 Squid CONNECT proxy。Squid 仅放行 `api.deepseek.com` 与 `yufan-data-lake` 的两个精确 S3 hostname，并再次拒绝私网、link-local 和 metadata 目标。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现，不能直接交给研究 agent。应用 URL 校验不是网络隔离的替代品。
 
 当前 Pilot 固定使用 `deepseek/deepseek-reasoner` 和 `thinking=high`。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 
@@ -161,7 +161,7 @@ QUEUED
 - 读取固定 commit 的 Factor Forge 代码和 skills。
 - 读取 allowlisted Data API catalog/datamart。
 - 写该任务 workspace、该任务 agent state 和 Console 外部 SQLite。
-- 从经过 DNS/IP 校验且容器网络策略允许的公开 HTTPS URL 读取用户提供的研究参考。
+- 读取固定模型 API 与 approved Data API/S3；Pilot 不接收直接外部参考 URL。
 
 ### 5.2 禁止
 
@@ -204,6 +204,7 @@ QUEUED
 - REJECT/BLOCK/pause 仍展示完整研究方法和证据链。
 - Git 写入审计没有 workspace 外路径。
 - 容器无法访问 metadata、localhost 或 RFC1918 地址；能访问公开模型端点和 allowlisted S3/Data API。
+- 容器无法绕过 allowlisted proxy 访问任意公网 host，S3 IAM 仍无写入/删除权限。
 - 伪造 certificate、verifier BLOCK、空 Council summary、dry-run REJECT、report identity 混用均不能产生正式 PASS。
 
 这是一项“Web 能安全驱动正式框架”的 proof，不等于任一因子已 `ACCEPT`，也不等于多租户生产 SaaS 已完成。

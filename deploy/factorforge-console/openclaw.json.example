@@ -5,6 +5,12 @@
       "deepseek": {
         "baseUrl": "https://api.deepseek.com",
         "api": "openai-completions",
+        "request": {
+          "proxy": {
+            "mode": "explicit-proxy",
+            "url": "http://172.29.0.1:3128"
+          }
+        },
         "models": [
           {
             "id": "deepseek-reasoner",
@@ -43,10 +49,10 @@
     }
   },
   "plugins": {
-    "allow": ["web-readability"]
+    "allow": []
   },
   "tools": {
-    "allow": ["read", "edit", "write", "apply_patch", "exec", "process", "web_fetch"],
+    "allow": ["read", "edit", "write", "apply_patch", "exec", "process"],
     "fs": {"workspaceOnly": true},
     "exec": {
       "mode": "full",
@@ -55,11 +61,6 @@
     },
     "sessions": {"visibility": "self"},
     "elevated": {"enabled": false},
-    "web": {
-      "search": {"enabled": false},
-      "fetch": {"enabled": true},
-      "x_search": {"enabled": false}
-    },
     "agentToAgent": {"enabled": false}
   }
 }

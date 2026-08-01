@@ -438,6 +438,8 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert "--read-only" in research_command
     assert "--local" in research_command
     assert research_command[research_command.index("--network") + 1] == config.container_network
+    assert f"HTTPS_PROXY={config.container_proxy_url}" in research_command
+    assert "AWS_EC2_METADATA_DISABLED=true" in research_command
     assert f"type=bind,src={source.resolve()},dst={source.resolve()},readonly" in research_command
     assert f"type=bind,src={workspace.resolve()},dst={workspace.resolve()}" in research_command
     assert f"type=bind,src={catalog_root.resolve()},dst={catalog_root.resolve()},readonly" in research_command

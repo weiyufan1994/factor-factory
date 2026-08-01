@@ -302,7 +302,7 @@ Read and follow these skills literally before acting:
 - formal sample: {job.request.sample_start} through {job.request.sample_end}
 - forward horizon: {job.request.forward_horizon}
 - transaction cost assumption: {job.request.transaction_cost_bps} bps
-- source URL: {job.request.source_url or 'none; this is a user-authored natural-language hypothesis'}
+- source material: user-authored natural-language hypothesis only; external URL ingestion is disabled
 
 ## Read-only Data API inputs
 
@@ -320,6 +320,7 @@ Read and follow these skills literally before acting:
 8. A process exit code or wrapper PASS is not a factor verdict. Finish only with formal ACCEPT, REJECT, BLOCK, or an honest REVIEW_REQUIRED pause.
 9. Do not create a revision child or record human approval unless an existing artifact under `identity/` explicitly authorizes this resume. Automated action must never be labeled human approval.
 10. Before finishing, verify the workspace manifest and inspect Git status. Any write outside the active workspace is a blocking failure.
+11. Network egress is restricted to the model API and approved read-only S3 bucket. Do not upload, POST, tunnel or encode Data API content to any external destination, and do not attempt to bypass the proxy.
 
 Write a final machine-readable record to:
 

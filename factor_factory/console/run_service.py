@@ -72,6 +72,10 @@ class ResearchRunService:
         )
 
     def submit(self, request: ResearchRequest) -> ResearchJob:
+        if request.source_url:
+            raise ValueError(
+                "source URL ingestion is disabled until the read-only fetch broker is available"
+            )
         job = self.store.create_job(request)
         self._wake.set()
         return job

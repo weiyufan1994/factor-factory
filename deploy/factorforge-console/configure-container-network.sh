@@ -15,36 +15,30 @@ fi
 actual_subnet="$(docker network inspect "${NETWORK_NAME}" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')"
 ipv6_enabled="$(docker network inspect "${NETWORK_NAME}" --format '{{.EnableIPv6}}')"
 internal_network="$(docker network inspect "${NETWORK_NAME}" --format '{{.Internal}}')"
+proxy_gateway="$(docker network inspect "${NETWORK_NAME}" --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}')"
+expected_gateway="$(python3 -c 'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1], strict=True).network_address + 1)' "${NETWORK_SUBNET}")"
 if [[ "${actual_subnet}" != "${NETWORK_SUBNET}" || "${ipv6_enabled}" != "false" || "${internal_network}" != "false" ]]; then
   echo "Factor Forge Console network metadata does not match the required policy" >&2
   exit 1
 fi
 
-blocked_destinations=(
-  0.0.0.0/8
-  10.0.0.0/8
-  100.64.0.0/10
-  127.0.0.0/8
-  169.254.0.0/16
-  172.16.0.0/12
-  192.0.0.0/24
-  192.0.2.0/24
-  192.168.0.0/16
-  198.18.0.0/15
-  198.51.100.0/24
-  203.0.113.0/24
-  224.0.0.0/4
-  240.0.0.0/4
-)
+if [[ "${proxy_gateway}" != "${expected_gateway}" ]]; then
+  echo "Factor Forge Console proxy gateway does not match the required policy" >&2
+  exit 1
+fi
 
-for destination in "${blocked_destinations[@]}"; do
-  rule=(-s "${NETWORK_SUBNET}" -d "${destination}" -j REJECT)
-  if ! iptables -w 5 -C DOCKER-USER "${rule[@]}" 2>/dev/null; then
-    iptables -w 5 -I DOCKER-USER 1 "${rule[@]}"
-  fi
-done
+chain="FF_CONSOLE_EGRESS"
+iptables -w 5 -N "${chain}" 2>/dev/null || true
+iptables -w 5 -F "${chain}"
+iptables -w 5 -A "${chain}" -d "${proxy_gateway}/32" -p tcp --dport 3128 -j ACCEPT
+iptables -w 5 -A "${chain}" -j REJECT
 
-# Fail closed if any required rule is absent after reconciliation.
-for destination in "${blocked_destinations[@]}"; do
-  iptables -w 5 -C DOCKER-USER -s "${NETWORK_SUBNET}" -d "${destination}" -j REJECT
+while iptables -w 5 -C DOCKER-USER -s "${NETWORK_SUBNET}" -j "${chain}" 2>/dev/null; do
+  iptables -w 5 -D DOCKER-USER -s "${NETWORK_SUBNET}" -j "${chain}"
 done
+iptables -w 5 -I DOCKER-USER 1 -s "${NETWORK_SUBNET}" -j "${chain}"
+
+# Fail closed if the only allowed route is the host proxy.
+iptables -w 5 -C DOCKER-USER -s "${NETWORK_SUBNET}" -j "${chain}"
+iptables -w 5 -C "${chain}" -d "${proxy_gateway}/32" -p tcp --dport 3128 -j ACCEPT
+iptables -w 5 -C "${chain}" -j REJECT

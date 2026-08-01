@@ -1,8 +1,8 @@
 [Unit]
 Description=Factor Forge invitation research Console
-After=network-online.target docker.service factorforge-console-network.service
+After=network-online.target docker.service factorforge-console-network.service factorforge-console-proxy.service
 Wants=network-online.target
-Requires=docker.service factorforge-console-network.service
+Requires=docker.service factorforge-console-network.service factorforge-console-proxy.service
 
 [Service]
 Type=simple

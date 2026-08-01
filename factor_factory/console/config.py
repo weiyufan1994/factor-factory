@@ -6,6 +6,7 @@ import ipaddress
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class ConsoleConfig:
     container_runtime: str = "docker"
     container_network: str = "factorforge-console-egress"
     container_network_subnet: str = "172.29.0.0/24"
+    container_proxy_url: str = "http://172.29.0.1:3128"
     agent_container_image: str = "factorforge-console-agent:2026.08.01"
     openclaw_profile_template: Path | None = None
     container_memory: str = "16g"
@@ -87,6 +89,20 @@ class ConsoleConfig:
         network = ipaddress.ip_network(self.container_network_subnet, strict=True)
         if network.version != 4 or network.prefixlen < 24 or network.is_global:
             raise ValueError("agent container network must use a dedicated private IPv4 /24 or smaller")
+        proxy = urlsplit(self.container_proxy_url)
+        try:
+            proxy_address = ipaddress.ip_address(proxy.hostname or "")
+        except ValueError as exc:
+            raise ValueError("agent container proxy must use a literal bridge address") from exc
+        if (
+            proxy.scheme != "http"
+            or proxy.username
+            or proxy.password
+            or proxy.port != 3128
+            or proxy_address not in network
+            or proxy_address != network.network_address + 1
+        ):
+            raise ValueError("agent container proxy must be the dedicated bridge gateway on port 3128")
 
     @classmethod
     def from_env(
@@ -127,6 +143,9 @@ class ConsoleConfig:
             ),
             container_network_subnet=os.getenv(
                 "FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET", "172.29.0.0/24"
+            ),
+            container_proxy_url=os.getenv(
+                "FACTORFORGE_CONSOLE_CONTAINER_PROXY_URL", "http://172.29.0.1:3128"
             ),
             agent_container_image=os.getenv(
                 "FACTORFORGE_CONSOLE_AGENT_IMAGE", "factorforge-console-agent:2026.08.01"

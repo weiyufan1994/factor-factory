@@ -28,6 +28,7 @@ FACTORFORGE_CONSOLE_EXECUTION_MODE=container
 FACTORFORGE_CONSOLE_CONTAINER_RUNTIME=docker
 FACTORFORGE_CONSOLE_CONTAINER_NETWORK=factorforge-console-egress
 FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET=172.29.0.0/24
+FACTORFORGE_CONSOLE_CONTAINER_PROXY_URL=http://172.29.0.1:3128
 FACTORFORGE_CONSOLE_AGENT_IMAGE=factorforge-console-agent:2026.08.01
 FACTORFORGE_CONSOLE_OPENCLAW_PROFILE_TEMPLATE=<committed profile template>
 FACTORFORGE_CONSOLE_STATE_ROOT=<external private state root>
@@ -50,6 +51,7 @@ docker build -f deploy/factorforge-console/Dockerfile.agent \
   -t factorforge-console-agent:2026.08.01 .
 
 sudo -E deploy/factorforge-console/configure-container-network.sh
+# 将 squid-factorforge-console.conf 安装到 /etc/squid/，再启动 proxy unit。
 
 python3 scripts/run_factorforge_console.py \
   --source-repo /path/to/clean/factor-factory-control \
@@ -70,6 +72,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 
 - 控制 worktree clean、base commit 可解析。
 - agent image、专用 bridge 的 subnet/IPv6/internal 属性。
+- `DOCKER-USER` 只允许 bridge -> `172.29.0.1:3128`，Squid 仅允许 DeepSeek 与指定 S3 bucket host。
 - OpenClaw profile 的 model endpoint、plugin 和 tool allowlist。
 - auth seed provider/type/key 合法。
 - 启动时回收 Console 标签下的遗留 agent 容器。
@@ -94,7 +97,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 5. `/srv/factorforge/control` 是 clean、固定 commit 的部署 checkout。
 6. `/var/lib/factorforge-console` 存任务账本、agent state 和 factor worktrees。
 7. `/etc/factorforge-console` 只存 root-readable 配置或 Secrets Manager materialization。
-8. Caddy 负责 HTTPS 和反向代理；systemd 管理 `factorforge-console-network.service` 和 `factorforge-console.service`。
+8. Caddy 负责 HTTPS 和反向代理；systemd 管理 network、allowlisted proxy 和 Console 三个 unit。
 9. EC2 metadata hop limit 设为 1；容器环境固定 `AWS_EC2_METADATA_DISABLED=true`，并验证 `169.254.169.254` 不可达。
 10. 在开放邀请前执行容器内网络负例、Data API read smoke、一个真实 factor workspace E2E 和浏览器路径/secret 扫描。
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Factor Forge Console allowlisted outbound proxy
+Requires=factorforge-console-network.service
+After=factorforge-console-network.service
+Before=factorforge-console.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/squid -k parse -f /etc/squid/factorforge-console.conf
+ExecStart=/usr/sbin/squid -N -f /etc/squid/factorforge-console.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

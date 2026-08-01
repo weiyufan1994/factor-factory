@@ -112,6 +112,7 @@ def test_invite_login_and_security_headers(research_console):
     opener, html = _login_opener(base_url)
     assert "Content-Security-Policy" in opener.open(f"{base_url}/", timeout=3).headers
     assert "服务器路径" not in html
+    assert 'name="source_url"' not in html
 
 
 def test_rate_limiter_trusts_forwarded_address_only_from_loopback_proxy():

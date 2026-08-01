@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import ipaddress
+import socket
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -64,7 +65,7 @@ def _require_choice(value: str, allowed: set[str], label: str) -> str:
     return value
 
 
-def _validate_public_source_url(value: str) -> None:
+def validate_public_source_url(value: str) -> None:
     if not value:
         return
     try:
@@ -79,11 +80,30 @@ def _validate_public_source_url(value: str) -> None:
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname == "localhost" or hostname.endswith((".localhost", ".local", ".internal")):
         raise ValueError("source_url must not target a local or internal host")
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     try:
-        address = ipaddress.ip_address(hostname)
+        addresses.add(ipaddress.ip_address(hostname))
     except ValueError:
-        return
-    if not address.is_global:
+        try:
+            # inet_aton catches legacy spellings such as 127.1 and 2130706433.
+            addresses.add(ipaddress.ip_address(socket.inet_aton(hostname)))
+        except OSError:
+            try:
+                answers = socket.getaddrinfo(
+                    hostname,
+                    443,
+                    family=socket.AF_UNSPEC,
+                    type=socket.SOCK_STREAM,
+                )
+            except socket.gaierror as exc:
+                raise ValueError("source_url hostname could not be resolved") from exc
+            for answer in answers:
+                address_text = str(answer[4][0]).split("%", 1)[0]
+                try:
+                    addresses.add(ipaddress.ip_address(address_text))
+                except ValueError as exc:
+                    raise ValueError("source_url resolved to an invalid address") from exc
+    if not addresses or any(not address.is_global for address in addresses):
         raise ValueError("source_url must not target a private or non-global address")
 
 
@@ -109,7 +129,7 @@ class ResearchRequest:
             raise ValueError("title is too long")
         if len(self.hypothesis) > 20_000:
             raise ValueError("hypothesis is too long")
-        _validate_public_source_url(self.source_url)
+        validate_public_source_url(self.source_url)
         if not 0 <= float(self.transaction_cost_bps) <= 200:
             raise ValueError("transaction_cost_bps must be between 0 and 200")
 

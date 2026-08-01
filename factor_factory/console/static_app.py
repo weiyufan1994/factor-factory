@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 import threading
 import time
@@ -60,6 +61,8 @@ class ResearchConsoleApplication:
     store: ResearchJobStore
     service: ResearchRunService
     auth: InviteAuth
+    engine_commit: str = ""
+    agent_runtime: str = ""
     login_limiter: _LoginRateLimiter = field(default_factory=_LoginRateLimiter)
 
 
@@ -179,7 +182,22 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
             if path == "/healthz":
-                self._send_json(200, {"status": "ok", "service": "factorforge-console"}, public=True)
+                checks = _health_checks(application)
+                ready = all(checks.values())
+                self._send_json(
+                    200 if ready else 503,
+                    {
+                        "status": "ok" if ready else "unhealthy",
+                        "service": "factorforge-console",
+                        "checks": checks,
+                    },
+                    public=True,
+                )
+                return
+            if path == "/favicon.ico":
+                self.send_response(204)
+                self._security_headers(public=True)
+                self.end_headers()
                 return
             if path == "/login":
                 if self._authenticated():
@@ -272,7 +290,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             self._send_json(404, {"error": "not_found"})
 
         def _login(self) -> None:
-            address = self.client_address[0] if self.client_address else "unknown"
+            address = _rate_limit_address(self)
             if not application.login_limiter.allowed(address):
                 self._send_html(429, render_login("尝试次数过多，请稍后再试。"), public=True)
                 return
@@ -433,3 +451,34 @@ def _validate_request_choices(request: ResearchRequest) -> None:
         raise ValueError("invalid sample_end")
     if request.sample_start >= request.sample_end:
         raise ValueError("sample_start must be before sample_end")
+
+
+def _health_checks(application: ResearchConsoleApplication) -> dict[str, bool]:
+    service_health = getattr(application.service, "healthcheck", None)
+    return {
+        "ledger": application.store.healthcheck(),
+        "worker": bool(service_health()) if callable(service_health) else True,
+        "engine": (
+            application.config.source_repo.exists()
+            if application.engine_commit
+            else True
+        ),
+        "agent_runtime": bool(application.agent_runtime) if application.agent_runtime else True,
+        "data_catalogs": all(path.is_file() for path in application.config.data_catalogs),
+    }
+
+
+def _rate_limit_address(handler: BaseHTTPRequestHandler) -> str:
+    peer = handler.client_address[0] if handler.client_address else ""
+    try:
+        peer_address = ipaddress.ip_address(peer)
+    except ValueError:
+        return "unknown"
+    if peer_address.is_loopback:
+        forwarded = handler.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        try:
+            forwarded_address = ipaddress.ip_address(forwarded)
+        except ValueError:
+            return peer_address.compressed
+        return forwarded_address.compressed
+    return peer_address.compressed

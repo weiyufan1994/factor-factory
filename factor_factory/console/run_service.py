@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import threading
 import time
@@ -11,7 +12,7 @@ from typing import Any
 from factor_factory.console.agent_adapter import ResearchAgentAdapter
 from factor_factory.console.artifact_service import list_safe_artifacts
 from factor_factory.console.config import ConsoleConfig
-from factor_factory.console.models import ResearchJob, ResearchRequest
+from factor_factory.console.models import ResearchJob, ResearchRequest, validate_public_source_url
 from factor_factory.console.store import ResearchJobStore, utc_now
 from factor_factory.console.ultimate_reader import UltimateRunSummary, read_ultimate_workspace
 from factor_factory.console.worktree_allocator import (
@@ -57,8 +58,18 @@ class ResearchRunService:
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
         self._wake.set()
+        stop_all = getattr(self.agent_adapter, "stop_all", None)
+        if callable(stop_all):
+            stop_all()
         if self._thread:
             self._thread.join(timeout=timeout)
+
+    def healthcheck(self) -> bool:
+        return bool(
+            self._thread
+            and self._thread.is_alive()
+            and not self._stop.is_set()
+        )
 
     def submit(self, request: ResearchRequest) -> ResearchJob:
         job = self.store.create_job(request)
@@ -91,6 +102,7 @@ class ResearchRunService:
 
     def _run_job(self, job: ResearchJob) -> None:
         try:
+            validate_public_source_url(job.request.source_url)
             resume = bool(job.workspace_path and job.worktree_path)
             if resume:
                 worktree = Path(job.worktree_path).resolve(strict=True)
@@ -231,7 +243,7 @@ class ResearchRunService:
         }
         for key, value in expected.items():
             actual = str(getattr(summary, key) or "")
-            if actual and actual != value:
+            if actual != value:
                 raise RuntimeError(
                     f"{BLOCK_EVIDENCE_IDENTITY_MISMATCH}: {key} expected={value!r} actual={actual!r}"
                 )
@@ -464,9 +476,16 @@ def _artifact_label(artifact_id: str) -> str:
 
 def _public_error_message(message: str) -> str:
     text = str(message).replace("\n", " ")[:1200]
-    for marker in ("/Users/", "/home/", "/srv/", "/private/tmp/", "/tmp/"):
-        if marker in text:
-            return text.split(":", 1)[0] + ": internal path withheld"
+    text = re.sub(
+        r"(?i)(?:file://\S+|s3://\S+|/(?:Users|home|srv|private|tmp|var/lib|root|etc|opt)/\S+)",
+        "[internal-path]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|secret|token|password)\s*[:=]\s*)[^\s,;]+",
+        r"\1[redacted]",
+        text,
+    )
     return text
 
 

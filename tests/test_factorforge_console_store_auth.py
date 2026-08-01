@@ -45,6 +45,7 @@ def _auth_seed(path: Path, *, provider: str = "deepseek", profile_type: str = "a
                 1,
             ),
         )
+    path.chmod(0o600)
     return path
 
 
@@ -63,11 +64,34 @@ def test_research_request_rejects_unsafe_or_oversized_values():
         ResearchRequest(title="idea", hypothesis="test", source_url="https://metadata.google.internal/report")
     with pytest.raises(ValueError, match="private or non-global"):
         ResearchRequest(title="idea", hypothesis="test", source_url="https://127.0.0.1/report")
+    with pytest.raises(ValueError, match="private or non-global"):
+        ResearchRequest(title="idea", hypothesis="test", source_url="https://127.1/report")
+    with pytest.raises(ValueError, match="private or non-global"):
+        ResearchRequest(title="idea", hypothesis="test", source_url="https://2130706433/report")
     with pytest.raises(ValueError, match="without credentials"):
         ResearchRequest(title="idea", hypothesis="test", source_url="https://user:pass@example.com/report")
     ResearchRequest(title="idea", hypothesis="test", source_url="https://example.com/report")
     with pytest.raises(ValueError, match="between 0 and 200"):
         ResearchRequest(title="idea", hypothesis="test", transaction_cost_bps=201)
+
+
+def test_research_request_rejects_dns_resolution_to_private_address(monkeypatch):
+    import factor_factory.console.models as models
+
+    monkeypatch.setattr(
+        models.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (models.socket.AF_INET, models.socket.SOCK_STREAM, 6, "", ("10.2.3.4", 443))
+        ],
+    )
+
+    with pytest.raises(ValueError, match="private or non-global"):
+        models.ResearchRequest(
+            title="idea",
+            hypothesis="test",
+            source_url="https://public-looking.example/report",
+        )
 
 
 def test_job_store_uses_external_sqlite_and_serial_claiming(tmp_path):
@@ -239,6 +263,42 @@ def test_agent_readiness_rejects_oauth_seed(tmp_path, monkeypatch):
         OpenClawResearchAgentAdapter(config).validate_ready()
 
 
+def test_auth_seed_rejects_symlink_broad_permissions_and_multiple_profiles(tmp_path):
+    from factor_factory.console.agent_adapter import (
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        validate_auth_database,
+    )
+
+    broad = _auth_seed(tmp_path / "broad.sqlite")
+    broad.chmod(0o644)
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        validate_auth_database(broad, provider="deepseek", label="seed")
+
+    target = _auth_seed(tmp_path / "target.sqlite")
+    link = tmp_path / "linked.sqlite"
+    link.symlink_to(target)
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        validate_auth_database(link, provider="deepseek", label="seed")
+
+    multiple = _auth_seed(tmp_path / "multiple.sqlite")
+    with sqlite3.connect(multiple) as connection:
+        row = connection.execute(
+            "SELECT store_json FROM auth_profile_store WHERE store_key = 'primary'"
+        ).fetchone()
+        payload = json.loads(row[0])
+        payload["profiles"]["deepseek:second"] = {
+            "provider": "deepseek",
+            "type": "api_key",
+            "key": "second-test-api-key",
+        }
+        connection.execute(
+            "UPDATE auth_profile_store SET store_json = ? WHERE store_key = 'primary'",
+            (json.dumps(payload),),
+        )
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        validate_auth_database(multiple, provider="deepseek", label="seed")
+
+
 def test_console_config_rejects_unknown_thinking_level(tmp_path):
     from factor_factory.console.config import ConsoleConfig
 
@@ -252,6 +312,166 @@ def test_console_config_rejects_unknown_thinking_level(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("invite", "cookie"),
+    [
+        ("replace-via-secrets-manager", "strong-cookie-secret-2026-with-entropy-value"),
+        ("short", "strong-cookie-secret-2026-with-entropy-value"),
+        ("strong-invite-secret-2026", "replace-with-random-secret"),
+        ("same-secret-value-2026-with-enough-length", "same-secret-value-2026-with-enough-length"),
+    ],
+)
+def test_console_config_rejects_weak_or_placeholder_production_secrets(
+    tmp_path,
+    invite,
+    cookie,
+):
+    from factor_factory.console.config import ConsoleConfig
+
+    with pytest.raises(ValueError):
+        ConsoleConfig(
+            source_repo=tmp_path / "source",
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            invite_password=invite,
+            cookie_secret=cookie,
+        )
+
+
+def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_path, monkeypatch):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import ContainerizedOpenClawResearchAgentAdapter
+    from factor_factory.console.models import ResearchJob
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    workspace.mkdir(parents=True)
+    catalog_root = tmp_path / "data-runtime"
+    catalog = catalog_root / "catalogs" / "catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text("{}\n", encoding="utf-8")
+    data_api = tmp_path / "data-api"
+    data_api.mkdir()
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        data_catalogs=(catalog,),
+        data_api_pythonpath=data_api,
+        openclaw_auth_seed_db=_auth_seed(tmp_path / "seed.sqlite"),
+        openclaw_profile_template=(
+            Path(__file__).resolve().parents[1] / "deploy" / "factorforge-console" / "openclaw.json.example"
+        ),
+        container_runtime="docker-test",
+        agent_container_image="factorforge-agent:test",
+        auth_disabled=True,
+    )
+    job = ResearchJob(
+        job_id="job_123abc",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="report",
+        request=_request(),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "network" in command and "inspect" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Name": config.container_network,
+                            "Internal": False,
+                            "EnableIPv6": False,
+                            "IPAM": {"Config": [{"Subnet": config.container_network_subnet}]},
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if "ps" in command and "-aq" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if "agents" in command and "add" in command:
+            profile = (
+                config.state_root
+                / "jobs"
+                / job.job_id
+                / "container-agent"
+                / "home"
+                / ".openclaw-factorforge-console"
+                / "openclaw.json"
+            )
+            payload = json.loads(profile.read_text(encoding="utf-8"))
+            payload.setdefault("agents", {})["list"] = [
+                {
+                    "id": "factorforge-web-123abc",
+                    "workspace": str(source.resolve()),
+                    "agentDir": str(
+                        (
+                            config.state_root
+                            / "jobs"
+                            / job.job_id
+                            / "container-agent"
+                            / "agent"
+                        ).resolve()
+                    ),
+                    "model": "deepseek/deepseek-reasoner",
+                }
+            ]
+            profile.write_text(json.dumps(payload), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout='{"status":"ok"}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    assert adapter.validate_ready() == "container:factorforge-agent:test"
+    result = adapter.run(job, worktree=source, workspace=workspace, resume=False)
+    assert result.returncode == 0
+    run_commands = [command for command in calls if len(command) > 1 and command[1] == "run"]
+    assert len(run_commands) == 2
+    research_command = run_commands[-1]
+    assert "--read-only" in research_command
+    assert "--local" in research_command
+    assert research_command[research_command.index("--network") + 1] == config.container_network
+    assert f"type=bind,src={source.resolve()},dst={source.resolve()},readonly" in research_command
+    assert f"type=bind,src={workspace.resolve()},dst={workspace.resolve()}" in research_command
+    assert f"type=bind,src={catalog_root.resolve()},dst={catalog_root.resolve()},readonly" in research_command
+    assert f"type=bind,src={data_api.resolve()},dst={data_api.resolve()},readonly" in research_command
+    profile_path = (
+        config.state_root
+        / "jobs"
+        / job.job_id
+        / "container-agent"
+        / "home"
+        / ".openclaw-factorforge-console"
+        / "openclaw.json"
+    )
+    assert f"type=bind,src={profile_path},dst={profile_path},readonly" in research_command
+    tmpfs_index = research_command.index("--tmpfs")
+    assert research_command[tmpfs_index + 1].startswith("/tmp:rw,nosuid,nodev,size=")
+
+
+def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_RUNTIME_UNAVAILABLE
+    from factor_factory.console.container_agent_adapter import _validate_profile_policy
+
+    template = Path(__file__).resolve().parents[1] / "deploy" / "factorforge-console" / "openclaw.json.example"
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["tools"]["allow"].append("browser")
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["models"]["providers"]["deepseek"]["baseUrl"] = "https://127.0.0.1"
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+
 def test_secret_redaction(monkeypatch):
     from factor_factory.console.agent_adapter import redact_secrets
 
@@ -260,9 +480,13 @@ def test_secret_redaction(monkeypatch):
         {
             "api_key": "super-secret-provider-key",
             "authorization": "Bearer sk-example-secret-123456789",
+            "aws_access_key_id": "AKIAABCDEFGHIJKLMNOP",
+            "aws_secret_access_key": "aws-secret-material-for-test",
         }
     )
-    redacted = redact_secrets(raw)
+    redacted = redact_secrets(raw, extra_values=("aws-secret-material-for-test",))
     assert "super-secret-provider-key" not in redacted
     assert "sk-example-secret-123456789" not in redacted
+    assert "AKIAABCDEFGHIJKLMNOP" not in redacted
+    assert "aws-secret-material-for-test" not in redacted
     assert "[REDACTED]" in redacted

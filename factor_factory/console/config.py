@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import secrets
+import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,6 +25,16 @@ class ConsoleConfig:
     openclaw_thinking: str = "high"
     openclaw_auth_provider: str = "deepseek"
     openclaw_auth_seed_db: Path | None = None
+    execution_mode: str = "container"
+    container_runtime: str = "docker"
+    container_network: str = "factorforge-console-egress"
+    container_network_subnet: str = "172.29.0.0/24"
+    agent_container_image: str = "factorforge-console-agent:2026.08.01"
+    openclaw_profile_template: Path | None = None
+    container_memory: str = "16g"
+    container_cpus: float = 4.0
+    container_pids_limit: int = 512
+    container_tmpfs_size: str = "8g"
     max_concurrent_jobs: int = 1
     agent_timeout_seconds: int = 21_600
     max_request_bytes: int = 65_536
@@ -41,16 +53,40 @@ class ConsoleConfig:
             object.__setattr__(self, "data_api_pythonpath", self.data_api_pythonpath.expanduser().resolve())
         if self.openclaw_auth_seed_db is not None:
             object.__setattr__(self, "openclaw_auth_seed_db", self.openclaw_auth_seed_db.expanduser().resolve())
-        if not self.cookie_secret:
+        if self.openclaw_profile_template is None:
+            object.__setattr__(
+                self,
+                "openclaw_profile_template",
+                (self.source_repo / "deploy" / "factorforge-console" / "openclaw.json.example").resolve(),
+            )
+        else:
+            object.__setattr__(
+                self,
+                "openclaw_profile_template",
+                self.openclaw_profile_template.expanduser().resolve(),
+            )
+        if not self.cookie_secret and self.auth_disabled:
             object.__setattr__(self, "cookie_secret", secrets.token_urlsafe(48))
         if self.max_concurrent_jobs != 1:
             raise ValueError("the invitation pilot requires max_concurrent_jobs=1")
-        if not self.auth_disabled and not self.invite_password:
-            raise ValueError("invite password is required unless auth is explicitly disabled")
+        if not self.auth_disabled:
+            _validate_secret(self.invite_password, label="invite password", minimum=16)
+            _validate_secret(self.cookie_secret, label="cookie secret", minimum=32)
+            if self.invite_password == self.cookie_secret:
+                raise ValueError("invite password and cookie secret must differ")
         if self.agent_timeout_seconds < 60:
             raise ValueError("agent timeout must be at least 60 seconds")
         if self.openclaw_thinking not in {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}:
             raise ValueError("unsupported OpenClaw thinking level")
+        if self.execution_mode not in {"container", "shared_gateway"}:
+            raise ValueError("execution_mode must be container or shared_gateway")
+        if self.container_cpus <= 0 or self.container_pids_limit < 64:
+            raise ValueError("invalid agent container resource limits")
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}", self.container_network):
+            raise ValueError("invalid agent container network name")
+        network = ipaddress.ip_network(self.container_network_subnet, strict=True)
+        if network.version != 4 or network.prefixlen < 24 or network.is_global:
+            raise ValueError("agent container network must use a dedicated private IPv4 /24 or smaller")
 
     @classmethod
     def from_env(
@@ -84,6 +120,33 @@ class ConsoleConfig:
                 if os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_AUTH_SEED_DB")
                 else None
             ),
+            execution_mode=os.getenv("FACTORFORGE_CONSOLE_EXECUTION_MODE", "container"),
+            container_runtime=os.getenv("FACTORFORGE_CONSOLE_CONTAINER_RUNTIME", "docker"),
+            container_network=os.getenv(
+                "FACTORFORGE_CONSOLE_CONTAINER_NETWORK", "factorforge-console-egress"
+            ),
+            container_network_subnet=os.getenv(
+                "FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET", "172.29.0.0/24"
+            ),
+            agent_container_image=os.getenv(
+                "FACTORFORGE_CONSOLE_AGENT_IMAGE", "factorforge-console-agent:2026.08.01"
+            ),
+            openclaw_profile_template=(
+                Path(os.environ["FACTORFORGE_CONSOLE_OPENCLAW_PROFILE_TEMPLATE"])
+                if os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_PROFILE_TEMPLATE")
+                else None
+            ),
+            container_memory=os.getenv("FACTORFORGE_CONSOLE_CONTAINER_MEMORY", "16g"),
+            container_cpus=float(os.getenv("FACTORFORGE_CONSOLE_CONTAINER_CPUS", "4")),
+            container_pids_limit=int(os.getenv("FACTORFORGE_CONSOLE_CONTAINER_PIDS", "512")),
+            container_tmpfs_size=os.getenv("FACTORFORGE_CONSOLE_CONTAINER_TMPFS", "8g"),
             agent_timeout_seconds=int(os.getenv("FACTORFORGE_CONSOLE_AGENT_TIMEOUT", "21600")),
             auth_disabled=auth_disabled,
         )
+
+
+def _validate_secret(value: str, *, label: str, minimum: int) -> None:
+    lowered = value.strip().lower()
+    placeholders = ("replace", "changeme", "change-me", "example", "password", "your-secret")
+    if len(value) < minimum or any(token in lowered for token in placeholders):
+        raise ValueError(f"{label} is missing, weak, or still a placeholder")

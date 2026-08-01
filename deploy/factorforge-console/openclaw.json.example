@@ -22,6 +22,8 @@
   "agents": {
     "defaults": {
       "workspace": "/var/lib/factorforge-console/openclaw-workspace",
+      "skills": [],
+      "skipBootstrap": true,
       "model": {
         "primary": "deepseek/deepseek-reasoner",
         "fallbacks": []
@@ -40,24 +42,19 @@
       }
     }
   },
-  "gateway": {
-    "mode": "local",
-    "bind": "loopback",
-    "port": 19061,
-    "auth": {
-      "mode": "token",
-      "token": "replace-via-secrets-manager"
-    }
-  },
   "plugins": {
-    "allow": ["memory-core", "web-readability"],
-    "entries": {
-      "memory-core": {
-        "config": {}
-      }
-    }
+    "allow": ["web-readability"]
   },
   "tools": {
+    "allow": ["read", "edit", "write", "apply_patch", "exec", "process", "web_fetch"],
+    "fs": {"workspaceOnly": true},
+    "exec": {
+      "mode": "full",
+      "strictInlineEval": true,
+      "applyPatch": {"workspaceOnly": true}
+    },
+    "sessions": {"visibility": "self"},
+    "elevated": {"enabled": false},
     "web": {
       "search": {"enabled": false},
       "fetch": {"enabled": true},

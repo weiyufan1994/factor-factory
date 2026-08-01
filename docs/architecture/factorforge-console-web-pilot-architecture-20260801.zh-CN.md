@@ -2,7 +2,7 @@
 
 日期：2026-08-01
 
-状态：实现与本地验收
+状态：安全收敛与云端 Pilot 验收中
 
 适用范围：邀请制朋友测试，不是公开注册 SaaS
 
@@ -81,11 +81,11 @@ flowchart LR
   W --> Q["单并发队列"]
   Q --> A["Worktree Allocator"]
   A --> FW["因子专属 Git worktree + workspace"]
-  Q --> O["专用 OpenClaw Gateway"]
-  O --> AG["因子专属 agent/session"]
+  Q --> C["任务专属只读根文件系统容器"]
+  C --> AG["任务专属 OpenClaw local agent/session/state"]
   AG --> FW
   AG --> D["Data API / approved datamarts 只读"]
-  FW --> V["Ultimate evidence reader + isolation audit"]
+  FW --> V["官方 protocol/proof validator + isolation audit"]
   V --> L
   L --> W
 ```
@@ -96,7 +96,7 @@ flowchart LR
 - 共享邀请口令登录；签名 `HttpOnly`、`SameSite=Lax` cookie。
 - 所有写操作要求 CSRF token。
 - 请求体和字段长度有限制，登录有基础限速。
-- 只公开安全扩展名和经过扫描的 workspace-relative artifact。
+- 只公开安全扩展名和经过全文扫描的 workspace-relative artifact；PNG 必须通过结构、CRC、尾随载荷和 metadata 检查。
 - HTML/SVG 强制下载，服务端绝对路径、日志、凭据和疑似 secret 不公开。
 
 ### 3.2 任务账本
@@ -109,13 +109,18 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 
 ### 3.3 Agent 层
 
-Console 使用独立 OpenClaw profile 和独立 loopback gateway：
+正式 Pilot 不运行共享 Gateway。每个任务启动一个 disposable OpenClaw local-agent 容器：
 
 - 无聊天频道、无 cron、无 heartbeat。
-- 不使用共享主 agent 的 session 或 OAuth 数据库。
-- 每个因子创建独立 agent state 和 session key。
-- 认证来自只含一个可移植 API key 的只读 seed SQLite；复制到新 agent 后不再共享写入。
-- 启动前必须通过 config、gateway health、plugin error 和 seed schema 检查。
+- 不挂载用户 HOME、其他 agent state、其他 factor worktree 或共享 OAuth 数据库。
+- engine worktree、Data API 源码和 catalog/datamart root 只读挂载；仅当前 factor workspace 和当前任务 agent state 可写。
+- 容器使用只读 rootfs、drop all capabilities、no-new-privileges、pids/memory/CPU 限额和独立 tmpfs。
+- OpenClaw profile 在研究容器内再次只读挂载；禁用 bootstrap/global skills/elevated/agent-to-agent，只允许固定工具集合。
+- 认证 seed 必须是非 symlink、权限不宽于 `0600`、且只含一个指定 provider 的静态 `api_key`；使用 SQLite backup 复制，避免 WAL 不一致。
+- 现有 Data API 仍通过只读 IAM 使用；主机取得的短期只读 AWS 凭证经 `0600` 临时 env file 注入当前任务，容器内禁用 metadata，任务结束删除临时文件。
+- 服务重启先回收带 `factorforge.console=research-agent` 标签的遗留容器，再把中断任务置为待复核，禁止旧 turn 与新 turn 重叠。
+
+容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 规则按该 bridge 子网拒绝 loopback、RFC1918、carrier-grade NAT、link-local/cloud metadata、保留和文档地址；用户 URL 同时要求 HTTPS、无凭据、443 端口、规范化 IP 为 global，且 DNS 的全部解析结果均为 global。应用校验不是网络隔离的替代品。
 
 当前 Pilot 固定使用 `deepseek/deepseek-reasoner` 和 `thinking=high`。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 
@@ -129,6 +134,10 @@ Agent 先读取仓库内正式 skills，然后：
 4. 不调用现有 `run_factorforge_ultimate_loop.py`，直至其 workspace 和审批语义缺陷关闭。
 5. 缺数据、缺 Council 证据或无法完成时形成可审计 pause/BLOCK，不编造结果。
 6. 最后写 `identity/web_agent_completion.json`，但网页仍以正式 Ultimate artifact 为主证据核验。
+
+Console 不信任 completion、wrapper exit code 或 artifact 的“自报状态”。终态必须重新调用仓库已有的 `validate_protocol_bundle(stage="final")` 和 `validate_factor_proof_certificate()`；持久化 verifier 必须与重算 verdict、report/factor identity 一致。任何来源的显式 false/BLOCK 或相互矛盾均优先，dry-run 永远没有 formal proof eligibility。
+
+内部证据读取与浏览器发布是两条独立路径：内部读取允许合法 artifact 记录服务器路径，但只接受当前 workspace 内的非 symlink、限长 JSON；对外字段、blocker、next action 和下载 artifact 再单独脱敏。禁止用“公开扫描失败”代替正式证据验证。
 
 ## 4. 任务生命周期
 
@@ -152,7 +161,7 @@ QUEUED
 - 读取固定 commit 的 Factor Forge 代码和 skills。
 - 读取 allowlisted Data API catalog/datamart。
 - 写该任务 workspace、该任务 agent state 和 Console 外部 SQLite。
-- 从公开 HTTPS URL 读取用户提供的研究参考。
+- 从经过 DNS/IP 校验且容器网络策略允许的公开 HTTPS URL 读取用户提供的研究参考。
 
 ### 5.2 禁止
 
@@ -168,8 +177,8 @@ QUEUED
 
 - 新 EC2、新 security group、新 instance profile、新加密 EBS。
 - SSM 管理，不开放 SSH；公网只开放 80/443。
-- Caddy 终止 HTTPS；Console 和 OpenClaw gateway 只监听 loopback。
-- Console 与 OpenClaw 分别由 systemd 管理。
+- Caddy 终止 HTTPS；Console 只监听 loopback。
+- systemd 管理 Docker 隔离网络 oneshot 和 Console；agent 容器由 Console 按任务创建和回收。
 - Data API 通过现有 approved catalog/datamart 只读访问。
 - 模型 key、邀请口令和 cookie secret 来自 Secrets Manager 或 root-only 环境文件。
 
@@ -181,7 +190,7 @@ QUEUED
 
 - Console 全量单测和 legacy smoke PASS。
 - 源 worktree clean，固定 commit 可解析。
-- Agent profile config/health PASS，插件错误为 0。
+- Agent image、专用 bridge、profile policy 和无遗留容器 readiness PASS。
 - 静态 auth seed 仅含一个指定 provider 的 `api_key` profile。
 - 桌面和手机 Playwright 截图无重叠、无路径泄漏。
 
@@ -194,5 +203,7 @@ QUEUED
 - 页面能区分 protocol、factor、Council 和 proof eligibility。
 - REJECT/BLOCK/pause 仍展示完整研究方法和证据链。
 - Git 写入审计没有 workspace 外路径。
+- 容器无法访问 metadata、localhost 或 RFC1918 地址；能访问公开模型端点和 allowlisted S3/Data API。
+- 伪造 certificate、verifier BLOCK、空 Council summary、dry-run REJECT、report identity 混用均不能产生正式 PASS。
 
 这是一项“Web 能安全驱动正式框架”的 proof，不等于任一因子已 `ACCEPT`，也不等于多租户生产 SaaS 已完成。

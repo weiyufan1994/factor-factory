@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import re
 import threading
+from types import SimpleNamespace
 from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.error import HTTPError
@@ -39,8 +41,8 @@ def research_console(tmp_path):
         source_repo=tmp_path / "source",
         state_root=tmp_path / "state",
         worktree_root=tmp_path / "worktrees",
-        invite_password="friend-pass",
-        cookie_secret="test-cookie-secret",
+        invite_password="friend-invite-2026-test",
+        cookie_secret="test-cookie-signing-secret-2026-at-least-32-bytes",
     )
     store = ResearchJobStore(config.state_root)
     service = _FakeService(store)
@@ -48,7 +50,10 @@ def research_console(tmp_path):
         config=config,
         store=store,
         service=service,
-        auth=InviteAuth("friend-pass", "test-cookie-secret"),
+        auth=InviteAuth(
+            "friend-invite-2026-test",
+            "test-cookie-signing-secret-2026-at-least-32-bytes",
+        ),
     )
     server = build_research_console_server(app, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -65,7 +70,7 @@ def research_console(tmp_path):
 def _login_opener(base_url: str):
     cookie_jar = CookieJar()
     opener = build_opener(HTTPCookieProcessor(cookie_jar))
-    payload = urlencode({"password": "friend-pass"}).encode("utf-8")
+    payload = urlencode({"password": "friend-invite-2026-test"}).encode("utf-8")
     response = opener.open(Request(f"{base_url}/login", data=payload, method="POST"), timeout=3)
     assert response.status == 200
     html = response.read().decode("utf-8")
@@ -84,6 +89,10 @@ def test_invite_login_and_security_headers(research_console):
     response = urlopen(f"{base_url}/healthz", timeout=3)
     assert response.status == 200
     assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert b'"ledger":true' in response.read()
+
+    response = urlopen(f"{base_url}/favicon.ico", timeout=3)
+    assert response.status == 204
 
     response = urlopen(f"{base_url}/", timeout=3)
     assert response.url.endswith("/login")
@@ -103,6 +112,22 @@ def test_invite_login_and_security_headers(research_console):
     opener, html = _login_opener(base_url)
     assert "Content-Security-Policy" in opener.open(f"{base_url}/", timeout=3).headers
     assert "服务器路径" not in html
+
+
+def test_rate_limiter_trusts_forwarded_address_only_from_loopback_proxy():
+    from factor_factory.console.static_app import _rate_limit_address
+
+    proxied = SimpleNamespace(
+        client_address=("127.0.0.1", 1234),
+        headers={"X-Forwarded-For": "203.0.113.9, 127.0.0.1"},
+    )
+    direct = SimpleNamespace(
+        client_address=("198.51.100.7", 1234),
+        headers={"X-Forwarded-For": "203.0.113.9"},
+    )
+
+    assert _rate_limit_address(proxied) == "203.0.113.9"
+    assert _rate_limit_address(direct) == "198.51.100.7"
 
 
 def test_submit_research_and_api_hide_private_paths(research_console):
@@ -160,7 +185,11 @@ def test_artifact_endpoint_serves_only_workspace_relative_safe_file(research_con
     workspace = tmp_path / "factor-workspace"
     image = workspace / "evaluations" / "rank_ic_timeseries.png"
     image.parent.mkdir(parents=True)
-    image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
     app.store.update_job(
         job.job_id,
         workspace_path=str(workspace),

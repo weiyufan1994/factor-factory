@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -21,6 +22,25 @@ def _wrapper_path(workspace: Path) -> Path:
 
 def _proof_path(workspace: Path) -> Path:
     return workspace / "objects" / "research_protocol" / f"factor_proof_certificate__{REPORT_ID}.json"
+
+
+def _verifier_path(workspace: Path) -> Path:
+    return workspace / "objects" / "research_protocol" / f"factor_proof_verifier_report__{REPORT_ID}.json"
+
+
+def _mock_formal_validation(monkeypatch: pytest.MonkeyPatch, *, verdict: str) -> None:
+    import factor_factory.console.ultimate_reader as reader
+
+    monkeypatch.setattr(
+        reader,
+        "validate_factor_proof_certificate",
+        lambda *args, **kwargs: {"verdict": verdict, "block_reasons": []},
+    )
+    monkeypatch.setattr(
+        reader,
+        "validate_protocol_bundle",
+        lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
+    )
 
 
 def test_wrapper_pass_does_not_override_paused_council(tmp_path: Path) -> None:
@@ -81,9 +101,13 @@ def test_wrapper_pass_does_not_override_paused_council(tmp_path: Path) -> None:
     assert summary.current_stage == "awaiting_agent_results"
 
 
-def test_formal_reject_is_not_reported_as_completed(tmp_path: Path) -> None:
+def test_formal_reject_is_not_reported_as_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from factor_factory.console.ultimate_reader import read_ultimate_workspace
 
+    _mock_formal_validation(monkeypatch, verdict="REJECT")
     workspace = tmp_path / "workspace"
     _write_json(
         _wrapper_path(workspace),
@@ -106,6 +130,15 @@ def test_formal_reject_is_not_reported_as_completed(tmp_path: Path) -> None:
         },
     )
     _write_json(
+        _verifier_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_REJECTED",
+            "verdict": "REJECT",
+            "block_reasons": [],
+        },
+    )
+    _write_json(
         workspace
         / "objects"
         / "research_iteration_master"
@@ -113,6 +146,15 @@ def test_formal_reject_is_not_reported_as_completed(tmp_path: Path) -> None:
         / REPORT_ID
         / f"revision_council_summary__{REPORT_ID}.json",
         {"report_id": REPORT_ID, "status": "PASS"},
+    )
+    _write_json(
+        workspace
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / REPORT_ID
+        / f"main_agent_council_synthesis__{REPORT_ID}.json",
+        {"report_id": REPORT_ID, "status": "PASS", "selected_revision": "reject"},
     )
 
     summary = read_ultimate_workspace(workspace)
@@ -124,9 +166,13 @@ def test_formal_reject_is_not_reported_as_completed(tmp_path: Path) -> None:
     assert summary.formal_proof_eligible is True
 
 
-def test_reader_extracts_contracts_and_metrics_without_recomputation(tmp_path: Path) -> None:
+def test_reader_extracts_contracts_and_metrics_without_recomputation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from factor_factory.console.ultimate_reader import read_ultimate_workspace
 
+    _mock_formal_validation(monkeypatch, verdict="ACCEPT")
     workspace = tmp_path / "workspace"
     _write_json(
         _wrapper_path(workspace),
@@ -138,6 +184,15 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(tmp_path: P
             "revision_council": {"status": "skipped"},
             "started_at_utc": "2026-08-01T02:00:00Z",
             "finished_at_utc": "2026-08-01T02:10:00Z",
+        },
+    )
+    _write_json(
+        _verifier_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_METRICS",
+            "verdict": "ACCEPT",
+            "block_reasons": [],
         },
     )
     _write_json(
@@ -239,6 +294,168 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(tmp_path: P
     assert all(not Path(value).is_absolute() for value in summary.artifact_ids.values())
 
 
+def test_internal_evidence_with_host_paths_is_read_but_public_text_is_redacted(
+    tmp_path: Path,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_INTERNAL_PATH",
+            "research_id": "research_internal_path",
+            "status": "RUNNING",
+            "command": "/var/lib/factorforge/private/run.sh",
+        },
+    )
+    _write_json(
+        workspace
+        / "objects"
+        / "research_protocol"
+        / f"research_quality_gate__{REPORT_ID}.json",
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_INTERNAL_PATH",
+            "economic_mechanism_contract": {
+                "preferred_claim": (
+                    "workspace: /var/lib/factorforge/private and "
+                    "api_key: sk-public-copy-must-redact"
+                )
+            },
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace)
+    serialized = json.dumps(summary.to_dict(), ensure_ascii=False)
+
+    assert "wrapper_report" in summary.artifact_ids
+    assert summary.evidence_errors == []
+    assert "/var/lib/factorforge" not in serialized
+    assert "sk-public-copy-must-redact" not in serialized
+    assert "[internal-path]" in serialized
+    assert "[redacted]" in serialized
+
+
+def test_invalid_certificate_cannot_forge_formal_pass(tmp_path: Path) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_FORGED",
+            "status": "PASS",
+            "formal_proof_eligible": True,
+            "revision_council": {"status": "skipped"},
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_FORGED",
+            "declared_verdict": "ACCEPT",
+            "formal_proof_eligible": True,
+        },
+    )
+    _write_json(
+        _verifier_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_FORGED",
+            "verdict": "ACCEPT",
+            "block_reasons": [],
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.execution_status == "BLOCKED"
+    assert summary.protocol_status == "BLOCK"
+    assert summary.factor_verdict == "BLOCK"
+    assert summary.formal_proof_eligible is False
+    assert any("BLOCK_FACTORFORGE_FACTOR_PROOF" in item for item in summary.blockers)
+
+
+def test_verifier_block_overrides_other_true_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    _mock_formal_validation(monkeypatch, verdict="REJECT")
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CONTRADICTION",
+            "status": "PASS",
+            "formal_proof_eligible": True,
+            "revision_council": {"status": "skipped"},
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CONTRADICTION",
+            "declared_verdict": "REJECT",
+            "formal_proof_eligible": True,
+        },
+    )
+    _write_json(
+        _verifier_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CONTRADICTION",
+            "verdict": "BLOCK",
+            "block_reasons": ["BLOCK_REVIEW_PROBE"],
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.execution_status == "BLOCKED"
+    assert summary.protocol_status == "BLOCK"
+    assert summary.formal_proof_eligible is False
+    assert "BLOCK_REVIEW_PROBE" in summary.blockers
+
+
+def test_dry_run_reject_stays_dry_run(tmp_path: Path) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_DRY",
+            "status": "DRY_RUN",
+            "dry_run": True,
+            "formal_proof_eligible": False,
+            "revision_council": {"status": "skipped"},
+        },
+    )
+    _write_json(
+        _proof_path(workspace),
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_DRY",
+            "declared_verdict": "REJECT",
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace)
+
+    assert summary.execution_status == "DRY_RUN"
+    assert summary.protocol_status == "UNKNOWN"
+    assert summary.formal_proof_eligible is False
+
+
 def test_artifact_service_lists_only_user_safe_files(tmp_path: Path) -> None:
     from factor_factory.console.artifact_service import list_artifact_ids
 
@@ -249,13 +466,18 @@ def test_artifact_service_lists_only_user_safe_files(tmp_path: Path) -> None:
         "reports/metrics.csv": "metric,value\nic,0.03\n",
         "objects/proof.json": "{}",
         "charts/nav.svg": "<svg xmlns='http://www.w3.org/2000/svg'></svg>",
-        "charts/nav.png": "png-placeholder",
         "reports/report.html": "<html><body>report</body></html>",
     }
     for artifact_id, content in safe_files.items():
         path = workspace / artifact_id
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    png_path = workspace / "charts" / "nav.png"
+    png_path.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
 
     blocked_files = {
         "logs/worker.txt": "raw worker output",
@@ -265,17 +487,24 @@ def test_artifact_service_lists_only_user_safe_files(tmp_path: Path) -> None:
         "reports/run.log": "returncode=0",
         "reports/report.pdf": "%PDF",
         "reports/internal_path.md": "workspace: /srv/factorforge/jobs/private/repo",
+        "reports/var_lib_path.md": "workspace: /var/lib/factorforge/private/repo",
+        "reports/unquoted_secret.md": "api_key: sk-this-must-never-reach-the-browser",
+        "reports/late_secret.md": "x" * (2 * 1024 * 1024 + 16)
+        + "\npassword: this-is-a-late-secret",
     }
     for artifact_id, content in blocked_files.items():
         path = workspace / artifact_id
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    (workspace / "charts" / "trailing-payload.png").write_bytes(
+        png_path.read_bytes() + b"api_key: sk-png-trailing-payload"
+    )
 
     outside = tmp_path / "outside.md"
     outside.write_text("outside", encoding="utf-8")
     (workspace / "reports" / "outside-link.md").symlink_to(outside)
 
-    assert list_artifact_ids(workspace) == sorted(safe_files)
+    assert list_artifact_ids(workspace) == sorted([*safe_files, "charts/nav.png"])
 
 
 @pytest.mark.parametrize(

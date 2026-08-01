@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.console.agent_adapter import OpenClawResearchAgentAdapter  # noqa: E402
 from factor_factory.console.auth import InviteAuth  # noqa: E402
 from factor_factory.console.config import ConsoleConfig  # noqa: E402
+from factor_factory.console.container_agent_adapter import ContainerizedOpenClawResearchAgentAdapter  # noqa: E402
 from factor_factory.console.run_service import ResearchRunService  # noqa: E402
 from factor_factory.console.static_app import (  # noqa: E402
     ResearchConsoleApplication,
@@ -24,6 +26,10 @@ from factor_factory.console.static_app import (  # noqa: E402
 )
 from factor_factory.console.store import ResearchJobStore  # noqa: E402
 from factor_factory.console.worktree_allocator import FactorWorktreeAllocator  # noqa: E402
+
+
+def _raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
 
 
 def main() -> None:
@@ -80,8 +86,13 @@ def main() -> None:
         base_ref=config.base_ref,
     )
     pinned_commit = allocator.validate_ready()
-    adapter = OpenClawResearchAgentAdapter(config)
-    openclaw_profile = adapter.validate_ready()
+    if config.execution_mode == "shared_gateway":
+        if not args.auth_disabled:
+            raise SystemExit("shared_gateway execution is restricted to loopback auth-disabled development")
+        adapter = OpenClawResearchAgentAdapter(config)
+    else:
+        adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    agent_runtime = adapter.validate_ready()
     service = ResearchRunService(
         config=config,
         store=store,
@@ -92,6 +103,8 @@ def main() -> None:
         config=config,
         store=store,
         service=service,
+        engine_commit=pinned_commit,
+        agent_runtime=agent_runtime,
         auth=InviteAuth(
             config.invite_password,
             config.cookie_secret,
@@ -102,9 +115,10 @@ def main() -> None:
     server = build_research_console_server(application, args.host, args.port)
     print(
         f"Factor Forge Console running at http://{args.host}:{args.port} "
-        f"(engine={pinned_commit[:12]}, agent_profile={openclaw_profile}, concurrency=1)",
+        f"(engine={pinned_commit[:12]}, agent_runtime={agent_runtime}, concurrency=1)",
         flush=True,
     )
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     serve_research_console_server(server, application)
 
 

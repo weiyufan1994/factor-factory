@@ -75,6 +75,14 @@ class _TerminalRejectAdapter:
             },
         )
         _write_json(
+            workspace / "objects" / "research_protocol" / f"factor_proof_verifier_report__{report_id}.json",
+            {
+                **identity,
+                "verdict": "REJECT",
+                "block_reasons": [],
+            },
+        )
+        _write_json(
             workspace / "objects" / "research_protocol" / f"research_quality_gate__{report_id}.json",
             {
                 **identity,
@@ -191,7 +199,22 @@ def _request(title: str):
     return ResearchRequest(title=title, hypothesis="A testable economic and mathematical hypothesis.")
 
 
-def test_service_runs_two_factors_in_separate_worktrees_and_preserves_reject(tmp_path):
+def test_service_runs_two_factors_in_separate_worktrees_and_preserves_reject(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.ultimate_reader as reader
+
+    monkeypatch.setattr(
+        reader,
+        "validate_factor_proof_certificate",
+        lambda *args, **kwargs: {"verdict": "REJECT", "block_reasons": []},
+    )
+    monkeypatch.setattr(
+        reader,
+        "validate_protocol_bundle",
+        lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
+    )
     source, store, service = _service(tmp_path, _TerminalRejectAdapter())
     first = service.submit(_request("Factor alpha"))
     second = service.submit(_request("Factor beta"))

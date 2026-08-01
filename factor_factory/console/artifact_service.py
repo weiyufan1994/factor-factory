@@ -4,6 +4,9 @@ import json
 import mimetypes
 import os
 import re
+import stat
+import struct
+import zlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -16,7 +19,6 @@ TEXT_ARTIFACT_EXTENSIONS = frozenset(
     {".json", ".md", ".txt", ".csv", ".svg", ".html"}
 )
 DEFAULT_MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
-SECRET_SCAN_BYTES = 2 * 1024 * 1024
 
 BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_PATH_INVALID = (
     "BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_PATH_INVALID"
@@ -42,17 +44,25 @@ _SENSITIVE_NAME = re.compile(
     re.IGNORECASE,
 )
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?ix)"
+    r"(?imx)"
     r"(?:\"|')?"
     r"(?:api[_-]?key|access[_-]?key|secret(?:[_-]?key)?|private[_-]?key|"
     r"auth(?:orization)?[_-]?token|bearer[_-]?token|password|passwd)"
-    r"(?:\"|')?\s*[:=]\s*(?:\"|')([^\"'\r\n]{8,})(?:\"|')"
+    r"(?:\"|')?\s*[:=]\s*"
+    r"(?:[\"']([^\"'\r\n]{8,})[\"']|([^\s,;#\]\)}]{8,}))"
 )
-_BEARER_SECRET = re.compile(r"(?i)\bauthorization\s*:\s*bearer\s+[a-z0-9._~+/=-]{12,}")
+_BEARER_SECRET = re.compile(
+    r"(?i)\b(?:authorization\s*:\s*)?bearer\s+[a-z0-9._~+/=-]{12,}"
+)
+_AWS_ACCESS_KEY = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 _PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
 _INTERNAL_ABSOLUTE_PATH = re.compile(
-    r"(?:^|[\s\"'=:(])(?:/Users/|/home/|/srv/|/private/tmp/|/tmp/|[A-Za-z]:\\\\)"
+    r"(?i)(?:file://|s3://|"
+    r"(?:^|[\s\"'=:(])/(?:Users|home|srv|private|tmp|var/lib|root|etc|opt)/|"
+    r"(?:^|[\s\"'=:(])[A-Za-z]:\\\\)"
 )
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_FORBIDDEN_CHUNKS = {b"eXIf", b"iCCP"}
 _MASKED_VALUES = {
     "<redacted>",
     "redacted",
@@ -199,6 +209,8 @@ def resolve_artifact_path(
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
     if resolved.suffix.lower() in TEXT_ARTIFACT_EXTENSIONS and _contains_secret(resolved):
         raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    if resolved.suffix.lower() == ".png" and not _valid_public_png(resolved):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
     return resolved
 
 
@@ -213,7 +225,41 @@ def read_artifact_bytes(
         artifact_id,
         max_file_bytes=max_file_bytes,
     )
-    return path.read_bytes()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > max_file_bytes:
+                raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+            chunks: list[bytes] = []
+            remaining = max_file_bytes + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError) as exc:
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE) from exc
+    data = b"".join(chunks)
+    if (
+        len(data) > max_file_bytes
+        or before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or len(data) != after.st_size
+    ):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    extension = path.suffix.lower()
+    if extension in TEXT_ARTIFACT_EXTENSIONS and _contains_secret_bytes(data, extension=extension):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    if extension == ".png" and not _valid_public_png_bytes(data):
+        raise ArtifactAccessError(BLOCK_FACTORFORGE_CONSOLE_ARTIFACT_UNSAFE)
+    return data
 
 
 def _workspace_root(workspace_root: str | Path) -> Path:
@@ -285,24 +331,87 @@ def _safe_artifact_name(relative: PurePosixPath) -> bool:
 
 def _contains_secret(path: Path) -> bool:
     try:
-        with path.open("rb") as handle:
-            sample = handle.read(SECRET_SCAN_BYTES)
-        text = sample.decode("utf-8", errors="ignore")
+        sample = path.read_bytes()
     except OSError:
         return True
-    if _PRIVATE_KEY.search(text) or _BEARER_SECRET.search(text) or _INTERNAL_ABSOLUTE_PATH.search(text):
+    return _contains_secret_bytes(sample, extension=path.suffix.lower())
+
+
+def _contains_secret_bytes(sample: bytes, *, extension: str) -> bool:
+    text = sample.decode("utf-8", errors="ignore")
+    if (
+        _PRIVATE_KEY.search(text)
+        or _BEARER_SECRET.search(text)
+        or _AWS_ACCESS_KEY.search(text)
+        or _INTERNAL_ABSOLUTE_PATH.search(text)
+    ):
         return True
     for match in _SECRET_ASSIGNMENT.finditer(text):
-        value = match.group(1).strip().lower()
+        value = (match.group(1) or match.group(2) or "").strip().lower()
         if value not in _MASKED_VALUES and set(value) != {"*"}:
             return True
-    if path.suffix.lower() == ".json" and len(sample) < SECRET_SCAN_BYTES:
+    if extension == ".json":
         try:
             payload = json.loads(text)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return False
         return _json_contains_secret(payload)
     return False
+
+
+def _valid_public_png(path: Path) -> bool:
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return False
+    return _valid_public_png_bytes(payload)
+
+
+def _valid_public_png_bytes(payload: bytes) -> bool:
+    if not payload.startswith(_PNG_SIGNATURE):
+        return False
+    offset = len(_PNG_SIGNATURE)
+    saw_header = False
+    saw_data = False
+    saw_end = False
+    while offset < len(payload):
+        if offset + 12 > len(payload):
+            return False
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        chunk_type = payload[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(payload) or not re.fullmatch(rb"[A-Za-z]{4}", chunk_type):
+            return False
+        data = payload[offset + 8 : offset + 8 + length]
+        expected_crc = struct.unpack(">I", payload[offset + 8 + length : chunk_end])[0]
+        if zlib.crc32(chunk_type + data) & 0xFFFFFFFF != expected_crc:
+            return False
+        if chunk_type == b"IHDR":
+            if saw_header or offset != len(_PNG_SIGNATURE) or length != 13:
+                return False
+            saw_header = True
+        elif chunk_type == b"IDAT":
+            saw_data = True
+        elif chunk_type == b"IEND":
+            if length != 0 or saw_end:
+                return False
+            saw_end = True
+            offset = chunk_end
+            break
+        elif chunk_type in _PNG_FORBIDDEN_CHUNKS:
+            return False
+        elif chunk_type in {b"tEXt", b"iTXt", b"zTXt"}:
+            text = data.decode("utf-8", errors="ignore")
+            if (
+                _PRIVATE_KEY.search(text)
+                or _BEARER_SECRET.search(text)
+                or _AWS_ACCESS_KEY.search(text)
+                or _INTERNAL_ABSOLUTE_PATH.search(text)
+                or _SECRET_ASSIGNMENT.search(text)
+            ):
+                return False
+        offset = chunk_end
+    return saw_header and saw_data and saw_end and offset == len(payload)
 
 
 def _json_contains_secret(value: object) -> bool:

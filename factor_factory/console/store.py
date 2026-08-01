@@ -94,6 +94,14 @@ class ResearchJobStore:
         except OSError:
             pass
 
+    def healthcheck(self) -> bool:
+        try:
+            with self._lock, self._connect() as connection:
+                row = connection.execute("SELECT 1 AS ok").fetchone()
+            return bool(row and row["ok"] == 1)
+        except sqlite3.Error:
+            return False
+
     def create_job(self, request: ResearchRequest) -> ResearchJob:
         now = utc_now()
         suffix = uuid.uuid4().hex[:10]

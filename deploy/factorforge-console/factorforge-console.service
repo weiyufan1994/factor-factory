@@ -1,13 +1,14 @@
 [Unit]
 Description=Factor Forge invitation research Console
-After=network-online.target openclaw-factorforge-console.service
+After=network-online.target docker.service factorforge-console-network.service
 Wants=network-online.target
-Requires=openclaw-factorforge-console.service
+Requires=docker.service factorforge-console-network.service
 
 [Service]
 Type=simple
 User=factorforge
 Group=factorforge
+SupplementaryGroups=docker
 WorkingDirectory=/srv/factorforge/control
 Environment=HOME=/var/lib/factorforge-console
 Environment=PYTHONDONTWRITEBYTECODE=1

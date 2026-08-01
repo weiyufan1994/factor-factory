@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 from dataclasses import dataclass
@@ -40,6 +39,9 @@ class ResearchAgentAdapter(Protocol):
     def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
         ...
 
+    def stop_all(self) -> None:
+        ...
+
 
 class OpenClawResearchAgentAdapter:
     def __init__(self, config: ConsoleConfig) -> None:
@@ -48,7 +50,11 @@ class OpenClawResearchAgentAdapter:
     def validate_ready(self) -> str:
         if not self.config.openclaw_profile:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: a dedicated OpenClaw profile is required")
-        self._validate_auth_database(self.config.openclaw_auth_seed_db, label="credential seed")
+        validate_auth_database(
+            self.config.openclaw_auth_seed_db,
+            provider=self.config.openclaw_auth_provider,
+            label="credential seed",
+        )
         self._probe(["config", "validate"], timeout=20)
         output = self._probe(["health", "--json", "--timeout", "5000"], timeout=15)
         try:
@@ -63,6 +69,9 @@ class OpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: dedicated OpenClaw gateway is unhealthy"
             )
         return self.config.openclaw_profile
+
+    def stop_all(self) -> None:
+        return None
 
     def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
         agent_id = job.agent_id or f"factorforge-web-{job.job_id.removeprefix('job_')}"
@@ -168,44 +177,51 @@ class OpenClawResearchAgentAdapter:
         if proc.returncode != 0 and "already exists" not in (proc.stderr + proc.stdout).lower():
             detail = redact_secrets(proc.stderr or proc.stdout)[-1200:]
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {detail}")
+        self._validate_agent_binding(agent_id, workspace, agent_state, model)
 
     def _install_auth_seed(self, agent_state: Path) -> None:
         destination = agent_state / "openclaw-agent.sqlite"
         if destination.exists():
-            self._validate_auth_database(destination, label="agent credential store")
+            validate_auth_database(
+                destination,
+                provider=self.config.openclaw_auth_provider,
+                label="agent credential store",
+            )
             return
         seed = self.config.openclaw_auth_seed_db
-        self._validate_auth_database(seed, label="credential seed")
+        validate_auth_database(seed, provider=self.config.openclaw_auth_provider, label="credential seed")
         assert seed is not None
         temp = agent_state / f".openclaw-agent.sqlite.seed-{os.getpid()}"
-        shutil.copy2(seed, temp)
+        copy_auth_database(seed, temp)
         temp.chmod(0o600)
         temp.replace(destination)
+        validate_auth_database(
+            destination,
+            provider=self.config.openclaw_auth_provider,
+            label="copied agent credential store",
+        )
 
-    def _validate_auth_database(self, path: Path | None, *, label: str) -> None:
-        if path is None or not path.is_file():
-            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is missing")
+    def _validate_agent_binding(self, agent_id: str, workspace: Path, agent_state: Path, model: str) -> None:
+        output = self._probe(["agents", "list", "--json"], timeout=30)
         try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
-                row = connection.execute(
-                    "SELECT store_json FROM auth_profile_store WHERE store_key = 'primary'"
-                ).fetchone()
-            payload = json.loads(str(row[0])) if row else {}
-            profiles = payload.get("profiles") or {}
-        except (OSError, sqlite3.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is unreadable") from exc
-        if not isinstance(profiles, dict) or not profiles:
-            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has no auth profile")
-        expected_provider = self.config.openclaw_auth_provider
-        for profile in profiles.values():
-            if not isinstance(profile, dict):
-                raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has invalid auth data")
-            if profile.get("provider") != expected_provider or profile.get("type") != "api_key":
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} must contain only portable {expected_provider} API keys"
-                )
-            if not isinstance(profile.get("key"), str) or len(profile["key"]) < 8:
-                raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has an invalid API key")
+            payload = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: cannot verify agent binding") from exc
+        agents = payload if isinstance(payload, list) else payload.get("agents", [])
+        match = next((item for item in agents if str(item.get("id") or item.get("agentId")) == agent_id), None)
+        expected = {
+            "workspace": str(workspace.resolve()),
+            "agentDir": str(agent_state.resolve()),
+        }
+        if not isinstance(match, dict):
+            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent binding is missing")
+        for key, value in expected.items():
+            actual = str(match.get(key) or "")
+            if not actual or str(Path(actual).expanduser().resolve()) != value:
+                raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: existing agent {key} binding mismatch")
+        actual_model = str(match.get("model") or "")
+        if model and actual_model != model:
+            raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: existing agent model binding mismatch")
 
     def _probe(self, args: list[str], *, timeout: int) -> str:
         try:
@@ -313,7 +329,7 @@ It must contain `version=factorforge_web_agent_completion_v1`, all immutable ide
 """
 
 
-def redact_secrets(text: str) -> str:
+def redact_secrets(text: str, *, extra_values: tuple[str, ...] = ()) -> str:
     value = text or ""
     secret_values = []
     for key, raw in os.environ.items():
@@ -322,13 +338,19 @@ def redact_secrets(text: str) -> str:
             secret_values.append(raw)
     for raw in sorted(secret_values, key=len, reverse=True):
         value = value.replace(raw, "[REDACTED]")
+    for raw in sorted((item for item in extra_values if len(item) >= 8), key=len, reverse=True):
+        value = value.replace(raw, "[REDACTED]")
     patterns = (
-        r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+",
-        r"(?i)(api[-_]?key[\"']?\s*[:=]\s*[\"'])[^\"']+",
-        r"\bsk-[A-Za-z0-9_-]{12,}\b",
+        (r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+", r"\1[REDACTED]"),
+        (
+            r"(?i)((?:api[-_]?key|aws_secret_access_key|aws_session_token)[\"']?\s*[:=]\s*[\"']?)[^\s\"']+",
+            r"\1[REDACTED]",
+        ),
+        (r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]"),
+        (r"\bsk-[A-Za-z0-9_-]{12,}\b", "[REDACTED]"),
     )
-    for pattern in patterns:
-        value = re.sub(pattern, r"\1[REDACTED]" if "(" in pattern else "[REDACTED]", value)
+    for pattern, replacement in patterns:
+        value = re.sub(pattern, replacement, value)
     return value
 
 
@@ -347,3 +369,41 @@ def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
     except OSError:
         pass
     temp.replace(path)
+
+
+def validate_auth_database(path: Path | None, *, provider: str, label: str) -> None:
+    if path is None or path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is missing or not a regular file")
+    if path.stat().st_mode & 0o077:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} permissions are too broad")
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                "SELECT store_json FROM auth_profile_store WHERE store_key = 'primary'"
+            ).fetchone()
+        payload = json.loads(str(row[0])) if row else {}
+        profiles = payload.get("profiles") or {}
+    except (OSError, sqlite3.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} is unreadable") from exc
+    if not isinstance(profiles, dict) or len(profiles) != 1:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} must contain exactly one auth profile")
+    profile = next(iter(profiles.values()))
+    if not isinstance(profile, dict):
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has invalid auth data")
+    if profile.get("provider") != provider or profile.get("type") != "api_key":
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} must contain only a portable {provider} API key"
+        )
+    if not isinstance(profile.get("key"), str) or len(profile["key"]) < 8:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} has an invalid API key")
+
+
+def copy_auth_database(source: Path, destination: Path) -> None:
+    if destination.exists():
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: auth copy destination already exists")
+    try:
+        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as source_db:
+            with sqlite3.connect(destination) as destination_db:
+                source_db.backup(destination_db)
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: auth database copy failed") from exc

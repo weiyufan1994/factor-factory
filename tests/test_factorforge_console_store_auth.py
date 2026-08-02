@@ -730,7 +730,40 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     orphaned_output.unlink()
     temporary_files[0].unlink()
 
-    adapter._promote_resume_workspace_view(view, workspace=workspace)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter,
+            "_validate_resume_workspace_artifact",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("Host resume validator rejected the memo")
+            ),
+        )
+        with pytest.raises(RuntimeError, match="Host resume validator rejected"):
+            adapter._promote_resume_workspace_view(
+                view,
+                workspace=workspace,
+                worktree=source,
+                report_id=task.report_id,
+            )
+    assert not (workspace / task.required_output_relative).exists()
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\n"
+
+    validated: list[str] = []
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter,
+            "_validate_resume_workspace_artifact",
+            lambda *_args, **_kwargs: validated.append(task.report_id),
+        )
+        adapter._promote_resume_workspace_view(
+            view,
+            workspace=workspace,
+            worktree=source,
+            report_id=task.report_id,
+        )
+    assert validated == [task.report_id]
 
     assert (workspace / task.required_output_relative).read_text(
         encoding="utf-8"
@@ -855,10 +888,10 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
             0,
             stdout=json.dumps(
                 {
-                    "payloads": [{"text": "Memo authored and validator passed."}],
+                    "payloads": [{"text": "MEMO_DRAFT_COMPLETE"}],
                     "meta": {
                         "agentMeta": {"provider": "deepseek", "model": "reasoner"},
-                        "finalAssistantVisibleText": "Memo authored and validator passed.",
+                        "finalAssistantVisibleText": "MEMO_DRAFT_COMPLETE",
                     },
                 }
             ),
@@ -971,29 +1004,29 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
             payload["payloads"] = [{"text": final_text}]
         return json.dumps(payload)
 
-    _validate_openclaw_terminal_status(
+    assert _validate_openclaw_terminal_status(
         receipt("Memo authored and validator passed."),
         "embedded run agent end: isError=true\n"
         "embedded run agent end: isError=false\n",
-    )
-    _validate_openclaw_terminal_status(
+    ) == "Memo authored and validator passed."
+    assert _validate_openclaw_terminal_status(
         receipt("The memo explains why a context overflow would invalidate proof."),
         "",
-    )
-    _validate_openclaw_terminal_status(
+    ) == "The memo explains why a context overflow would invalidate proof."
+    assert _validate_openclaw_terminal_status(
         receipt(
             "Memo authored and validator passed.",
             include_optional_final=False,
         ),
         "",
-    )
-    _validate_openclaw_terminal_status(
+    ) == "Memo authored and validator passed."
+    assert _validate_openclaw_terminal_status(
         receipt(
             "Memo authored and validator passed.",
             include_payloads=False,
         ),
         "",
-    )
+    ) == "Memo authored and validator passed."
     lifecycle_only = json.dumps(
         {
             "meta": {
@@ -1004,10 +1037,10 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
             }
         }
     )
-    _validate_openclaw_terminal_status(
+    assert _validate_openclaw_terminal_status(
         lifecycle_only,
         "embedded run agent end: isError=false\n",
-    )
+    ) == ""
     with pytest.raises(RuntimeError, match="terminal receipt schema"):
         _validate_openclaw_terminal_status(lifecycle_only, "")
     with pytest.raises(RuntimeError, match="terminal model error"):
@@ -1032,6 +1065,89 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
             receipt("Memo authored and validator passed."),
             "embedded run agent end: isError=false\n"
             "embedded run agent end: isError=true\n",
+        )
+
+
+def test_host_resume_validator_uses_phase_root_and_is_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+    from types import SimpleNamespace
+
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_RUNTIME_FAILED
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    worktree = tmp_path / "worktree"
+    validator = (
+        worktree
+        / "skills/factor-forge-step6/scripts/validate_main_agent_mechanism_memo.py"
+    )
+    validator.parent.mkdir(parents=True)
+    validator.write_text("# pinned validator\n", encoding="utf-8")
+    phase_root = tmp_path / "phase"
+    phase_root.mkdir()
+    view = SimpleNamespace(root=phase_root)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=worktree,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def passing_validator(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {"report_id": "REPORT", "result": "PASS", "failures": []}
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "must-not-reach-validator")
+    monkeypatch.setattr(subprocess, "run", passing_validator)
+    adapter._validate_resume_workspace_artifact(
+        view,
+        worktree=worktree,
+        report_id="REPORT",
+    )
+
+    assert captured["command"] == [
+        sys.executable,
+        "-B",
+        str(validator),
+        "--report-id",
+        "REPORT",
+    ]
+    validator_env = captured["kwargs"]["env"]
+    assert validator_env["FACTORFORGE_ROOT"] == str(phase_root)
+    assert "DEEPSEEK_API_KEY" not in validator_env
+
+    def rejecting_validator(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {"report_id": "REPORT", "result": "BLOCK", "failures": ["bad"]}
+            ),
+            stderr="bad",
+        )
+
+    monkeypatch.setattr(subprocess, "run", rejecting_validator)
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_FAILED):
+        adapter._validate_resume_workspace_artifact(
+            view,
+            worktree=worktree,
+            report_id="REPORT",
         )
 
 

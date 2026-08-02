@@ -545,19 +545,19 @@ quote them.
    invalid. Name concrete counterparties and formula observables; do not use
    canned shorthand such as "investors", "market participants", "generic
    payer", "the factor captures alpha", "signed price state", "volume
-   participation gate", or "liquidity or turnover shock".
+   participation gate", or "liquidity or turnover shock". Keep each answer
+   between 120 and 600 characters and the complete serialized memo under
+   20,000 UTF-8 bytes. Concision must not omit contradictory observed metrics.
 5. Select both model-family fields from: {model_families}. Update the
    operator-consistency discussion flags only after the memo actually contains
    the corresponding discussion.
-6. Update `identity/web_execution_ledger.md` with a concise record under 4,000
+6. Update `identity/web_execution_ledger.md` with a concise record under 2,000
    characters. Do not include secrets or absolute paths in that ledger.
-7. Run only this Host-approved memo validator:
-
-`{task.validation_command}`
-
-Correct only the memo until the validator returns PASS. After PASS, return
-exactly `MEMO_VALIDATED_PASS` with no summary, further tool call, or file read,
-then exit. Do not write
+7. Build the complete memo in reasoning, then use exactly one write call for
+   the memo and exactly one write call for the ledger. Do not edit or read either
+   generated file afterward and do not run any command or validator. The Host
+   runs the pinned formal validator after your clean exit. Return exactly
+   `MEMO_DRAFT_COMPLETE` with no summary or further tool call, then exit. Do not write
 the optional Markdown unless useful. Do not modify the contract, facts packet,
 answer form, questionnaire, factor spec/case/evaluation, Ultimate proof, plan,
 data, knowledge, or any file outside the required memo and execution ledger. Do not run the

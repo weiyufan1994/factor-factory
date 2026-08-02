@@ -1145,7 +1145,9 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "main_agent_mechanism_questionnaire__REPORT.json" not in prompt
     assert "DO_NOT_LEAK_QUESTIONNAIRE_INTERPRETATION" not in prompt
     assert contract["answer_form"] in prompt
-    assert contract["validation_command"] in prompt
+    assert contract["validation_command"] not in prompt
+    assert "pinned formal validator after your clean exit" in prompt
+    assert "MEMO_DRAFT_COMPLETE" in prompt
     assert "Required Authoring Preflight" not in prompt
     assert "six packet files" not in prompt
     assert "Fill the task-local web research plan" not in prompt

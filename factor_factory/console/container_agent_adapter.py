@@ -10,6 +10,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import threading
 import uuid
 from contextlib import contextmanager
@@ -429,11 +430,17 @@ class ContainerizedOpenClawResearchAgentAdapter:
 
         if resume_workspace_view is not None and returncode == 0:
             try:
-                _validate_openclaw_terminal_status(stdout, stderr)
+                terminal_text = _validate_openclaw_terminal_status(stdout, stderr)
+                if terminal_text != "MEMO_DRAFT_COMPLETE":
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: resume agent terminal marker is invalid"
+                    )
                 self._promote_resume_workspace_view(
                     resume_workspace_view,
                     workspace=workspace,
                     extra_secret_values=credential_values,
+                    worktree=worktree,
+                    report_id=job.report_id,
                 )
             except RuntimeError as exc:
                 if str(exc).startswith(BLOCK_AGENT_ORPHANED_WRITER):
@@ -1107,6 +1114,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
         *,
         workspace: Path,
         extra_secret_values: tuple[str, ...] = (),
+        worktree: Path | None = None,
+        report_id: str | None = None,
     ) -> None:
         root = workspace
         if not root.is_absolute() or root.is_symlink() or not root.is_dir():
@@ -1170,12 +1179,84 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     )
             staged_outputs[relative] = staged_text
 
+        if (worktree is None) != (report_id is None):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume validator identity is incomplete"
+            )
+        if worktree is not None and report_id is not None:
+            self._validate_resume_workspace_artifact(
+                view,
+                worktree=worktree,
+                report_id=report_id,
+            )
+
         with self._workspace_promotion_lock(root):
             self._promote_staged_resume_outputs(
                 view,
                 root=root,
                 staged_outputs=staged_outputs,
                 optional_relatives=optional_relatives,
+            )
+
+    def _validate_resume_workspace_artifact(
+        self,
+        view: _ResumeWorkspaceView,
+        *,
+        worktree: Path,
+        report_id: str,
+    ) -> None:
+        validator = (
+            worktree
+            / "skills/factor-forge-step6/scripts/validate_main_agent_mechanism_memo.py"
+        )
+        try:
+            validator.resolve(strict=True).relative_to(worktree.resolve(strict=True))
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: pinned resume validator is unavailable"
+            ) from exc
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(validator),
+                "--report-id",
+                report_id,
+            ],
+            cwd=worktree,
+            env={
+                "FACTORFORGE_ROOT": str(view.root),
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPATH": str(worktree),
+                "PYTHONUNBUFFERED": "1",
+            },
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+        if (
+            proc.returncode != 0
+            or len(proc.stdout.encode("utf-8")) > 256 * 1024
+            or len(proc.stderr.encode("utf-8")) > 256 * 1024
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator rejected the memo:"
+                f"{redact_secrets(proc.stderr)[-2_000:]}"
+            )
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator receipt is invalid"
+            ) from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("result") != "PASS"
+            or payload.get("failures") != []
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator did not return PASS"
             )
 
     def _promote_staged_resume_outputs(
@@ -2974,7 +3055,7 @@ def _workspace_relative_entry_exists(workspace: Path, relative: str) -> bool:
         return True
 
 
-def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> None:
+def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
     if not stdout.strip() or len(stdout.encode("utf-8")) > 2 * 1024 * 1024:
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt is missing or too large"
@@ -3084,6 +3165,7 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> None:
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw reported a terminal model error"
         )
+    return final_text
 
 
 def _audit_resume_workspace_view(view: _ResumeWorkspaceView) -> None:

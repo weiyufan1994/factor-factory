@@ -885,6 +885,8 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
     ) == "parent ledger\n"
     assert len(research_commands) == 1
     research_command = research_commands[0]
+    thinking_index = research_command.index("--thinking")
+    assert research_command[thinking_index + 1] == "medium"
     workspace_mount = next(
         item
         for item in research_command
@@ -1306,6 +1308,15 @@ def test_console_config_rejects_unknown_thinking_level(tmp_path):
             state_root=tmp_path / "state",
             worktree_root=tmp_path / "runs",
             openclaw_thinking="invented",
+            auth_disabled=True,
+        )
+
+    with pytest.raises(ValueError, match="thinking level"):
+        ConsoleConfig(
+            source_repo=tmp_path / "source",
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            openclaw_resume_thinking="invented",
             auth_disabled=True,
         )
 

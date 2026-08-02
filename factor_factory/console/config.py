@@ -30,6 +30,7 @@ class ConsoleConfig:
     openclaw_profile: str = "factorforge-console"
     openclaw_model: str = "deepseek/deepseek-reasoner"
     openclaw_thinking: str = "high"
+    openclaw_resume_thinking: str = "medium"
     openclaw_auth_provider: str = "deepseek"
     openclaw_auth_seed_db: Path | None = None
     execution_mode: str = "container"
@@ -116,7 +117,20 @@ class ConsoleConfig:
             raise ValueError("agent timeout must be at least 60 seconds")
         if not self.auth_disabled and self.agent_timeout_seconds > 3_300:
             raise ValueError("production agent timeout exceeds the temporary AWS lease budget")
-        if self.openclaw_thinking not in {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}:
+        supported_thinking_levels = {
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "adaptive",
+            "max",
+        }
+        if (
+            self.openclaw_thinking not in supported_thinking_levels
+            or self.openclaw_resume_thinking not in supported_thinking_levels
+        ):
             raise ValueError("unsupported OpenClaw thinking level")
         if self.execution_mode not in {"container", "shared_gateway"}:
             raise ValueError("execution_mode must be container or shared_gateway")
@@ -220,6 +234,10 @@ class ConsoleConfig:
             openclaw_profile=os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_PROFILE", "factorforge-console"),
             openclaw_model=os.getenv("FACTORFORGE_CONSOLE_MODEL", "deepseek/deepseek-reasoner"),
             openclaw_thinking=os.getenv("FACTORFORGE_CONSOLE_THINKING", "high"),
+            openclaw_resume_thinking=os.getenv(
+                "FACTORFORGE_CONSOLE_RESUME_THINKING",
+                "medium",
+            ),
             openclaw_auth_provider=os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_AUTH_PROVIDER", "deepseek"),
             openclaw_auth_seed_db=(
                 Path(os.environ["FACTORFORGE_CONSOLE_OPENCLAW_AUTH_SEED_DB"])

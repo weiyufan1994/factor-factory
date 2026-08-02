@@ -177,7 +177,11 @@ class OpenClawResearchAgentAdapter:
             "--message-file",
             str(prompt_path),
             "--thinking",
-            self.config.openclaw_thinking,
+            (
+                self.config.openclaw_resume_thinking
+                if resume
+                else self.config.openclaw_thinking
+            ),
             "--timeout",
             str(self.config.agent_timeout_seconds),
             "--json",
@@ -551,7 +555,9 @@ quote them.
 
 `{task.validation_command}`
 
-Correct only the memo until the validator returns PASS, then exit. Do not write
+Correct only the memo until the validator returns PASS. After PASS, return
+exactly `MEMO_VALIDATED_PASS` with no summary, further tool call, or file read,
+then exit. Do not write
 the optional Markdown unless useful. Do not modify the contract, facts packet,
 answer form, questionnaire, factor spec/case/evaluation, Ultimate proof, plan,
 data, knowledge, or any file outside the required memo and execution ledger. Do not run the

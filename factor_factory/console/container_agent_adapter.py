@@ -382,7 +382,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "--message-file",
                 str(prompt_path),
                 "--thinking",
-                self.config.openclaw_thinking,
+                (
+                    self.config.openclaw_resume_thinking
+                    if resume
+                    else self.config.openclaw_thinking
+                ),
                 "--timeout",
                 str(self.config.agent_timeout_seconds),
                 "--json",

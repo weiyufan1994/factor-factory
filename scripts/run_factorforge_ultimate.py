@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+sys.path[:] = [item for item in sys.path if item != str(REPO_ROOT)]
+sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_workspace import (
     BLOCK_OUTPUT_OUTSIDE_WORKSPACE,

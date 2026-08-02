@@ -52,6 +52,7 @@ BLOCK_CREDENTIAL_REGISTRY_INVALID = "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGIST
 BLOCK_AGENT_WRITE_SCOPE_INVALID = "BLOCK_FACTORFORGE_CONSOLE_AGENT_WRITE_SCOPE_INVALID"
 BLOCK_HOST_FORMAL_EXECUTION_FAILED = "BLOCK_FACTORFORGE_CONSOLE_HOST_FORMAL_EXECUTION_FAILED"
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
 PRIVATE_LIFECYCLE_VERSION = "factorforge_console_private_job_lifecycle_v1"
 PRIVATE_LIFECYCLE_RUNNING = "RUNNING"
 PRIVATE_LIFECYCLE_RESUMABLE = "RESUMABLE"
@@ -67,6 +68,81 @@ NON_RESUMABLE_SECURITY_BLOCKERS = frozenset(
         "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_CLEANUP_FAILED",
     }
 )
+
+
+def _configure_host_formal_python_environment(
+    env: dict[str, str],
+    *,
+    worktree: Path,
+    data_api_pythonpath: Path | None,
+) -> None:
+    try:
+        worktree_root = worktree.expanduser().resolve(strict=True)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal worktree is invalid"
+        ) from exc
+
+    python_paths = [str(worktree_root)]
+    excluded_inherited_root: Path | None = None
+    env.pop("FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT", None)
+    if data_api_pythonpath is not None:
+        checkout_candidate = data_api_pythonpath.expanduser()
+        package_candidate = checkout_candidate / "factor_factory" / "data_api"
+        bridge_candidate = worktree_root / DATA_API_BRIDGE_RELATIVE
+        package_entry = package_candidate / "__init__.py"
+        bridge_entry = bridge_candidate / "factorforge_data_api" / "__init__.py"
+        if (
+            checkout_candidate.is_symlink()
+            or package_candidate.is_symlink()
+            or package_entry.is_symlink()
+            or bridge_candidate.is_symlink()
+            or bridge_entry.is_symlink()
+        ):
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Data API bridge path is unsafe"
+            )
+        try:
+            checkout = checkout_candidate.resolve(strict=True)
+            package_root = package_candidate.resolve(strict=True)
+            bridge_root = bridge_candidate.resolve(strict=True)
+            package_root.relative_to(checkout)
+            bridge_root.relative_to(worktree_root)
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Data API bridge path is invalid"
+            ) from exc
+        if not package_entry.is_file() or not bridge_entry.is_file():
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Data API bridge package is missing"
+            )
+        python_paths.append(str(bridge_root))
+        excluded_inherited_root = checkout
+        env["FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT"] = str(package_root)
+
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    seen_python_paths = set(python_paths)
+    for item in inherited_pythonpath.split(os.pathsep):
+        value = item.strip()
+        if not value:
+            continue
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = worktree_root / candidate
+        try:
+            canonical = candidate.resolve(strict=False)
+        except RuntimeError:
+            continue
+        if excluded_inherited_root is not None and (
+            canonical == excluded_inherited_root
+            or canonical.is_relative_to(excluded_inherited_root)
+        ):
+            continue
+        canonical_value = str(canonical)
+        if canonical_value not in seen_python_paths:
+            python_paths.append(canonical_value)
+            seen_python_paths.add(canonical_value)
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
 
 
 def _require_resume_request_allowed(job: ResearchJob) -> None:
@@ -1241,15 +1317,11 @@ class ResearchRunService:
         env["AWS_EC2_METADATA_DISABLED"] = "true"
         env["FACTORFORGE_STATE_CATALOG"] = str(catalog)
         env["FACTORFORGE_DATA_CATALOG"] = str(catalog)
-        python_paths = [str(worktree)]
-        if self.config.data_api_pythonpath:
-            python_paths.insert(
-                0,
-                str(self.config.data_api_pythonpath.expanduser().resolve(strict=True)),
-            )
-        if env.get("PYTHONPATH"):
-            python_paths.append(env["PYTHONPATH"])
-        env["PYTHONPATH"] = os.pathsep.join(python_paths)
+        _configure_host_formal_python_environment(
+            env,
+            worktree=worktree,
+            data_api_pythonpath=self.config.data_api_pythonpath,
+        )
         plan_path = workspace / "identity" / "web_research_plan.json"
         commands: list[dict[str, Any]] = []
         if resume:

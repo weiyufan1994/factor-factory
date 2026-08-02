@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import pytest
 from factor_factory.console.run_service import ResearchRunService as _ResearchRunService
 from factor_factory.console.run_service import (
     _allowed_agent_write_paths,
+    _configure_host_formal_python_environment,
     _validate_agent_write_boundary as _validate_agent_write_boundary_impl,
     _workspace_file_snapshot,
 )
@@ -1231,6 +1233,83 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
             resume=True,
             resume_trust=None,
         )
+
+
+def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
+    tmp_path,
+):
+    worktree = tmp_path / "worktree"
+    control_console = worktree / "factor_factory" / "console"
+    control_console.mkdir(parents=True)
+    (worktree / "factor_factory" / "__init__.py").write_text("\n", encoding="utf-8")
+    (control_console / "__init__.py").write_text(
+        "CONTROL_MARKER = 'control'\n",
+        encoding="utf-8",
+    )
+    bridge_source = PROJECT_ROOT / "deploy" / "factorforge-console" / "data-api-bridge"
+    bridge_target = worktree / "deploy" / "factorforge-console" / "data-api-bridge"
+    shutil.copytree(bridge_source, bridge_target)
+
+    data_api_checkout = tmp_path / "data-api"
+    data_api_package = data_api_checkout / "factor_factory" / "data_api"
+    data_api_package.mkdir(parents=True)
+    (data_api_checkout / "factor_factory" / "__init__.py").write_text(
+        "DATA_API_SHADOW = True\n",
+        encoding="utf-8",
+    )
+    (data_api_package / "__init__.py").write_text(
+        "DATA_API_MARKER = 'external'\n__all__ = ['DATA_API_MARKER']\n",
+        encoding="utf-8",
+    )
+    data_api_alias = tmp_path / "data-api-alias"
+    data_api_alias.symlink_to(data_api_checkout, target_is_directory=True)
+    unrelated_pythonpath = tmp_path / "unrelated-pythonpath"
+    unrelated_pythonpath.mkdir()
+
+    env = {
+        "PYTHONPATH": os.pathsep.join(
+            [
+                f"{data_api_checkout}{os.sep}",
+                f"{data_api_checkout}{os.sep}.",
+                str(data_api_alias),
+                str(data_api_checkout / "factor_factory"),
+                str(unrelated_pythonpath),
+            ]
+        )
+    }
+    _configure_host_formal_python_environment(
+        env,
+        worktree=worktree,
+        data_api_pythonpath=data_api_checkout,
+    )
+
+    python_paths = env["PYTHONPATH"].split(os.pathsep)
+    assert python_paths[:2] == [str(worktree.resolve()), str(bridge_target.resolve())]
+    assert not any(
+        Path(item).is_relative_to(data_api_checkout.resolve()) for item in python_paths
+    )
+    assert str(unrelated_pythonpath.resolve()) in python_paths
+    assert env["FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT"] == str(
+        data_api_package.resolve()
+    )
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from factor_factory.console import CONTROL_MARKER; "
+                "from factorforge_data_api import DATA_API_MARKER; "
+                "assert CONTROL_MARKER == 'control'; "
+                "assert DATA_API_MARKER == 'external'"
+            ),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
 
 
 def test_agent_write_boundary_allows_plan_but_rejects_formal_evidence(tmp_path):

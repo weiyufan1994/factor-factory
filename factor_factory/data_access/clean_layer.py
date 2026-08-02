@@ -10,14 +10,23 @@ import pandas as pd
 
 from .daily import _normalize_date, _normalize_symbols
 from .daily_policy import DailyFilterPolicy, get_clean_daily
-from .paths import LocalTusharePaths, default_local_data_root, resolve_local_tushare_paths
+from .paths import (
+    LocalTusharePaths,
+    default_local_data_root,
+    path_exists_accessibly,
+    resolve_local_tushare_paths,
+)
 
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FACTORFORGE_ROOT = (
     Path(os.getenv('FACTORFORGE_ROOT'))
     if os.getenv('FACTORFORGE_ROOT')
-    else (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT)
+    else (
+        LEGACY_WORKSPACE / 'factorforge'
+        if path_exists_accessibly(LEGACY_WORKSPACE / 'factorforge')
+        else REPO_ROOT
+    )
 ).expanduser()
 
 
@@ -47,7 +56,9 @@ def resolve_clean_daily_layer_paths() -> CleanDailyLayerPaths:
 
 def clean_daily_layer_ready(paths: CleanDailyLayerPaths | None = None) -> bool:
     resolved = paths or resolve_clean_daily_layer_paths()
-    return resolved.daily_parquet.exists() and resolved.metadata_json.exists()
+    return path_exists_accessibly(resolved.daily_parquet) and path_exists_accessibly(
+        resolved.metadata_json
+    )
 
 
 def materialize_clean_daily_layer(

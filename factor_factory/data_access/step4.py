@@ -8,9 +8,18 @@ from typing import Iterable
 
 import pandas as pd
 
+from .paths import path_exists_accessibly
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
-FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
+FACTORFORGE = Path(
+    os.getenv('FACTORFORGE_ROOT')
+    or (
+        LEGACY_WORKSPACE / 'factorforge'
+        if path_exists_accessibly(LEGACY_WORKSPACE / 'factorforge')
+        else REPO_ROOT
+    )
+)
 RUNS = FACTORFORGE / 'runs'
 OBJ = FACTORFORGE / 'objects'
 

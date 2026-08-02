@@ -20,7 +20,28 @@ import pandas as pd
 # COMMENT_POLICY: runtime_path
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
-REPO_ROOT = Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser() if os.getenv('FACTORFORGE_REPO_ROOT') else (LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3])
+
+
+def _legacy_repo_root_if_accessible() -> Path | None:
+    try:
+        return LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else None
+    except OSError:
+        return None
+
+
+def _legacy_runtime_root_if_accessible() -> Path | None:
+    candidate = LEGACY_WORKSPACE / 'factorforge'
+    try:
+        return candidate if candidate.exists() else None
+    except OSError:
+        return None
+
+
+REPO_ROOT = (
+    Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser()
+    if os.getenv('FACTORFORGE_REPO_ROOT')
+    else (_legacy_repo_root_if_accessible() or Path(__file__).resolve().parents[3])
+)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -38,7 +59,7 @@ from factor_factory.formula.field_aliases import aliases_for
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
 
-FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
+FF = Path(os.getenv('FACTORFORGE_ROOT') or (_legacy_runtime_root_if_accessible() or REPO_ROOT))
 WORKSPACE = FF.parent
 OBJ = FF / 'objects'
 RUNS = FF / 'runs'

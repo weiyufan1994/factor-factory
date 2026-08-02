@@ -29,3 +29,22 @@ def test_rank_formula_requires_cross_sectional_sample_universe():
     }
 
     assert run_step3.requires_cross_sectional_sample(formula_ir) is True
+
+
+def test_step3_repo_root_falls_back_when_legacy_checkout_is_inaccessible(monkeypatch):
+    legacy_repo = Path("/home/ubuntu/.openclaw/workspace/repos/factor-factory")
+    legacy_runtime = Path("/home/ubuntu/.openclaw/workspace/factorforge")
+    original_exists = Path.exists
+
+    def guarded_exists(path):
+        if path in {legacy_repo, legacy_runtime}:
+            raise PermissionError("legacy path is outside the service boundary")
+        return original_exists(path)
+
+    monkeypatch.delenv("FACTORFORGE_REPO_ROOT", raising=False)
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+
+    run_step3 = _load_run_step3()
+
+    assert run_step3.REPO_ROOT == Path(__file__).resolve().parents[1]
+    assert run_step3.FF == run_step3.REPO_ROOT

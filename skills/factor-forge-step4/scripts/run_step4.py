@@ -28,10 +28,26 @@ import numpy as np
 # COMMENT_POLICY: runtime_path
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
-REPO_ROOT = LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3]
+
+
+def _legacy_path_if_accessible(path: Path) -> Path | None:
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
+
+
+REPO_ROOT = (
+    Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser()
+    if os.getenv('FACTORFORGE_REPO_ROOT')
+    else (_legacy_path_if_accessible(LEGACY_REPO_ROOT) or Path(__file__).resolve().parents[3])
+)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
+FACTORFORGE = Path(
+    os.getenv('FACTORFORGE_ROOT')
+    or (_legacy_path_if_accessible(LEGACY_WORKSPACE / 'factorforge') or REPO_ROOT)
+)
 WORKSPACE = FACTORFORGE.parent
 OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'

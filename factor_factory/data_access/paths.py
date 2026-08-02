@@ -9,6 +9,13 @@ LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 DEFAULT_EC2_PERSISTENT_ROOT = LEGACY_WORKSPACE / 'factorforge' / 'data' / 'raw_tushare'
 
 
+def path_exists_accessibly(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _running_as_root() -> bool:
     geteuid = getattr(os, 'geteuid', None)
     return bool(geteuid and geteuid() == 0)
@@ -31,7 +38,7 @@ def default_local_data_root() -> Path:
     explicit_root = os.getenv('FACTORFORGE_LOCAL_DATA_ROOT')
     if explicit_root:
         return Path(explicit_root).expanduser()
-    if DEFAULT_EC2_PERSISTENT_ROOT.exists():
+    if path_exists_accessibly(DEFAULT_EC2_PERSISTENT_ROOT):
         return DEFAULT_EC2_PERSISTENT_ROOT.expanduser()
     if _running_as_root():
         raise RuntimeError(
@@ -56,7 +63,7 @@ def _dedupe(paths: list[Path | None]) -> list[Path]:
 
 def _first_existing(candidates: list[Path | None], fallback: Path) -> Path:
     for path in _dedupe(candidates):
-        if path.exists():
+        if path_exists_accessibly(path):
             return path
     return fallback.expanduser()
 
@@ -112,11 +119,11 @@ def _paths_for_root(root: Path, source_label: str) -> LocalTusharePaths:
 def _has_required_inputs(paths: LocalTusharePaths, require_daily_basic: bool = False) -> bool:
     core_ready = all(
         [
-            paths.daily_csv.exists(),
-            paths.adj_factor_csv.exists(),
-            paths.trade_cal_csv.exists(),
-            paths.stock_basic_csv.exists(),
-            paths.stock_st_csv.exists(),
+            path_exists_accessibly(paths.daily_csv),
+            path_exists_accessibly(paths.adj_factor_csv),
+            path_exists_accessibly(paths.trade_cal_csv),
+            path_exists_accessibly(paths.stock_basic_csv),
+            path_exists_accessibly(paths.stock_st_csv),
         ]
     )
     if not core_ready:
@@ -227,10 +234,13 @@ def resolve_local_tushare_paths(require_daily_basic: bool = False) -> LocalTusha
 
 
 def inspect_trade_date_csv_root(path: Path) -> dict | None:
-    if not path.exists():
+    if not path_exists_accessibly(path):
         return None
 
-    csv_parts = sorted(path.glob('trade_date=*/*.csv'))
+    try:
+        csv_parts = sorted(path.glob('trade_date=*/*.csv'))
+    except OSError:
+        return None
     if not csv_parts:
         return None
 
@@ -250,18 +260,18 @@ def summarize_local_tushare_paths() -> dict:
         'root': str(paths.root),
         'source_label': paths.source_label,
         'candidate_roots': [
-            {'path': str(path), 'label': label, 'exists': path.exists()}
+            {'path': str(path), 'label': label, 'exists': path_exists_accessibly(path)}
             for path, label in _candidate_roots()
         ],
-        'daily_csv': {'path': str(paths.daily_csv), 'exists': paths.daily_csv.exists()},
-        'adj_factor_csv': {'path': str(paths.adj_factor_csv), 'exists': paths.adj_factor_csv.exists()},
+        'daily_csv': {'path': str(paths.daily_csv), 'exists': path_exists_accessibly(paths.daily_csv)},
+        'adj_factor_csv': {'path': str(paths.adj_factor_csv), 'exists': path_exists_accessibly(paths.adj_factor_csv)},
         'daily_basic_dir': {
             'path': str(paths.daily_basic_dir),
-            'exists': paths.daily_basic_dir.exists(),
+            'exists': path_exists_accessibly(paths.daily_basic_dir),
             'trade_date_count': int(daily_basic_meta['trade_date_count']) if daily_basic_meta else 0,
         },
-        'trade_cal_csv': {'path': str(paths.trade_cal_csv), 'exists': paths.trade_cal_csv.exists()},
-        'stock_basic_csv': {'path': str(paths.stock_basic_csv), 'exists': paths.stock_basic_csv.exists()},
-        'stock_st_csv': {'path': str(paths.stock_st_csv), 'exists': paths.stock_st_csv.exists()},
-        'stock_st_daily_csv': {'path': str(paths.stock_st_daily_csv), 'exists': paths.stock_st_daily_csv.exists()},
+        'trade_cal_csv': {'path': str(paths.trade_cal_csv), 'exists': path_exists_accessibly(paths.trade_cal_csv)},
+        'stock_basic_csv': {'path': str(paths.stock_basic_csv), 'exists': path_exists_accessibly(paths.stock_basic_csv)},
+        'stock_st_csv': {'path': str(paths.stock_st_csv), 'exists': path_exists_accessibly(paths.stock_st_csv)},
+        'stock_st_daily_csv': {'path': str(paths.stock_st_daily_csv), 'exists': path_exists_accessibly(paths.stock_st_daily_csv)},
     }

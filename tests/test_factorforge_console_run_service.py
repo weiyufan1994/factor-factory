@@ -1208,6 +1208,8 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
     assert calls[1][0][calls[1][0].index("--start-step") + 1] == "3"
     assert calls[0][1]["env"]["AWS_ACCESS_KEY_ID"] == "HOSTACCESSKEYFORTEST"
     assert calls[0][1]["env"]["AWS_SESSION_TOKEN"] == "host-session-token-for-test"
+    assert calls[0][1]["env"]["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
+    assert calls[1][1]["env"]["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
     assert "FACTORFORGE_CONSOLE_INVITE_PASSWORD" not in calls[0][1]["env"]
     assert "DEEPSEEK_API_KEY" not in calls[0][1]["env"]
     assert calls[1][1]["env"]["AWS_EC2_METADATA_DISABLED"] == "true"
@@ -1293,6 +1295,7 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
         data_api_package.resolve()
     )
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
     probe = subprocess.run(
         [
             sys.executable,

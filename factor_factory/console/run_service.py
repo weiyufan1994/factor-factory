@@ -29,6 +29,7 @@ from factor_factory.research_workspace import load_workspace_manifest, validate_
 BLOCK_ISOLATION_AUDIT_FAILED = "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED"
 BLOCK_EVIDENCE_IDENTITY_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_IDENTITY_MISMATCH"
 BLOCK_FORMAL_EVIDENCE_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_EVIDENCE_MISSING"
+BLOCK_CREDENTIAL_REGISTRY_INVALID = "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID"
 
 
 class ResearchQueueService:
@@ -324,12 +325,29 @@ class ResearchRunService:
             )
         except (WorktreeAllocationError, FileNotFoundError, ValueError, RuntimeError) as exc:
             message = str(exc)
+            registry_read_failed = False
             if not denied_values:
                 try:
                     denied_values = _adapter_denied_values(self.agent_adapter, job.job_id)
                 except (OSError, RuntimeError, ValueError):
-                    denied_values = ()
-            token = message.split(":", 1)[0] if message.startswith("BLOCK_") else "BLOCK_FACTORFORGE_CONSOLE_RUN_FAILED"
+                    registry_read_failed = True
+            credential_state = "not_issued"
+            if registry_read_failed:
+                try:
+                    credential_state = _adapter_credential_material_state(
+                        self.agent_adapter,
+                        job.job_id,
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    credential_state = "unknown"
+            if registry_read_failed and credential_state != "not_issued":
+                token = BLOCK_CREDENTIAL_REGISTRY_INVALID
+                public_message = (
+                    "临时凭证脱敏状态无法验证；任务已安全阻断，未公开原始异常详情。"
+                )
+            else:
+                token = message.split(":", 1)[0] if message.startswith("BLOCK_") else "BLOCK_FACTORFORGE_CONSOLE_RUN_FAILED"
+                public_message = _public_error_message(message, denied_values=denied_values)
             self.store.update_job(
                 job.job_id,
                 execution_status="BLOCKED" if token.startswith("BLOCK_") else "FAILED",
@@ -337,13 +355,13 @@ class ResearchRunService:
                 factor_verdict="BLOCK" if token.startswith("BLOCK_") else "UNKNOWN",
                 current_stage="blocked" if token.startswith("BLOCK_") else "failed",
                 error_code=token,
-                error_message=_public_error_message(message, denied_values=denied_values),
+                error_message=public_message,
                 finished_at_utc=utc_now(),
             )
             self.store.append_event(
                 job.job_id,
                 "RUN_BLOCKED",
-                _public_error_message(message, denied_values=denied_values),
+                public_message,
                 {"code": token},
             )
         except Exception as exc:
@@ -657,6 +675,19 @@ def _adapter_denied_values(
         return ()
     values = reader(job_id)
     return tuple(str(value) for value in values if len(str(value)) >= 8)
+
+
+def _adapter_credential_material_state(
+    adapter: ResearchAgentAdapter,
+    job_id: str,
+) -> str:
+    reader = getattr(adapter, "credential_material_state", None)
+    if not callable(reader):
+        return "unknown"
+    state = str(reader(job_id))
+    if state not in {"not_issued", "may_have_been_issued"}:
+        raise RuntimeError("credential material state is invalid")
+    return state
 
 
 def _redact_public_payload(value: Any, denied_values: tuple[str, ...]) -> Any:

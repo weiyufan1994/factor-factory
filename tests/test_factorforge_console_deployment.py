@@ -116,6 +116,9 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     broker_unit = (
         REPO_ROOT / "deploy/factorforge-console/factorforge-console-model-broker.service"
     ).read_text()
+    caddy_unit = (
+        REPO_ROOT / "deploy/factorforge-console/factorforge-console-caddy.service"
+    ).read_text()
     network_script = (
         REPO_ROOT / "deploy/factorforge-console/configure-container-network.sh"
     ).read_text()
@@ -130,6 +133,8 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     assert "/var/lib/factorforge-console/secret-scan" in broker_unit
     assert "/run/factorforge-console-model-broker/denied-secrets" not in broker_unit
     assert "--mode web" in web_unit and "--mode worker" in runner_unit
+    assert "Wants=network-online.target factorforge-console.service" in caddy_unit
+    assert "Requires=factorforge-console.service" not in caddy_unit
     assert "--catalog" not in web_unit and "--catalog" not in runner_unit
     assert "FACTORFORGE_DATA_CATALOGS=" in (
         REPO_ROOT / "deploy/factorforge-console/factorforge-console.env.example"

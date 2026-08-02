@@ -162,7 +162,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 5. `/srv/factorforge/control` 是 clean、固定 commit 的部署 checkout。
 6. `/var/lib/factorforge-console` 存任务账本、agent state 和 factor worktrees。
 7. `/etc/factorforge-console` 只存 root-readable 配置或 Secrets Manager materialization。
-8. Caddy 负责 HTTPS 和覆盖 `X-Forwarded-For`；systemd 管理 network、S3 proxy、model broker、runner、Web 五个 unit。Web 用户不得进入 Docker group。
+8. Caddy 负责 HTTPS 和覆盖 `X-Forwarded-For`；systemd 管理 network、S3 proxy、model broker、runner、Web、Caddy 六个 unit。Caddy 对 Web 使用 `Wants` 而不是 `Requires`，代码更新期间 Web 短暂停机不得连带停止 HTTPS unit。Web 用户不得进入 Docker group。
 9. EC2 metadata hop limit 设为 1；容器环境固定 `AWS_EC2_METADATA_DISABLED=true`，并验证 `169.254.169.254` 不可达。
 10. 在开放邀请前执行容器内六项网络正负例、Data API read smoke、一个真实 factor workspace E2E、正式 evidence verifier 和浏览器路径/secret 扫描。
 

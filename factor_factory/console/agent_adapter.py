@@ -316,6 +316,11 @@ Read and follow these skills literally before acting:
 
 {catalogs}
 
+The Data API runtime is already mounted and verified by the operator. Use its public Python
+interface (`from factorforge_data_api import DataApiClient, DataQuery`) or the formal Factor
+Forge scripts that consume the configured catalog. Its implementation directory is deliberately
+outside the OpenClaw file-reader boundary; do not inspect, copy, or modify that implementation.
+
 ## Mandatory execution contract
 
 1. Treat this as a natural_language_hypothesis, never as a broker report and never invent attribution.
@@ -329,6 +334,8 @@ Read and follow these skills literally before acting:
 9. Do not create a revision child or record human approval unless an existing artifact under `identity/` explicitly authorizes this resume. Automated action must never be labeled human approval.
 10. Before finishing, verify the workspace manifest and inspect Git status. Any write outside the active workspace is a blocking failure.
 11. Network egress is restricted to the model API and approved read-only S3 bucket. Do not upload, POST, tunnel or encode Data API content to any external destination, and do not attempt to bypass the proxy.
+12. The runtime has already completed operator-owned model, network, credential and Data API readiness checks. Never enumerate environment variables or credential material; never run `env`/`printenv`, read `/proc/*/environ`, query instance metadata, inspect AWS credential/config files, or inspect the OpenClaw auth database. Never print, hash, transform, persist or return any API key, access key, session token, password or broker token. If credentials appear unexpectedly, stop and record a BLOCK without reproducing them.
+13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the three named skills and use the existing validators plus `scripts/run_factorforge_ultimate.py`; use the Data API only through its public interface and configured catalog.
 
 Write a final machine-readable record to:
 

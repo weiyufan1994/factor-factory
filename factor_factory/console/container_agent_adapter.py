@@ -665,6 +665,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self,
         job_id: str,
     ) -> tuple[Path | None, tuple[str, ...], Path | None]:
+        if re.fullmatch(r"job_[a-f0-9]{10}", job_id):
+            self._mark_credential_material_may_have_been_issued(job_id)
         credentials: _AwsCredentialLease | None = None
         try:
             credentials = _load_aws_credentials(
@@ -769,8 +771,73 @@ class ContainerizedOpenClawResearchAgentAdapter:
         scan_path = self._denied_secret_path(job_id)
         return _read_denied_secret_file(scan_path)
 
+    def credential_material_state(self, job_id: str) -> str:
+        marker = self._credential_material_marker_path(job_id)
+        if not marker.exists() and not marker.is_symlink():
+            return "not_issued"
+        try:
+            descriptor = os.open(
+                marker,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError("credential material state marker is unsafe") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            payload = os.read(descriptor, 256).decode("utf-8")
+            if os.read(descriptor, 1):
+                raise RuntimeError("credential material state marker is unsafe")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError("credential material state marker is unsafe") from exc
+        finally:
+            os.close(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or payload != (
+            "factorforge_console_credential_material_may_have_been_issued_v1\n"
+        ):
+            raise RuntimeError("credential material state marker is unsafe")
+        return "may_have_been_issued"
+
     def clear_denied_secrets(self, job_id: str) -> None:
         self._cleanup_aws_environment(None, self._denied_secret_path(job_id))
+        marker = self._credential_material_marker_path(job_id)
+        if self.credential_material_state(job_id) == "may_have_been_issued":
+            marker.unlink()
+
+    def _mark_credential_material_may_have_been_issued(self, job_id: str) -> None:
+        marker = self._credential_material_marker_path(job_id)
+        if marker.exists() or marker.is_symlink():
+            if self.credential_material_state(job_id) != "may_have_been_issued":
+                raise RuntimeError("credential material state marker is unsafe")
+            return
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.parent.chmod(0o700)
+        descriptor = os.open(
+            marker,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            payload = b"factorforge_console_credential_material_may_have_been_issued_v1\n"
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(descriptor, payload[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(marker.parent)
+
+    def _credential_material_marker_path(self, job_id: str) -> Path:
+        if not re.fullmatch(r"job_[a-f0-9]{10}", job_id):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: task identity is invalid"
+            )
+        return (
+            self.config.state_root
+            / "jobs"
+            / job_id
+            / "container-agent"
+            / "credential-material-issued.marker"
+        )
 
     def _denied_secret_path(self, job_id: str) -> Path:
         if not re.fullmatch(r"job_[a-f0-9]{10}", job_id):
@@ -1384,10 +1451,15 @@ def _validate_profile_policy(
         )
     if tools.get("allow") != REQUIRED_CONTAINER_TOOLS:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container tool allowlist is invalid")
+    exec_policy = tools.get("exec") or {}
     if (
         (tools.get("fs") or {}).get("workspaceOnly") is not True
-        or (tools.get("exec") or {}).get("mode") != "full"
-        or ((tools.get("exec") or {}).get("applyPatch") or {}).get("workspaceOnly") is not True
+        or exec_policy.get("host") != "gateway"
+        or exec_policy.get("mode") != "full"
+        or exec_policy.get("strictInlineEval") is not False
+        or "security" in exec_policy
+        or "ask" in exec_policy
+        or (exec_policy.get("applyPatch") or {}).get("workspaceOnly") is not True
         or (tools.get("elevated") or {}).get("enabled") is not False
         or (tools.get("agentToAgent") or {}).get("enabled") is not False
         or (tools.get("sessions") or {}).get("visibility") != "self"

@@ -290,6 +290,9 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "Do not run" in prompt
     assert "Data API and catalogs are read-only" in prompt
     assert "never as a broker report" in prompt
+    assert "from factorforge_data_api import DataApiClient, DataQuery" in prompt
+    assert "Never enumerate environment variables or credential material" in prompt
+    assert "scripts/run_factorforge_ultimate.py" in prompt
 
 
 def test_agent_readiness_requires_healthy_dedicated_profile(tmp_path, monkeypatch):
@@ -759,6 +762,18 @@ def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
     with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
         _validate_profile_policy(payload)
 
+    for key, value in (
+        ("host", "auto"),
+        ("mode", "ask"),
+        ("strictInlineEval", True),
+        ("security", "full"),
+        ("ask", "off"),
+    ):
+        payload = json.loads(template.read_text(encoding="utf-8"))
+        payload["tools"]["exec"][key] = value
+        with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+            _validate_profile_policy(payload)
+
 
 def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, monkeypatch):
     import factor_factory.console.container_agent_adapter as adapter_module
@@ -796,7 +811,9 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
     )
     adapter = ContainerizedOpenClawResearchAgentAdapter(config)
     job_id = "job_1234567890"
+    assert adapter.credential_material_state(job_id) == "not_issued"
     lease_path, values, scan_path = adapter._prepare_aws_environment(job_id)
+    assert adapter.credential_material_state(job_id) == "may_have_been_issued"
     assert lease_path == config.state_root / "credential-leases" / f"{job_id}.env"
     assert scan_path == scan_root / f"{config.installation_id}.{job_id}.secrets"
     assert (scan_root / "active.registry").read_text(encoding="utf-8").strip() == scan_path.name
@@ -812,6 +829,7 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
     assert scan_path.exists()
     assert adapter.denied_secret_values(job_id) == values
     adapter.clear_denied_secrets(job_id)
+    assert adapter.credential_material_state(job_id) == "not_issued"
     assert not scan_path.exists()
     assert not (scan_root / "active.registry").exists()
 

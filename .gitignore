@@ -16,6 +16,7 @@ data/clean/
 data/raw/
 output/
 tmp/
+.playwright-cli/
 factor_factory.egg-info/
 .obsidian/
 knowledge/retrieval/

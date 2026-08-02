@@ -49,8 +49,9 @@
     "allow": ["read", "edit", "write", "apply_patch", "exec", "process"],
     "fs": {"workspaceOnly": true},
     "exec": {
+      "host": "gateway",
       "mode": "full",
-      "strictInlineEval": true,
+      "strictInlineEval": false,
       "applyPatch": {"workspaceOnly": true}
     },
     "sessions": {"visibility": "self"},

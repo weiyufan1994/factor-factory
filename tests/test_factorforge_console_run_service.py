@@ -247,8 +247,24 @@ class _EarlyRuntimeFailureAdapter:
     def denied_secret_values(self, job_id: str):
         raise RuntimeError("task denied-secret registry is missing")
 
+    def credential_material_state(self, job_id: str):
+        return "not_issued"
+
     def clear_denied_secrets(self, job_id: str):
         return None
+
+
+class _PostCredentialRegistryLossAdapter(_EarlyRuntimeFailureAdapter):
+    secret = "temporary-session-value-after-registry-loss"
+
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        raise RuntimeError(
+            "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: subprocess echoed "
+            f"{self.secret}"
+        )
+
+    def credential_material_state(self, job_id: str):
+        return "may_have_been_issued"
 
 
 def _service(tmp_path: Path, adapter):
@@ -410,6 +426,25 @@ def test_early_runtime_failure_keeps_original_block_reason_without_registry(tmp_
     assert blocked.error_code == "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE"
     assert "container agent initialization failed" in blocked.error_message
     assert "CREDENTIAL_REGISTRY_INVALID" not in blocked.error_message
+
+
+def test_post_credential_registry_loss_fails_closed_without_echoing_exception(tmp_path):
+    adapter = _PostCredentialRegistryLossAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Post-credential registry loss"))
+
+    service.run_once()
+    blocked = store.get_job(job.job_id)
+    serialized = json.dumps(
+        {"job": blocked.to_dict(), "events": store.list_events(job.job_id)},
+        ensure_ascii=False,
+    )
+
+    assert blocked.execution_status == "BLOCKED"
+    assert blocked.error_code == "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID"
+    assert "未公开原始异常详情" in blocked.error_message
+    assert adapter.secret not in serialized
+    assert "subprocess echoed" not in serialized
 
 
 def test_web_result_redacts_exact_and_base64_temporary_credentials():

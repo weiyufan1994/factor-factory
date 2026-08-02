@@ -128,6 +128,90 @@ def _catalog_item(catalog_path: Path | None, dataset_id: str) -> dict[str, Any]:
     return {}
 
 
+def _column_names(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    columns: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            columns.append(item.strip())
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("column") or item.get("field")
+            if isinstance(name, str) and name.strip():
+                columns.append(name.strip())
+    return list(dict.fromkeys(columns))
+
+
+def _catalog_schema(catalog_item: dict[str, Any]) -> dict[str, Any]:
+    metadata = catalog_item.get("metadata") if isinstance(catalog_item.get("metadata"), dict) else {}
+    schema = catalog_item.get("schema") if isinstance(catalog_item.get("schema"), dict) else {}
+    columns = (
+        _column_names(schema.get("columns"))
+        or _column_names(catalog_item.get("columns"))
+        or _column_names(catalog_item.get("fields"))
+        or _column_names(metadata.get("columns"))
+    )
+    return {
+        "columns": columns,
+        "date_column": schema.get("date_column") or catalog_item.get("date_column") or metadata.get("date_column"),
+        "symbol_column": (
+            schema.get("symbol_column")
+            or catalog_item.get("symbol_column")
+            or metadata.get("symbol_column")
+        ),
+        "qlib_field_map": schema.get("qlib_field_map") or catalog_item.get("qlib_field_map") or {},
+        "logical_fields": schema.get("logical_fields") or catalog_item.get("logical_fields") or {},
+        "schema_hash": schema.get("schema_hash") or catalog_item.get("schema_hash") or metadata.get("schema_hash"),
+    }
+
+
+def _local_catalog_sidecar(uri: Any) -> dict[str, Any]:
+    if not isinstance(uri, str) or not uri.strip() or "://" in uri:
+        return {}
+    path = Path(uri).expanduser()
+    meta_path = path.with_suffix(".meta.json")
+    try:
+        return _read_json(meta_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _catalog_inventory(catalog_item: dict[str, Any], *, uri: Any = None) -> dict[str, Any]:
+    metadata = catalog_item.get("metadata") if isinstance(catalog_item.get("metadata"), dict) else {}
+    freshness = catalog_item.get("freshness") if isinstance(catalog_item.get("freshness"), dict) else {}
+    if not freshness and isinstance(metadata.get("freshness"), dict):
+        freshness = metadata["freshness"]
+    inventory = dict(catalog_item.get("coverage")) if isinstance(catalog_item.get("coverage"), dict) else {}
+    sidecar = _local_catalog_sidecar(uri)
+    summaries = [
+        freshness,
+        metadata.get("output_summary") if isinstance(metadata.get("output_summary"), dict) else {},
+        sidecar.get("output_summary") if isinstance(sidecar.get("output_summary"), dict) else {},
+        (sidecar.get("clean_meta") or {}).get("counts")
+        if isinstance(sidecar.get("clean_meta"), dict)
+        and isinstance((sidecar.get("clean_meta") or {}).get("counts"), dict)
+        else {},
+    ]
+    aliases = {
+        "row_count": ("row_count", "rows"),
+        "date_count": ("date_count", "trade_dates", "dates"),
+        "ticker_count": ("ticker_count", "tickers", "symbols"),
+        "trade_date_min": ("trade_date_min", "start_date", "date_min"),
+        "trade_date_max": ("trade_date_max", "end_date", "date_max", "latest_trade_date"),
+    }
+    for target, source_keys in aliases.items():
+        if inventory.get(target) is not None:
+            continue
+        for summary in summaries:
+            value = next((summary.get(key) for key in source_keys if summary.get(key) is not None), None)
+            if value is not None:
+                inventory[target] = value
+                break
+    if inventory:
+        inventory["scope"] = "dataset_inventory"
+    return inventory
+
+
 def _default_fields(dataset_id: str) -> list[str]:
     if dataset_id == "clean_daily_bar":
         return ["open", "high", "low", "close", "vol", "amount", "pct_chg"]
@@ -160,7 +244,16 @@ def _normalize_result_metadata(result: Any, catalog_path: Path | None, dataset_i
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     schema = payload.get("schema") if isinstance(payload.get("schema"), dict) else {}
     coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    catalog_schema = _catalog_schema(catalog_item)
+    catalog_uri = catalog_item.get("uri") or catalog_item.get("path")
     freshness = payload.get("freshness") if isinstance(payload.get("freshness"), dict) else {}
+    if not freshness:
+        freshness = (
+            catalog_item.get("freshness")
+            if isinstance(catalog_item.get("freshness"), dict)
+            else (catalog_item.get("metadata") or {}).get("freshness") or {}
+        )
+    catalog_inventory = _catalog_inventory(catalog_item, uri=catalog_uri or source.get("uri"))
     policy = (
         catalog_item.get("daily_filter_policy")
         or catalog_item.get("policy")
@@ -175,23 +268,28 @@ def _normalize_result_metadata(result: Any, catalog_path: Path | None, dataset_i
         "access_mode": "catalog",
         "catalog_path": str(catalog_path) if catalog_path else source.get("catalog_path"),
         "request": payload.get("query"),
-        "source_uri": source.get("uri"),
-        "source": source,
+        "source_uri": source.get("uri") or catalog_uri,
+        "source": {"uri": catalog_uri, **source} if catalog_uri and not source.get("uri") else source,
         "freshness": freshness,
         "schema": {
-            "columns": schema.get("columns") or [],
-            "date_column": schema.get("date_column"),
-            "symbol_column": schema.get("symbol_column"),
-            "qlib_field_map": schema.get("qlib_field_map") or {},
-            "logical_fields": schema.get("logical_fields") or {},
-            "schema_hash": schema.get("schema_hash"),
+            "columns": schema.get("columns") or catalog_schema["columns"],
+            "date_column": schema.get("date_column") or catalog_schema["date_column"],
+            "symbol_column": schema.get("symbol_column") or catalog_schema["symbol_column"],
+            "qlib_field_map": schema.get("qlib_field_map") or catalog_schema["qlib_field_map"],
+            "logical_fields": schema.get("logical_fields") or catalog_schema["logical_fields"],
+            "schema_hash": schema.get("schema_hash") or catalog_schema["schema_hash"],
         },
         "coverage": coverage,
+        "catalog_inventory": catalog_inventory,
         "daily_filter_policy": policy,
         "resolved_fields": payload.get("resolved_fields") or {},
         "proxy_rules": payload.get("proxy_rules") or [],
         "metadata": {
-            "dataset_version": catalog_item.get("version") or catalog_item.get("dataset_version"),
+            "dataset_version": (
+                catalog_item.get("version")
+                or catalog_item.get("dataset_version")
+                or (catalog_item.get("metadata") or {}).get("schema_version")
+            ),
             "producer": catalog_item.get("producer") or (catalog_item.get("metadata") or {}).get("producer"),
             "independent_package": "factorforge_data_api",
         },
@@ -501,8 +599,10 @@ def resolve_data_api_dataset(
         )
     source = catalog_item.get("source") if isinstance(catalog_item.get("source"), dict) else {}
     metadata = catalog_item.get("metadata") if isinstance(catalog_item.get("metadata"), dict) else {}
-    schema = catalog_item.get("schema") if isinstance(catalog_item.get("schema"), dict) else {}
+    schema = _catalog_schema(catalog_item)
     freshness = catalog_item.get("freshness") if isinstance(catalog_item.get("freshness"), dict) else {}
+    if not freshness and isinstance(metadata.get("freshness"), dict):
+        freshness = metadata["freshness"]
     policy = (
         catalog_item.get("daily_filter_policy")
         or catalog_item.get("policy")
@@ -541,12 +641,17 @@ def resolve_data_api_dataset(
             "logical_fields": schema.get("logical_fields") or {},
             "schema_hash": schema.get("schema_hash"),
         },
-        "coverage": catalog_item.get("coverage") or {},
+        "coverage": {},
+        "catalog_inventory": _catalog_inventory(catalog_item, uri=uri),
         "daily_filter_policy": policy,
         "resolved_fields": {field: field for field in requested_fields},
         "proxy_rules": catalog_item.get("proxy_rules") or [],
         "metadata": {
-            "dataset_version": catalog_item.get("version") or catalog_item.get("dataset_version"),
+            "dataset_version": (
+                catalog_item.get("version")
+                or catalog_item.get("dataset_version")
+                or metadata.get("schema_version")
+            ),
             "producer": catalog_item.get("producer") or metadata.get("producer"),
             "independent_package": "factorforge_data_api",
             "resolve_mode": "catalog_only",

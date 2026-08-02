@@ -185,6 +185,75 @@ def infer_operator_schema(prep: dict) -> dict:
     return {'columns': list(DEFAULT_OPERATOR_SCHEMA_COLUMNS), 'source': 'default_plan_schema', 'strict': False}
 
 
+def assert_resolved_fields_in_operator_schema(formula_ir: dict, prep: dict) -> dict:
+    operator_schema = infer_operator_schema(prep)
+    required_fields = {
+        str(field).strip()
+        for field in formula_ir.get('required_fields') or []
+        if str(field).strip()
+    }
+    raw_resolved_fields = formula_ir.get('resolved_fields')
+    assert isinstance(raw_resolved_fields, dict), (
+        'BLOCK_FORMULA_FIELD_MAPPING_INCOMPLETE: resolved_fields must be an object'
+    )
+    resolved_fields = {
+        str(field).strip(): str(resolved).strip()
+        for field, resolved in raw_resolved_fields.items()
+        if str(field).strip() and str(resolved).strip()
+    }
+    field_nodes: list[tuple[str, str]] = []
+
+    def collect(node) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get('type') == 'field':
+            name = str(node.get('name') or '').strip()
+            resolved = str(node.get('resolved_field') or '').strip()
+            assert name and resolved, (
+                'BLOCK_FORMULA_FIELD_MAPPING_INCOMPLETE: '
+                'every field node requires name and resolved_field'
+            )
+            field_nodes.append((name, resolved))
+        for child in node.get('args') or []:
+            collect(child)
+
+    collect(formula_ir.get('root'))
+    node_fields = {name for name, _resolved in field_nodes}
+    assert required_fields == node_fields, (
+        'BLOCK_FORMULA_REQUIRED_FIELDS_INCOMPLETE: '
+        f'required_fields={sorted(required_fields)} tree_fields={sorted(node_fields)}'
+    )
+    missing_mappings = sorted(node_fields - set(resolved_fields))
+    assert not missing_mappings, (
+        'BLOCK_FORMULA_FIELD_MAPPING_INCOMPLETE: '
+        f'resolved_fields missing {missing_mappings}'
+    )
+    mismatches = [
+        {
+            'field': name,
+            'mapped_resolved_field': resolved_fields.get(name),
+            'node_resolved_field': node_resolved,
+        }
+        for name, node_resolved in field_nodes
+        if resolved_fields.get(name) != node_resolved
+    ]
+    assert not mismatches, (
+        'BLOCK_FORMULA_FIELD_MAPPING_MISMATCH: '
+        f'field node resolved_field differs from resolved_fields: {mismatches}'
+    )
+    available = {str(col).lower() for col in operator_schema.get('columns') or []}
+    missing = [
+        {'field': field, 'resolved_field': resolved}
+        for field, resolved in sorted(resolved_fields.items())
+        if str(resolved).lower() not in available
+    ]
+    assert not missing, (
+        'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in '
+        f'{operator_schema.get("source")}: {missing}'
+    )
+    return operator_schema
+
+
 def assert_artifact_identity(label: str, data: dict, expected: dict | None = None, role: str | None = None) -> dict:
     identity = data.get('artifact_identity') or ((data.get('metadata') or {}).get('artifact_identity'))
     assert isinstance(identity, dict) and identity, f'{label}.artifact_identity is required'
@@ -349,15 +418,7 @@ def validate_operator_mode(
     assert operator_set, 'operator mode requires operator_set/operators'
     assert required_fields, 'operator mode requires required_fields/required_inputs'
     assert resolved_fields, 'operator mode requires resolved_fields'
-    operator_schema = infer_operator_schema(prep)
-    if operator_schema.get('strict'):
-        available = {str(col).lower() for col in operator_schema.get('columns') or []}
-        missing = [
-            {'field': field, 'resolved_field': resolved}
-            for field, resolved in resolved_fields.items()
-            if str(resolved).lower() not in available
-        ]
-        assert not missing, f'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in {operator_schema.get("source")}: {missing}'
+    assert_resolved_fields_in_operator_schema(formula_ir, prep)
     for operator in operator_set:
         meta = operator_meta(str(operator))
         assert meta.get('supports_pandas') is True, f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}'
@@ -1139,6 +1200,7 @@ def validate_hybrid_mode(
     boundary = contract.get('boundary') or {}
     assert formula_ir, 'BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph.formula_ir missing'
     assert formula_ir.get('parse_status') == 'success', f"BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph formula_ir parse failed {formula_ir.get('parse_errors')}"
+    assert_resolved_fields_in_operator_schema(formula_ir, prep)
     assert isinstance(custom_blocks, list) and custom_blocks, 'BLOCK_INVALID_HYBRID_CONTRACT: custom_blocks missing'
     assert_hybrid_boundary(boundary, custom_blocks)
     for key in ['formula_hash', 'custom_block_hash', 'hybrid_hash']:
@@ -1147,16 +1209,6 @@ def validate_hybrid_mode(
         assert plan.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: implementation_plan {key} mismatch'
         assert hybrid_data.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: hybrid_scaffold {key} mismatch'
 
-    operator_schema = infer_operator_schema(prep)
-    resolved_fields = formula_ir.get('resolved_fields') or {}
-    if operator_schema.get('strict'):
-        available = {str(col).lower() for col in operator_schema.get('columns') or []}
-        missing = [
-            {'field': field, 'resolved_field': resolved}
-            for field, resolved in resolved_fields.items()
-            if str(resolved).lower() not in available
-        ]
-        assert not missing, f'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in {operator_schema.get("source")}: {missing}'
     for operator in formula_ir.get('operator_set') or []:
         meta = operator_meta(str(operator))
         assert meta.get('supports_pandas') is True, f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}'
@@ -1197,7 +1249,7 @@ def validate_hybrid_mode(
     compute_factor = getattr(module, 'compute_factor', None)
     assert callable(compute_operator), 'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: compute_operator_subgraph missing'
     assert callable(compute_factor), 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: compute_factor missing'
-    fixture = make_operator_fixture()
+    fixture = make_operator_fixture(formula_ir)
     fixture['is_tradable'] = [idx % 2 == 0 for idx in range(len(fixture))]
     fixture['custom_scale'] = 2.0
     fixture['universe_flag'] = [1 if idx % 3 else 0 for idx in range(len(fixture))]

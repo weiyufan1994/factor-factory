@@ -16,8 +16,11 @@ import pytest
 from factor_factory.console.run_service import ResearchRunService as _ResearchRunService
 from factor_factory.console.run_service import (
     _allowed_agent_write_paths,
+    _capture_resume_restore_state,
     _configure_host_formal_python_environment,
+    _restore_resume_workspace,
     _validate_agent_write_boundary as _validate_agent_write_boundary_impl,
+    _workspace_evidence_tree,
     _workspace_file_snapshot,
 )
 from factor_factory.console.web_research_plan import stable_json_hash
@@ -85,10 +88,15 @@ def _stub_materialized_web_contract(monkeypatch):
         return {
             "start_step": "6",
             "ultimate_proof_sha256": _file_sha256(proof_path),
-            "attestation_id": f"attestations/{job.job_id}.json",
+            # Mirror the attestation returned by the host stub above. Production
+            # resume validation reads this identity from the current pointer.
+            "attestation_id": "attestations/unit-test.json",
             "attestation_sha256": "attestation-hash",
             "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
             "receipt_sha256": "receipt-hash",
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
         }
 
     monkeypatch.setattr(
@@ -263,7 +271,15 @@ class _TerminalRejectAdapter:
 
 
 class _PausedAdapter:
-    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+    def run(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task=None,
+    ):
         from factor_factory.console.agent_adapter import AgentRunResult
 
         report_id = job.report_id
@@ -272,10 +288,83 @@ class _PausedAdapter:
             workspace / "objects" / "runtime_context" / f"ultimate_run_report__{report_id}.json",
             {
                 **identity,
-                "status": "PASS",
+                "status": "PAUSED",
                 "formal_proof_eligible": False,
-                "revision_council": {"status": "awaiting_agent_results"},
+                "main_agent_mechanism_memo": {
+                    "status": "awaiting_main_agent_mechanism_memo",
+                    "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+                },
+                "revision_council": {
+                    "status": "not_reached",
+                    "reason": "awaiting_main_agent_mechanism_memo",
+                },
             },
+        )
+        rim = workspace / "objects" / "research_iteration_master"
+        questionnaire = rim / f"main_agent_mechanism_questionnaire__{report_id}.json"
+        questionnaire_md = rim / f"main_agent_mechanism_questionnaire__{report_id}.md"
+        memo = rim / f"main_agent_mechanism_memo__{report_id}.json"
+        memo_md = rim / f"main_agent_mechanism_memo__{report_id}.md"
+        _write_json(
+            questionnaire,
+            {
+                "contract_version": "factorforge_main_agent_mechanism_questionnaire_v1",
+                **identity,
+                "formula_facts": {
+                    "formula": "divide(minus(close, open), pre_close)",
+                    "fields": ["close", "open", "pre_close"],
+                    "operators": ["divide", "minus"],
+                },
+                "metric_facts": {"rank_ic_mean": -0.01},
+            },
+        )
+        questionnaire_md.parent.mkdir(parents=True, exist_ok=True)
+        questionnaire_md.write_text("# Questionnaire\n", encoding="utf-8")
+        _write_json(
+            rim / f"main_agent_mechanism_memo_status__{report_id}.json",
+            {
+                "report_id": report_id,
+                "status": "awaiting_main_agent_mechanism_memo",
+                "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+                "questionnaire_ref": {
+                    "contract_version": "factorforge_main_agent_mechanism_questionnaire_v1",
+                    "json_path": str(questionnaire),
+                    "markdown_path": str(questionnaire_md),
+                },
+                "expected_memo_ref": {
+                    "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+                    "json_path": str(memo),
+                    "markdown_path": str(memo_md),
+                },
+            },
+        )
+        _write_json(
+            workspace
+            / "objects"
+            / "factor_spec_master"
+            / f"factor_spec_master__{report_id}.json",
+            {
+                **identity,
+                "canonical_spec": {
+                    "formula_text": "divide(minus(close, open), pre_close)",
+                    "required_inputs": ["close", "open", "pre_close"],
+                    "operators": ["divide", "minus"],
+                },
+            },
+        )
+        _write_json(
+            workspace
+            / "objects"
+            / "factor_case_master"
+            / f"factor_case_master__{report_id}.json",
+            {**identity, "headline_metrics": {"rank_ic_mean": -0.01}},
+        )
+        _write_json(
+            workspace
+            / "objects"
+            / "validation"
+            / f"factor_evaluation__{report_id}.json",
+            {**identity, "headline_metrics": {"rank_ic_mean": -0.01}},
         )
         _write_json(
             workspace / "objects" / "runtime_context" / f"ultimate_loop_report__{report_id}.json",
@@ -358,7 +447,15 @@ class _PausedThenForgingAdapter:
         self._paused = _PausedAdapter()
         self._forging = _ForgingAdapter()
 
-    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+    def run(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task=None,
+    ):
         self.calls += 1
         delegate = self._forging if resume else self._paused
         return delegate.run(
@@ -367,6 +464,242 @@ class _PausedThenForgingAdapter:
             workspace=workspace,
             resume=resume,
         )
+
+
+class _PausedThenMalformedMemoAdapter:
+    def __init__(self, state_root: Path, malformed: str) -> None:
+        self.state_root = state_root
+        self.malformed = malformed
+        self.calls = 0
+        self._paused = _PausedAdapter()
+
+    def run(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task=None,
+    ):
+        from factor_factory.console.agent_adapter import AgentRunResult
+
+        self.calls += 1
+        if not resume:
+            return self._paused.run(
+                job,
+                worktree=worktree,
+                workspace=workspace,
+                resume=False,
+            )
+        assert resume_task is not None
+        memo_path = workspace / resume_task.required_output_relative
+        memo_path.parent.mkdir(parents=True, exist_ok=True)
+        memo_path.write_text(self.malformed, encoding="utf-8")
+        (workspace / "identity" / "web_execution_ledger.md").write_text(
+            "resume artifact authored\n",
+            encoding="utf-8",
+        )
+        session_key = f"agent:malformed:{resume_task.attempt_id}"
+        result_path = (
+            self.state_root
+            / "jobs"
+            / job.job_id
+            / f"agent_run_{resume_task.attempt_id}.json"
+        )
+        _write_json(
+            result_path,
+            {
+                "version": "factorforge_console_agent_run_v1",
+                "job_id": job.job_id,
+                "factor_id": job.factor_id,
+                "research_id": job.research_id,
+                "report_id": job.report_id,
+                "agent_id": "agent-malformed",
+                "session_key_sha256": hashlib.sha256(
+                    session_key.encode("utf-8")
+                ).hexdigest(),
+                "resume": True,
+                "resume_attempt_id": resume_task.attempt_id,
+                "returncode": 0,
+            },
+        )
+        return AgentRunResult(
+            returncode=0,
+            agent_id="agent-malformed",
+            session_key=session_key,
+            started_at_utc="2026-08-02T00:00:00Z",
+            finished_at_utc="2026-08-02T00:01:00Z",
+            stdout_tail="",
+            stderr_tail="",
+            result_path=str(result_path),
+        )
+
+
+class _PausedThenResumeFailureAdapter:
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.calls = 0
+        self._paused = _PausedAdapter()
+
+    def run(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task=None,
+    ):
+        self.calls += 1
+        if not resume:
+            return self._paused.run(
+                job,
+                worktree=worktree,
+                workspace=workspace,
+                resume=False,
+            )
+        raise RuntimeError(f"{self.token}: injected resume failure")
+
+
+class _CouncilPauseThenLeaseFailureAdapter:
+    def __init__(self, state_root: Path) -> None:
+        self.state_root = state_root
+        self._paused = _PausedAdapter()
+        self.council_ingress_completed = False
+
+    def run(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task=None,
+    ):
+        assert not resume
+        result = self._paused.run(
+            job,
+            worktree=worktree,
+            workspace=workspace,
+            resume=False,
+        )
+        proof_path = (
+            workspace
+            / "objects"
+            / "runtime_context"
+            / f"ultimate_run_report__{job.report_id}.json"
+        )
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        proof["main_agent_mechanism_memo"] = {"status": "complete"}
+        proof["revision_council"] = {
+            "status": "awaiting_agent_results",
+            "effective_mode": "agentic_dispatch_manifest",
+        }
+        _write_json(proof_path, proof)
+
+        council_relative = (
+            Path("objects")
+            / "research_iteration_master"
+            / "revision_council"
+            / job.report_id
+        )
+        task_id = "economic_skeptic"
+        task_relative = (
+            council_relative
+            / "agent_tasks"
+            / f"task__{job.report_id}__{task_id}.json"
+        )
+        result_relative = (
+            council_relative
+            / "agent_results"
+            / f"agent_result__{job.report_id}__{task_id}.json"
+        )
+        expected_agent_identifier = f"console_council_{task_id}"
+        _write_json(
+            workspace / task_relative,
+            {
+                "task_packet_version": "factorforge_agentic_council_task_packet_v1",
+                "report_id": job.report_id,
+                "task_id": task_id,
+                "agent_role": "economic_skeptic",
+                "expected_agent_identifier": expected_agent_identifier,
+                "expected_result_path": result_relative.as_posix(),
+                "canonical_write_permission": False,
+                "execution_allowed_by_default": False,
+                "human_approval_required": True,
+            },
+        )
+        _write_json(
+            workspace
+            / council_relative
+            / f"dispatch_manifest__{job.report_id}.json",
+            {
+                "dispatch_manifest_version": "factorforge_agentic_council_dispatch_manifest_v1",
+                "report_id": job.report_id,
+                "status": "awaiting_agent_results",
+                "agent_task_count": 1,
+                "agent_tasks": [
+                    {
+                        "required": True,
+                        "task_id": task_id,
+                        "agent_role": "economic_skeptic",
+                        "expected_agent_identifier": expected_agent_identifier,
+                        "task_packet_path": task_relative.as_posix(),
+                        "task_packet_sha256": _file_sha256(workspace / task_relative),
+                        "expected_result_path": result_relative.as_posix(),
+                    }
+                ],
+            },
+        )
+        return result
+
+    def run_council_ingress(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        tasks,
+    ):
+        from factor_factory.console.agent_adapter import AgentRunResult
+
+        for task in tasks:
+            _write_json(
+                workspace / task.expected_result_path,
+                {
+                    "report_id": job.report_id,
+                    "task_id": task.task_id,
+                    "agent_role": task.agent_role,
+                    "agent_identifier": task.expected_agent_identifier,
+                },
+            )
+        self.council_ingress_completed = True
+        result_path = (
+            self.state_root
+            / "jobs"
+            / job.job_id
+            / "council_ingress_test.json"
+        )
+        _write_json(result_path, {"returncode": 0})
+        return AgentRunResult(
+            returncode=0,
+            agent_id=f"agent-{job.job_id}",
+            session_key=f"session-{job.job_id}",
+            started_at_utc="2026-08-02T00:00:00Z",
+            finished_at_utc="2026-08-02T00:01:00Z",
+            stdout_tail="council imported",
+            stderr_tail="",
+            result_path=str(result_path),
+        )
+
+    def prepare_host_data_environment(self, job_id: str):
+        if self.council_ingress_completed:
+            raise RuntimeError(
+                "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE: "
+                "injected post-Council lease failure"
+            )
+        return {}, ()
 
 
 class _CredentialEchoAdapter(_TerminalRejectAdapter):
@@ -569,6 +902,678 @@ def test_resume_refreshes_read_only_packet_without_overwriting_agent_plan(tmp_pa
     resumed_plan = json.loads(plan_path.read_text(encoding="utf-8"))
     assert resumed_plan["research_object"]["formula_or_law"] == "agent-authored-preserved-law"
     assert (Path(paused.workspace_path) / "identity" / "web_resume_authorization.json").is_file()
+
+
+def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_path, monkeypatch):
+    from factor_factory.console.agent_adapter import AgentRunResult, build_agent_prompt
+    from factor_factory.console.models import ResearchJob
+
+    source, _store, service = _service(tmp_path, _PausedAdapter())
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    job = ResearchJob(
+        job_id="job_1234567890",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="REPORT",
+        request=_request("Mechanism pause factor"),
+    )
+    proof_relative = "objects/runtime_context/ultimate_run_report__REPORT.json"
+    proof_path = workspace / proof_relative
+    _write_json(
+        proof_path,
+        {
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+            },
+        },
+    )
+    _write_json(
+        workspace
+        / "objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.json",
+        {
+            "contract_version": "factorforge_main_agent_mechanism_questionnaire_v1",
+            "report_id": "REPORT",
+            "source_refs": {
+                "factor_spec_master": "objects/factor_spec_master/factor_spec_master__REPORT.json",
+                "factor_case_master": "objects/factor_case_master/factor_case_master__REPORT.json",
+                "evaluation_summary": "objects/validation/factor_evaluation__REPORT.json",
+            },
+            "formula_facts": {
+                "formula": "divide(minus(close, open), pre_close)",
+                "fields": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
+                "profile_flags": {"has_open_close_position": True},
+            },
+            "metric_facts": {
+                "rank_ic_mean": -0.0078,
+                "cost_adjusted_annual_return": -0.12,
+            },
+            "upstream_hypothesis_context": {
+                "decision": "iterate",
+                "mechanism_analysis": {
+                    "deterministic_component_interpretation": (
+                        "DO_NOT_LEAK_QUESTIONNAIRE_INTERPRETATION"
+                    )
+                },
+            },
+        },
+    )
+    (
+        workspace
+        / "objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.md"
+    ).write_text("# Questionnaire\n", encoding="utf-8")
+    _write_json(
+        workspace
+        / "objects/research_iteration_master/main_agent_mechanism_memo_status__REPORT.json",
+        {
+            "report_id": "REPORT",
+            "status": "awaiting_main_agent_mechanism_memo",
+            "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+            "questionnaire_ref": {
+                "contract_version": "factorforge_main_agent_mechanism_questionnaire_v1",
+                "json_path": str(
+                    workspace
+                    / "objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.json"
+                ),
+                "markdown_path": str(
+                    workspace
+                    / "objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.md"
+                ),
+            },
+            "expected_memo_ref": {
+                "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+                "json_path": str(
+                    workspace
+                    / "objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json"
+                ),
+                "markdown_path": str(
+                    workspace
+                    / "objects/research_iteration_master/main_agent_mechanism_memo__REPORT.md"
+                ),
+            },
+        },
+    )
+    _write_json(
+        workspace / "objects/factor_spec_master/factor_spec_master__REPORT.json",
+        {
+            "factor_id": "FACTOR",
+            "canonical_spec": {
+                "formula_text": "divide(minus(close, open), pre_close)",
+                "required_inputs": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
+            },
+        },
+    )
+    _write_json(
+        workspace / "objects/factor_case_master/factor_case_master__REPORT.json",
+        {
+            "factor_id": "FACTOR",
+            "headline_metrics": {
+                "rank_ic_mean": -0.0078,
+                "long_side_turnover_mean_daily": 0.8724,
+            },
+        },
+    )
+    _write_json(
+        workspace / "objects/validation/factor_evaluation__REPORT.json",
+        {
+            "report_id": "REPORT",
+            "coverage_summary": {
+                "row_count": 8034990,
+                "date_count": 2313,
+                "ticker_count": 5004,
+            },
+            "backend_summary": [
+                {
+                    "backend": "self_quant",
+                    "status": "PASS",
+                    "key_metrics": {
+                        "rank_ic_mean": -0.0078,
+                        "rank_ic_ir": -0.1225,
+                        "pearson_ic_mean": 0.0056,
+                        "pearson_ic_ir": 0.1257,
+                        "long_side_annual_volatility": 0.2631,
+                        "long_side_sharpe": 0.0482,
+                        "long_side_max_drawdown": -0.5943,
+                        "long_side_recovery_days": 3474,
+                        "long_side_turnover_mean_daily": 0.8724,
+                        "trading_cogs_annual": 0.6596,
+                        "cost_adjusted_annual_return": -0.12,
+                        "cost_adjusted_long_side_sharpe": -2.4582,
+                        "cost_adjusted_long_side_max_drawdown": -0.9983,
+                        "cost_adjusted_long_side_recovery_days": 3474,
+                    },
+                }
+            ],
+        },
+    )
+    service._write_resume_authorization(job, workspace)
+    _write_json(workspace / "identity/web_research_request.json", {"report_id": "REPORT"})
+    _write_json(workspace / "identity/factor_knowledge_summary.json", {"cold_start": True})
+    resume_task = service._write_agent_resume_contract(
+        job,
+        workspace,
+        resume_trust={
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+        },
+        attempt_id=f"resume_{'a' * 32}",
+    )
+
+    contract_path = workspace / "identity/web_agent_resume_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    answer_form_path = workspace / contract["answer_form"]
+    answer_form = json.loads(answer_form_path.read_text(encoding="utf-8"))
+    assert contract["pause_kind"] == "main_agent_mechanism_memo"
+    assert contract["resume_start_step"] == "6"
+    assert contract["required_output"].endswith(
+        "main_agent_mechanism_memo__REPORT.json"
+    )
+    assert contract["input_sha256"][contract["answer_form"]] == _file_sha256(
+        answer_form_path
+    )
+    facts = json.loads((workspace / contract["facts"]).read_text(encoding="utf-8"))
+    assert "DO_NOT_LEAK_QUESTIONNAIRE_INTERPRETATION" not in json.dumps(facts)
+    assert facts["observed_metrics"]["rank_ic_ir"] == -0.1225
+    assert facts["observed_metrics"]["pearson_ic_ir"] == 0.1257
+    assert facts["observed_metrics"]["trading_cogs_annual"] == 0.6596
+    assert facts["metric_availability"]["missing_core_metric_keys"] == []
+    assert contract["facts"] in contract["agent_read_only_inputs"]
+    assert not any("questionnaire" in item for item in contract["agent_read_only_inputs"])
+    assert answer_form["producer"] == ""
+    assert answer_form["resume_attempt_id"] == f"resume_{'a' * 32}"
+    assert answer_form["mechanism_qa"] == {
+        field: "" for field in contract["required_qa_fields"]
+    }
+    assert answer_form["formula_component_map"][0]["economic_state"] == ""
+    assert "stochastic_process" in contract["allowed_model_families"]
+    assert answer_form["evidence_comparison"]["observed_metrics"]
+
+    prompt = build_agent_prompt(
+        job,
+        worktree=source,
+        workspace=workspace,
+        config=service.config,
+        resume=True,
+        resume_task=resume_task,
+    )
+    assert prompt.startswith("# Factor Forge Step6 Mechanism Resume Task")
+    assert "AWAITING_MAIN_AGENT_MECHANISM_MEMO" in prompt
+    assert contract["required_output"] in prompt
+    assert contract["facts"] in prompt
+    assert "main_agent_mechanism_questionnaire__REPORT.json" not in prompt
+    assert "DO_NOT_LEAK_QUESTIONNAIRE_INTERPRETATION" not in prompt
+    assert contract["answer_form"] in prompt
+    assert contract["validation_command"] in prompt
+    assert "Required Authoring Preflight" not in prompt
+    assert "six packet files" not in prompt
+    assert "Fill the task-local web research plan" not in prompt
+
+    memo_path = workspace / contract["required_output"]
+    memo = json.loads(answer_form_path.read_text(encoding="utf-8"))
+    memo["report_id"] = "WRONG_REPORT"
+    _write_json(memo_path, memo)
+    monkeypatch.setattr(
+        "factor_factory.console.run_service.validate_main_agent_mechanism_memo",
+        lambda _memo, _spec: [],
+    )
+    agent_session_key = "agent:resume:test"
+    result_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "agent_run_test.json"
+    )
+    _write_json(
+        result_path,
+        {
+            "version": "factorforge_console_agent_run_v1",
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "agent_id": "agent-resume-test",
+            "session_key_sha256": hashlib.sha256(
+                agent_session_key.encode("utf-8")
+            ).hexdigest(),
+            "resume": True,
+            "resume_attempt_id": resume_task.attempt_id,
+            "returncode": 0,
+        },
+    )
+    agent_result = AgentRunResult(
+        returncode=0,
+        agent_id="agent-resume-test",
+        session_key=agent_session_key,
+        started_at_utc="2026-08-02T00:00:00Z",
+        finished_at_utc="2026-08-02T00:01:00Z",
+        stdout_tail="",
+        stderr_tail="",
+        result_path=str(result_path),
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="BLOCK_FACTORFORGE_CONSOLE_AGENT_RESUME_ARTIFACT_INVALID:.*report_id",
+    ):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+
+    memo = json.loads(answer_form_path.read_text(encoding="utf-8"))
+    memo["producer"] = "step6_main_agent"
+    memo["agent_authorship"] = {
+        "authoring_mode": "current_agent_freeform",
+        "agent_role": "main_agent",
+        "answered_without_deterministic_template": True,
+    }
+    _write_json(memo_path, memo)
+    with pytest.raises(RuntimeError, match="producer_not_current_main_agent"):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+
+    memo["producer"] = "current_main_agent"
+    _write_json(memo_path, memo)
+    service._validate_agent_resume_artifact(
+        job,
+        workspace,
+        resume_trust={
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+        },
+        resume_task=resume_task,
+        agent_result=agent_result,
+    )
+
+    agent_run = json.loads(result_path.read_text(encoding="utf-8"))
+    agent_run["resume_attempt_id"] = f"resume_{'b' * 32}"
+    _write_json(result_path, agent_run)
+    with pytest.raises(RuntimeError, match="agent_run_receipt_binding_invalid"):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+
+
+def test_failed_mechanism_resume_restores_exact_parent_evidence_tree(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "identity").mkdir(parents=True)
+    (workspace / "reports").mkdir()
+    (workspace / "objects/research_iteration_master").mkdir(parents=True)
+    (workspace / "identity/web_research_runtime.md").write_text(
+        "parent runtime\n", encoding="utf-8"
+    )
+    (workspace / "identity/web_execution_ledger.md").write_text(
+        "parent ledger\n", encoding="utf-8"
+    )
+    (workspace / "reports/user_hypothesis.md").write_text(
+        "parent hypothesis\n", encoding="utf-8"
+    )
+    parent_tree_hash = stable_json_hash(_workspace_evidence_tree(workspace))
+    restore_state = _capture_resume_restore_state(
+        workspace,
+        report_id="REPORT",
+    )
+
+    (workspace / "identity/web_research_runtime.md").write_text(
+        "resume runtime\n", encoding="utf-8"
+    )
+    (workspace / "identity/web_execution_ledger.md").write_text(
+        "failed resume ledger\n", encoding="utf-8"
+    )
+    (workspace / "identity/web_agent_resume_contract.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    (workspace / "objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    _restore_resume_workspace(
+        workspace,
+        restore_state,
+        report_id="REPORT",
+        expected_tree_sha256=parent_tree_hash,
+    )
+
+    assert stable_json_hash(_workspace_evidence_tree(workspace)) == parent_tree_hash
+    assert (workspace / "identity/web_research_runtime.md").read_text(encoding="utf-8") == "parent runtime\n"
+    assert (workspace / "identity/web_execution_ledger.md").read_text(encoding="utf-8") == "parent ledger\n"
+    assert not (workspace / "identity/web_agent_resume_contract.json").exists()
+    assert not (
+        workspace
+        / "objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("malformed", ["{not-json", "[]"])
+def test_malformed_mechanism_memo_is_retryable_and_restores_parent_tree(
+    tmp_path,
+    monkeypatch,
+    malformed,
+):
+    adapter = _PausedThenMalformedMemoAdapter(tmp_path / "state", malformed)
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Malformed mechanism memo"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    parent_tree_sha256 = stable_json_hash(_workspace_evidence_tree(workspace))
+
+    monkeypatch.setattr(
+        "factor_factory.console.run_service._validate_agent_write_boundary",
+        _validate_agent_write_boundary_impl,
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert blocked.execution_status == "BLOCKED"
+    assert (
+        blocked.error_code
+        == "BLOCK_FACTORFORGE_CONSOLE_AGENT_RESUME_ARTIFACT_INVALID"
+    )
+    assert blocked.result["host_attestation_id"] == paused.result[
+        "host_attestation_id"
+    ]
+    assert stable_json_hash(_workspace_evidence_tree(workspace)) == parent_tree_sha256
+    assert not (
+        workspace
+        / "objects"
+        / "research_iteration_master"
+        / f"main_agent_mechanism_memo__{job.report_id}.json"
+    ).exists()
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+    assert adapter.calls == 2
+
+
+def test_resume_prelaunch_unavailable_restores_and_remains_resumable(tmp_path):
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_RUNTIME_UNAVAILABLE
+
+    adapter = _PausedThenResumeFailureAdapter(BLOCK_AGENT_RUNTIME_UNAVAILABLE)
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Resume prelaunch unavailable"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    parent_tree_sha256 = stable_json_hash(_workspace_evidence_tree(workspace))
+
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert blocked.error_code == BLOCK_AGENT_RUNTIME_UNAVAILABLE
+    assert blocked.result["host_attestation_id"] == paused.result[
+        "host_attestation_id"
+    ]
+    assert stable_json_hash(_workspace_evidence_tree(workspace)) == parent_tree_sha256
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+    assert adapter.calls == 2
+
+
+def test_post_council_runtime_failure_restores_parent_tree_and_result_root(tmp_path):
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_RUNTIME_UNAVAILABLE
+
+    adapter = _CouncilPauseThenLeaseFailureAdapter(tmp_path / "state")
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Council result restore"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    parent_tree_sha256 = stable_json_hash(_workspace_evidence_tree(workspace))
+    result_root = (
+        workspace
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / job.report_id
+        / "agent_results"
+    )
+    assert not result_root.exists()
+
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert adapter.council_ingress_completed is True
+    assert blocked.error_code == BLOCK_AGENT_RUNTIME_UNAVAILABLE
+    assert blocked.result["host_attestation_id"] == paused.result[
+        "host_attestation_id"
+    ]
+    assert not result_root.exists()
+    assert stable_json_hash(_workspace_evidence_tree(workspace)) == parent_tree_sha256
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+
+
+def test_possible_orphaned_resume_writer_is_non_resumable(tmp_path):
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_ORPHANED_WRITER
+
+    adapter = _PausedThenResumeFailureAdapter(BLOCK_AGENT_ORPHANED_WRITER)
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Orphaned resume writer"))
+    service.run_once()
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert blocked.error_code == BLOCK_AGENT_ORPHANED_WRITER
+    assert (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "security"
+        / "non_resumable.json"
+    ).is_file()
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "NON_RESUMABLE"
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        service.request_resume(job.job_id)
+    assert adapter.calls == 2
+
+
+def test_resume_classifier_distinguishes_all_known_resume_states(tmp_path):
+    from factor_factory.console.run_service import (
+        RESUME_KIND_COUNCIL_INGRESS,
+        RESUME_KIND_HOST_FORMAL_CHECKPOINT,
+        RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS,
+        RESUME_KIND_HUMAN_NEXT_DERIVATION,
+        RESUME_KIND_MECHANISM_AGENT,
+        _classify_resume_route,
+    )
+
+    workspace = tmp_path / "workspace"
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / "ultimate_run_report__REPORT.json"
+    )
+
+    def classify(payload, *, start_step="6"):
+        _write_json(proof_path, payload)
+        return _classify_resume_route(
+            workspace,
+            "REPORT",
+            start_step=start_step,
+            trusted_proof_sha256=_file_sha256(proof_path),
+        )
+
+    assert classify(
+        {"status": "FAIL", "failure": {"command": "run_step4"}},
+        start_step="4",
+    ).kind == RESUME_KIND_HOST_FORMAL_CHECKPOINT
+    assert classify(
+        {
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "status": "awaiting_main_agent_mechanism_memo",
+                "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+            },
+        }
+    ).kind == RESUME_KIND_MECHANISM_AGENT
+    assert classify(
+        {
+            "status": "PAUSED",
+            "revision_council": {
+                "status": "awaiting_agent_results",
+                "effective_mode": "agentic_dispatch_manifest",
+            },
+        }
+    ).kind == RESUME_KIND_COUNCIL_INGRESS
+    assert classify(
+        {
+            "status": "PAUSED",
+            "final_outcome": "awaiting_main_agent_council_synthesis",
+        }
+    ).kind == RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS
+    assert classify(
+        {
+            "status": "PAUSED",
+            "final_outcome": "awaiting_next_derivation",
+        }
+    ).kind == RESUME_KIND_HUMAN_NEXT_DERIVATION
+    with pytest.raises(RuntimeError, match="unknown or unsupported paused resume state"):
+        classify({"status": "PAUSED"})
+
+
+def test_host_formal_checkpoint_resume_does_not_call_research_agent(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Host checkpoint retry"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    assert paused.execution_status == "REVIEW_REQUIRED"
+    assert adapter.calls == 1
+
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "status": "FAIL",
+            "failure": {"command": "run_step4", "returncode": 1},
+        },
+    )
+
+    def trusted_step4(
+        _job,
+        *,
+        worktree,
+        workspace,
+        private_execution_started=False,
+    ):
+        return {
+            "start_step": "4",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "attestation-hash",
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "receipt-hash",
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+        }
+
+    monkeypatch.setattr(service, "_validate_trusted_resume_context", trusted_step4)
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    assert adapter.calls == 1
+    host_records = list(
+        (
+            service.config.state_root
+            / "jobs"
+            / job.job_id
+            / "host-checkpoint-runs"
+        ).glob("*.json")
+    )
+    assert len(host_records) == 1
+    assert json.loads(host_records[0].read_text(encoding="utf-8"))[
+        "actor_kind"
+    ] == "host_formal_checkpoint"
+
+
+def test_generic_resume_preserves_explicit_human_decision_pause(tmp_path):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Council synthesis decision"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "status": "PAUSED",
+            "final_outcome": "awaiting_main_agent_council_synthesis",
+        },
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    review = store.get_job(job.job_id)
+    assert review.execution_status == "REVIEW_REQUIRED"
+    assert review.protocol_status == "PAUSED"
+    assert (
+        review.error_code
+        == "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED"
+    )
+    assert adapter.calls == 1
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
 
 
 def test_write_outside_factor_workspace_blocks_even_with_formal_reject(tmp_path):
@@ -1330,7 +2335,7 @@ def test_agent_write_boundary_allows_plan_but_rejects_formal_evidence(tmp_path):
     _write_json(workspace / "identity" / "web_research_plan.json", {"version": "plan"})
     with pytest.raises(
         RuntimeError,
-        match="missing:identity/web_execution_ledger.md",
+        match="BLOCK_FACTORFORGE_CONSOLE_AGENT_DELIVERABLE_MISSING:.*missing:identity/web_execution_ledger.md",
     ):
         _validate_agent_write_boundary_impl(
             workspace,
@@ -1398,7 +2403,7 @@ def test_agent_write_boundary_resume_requires_ledger_not_completion(tmp_path):
     assert "identity/web_agent_completion.json" not in required
     with pytest.raises(
         RuntimeError,
-        match="missing:identity/web_execution_ledger.md",
+        match="BLOCK_FACTORFORGE_CONSOLE_AGENT_DELIVERABLE_MISSING:.*missing:identity/web_execution_ledger.md",
     ):
         _validate_agent_write_boundary_impl(
             workspace,
@@ -1456,7 +2461,7 @@ def test_agent_write_boundary_mechanism_resume_still_requires_named_memo(tmp_pat
     )
     with pytest.raises(
         RuntimeError,
-        match="missing:objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json",
+        match="BLOCK_FACTORFORGE_CONSOLE_AGENT_DELIVERABLE_MISSING:.*missing:objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json",
     ):
         _validate_agent_write_boundary_impl(
             workspace,

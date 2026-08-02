@@ -13,7 +13,11 @@ NON_RESUMABLE_SECURITY_ERRORS = {
     "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED",
     "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID",
     "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID",
+    "BLOCK_FACTORFORGE_CONSOLE_AGENT_ORPHANED_WRITER",
     "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_CLEANUP_FAILED",
+}
+GENERIC_RESUME_DISABLED_ERRORS = {
+    "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED",
 }
 
 
@@ -212,6 +216,7 @@ def _decision_panel(job: ResearchJob, result: dict[str, Any], csrf_token: str) -
         and job.workspace_path
         and result.get("host_attestation_id")
         and job.error_code not in NON_RESUMABLE_SECURITY_ERRORS
+        and job.error_code not in GENERIC_RESUME_DISABLED_ERRORS
     )
     if can_resume:
         action = f"""

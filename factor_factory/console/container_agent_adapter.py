@@ -18,11 +18,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from factor_factory.console.agent_adapter import (
+    BLOCK_AGENT_ORPHANED_WRITER,
     BLOCK_AGENT_RUNTIME_FAILED,
     BLOCK_AGENT_RUNTIME_TIMEOUT,
     BLOCK_AGENT_RUNTIME_UNAVAILABLE,
     AgentRunResult,
+    AgentResumeTask,
     build_agent_prompt,
+    build_agent_session_key,
     copy_auth_database,
     redact_secrets,
     validate_auth_database,
@@ -203,22 +206,54 @@ class ContainerizedOpenClawResearchAgentAdapter:
             and network.returncode == 0
         )
 
-    def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
+    def run(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task: AgentResumeTask | None = None,
+    ) -> AgentRunResult:
         worktree = worktree.resolve(strict=True)
         workspace = workspace.resolve(strict=True)
         workspace.relative_to(worktree)
-        agent_id = job.agent_id or f"factorforge-web-{job.job_id.removeprefix('job_')}"
-        session_key = job.agent_session_key or f"agent:{agent_id}:{job.job_id}"
+        if resume and resume_task is None:
+            raise RuntimeError(
+                "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID: typed resume task is required"
+            )
+        base_agent_id = f"factorforge-web-{job.job_id.removeprefix('job_')}"
+        agent_id = (
+            f"{base_agent_id}-r-{resume_task.attempt_id[-8:]}"
+            if resume_task is not None
+            else (job.agent_id or base_agent_id)
+        )
+        session_key = build_agent_session_key(
+            job,
+            agent_id,
+            resume=resume,
+            resume_task=resume_task,
+        )
         prompt_path = workspace / "identity" / ("web_agent_resume.md" if resume else "web_agent_task.md")
         write_text_atomic(
             prompt_path,
-            build_agent_prompt(job, worktree=worktree, workspace=workspace, config=self.config, resume=resume),
+            build_agent_prompt(
+                job,
+                worktree=worktree,
+                workspace=workspace,
+                config=self.config,
+                resume=resume,
+                resume_task=resume_task,
+            ),
             root=workspace,
         )
 
         self._initialize_credential_material_state(job.job_id, resume=resume)
         first_issuance = self.credential_material_state(job.job_id) == "not_issued"
-        runtime_root, home, agent_dir, profile_config = self._prepare_runtime(job.job_id)
+        runtime_root, home, agent_dir, profile_config = self._prepare_runtime(
+            job.job_id,
+            phase_id=resume_task.attempt_id if resume_task is not None else None,
+        )
         git_dir = self._prepare_git_view(
             runtime_root=runtime_root,
             worktree=worktree,
@@ -246,6 +281,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
             aws_env_file=None,
             profile_config_readonly=None,
             auth_store_readonly=None,
+            protected_workspace_relatives=(
+                (resume_task.contract_relative, *resume_task.protected_inputs)
+                if resume_task is not None
+                else ()
+            ),
         )
         model = job.request.model or self.config.openclaw_model
         add_command = [
@@ -285,6 +325,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 aws_env_file=aws_env_file,
                 profile_config_readonly=profile_config,
                 auth_store_readonly=auth_store,
+                protected_workspace_relatives=(
+                    (resume_task.contract_relative, *resume_task.protected_inputs)
+                    if resume_task is not None
+                    else ()
+                ),
             )
             command = [
                 *research_common,
@@ -327,7 +372,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             except subprocess.TimeoutExpired as exc:
                 if not self._stop_container(container_name):
                     raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: timed-out agent container could not be removed"
+                        f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out agent container could not be removed"
                     ) from exc
                 stdout = redact_secrets(_as_text(exc.stdout), extra_values=credential_values)
                 stderr = redact_secrets(_as_text(exc.stderr), extra_values=credential_values)
@@ -353,6 +398,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "agent_id": agent_id,
             "session_key_sha256": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
             "resume": resume,
+            "resume_attempt_id": resume_task.attempt_id if resume_task is not None else "",
             "started_at_utc": started,
             "finished_at_utc": finished,
             "returncode": returncode,
@@ -599,7 +645,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 except subprocess.TimeoutExpired as exc:
                     if not self._stop_container(container_name):
                         raise RuntimeError(
-                            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: timed-out Council container could not be removed"
+                            f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out Council container could not be removed"
                         ) from exc
                     turn_returncode = 124
                     stdout = redact_secrets(
@@ -753,8 +799,25 @@ class ContainerizedOpenClawResearchAgentAdapter:
             result_path=str(result_path),
         )
 
-    def _prepare_runtime(self, job_id: str) -> tuple[Path, Path, Path, Path]:
+    def _prepare_runtime(
+        self,
+        job_id: str,
+        *,
+        phase_id: str | None = None,
+    ) -> tuple[Path, Path, Path, Path]:
         runtime_root = self.config.state_root / "jobs" / job_id / "container-agent"
+        if phase_id is not None:
+            if not re.fullmatch(r"resume_[a-f0-9]{32}", phase_id):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume phase identity is invalid"
+                )
+            runtime_root = (
+                self.config.state_root
+                / "jobs"
+                / job_id
+                / "container-agent-phases"
+                / phase_id
+            )
         home = runtime_root / "home"
         agent_dir = runtime_root / "agent"
         profile_dir = home / f".openclaw-{self.config.openclaw_profile}"
@@ -916,6 +979,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         worktree_mount_source: Path | None = None,
         workspace_readonly: bool = False,
         workspace_mount_source: Path | None = None,
+        protected_workspace_relatives: tuple[str, ...] = (),
     ) -> list[str]:
         command = [
             self.config.container_runtime,
@@ -993,7 +1057,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 ]
             )
         if workspace_mount_source is None:
-            for relative in (
+            protected_relatives = [
                 "manifest.json",
                 "identity/web_research_request.json",
                 "identity/data_catalog_summary.json",
@@ -1002,9 +1066,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "identity/web_research_runtime.md",
                 "identity/web_agent_task.md",
                 "identity/web_agent_resume.md",
+                "identity/web_agent_resume_contract.json",
+                "identity/web_main_agent_mechanism_answer_form.json",
+                "identity/web_resume_authorization.json",
                 "reports/user_hypothesis.md",
-            ):
+            ]
+            protected_relatives.extend(protected_workspace_relatives)
+            for relative in dict.fromkeys(protected_relatives):
                 protected = workspace / relative
+                try:
+                    protected.resolve(strict=True).relative_to(workspace.resolve(strict=True))
+                except (FileNotFoundError, RuntimeError, ValueError):
+                    continue
                 if protected.is_file() and not protected.is_symlink():
                     command.extend(["--mount", _mount(protected, readonly=True)])
         if aws_env_file is not None:
@@ -1514,7 +1587,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             value = container_id.strip()
             if value and not self._stop_container(value):
                 raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: stale agent container could not be removed"
+                    f"{BLOCK_AGENT_ORPHANED_WRITER}: stale agent container could not be removed"
                 )
         remaining = self._run_runtime(
             [
@@ -1531,7 +1604,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         )
         if remaining.strip():
             raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: stale agent containers remain after reconciliation"
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: stale agent containers remain after reconciliation"
             )
 
     def _reconcile_orphan_credentials(self) -> None:

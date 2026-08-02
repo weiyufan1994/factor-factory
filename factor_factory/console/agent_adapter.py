@@ -19,6 +19,7 @@ from factor_factory.console.web_research_plan import write_text_atomic
 
 
 BLOCK_AGENT_RUNTIME_UNAVAILABLE = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE"
+BLOCK_AGENT_ORPHANED_WRITER = "BLOCK_FACTORFORGE_CONSOLE_AGENT_ORPHANED_WRITER"
 BLOCK_AGENT_RUNTIME_FAILED = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED"
 BLOCK_AGENT_RUNTIME_TIMEOUT = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_TIMEOUT"
 
@@ -35,11 +36,46 @@ class AgentRunResult:
     result_path: str
 
 
+@dataclass(frozen=True)
+class AgentResumeTask:
+    version: str
+    attempt_id: str
+    job_id: str
+    factor_id: str
+    research_id: str
+    report_id: str
+    resume_start_step: str
+    pause_kind: str
+    pause_token: str
+    session_policy: str
+    ultimate_proof_sha256: str
+    contract_relative: str
+    status_relative: str
+    questionnaire_relative: str
+    questionnaire_markdown_relative: str
+    facts_relative: str
+    answer_form_relative: str
+    required_output_relative: str
+    optional_output_relative: str
+    read_only_inputs: tuple[str, ...]
+    protected_inputs: tuple[str, ...]
+    allowed_model_families: tuple[str, ...]
+    validation_command: str
+
+
 class ResearchAgentAdapter(Protocol):
     def validate_ready(self) -> str:
         ...
 
-    def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
+    def run(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task: AgentResumeTask | None = None,
+    ) -> AgentRunResult:
         ...
 
     def stop_all(self) -> None:
@@ -94,17 +130,42 @@ class OpenClawResearchAgentAdapter:
     ) -> tuple[dict[str, str], tuple[str, ...]]:
         return {}, ()
 
-    def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
-        agent_id = job.agent_id or f"factorforge-web-{job.job_id.removeprefix('job_')}"
-        session_key = job.agent_session_key or f"agent:{agent_id}:{job.job_id}"
+    def run(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task: AgentResumeTask | None = None,
+    ) -> AgentRunResult:
+        base_agent_id = f"factorforge-web-{job.job_id.removeprefix('job_')}"
+        agent_id = (
+            f"{base_agent_id}-r-{resume_task.attempt_id[-8:]}"
+            if resume and resume_task is not None
+            else (job.agent_id or base_agent_id)
+        )
+        session_key = build_agent_session_key(
+            job,
+            agent_id,
+            resume=resume,
+            resume_task=resume_task,
+        )
         prompt_path = workspace / "identity" / ("web_agent_resume.md" if resume else "web_agent_task.md")
         write_text_atomic(
             prompt_path,
-            build_agent_prompt(job, worktree=worktree, workspace=workspace, config=self.config, resume=resume),
+            build_agent_prompt(
+                job,
+                worktree=worktree,
+                workspace=workspace,
+                config=self.config,
+                resume=resume,
+                resume_task=resume_task,
+            ),
             root=workspace,
         )
         started = utc_now()
-        if not resume or not job.agent_id:
+        if resume or not job.agent_id:
             self._ensure_agent(agent_id, workspace, job.request.model or self.config.openclaw_model)
         command = [
             *self._command_prefix(),
@@ -154,6 +215,7 @@ class OpenClawResearchAgentAdapter:
             "agent_id": agent_id,
             "session_key_sha256": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
             "resume": resume,
+            "resume_attempt_id": resume_task.attempt_id if resume_task is not None else "",
             "started_at_utc": started,
             "finished_at_utc": utc_now(),
             "returncode": returncode,
@@ -293,9 +355,34 @@ def build_agent_prompt(
     workspace: Path,
     config: ConsoleConfig,
     resume: bool,
+    resume_task: AgentResumeTask | None = None,
 ) -> str:
+    if resume:
+        if resume_task is None:
+            raise RuntimeError(
+                "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID: typed resume task is required"
+            )
+        return _build_agent_resume_prompt(
+            job,
+            worktree=worktree,
+            workspace=workspace,
+            task=resume_task,
+        )
+    if resume_task is not None:
+        raise RuntimeError(
+            "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID: fresh authoring cannot carry a resume task"
+        )
     catalogs = "- `identity/data_catalog_summary.json` (operator-authored, read-only projection)"
-    action = "Resume the existing formal run from its current verified pause." if resume else "Start a new formal run from the submitted natural-language hypothesis."
+    action = "Start a new formal run from the submitted natural-language hypothesis."
+    packet_files = [
+        workspace / "identity" / "web_research_runtime.md",
+        workspace / "identity" / "web_research_request.json",
+        workspace / "identity" / "data_catalog_summary.json",
+        workspace / "identity" / "factor_knowledge_summary.json",
+        workspace / "identity" / "web_research_authoring_contract.json",
+        workspace / "identity" / "web_research_plan.json",
+    ]
+    packet_list = "\n".join(f"- {path}" for path in dict.fromkeys(packet_files))
     return f"""# Factor Forge Web Research Task
 
 You are the sole runtime researcher for one isolated Factor Forge task. {action}
@@ -311,14 +398,9 @@ You are the sole runtime researcher for one isolated Factor Forge task. {action}
 
 The operator has already projected the installed Ultimate, Researcher and
 Research Brain contracts into this task-local runtime packet. Read only these
-six files before acting:
+Host-named files before acting:
 
-- {workspace / 'identity' / 'web_research_runtime.md'}
-- {workspace / 'identity' / 'web_research_request.json'}
-- {workspace / 'identity' / 'data_catalog_summary.json'}
-- {workspace / 'identity' / 'factor_knowledge_summary.json'}
-- {workspace / 'identity' / 'web_research_authoring_contract.json'}
-- {workspace / 'identity' / 'web_research_plan.json'}
+{packet_list}
 
 The formal validators and `scripts/run_factorforge_ultimate.py` remain the
 source of truth. Do not read whole skill files or validator/wrapper source.
@@ -365,6 +447,135 @@ research ran. On a fresh run, exit only after the plan is complete and its prefl
 PASS; on resume, exit after the exact permitted pause artifact is complete. Do not include
 secrets or absolute paths in the execution ledger.
 """
+
+
+def _build_agent_resume_prompt(
+    job: ResearchJob,
+    *,
+    worktree: Path,
+    workspace: Path,
+    task: AgentResumeTask,
+) -> str:
+    expected_identity = (
+        task.job_id == job.job_id
+        and task.factor_id == job.factor_id
+        and task.research_id == job.research_id
+        and task.report_id == job.report_id
+    )
+    if (
+        task.version != "factorforge_console_resume_task_v1"
+        or not expected_identity
+        or task.pause_kind != "main_agent_mechanism_memo"
+        or task.pause_token != "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+        or task.resume_start_step != "6"
+        or task.session_policy != "fresh_phase_agent"
+    ):
+        raise RuntimeError(
+            "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID: mechanism resume task is invalid"
+        )
+    read_list = "\n".join(
+        f"- {workspace / relative}" for relative in task.read_only_inputs
+    )
+    model_families = ", ".join(task.allowed_model_families)
+    return f"""# Factor Forge Step6 Mechanism Resume Task
+
+You are the sole mechanism researcher for one Host-verified Step6 pause. This
+is not initial idea authoring, plan generation, data preparation, backtesting,
+Council dispatch, or Ultimate execution.
+
+## Immutable resume identity
+
+- attempt_id: {task.attempt_id}
+- job_id: {task.job_id}
+- factor_id: {task.factor_id}
+- research_id: {task.research_id}
+- report_id: {task.report_id}
+- pause_token: {task.pause_token}
+- host_resume_start_step: {task.resume_start_step}
+- session_policy: {task.session_policy}
+- engine worktree: {worktree}
+- active factor workspace: {workspace}
+
+## Research question
+
+- title: {job.request.title}
+- submitted hypothesis: {job.request.hypothesis}
+- universe: {job.request.universe}
+- formal sample: {job.request.sample_start} through {job.request.sample_end}
+- forward horizon: {job.request.forward_horizon}
+- transaction cost assumption: {job.request.transaction_cost_bps} bps
+
+Read only the Host-authorized research inputs below:
+
+- {workspace / task.contract_relative}
+{read_list}
+
+The mechanism facts packet contains only formula syntax, legal evaluation
+semantics, coverage, and validated Step4/5 metrics. The structural answer form
+contains the same immutable facts and blank research fields. Neither contains
+an accepted economic or mathematical interpretation. The Host also protects
+upstream audit artifacts, including the deterministic questionnaire and full
+factor artifacts, but those are not authorized research inputs: do not read or
+quote them.
+
+## Required deliverable
+
+1. Copy `{workspace / task.answer_form_relative}` to
+   `{workspace / task.required_output_relative}`.
+2. Preserve `resume_attempt_id`, identity, source refs, formula syntax,
+   observed metrics, component IDs/subexpressions/operators, and
+   formula/operator-presence flags exactly.
+3. Independently fill every blank research field. Set `producer` to
+   `current_main_agent`; set authoring mode to `current_agent_freeform`, role to
+   `main_agent`, and `answered_without_deterministic_template` to `true`.
+4. Answer all eight `mechanism_qa` questions with formula-specific reasoning.
+   Derive the random object, legal information set, stochastic or structural
+   model, target functional, observable estimator, payoff sign and horizon,
+   concrete payer, necessary market structure, component ablations, observed
+   metric reconciliation, costs, monotonicity, turnover, kill criteria, and at
+   least two falsifiers. An explanation that ignores contradictory metrics is
+   invalid. Name concrete counterparties and formula observables; do not use
+   canned shorthand such as "investors", "market participants", "generic
+   payer", "the factor captures alpha", "signed price state", "volume
+   participation gate", or "liquidity or turnover shock".
+5. Select both model-family fields from: {model_families}. Update the
+   operator-consistency discussion flags only after the memo actually contains
+   the corresponding discussion.
+6. Update `identity/web_execution_ledger.md` with a concise record under 4,000
+   characters. Do not include secrets or absolute paths in that ledger.
+7. Run only this Host-approved memo validator:
+
+`{task.validation_command}`
+
+Correct only the memo until the validator returns PASS, then exit. Do not write
+the optional Markdown unless useful. Do not modify the contract, facts packet,
+answer form, questionnaire, factor spec/case/evaluation, Ultimate proof, plan,
+data, knowledge, or any file outside the required memo and execution ledger. Do not run the
+materializer, Step scripts other than the exact validator above, Council,
+Ultimate, custom Python, data access, network probes, credential inspection, or
+environment enumeration. Never claim a factor verdict; the Host resumes formal
+Step6 and Council after your process exits.
+"""
+
+
+def build_agent_session_key(
+    job: ResearchJob,
+    agent_id: str,
+    *,
+    resume: bool,
+    resume_task: AgentResumeTask | None = None,
+) -> str:
+    if resume:
+        if resume_task is None or resume_task.session_policy != "fresh_phase_agent":
+            raise RuntimeError(
+                "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID: fresh resume phase is required"
+            )
+        return f"agent:{agent_id}:{job.job_id}:{resume_task.attempt_id}"
+    if resume_task is not None:
+        raise RuntimeError(
+            "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID: fresh session cannot carry resume task"
+        )
+    return job.agent_session_key or f"agent:{agent_id}:{job.job_id}"
 
 
 def redact_secrets(text: str, *, extra_values: tuple[str, ...] = ()) -> str:

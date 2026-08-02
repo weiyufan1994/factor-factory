@@ -26,6 +26,36 @@ def _request(title: str = "Overnight information diffusion"):
     )
 
 
+def _resume_task():
+    from factor_factory.console.agent_adapter import AgentResumeTask
+
+    return AgentResumeTask(
+        version="factorforge_console_resume_task_v1",
+        attempt_id=f"resume_{'a' * 32}",
+        job_id="job_1234567890",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="REPORT",
+        resume_start_step="6",
+        pause_kind="main_agent_mechanism_memo",
+        pause_token="AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+        session_policy="fresh_phase_agent",
+        ultimate_proof_sha256="b" * 64,
+        contract_relative="identity/web_agent_resume_contract.json",
+        status_relative="objects/research_iteration_master/main_agent_mechanism_memo_status__REPORT.json",
+        questionnaire_relative="objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.json",
+        questionnaire_markdown_relative="objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.md",
+        facts_relative="identity/web_main_agent_mechanism_facts.json",
+        answer_form_relative="identity/web_main_agent_mechanism_answer_form.json",
+        required_output_relative="objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json",
+        optional_output_relative="objects/research_iteration_master/main_agent_mechanism_memo__REPORT.md",
+        read_only_inputs=(),
+        protected_inputs=(),
+        allowed_model_families=("stochastic_process",),
+        validation_command="validate memo",
+    )
+
+
 def _auth_seed(
     path: Path,
     *,
@@ -361,8 +391,90 @@ def test_container_agent_refuses_prompt_symlink_escape(tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="unsafe atomic-write destination"):
-        adapter.run(job, worktree=worktree, workspace=workspace, resume=True)
+        adapter.run(
+            job,
+            worktree=worktree,
+            workspace=workspace,
+            resume=True,
+            resume_task=_resume_task(),
+        )
     assert outside.read_text(encoding="utf-8") == "must remain unchanged\n"
+
+
+def test_resume_agent_session_is_fresh_and_does_not_reuse_long_context(monkeypatch):
+    from factor_factory.console.agent_adapter import build_agent_session_key
+    from factor_factory.console.models import ResearchJob
+
+    job = ResearchJob(
+        job_id="job_1234567890",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="REPORT",
+        request=_request(),
+        agent_session_key="agent:old:long-session",
+    )
+    assert build_agent_session_key(job, "agent-id", resume=False) == "agent:old:long-session"
+    task = _resume_task()
+    resumed = build_agent_session_key(
+        job,
+        "agent-id",
+        resume=True,
+        resume_task=task,
+    )
+    assert resumed == f"agent:agent-id:{job.job_id}:{task.attempt_id}"
+    assert resumed != job.agent_session_key
+
+
+def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    workspace.mkdir(parents=True)
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        openclaw_auth_seed_db=_auth_seed(tmp_path / "seed.sqlite"),
+        openclaw_profile_template=(
+            Path(__file__).resolve().parents[1]
+            / "deploy/factorforge-console/openclaw.json.example"
+        ),
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    initial_root, initial_home, _initial_agent, _initial_profile = (
+        adapter._prepare_runtime("job_1234567890")
+    )
+    marker = initial_home / "old-transcript-marker"
+    marker.write_text("must-not-be-visible\n", encoding="utf-8")
+    task = _resume_task()
+    resume_root, resume_home, resume_agent, resume_profile = adapter._prepare_runtime(
+        "job_1234567890",
+        phase_id=task.attempt_id,
+    )
+
+    assert resume_root != initial_root
+    assert not (resume_home / marker.name).exists()
+    command = adapter._container_prefix(
+        container_name="resume-isolation-test",
+        job_id="job_1234567890",
+        worktree=source,
+        workspace=workspace,
+        runtime_root=resume_root,
+        home=resume_home,
+        git_dir=None,
+        aws_env_file=None,
+        profile_config_readonly=resume_profile,
+        auth_store_readonly=resume_agent / "openclaw-agent.sqlite",
+    )
+    joined = " ".join(command)
+    assert f"src={resume_root},dst={resume_root}" in joined
+    assert f"src={initial_root},dst={initial_root}" not in joined
+    assert str(marker) not in joined
 
 
 def test_agent_readiness_requires_healthy_dedicated_profile(tmp_path, monkeypatch):
@@ -1372,6 +1484,34 @@ def test_legacy_resume_without_denied_secret_history_blocks_before_new_lease(
         adapter._prepare_aws_environment(job_id)
     assert BLOCK_AGENT_RUNTIME_UNAVAILABLE in str(exc.value)
     assert lease_called is False
+
+
+def test_unstoppable_stale_container_uses_orphaned_writer_blocker(
+    tmp_path,
+    monkeypatch,
+):
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_ORPHANED_WRITER
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    config = ConsoleConfig(
+        source_repo=tmp_path / "source",
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    monkeypatch.setattr(
+        adapter,
+        "_run_runtime",
+        lambda *_args, **_kwargs: "stale-container-id\n",
+    )
+    monkeypatch.setattr(adapter, "_stop_container", lambda _name: False)
+
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_ORPHANED_WRITER):
+        adapter._reconcile_stale_containers()
 
 
 def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):

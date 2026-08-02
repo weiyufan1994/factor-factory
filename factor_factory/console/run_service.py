@@ -9,10 +9,17 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from factor_factory.console.agent_adapter import AgentRunResult, ResearchAgentAdapter
+from factor_factory.console.agent_adapter import (
+    BLOCK_AGENT_ORPHANED_WRITER,
+    BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+    AgentResumeTask,
+    AgentRunResult,
+    ResearchAgentAdapter,
+)
 from factor_factory.console.artifact_service import SafeArtifact, publish_official_artifacts
 from factor_factory.console.catalog_health import catalogs_healthy, require_catalogs_healthy
 from factor_factory.console.config import ConsoleConfig
@@ -43,6 +50,12 @@ from factor_factory.console.worktree_allocator import (
     WorktreeAllocationError,
 )
 from factor_factory.research_workspace import load_workspace_manifest, validate_workspace_manifest
+from factor_factory.mechanism_math.main_agent_memo import (
+    CONTRACT_VERSION,
+    REQUIRED_QA_FIELDS,
+    validate_main_agent_mechanism_memo,
+)
+from factor_factory.mechanism_math.formula_specific import BASELINE_MODEL_FAMILIES
 
 
 BLOCK_ISOLATION_AUDIT_FAILED = "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED"
@@ -50,8 +63,11 @@ BLOCK_EVIDENCE_IDENTITY_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_IDENTITY_
 BLOCK_FORMAL_EVIDENCE_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_EVIDENCE_MISSING"
 BLOCK_CREDENTIAL_REGISTRY_INVALID = "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID"
 BLOCK_AGENT_WRITE_SCOPE_INVALID = "BLOCK_FACTORFORGE_CONSOLE_AGENT_WRITE_SCOPE_INVALID"
+BLOCK_AGENT_RESUME_ARTIFACT_INVALID = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RESUME_ARTIFACT_INVALID"
+BLOCK_AGENT_DELIVERABLE_MISSING = "BLOCK_FACTORFORGE_CONSOLE_AGENT_DELIVERABLE_MISSING"
 BLOCK_HOST_FORMAL_EXECUTION_FAILED = "BLOCK_FACTORFORGE_CONSOLE_HOST_FORMAL_EXECUTION_FAILED"
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+EXPLICIT_HUMAN_DECISION_REQUIRED = "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
 PRIVATE_LIFECYCLE_VERSION = "factorforge_console_private_job_lifecycle_v1"
 PRIVATE_LIFECYCLE_RUNNING = "RUNNING"
@@ -65,8 +81,90 @@ NON_RESUMABLE_SECURITY_BLOCKERS = frozenset(
         BLOCK_ISOLATION_AUDIT_FAILED,
         BLOCK_CREDENTIAL_REGISTRY_INVALID,
         BLOCK_RESUME_TRUST_INVALID,
+        BLOCK_AGENT_ORPHANED_WRITER,
         "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_CLEANUP_FAILED",
     }
+)
+
+RETRYABLE_AGENT_RESUME_BLOCKERS = frozenset(
+    {
+        BLOCK_AGENT_DELIVERABLE_MISSING,
+        BLOCK_AGENT_RESUME_ARTIFACT_INVALID,
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED",
+    }
+)
+
+RESUME_KIND_HOST_FORMAL_CHECKPOINT = "host_formal_checkpoint"
+RESUME_KIND_MECHANISM_AGENT = "mechanism_agent"
+RESUME_KIND_COUNCIL_INGRESS = "council_ingress"
+RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS = "human_council_synthesis"
+RESUME_KIND_HUMAN_NEXT_DERIVATION = "human_next_derivation"
+
+
+@dataclass(frozen=True)
+class ResumeRoute:
+    kind: str
+    start_step: str
+    pause_state: str = ""
+    pause_token: str = ""
+
+
+@dataclass(frozen=True)
+class ResumeRestoreState:
+    files: dict[str, str | None]
+    initially_absent_directories: tuple[str, ...] = ()
+
+
+MECHANISM_METRIC_KEYS = frozenset(
+    {
+        "metric_period",
+        "rank_ic_mean",
+        "rank_ic_std",
+        "rank_ic_ir",
+        "rank_icir",
+        "pearson_ic_mean",
+        "pearson_ic_std",
+        "pearson_ic_ir",
+        "fama_macbeth",
+        "fama_macbeth_beta",
+        "fama_macbeth_premium",
+        "fama_macbeth_risk_premium",
+        "fama_macbeth_t_stat",
+        "fama_macbeth_tstat",
+        "fama_macbeth_p_value",
+        "long_side_return_daily",
+        "long_side_annual_return",
+        "long_side_annual_volatility",
+        "long_side_sharpe",
+        "long_side_max_drawdown",
+        "long_side_recovery_days",
+        "long_side_turnover_mean_daily",
+        "turnover_mean",
+        "daily_turnover",
+        "trading_cogs_daily",
+        "trading_cogs_annual",
+        "transaction_cost",
+        "cost_adjusted_return_daily",
+        "cost_adjusted_annual_return",
+        "cost_adjusted_long_side_sharpe",
+        "cost_adjusted_long_side_max_drawdown",
+        "cost_adjusted_long_side_recovery_days",
+        "long_short_spread_mean",
+        "long_short_spread_std",
+        "long_short_spread_ir",
+        "monotonicity",
+        "monotonicity_score",
+        "decile_monotonicity",
+        "quintile_monotonicity",
+    }
+)
+MECHANISM_METRIC_PREFIXES = (
+    "group_",
+    "decile_",
+    "quintile_",
+    "quantile_",
+    "fama_macbeth_",
 )
 
 
@@ -157,6 +255,118 @@ def _require_resume_request_allowed(job: ResearchJob) -> None:
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: persisted workspace identity is incomplete"
         )
+
+
+def _classify_resume_route(
+    workspace: Path,
+    report_id: str,
+    *,
+    start_step: str,
+    trusted_proof_sha256: str,
+) -> ResumeRoute:
+    proof_relative = (
+        "objects/runtime_context/"
+        f"ultimate_run_report__{report_id}.json"
+    )
+    proof_path = _read_regular_workspace_file(workspace, proof_relative)
+    if not trusted_proof_sha256 or _sha256(proof_path) != trusted_proof_sha256:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume route proof hash mismatch"
+        )
+    if start_step not in {"3", "4", "5", "6"}:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume route start step is invalid"
+        )
+    proof = _read_regular_workspace_json(workspace, proof_relative)
+    status = str(proof.get("status") or "").upper()
+    if status in {"FAIL", "BLOCK_DATA_REQUEST_PENDING"}:
+        return ResumeRoute(
+            kind=RESUME_KIND_HOST_FORMAL_CHECKPOINT,
+            start_step=start_step,
+        )
+    if status != "PAUSED" or start_step != "6":
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: unsupported formal resume state"
+        )
+
+    mechanism = (
+        proof.get("main_agent_mechanism_memo")
+        if isinstance(proof.get("main_agent_mechanism_memo"), dict)
+        else {}
+    )
+    mechanism_token = str(mechanism.get("token") or "")
+    mechanism_state = str(mechanism.get("status") or "")
+    if (
+        mechanism_token == "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+        and mechanism_state in {"", "awaiting_main_agent_mechanism_memo"}
+    ):
+        return ResumeRoute(
+            kind=RESUME_KIND_MECHANISM_AGENT,
+            start_step="6",
+            pause_state="awaiting_main_agent_mechanism_memo",
+            pause_token=mechanism_token,
+        )
+
+    council = (
+        proof.get("revision_council")
+        if isinstance(proof.get("revision_council"), dict)
+        else {}
+    )
+    if (
+        str(council.get("status") or "") == "awaiting_agent_results"
+        and str(council.get("effective_mode") or "")
+        == "agentic_dispatch_manifest"
+    ):
+        return ResumeRoute(
+            kind=RESUME_KIND_COUNCIL_INGRESS,
+            start_step="6",
+            pause_state="awaiting_agent_results",
+            pause_token="AWAITING_REVISION_COUNCIL_AGENT_RESULTS",
+        )
+
+    pause_state = str(proof.get("final_outcome") or "")
+    paused_note_relative = (
+        "objects/research_iteration_master/"
+        f"paused_research_note__{report_id}.json"
+    )
+    paused_note_path = workspace / paused_note_relative
+    if paused_note_path.exists() or paused_note_path.is_symlink():
+        paused_note = _read_regular_workspace_json(workspace, paused_note_relative)
+        note_state = str(paused_note.get("pause_state") or "")
+        if pause_state and note_state and pause_state != note_state:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: paused state evidence is inconsistent"
+            )
+        pause_state = pause_state or note_state
+    if pause_state == "awaiting_main_agent_council_synthesis":
+        return ResumeRoute(
+            kind=RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS,
+            start_step="6",
+            pause_state=pause_state,
+        )
+    if pause_state == "awaiting_next_derivation":
+        return ResumeRoute(
+            kind=RESUME_KIND_HUMAN_NEXT_DERIVATION,
+            start_step="6",
+            pause_state=pause_state,
+        )
+    raise RuntimeError(
+        f"{BLOCK_RESUME_TRUST_INVALID}: unknown or unsupported paused resume state"
+    )
+
+
+def _human_resume_message(route: ResumeRoute) -> tuple[str, str]:
+    if route.kind == RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS:
+        return (
+            "Council 已返回多个修订方案，需要明确选择修订法则后才能继续。普通续跑不会代替该决定。",
+            "请在专用 Council 综合审批入口选择方案、公式、证伪标准与终止条件。",
+        )
+    if route.kind == RESUME_KIND_HUMAN_NEXT_DERIVATION:
+        return (
+            "当前修订分支已被证伪，需要明确选择下一条数学推导方向。普通续跑不会自动生成或批准新分支。",
+            "请在专用下一轮推导入口选择问题分类和研究对象后再继续。",
+        )
+    raise ValueError("resume route does not require an explicit human decision")
 
 
 class ResearchQueueService:
@@ -350,6 +560,10 @@ class ResearchRunService:
     def _run_job(self, job: ResearchJob) -> None:
         denied_values: tuple[str, ...] = ()
         resume_trust: dict[str, Any] | None = None
+        resume_route: ResumeRoute | None = None
+        resume_task: AgentResumeTask | None = None
+        resume_restore_state: ResumeRestoreState | None = None
+        resume_parent_restored = False
         private_completion_status: str | None = None
         private_attestation_id = ""
         council_ingress_tasks: tuple[CouncilIngressTask, ...] = ()
@@ -374,13 +588,79 @@ class ResearchRunService:
                     workspace=workspace,
                     private_execution_started=True,
                 )
-                council_ingress_tasks = _trusted_council_ingress_tasks(
+                resume_route = _classify_resume_route(
                     workspace,
-                    report_id=job.report_id,
-                    trusted_resume_proof_sha256=str(
+                    job.report_id,
+                    start_step=str(resume_trust["start_step"]),
+                    trusted_proof_sha256=str(
                         resume_trust["ultimate_proof_sha256"]
                     ),
                 )
+                if resume_route.kind in {
+                    RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS,
+                    RESUME_KIND_HUMAN_NEXT_DERIVATION,
+                }:
+                    summary_message, next_action = _human_resume_message(resume_route)
+                    preserved_result = (
+                        dict(job.result) if isinstance(job.result, dict) else {}
+                    )
+                    preserved_result["summary"] = summary_message
+                    preserved_result["next_actions"] = [next_action]
+                    self.store.update_job(
+                        job.job_id,
+                        execution_status="REVIEW_REQUIRED",
+                        protocol_status="PAUSED",
+                        factor_verdict=job.factor_verdict,
+                        council_status="PAUSED",
+                        current_stage="review_required",
+                        error_code=EXPLICIT_HUMAN_DECISION_REQUIRED,
+                        error_message=summary_message,
+                        result=preserved_result,
+                        finished_at_utc="",
+                    )
+                    self.store.append_event(
+                        job.job_id,
+                        "EXPLICIT_HUMAN_DECISION_REQUIRED",
+                        summary_message,
+                        {"pause_state": resume_route.pause_state},
+                    )
+                    private_completion_status = PRIVATE_LIFECYCLE_RESUMABLE
+                    private_attestation_id = str(
+                        resume_trust.get("attestation_id") or ""
+                    )
+                    return
+                if resume_route.kind == RESUME_KIND_COUNCIL_INGRESS:
+                    council_ingress_tasks = _trusted_council_ingress_tasks(
+                        workspace,
+                        report_id=job.report_id,
+                        trusted_resume_proof_sha256=str(
+                            resume_trust["ultimate_proof_sha256"]
+                        ),
+                    )
+                    if not council_ingress_tasks:
+                        raise RuntimeError(
+                            f"{BLOCK_RESUME_TRUST_INVALID}: Council resume has no trusted ingress tasks"
+                        )
+                if resume_route.kind in {
+                    RESUME_KIND_MECHANISM_AGENT,
+                    RESUME_KIND_COUNCIL_INGRESS,
+                }:
+                    council_result_paths = tuple(
+                        task.expected_result_path for task in council_ingress_tasks
+                    )
+                    resume_restore_state = _capture_resume_restore_state(
+                        workspace,
+                        report_id=job.report_id,
+                        expected_absent_paths=council_result_paths,
+                        managed_directories=tuple(
+                            sorted(
+                                {
+                                    Path(relative).parent.as_posix()
+                                    for relative in council_result_paths
+                                }
+                            )
+                        ),
+                    )
                 self._write_request_artifacts(
                     job,
                     allocation,
@@ -388,6 +668,13 @@ class ResearchRunService:
                     trusted_resume_start_step=str(resume_trust["start_step"]),
                 )
                 self._write_resume_authorization(job, workspace)
+                if resume_route.kind == RESUME_KIND_MECHANISM_AGENT:
+                    resume_task = self._write_agent_resume_contract(
+                        job,
+                        workspace,
+                        resume_trust=resume_trust,
+                        attempt_id=f"resume_{uuid.uuid4().hex}",
+                    )
             else:
                 allocation = self.allocator.allocate(
                     factor_id=job.factor_id,
@@ -412,31 +699,54 @@ class ResearchRunService:
                     {"base_commit": allocation.base_commit},
                 )
 
-            agent_write_snapshot = _workspace_file_snapshot(workspace)
-            allowed_agent_writes, required_agent_outputs = _allowed_agent_write_paths(
-                workspace,
-                report_id=job.report_id,
-                resume=resume,
-                trusted_resume_proof_sha256=(
-                    str(resume_trust["ultimate_proof_sha256"])
-                    if resume_trust is not None
-                    else None
-                ),
-                council_ingress_tasks=council_ingress_tasks,
+            uses_research_agent = bool(
+                not resume
+                or (
+                    resume_route is not None
+                    and resume_route.kind
+                    in {RESUME_KIND_MECHANISM_AGENT, RESUME_KIND_COUNCIL_INGRESS}
+                )
             )
+            if uses_research_agent:
+                agent_write_snapshot = _workspace_file_snapshot(workspace)
+                allowed_agent_writes, required_agent_outputs = _allowed_agent_write_paths(
+                    workspace,
+                    report_id=job.report_id,
+                    resume=resume,
+                    trusted_resume_proof_sha256=(
+                        str(resume_trust["ultimate_proof_sha256"])
+                        if resume_trust is not None
+                        else None
+                    ),
+                    council_ingress_tasks=council_ingress_tasks,
+                )
+            else:
+                agent_write_snapshot = {}
+                allowed_agent_writes = set()
+                required_agent_outputs = set()
 
             self.store.update_job(
                 job.job_id,
                 execution_status="RESEARCHING",
                 protocol_status="RUNNING",
-                current_stage="researching",
+                current_stage=(
+                    "researching" if uses_research_agent else "formal_checkpoint_retry"
+                ),
             )
-            self.store.append_event(
-                job.job_id,
-                "AGENT_STARTED" if not resume else "AGENT_RESUMED",
-                "隔离研究代理已启动" if not resume else "研究代理已从现有证据继续",
-                {},
-            )
+            if uses_research_agent:
+                self.store.append_event(
+                    job.job_id,
+                    "AGENT_STARTED" if not resume else "AGENT_RESUMED",
+                    "隔离研究代理已启动" if not resume else "研究代理已从现有证据继续",
+                    {},
+                )
+            else:
+                self.store.append_event(
+                    job.job_id,
+                    "HOST_FORMAL_CHECKPOINT_RETRY_STARTED",
+                    "主机正在从可信失败检查点重试正式步骤，未启动研究代理",
+                    {"start_step": resume_route.start_step if resume_route else ""},
+                )
             current_job = self.store.get_job(job.job_id) or job
             if council_ingress_tasks:
                 run_council_ingress = getattr(
@@ -455,12 +765,34 @@ class ResearchRunService:
                     workspace=workspace,
                     tasks=council_ingress_tasks,
                 )
+            elif uses_research_agent:
+                if resume:
+                    if resume_task is None:
+                        raise RuntimeError(
+                            f"{BLOCK_RESUME_TRUST_INVALID}: typed resume task is missing"
+                        )
+                    agent_result = self.agent_adapter.run(
+                        current_job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        resume=True,
+                        resume_task=resume_task,
+                    )
+                else:
+                    agent_result = self.agent_adapter.run(
+                        current_job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        resume=False,
+                    )
             else:
-                agent_result = self.agent_adapter.run(
+                if resume_route is None or resume_route.kind != RESUME_KIND_HOST_FORMAL_CHECKPOINT:
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: host formal resume route is invalid"
+                    )
+                agent_result = self._write_host_formal_checkpoint_result(
                     current_job,
-                    worktree=worktree,
-                    workspace=workspace,
-                    resume=resume,
+                    start_step=resume_route.start_step,
                 )
             denied_values = _adapter_denied_values(self.agent_adapter, job.job_id)
             self.store.update_job(
@@ -472,20 +804,37 @@ class ResearchRunService:
             )
             self.store.append_event(
                 job.job_id,
-                "AGENT_FINISHED",
-                "研究代理已返回，开始核验正式证据",
+                "AGENT_FINISHED" if uses_research_agent else "HOST_FORMAL_CHECKPOINT_READY",
+                (
+                    "研究代理已返回，开始核验正式证据"
+                    if uses_research_agent
+                    else "可信失败检查点已通过主机预检，开始正式重试"
+                ),
                 {"returncode": agent_result.returncode},
             )
 
-            _validate_agent_write_boundary(
-                workspace,
-                before=agent_write_snapshot,
-                allowed=allowed_agent_writes,
-                required=required_agent_outputs,
-            )
+            if uses_research_agent:
+                _validate_agent_write_boundary(
+                    workspace,
+                    before=agent_write_snapshot,
+                    allowed=allowed_agent_writes,
+                    required=required_agent_outputs,
+                )
             if agent_result.returncode != 0:
                 raise RuntimeError(
                     f"BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: returncode={agent_result.returncode}"
+                )
+            if (
+                resume
+                and resume_route is not None
+                and resume_route.kind == RESUME_KIND_MECHANISM_AGENT
+            ):
+                self._validate_agent_resume_artifact(
+                    current_job,
+                    workspace,
+                    resume_trust=resume_trust or {},
+                    resume_task=resume_task,
+                    agent_result=agent_result,
                 )
 
             isolation_failures = audit_factor_worktree(worktree, workspace)
@@ -528,6 +877,7 @@ class ResearchRunService:
                 agent_result=agent_result,
                 web_materialization=web_materialization,
                 formal_execution=formal_execution,
+                resume_task=resume_task,
             )
             publication_id, public_artifacts = publish_official_artifacts(
                 workspace,
@@ -611,6 +961,32 @@ class ResearchRunService:
             else:
                 token = message.split(":", 1)[0] if message.startswith("BLOCK_") else "BLOCK_FACTORFORGE_CONSOLE_RUN_FAILED"
                 public_message = _public_error_message(message, denied_values=denied_values)
+            if (
+                token in RETRYABLE_AGENT_RESUME_BLOCKERS
+                and resume_restore_state is not None
+                and resume_trust is not None
+            ):
+                try:
+                    _restore_resume_workspace(
+                        Path(job.workspace_path),
+                        resume_restore_state,
+                        report_id=job.report_id,
+                        expected_tree_sha256=str(
+                            resume_trust.get("workspace_evidence_tree_root_sha256")
+                            or ""
+                        ),
+                    )
+                    private_completion_status = PRIVATE_LIFECYCLE_RESUMABLE
+                    private_attestation_id = str(
+                        resume_trust.get("attestation_id") or ""
+                    )
+                    resume_parent_restored = True
+                except (OSError, RuntimeError, UnicodeError, ValueError):
+                    token = BLOCK_RESUME_TRUST_INVALID
+                    public_message = (
+                        "续跑交付失败后未能恢复到已认证暂停证据；当前任务已禁止再次续跑，"
+                        "请新建隔离任务。"
+                    )
             if token in NON_RESUMABLE_SECURITY_BLOCKERS:
                 try:
                     self._mark_job_non_resumable(job, token=token)
@@ -620,6 +996,15 @@ class ResearchRunService:
                         "任务触发安全阻断，且主机私有不可续跑标记未能可靠落盘；"
                         "当前任务已禁止续跑，请新建隔离任务。"
                     )
+            failure_result = _result_without_resume_attestation(
+                self.store.get_job(job.job_id) or job
+            )
+            if resume_parent_restored and private_attestation_id:
+                failure_result["host_attestation_id"] = private_attestation_id
+                failure_result["summary"] = public_message
+                failure_result["next_actions"] = [
+                    "父暂停证据已完整恢复；可从同一任务重新继续。"
+                ]
             self.store.update_job(
                 job.job_id,
                 execution_status="BLOCKED" if token.startswith("BLOCK_") else "FAILED",
@@ -628,9 +1013,7 @@ class ResearchRunService:
                 current_stage="blocked" if token.startswith("BLOCK_") else "failed",
                 error_code=token,
                 error_message=public_message,
-                result=_result_without_resume_attestation(
-                    self.store.get_job(job.job_id) or job
-                ),
+                result=failure_result,
                 finished_at_utc=utc_now(),
             )
             self.store.append_event(
@@ -1259,7 +1642,54 @@ class ResearchRunService:
             "attestation_sha256": attestation_sha256,
             "receipt_id": receipt_id,
             "receipt_sha256": receipt_sha256,
+            "workspace_evidence_tree_root_sha256": stable_json_hash(entries),
         }
+
+    def _write_host_formal_checkpoint_result(
+        self,
+        job: ResearchJob,
+        *,
+        start_step: str,
+    ) -> AgentRunResult:
+        if start_step not in {"3", "4", "5", "6"}:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: host checkpoint start step is invalid"
+            )
+        recorded_at = utc_now()
+        result_root = (
+            self.config.state_root / "jobs" / job.job_id / "host-checkpoint-runs"
+        )
+        result_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        result_root.chmod(0o700)
+        result_path = result_root / (
+            f"host_checkpoint_{_stamp(recorded_at)}_{uuid.uuid4().hex[:12]}.json"
+        )
+        session_key = f"host-formal:{job.job_id}:{uuid.uuid4().hex}"
+        payload = {
+            "version": "factorforge_console_host_checkpoint_run_v1",
+            "actor_kind": "host_formal_checkpoint",
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "start_step": start_step,
+            "session_key_sha256": hashlib.sha256(
+                session_key.encode("utf-8")
+            ).hexdigest(),
+            "returncode": 0,
+            "recorded_at_utc": recorded_at,
+        }
+        _write_json_atomic(result_path, payload, root=self.config.state_root)
+        return AgentRunResult(
+            returncode=0,
+            agent_id="factorforge-console-host",
+            session_key=session_key,
+            started_at_utc=recorded_at,
+            finished_at_utc=recorded_at,
+            stdout_tail="host formal checkpoint accepted",
+            stderr_tail="",
+            result_path=str(result_path),
+        )
 
     def _execute_host_formal_pipeline(
         self,
@@ -1567,6 +1997,7 @@ class ResearchRunService:
         agent_result: AgentRunResult,
         web_materialization: dict[str, str],
         formal_execution: dict[str, Any],
+        resume_task: AgentResumeTask | None = None,
     ) -> str:
         evidence_hashes: dict[str, dict[str, str]] = {}
         workspace_root = workspace.resolve(strict=True)
@@ -1613,10 +2044,34 @@ class ResearchRunService:
             raise RuntimeError(
                 f"BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: agent result path is outside host state"
             ) from exc
-        if not agent_result_path.is_file() or agent_result_path.is_symlink():
+        if (
+            not agent_result_path.is_file()
+            or agent_result_path.is_symlink()
+            or agent_result_relative.parts[:2] != ("jobs", job.job_id)
+        ):
             raise RuntimeError(
                 "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: agent result record is unsafe"
             )
+        resume_artifact_binding: dict[str, Any] | None = None
+        if resume_task is not None:
+            memo_path = _read_regular_workspace_file(
+                workspace_root,
+                resume_task.required_output_relative,
+            )
+            contract_path = _read_regular_workspace_file(
+                workspace_root,
+                resume_task.contract_relative,
+            )
+            resume_artifact_binding = {
+                "version": "factorforge_console_agent_resume_artifact_binding_v1",
+                "attempt_id": resume_task.attempt_id,
+                "agent_id": agent_result.agent_id,
+                "agent_run_receipt_id": agent_result_relative.as_posix(),
+                "agent_run_receipt_sha256": _sha256(agent_result_path),
+                "resume_contract_sha256": _sha256(contract_path),
+                "mechanism_memo_artifact_id": resume_task.required_output_relative,
+                "mechanism_memo_sha256": _sha256(memo_path),
+            }
 
         receipt_id = str(formal_execution.get("receipt_id") or "")
         receipt_relative = Path(receipt_id)
@@ -1790,11 +2245,17 @@ class ResearchRunService:
             "research_id": job.research_id,
             "report_id": job.report_id,
             "base_commit": job.base_commit,
-            "host_observed_agent_process": True,
+            "host_observed_agent_process": (
+                agent_result.agent_id != "factorforge-console-host"
+            ),
+            "host_observed_checkpoint_actor": (
+                agent_result.agent_id == "factorforge-console-host"
+            ),
             "host_observed_ultimate_process": True,
             "agent_returncode": agent_result.returncode,
             "agent_result_id": agent_result_relative.as_posix(),
             "agent_result_sha256": _sha256(agent_result_path),
+            "agent_resume_artifact_binding": resume_artifact_binding,
             "host_evidence_reader_invoked": True,
             "host_terminal_formal_validation_status": (
                 "PASS"
@@ -1928,6 +2389,849 @@ class ResearchRunService:
             root=workspace,
         )
 
+    def _write_agent_resume_contract(
+        self,
+        job: ResearchJob,
+        workspace: Path,
+        *,
+        resume_trust: dict[str, Any],
+        attempt_id: str,
+    ) -> AgentResumeTask:
+        if not re.fullmatch(r"resume_[a-f0-9]{32}", attempt_id):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume attempt identity is invalid"
+            )
+        proof_relative = (
+            "objects/runtime_context/"
+            f"ultimate_run_report__{job.report_id}.json"
+        )
+        proof_path = workspace / proof_relative
+        proof = _read_regular_workspace_json(workspace, proof_relative)
+        if _sha256(proof_path) != str(resume_trust.get("ultimate_proof_sha256") or ""):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume contract proof hash mismatch"
+            )
+        pause = (
+            proof.get("main_agent_mechanism_memo")
+            if isinstance(proof.get("main_agent_mechanism_memo"), dict)
+            else {}
+        )
+        pause_token = str(pause.get("token") or "")
+        if (
+            str(proof.get("status") or "").upper() != "PAUSED"
+            or pause_token != "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+            or str(resume_trust.get("start_step") or "") != "6"
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: unsupported or unknown agent resume pause"
+            )
+        rim = "objects/research_iteration_master"
+        status_relative = (
+            f"{rim}/main_agent_mechanism_memo_status__{job.report_id}.json"
+        )
+        questionnaire_relative = (
+            f"{rim}/main_agent_mechanism_questionnaire__{job.report_id}.json"
+        )
+        questionnaire_markdown_relative = (
+            f"{rim}/main_agent_mechanism_questionnaire__{job.report_id}.md"
+        )
+        spec_relative = (
+            "objects/factor_spec_master/"
+            f"factor_spec_master__{job.report_id}.json"
+        )
+        case_relative = (
+            "objects/factor_case_master/"
+            f"factor_case_master__{job.report_id}.json"
+        )
+        evaluation_relative = (
+            "objects/validation/"
+            f"factor_evaluation__{job.report_id}.json"
+        )
+        status = _read_regular_workspace_json(workspace, status_relative)
+        questionnaire = _read_regular_workspace_json(
+            workspace, questionnaire_relative
+        )
+        _read_regular_workspace_file(
+            workspace, questionnaire_markdown_relative
+        )
+        factor_spec = _read_regular_workspace_json(workspace, spec_relative)
+        factor_case = _read_regular_workspace_json(workspace, case_relative)
+        evaluation = _read_regular_workspace_json(workspace, evaluation_relative)
+        if (
+            status.get("status") != "awaiting_main_agent_mechanism_memo"
+            or status.get("token") != pause_token
+            or str(status.get("report_id") or "") != job.report_id
+            or questionnaire.get("contract_version")
+            != "factorforge_main_agent_mechanism_questionnaire_v1"
+            or str(questionnaire.get("report_id") or "") != job.report_id
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: mechanism pause evidence is inconsistent"
+            )
+        questionnaire_ref = (
+            status.get("questionnaire_ref")
+            if isinstance(status.get("questionnaire_ref"), dict)
+            else {}
+        )
+        expected_memo_ref = (
+            status.get("expected_memo_ref")
+            if isinstance(status.get("expected_memo_ref"), dict)
+            else {}
+        )
+        expected_questionnaire_path = workspace / questionnaire_relative
+        expected_questionnaire_markdown_path = (
+            workspace / questionnaire_markdown_relative
+        )
+        expected_memo_path = (
+            workspace
+            / f"{rim}/main_agent_mechanism_memo__{job.report_id}.json"
+        )
+        expected_memo_markdown_path = (
+            workspace
+            / f"{rim}/main_agent_mechanism_memo__{job.report_id}.md"
+        )
+        if any(
+            not _artifact_ref_path_matches(reference, key, expected)
+            for reference, key, expected in (
+                (questionnaire_ref, "json_path", expected_questionnaire_path),
+                (
+                    questionnaire_ref,
+                    "markdown_path",
+                    expected_questionnaire_markdown_path,
+                ),
+                (expected_memo_ref, "json_path", expected_memo_path),
+                (
+                    expected_memo_ref,
+                    "markdown_path",
+                    expected_memo_markdown_path,
+                ),
+            )
+        ) or (
+            questionnaire_ref.get("contract_version")
+            != "factorforge_main_agent_mechanism_questionnaire_v1"
+            or expected_memo_ref.get("contract_version") != CONTRACT_VERSION
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: mechanism pause refs are invalid"
+            )
+        questionnaire_formula_facts = (
+            questionnaire.get("formula_facts")
+            if isinstance(questionnaire.get("formula_facts"), dict)
+            else {}
+        )
+        formula_facts = _mechanism_formula_facts(factor_spec)
+        formula = str(formula_facts["formula"])
+        fields = list(formula_facts["fields"])
+        operators = list(formula_facts["operators"])
+        questionnaire_formula = str(
+            questionnaire_formula_facts.get("formula") or ""
+        ).strip()
+        questionnaire_fields = {
+            str(item).strip()
+            for item in questionnaire_formula_facts.get("fields") or []
+            if str(item).strip()
+        }
+        questionnaire_operators = {
+            _normalized_operator_name(item)
+            for item in questionnaire_formula_facts.get("operators") or []
+            if _normalized_operator_name(item)
+        }
+        if (
+            questionnaire_formula != formula
+            or questionnaire_fields != set(fields)
+            or questionnaire_operators != set(operators)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: questionnaire formula facts disagree with the authoritative factor spec"
+            )
+        questionnaire_metric_facts = (
+            questionnaire.get("metric_facts")
+            if isinstance(questionnaire.get("metric_facts"), dict)
+            else {}
+        )
+        metric_facts, metric_availability = _complete_mechanism_metric_facts(
+            factor_case,
+            evaluation,
+        )
+        for key, value in questionnaire_metric_facts.items():
+            if (
+                key in metric_facts
+                and stable_json_hash(metric_facts[key]) != stable_json_hash(value)
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: questionnaire metric fact mismatch:{key}"
+                )
+        components = [
+            {
+                "component_id": "formula_root",
+                "formula_subexpression": formula,
+                "operators": operators,
+                "observable_estimator": "",
+                "economic_state": "",
+                "mathematical_object": "",
+                "expected_role": "",
+                "metric_link": "",
+            }
+        ]
+        profile = (
+            formula_facts.get("profile_flags")
+            if isinstance(formula_facts.get("profile_flags"), dict)
+            else {}
+        )
+        operator_set = {item.lower() for item in operators}
+        source_refs = {
+            "factor_spec_master": spec_relative,
+            "factor_case_master": case_relative,
+            "evaluation_summary": evaluation_relative,
+        }
+        facts_relative = "identity/web_main_agent_mechanism_facts.json"
+        facts_packet = {
+            "version": "factorforge_console_mechanism_facts_v1",
+            "attempt_id": attempt_id,
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "formula_facts": formula_facts,
+            "evaluation_contract": _project_evaluation_contract(factor_spec),
+            "observed_metrics": metric_facts,
+            "metric_availability": metric_availability,
+            "source_artifacts": {
+                key: {
+                    "artifact_id": relative,
+                    "sha256": _sha256(
+                        _read_regular_workspace_file(workspace, relative)
+                    ),
+                }
+                for key, relative in source_refs.items()
+            },
+            "research_fields_are_intentionally_blank": True,
+        }
+        _write_json_atomic(
+            workspace / facts_relative,
+            facts_packet,
+            root=workspace,
+        )
+        answer_form = {
+            "contract_version": CONTRACT_VERSION,
+            "resume_attempt_id": attempt_id,
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "created_at_utc": utc_now(),
+            "producer": "",
+            "agent_authorship": {
+                "authoring_mode": "",
+                "agent_role": "",
+                "answered_without_deterministic_template": False,
+            },
+            "source_refs": source_refs,
+            "formula": formula,
+            "formula_understanding": {
+                "formula_features": {"fields": fields, "operators": operators}
+            },
+            "formula_component_map": components,
+            "mechanism_qa": {field: "" for field in REQUIRED_QA_FIELDS},
+            "economic_hypothesis": {
+                "return_source_class": "",
+                "payer_or_counterparty": "",
+                "why_they_pay": "",
+                "necessary_market_structure": "",
+            },
+            "math_hypothesis": {
+                "selected_model_family": "",
+                "why_this_model": "",
+                "why_not_generic_template": "",
+                "random_object": "",
+                "latent_state": "",
+                "process_or_distribution": "",
+                "target_functional": "",
+                "formula_as_estimator": "",
+                "expected_metric_signature": {},
+            },
+            "math_model_selection": {
+                "model_family": "",
+                "baseline_model": "",
+                "model_mutation": "",
+            },
+            "payer": {
+                "payer_or_counterparty": "",
+                "why_they_pay": "",
+                "necessary_market_structure": "",
+            },
+            "formula_state_estimator": {
+                "latent_state": "",
+                "observable_mapping": "",
+                "component_links": [],
+            },
+            "expected_metric_signature": {},
+            "falsification_tests": [],
+            "evidence_comparison": {
+                "observed_metrics": metric_facts,
+                "mechanism_supported": "",
+                "contradictions": [],
+                "revision_implications": [],
+                "kill_criteria_triggered": [],
+            },
+            "operator_claim_consistency": {
+                "claims_correlation_or_covariance": False,
+                "formula_has_correlation_or_covariance_operator": bool(
+                    operator_set & {"correlation", "corr", "covariance", "cov"}
+                ),
+                "claims_dependence_without_operator_justification": False,
+                "explicit_dependence_justification": "",
+                "has_sign_or_threshold": bool(
+                    operator_set & {"sign", "where"}
+                ) or bool(profile.get("has_sign")),
+                "sign_threshold_discussion_present": False,
+                "has_volume_ratio": bool(profile.get("has_volume_ratio")),
+                "volume_ratio_participation_discussion_present": False,
+                "has_additive_rank_raw_ratio": bool(
+                    profile.get("has_additive_score")
+                    and profile.get("has_volume_ratio")
+                ),
+                "additive_scale_commensurability_discussion_present": False,
+            },
+            "council_questions": [],
+            "canonical_write_permission": False,
+            "execution_allowed_by_default": False,
+        }
+        answer_form_relative = "identity/web_main_agent_mechanism_answer_form.json"
+        answer_form_path = workspace / answer_form_relative
+        _write_json_atomic(answer_form_path, answer_form, root=workspace)
+        memo_relative = (
+            f"{rim}/main_agent_mechanism_memo__{job.report_id}.json"
+        )
+        optional_memo_relative = (
+            f"{rim}/main_agent_mechanism_memo__{job.report_id}.md"
+        )
+        validation_command = (
+            f"FACTORFORGE_ROOT={workspace} python3 -B "
+            f"{workspace.parents[2] / 'skills' / 'factor-forge-step6' / 'scripts' / 'validate_main_agent_mechanism_memo.py'} "
+            f"--report-id {job.report_id}"
+        )
+        read_only_inputs = (
+            facts_relative,
+            answer_form_relative,
+            "identity/web_resume_authorization.json",
+            "identity/web_research_request.json",
+            "identity/factor_knowledge_summary.json",
+        )
+        protected_inputs = tuple(
+            dict.fromkeys(
+                (
+                    proof_relative,
+                    status_relative,
+                    questionnaire_relative,
+                    questionnaire_markdown_relative,
+                    spec_relative,
+                    case_relative,
+                    evaluation_relative,
+                    *read_only_inputs,
+                )
+            )
+        )
+        protected_input_hashes = {
+            relative: _sha256(
+                _read_regular_workspace_file(workspace, relative)
+            )
+            for relative in protected_inputs
+        }
+        contract_relative = "identity/web_agent_resume_contract.json"
+        contract = {
+            "version": "factorforge_console_resume_task_v1",
+            "attempt_id": attempt_id,
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "resume_start_step": "6",
+            "pause_kind": "main_agent_mechanism_memo",
+            "pause_token": pause_token,
+            "session_policy": "fresh_phase_agent",
+            "ultimate_proof_sha256": _sha256(proof_path),
+            "facts": facts_relative,
+            "answer_form": answer_form_relative,
+            "required_output": memo_relative,
+            "optional_output": optional_memo_relative,
+            "allowed_writes": [
+                memo_relative,
+                optional_memo_relative,
+                "identity/web_execution_ledger.md",
+            ],
+            "required_writes": [
+                memo_relative,
+                "identity/web_execution_ledger.md",
+            ],
+            "agent_read_only_inputs": list(read_only_inputs),
+            "required_qa_fields": REQUIRED_QA_FIELDS,
+            "allowed_model_families": sorted(BASELINE_MODEL_FAMILIES),
+            "validation_command": validation_command,
+            "input_sha256": {
+                relative: _sha256(_read_regular_workspace_file(workspace, relative))
+                for relative in read_only_inputs
+            },
+            "host_audit_tree_sha256": stable_json_hash(protected_input_hashes),
+        }
+        _write_json_atomic(
+            workspace / contract_relative,
+            contract,
+            root=workspace,
+        )
+        return AgentResumeTask(
+            version=str(contract["version"]),
+            attempt_id=attempt_id,
+            job_id=job.job_id,
+            factor_id=job.factor_id,
+            research_id=job.research_id,
+            report_id=job.report_id,
+            resume_start_step="6",
+            pause_kind="main_agent_mechanism_memo",
+            pause_token=pause_token,
+            session_policy="fresh_phase_agent",
+            ultimate_proof_sha256=str(contract["ultimate_proof_sha256"]),
+            contract_relative=contract_relative,
+            status_relative=status_relative,
+            questionnaire_relative=questionnaire_relative,
+            questionnaire_markdown_relative=questionnaire_markdown_relative,
+            facts_relative=facts_relative,
+            answer_form_relative=answer_form_relative,
+            required_output_relative=memo_relative,
+            optional_output_relative=optional_memo_relative,
+            read_only_inputs=read_only_inputs,
+            protected_inputs=protected_inputs,
+            allowed_model_families=tuple(sorted(BASELINE_MODEL_FAMILIES)),
+            validation_command=validation_command,
+        )
+
+    def _validate_agent_resume_artifact(
+        self,
+        job: ResearchJob,
+        workspace: Path,
+        *,
+        resume_trust: dict[str, Any],
+        resume_task: AgentResumeTask | None,
+        agent_result: AgentRunResult,
+    ) -> None:
+        if resume_task is None:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: typed resume task missing"
+            )
+        contract_relative = "identity/web_agent_resume_contract.json"
+        contract = _read_regular_workspace_json(workspace, contract_relative)
+        if any(
+            contract.get(key) != expected
+            for key, expected in {
+                "version": "factorforge_console_resume_task_v1",
+                "attempt_id": resume_task.attempt_id,
+                "job_id": job.job_id,
+                "factor_id": job.factor_id,
+                "research_id": job.research_id,
+                "report_id": job.report_id,
+                "resume_start_step": str(resume_trust.get("start_step") or ""),
+                "ultimate_proof_sha256": str(
+                    resume_trust.get("ultimate_proof_sha256") or ""
+                ),
+                "pause_kind": "main_agent_mechanism_memo",
+                "pause_token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+                "session_policy": "fresh_phase_agent",
+                "facts": resume_task.facts_relative,
+                "answer_form": resume_task.answer_form_relative,
+                "required_output": resume_task.required_output_relative,
+                "optional_output": resume_task.optional_output_relative,
+            }.items()
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: resume contract identity mismatch"
+            )
+        protected_input_hashes = {
+            relative: _sha256(
+                _read_regular_workspace_file(workspace, relative)
+            )
+            for relative in resume_task.protected_inputs
+        }
+        if contract.get("host_audit_tree_sha256") != stable_json_hash(
+            protected_input_hashes
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: host audit input tree mismatch"
+            )
+        input_hashes = (
+            contract.get("input_sha256")
+            if isinstance(contract.get("input_sha256"), dict)
+            else {}
+        )
+        for relative, expected_hash in input_hashes.items():
+            input_path = _read_regular_workspace_file(workspace, str(relative))
+            if _sha256(input_path) != str(expected_hash or ""):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: resume input hash mismatch:{relative}"
+                )
+        expected_output = (
+            "objects/research_iteration_master/"
+            f"main_agent_mechanism_memo__{job.report_id}.json"
+        )
+        if contract.get("required_output") != expected_output:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: mechanism memo output binding mismatch"
+            )
+        memo = _read_agent_resume_artifact_json(workspace, expected_output)
+        answer_form_relative = str(contract.get("answer_form") or "")
+        answer_form = _read_regular_workspace_json(
+            workspace, answer_form_relative
+        )
+        spec_relative = (
+            "objects/factor_spec_master/"
+            f"factor_spec_master__{job.report_id}.json"
+        )
+        factor_spec = _read_regular_workspace_json(workspace, spec_relative)
+        failures = validate_main_agent_mechanism_memo(memo, factor_spec)
+        immutable_fields = (
+            "contract_version",
+            "resume_attempt_id",
+            "report_id",
+            "factor_id",
+            "source_refs",
+            "formula",
+            "formula_understanding",
+            "canonical_write_permission",
+            "execution_allowed_by_default",
+        )
+        for field in immutable_fields:
+            if stable_json_hash(memo.get(field)) != stable_json_hash(
+                answer_form.get(field)
+            ):
+                failures.append(f"immutable_field_changed:{field}")
+        if memo.get("resume_attempt_id") != resume_task.attempt_id:
+            failures.append("resume_attempt_id_mismatch")
+        if memo.get("producer") != "current_main_agent":
+            failures.append("producer_not_current_main_agent")
+        authorship = (
+            memo.get("agent_authorship")
+            if isinstance(memo.get("agent_authorship"), dict)
+            else {}
+        )
+        if authorship.get("authoring_mode") != "current_agent_freeform":
+            failures.append("agent_authorship.authoring_mode_invalid")
+        if authorship.get("agent_role") != "main_agent":
+            failures.append("agent_authorship.agent_role_invalid")
+        if authorship.get("answered_without_deterministic_template") is not True:
+            failures.append(
+                "agent_authorship.answered_without_deterministic_template_invalid"
+            )
+
+        state_root = self.config.state_root.resolve(strict=True)
+        agent_result_raw = Path(agent_result.result_path).expanduser()
+        if agent_result_raw.is_symlink():
+            failures.append("agent_run_receipt_unsafe")
+        else:
+            try:
+                agent_result_path = agent_result_raw.resolve(strict=True)
+                agent_result_relative = agent_result_path.relative_to(state_root)
+                agent_run = json.loads(agent_result_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, RuntimeError, ValueError, json.JSONDecodeError):
+                failures.append("agent_run_receipt_invalid")
+            else:
+                if (
+                    not agent_result_path.is_file()
+                    or agent_result_path.is_symlink()
+                    or agent_result_relative.parts[:2] != ("jobs", job.job_id)
+                    or not isinstance(agent_run, dict)
+                    or agent_run.get("version") != "factorforge_console_agent_run_v1"
+                    or agent_run.get("job_id") != job.job_id
+                    or agent_run.get("factor_id") != job.factor_id
+                    or agent_run.get("research_id") != job.research_id
+                    or agent_run.get("report_id") != job.report_id
+                    or agent_run.get("agent_id") != agent_result.agent_id
+                    or agent_run.get("resume") is not True
+                    or agent_run.get("resume_attempt_id") != resume_task.attempt_id
+                    or agent_run.get("returncode") != 0
+                    or agent_run.get("session_key_sha256")
+                    != hashlib.sha256(
+                        agent_result.session_key.encode("utf-8")
+                    ).hexdigest()
+                ):
+                    failures.append("agent_run_receipt_binding_invalid")
+        observed = (
+            memo.get("evidence_comparison", {}).get("observed_metrics")
+            if isinstance(memo.get("evidence_comparison"), dict)
+            else None
+        )
+        expected_observed = (
+            answer_form.get("evidence_comparison", {}).get("observed_metrics")
+            if isinstance(answer_form.get("evidence_comparison"), dict)
+            else None
+        )
+        if stable_json_hash(observed) != stable_json_hash(expected_observed):
+            failures.append("immutable_field_changed:evidence_comparison.observed_metrics")
+        memo_components = memo.get("formula_component_map") or []
+        form_components = answer_form.get("formula_component_map") or []
+        if not isinstance(memo_components, list) or len(memo_components) < len(
+            form_components
+        ):
+            failures.append("immutable_field_changed:formula_component_map.required_components")
+        else:
+            for index, (memo_component, form_component) in enumerate(
+                zip(memo_components, form_components)
+            ):
+                for field in ("component_id", "formula_subexpression", "operators"):
+                    memo_value = memo_component.get(field) if isinstance(memo_component, dict) else None
+                    form_value = form_component.get(field) if isinstance(form_component, dict) else None
+                    if stable_json_hash(memo_value) != stable_json_hash(form_value):
+                        failures.append(
+                            f"immutable_field_changed:formula_component_map.{index}.{field}"
+                        )
+        memo_operator = (
+            memo.get("operator_claim_consistency")
+            if isinstance(memo.get("operator_claim_consistency"), dict)
+            else {}
+        )
+        form_operator = (
+            answer_form.get("operator_claim_consistency")
+            if isinstance(answer_form.get("operator_claim_consistency"), dict)
+            else {}
+        )
+        for field in (
+            "formula_has_correlation_or_covariance_operator",
+            "has_sign_or_threshold",
+            "has_volume_ratio",
+            "has_additive_rank_raw_ratio",
+        ):
+            if memo_operator.get(field) != form_operator.get(field):
+                failures.append(
+                    f"immutable_field_changed:operator_claim_consistency.{field}"
+                )
+        if failures:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: "
+                + ",".join(dict.fromkeys(failures))
+            )
+
+
+def _normalized_operator_name(value: Any) -> str:
+    return str(value or "").strip().lower().removesuffix("()")
+
+
+def _mechanism_formula_facts(factor_spec: dict[str, Any]) -> dict[str, Any]:
+    canonical = (
+        factor_spec.get("canonical_spec")
+        if isinstance(factor_spec.get("canonical_spec"), dict)
+        else factor_spec
+    )
+    formula_ir = (
+        canonical.get("formula_ir")
+        if isinstance(canonical.get("formula_ir"), dict)
+        else {}
+    )
+    formula = str(
+        canonical.get("formula_text")
+        or formula_ir.get("formula_text")
+        or ""
+    ).strip()
+    fields = sorted(
+        {
+            str(item).strip()
+            for item in (
+                formula_ir.get("required_fields")
+                or canonical.get("required_fields")
+                or canonical.get("required_inputs")
+                or []
+            )
+            if str(item).strip()
+        }
+    )
+    operators = sorted(
+        {
+            _normalized_operator_name(item)
+            for item in (
+                formula_ir.get("operator_set")
+                or canonical.get("operator_set")
+                or canonical.get("operators")
+                or []
+            )
+            if _normalized_operator_name(item)
+        }
+    )
+    if not formula or not fields or not operators:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: authoritative formula syntax is incomplete"
+        )
+    lower_fields = {item.lower() for item in fields}
+    operator_set = set(operators)
+    compact_formula = re.sub(r"\s+", "", formula.lower())
+    has_volume = bool(lower_fields & {"volume", "vol"})
+    profile_flags = {
+        "has_sign": "sign" in operator_set,
+        "has_open_close_position": {"open", "close"}.issubset(lower_fields),
+        "has_volume_ratio": bool(
+            has_volume
+            and "divide" in operator_set
+            and ("sum" in operator_set or "sum(" in compact_formula)
+        ),
+        "has_additive_score": bool(
+            "plus" in operator_set or "+" in formula
+        ),
+    }
+    return {
+        "formula": formula,
+        "formula_ir_sha256": str(formula_ir.get("formula_hash") or ""),
+        "fields": fields,
+        "operators": operators,
+        "profile_flags": profile_flags,
+    }
+
+
+def _metric_fact_value(value: Any) -> Any | None:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list) and len(value) <= 100:
+        projected = [_metric_fact_value(item) for item in value]
+        return projected if all(item is not None for item in projected) else None
+    if isinstance(value, dict) and len(value) <= 100:
+        projected_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            projected = _metric_fact_value(item)
+            if projected is None and item is not None:
+                return None
+            projected_dict[str(key)] = projected
+        return projected_dict
+    return None
+
+
+def _project_metric_mapping(
+    target: dict[str, Any],
+    candidate: Any,
+) -> None:
+    if not isinstance(candidate, dict):
+        return
+    for raw_key, raw_value in candidate.items():
+        key = str(raw_key)
+        if (
+            key not in MECHANISM_METRIC_KEYS
+            and not key.startswith(MECHANISM_METRIC_PREFIXES)
+        ):
+            continue
+        value = _metric_fact_value(raw_value)
+        if value is not None or raw_value is None:
+            target[key] = value
+
+
+def _complete_mechanism_metric_facts(
+    factor_case: dict[str, Any],
+    evaluation: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    metrics: dict[str, Any] = {}
+    for candidate in (
+        factor_case.get("headline_metrics"),
+        factor_case.get("metrics"),
+        evaluation.get("headline_metrics"),
+        evaluation.get("key_metrics"),
+        evaluation.get("metrics"),
+    ):
+        _project_metric_mapping(metrics, candidate)
+    backends: list[dict[str, Any]] = []
+    for index, item in enumerate(evaluation.get("backend_summary") or []):
+        if not isinstance(item, dict):
+            continue
+        backend_metrics: dict[str, Any] = {}
+        _project_metric_mapping(backend_metrics, item.get("key_metrics"))
+        _project_metric_mapping(metrics, backend_metrics)
+        backends.append(
+            {
+                "index": index,
+                "backend": str(
+                    item.get("backend")
+                    or item.get("name")
+                    or item.get("backend_id")
+                    or f"backend_{index}"
+                ),
+                "status": str(item.get("status") or item.get("verdict") or ""),
+                "metric_keys": sorted(backend_metrics),
+            }
+        )
+    coverage = (
+        evaluation.get("coverage_summary")
+        if isinstance(evaluation.get("coverage_summary"), dict)
+        else {}
+    )
+    for key in ("row_count", "date_count", "ticker_count", "period_count"):
+        if key in coverage:
+            metrics[f"coverage_{key}"] = coverage[key]
+    long_side_review = (
+        factor_case.get("long_side_review")
+        if isinstance(factor_case.get("long_side_review"), dict)
+        else {}
+    )
+    if "monotonicity_diagnostic" in long_side_review:
+        metrics["monotonicity_diagnostic"] = long_side_review[
+            "monotonicity_diagnostic"
+        ]
+    required_core = (
+        "rank_ic_mean",
+        "rank_ic_ir",
+        "pearson_ic_mean",
+        "pearson_ic_ir",
+        "long_side_annual_volatility",
+        "long_side_sharpe",
+        "long_side_max_drawdown",
+        "long_side_recovery_days",
+        "long_side_turnover_mean_daily",
+        "trading_cogs_annual",
+        "cost_adjusted_annual_return",
+        "cost_adjusted_long_side_sharpe",
+        "cost_adjusted_long_side_max_drawdown",
+        "cost_adjusted_long_side_recovery_days",
+    )
+    availability = {
+        "required_core_metric_keys": list(required_core),
+        "present_core_metric_keys": [key for key in required_core if key in metrics],
+        "missing_core_metric_keys": [key for key in required_core if key not in metrics],
+        "fama_macbeth_present": any(
+            key == "fama_macbeth" or key.startswith("fama_macbeth_")
+            for key in metrics
+        ),
+        "monotonicity_present": any(
+            "monotonic" in key or key.startswith(("group_", "decile_", "quintile_"))
+            for key in metrics
+        ),
+        "backends": backends,
+    }
+    if not metrics:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated Step4/5 metric facts are missing"
+        )
+    return metrics, availability
+
+
+def _project_evaluation_contract(factor_spec: dict[str, Any]) -> dict[str, Any]:
+    canonical = (
+        factor_spec.get("canonical_spec")
+        if isinstance(factor_spec.get("canonical_spec"), dict)
+        else factor_spec
+    )
+    evaluation = (
+        canonical.get("evaluation_contract")
+        if isinstance(canonical.get("evaluation_contract"), dict)
+        else {}
+    )
+    allowed = (
+        "version",
+        "forward_horizon",
+        "signal_timestamp_policy",
+        "position_entry_policy",
+        "rebalance_frequency",
+        "transaction_cost_bps",
+        "cost_model_id",
+        "cost_formula",
+        "label_policy",
+        "availability_lags",
+        "missing_data_policy",
+    )
+    return {
+        key: evaluation[key]
+        for key in allowed
+        if key in evaluation
+    }
+
 
 def _workspace_file_snapshot(workspace: Path) -> dict[str, str]:
     root = workspace.resolve(strict=True)
@@ -1939,6 +3243,241 @@ def _workspace_file_snapshot(workspace: Path) -> dict[str, str]:
         elif path.is_file():
             snapshot[relative] = f"file:{_sha256(path)}"
     return snapshot
+
+
+def _capture_resume_restore_state(
+    workspace: Path,
+    *,
+    report_id: str,
+    expected_absent_paths: tuple[str, ...] = (),
+    managed_directories: tuple[str, ...] = (),
+) -> ResumeRestoreState:
+    root = workspace.resolve(strict=True)
+    state: dict[str, str | None] = {}
+    identity = root / "identity"
+    if identity.is_symlink() or not identity.is_dir():
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume identity directory is unsafe"
+        )
+    for path in sorted(identity.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume identity contains a symlink"
+            )
+        if path.is_file():
+            state[relative] = path.read_text(encoding="utf-8")
+        elif not path.is_dir():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume identity contains an unsafe entry"
+            )
+    for relative in (
+        "reports/user_hypothesis.md",
+        (
+            "objects/research_iteration_master/"
+            f"main_agent_mechanism_memo__{report_id}.json"
+        ),
+        (
+            "objects/research_iteration_master/"
+            f"main_agent_mechanism_memo__{report_id}.md"
+        ),
+    ):
+        path = root / relative
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume restore target is a symlink"
+            )
+        state[relative] = path.read_text(encoding="utf-8") if path.is_file() else None
+    for relative in expected_absent_paths:
+        path = _safe_resume_restore_target(root, relative)
+        if path.exists() or path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: expected resume output already exists"
+            )
+        state[relative] = None
+
+    initially_absent_directories: list[str] = []
+    for relative in managed_directories:
+        path = _safe_resume_restore_target(root, relative)
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: managed resume directory is a symlink"
+            )
+        if path.exists():
+            if not path.is_dir():
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: managed resume directory is unsafe"
+                )
+        else:
+            initially_absent_directories.append(relative)
+    return ResumeRestoreState(
+        files=state,
+        initially_absent_directories=tuple(initially_absent_directories),
+    )
+
+
+def _restore_resume_workspace(
+    workspace: Path,
+    state: ResumeRestoreState,
+    *,
+    report_id: str,
+    expected_tree_sha256: str,
+) -> None:
+    root = workspace.resolve(strict=True)
+    identity = root / "identity"
+    if identity.is_symlink() or not identity.is_dir():
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume identity directory is unsafe"
+        )
+    baseline_identity = {
+        relative for relative in state.files if relative.startswith("identity/")
+    }
+    for path in sorted(identity.rglob("*"), reverse=True):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: failed resume created an unsafe identity entry"
+            )
+        if path.is_file() and relative not in baseline_identity:
+            path.unlink()
+    expected_memo_paths = {
+        (
+            "objects/research_iteration_master/"
+            f"main_agent_mechanism_memo__{report_id}.json"
+        ),
+        (
+            "objects/research_iteration_master/"
+            f"main_agent_mechanism_memo__{report_id}.md"
+        ),
+    }
+    if not expected_memo_paths.issubset(state.files):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume restore state is incomplete"
+        )
+    for relative, content in state.files.items():
+        path = _safe_resume_restore_target(root, relative)
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume restore target is a symlink"
+            )
+        if content is None:
+            if path.exists():
+                if not path.is_file():
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: resume restore target is not a file"
+                    )
+                path.unlink()
+        else:
+            write_text_atomic(path, content, root=root)
+    for relative in sorted(
+        state.initially_absent_directories,
+        key=lambda value: len(Path(value).parts),
+        reverse=True,
+    ):
+        path = _safe_resume_restore_target(root, relative)
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: managed resume directory is unsafe"
+            )
+        if path.exists():
+            try:
+                path.rmdir()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: managed resume directory is not empty"
+                ) from exc
+    restored_tree = _workspace_evidence_tree(root)
+    if not expected_tree_sha256 or stable_json_hash(restored_tree) != expected_tree_sha256:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: restored workspace evidence tree mismatch"
+        )
+
+
+def _safe_resume_restore_target(root: Path, relative: str) -> Path:
+    relative_path = Path(relative)
+    if (
+        not relative
+        or relative_path.is_absolute()
+        or ".." in relative_path.parts
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume restore target is unsafe"
+        )
+    current = root
+    for part in relative_path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: resume restore target is a symlink"
+            )
+    return root / relative_path
+
+
+def _read_regular_workspace_file(workspace: Path, relative: str) -> Path:
+    root = workspace.resolve(strict=True)
+    path = workspace / relative
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume input is missing or outside workspace: {relative}"
+        ) from exc
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume input is not a regular file: {relative}"
+        )
+    return path
+
+
+def _artifact_ref_path_matches(
+    reference: dict[str, Any],
+    key: str,
+    expected: Path,
+) -> bool:
+    value = str(reference.get(key) or "")
+    if not value:
+        return False
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = expected.parents[2] / candidate
+    try:
+        return candidate.resolve(strict=False) == expected.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
+def _read_regular_workspace_json(workspace: Path, relative: str) -> dict[str, Any]:
+    path = _read_regular_workspace_file(workspace, relative)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume input is invalid JSON: {relative}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: resume input must be a JSON object: {relative}"
+        )
+    return payload
+
+
+def _read_agent_resume_artifact_json(
+    workspace: Path,
+    relative: str,
+) -> dict[str, Any]:
+    path = _read_regular_workspace_file(workspace, relative)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: invalid JSON:{relative}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: JSON root must be an object:{relative}"
+        )
+    return payload
 
 
 def _result_without_resume_attestation(job: ResearchJob) -> dict[str, Any]:
@@ -2112,10 +3651,15 @@ def _validate_agent_write_boundary(
         for path in changed & allowed
         if path in after and not after[path].startswith("file:")
     )
-    if missing or unsafe:
-        detail = [*(f"missing:{path}" for path in missing), *(f"unsafe:{path}" for path in unsafe)]
+    if unsafe:
+        detail = [f"unsafe:{path}" for path in unsafe]
         raise RuntimeError(
             f"{BLOCK_AGENT_WRITE_SCOPE_INVALID}: " + ",".join(detail[:50])
+        )
+    if missing:
+        detail = [f"missing:{path}" for path in missing]
+        raise RuntimeError(
+            f"{BLOCK_AGENT_DELIVERABLE_MISSING}: " + ",".join(detail[:50])
         )
 
 

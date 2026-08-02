@@ -257,6 +257,38 @@ def test_submit_research_and_api_hide_private_paths(research_console):
     assert "agent_session_key" not in api
 
 
+def test_explicit_human_decision_pause_hides_generic_resume_action(
+    research_console,
+):
+    from factor_factory.console.models import ResearchRequest
+
+    base_url, app = research_console
+    opener, _html = _login_opener(base_url)
+    job = app.store.create_job(
+        ResearchRequest(title="Council decision", hypothesis="test hypothesis")
+    )
+    app.store.update_job(
+        job.job_id,
+        execution_status="REVIEW_REQUIRED",
+        protocol_status="PAUSED",
+        council_status="PAUSED",
+        workspace_path="/private/workspace",
+        error_code="FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED",
+        error_message="Council synthesis requires an explicit decision.",
+        result={
+            "host_attestation_id": "attestations/test.json",
+            "summary": "Council synthesis requires an explicit decision.",
+            "next_actions": ["Use the dedicated Council synthesis approval."],
+        },
+    )
+
+    detail = opener.open(
+        f"{base_url}/research/{job.job_id}", timeout=3
+    ).read().decode("utf-8")
+    assert "Council synthesis requires an explicit decision." in detail
+    assert "从现有证据继续" not in detail
+
+
 def test_csrf_blocks_forged_submission(research_console):
     base_url, _app = research_console
     opener, _html = _login_opener(base_url)

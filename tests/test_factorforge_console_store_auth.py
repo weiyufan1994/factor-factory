@@ -322,6 +322,8 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "identity/web_research_runtime.md" in prompt
     assert "identity/data_catalog_summary.json" in prompt
     assert "identity/factor_knowledge_summary.json" in prompt
+    assert "identity/web_research_authoring_contract.json" in prompt
+    assert "authoring preflight command" in prompt
     assert "skills/factor-forge-ultimate/SKILL.md" not in prompt
     assert "identity/web_execution_ledger.md" in prompt
     assert "host exclusively materializes and runs formal Step3 through Step6" in prompt
@@ -558,6 +560,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         workspace / "identity" / "web_research_request.json",
         workspace / "identity" / "data_catalog_summary.json",
         workspace / "identity" / "factor_knowledge_summary.json",
+        workspace / "identity" / "web_research_authoring_contract.json",
         workspace / "identity" / "web_research_runtime.md",
         workspace / "identity" / "web_agent_task.md",
         workspace / "reports" / "user_hypothesis.md",

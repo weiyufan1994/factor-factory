@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 SUPPORTED_OPERATORS = {
     'rank': {'name': 'rank', 'aliases': ['rank'], 'arity': 1, 'category': 'cross_sectional', 'lookahead_safe': True, 'requires_window': False, 'supports_pandas': True, 'supports_qlib': True, 'qlib_name': 'Rank'},
@@ -55,8 +57,16 @@ def validate_operator_call(name: str, args: list[dict]) -> None:
         window_node = args[-1]
         if window_node.get('type') != 'constant':
             raise ValueError(f'BLOCK_OPERATOR_WINDOW_NOT_LITERAL: {name}')
+        value = window_node.get('value')
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) != int(value)
+        ):
+            raise ValueError(f'BLOCK_OPERATOR_WINDOW_NOT_INTEGER: {name}')
         try:
-            window = int(window_node.get('value'))
+            window = int(value)
         except Exception as exc:
             raise ValueError(f'BLOCK_OPERATOR_WINDOW_INVALID: {name}') from exc
         if window <= 0:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -8,7 +9,7 @@ import stat
 import subprocess
 import uuid
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -17,8 +18,10 @@ from factor_factory.console.models import (
     PILOT_FORWARD_HORIZON,
     PILOT_TRANSACTION_COST_BPS,
 )
+from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.formula.parser import parse_formula
 from factor_factory.formula.qlib_codegen import to_qlib_expression
+from factor_factory.formula.registry import SUPPORTED_OPERATORS, canonical_operator_name
 from factor_factory.knowledge_context import retrieve_factor_knowledge_context
 from factor_factory.research_conjecture import (
     PROTOCOL_VERSION,
@@ -34,6 +37,7 @@ from factor_factory.research_workspace import (
 
 PLAN_VERSION = "factorforge_web_research_plan_v1"
 BOOTSTRAP_VERSION = "factorforge_web_research_bootstrap_v1"
+AUTHORING_CONTRACT_VERSION = "factorforge_web_research_authoring_contract_v1"
 PLACEHOLDER = "RESEARCHER_MUST_REPLACE"
 
 BLOCK_PLAN_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_INVALID"
@@ -42,12 +46,7 @@ BLOCK_PLAN_IMPLEMENTATION_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_IMPLEMENTATI
 BLOCK_PLAN_CATALOG_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_CATALOG_INVALID"
 BLOCK_PLAN_RESUME_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_RESUME_POINT_INVALID"
 
-RETURN_SOURCE_FAMILIES = {
-    "risk_premium",
-    "information_advantage",
-    "market_structure_arbitrage",
-    "mixed",
-}
+RETURN_SOURCE_FAMILIES = FORMAL_RETURN_SOURCE_FAMILIES
 CLAIM_CLASSES = {
     "risk_premium",
     "information_rent",
@@ -63,6 +62,12 @@ ROUTE_FAMILIES = {
     "latent_state_measurement",
     "null_alias_counterexample",
 }
+WEB_NON_FORMULA_DAILY_FIELDS = frozenset({"ts_code", "trade_date"})
+WEB_FORMULA_OPERATORS = frozenset(
+    name
+    for name, metadata in SUPPORTED_OPERATORS.items()
+    if metadata.get("supports_pandas") and metadata.get("supports_qlib")
+)
 
 
 class WebResearchPlanError(ValueError):
@@ -174,10 +179,168 @@ def _placeholder() -> str:
     return PLACEHOLDER
 
 
+def _clean_daily_columns(catalog_summary: dict[str, Any]) -> list[str]:
+    columns: list[str] = []
+    for catalog in catalog_summary.get("catalogs") or []:
+        if not isinstance(catalog, dict):
+            continue
+        for entry in catalog.get("entries") or []:
+            if not isinstance(entry, dict) or entry.get("name") != "clean_daily_bar":
+                continue
+            for column in entry.get("columns") or []:
+                name = str(column).strip()
+                if (
+                    name
+                    and name not in WEB_NON_FORMULA_DAILY_FIELDS
+                    and name not in columns
+                ):
+                    columns.append(name)
+    return columns
+
+
+def _recommended_evidence_window(request: dict[str, Any]) -> dict[str, str]:
+    try:
+        sample_start = date.fromisoformat(str(request.get("sample_start") or ""))
+        sample_end = date.fromisoformat(str(request.get("sample_end") or ""))
+    except ValueError:
+        return {}
+    span_days = (sample_end - sample_start).days
+    if span_days < 3:
+        return {}
+    oos_start = sample_start + timedelta(days=max(2, int(span_days * 0.7)))
+    if oos_start >= sample_end:
+        oos_start = sample_end - timedelta(days=1)
+    return {
+        "is_start": sample_start.isoformat(),
+        "is_end": (oos_start - timedelta(days=1)).isoformat(),
+        "oos_start": oos_start.isoformat(),
+        "oos_end": sample_end.isoformat(),
+    }
+
+
+def _operator_signature(name: str, metadata: dict[str, Any]) -> str:
+    arity = int(metadata.get("arity") or 0)
+    requires_window = bool(metadata.get("requires_window"))
+    if arity == 1:
+        arguments = "x"
+    elif arity == 2 and requires_window:
+        arguments = "x, positive_integer_window"
+    elif arity == 2:
+        arguments = "x, y"
+    elif arity == 3 and requires_window:
+        arguments = "x, y, positive_integer_window"
+    else:
+        arguments = ", ".join(f"arg_{index + 1}" for index in range(arity))
+    return f"{name}({arguments})"
+
+
+def _noncanonical_formula_operator_calls(formula_text: str) -> list[str]:
+    try:
+        expression = ast.parse(formula_text, mode="eval")
+    except (SyntaxError, TypeError, ValueError):
+        return []
+    aliases: list[str] = []
+    for node in ast.walk(expression):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        source_name = str(node.func.id).strip()
+        try:
+            canonical_name = canonical_operator_name(source_name)
+        except KeyError:
+            continue
+        if source_name != canonical_name:
+            aliases.append(f"{source_name}->{canonical_name}")
+    return sorted(set(aliases))
+
+
+def build_authoring_contract(
+    request: dict[str, Any],
+    *,
+    catalog_summary: dict[str, Any],
+) -> dict[str, Any]:
+    supported_operators = [
+        {
+            "name": name,
+            "arity": int(SUPPORTED_OPERATORS[name]["arity"]),
+            "signature": _operator_signature(name, SUPPORTED_OPERATORS[name]),
+        }
+        for name in sorted(WEB_FORMULA_OPERATORS)
+    ]
+    return {
+        "version": AUTHORING_CONTRACT_VERSION,
+        "immutable_host_authored": True,
+        "daily_field_contract": {
+            "dataset": "clean_daily_bar",
+            "allowed_columns": _clean_daily_columns(catalog_summary),
+            "rule": (
+                "data_plan.daily_fields is a JSON list containing only the raw column names "
+                "referenced by research_object.formula_or_law, with no prose, labels, controls, "
+                "strata fields, or unused columns"
+            ),
+            "control_field_rule": (
+                "Evaluation controls and strata may be described in mechanism or regime text, "
+                "but they must not be added to data_plan.daily_fields unless the formula itself "
+                "references them"
+            ),
+        },
+        "formula_ir_contract": {
+            "syntax": (
+                "One Python-expression subset only: raw field names, numeric constants, the "
+                "listed canonical function names, and + - * / arithmetic symbols"
+            ),
+            "arithmetic_symbols": {
+                "+": "plus",
+                "- (binary)": "minus",
+                "*": "multiply",
+                "/": "divide",
+                "- (unary)": "negate",
+            },
+            "supported_operators": supported_operators,
+            "operator_declaration_rule": (
+                "implementation.operators must exactly equal the canonical operator names "
+                "produced by the formula, without aliases such as mul, sub, or div"
+            ),
+            "valid_examples": [
+                {
+                    "formula_or_law": "-(open / pre_close - 1.0)",
+                    "daily_fields": ["open", "pre_close"],
+                    "operators": ["divide", "minus", "negate"],
+                },
+                {
+                    "formula_or_law": "abs(open / pre_close - 1.0) * sign(close - open)",
+                    "daily_fields": ["open", "pre_close", "close"],
+                    "operators": ["abs", "divide", "minus", "multiply", "sign"],
+                },
+            ],
+        },
+        "economic_mechanism_contract": {
+            "return_source_family_allowed": sorted(RETURN_SOURCE_FAMILIES),
+            "claim_class_allowed": sorted(CLAIM_CLASSES),
+            "alternative_source_rule": (
+                "Every alternative_return_source_tests[].alternative_source must be one exact "
+                "return_source_family value different from the selected primary family"
+            ),
+        },
+        "evidence_window_contract": {
+            "submitted_sample_start": str(request.get("sample_start") or ""),
+            "submitted_sample_end": str(request.get("sample_end") or ""),
+            "outer_bounds_immutable": True,
+            "required_relation": "is_start <= is_end < oos_start <= oos_end",
+            "recommended_valid_example": _recommended_evidence_window(request),
+        },
+        "preflight_contract": {
+            "must_pass_before_completion": True,
+            "formal_research_started": False,
+            "rule": "Correct the named plan fields until the authoring-only preflight returns PASS",
+        },
+    }
+
+
 def build_plan_template(
     request: dict[str, Any],
     *,
     knowledge_summary: dict[str, Any],
+    authoring_contract: dict[str, Any],
 ) -> dict[str, Any]:
     identity = {
         key: str(request.get(key) or "")
@@ -186,6 +349,10 @@ def build_plan_template(
     return {
         "version": PLAN_VERSION,
         "identity": identity,
+        "authoring_contract": {
+            "version": AUTHORING_CONTRACT_VERSION,
+            "sha256": stable_json_hash(authoring_contract),
+        },
         "research_object": {
             "title": str(request.get("title") or ""),
             "hypothesis": str(request.get("hypothesis") or ""),
@@ -402,7 +569,8 @@ formal validators and `scripts/run_factorforge_ultimate.py` remain authoritative
 1. `identity/web_research_request.json`
 2. `identity/data_catalog_summary.json`
 3. `identity/factor_knowledge_summary.json`
-4. `identity/web_research_plan.json`
+4. `identity/web_research_authoring_contract.json`
+5. `identity/web_research_plan.json`
 
 Do not read whole skill files, validator source, wrapper source, or recursive
 reference documents. If a command blocks, correct the named plan field; do not
@@ -430,15 +598,41 @@ not relabel these semantics. {resume_note}
 
 Write the exact factor law in `research_object.formula_or_law` using the existing
 Factor Forge Formula IR operators and fields present in `clean_daily_bar`.
-`implementation.operators` must list the operators actually used. Web plan v1
-does not execute agent-authored Python: the trusted Formula IR code generator
-creates the formal implementation after parsing and field checks. Unsupported
-syntax, raw-minute dependencies, or derived-state requirements must finish with
-a precise BLOCK; do not substitute a raw full-window scan or custom code.
+The read-only authoring contract lists every permitted field, exact canonical
+operator name, signature, economic enum and a valid date-window example.
+`data_plan.daily_fields` must contain only bare JSON column names referenced by
+the formula. Never put prose, field roles, evaluation controls, strata fields or
+unused columns in that list. Describe controls and strata in the mechanism and
+regime text instead. Prefer `+ - * /` for arithmetic; `mul`, `sub` and `div` are
+not valid aliases. `implementation.operators` must exactly list the canonical
+operators actually emitted by the formula.
+
+Choose `economic_mechanism.return_source_family`,
+`economic_mechanism.claim_class`, and every alternative source from the exact
+finite values in the authoring contract. Keep the submitted outer sample bounds
+unchanged and enforce `is_start <= is_end < oos_start <= oos_end`.
+
+Web plan v1 does not execute agent-authored Python: the trusted Formula IR code
+generator creates the formal implementation after parsing and field checks.
+Unsupported syntax, raw-minute dependencies, or derived-state requirements must
+finish with a precise BLOCK; do not substitute a raw full-window scan or custom
+code.
 
 Use only fields declared in the plan and only information available by the
 signal timestamp. The Data API and catalogs are read-only. Missing data is a
 precise BLOCK, never fabricated evidence.
+
+## Required Authoring Preflight
+
+After completing the plan, run this authoring-only check:
+
+`python3 {worktree / 'scripts' / 'validate_factorforge_web_research_plan.py'} --workspace-root {workspace} --plan {workspace / 'identity' / 'web_research_plan.json'}`
+
+This command does not access data, materialize artifacts, or start Ultimate.
+Correct only the named fields and rerun it until `verdict=PASS`. Do not write
+`web_agent_completion.json` with `execution_status=AUTHORING_COMPLETE` until the
+preflight passes. If the contract cannot be satisfied with the available fields,
+record an explicit BLOCK instead of inventing an input.
 
 ## Host-Owned Formal Execution
 
@@ -751,6 +945,38 @@ def write_web_research_packet(
             knowledge_summary,
             root=workspace,
         )
+    catalog_summary_path = identity / "data_catalog_summary.json"
+    if freeze_research_inputs:
+        if not catalog_summary_path.is_file() or catalog_summary_path.is_symlink():
+            raise RuntimeError("frozen data catalog summary is unsafe")
+        catalog_summary = json.loads(catalog_summary_path.read_text(encoding="utf-8"))
+    else:
+        catalog_summary = summarize_catalogs(catalogs)
+        write_json_atomic(
+            catalog_summary_path,
+            catalog_summary,
+            root=workspace,
+        )
+    authoring_contract = build_authoring_contract(
+        request,
+        catalog_summary=catalog_summary,
+    )
+    authoring_contract_path = identity / "web_research_authoring_contract.json"
+    if authoring_contract_path.exists() or authoring_contract_path.is_symlink():
+        if not authoring_contract_path.is_file() or authoring_contract_path.is_symlink():
+            raise RuntimeError("existing web research authoring contract is unsafe")
+        if freeze_research_inputs:
+            existing_contract = json.loads(
+                authoring_contract_path.read_text(encoding="utf-8")
+            )
+            if stable_json_hash(existing_contract) != stable_json_hash(authoring_contract):
+                raise RuntimeError("frozen web research authoring contract changed")
+    if not freeze_research_inputs or not authoring_contract_path.exists():
+        write_json_atomic(
+            authoring_contract_path,
+            authoring_contract,
+            root=workspace,
+        )
     plan_path = identity / "web_research_plan.json"
     if (
         preserve_existing_plan
@@ -761,17 +987,11 @@ def write_web_research_packet(
     if not preserve_existing_plan or not plan_path.exists():
         write_json_atomic(
             plan_path,
-            build_plan_template(request, knowledge_summary=knowledge_summary),
-            root=workspace,
-        )
-    catalog_summary_path = identity / "data_catalog_summary.json"
-    if freeze_research_inputs:
-        if not catalog_summary_path.is_file() or catalog_summary_path.is_symlink():
-            raise RuntimeError("frozen data catalog summary is unsafe")
-    else:
-        write_json_atomic(
-            catalog_summary_path,
-            summarize_catalogs(catalogs),
+            build_plan_template(
+                request,
+                knowledge_summary=knowledge_summary,
+                authoring_contract=authoring_contract,
+            ),
             root=workspace,
         )
     if preserve_existing_plan:
@@ -845,6 +1065,34 @@ def _validate_date_window(evidence: dict[str, Any], reasons: list[str]) -> None:
             return
     if not (parsed[0] <= parsed[1] < parsed[2] <= parsed[3]):
         reasons.append("evidence_policy.window_order")
+
+
+def _legacy_authoring_contract_reference_allowed(
+    workspace: Path,
+    plan: dict[str, Any],
+) -> bool:
+    plan_path = workspace / "identity" / "web_research_plan.json"
+    bootstrap_path = workspace / "identity" / "web_research_bootstrap_result.json"
+    if (
+        not plan_path.is_file()
+        or plan_path.is_symlink()
+        or not bootstrap_path.is_file()
+        or bootstrap_path.is_symlink()
+    ):
+        return False
+    try:
+        persisted_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        bootstrap = json.loads(bootstrap_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(persisted_plan, dict)
+        and isinstance(bootstrap, dict)
+        and stable_json_hash(persisted_plan) == stable_json_hash(plan)
+        and bootstrap.get("verdict") == "PASS"
+        and str(bootstrap.get("agent_authored_plan_sha256") or "")
+        == sha256_file(plan_path)
+    )
 
 
 def validate_plan(
@@ -963,16 +1211,51 @@ def validate_plan(
         reasons.append("implementation.entrypoint")
     _require_string_list(reasons, implementation, "operators", "implementation")
     catalog_summary_path = workspace / "identity" / "data_catalog_summary.json"
-    if not catalog_summary_path.is_file():
+    if not catalog_summary_path.is_file() or catalog_summary_path.is_symlink():
         raise WebResearchPlanError(BLOCK_PLAN_CATALOG_INVALID, ["data catalog summary missing"])
     catalog_summary = json.loads(catalog_summary_path.read_text(encoding="utf-8"))
-    daily_columns: set[str] = set()
-    for catalog in catalog_summary.get("catalogs") or []:
-        if not isinstance(catalog, dict):
-            continue
-        for entry in catalog.get("entries") or []:
-            if isinstance(entry, dict) and entry.get("name") == "clean_daily_bar":
-                daily_columns.update(str(item) for item in (entry.get("columns") or []))
+    if not isinstance(catalog_summary, dict):
+        raise WebResearchPlanError(BLOCK_PLAN_CATALOG_INVALID, ["data catalog summary invalid"])
+    authoring_contract_path = (
+        workspace / "identity" / "web_research_authoring_contract.json"
+    )
+    if not authoring_contract_path.is_file() or authoring_contract_path.is_symlink():
+        raise WebResearchPlanError(
+            BLOCK_PLAN_IDENTITY_INVALID,
+            ["web research authoring contract missing or unsafe"],
+        )
+    authoring_contract = json.loads(
+        authoring_contract_path.read_text(encoding="utf-8")
+    )
+    expected_authoring_contract = build_authoring_contract(
+        request,
+        catalog_summary=catalog_summary,
+    )
+    if (
+        not isinstance(authoring_contract, dict)
+        or stable_json_hash(authoring_contract)
+        != stable_json_hash(expected_authoring_contract)
+    ):
+        raise WebResearchPlanError(
+            BLOCK_PLAN_IDENTITY_INVALID,
+            ["web research authoring contract does not match host inputs"],
+        )
+    contract_reference = (
+        plan.get("authoring_contract")
+        if isinstance(plan.get("authoring_contract"), dict)
+        else {}
+    )
+    contract_reference_valid = (
+        contract_reference.get("version") == AUTHORING_CONTRACT_VERSION
+        and str(contract_reference.get("sha256") or "")
+        == stable_json_hash(authoring_contract)
+    )
+    if not contract_reference_valid and not _legacy_authoring_contract_reference_allowed(
+        workspace,
+        plan,
+    ):
+        reasons.append("authoring_contract")
+    daily_columns = set(_clean_daily_columns(catalog_summary))
     if not daily_columns:
         reasons.append("data_plan.clean_daily_bar_catalog_missing")
     missing_daily_fields = sorted(set(str(item) for item in daily_fields) - daily_columns)
@@ -992,6 +1275,22 @@ def validate_plan(
             for error in (formula_ir.get("parse_errors") or ["parse failed"])
         )
     else:
+        noncanonical_calls = _noncanonical_formula_operator_calls(
+            str(research.get("formula_or_law") or "")
+        )
+        if noncanonical_calls:
+            reasons.append(
+                "implementation.web_operator_alias_forbidden:"
+                + ",".join(noncanonical_calls)
+            )
+        unsupported_web_operators = sorted(
+            set(formula_ir.get("operator_set") or []) - WEB_FORMULA_OPERATORS
+        )
+        if unsupported_web_operators:
+            reasons.append(
+                "implementation.web_operator_unsupported:"
+                + ",".join(unsupported_web_operators)
+            )
         required_formula_fields = set(
             str(item) for item in (formula_ir.get("required_fields") or [])
         )
@@ -1104,6 +1403,8 @@ def validate_plan(
         plan_end = date.fromisoformat(str(evidence.get("oos_end") or ""))
         if plan_start < request_start or plan_end > request_end:
             reasons.append("evidence_policy.outside_submitted_sample")
+        if plan_start != request_start or plan_end != request_end:
+            reasons.append("evidence_policy.submitted_outer_bounds_mismatch")
     except ValueError:
         reasons.append("evidence_policy.submitted_sample_invalid")
     for field in (

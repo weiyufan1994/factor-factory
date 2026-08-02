@@ -41,7 +41,8 @@
     "scripts/materialize_factorforge_web_research.py",
     "scripts/refresh_factorforge_console_catalog.py",
     "scripts/run_factorforge_console.py",
-    "scripts/run_factorforge_model_broker.py"
+    "scripts/run_factorforge_model_broker.py",
+    "scripts/validate_factorforge_web_research_plan.py"
   ],
   "step4_backend_helpers": [
     "scripts/build_report_qlib_provider.py",

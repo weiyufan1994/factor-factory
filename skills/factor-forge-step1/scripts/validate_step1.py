@@ -4,9 +4,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
+
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'
@@ -43,7 +49,7 @@ def valid_knowledge_reference_contract(value) -> bool:
 def valid_economic_hypothesis(value) -> bool:
     if not isinstance(value, dict) or not value:
         return False
-    if value.get('macro_return_source') not in {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'mixed'}:
+    if value.get('macro_return_source') not in FORMAL_RETURN_SOURCE_FAMILIES:
         return False
     second = value.get('second_layer')
     return (
@@ -99,7 +105,7 @@ def valid_market_process_thesis(value) -> bool:
     required = ['market_phenomenon', 'economic_hypothesis', 'return_source_family', 'payer_or_counterparty', 'why_they_pay']
     source = value.get('return_source_family')
     alternatives = value.get('alternative_return_source_tests')
-    valid_sources = {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'constraint_driven_arbitrage', 'mixed'}
+    valid_sources = FORMAL_RETURN_SOURCE_FAMILIES
     has_alternative_test = False
     if isinstance(alternatives, list):
         for item in alternatives:

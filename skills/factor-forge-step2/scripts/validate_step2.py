@@ -38,6 +38,7 @@ FORBIDDEN_PRODUCER_TOKENS = {
 ALLOWED_IMPLEMENTATION_MODES = {'operator', 'direct_code', 'hybrid'}
 
 from factor_factory.artifact_identity import build_spec_hash
+from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.factor_families.registry import FamilyPluginContractError, get_family_plugin_contract
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
@@ -102,7 +103,7 @@ def direct_code_contract_checks(master):
 def valid_economic_hypothesis(value) -> bool:
     if not isinstance(value, dict) or not value:
         return False
-    if value.get('macro_return_source') not in {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'mixed'}:
+    if value.get('macro_return_source') not in FORMAL_RETURN_SOURCE_FAMILIES:
         return False
     second = value.get('second_layer')
     return (

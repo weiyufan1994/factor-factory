@@ -996,6 +996,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "identity/web_research_request.json",
                 "identity/data_catalog_summary.json",
                 "identity/factor_knowledge_summary.json",
+                "identity/web_research_authoring_contract.json",
                 "identity/web_research_runtime.md",
                 "identity/web_agent_task.md",
                 "identity/web_agent_resume.md",

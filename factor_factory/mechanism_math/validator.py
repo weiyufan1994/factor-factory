@@ -4,6 +4,8 @@ import re
 import json
 from typing import Any
 
+from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
+
 from .schema import (
     CONTRACT_VERSION,
     CONTRACT_VERSION_V2,
@@ -511,7 +513,7 @@ def _validate_t0_t1_stochastic_benchmark(contract: dict[str, Any]) -> list[dict[
 def _validate_return_source_review(thesis: dict[str, Any]) -> list[dict[str, str]]:
     failures: list[dict[str, str]] = []
     source = str(thesis.get("return_source_family") or "")
-    allowed = {"risk_premium", "information_advantage", "market_structure_arbitrage", "constraint_driven_arbitrage", "mixed"}
+    allowed = FORMAL_RETURN_SOURCE_FAMILIES
     tests = thesis.get("alternative_return_source_tests")
     if source not in allowed or not isinstance(tests, list) or not tests:
         _failures_add(

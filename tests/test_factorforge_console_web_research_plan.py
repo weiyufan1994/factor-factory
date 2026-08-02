@@ -280,6 +280,31 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
     summary = json.loads((workspace / "identity" / "data_catalog_summary.json").read_text(encoding="utf-8"))
     assert summary["catalogs"][0]["entries"][0]["name"] == "clean_daily_bar"
     assert "open" in summary["catalogs"][0]["entries"][0]["columns"]
+    contract = json.loads(
+        (workspace / "identity" / "web_research_authoring_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    operator_names = {
+        item["name"] for item in contract["formula_ir_contract"]["supported_operators"]
+    }
+    assert contract["version"] == "factorforge_web_research_authoring_contract_v1"
+    assert contract["immutable_host_authored"] is True
+    assert "open" in contract["daily_field_contract"]["allowed_columns"]
+    assert "multiply" in operator_names
+    assert "mul" not in operator_names
+    assert "constraint_driven_arbitrage" in (
+        contract["economic_mechanism_contract"]["return_source_family_allowed"]
+    )
+    assert contract["evidence_window_contract"]["required_relation"] == (
+        "is_start <= is_end < oos_start <= oos_end"
+    )
+    guide = (workspace / "identity" / "web_research_runtime.md").read_text(
+        encoding="utf-8"
+    )
+    assert "validate_factorforge_web_research_plan.py" in guide
+    assert "controls and strata" in guide
+    assert "`mul`, `sub` and `div` are" in guide
 
     try:
         validate_plan(plan, workspace=workspace)
@@ -288,6 +313,201 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
         assert "unreplaced_placeholders" in exc.reasons
     else:
         raise AssertionError("unfilled web research plan must block")
+
+
+def test_authoring_preflight_passes_valid_plan_and_reports_formula_contract(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    _fill_plan(workspace)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_factorforge_web_research_plan.py",
+            "--workspace-root",
+            str(workspace),
+            "--plan",
+            str(workspace / "identity" / "web_research_plan.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["verdict"] == "PASS"
+    assert result["formal_research_started"] is False
+    assert result["required_fields"] == ["open", "pre_close"]
+    assert result["operator_set"] == ["divide", "minus", "negate"]
+
+
+def test_authoring_preflight_blocks_v5_style_prose_aliases_and_bad_enums(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    plan["research_object"]["formula_or_law"] = (
+        "mul(abs(sub(div(open, pre_close), 1)), sign(sub(close, open)))"
+    )
+    plan["data_plan"]["daily_fields"] = [
+        "signal fields (formula inputs): open, close, pre_close"
+    ]
+    plan["implementation"]["operators"] = ["div", "sub", "abs", "sign", "mul"]
+    plan["economic_mechanism"]["return_source_family"] = "behavioral reversal"
+    plan["economic_mechanism"]["claim_class"] = "rank predictive"
+    plan["evidence_policy"]["is_end"] = plan["evidence_policy"]["oos_end"]
+    plan_path = workspace / "identity" / "web_research_plan.json"
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_factorforge_web_research_plan.py",
+            "--workspace-root",
+            str(workspace),
+            "--plan",
+            str(plan_path),
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert proc.returncode == 1
+    result = json.loads(proc.stderr)
+    assert result["verdict"] == "BLOCK"
+    reasons = result["block_reasons"]
+    assert any(reason.startswith("data_plan.daily_fields_not_in_clean_daily_bar") for reason in reasons)
+    assert any(reason.startswith("implementation.formula_ir:") for reason in reasons)
+    assert "economic_mechanism.return_source_family" in reasons
+    assert "economic_mechanism.claim_class" in reasons
+    assert "evidence_policy.window_order" in reasons
+
+
+def test_authoring_contract_and_web_operator_subset_are_fail_closed(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    plan["research_object"]["formula_or_law"] = "signedpower(open, 2)"
+    plan["data_plan"]["daily_fields"] = ["open"]
+    plan["implementation"]["operators"] = ["signedpower"]
+
+    with pytest.raises(WebResearchPlanError) as unsupported:
+        validate_plan(plan, workspace=workspace)
+    assert unsupported.value.token == BLOCK_PLAN_INVALID
+    assert "implementation.web_operator_unsupported:signedpower" in unsupported.value.reasons
+
+    plan["research_object"]["formula_or_law"] = "mean(close, 2.5)"
+    plan["data_plan"]["daily_fields"] = ["close"]
+    plan["implementation"]["operators"] = ["mean"]
+    with pytest.raises(WebResearchPlanError) as fractional_window:
+        validate_plan(plan, workspace=workspace)
+    assert any(
+        "BLOCK_OPERATOR_WINDOW_NOT_INTEGER: mean" in reason
+        for reason in fractional_window.value.reasons
+    )
+
+    plan["research_object"]["formula_or_law"] = "ts_mean(close, 5)"
+    with pytest.raises(WebResearchPlanError) as alias:
+        validate_plan(plan, workspace=workspace)
+    assert "implementation.web_operator_alias_forbidden:ts_mean->mean" in alias.value.reasons
+
+    for invalid_constant in ("True", "1e309"):
+        plan["research_object"]["formula_or_law"] = f"close + {invalid_constant}"
+        plan["implementation"]["operators"] = ["plus"]
+        with pytest.raises(WebResearchPlanError) as constant:
+            validate_plan(plan, workspace=workspace)
+        assert any(
+            "BLOCK_FORMULA_CONSTANT_INVALID" in reason
+            for reason in constant.value.reasons
+        )
+
+    contract_path = workspace / "identity" / "web_research_authoring_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["daily_field_contract"]["allowed_columns"].append("invented_field")
+    contract_path.write_text(
+        json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebResearchPlanError) as tampered:
+        validate_plan(_fill_plan(workspace), workspace=workspace)
+    assert tampered.value.token == "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_IDENTITY_INVALID"
+    assert "web research authoring contract does not match host inputs" in tampered.value.reasons
+
+
+def test_constraint_driven_return_source_materializes_and_passes_step1(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    plan["economic_mechanism"]["return_source_family"] = (
+        "constraint_driven_arbitrage"
+    )
+    plan_path = workspace / "identity" / "web_research_plan.json"
+    plan_path.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "FACTORFORGE_STATE_CATALOG": str(catalog)}
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "scripts/materialize_factorforge_web_research.py",
+            "--workspace-root",
+            str(workspace),
+            "--plan",
+            str(plan_path),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    alpha_idea = json.loads(
+        (
+            workspace
+            / "objects"
+            / "alpha_idea_master"
+            / "alpha_idea_master__WEB_REPORT.json"
+        ).read_text(encoding="utf-8")
+    )
+    discipline = alpha_idea["research_discipline"]
+    assert discipline["economic_hypothesis"]["macro_return_source"] == (
+        "constraint_driven_arbitrage"
+    )
+    assert discipline["market_process_thesis"]["return_source_family"] == (
+        "constraint_driven_arbitrage"
+    )
 
 
 def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_path):

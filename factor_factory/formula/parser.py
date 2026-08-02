@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import math
 from typing import Any
 
 from factor_factory.artifact_identity import stable_hash
@@ -15,6 +16,8 @@ def _node(raw: ast.AST) -> dict[str, Any]:
     if isinstance(raw, ast.Name):
         return {'type': 'field', 'name': raw.id, 'resolved_field': resolve_field(raw.id)}
     if isinstance(raw, ast.Constant) and isinstance(raw.value, (int, float)):
+        if isinstance(raw.value, bool) or not math.isfinite(float(raw.value)):
+            raise ValueError(f'BLOCK_FORMULA_CONSTANT_INVALID: {raw.value!r}')
         return {'type': 'constant', 'value': raw.value}
     if isinstance(raw, ast.UnaryOp) and isinstance(raw.op, ast.USub):
         return {'type': 'operator', 'operator': 'negate', 'args': [_node(raw.operand)]}

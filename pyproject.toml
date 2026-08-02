@@ -19,11 +19,15 @@ dependencies = [
 step4 = [
   "matplotlib>=3.10",
   "pyarrow>=14.0",
+  "scipy>=1.15,<1.16; python_version < '3.11'",
+  "scipy>=1.16; python_version >= '3.11'",
 ]
 qlib = [
   "matplotlib>=3.10",
   "pyarrow>=14.0",
   "pyqlib>=0.9.7",
+  "scipy>=1.15,<1.16; python_version < '3.11'",
+  "scipy>=1.16; python_version >= '3.11'",
 ]
 
 [tool.setuptools]

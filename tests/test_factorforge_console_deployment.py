@@ -154,13 +154,18 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     host_requirements = (
         REPO_ROOT / "deploy/factorforge-console/requirements-host.txt"
     ).read_text(encoding="utf-8")
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "matplotlib==3.10.8" in host_requirements
     assert "pyarrow==25.0.0" in host_requirements
+    assert "scipy==1.16.3" in host_requirements
+    assert 'scipy>=1.15,<1.16; python_version < \'3.11\'' in pyproject
+    assert 'scipy>=1.16; python_version >= \'3.11\'' in pyproject
     assert (
         "ExecStartPre=/opt/factorforge-console/venv/bin/python -c "
-        '"import matplotlib, pyarrow, pyarrow.fs; '
+        '"import matplotlib, pyarrow, pyarrow.fs, scipy; '
         "assert matplotlib.__version__ == '3.10.8'; "
-        "assert pyarrow.__version__ == '25.0.0'\""
+        "assert pyarrow.__version__ == '25.0.0'; "
+        "assert scipy.__version__ == '1.16.3'\""
     ) in runner_unit
 
     statements = {item["Sid"]: item for item in policy["Statement"]}

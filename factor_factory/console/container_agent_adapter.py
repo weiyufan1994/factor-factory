@@ -796,7 +796,13 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent profile config is unreadable") from exc
         agents = ((payload.get("agents") or {}).get("list") or []) if isinstance(payload, dict) else []
         match = next((item for item in agents if str(item.get("id") or "") == agent_id), None)
-        if not isinstance(match, dict) or len(agents) != 1:
+        agent_ids = [str(item.get("id") or "") for item in agents if isinstance(item, dict)]
+        if (
+            not isinstance(match, dict)
+            or len(agent_ids) != len(agents)
+            or len(agent_ids) != len(set(agent_ids))
+            or set(agent_ids) not in ({agent_id}, {"main", agent_id})
+        ):
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent binding is missing")
         expected = {"workspace": worktree, "agentDir": agent_dir}
         for key, path in expected.items():

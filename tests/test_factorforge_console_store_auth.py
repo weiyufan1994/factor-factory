@@ -560,6 +560,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
             )
             payload = json.loads(profile.read_text(encoding="utf-8"))
             payload.setdefault("agents", {})["list"] = [
+                {"id": "main"},
                 {
                     "id": "factorforge-web-123abc",
                     "workspace": str(source.resolve()),

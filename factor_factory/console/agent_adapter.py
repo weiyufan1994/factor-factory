@@ -606,9 +606,11 @@ quote them.
      expected sign or shape with the immutable observed metrics, including any
      contradiction; do not substitute differently named threshold keys.
    - Fill the top-level `falsification_tests` as a JSON list with at least two
-     formula-specific, empirically decidable tests. A discussion inside
-     `mechanism_qa`, `math_hypothesis`, or another nested field does not satisfy
-     this required top-level field.
+     formula-specific, empirically decidable tests. Every list item must be one
+     non-empty plain JSON string; objects, dictionaries, arrays, or structured
+     test records are invalid. A discussion inside `mechanism_qa`,
+     `math_hypothesis`, or another nested field does not satisfy this required
+     top-level field.
 6. Select both model-family fields from: {model_families}. Update the
    operator-consistency discussion flags only after the memo actually contains
    the corresponding discussion. For every `formula_component_map` item,

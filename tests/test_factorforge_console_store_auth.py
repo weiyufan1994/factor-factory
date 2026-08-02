@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 import sqlite3
@@ -477,7 +478,8 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     assert str(marker) not in joined
 
 
-def test_container_resume_uses_facts_only_workspace_view(tmp_path):
+def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
+    import factor_factory.console.container_agent_adapter as adapter_module
     from dataclasses import replace
 
     from factor_factory.console.config import ConsoleConfig
@@ -525,6 +527,9 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path):
         json.dumps({"deterministic_interpretation": "must stay hidden"}) + "\n",
         encoding="utf-8",
     )
+    unlisted_parent_evidence = workspace / "reports/unlisted_evidence.json"
+    unlisted_parent_evidence.parent.mkdir(parents=True)
+    unlisted_parent_evidence.write_text('{"status": "baseline"}\n', encoding="utf-8")
 
     config = ConsoleConfig(
         source_repo=source,
@@ -541,6 +546,7 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path):
         resume_task=task,
     )
 
+    assert not view.root.is_relative_to(runtime_root)
     assert not (view.root / task.protected_inputs[0]).exists()
     safe_spec = json.loads(
         (
@@ -565,16 +571,32 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path):
         aws_env_file=None,
         profile_config_readonly=None,
         auth_store_readonly=None,
-        workspace_readonly=True,
+        workspace_readonly=False,
         workspace_mount_source=view.root,
-        writable_workspace_relatives=view.writable_relatives,
-        writable_workspace_source_root=view.root,
+        protected_workspace_relatives=tuple(
+            relative for relative, _digest in view.read_only_file_sha256
+        ),
     )
     joined = " ".join(command)
-    assert f"src={view.root},dst={workspace},readonly" in joined
+    mount_specs = [item for item in command if item.startswith("type=bind,")]
+    mount_targets = [
+        Path(spec.split(",dst=", 1)[1].split(",", 1)[0])
+        for spec in mount_specs
+    ]
+    assert not any(
+        view.root == target or view.root.is_relative_to(target)
+        for target in mount_targets
+    )
+    assert f"src={view.root},dst={workspace}" in joined
+    assert f"src={view.root},dst={workspace},readonly" not in joined
     assert f"src={workspace},dst={workspace}" not in joined
     assert str(protected) not in joined
-    assert f"src={view.root / task.required_output_relative}" in joined
+    for relative, _digest in view.read_only_file_sha256:
+        assert (
+            f"src={view.root / relative},dst={workspace / relative},readonly"
+            in joined
+        )
+    assert f"src={view.root / task.required_output_relative}" not in joined
     assert f"src={workspace / task.required_output_relative}" not in joined
     assert f"src={workspace / 'identity/web_execution_ledger.md'}" not in joined
 
@@ -582,10 +604,132 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path):
         '{"memo": "phase local"}\n',
         encoding="utf-8",
     )
+    with pytest.raises(RuntimeError, match="resume output is empty:identity/web_execution_ledger.md"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    assert not (workspace / task.required_output_relative).exists()
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\n"
+
+    (view.root / task.required_output_relative).write_text(
+        "not json\n",
+        encoding="utf-8",
+    )
     (view.root / "identity/web_execution_ledger.md").write_text(
         "phase ledger\n",
         encoding="utf-8",
     )
+    with pytest.raises(RuntimeError, match="resume output is invalid JSON"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    assert not (workspace / task.required_output_relative).exists()
+
+    unexpected = view.root / "unexpected.txt"
+    unexpected.write_text("must not be promoted\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unexpected entries"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    unexpected.unlink()
+
+    memo_path = view.root / task.required_output_relative
+    optional_path = view.root / task.optional_output_relative
+    memo_path.unlink()
+    os.link(optional_path, memo_path)
+    with pytest.raises(RuntimeError, match="resume workspace file is unsafe"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    memo_path.unlink()
+    memo_path.touch(mode=0o600)
+
+    (view.root / task.required_output_relative).write_text(
+        '{"memo": "phase local"}\n',
+        encoding="utf-8",
+    )
+    read_only_relative, _digest = view.read_only_file_sha256[0]
+    read_only_file = view.root / read_only_relative
+    original_read_only = read_only_file.read_bytes()
+    read_only_file.chmod(0o600)
+    read_only_file.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="resume input changed"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    assert not (workspace / task.required_output_relative).exists()
+    read_only_file.write_bytes(original_read_only)
+    read_only_file.chmod(0o400)
+
+    original_parent_protected = protected.read_bytes()
+    protected.write_text("changed parent evidence\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="parent workspace evidence tree changed"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    assert not (workspace / task.required_output_relative).exists()
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\n"
+    protected.write_bytes(original_parent_protected)
+
+    original_unlisted_evidence = unlisted_parent_evidence.read_bytes()
+    unlisted_parent_evidence.write_text(
+        '{"status": "changed"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="parent workspace evidence tree changed"):
+        adapter._promote_resume_workspace_view(view, workspace=workspace)
+    assert not (workspace / task.required_output_relative).exists()
+    unlisted_parent_evidence.write_bytes(original_unlisted_evidence)
+
+    original_atomic_replace = adapter_module._replace_text_atomic_existing
+
+    def fail_after_ledger_replace(
+        workspace_root,
+        relative,
+        text,
+        *,
+        expected_bytes,
+    ):
+        original_atomic_replace(
+            workspace_root,
+            relative,
+            text,
+            expected_bytes=expected_bytes,
+        )
+        if relative == "identity/web_execution_ledger.md" and "phase ledger" in text:
+            raise OSError("injected post-replace ledger failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter_module,
+            "_replace_text_atomic_existing",
+            fail_after_ledger_replace,
+        )
+        with pytest.raises(OSError, match="post-replace ledger failure"):
+            adapter._promote_resume_workspace_view(view, workspace=workspace)
+    assert not (workspace / task.required_output_relative).exists()
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\n"
+
+    original_unlink = os.unlink
+
+    def leave_atomic_temporary(path, *, dir_fd=None):
+        if str(path).endswith(".tmp"):
+            raise OSError("injected temporary cleanup failure")
+        return original_unlink(path, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "unlink", leave_atomic_temporary)
+        with pytest.raises(
+            RuntimeError,
+            match="ORPHANED_WRITER.*parent_workspace_evidence_tree",
+        ):
+            adapter._promote_resume_workspace_view(view, workspace=workspace)
+    orphaned_output = workspace / task.required_output_relative
+    assert orphaned_output.exists()
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\n"
+    temporary_files = tuple(
+        path for path in workspace.rglob("*.tmp") if path.is_file()
+    )
+    assert len(temporary_files) == 1
+    orphaned_output.unlink()
+    temporary_files[0].unlink()
+
     adapter._promote_resume_workspace_view(view, workspace=workspace)
 
     assert (workspace / task.required_output_relative).read_text(
@@ -594,6 +738,463 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path):
     assert (workspace / "identity/web_execution_ledger.md").read_text(
         encoding="utf-8"
     ) == "parent ledger\nphase ledger\n"
+
+
+def test_container_resume_zero_exit_with_empty_outputs_is_failure(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+    from dataclasses import replace
+
+    from factor_factory.console.agent_adapter import (
+        BLOCK_AGENT_ORPHANED_WRITER,
+        BLOCK_AGENT_RUNTIME_FAILED,
+    )
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+    from factor_factory.console.models import ResearchJob
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    (workspace / "objects/research_iteration_master").mkdir(parents=True)
+    task = replace(
+        _resume_task(),
+        read_only_inputs=(
+            "identity/web_main_agent_mechanism_facts.json",
+            "identity/web_main_agent_mechanism_answer_form.json",
+        ),
+    )
+    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / task.facts_relative).write_text(
+        json.dumps(
+            {
+                "formula_facts": {
+                    "formula": "divide(minus(close, open), pre_close)",
+                    "fields": ["close", "open", "pre_close"],
+                    "operators": ["divide", "minus"],
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / "identity/web_execution_ledger.md").write_text(
+        "parent ledger\n",
+        encoding="utf-8",
+    )
+    token = "broker-client-token-for-empty-resume-test"
+    token_file = tmp_path / "broker-client-token"
+    token_file.write_text(token, encoding="utf-8")
+    token_file.chmod(0o600)
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        openclaw_auth_seed_db=_auth_seed(tmp_path / "seed.sqlite", key=token),
+        model_broker_client_token_file=token_file,
+        model_broker_secret_scan_root=tmp_path / "broker-scan",
+        openclaw_profile_template=(
+            Path(__file__).resolve().parents[1]
+            / "deploy"
+            / "factorforge-console"
+            / "openclaw.json.example"
+        ),
+        container_runtime="docker-test",
+        agent_container_image="factorforge-agent:test",
+        auth_disabled=True,
+    )
+    job = ResearchJob(
+        job_id=task.job_id,
+        factor_id=task.factor_id,
+        research_id=task.research_id,
+        report_id=task.report_id,
+        request=_request(),
+        base_commit="a" * 40,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    git_view = tmp_path / "engine.git"
+    git_view.mkdir()
+    monkeypatch.setattr(adapter, "_prepare_git_view", lambda **_kwargs: git_view)
+    monkeypatch.setattr(
+        adapter,
+        "_initialize_credential_material_state",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "credential_material_state",
+        lambda _job_id: "not_issued",
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_prepare_aws_environment",
+        lambda *_args, **_kwargs: (None, (token,), None),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_cleanup_aws_environment",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(adapter, "_run_runtime", lambda *_args, **_kwargs: "{}")
+    monkeypatch.setattr(
+        adapter,
+        "_validate_agent_binding",
+        lambda *_args, **_kwargs: None,
+    )
+    research_commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        research_commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "payloads": [{"text": "Memo authored and validator passed."}],
+                    "meta": {
+                        "agentMeta": {"provider": "deepseek", "model": "reasoner"},
+                        "finalAssistantVisibleText": "Memo authored and validator passed.",
+                    },
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = adapter.run(
+        job,
+        worktree=source,
+        workspace=workspace,
+        resume=True,
+        resume_task=task,
+    )
+
+    assert result.returncode == 1
+    receipt = json.loads(Path(result.result_path).read_text(encoding="utf-8"))
+    assert receipt["returncode"] == 1
+    assert receipt["error_code"] == BLOCK_AGENT_RUNTIME_FAILED
+    assert "resume output is empty" in receipt["stderr_tail"]
+    assert not (workspace / task.required_output_relative).exists()
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\n"
+    assert len(research_commands) == 1
+    research_command = research_commands[0]
+    workspace_mount = next(
+        item
+        for item in research_command
+        if item.startswith("type=bind,src=")
+        and f",dst={workspace.resolve()}" in item
+        and not item.endswith(",readonly")
+    )
+    view_root = Path(
+        workspace_mount.split("src=", 1)[1].split(",dst=", 1)[0]
+    )
+    assert not view_root.is_relative_to(
+        config.state_root / "jobs" / job.job_id / "container-agent-phases" / task.attempt_id
+    )
+    assert not any(
+        f"src={view_root / task.required_output_relative}" in item
+        for item in research_command
+    )
+
+    io_failure_task = replace(task, attempt_id=f"resume_{'b' * 32}")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter,
+            "_promote_resume_workspace_view",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("injected promotion I/O failure")
+            ),
+        )
+        io_failure_result = adapter.run(
+            job,
+            worktree=source,
+            workspace=workspace,
+            resume=True,
+            resume_task=io_failure_task,
+        )
+    assert io_failure_result.returncode == 1
+    io_failure_receipt = json.loads(
+        Path(io_failure_result.result_path).read_text(encoding="utf-8")
+    )
+    assert io_failure_receipt["error_code"] == BLOCK_AGENT_RUNTIME_FAILED
+    assert "resume promotion I/O failure:OSError" in io_failure_receipt["stderr_tail"]
+
+    orphan_task = replace(task, attempt_id=f"resume_{'c' * 32}")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter,
+            "_promote_resume_workspace_view",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError(f"{BLOCK_AGENT_ORPHANED_WRITER}: injected uncertainty")
+            ),
+        )
+        with pytest.raises(RuntimeError, match=BLOCK_AGENT_ORPHANED_WRITER):
+            adapter.run(
+                job,
+                worktree=source,
+                workspace=workspace,
+                resume=True,
+                resume_task=orphan_task,
+            )
+
+
+def test_openclaw_terminal_status_is_structured_and_fail_closed():
+    from factor_factory.console.container_agent_adapter import (
+        _validate_openclaw_terminal_status,
+    )
+
+    def receipt(
+        final_text: str,
+        *,
+        include_optional_final: bool = True,
+        include_payloads: bool = True,
+    ) -> str:
+        metadata = {
+            "agentMeta": {
+                "provider": "deepseek",
+                "model": "deepseek-reasoner",
+            }
+        }
+        if include_optional_final:
+            metadata["finalAssistantVisibleText"] = final_text
+        payload = {"meta": metadata}
+        if include_payloads:
+            payload["payloads"] = [{"text": final_text}]
+        return json.dumps(payload)
+
+    _validate_openclaw_terminal_status(
+        receipt("Memo authored and validator passed."),
+        "embedded run agent end: isError=true\n"
+        "embedded run agent end: isError=false\n",
+    )
+    _validate_openclaw_terminal_status(
+        receipt("The memo explains why a context overflow would invalidate proof."),
+        "",
+    )
+    _validate_openclaw_terminal_status(
+        receipt(
+            "Memo authored and validator passed.",
+            include_optional_final=False,
+        ),
+        "",
+    )
+    _validate_openclaw_terminal_status(
+        receipt(
+            "Memo authored and validator passed.",
+            include_payloads=False,
+        ),
+        "",
+    )
+    lifecycle_only = json.dumps(
+        {
+            "meta": {
+                "agentMeta": {
+                    "provider": "deepseek",
+                    "model": "deepseek-reasoner",
+                }
+            }
+        }
+    )
+    _validate_openclaw_terminal_status(
+        lifecycle_only,
+        "embedded run agent end: isError=false\n",
+    )
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(lifecycle_only, "")
+    with pytest.raises(RuntimeError, match="terminal model error"):
+        _validate_openclaw_terminal_status(
+            receipt(
+                "Context overflow: prompt too large for the model. Try /reset."
+            ),
+            "",
+        )
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status("{}", "")
+    invalid_type = json.loads(receipt("Memo authored."))
+    invalid_type["meta"]["isError"] = "true"
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(json.dumps(invalid_type), "")
+    cancelled = json.loads(receipt("Memo authored."))
+    cancelled["meta"]["status"] = "cancelled"
+    with pytest.raises(RuntimeError, match="terminal agent error"):
+        _validate_openclaw_terminal_status(json.dumps(cancelled), "")
+    with pytest.raises(RuntimeError, match="stderr reported a terminal agent error"):
+        _validate_openclaw_terminal_status(
+            receipt("Memo authored and validator passed."),
+            "embedded run agent end: isError=false\n"
+            "embedded run agent end: isError=true\n",
+        )
+
+
+def test_workspace_promotion_lock_serializes_console_writers(tmp_path):
+    import threading
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    workspace.mkdir(parents=True)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=source,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        )
+    )
+    started = threading.Event()
+    acquired = threading.Event()
+
+    def contender():
+        started.set()
+        with adapter._workspace_promotion_lock(workspace):
+            acquired.set()
+
+    with adapter._workspace_promotion_lock(workspace):
+        thread = threading.Thread(target=contender, daemon=True)
+        thread.start()
+        assert started.wait(timeout=1)
+        assert not acquired.wait(timeout=0.1)
+    assert acquired.wait(timeout=1)
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+
+
+def test_workspace_openat_chain_rejects_parent_symlink_swap(tmp_path, monkeypatch):
+    import factor_factory.console.container_agent_adapter as adapter_module
+
+    workspace = tmp_path / "workspace"
+    safe = workspace / "safe"
+    safe.mkdir(parents=True)
+    (safe / "input.json").write_text('{"source": "workspace"}\n', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "input.json").write_text('{"source": "outside"}\n', encoding="utf-8")
+    original_open = os.open
+    backup = workspace / "safe-backup"
+    swapped = False
+
+    def swap_before_parent_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if str(path) == "safe" and dir_fd is not None and not swapped:
+            safe.rename(backup)
+            safe.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", swap_before_parent_open)
+        with pytest.raises((OSError, RuntimeError)):
+            adapter_module._read_stable_workspace_file_bytes(
+                workspace,
+                "safe/input.json",
+                max_bytes=1024,
+            )
+    assert swapped is True
+    assert (outside / "input.json").read_text(encoding="utf-8") == (
+        '{"source": "outside"}\n'
+    )
+    safe.unlink()
+    backup.rename(safe)
+
+    swapped = False
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", swap_before_parent_open)
+        with pytest.raises((OSError, RuntimeError)):
+            adapter_module._write_text_atomic_new(
+                workspace / "safe/output.json",
+                '{"status": "created"}\n',
+                root=workspace,
+            )
+    assert swapped is True
+    assert not (outside / "output.json").exists()
+
+
+def test_resume_view_binds_phase_inputs_to_parent_tree_baseline(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.container_agent_adapter as adapter_module
+    from dataclasses import replace
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    (workspace / "objects/research_iteration_master").mkdir(parents=True)
+    task = replace(
+        _resume_task(),
+        read_only_inputs=(
+            "identity/web_main_agent_mechanism_facts.json",
+            "identity/web_main_agent_mechanism_answer_form.json",
+        ),
+        protected_inputs=(),
+    )
+    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    facts_path = workspace / task.facts_relative
+    facts_path.write_text(
+        json.dumps(
+            {
+                "formula_facts": {
+                    "formula": "divide(minus(close, open), pre_close)",
+                    "fields": ["close", "open", "pre_close"],
+                    "operators": ["divide", "minus"],
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / "identity/web_agent_resume.md").write_text(
+        "facts only\n",
+        encoding="utf-8",
+    )
+    (workspace / "identity/web_execution_ledger.md").write_text(
+        "parent ledger\n",
+        encoding="utf-8",
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=source,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        )
+    )
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    original_tree_snapshot = adapter_module._workspace_tree_snapshot
+
+    def mutate_before_tree_snapshot(*args, **kwargs):
+        facts_path.write_text('{"changed": true}\n', encoding="utf-8")
+        return original_tree_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(
+        adapter_module,
+        "_workspace_tree_snapshot",
+        mutate_before_tree_snapshot,
+    )
+    with pytest.raises(RuntimeError, match="phase input and parent tree baseline diverged"):
+        adapter._prepare_resume_workspace_view(
+            runtime_root=runtime_root,
+            workspace=workspace,
+            resume_task=task,
+        )
 
 
 def test_agent_readiness_requires_healthy_dedicated_profile(tmp_path, monkeypatch):

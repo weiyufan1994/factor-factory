@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,6 +82,12 @@ class _AwsCredentialLease:
 @dataclass(frozen=True)
 class _ResumeWorkspaceView:
     root: Path
+    read_only_file_sha256: tuple[tuple[str, str], ...]
+    parent_tree_file_sha256: tuple[tuple[str, str], ...]
+    parent_tree_directory_relatives: tuple[str, ...]
+    parent_ledger_sha256: str
+    parent_output_absent_relatives: tuple[str, ...]
+    allowed_entry_relatives: tuple[str, ...]
     writable_relatives: tuple[str, ...]
     remove_if_empty_relatives: tuple[str, ...]
 
@@ -301,15 +309,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
             workspace_mount_source=(
                 resume_workspace_view.root if resume_workspace_view is not None else None
             ),
-            writable_workspace_relatives=(
-                resume_workspace_view.writable_relatives
+            protected_workspace_relatives=(
+                tuple(relative for relative, _digest in resume_workspace_view.read_only_file_sha256)
                 if resume_workspace_view is not None
                 else ()
-            ),
-            writable_workspace_source_root=(
-                resume_workspace_view.root
-                if resume_workspace_view is not None
-                else None
             ),
         )
         model = job.request.model or self.config.openclaw_model
@@ -350,21 +353,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 aws_env_file=aws_env_file,
                 profile_config_readonly=profile_config,
                 auth_store_readonly=auth_store,
-                workspace_readonly=resume_workspace_view is not None,
+                workspace_readonly=False,
                 workspace_mount_source=(
                     resume_workspace_view.root
                     if resume_workspace_view is not None
                     else None
                 ),
-                writable_workspace_relatives=(
-                    resume_workspace_view.writable_relatives
+                protected_workspace_relatives=(
+                    tuple(
+                        relative
+                        for relative, _digest in resume_workspace_view.read_only_file_sha256
+                    )
                     if resume_workspace_view is not None
                     else ()
-                ),
-                writable_workspace_source_root=(
-                    resume_workspace_view.root
-                    if resume_workspace_view is not None
-                    else None
                 ),
             )
             command = [
@@ -423,10 +424,26 @@ class ContainerizedOpenClawResearchAgentAdapter:
             self._cleanup_aws_environment(aws_env_file, None)
 
         if resume_workspace_view is not None and returncode == 0:
-            self._promote_resume_workspace_view(
-                resume_workspace_view,
-                workspace=workspace,
-            )
+            try:
+                _validate_openclaw_terminal_status(stdout, stderr)
+                self._promote_resume_workspace_view(
+                    resume_workspace_view,
+                    workspace=workspace,
+                    extra_secret_values=credential_values,
+                )
+            except RuntimeError as exc:
+                if str(exc).startswith(BLOCK_AGENT_ORPHANED_WRITER):
+                    raise
+                returncode = 1
+                error_code = BLOCK_AGENT_RUNTIME_FAILED
+                stderr = f"{stderr}\n{exc}".strip()
+            except OSError as exc:
+                returncode = 1
+                error_code = BLOCK_AGENT_RUNTIME_FAILED
+                stderr = (
+                    f"{stderr}\n{BLOCK_AGENT_RUNTIME_FAILED}: "
+                    f"resume promotion I/O failure:{type(exc).__name__}"
+                ).strip()
 
         finished = utc_now()
         result_path = self.config.state_root / "jobs" / job.job_id / f"agent_run_{_stamp(finished)}.json"
@@ -894,7 +911,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         workspace: Path,
         resume_task: AgentResumeTask,
     ) -> _ResumeWorkspaceView:
-        view_root = runtime_root / "resume-workspace-view"
+        view_root = runtime_root.parent / f"{runtime_root.name}-resume-workspace-view"
         if view_root.exists() or view_root.is_symlink():
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace view already exists"
@@ -912,25 +929,33 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 )
             )
         )
-        for relative in safe_read_relatives:
-            source = _safe_workspace_relative_file(
+        parent_protected_relatives = tuple(
+            dict.fromkeys(
+                (
+                    *resume_task.protected_inputs,
+                    *safe_read_relatives,
+                )
+            )
+        )
+        parent_snapshots = {
+            relative: _read_stable_workspace_file_bytes(
                 workspace,
                 relative,
-                must_exist=True,
+                max_bytes=16 * 1024 * 1024,
             )
+            for relative in parent_protected_relatives
+        }
+        for relative in safe_read_relatives:
             destination = _safe_view_relative_path(view_root, relative)
             destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            shutil.copy2(source, destination)
+            destination.write_bytes(parent_snapshots[relative])
             destination.chmod(0o400)
 
-        facts_path = _safe_workspace_relative_file(
-            workspace,
-            resume_task.facts_relative,
-            must_exist=True,
-        )
         try:
-            facts = json.loads(facts_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            facts = json.loads(
+                parent_snapshots[resume_task.facts_relative].decode("utf-8")
+            )
+        except (KeyError, UnicodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume facts packet is invalid"
             ) from exc
@@ -988,6 +1013,16 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 )
             )
         )
+        ledger_relative = "identity/web_execution_ledger.md"
+        parent_ledger = _read_stable_workspace_file_bytes(
+            workspace,
+            ledger_relative,
+            max_bytes=2 * 1024 * 1024,
+        )
+        parent_output_absent_relatives = (
+            resume_task.required_output_relative,
+            resume_task.optional_output_relative,
+        )
         for relative in writable_relatives:
             target = _safe_workspace_relative_file(
                 workspace,
@@ -1010,8 +1045,54 @@ class ContainerizedOpenClawResearchAgentAdapter:
             view_target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             view_target.touch(mode=0o600, exist_ok=False)
 
+        read_only_relatives = tuple(
+            dict.fromkeys((*safe_read_relatives, safe_spec_relative))
+        )
+        for directory in (
+            path for path in view_root.rglob("*") if path.is_dir()
+        ):
+            directory.chmod(0o700)
+        allowed_entry_relatives = tuple(
+            sorted(
+                path.relative_to(view_root).as_posix()
+                for path in view_root.rglob("*")
+            )
+        )
+        parent_tree_files, parent_tree_directories = _workspace_tree_snapshot(
+            workspace,
+            excluded_file_relatives=(
+                ledger_relative,
+                *parent_output_absent_relatives,
+            ),
+        )
+        parent_tree_file_map = dict(parent_tree_files)
+        for relative, snapshot_bytes in parent_snapshots.items():
+            if parent_tree_file_map.get(relative) != hashlib.sha256(
+                snapshot_bytes
+            ).hexdigest():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: phase input and parent tree baseline diverged:{relative}"
+                )
         return _ResumeWorkspaceView(
             root=view_root,
+            read_only_file_sha256=tuple(
+                (
+                    relative,
+                    hashlib.sha256(
+                        _safe_workspace_relative_file(
+                            view_root,
+                            relative,
+                            must_exist=True,
+                        ).read_bytes()
+                    ).hexdigest(),
+                )
+                for relative in read_only_relatives
+            ),
+            parent_tree_file_sha256=parent_tree_files,
+            parent_tree_directory_relatives=parent_tree_directories,
+            parent_ledger_sha256=hashlib.sha256(parent_ledger).hexdigest(),
+            parent_output_absent_relatives=parent_output_absent_relatives,
+            allowed_entry_relatives=allowed_entry_relatives,
             writable_relatives=writable_relatives,
             remove_if_empty_relatives=(resume_task.optional_output_relative,),
         )
@@ -1021,52 +1102,268 @@ class ContainerizedOpenClawResearchAgentAdapter:
         view: _ResumeWorkspaceView,
         *,
         workspace: Path,
+        extra_secret_values: tuple[str, ...] = (),
     ) -> None:
-        root = workspace.resolve(strict=True)
+        root = workspace
+        if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: parent workspace root is unsafe"
+            )
         optional_relatives = set(view.remove_if_empty_relatives)
-        for relative in view.writable_relatives:
-            source = _safe_workspace_relative_file(
+        _audit_resume_workspace_view(view)
+        for relative, expected_digest in view.read_only_file_sha256:
+            source_bytes = _read_stable_workspace_file_bytes(
                 view.root,
                 relative,
-                must_exist=True,
+                max_bytes=16 * 1024 * 1024,
             )
-            if source.stat().st_size > 2 * 1024 * 1024:
+            if hashlib.sha256(source_bytes).hexdigest() != expected_digest:
                 raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output is too large"
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume input changed:{relative}"
                 )
+        staged_outputs: dict[str, str] = {}
+        for relative in view.writable_relatives:
+            staged_bytes = _read_stable_workspace_file_bytes(
+                view.root,
+                relative,
+                max_bytes=2 * 1024 * 1024,
+                error_code=BLOCK_AGENT_RUNTIME_FAILED,
+            )
             try:
-                staged_text = source.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
+                staged_text = staged_bytes.decode("utf-8")
+            except UnicodeError as exc:
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output is not valid UTF-8"
                 ) from exc
-            target = _safe_workspace_relative_file(
-                root,
-                relative,
-                must_exist=(relative == "identity/web_execution_ledger.md"),
-            )
-            if relative == "identity/web_execution_ledger.md":
+            if relative not in optional_relatives and not staged_text.strip():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output is empty:{relative}"
+                )
+            if (
+                relative == "identity/web_execution_ledger.md"
+                and len(staged_text) > 4_000
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume execution ledger is too large"
+                )
+            if redact_secrets(
+                staged_text,
+                extra_values=extra_secret_values,
+            ) != staged_text:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output contains secret material"
+                )
+            if relative.endswith(".json") and staged_text.strip():
                 try:
-                    parent_ledger = target.read_text(encoding="utf-8")
-                except (OSError, UnicodeError) as exc:
+                    payload = json.loads(staged_text)
+                except json.JSONDecodeError as exc:
                     raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_FAILED}: parent execution ledger is invalid"
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output is invalid JSON:{relative}"
                     ) from exc
-                if staged_text:
-                    separator = "" if not parent_ledger or parent_ledger.endswith("\n") else "\n"
-                    write_text_atomic(
-                        target,
-                        f"{parent_ledger}{separator}{staged_text}",
-                        root=root,
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: resume JSON output must be an object:{relative}"
                     )
-                continue
-            if relative in optional_relatives and not staged_text:
-                continue
-            if target.exists() or target.is_symlink():
+            staged_outputs[relative] = staged_text
+
+        with self._workspace_promotion_lock(root):
+            self._promote_staged_resume_outputs(
+                view,
+                root=root,
+                staged_outputs=staged_outputs,
+                optional_relatives=optional_relatives,
+            )
+
+    def _promote_staged_resume_outputs(
+        self,
+        view: _ResumeWorkspaceView,
+        *,
+        root: Path,
+        staged_outputs: dict[str, str],
+        optional_relatives: set[str],
+    ) -> None:
+        _require_parent_workspace_tree_unchanged(view, root)
+        parent_ledger_bytes = _read_stable_workspace_file_bytes(
+            root,
+            "identity/web_execution_ledger.md",
+            max_bytes=2 * 1024 * 1024,
+            error_code=BLOCK_AGENT_RUNTIME_FAILED,
+        )
+        if hashlib.sha256(parent_ledger_bytes).hexdigest() != view.parent_ledger_sha256:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: parent execution ledger changed"
+            )
+        try:
+            parent_ledger = parent_ledger_bytes.decode("utf-8")
+        except UnicodeError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: parent execution ledger is invalid"
+            ) from exc
+        output_targets: dict[str, Path] = {}
+        for relative in view.parent_output_absent_relatives:
+            if _workspace_relative_entry_exists(root, relative):
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output promotion target exists"
                 )
-            write_text_atomic(target, staged_text, root=root)
+            output_targets[relative] = root / relative
+
+        staged_ledger = staged_outputs["identity/web_execution_ledger.md"]
+        separator = "" if not parent_ledger or parent_ledger.endswith("\n") else "\n"
+        combined_ledger = f"{parent_ledger}{separator}{staged_ledger}"
+        ledger_relative = "identity/web_execution_ledger.md"
+        try:
+            for relative in view.parent_output_absent_relatives:
+                staged_text = staged_outputs[relative]
+                if relative in optional_relatives and not staged_text:
+                    continue
+                target = output_targets[relative]
+                _write_text_atomic_new(target, staged_text, root=root)
+            _replace_text_atomic_existing(
+                root,
+                ledger_relative,
+                combined_ledger,
+                expected_bytes=parent_ledger_bytes,
+            )
+
+            _require_parent_workspace_tree_unchanged(view, root)
+            for relative, target in output_targets.items():
+                staged_text = staged_outputs[relative]
+                if relative in optional_relatives and not staged_text:
+                    if _workspace_relative_entry_exists(root, relative):
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_RUNTIME_FAILED}: unexpected optional output appeared"
+                        )
+                    continue
+                promoted = _read_stable_workspace_file_bytes(
+                    root,
+                    relative,
+                    max_bytes=2 * 1024 * 1024,
+                    error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                )
+                if hashlib.sha256(promoted).hexdigest() != hashlib.sha256(
+                    staged_text.encode("utf-8")
+                ).hexdigest():
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: promoted output changed:{relative}"
+                    )
+            promoted_ledger = _read_stable_workspace_file_bytes(
+                root,
+                "identity/web_execution_ledger.md",
+                max_bytes=2 * 1024 * 1024,
+                error_code=BLOCK_AGENT_RUNTIME_FAILED,
+            )
+            if hashlib.sha256(promoted_ledger).hexdigest() != hashlib.sha256(
+                combined_ledger.encode("utf-8")
+            ).hexdigest():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: promoted execution ledger changed"
+                )
+        except Exception as exc:
+            rollback_failures: list[str] = []
+            for relative in output_targets:
+                try:
+                    if not _workspace_relative_entry_exists(root, relative):
+                        continue
+                    _unlink_workspace_file_if_matches(
+                        root,
+                        relative,
+                        expected_bytes=staged_outputs[relative].encode("utf-8"),
+                    )
+                except (OSError, RuntimeError):
+                    rollback_failures.append(relative)
+            try:
+                current_ledger = _read_stable_workspace_file_bytes(
+                    root,
+                    "identity/web_execution_ledger.md",
+                    max_bytes=2 * 1024 * 1024,
+                    error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                )
+                if current_ledger == combined_ledger.encode("utf-8"):
+                    _replace_text_atomic_existing(
+                        root,
+                        ledger_relative,
+                        parent_ledger,
+                        expected_bytes=current_ledger,
+                    )
+                elif current_ledger != parent_ledger_bytes:
+                    rollback_failures.append("identity/web_execution_ledger.md")
+            except (OSError, RuntimeError):
+                rollback_failures.append("identity/web_execution_ledger.md")
+            try:
+                _require_parent_workspace_tree_unchanged(view, root)
+            except (OSError, RuntimeError):
+                rollback_failures.append("parent_workspace_evidence_tree")
+            try:
+                rolled_back_ledger = _read_stable_workspace_file_bytes(
+                    root,
+                    "identity/web_execution_ledger.md",
+                    max_bytes=2 * 1024 * 1024,
+                    error_code=BLOCK_AGENT_ORPHANED_WRITER,
+                )
+                if rolled_back_ledger != parent_ledger_bytes:
+                    rollback_failures.append("identity/web_execution_ledger.md")
+            except (OSError, RuntimeError):
+                rollback_failures.append("identity/web_execution_ledger.md")
+            for relative in view.parent_output_absent_relatives:
+                try:
+                    if _workspace_relative_entry_exists(root, relative):
+                        rollback_failures.append(relative)
+                except (OSError, RuntimeError):
+                    rollback_failures.append(relative)
+            if rollback_failures:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_ORPHANED_WRITER}: resume promotion rollback failed:"
+                    + ",".join(dict.fromkeys(rollback_failures))
+                ) from exc
+            raise
+
+    @contextmanager
+    def _workspace_promotion_lock(self, workspace: Path):
+        lock_root = self.config.state_root / "workspace-promotion-locks"
+        lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if lock_root.is_symlink() or not lock_root.is_dir():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: workspace promotion lock root is unsafe"
+            )
+        lock_root.chmod(0o700)
+        lock_root_metadata = lock_root.stat()
+        if (
+            lock_root_metadata.st_mode & 0o077
+            or lock_root_metadata.st_uid != os.geteuid()
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: workspace promotion lock root is unsafe"
+            )
+        workspace_identity = hashlib.sha256(
+            str(workspace).encode("utf-8")
+        ).hexdigest()
+        lock_path = lock_root / f"{workspace_identity}.lock"
+        descriptor = os.open(
+            lock_path,
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != os.geteuid()
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: workspace promotion lock is unsafe"
+                )
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
     def _broker_client_token(self) -> str:
         try:
@@ -1281,30 +1578,47 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     "GIT_OPTIONAL_LOCKS=0",
                 ]
             )
+        protected_relatives: list[str] = []
         if workspace_mount_source is None:
-            protected_relatives = [
-                "manifest.json",
-                "identity/web_research_request.json",
-                "identity/data_catalog_summary.json",
-                "identity/factor_knowledge_summary.json",
-                "identity/web_research_authoring_contract.json",
-                "identity/web_research_runtime.md",
-                "identity/web_agent_task.md",
-                "identity/web_agent_resume.md",
-                "identity/web_agent_resume_contract.json",
-                "identity/web_main_agent_mechanism_answer_form.json",
-                "identity/web_resume_authorization.json",
-                "reports/user_hypothesis.md",
-            ]
-            protected_relatives.extend(protected_workspace_relatives)
-            for relative in dict.fromkeys(protected_relatives):
-                protected = workspace / relative
-                try:
-                    protected.resolve(strict=True).relative_to(workspace.resolve(strict=True))
-                except (FileNotFoundError, RuntimeError, ValueError):
-                    continue
-                if protected.is_file() and not protected.is_symlink():
-                    command.extend(["--mount", _mount(protected, readonly=True)])
+            protected_relatives.extend(
+                [
+                    "manifest.json",
+                    "identity/web_research_request.json",
+                    "identity/data_catalog_summary.json",
+                    "identity/factor_knowledge_summary.json",
+                    "identity/web_research_authoring_contract.json",
+                    "identity/web_research_runtime.md",
+                    "identity/web_agent_task.md",
+                    "identity/web_agent_resume.md",
+                    "identity/web_agent_resume_contract.json",
+                    "identity/web_main_agent_mechanism_answer_form.json",
+                    "identity/web_resume_authorization.json",
+                    "reports/user_hypothesis.md",
+                ]
+            )
+        protected_relatives.extend(protected_workspace_relatives)
+        protected_source_root = workspace_mount_source or workspace
+        for relative in dict.fromkeys(protected_relatives):
+            try:
+                protected = _safe_workspace_relative_file(
+                    protected_source_root,
+                    relative,
+                    must_exist=True,
+                )
+            except RuntimeError:
+                if relative in protected_workspace_relatives:
+                    raise
+                continue
+            command.extend(
+                [
+                    "--mount",
+                    _mount(
+                        protected,
+                        readonly=True,
+                        target=workspace / relative,
+                    ),
+                ]
+            )
         for relative in writable_workspace_relatives:
             writable = _safe_workspace_relative_file(
                 writable_workspace_source_root
@@ -2168,6 +2482,674 @@ def _mount(
 ) -> str:
     mode = ",readonly" if readonly else ""
     return f"type=bind,src={path},dst={target or path}{mode}"
+
+
+def _validated_relative_parts(relative: str, *, error_code: str) -> tuple[str, ...]:
+    relative_path = Path(relative)
+    if (
+        not relative
+        or relative_path.is_absolute()
+        or relative_path == Path(".")
+        or ".." in relative_path.parts
+    ):
+        raise RuntimeError(f"{error_code}: workspace path is unsafe:{relative}")
+    return relative_path.parts
+
+
+def _open_absolute_directory_fd(path: Path, *, error_code: str) -> int:
+    if not path.is_absolute():
+        raise RuntimeError(f"{error_code}: workspace root must be absolute")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open("/", flags)
+    try:
+        for part in path.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(f"{error_code}: workspace root is not a directory")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _open_workspace_parent_fd(
+    workspace: Path,
+    relative: str,
+    *,
+    error_code: str,
+):
+    parts = _validated_relative_parts(relative, error_code=error_code)
+    descriptor = _open_absolute_directory_fd(workspace, error_code=error_code)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        for part in parts[:-1]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        yield descriptor, parts[-1]
+    finally:
+        os.close(descriptor)
+
+
+def _read_stable_file_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    relative: str,
+    max_bytes: int,
+    error_code: str,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise RuntimeError(
+            f"{error_code}: workspace file cannot be opened safely:{relative}"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size < 0
+            or before.st_size > max_bytes
+        ):
+            raise RuntimeError(
+                f"{error_code}: workspace file is unsafe or too large:{relative}"
+            )
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        try:
+            path_after = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"{error_code}: workspace file changed while reading:{relative}"
+            ) from exc
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        path_identity = (
+            path_after.st_dev,
+            path_after.st_ino,
+            path_after.st_size,
+            path_after.st_mtime_ns,
+            path_after.st_ctime_ns,
+        )
+        if (
+            before_identity != after_identity
+            or after_identity != path_identity
+            or len(payload) != before.st_size
+        ):
+            raise RuntimeError(
+                f"{error_code}: workspace file changed while reading:{relative}"
+            )
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def _hash_stable_file_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    relative: str,
+    max_bytes: int,
+    error_code: str,
+) -> tuple[str, int]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size < 0
+            or before.st_size > max_bytes
+        ):
+            raise RuntimeError(
+                f"{error_code}: workspace tree file is unsafe or too large:{relative}"
+            )
+        digest = hashlib.sha256()
+        bytes_read = 0
+        while bytes_read < before.st_size:
+            chunk = os.read(
+                descriptor,
+                min(before.st_size - bytes_read, 1024 * 1024),
+            )
+            if not chunk:
+                break
+            digest.update(chunk)
+            bytes_read += len(chunk)
+        after = os.fstat(descriptor)
+        path_after = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        identities = {
+            (
+                item.st_dev,
+                item.st_ino,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+            for item in (before, after, path_after)
+        }
+        if len(identities) != 1 or bytes_read != before.st_size:
+            raise RuntimeError(
+                f"{error_code}: workspace tree file changed while reading:{relative}"
+            )
+        return digest.hexdigest(), bytes_read
+    finally:
+        os.close(descriptor)
+
+
+def _workspace_tree_snapshot(
+    workspace: Path,
+    *,
+    excluded_file_relatives: tuple[str, ...],
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    error_code = BLOCK_AGENT_RUNTIME_FAILED
+    excluded = set(excluded_file_relatives)
+    file_digests: list[tuple[str, str]] = []
+    directories: list[str] = []
+    total_bytes = 0
+    file_count = 0
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_descriptor = _open_absolute_directory_fd(
+        workspace,
+        error_code=error_code,
+    )
+    root_identity = os.fstat(root_descriptor)
+
+    def walk(directory_descriptor: int, prefix: str) -> None:
+        nonlocal total_bytes, file_count
+        with os.scandir(directory_descriptor) as iterator:
+            entries = sorted(
+                (
+                    (entry.name, entry.stat(follow_symlinks=False))
+                    for entry in iterator
+                ),
+                key=lambda item: item[0],
+            )
+        for entry_name, metadata in entries:
+            relative = f"{prefix}/{entry_name}" if prefix else entry_name
+            if stat.S_ISLNK(metadata.st_mode):
+                raise RuntimeError(
+                    f"{error_code}: parent workspace tree contains a symlink:{relative}"
+                )
+            if stat.S_ISDIR(metadata.st_mode):
+                child_descriptor = os.open(
+                    entry_name,
+                    directory_flags,
+                    dir_fd=directory_descriptor,
+                )
+                try:
+                    child_metadata = os.fstat(child_descriptor)
+                    if (
+                        child_metadata.st_dev != metadata.st_dev
+                        or child_metadata.st_ino != metadata.st_ino
+                    ):
+                        raise RuntimeError(
+                            f"{error_code}: parent workspace directory changed:{relative}"
+                        )
+                    directories.append(relative)
+                    walk(child_descriptor, relative)
+                finally:
+                    os.close(child_descriptor)
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise RuntimeError(
+                    f"{error_code}: parent workspace tree contains an unsafe entry:{relative}"
+                )
+            file_count += 1
+            if file_count > 100_000:
+                raise RuntimeError(
+                    f"{error_code}: parent workspace tree contains too many files"
+                )
+            if relative in excluded:
+                continue
+            digest, size = _hash_stable_file_at(
+                directory_descriptor,
+                entry_name,
+                relative=relative,
+                max_bytes=4 * 1024 * 1024 * 1024,
+                error_code=error_code,
+            )
+            total_bytes += size
+            if total_bytes > 8 * 1024 * 1024 * 1024:
+                raise RuntimeError(
+                    f"{error_code}: parent workspace tree is too large"
+                )
+            file_digests.append((relative, digest))
+
+    try:
+        walk(root_descriptor, "")
+        verification_descriptor = _open_absolute_directory_fd(
+            workspace,
+            error_code=error_code,
+        )
+        try:
+            verification_identity = os.fstat(verification_descriptor)
+            if (
+                root_identity.st_dev != verification_identity.st_dev
+                or root_identity.st_ino != verification_identity.st_ino
+            ):
+                raise RuntimeError(
+                    f"{error_code}: parent workspace root changed while scanning"
+                )
+        finally:
+            os.close(verification_descriptor)
+    finally:
+        os.close(root_descriptor)
+    return tuple(file_digests), tuple(directories)
+
+
+def _require_parent_workspace_tree_unchanged(
+    view: _ResumeWorkspaceView,
+    workspace: Path,
+) -> None:
+    current_files, current_directories = _workspace_tree_snapshot(
+        workspace,
+        excluded_file_relatives=(
+            "identity/web_execution_ledger.md",
+            *view.parent_output_absent_relatives,
+        ),
+    )
+    if (
+        current_files != view.parent_tree_file_sha256
+        or current_directories != view.parent_tree_directory_relatives
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: parent workspace evidence tree changed"
+        )
+
+
+def _write_text_atomic_new(path: Path, text: str, *, root: Path) -> None:
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: new output path escapes workspace"
+        ) from exc
+    with _open_workspace_parent_fd(
+        root,
+        relative,
+        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+    ) as (parent_descriptor, name):
+        try:
+            os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: new output path already exists:{relative}"
+            )
+        temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            payload = text.encode("utf-8")
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(descriptor, payload[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(
+                temporary,
+                name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            os.fsync(parent_descriptor)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+
+
+def _replace_text_atomic_existing(
+    workspace: Path,
+    relative: str,
+    text: str,
+    *,
+    expected_bytes: bytes,
+) -> None:
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        error_code=BLOCK_AGENT_ORPHANED_WRITER,
+    ) as (parent_descriptor, name):
+        current = _read_stable_file_at(
+            parent_descriptor,
+            name,
+            relative=relative,
+            max_bytes=2 * 1024 * 1024,
+            error_code=BLOCK_AGENT_ORPHANED_WRITER,
+        )
+        if current != expected_bytes:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: existing output changed:{relative}"
+            )
+        temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            payload = text.encode("utf-8")
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(descriptor, payload[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            current = _read_stable_file_at(
+                parent_descriptor,
+                name,
+                relative=relative,
+                max_bytes=2 * 1024 * 1024,
+                error_code=BLOCK_AGENT_ORPHANED_WRITER,
+            )
+            if current != expected_bytes:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_ORPHANED_WRITER}: existing output changed:{relative}"
+                )
+            os.replace(
+                temporary,
+                name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.fsync(parent_descriptor)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+
+
+def _unlink_workspace_file_if_matches(
+    workspace: Path,
+    relative: str,
+    *,
+    expected_bytes: bytes,
+) -> None:
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        error_code=BLOCK_AGENT_ORPHANED_WRITER,
+    ) as (parent_descriptor, name):
+        current = _read_stable_file_at(
+            parent_descriptor,
+            name,
+            relative=relative,
+            max_bytes=2 * 1024 * 1024,
+            error_code=BLOCK_AGENT_ORPHANED_WRITER,
+        )
+        if current != expected_bytes:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: promoted output changed:{relative}"
+            )
+        os.unlink(name, dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+
+
+def _workspace_relative_entry_exists(workspace: Path, relative: str) -> bool:
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+    ) as (parent_descriptor, name):
+        try:
+            os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+
+
+def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> None:
+    if not stdout.strip() or len(stdout.encode("utf-8")) > 2 * 1024 * 1024:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt is missing or too large"
+        )
+    try:
+        receipt = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt is invalid JSON"
+        ) from exc
+    if not isinstance(receipt, dict):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt must be an object"
+        )
+    raw_payloads = receipt.get("payloads")
+    payloads = [] if raw_payloads is None else raw_payloads
+    metadata = receipt.get("meta")
+    agent_metadata = metadata.get("agentMeta") if isinstance(metadata, dict) else None
+    optional_final_text = (
+        metadata.get("finalAssistantVisibleText")
+        if isinstance(metadata, dict)
+        else None
+    )
+    payload_texts = (
+        [
+            str(item.get("text") or "").strip()
+            for item in payloads
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        if isinstance(payloads, list)
+        else []
+    )
+    lifecycle_matches = re.findall(
+        r"embedded run agent end:[^\n]*\bisError=(true|false)\b",
+        stderr[-2 * 1024 * 1024 :],
+        flags=re.IGNORECASE,
+    )
+    lifecycle_terminal = (
+        lifecycle_matches[-1].lower() if lifecycle_matches else ""
+    )
+    if lifecycle_terminal == "true":
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw stderr reported a terminal agent error"
+        )
+    if (
+        not isinstance(payloads, list)
+        or any(not isinstance(item, dict) for item in payloads)
+        or not isinstance(metadata, dict)
+        or not isinstance(agent_metadata, dict)
+        or (
+            optional_final_text is not None
+            and not isinstance(optional_final_text, str)
+        )
+        or not (
+            payload_texts
+            or (
+                isinstance(optional_final_text, str)
+                and optional_final_text.strip()
+            )
+            or lifecycle_terminal == "false"
+        )
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt schema is invalid"
+        )
+    final_text = (
+        optional_final_text.strip()
+        if isinstance(optional_final_text, str) and optional_final_text.strip()
+        else (payload_texts[-1] if payload_texts else "")
+    )
+    for item in (receipt, metadata, agent_metadata, *payloads):
+        if "isError" in item:
+            if not isinstance(item["isError"], bool):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt schema is invalid"
+                )
+            if item["isError"]:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw reported a terminal agent error"
+                )
+        for status_key in ("status", "state"):
+            if status_key not in item:
+                continue
+            if not isinstance(item[status_key], str):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt schema is invalid"
+                )
+            status = item[status_key].strip().lower()
+            if status not in {"", "ok", "success", "succeeded", "complete", "completed"}:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw reported a terminal agent error"
+                )
+        error = item.get("error")
+        if error not in (None, "", False):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw reported a terminal agent error"
+            )
+    terminal_error_prefixes = (
+        "Context overflow:",
+        "Agent failed:",
+        "Model request failed:",
+        "No response from model",
+        "No response generated",
+        "Request failed:",
+    )
+    if final_text.strip().startswith(terminal_error_prefixes):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw reported a terminal model error"
+        )
+
+
+def _audit_resume_workspace_view(view: _ResumeWorkspaceView) -> None:
+    if view.root.is_symlink():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace view root is unsafe"
+        )
+    root = view.root.resolve(strict=True)
+    if not root.is_dir() or root.stat().st_mode & 0o077:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace view root is unsafe"
+        )
+    entries = sorted(root.rglob("*"))
+    relatives = tuple(path.relative_to(root).as_posix() for path in entries)
+    if relatives != view.allowed_entry_relatives or len(entries) > 64:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace view contains unexpected entries"
+        )
+    total_bytes = 0
+    writable_relatives = set(view.writable_relatives)
+    for path in entries:
+        metadata = path.lstat()
+        relative = path.relative_to(root).as_posix()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace view contains a symlink"
+            )
+        if stat.S_ISDIR(metadata.st_mode):
+            if metadata.st_mode & 0o077:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace directory permissions are too broad"
+                )
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace file is unsafe"
+            )
+        if relative in writable_relatives:
+            path.chmod(0o600)
+            metadata = path.lstat()
+        elif metadata.st_mode & 0o077:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace file permissions are too broad"
+            )
+        total_bytes += metadata.st_size
+    if total_bytes > 8 * 1024 * 1024:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: resume workspace view is too large"
+        )
+
+
+def _read_stable_workspace_file_bytes(
+    workspace: Path,
+    relative: str,
+    *,
+    max_bytes: int,
+    error_code: str = BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+) -> bytes:
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        error_code=error_code,
+    ) as (parent_descriptor, name):
+        return _read_stable_file_at(
+            parent_descriptor,
+            name,
+            relative=relative,
+            max_bytes=max_bytes,
+            error_code=error_code,
+        )
 
 
 def _safe_workspace_relative_file(

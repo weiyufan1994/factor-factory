@@ -522,6 +522,10 @@ quote them.
 
 1. Copy `{workspace / task.answer_form_relative}` to
    `{workspace / task.required_output_relative}`.
+   The Host has pre-created the required memo, optional Markdown, and execution
+   ledger as ordinary files in a phase-private workspace. Write only those
+   exact files. Do not probe other paths, create sibling temporary files, or
+   retry a failed write more than once.
 2. Preserve `resume_attempt_id`, identity, source refs, formula syntax,
    observed metrics, component IDs/subexpressions/operators, and
    formula/operator-presence flags exactly.

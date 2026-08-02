@@ -9,6 +9,19 @@ import os
 import pandas as pd
 
 
+def _first_accessible_existing_path(candidates: list[str | Path | None]) -> Path | None:
+    for raw_path in candidates:
+        if not raw_path:
+            continue
+        candidate = Path(raw_path).expanduser()
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def _ensure_independent_data_api() -> None:
     try:
         import factorforge_data_api  # noqa: F401
@@ -23,7 +36,7 @@ def _ensure_independent_data_api() -> None:
             Path("/Users/humphrey/projects/factorforge-data-api"),
         ]
         for sibling in candidates:
-            if sibling.exists() and str(sibling) not in sys.path:
+            if _first_accessible_existing_path([sibling]) and str(sibling) not in sys.path:
                 sys.path.insert(0, str(sibling))
                 break
 
@@ -97,7 +110,7 @@ def default_catalog_path() -> Path | None:
 
 
 def _read_json(path: Path | None) -> dict[str, Any]:
-    if path is None or not path.exists():
+    if path is None or _first_accessible_existing_path([path]) is None:
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -241,7 +254,7 @@ def fetch_data_api_dataset(
             "/Users/humphrey/projects/factor-factory/data/clean/daily_clean.parquet",
             "/home/ubuntu/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
         ]
-        local_path = next((Path(path).expanduser() for path in candidates if path and Path(path).expanduser().exists()), None)
+        local_path = _first_accessible_existing_path(candidates)
         if local_path is not None:
             read_columns = list(dict.fromkeys(["ts_code", "trade_date", *requested_fields]))
             try:
@@ -277,7 +290,11 @@ def fetch_data_api_dataset(
                         "source": {
                             "access_mode": "local_clean_daily_parquet_warm_cache",
                             "uri": str(local_path),
-                            "meta_uri": str(meta_path) if meta_path.exists() else None,
+                            "meta_uri": (
+                                str(meta_path)
+                                if _first_accessible_existing_path([meta_path]) is not None
+                                else None
+                            ),
                         },
                         "freshness": local_meta.get("freshness") or {
                             "latest_trade_date": str(frame["trade_date"].max()) if not frame.empty else None,
@@ -308,7 +325,7 @@ def fetch_data_api_dataset(
             "/Users/humphrey/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
             "/home/ubuntu/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
         ]
-        local_path = next((Path(path).expanduser() for path in candidates if path and Path(path).expanduser().exists()), None)
+        local_path = _first_accessible_existing_path(candidates)
         if local_path is not None:
             requested_fields = fields or _default_fields(dataset_id)
             read_columns = list(dict.fromkeys(["ts_code", "trade_date", *requested_fields]))
@@ -341,7 +358,11 @@ def fetch_data_api_dataset(
                     "source": {
                         "access_mode": "local_parquet_warm_cache",
                         "uri": str(local_path),
-                        "meta_uri": str(meta_path) if meta_path.exists() else None,
+                        "meta_uri": (
+                            str(meta_path)
+                            if _first_accessible_existing_path([meta_path]) is not None
+                            else None
+                        ),
                     },
                     "freshness": local_meta.get("freshness") or {
                         "latest_trade_date": str(frame["trade_date"].max()) if not frame.empty else None,

@@ -2849,6 +2849,13 @@ class ResearchRunService:
             facts_packet,
             root=workspace,
         )
+        metric_signature_form = {
+            "rank_ic": "",
+            "long_side": "",
+            "cost_adjusted": "",
+            "monotonicity": "",
+            "turnover": "",
+        }
         answer_form = {
             "contract_version": CONTRACT_VERSION,
             "resume_attempt_id": attempt_id,
@@ -2883,7 +2890,7 @@ class ResearchRunService:
                 "process_or_distribution": "",
                 "target_functional": "",
                 "formula_as_estimator": "",
-                "expected_metric_signature": {},
+                "expected_metric_signature": dict(metric_signature_form),
             },
             "math_model_selection": {
                 "model_family": "",
@@ -2900,7 +2907,7 @@ class ResearchRunService:
                 "observable_mapping": "",
                 "component_links": [],
             },
-            "expected_metric_signature": {},
+            "expected_metric_signature": dict(metric_signature_form),
             "falsification_tests": [],
             "evidence_comparison": {
                 "observed_metrics": metric_facts,

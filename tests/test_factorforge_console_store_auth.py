@@ -459,6 +459,10 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     )
 
     assert resume_root != initial_root
+    assert json.loads(resume_profile.read_text(encoding="utf-8"))["tools"]["allow"] == [
+        "read",
+        "write",
+    ]
     assert not (resume_home / marker.name).exists()
     command = adapter._container_prefix(
         container_name="resume-isolation-test",

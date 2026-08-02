@@ -48,6 +48,7 @@ from factor_factory.console.web_research_plan import write_text_atomic
 
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
+REQUIRED_RESUME_CONTAINER_TOOLS = ["read", "write"]
 REQUIRED_COMPACTION_POLICY = {
     "mode": "safeguard",
     "reserveTokens": 16384,
@@ -335,7 +336,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--json",
         ]
         self._run_runtime(add_command, timeout=120, label="container agent initialization", allow_exists=True)
-        self._validate_agent_binding(profile_config, agent_id, worktree, agent_dir, model)
+        self._validate_agent_binding(
+            profile_config,
+            agent_id,
+            worktree,
+            agent_dir,
+            model,
+            expected_tools=(
+                REQUIRED_RESUME_CONTAINER_TOOLS
+                if resume_task is not None
+                else REQUIRED_CONTAINER_TOOLS
+            ),
+        )
 
         aws_env_file, credential_values, denied_secret_file = self._prepare_aws_environment(
             job.job_id,
@@ -900,9 +912,22 @@ class ContainerizedOpenClawResearchAgentAdapter:
             shutil.copy2(self.config.openclaw_profile_template, profile_config)
             profile_config.chmod(0o600)
         try:
+            payload = json.loads(profile_config.read_text(encoding="utf-8"))
+            expected_tools = REQUIRED_CONTAINER_TOOLS
+            if phase_id is not None:
+                expected_tools = REQUIRED_RESUME_CONTAINER_TOOLS
+                tools = payload.get("tools") if isinstance(payload, dict) else None
+                if isinstance(tools, dict) and tools.get("allow") == REQUIRED_CONTAINER_TOOLS:
+                    tools["allow"] = list(REQUIRED_RESUME_CONTAINER_TOOLS)
+                    write_text_atomic(
+                        profile_config,
+                        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+                        root=profile_config.parent,
+                    )
             _validate_profile_policy(
-                json.loads(profile_config.read_text(encoding="utf-8")),
+                payload,
                 expected_model_broker_url=self.config.container_model_broker_url,
+                expected_tools=expected_tools,
             )
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(
@@ -2136,11 +2161,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
         worktree: Path,
         agent_dir: Path,
         model: str,
+        *,
+        expected_tools: list[str] = REQUIRED_CONTAINER_TOOLS,
     ) -> None:
         try:
             payload = json.loads(profile_config.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent profile config is unreadable") from exc
+        _validate_profile_policy(
+            payload,
+            expected_model_broker_url=self.config.container_model_broker_url,
+            expected_tools=expected_tools,
+        )
         agents = ((payload.get("agents") or {}).get("list") or []) if isinstance(payload, dict) else []
         match = next((item for item in agents if str(item.get("id") or "") == agent_id), None)
         agent_ids = [str(item.get("id") or "") for item in agents if isinstance(item, dict)]
@@ -3651,6 +3683,7 @@ def _validate_profile_policy(
     payload: object,
     *,
     expected_model_broker_url: str = REQUIRED_MODEL_BROKER_URL,
+    expected_tools: list[str] = REQUIRED_CONTAINER_TOOLS,
 ) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile is not an object")
@@ -3667,7 +3700,7 @@ def _validate_profile_policy(
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container compaction policy is invalid"
         )
-    if tools.get("allow") != REQUIRED_CONTAINER_TOOLS:
+    if tools.get("allow") != expected_tools:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container tool allowlist is invalid")
     exec_policy = tools.get("exec") or {}
     if (

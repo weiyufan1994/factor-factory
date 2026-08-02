@@ -548,12 +548,26 @@ quote them.
    participation gate", or "liquidity or turnover shock". Keep each answer
    between 120 and 600 characters and the complete serialized memo under
    20,000 UTF-8 bytes. Concision must not omit contradictory observed metrics.
-5. Select both model-family fields from: {model_families}. Update the
+5. Complete the mathematical contract with these exact structural rules:
+   - `math_hypothesis.process_or_distribution` must contain an explicit model
+     equation using `=` and explain the formula-specific state, process, or
+     distribution. A prose restatement of operators is not a model.
+   - `math_hypothesis.target_functional` must name the forward return and legal
+     information set in conditional notation, for example
+     `E[r_i,t+h | F_t, formula_specific_state_i,t]`, with the actual state and
+     horizon substituted.
+   - Fill both `math_hypothesis.expected_metric_signature` and the top-level
+     `expected_metric_signature` as identical JSON objects. Preserve and fill
+     every scaffolded key: `rank_ic`, `long_side`, `cost_adjusted`,
+     `monotonicity`, and `turnover`. Each value must compare the model's
+     expected sign or shape with the immutable observed metrics, including any
+     contradiction; do not substitute differently named threshold keys.
+6. Select both model-family fields from: {model_families}. Update the
    operator-consistency discussion flags only after the memo actually contains
    the corresponding discussion.
-6. Update `identity/web_execution_ledger.md` with a concise record under 2,000
+7. Update `identity/web_execution_ledger.md` with a concise record under 2,000
    characters. Do not include secrets or absolute paths in that ledger.
-7. Build the complete memo in reasoning, then use exactly one write call for
+8. Build the complete memo in reasoning, then use exactly one write call for
    the memo and exactly one write call for the ledger. Do not edit or read either
    generated file afterward and do not run any command or validator. The Host
    runs the pinned formal validator after your clean exit. Return exactly
@@ -561,7 +575,7 @@ quote them.
 the optional Markdown unless useful. Do not modify the contract, facts packet,
 answer form, questionnaire, factor spec/case/evaluation, Ultimate proof, plan,
 data, knowledge, or any file outside the required memo and execution ledger. Do not run the
-materializer, Step scripts other than the exact validator above, Council,
+materializer, any Step script or validator, Council,
 Ultimate, custom Python, data access, network probes, credential inspection, or
 environment enumeration. Never claim a factor verdict; the Host resumes formal
 Step6 and Council after your process exits.

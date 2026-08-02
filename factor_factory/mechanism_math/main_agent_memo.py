@@ -21,6 +21,13 @@ REQUIRED_QA_FIELDS = [
     "metric_signature_answer",
     "falsification_answer",
 ]
+REQUIRED_METRIC_SIGNATURE_FIELDS = {
+    "rank_ic",
+    "long_side",
+    "cost_adjusted",
+    "monotonicity",
+    "turnover",
+}
 
 MODEL_FAMILY_ALIASES = {
     "price_volume_microstructure": "transient_impact",
@@ -903,7 +910,21 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         for key in required_keys:
             if not str(payload.get(key) or "").strip():
                 failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:{field}.{key}")
-    if not isinstance(memo.get("expected_metric_signature"), dict) or not memo.get("expected_metric_signature"):
+    top_signature = memo.get("expected_metric_signature")
+    math_signature = math.get("expected_metric_signature")
+    signatures_are_complete = all(
+        isinstance(signature, dict)
+        and REQUIRED_METRIC_SIGNATURE_FIELDS.issubset(signature)
+        and all(
+            isinstance(signature.get(field), str)
+            and bool(signature.get(field).strip())
+            for field in REQUIRED_METRIC_SIGNATURE_FIELDS
+        )
+        for signature in (top_signature, math_signature)
+    )
+    if not signatures_are_complete or top_signature != math_signature:
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING")
+    if not isinstance(top_signature, dict) or not top_signature:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:expected_metric_signature")
     if not _nonempty_str_list(memo.get("falsification_tests"), min_count=2):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:falsification_tests")
@@ -919,10 +940,6 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     target = str(math.get("target_functional") or "").lower()
     if not target or not ("r_" in target or "return" in target or "forward" in target) or not ("f_t" in target or "conditional" in target or "|" in target):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TARGET_FUNCTIONAL_INVALID")
-    signature = math.get("expected_metric_signature")
-    required_signature = {"long_side", "cost_adjusted", "monotonicity", "turnover"}
-    if not isinstance(signature, dict) or not required_signature.issubset(set(signature)):
-        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING")
     evidence = memo.get("evidence_comparison") if isinstance(memo.get("evidence_comparison"), dict) else {}
     observed = evidence.get("observed_metrics") if isinstance(evidence, dict) else {}
     if not isinstance(observed, dict) or not observed:

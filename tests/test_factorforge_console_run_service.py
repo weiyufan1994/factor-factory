@@ -1126,6 +1126,15 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert answer_form["mechanism_qa"] == {
         field: "" for field in contract["required_qa_fields"]
     }
+    expected_signature_keys = {
+        "rank_ic",
+        "long_side",
+        "cost_adjusted",
+        "monotonicity",
+        "turnover",
+    }
+    assert set(answer_form["math_hypothesis"]["expected_metric_signature"]) == expected_signature_keys
+    assert set(answer_form["expected_metric_signature"]) == expected_signature_keys
     assert answer_form["formula_component_map"][0]["economic_state"] == ""
     assert "stochastic_process" in contract["allowed_model_families"]
     assert answer_form["evidence_comparison"]["observed_metrics"]
@@ -1148,6 +1157,10 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert contract["validation_command"] not in prompt
     assert "pinned formal validator after your clean exit" in prompt
     assert "MEMO_DRAFT_COMPLETE" in prompt
+    assert "E[r_i,t+h | F_t, formula_specific_state_i,t]" in prompt
+    assert "identical JSON objects" in prompt
+    assert "any Step script or validator" in prompt
+    assert "exact validator above" not in prompt
     assert "Required Authoring Preflight" not in prompt
     assert "six packet files" not in prompt
     assert "Fill the task-local web research plan" not in prompt
@@ -1279,6 +1292,68 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
             resume_task=resume_task,
             agent_result=agent_result,
         )
+
+
+def _metric_signature_failures(
+    values: dict[str, str],
+    *,
+    top: dict[str, str] | None = None,
+) -> list[str]:
+    from factor_factory.mechanism_math.main_agent_memo import (
+        validate_main_agent_mechanism_memo,
+    )
+
+    return validate_main_agent_mechanism_memo(
+        {
+            "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+            "math_hypothesis": {"expected_metric_signature": values},
+            "expected_metric_signature": dict(values) if top is None else top,
+        }
+    )
+
+
+def test_main_agent_memo_metric_signature_blank_values_block():
+    blank = {
+        "rank_ic": "",
+        "long_side": "",
+        "cost_adjusted": "",
+        "monotonicity": "",
+        "turnover": "",
+    }
+    assert (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING"
+        in _metric_signature_failures(blank)
+    )
+
+
+def test_main_agent_memo_metric_signature_divergence_blocks():
+    signature = {
+        "rank_ic": "expected positive rank IC; observed sign is contradictory",
+        "long_side": "expected positive long-side return; observed return is negative",
+        "cost_adjusted": "expected positive net return; observed costs erase the payoff",
+        "monotonicity": "expected ordered buckets; observed ordering is non-monotonic",
+        "turnover": "expected moderate turnover; observed turnover is excessive",
+    }
+    divergent = dict(signature)
+    divergent["turnover"] = "different top-level turnover claim"
+    assert (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING"
+        in _metric_signature_failures(signature, top=divergent)
+    )
+
+
+def test_main_agent_memo_metric_signature_filled_and_identical_passes_signature_gate():
+    signature = {
+        "rank_ic": "expected positive rank IC; observed sign is contradictory",
+        "long_side": "expected positive long-side return; observed return is negative",
+        "cost_adjusted": "expected positive net return; observed costs erase the payoff",
+        "monotonicity": "expected ordered buckets; observed ordering is non-monotonic",
+        "turnover": "expected moderate turnover; observed turnover is excessive",
+    }
+    assert (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING"
+        not in _metric_signature_failures(signature)
+    )
 
 
 def test_failed_mechanism_resume_restores_exact_parent_evidence_tree(tmp_path):

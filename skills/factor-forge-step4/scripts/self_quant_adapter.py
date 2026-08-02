@@ -15,9 +15,18 @@ if str(REPO_ROOT) not in sys.path:
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FF.parent
-MPLCONFIGDIR = WORKSPACE / '.cache' / 'matplotlib'
+FORMAL_FACTOR_WORKSPACE = os.getenv('FACTORFORGE_FACTOR_WORKSPACE')
+MPLCONFIGDIR = (
+    Path(FORMAL_FACTOR_WORKSPACE).expanduser() / '.cache' / 'matplotlib'
+    if FORMAL_FACTOR_WORKSPACE
+    else FF / '.cache' / 'matplotlib'
+)
+if FORMAL_FACTOR_WORKSPACE:
+    os.environ['MPLCONFIGDIR'] = str(MPLCONFIGDIR)
+else:
+    os.environ.setdefault('MPLCONFIGDIR', str(MPLCONFIGDIR))
+MPLCONFIGDIR = Path(os.environ['MPLCONFIGDIR'])
 MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault('MPLCONFIGDIR', str(MPLCONFIGDIR))
 
 from factor_factory.data_access import (
     build_forward_return_frame,

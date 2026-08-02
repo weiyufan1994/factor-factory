@@ -7,22 +7,30 @@ import os
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE = REPO_ROOT.parent
+QLIB_REPO = WORKSPACE / "qlib_repo"
+FORMAL_FACTOR_WORKSPACE = os.getenv("FACTORFORGE_FACTOR_WORKSPACE")
+FACTORFORGE_ROOT = Path(
+    FORMAL_FACTOR_WORKSPACE or os.getenv("FACTORFORGE_ROOT") or REPO_ROOT
+).expanduser()
+MPLCONFIGDIR = FACTORFORGE_ROOT / ".cache" / "matplotlib"
+if FORMAL_FACTOR_WORKSPACE:
+    os.environ["MPLCONFIGDIR"] = str(MPLCONFIGDIR)
+else:
+    os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
+MPLCONFIGDIR = Path(os.environ["MPLCONFIGDIR"])
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE = REPO_ROOT.parent
-QLIB_REPO = WORKSPACE / "qlib_repo"
-
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(QLIB_REPO) not in sys.path:
     sys.path.insert(0, str(QLIB_REPO))
-
-os.environ.setdefault("MPLCONFIGDIR", str(WORKSPACE / ".cache" / "matplotlib"))
 
 import redis_lock  # noqa: F401,E402
 import qlib  # noqa: E402

@@ -32,6 +32,18 @@ FF = Path(
 )
 WORKSPACE = FF.parent
 RUNS = FF / 'runs'
+FORMAL_FACTOR_WORKSPACE = os.getenv('FACTORFORGE_FACTOR_WORKSPACE')
+MPLCONFIGDIR = (
+    Path(FORMAL_FACTOR_WORKSPACE).expanduser() / '.cache' / 'matplotlib'
+    if FORMAL_FACTOR_WORKSPACE
+    else FF / '.cache' / 'matplotlib'
+)
+if FORMAL_FACTOR_WORKSPACE:
+    os.environ['MPLCONFIGDIR'] = str(MPLCONFIGDIR)
+else:
+    os.environ.setdefault('MPLCONFIGDIR', str(MPLCONFIGDIR))
+MPLCONFIGDIR = Path(os.environ['MPLCONFIGDIR'])
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
 
 # Prefer the local editable qlib repository before any unrelated third-party `qlib` package.
 for candidate in [Path(os.getenv('QLIB_REPO_ROOT')).expanduser()] if os.getenv('QLIB_REPO_ROOT') else []:
@@ -40,8 +52,6 @@ for candidate in [Path(os.getenv('QLIB_REPO_ROOT')).expanduser()] if os.getenv('
 for candidate in [WORKSPACE / 'qlib_repo', Path.home() / 'projects' / 'qlib_repo']:
     if (candidate / 'qlib' / '__init__.py').exists() and str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
-
-os.environ.setdefault('MPLCONFIGDIR', str(WORKSPACE / '.cache' / 'matplotlib'))
 
 from factor_factory.data_access import (
     build_forward_return_frame,

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,43 @@ def test_step4_cold_import_falls_back_when_legacy_paths_are_inaccessible(
 
     assert module.REPO_ROOT == PROJECT_ROOT
     assert getattr(module, runtime_attribute) == PROJECT_ROOT
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["self_quant_adapter.py", "qlib_backtest_adapter.py"],
+)
+def test_step4_matplotlib_cache_is_forced_inside_formal_factor_workspace(
+    tmp_path,
+    monkeypatch,
+    filename,
+):
+    factor_workspace = tmp_path / "factor_research" / "FACTOR" / "research_id"
+    factor_workspace.mkdir(parents=True)
+    outside_cache = tmp_path / "outside" / "matplotlib"
+    monkeypatch.setenv("FACTORFORGE_REPO_ROOT", str(PROJECT_ROOT))
+    monkeypatch.setenv("FACTORFORGE_ROOT", str(factor_workspace))
+    monkeypatch.setenv("FACTORFORGE_FACTOR_WORKSPACE", str(factor_workspace))
+    monkeypatch.setenv("MPLCONFIGDIR", str(outside_cache))
+
+    module = _load_script(
+        f"factorforge_{filename.replace('.', '_')}_matplotlib_workspace_test",
+        STEP4_SCRIPTS / filename,
+    )
+
+    expected = factor_workspace / ".cache" / "matplotlib"
+    assert module.MPLCONFIGDIR == expected
+    assert Path(os.environ["MPLCONFIGDIR"]) == expected
+    assert expected.is_dir()
+    assert not outside_cache.exists()
+
+
+def test_native_qlib_report_sets_workspace_cache_before_matplotlib_import():
+    source = (PROJECT_ROOT / "scripts/run_qlib_native_report.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "FACTORFORGE_FACTOR_WORKSPACE" in source
+    assert source.index('os.environ["MPLCONFIGDIR"]') < source.index(
+        "import matplotlib"
+    )

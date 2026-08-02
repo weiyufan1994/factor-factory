@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -27,12 +28,17 @@ from factor_factory.console.agent_adapter import (
     validate_auth_database,
 )
 from factor_factory.console.config import ConsoleConfig
+from factor_factory.console.council_ingress import (
+    CouncilIngressTask,
+    build_council_task_prompt,
+)
 from factor_factory.console.models import ResearchJob
 from factor_factory.console.model_broker import (
     ACTIVE_SECRET_REGISTRY_NAME,
     read_private_token_file,
 )
 from factor_factory.console.store import utc_now
+from factor_factory.console.web_research_plan import write_text_atomic
 
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
@@ -204,12 +210,14 @@ class ContainerizedOpenClawResearchAgentAdapter:
         agent_id = job.agent_id or f"factorforge-web-{job.job_id.removeprefix('job_')}"
         session_key = job.agent_session_key or f"agent:{agent_id}:{job.job_id}"
         prompt_path = workspace / "identity" / ("web_agent_resume.md" if resume else "web_agent_task.md")
-        prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(
+        write_text_atomic(
+            prompt_path,
             build_agent_prompt(job, worktree=worktree, workspace=workspace, config=self.config, resume=resume),
-            encoding="utf-8",
+            root=workspace,
         )
 
+        self._initialize_credential_material_state(job.job_id, resume=resume)
+        first_issuance = self.credential_material_state(job.job_id) == "not_issued"
         runtime_root, home, agent_dir, profile_config = self._prepare_runtime(job.job_id)
         git_dir = self._prepare_git_view(
             runtime_root=runtime_root,
@@ -261,7 +269,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self._validate_agent_binding(profile_config, agent_id, worktree, agent_dir, model)
 
         aws_env_file, credential_values, denied_secret_file = self._prepare_aws_environment(
-            job.job_id
+            job.job_id,
+            allow_missing_history=first_issuance,
+            include_aws_credentials=False,
         )
         try:
             research_common = self._container_prefix(
@@ -359,6 +369,387 @@ class ContainerizedOpenClawResearchAgentAdapter:
             finished_at_utc=finished,
             stdout_tail=str(payload["stdout_tail"]),
             stderr_tail=str(payload["stderr_tail"]),
+            result_path=str(result_path),
+        )
+
+    def run_council_ingress(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        tasks: tuple[CouncilIngressTask, ...],
+    ) -> AgentRunResult:
+        if not tasks:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Council ingress has no tasks"
+            )
+        worktree = worktree.resolve(strict=True)
+        workspace = workspace.resolve(strict=True)
+        workspace.relative_to(worktree)
+        summary_prompt = workspace / "identity" / "web_agent_resume.md"
+        _ensure_workspace_parent(summary_prompt, root=workspace)
+        write_text_atomic(
+            summary_prompt,
+            "# Council result ingress\n\n"
+            f"Report: {job.report_id}\n\n"
+            f"{len(tasks)} independent blind-route agents are dispatched by the Host. "
+            "Each agent may write only its immutable expected result path.\n",
+            root=workspace,
+        )
+
+        self._initialize_credential_material_state(job.job_id, resume=True)
+        first_issuance = self.credential_material_state(job.job_id) == "not_issued"
+        runtime_root, _home, _primary_agent_dir, _profile_config = (
+            self._prepare_runtime(job.job_id)
+        )
+        council_run_root = (
+            runtime_root / "council-isolated" / f"run_{uuid.uuid4().hex}"
+        )
+        council_run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+        council_run_root.chmod(0o700)
+        model = job.request.model or self.config.openclaw_model
+        per_task_timeout = max(
+            180,
+            min(
+                self.config.agent_timeout_seconds,
+                self.config.agent_timeout_seconds // len(tasks) + 120,
+            ),
+        )
+        aws_env_file, credential_values, _denied_secret_file = (
+            self._prepare_aws_environment(
+                job.job_id,
+                allow_missing_history=first_issuance,
+                include_aws_credentials=False,
+            )
+        )
+        started = utc_now()
+        runs: list[dict[str, Any]] = []
+        private_results: list[tuple[CouncilIngressTask, Path]] = []
+        returncode = 0
+        try:
+            for index, task in enumerate(tasks, start=1):
+                runtime_token = _safe_runtime_token(task.task_id)
+                agent_id = (
+                    f"ff-council-{job.job_id.removeprefix('job_')[:10]}-{index:02d}"
+                )
+                session_key = f"agent:{agent_id}:{job.job_id}:{task.task_id}"
+                task_runtime_root = council_run_root / runtime_token
+                home = task_runtime_root / "home"
+                agent_dir = task_runtime_root / "agent"
+                profile_dir = home / f".openclaw-{self.config.openclaw_profile}"
+                output_root = task_runtime_root / "output"
+                worktree_view = task_runtime_root / "engine-view"
+                workspace_view = task_runtime_root / "workspace-view"
+                for path in (
+                    task_runtime_root,
+                    home,
+                    agent_dir,
+                    profile_dir,
+                    output_root,
+                    worktree_view,
+                    workspace_view,
+                ):
+                    path.mkdir(parents=True, exist_ok=False, mode=0o700)
+                    path.chmod(0o700)
+                workspace_mountpoint = worktree_view / workspace.relative_to(worktree)
+                workspace_mountpoint.mkdir(parents=True, exist_ok=False, mode=0o700)
+                packet_source = workspace / task.task_packet_path
+                packet_view = workspace_view / task.task_packet_path
+                packet_view.parent.mkdir(parents=True, exist_ok=False, mode=0o700)
+                shutil.copy2(packet_source, packet_view)
+                packet_view.chmod(0o400)
+                assert self.config.openclaw_profile_template is not None
+                profile_config = profile_dir / "openclaw.json"
+                shutil.copy2(self.config.openclaw_profile_template, profile_config)
+                profile_config.chmod(0o600)
+                _validate_profile_policy(
+                    json.loads(profile_config.read_text(encoding="utf-8")),
+                    expected_model_broker_url=self.config.container_model_broker_url,
+                )
+                auth_store = agent_dir / "openclaw-agent.sqlite"
+                assert self.config.openclaw_auth_seed_db is not None
+                copy_auth_database(self.config.openclaw_auth_seed_db, auth_store)
+                auth_store.chmod(0o600)
+                validate_auth_database(
+                    auth_store,
+                    provider=self.config.openclaw_auth_provider,
+                    label=f"Council credential store {index}",
+                    expected_key=self._broker_client_token(),
+                )
+                container_name = (
+                    f"ff-council-{self.config.installation_id[:8]}-"
+                    f"{job.job_id.removeprefix('job_')[:10]}-{index:02d}"
+                )
+                common = self._container_prefix(
+                    container_name=container_name,
+                    job_id=job.job_id,
+                    worktree=worktree,
+                    workspace=workspace,
+                    runtime_root=task_runtime_root,
+                    home=home,
+                    git_dir=None,
+                    aws_env_file=None,
+                    profile_config_readonly=None,
+                    auth_store_readonly=None,
+                    worktree_mount_source=worktree_view,
+                    workspace_readonly=True,
+                    workspace_mount_source=workspace_view,
+                )
+                add_command = [
+                    *common,
+                    self.config.openclaw_binary,
+                    "--profile",
+                    self.config.openclaw_profile,
+                    "agents",
+                    "add",
+                    agent_id,
+                    "--workspace",
+                    str(worktree),
+                    "--agent-dir",
+                    str(agent_dir),
+                    "--model",
+                    model,
+                    "--non-interactive",
+                    "--json",
+                ]
+                self._run_runtime(
+                    add_command,
+                    timeout=120,
+                    label=f"Council agent {index} initialization",
+                    allow_exists=True,
+                )
+                self._validate_agent_binding(
+                    profile_config,
+                    agent_id,
+                    worktree,
+                    agent_dir,
+                    model,
+                )
+                private_result_path = output_root / "agent_result.json"
+                prompt_path = task_runtime_root / "council_task.md"
+                prompt_path.write_text(
+                    build_council_task_prompt(
+                        workspace=workspace,
+                        report_id=job.report_id,
+                        task=task,
+                        private_output_path=private_result_path,
+                    ),
+                    encoding="utf-8",
+                )
+                prompt_path.chmod(0o600)
+                research_common = self._container_prefix(
+                    container_name=container_name,
+                    job_id=job.job_id,
+                    worktree=worktree,
+                    workspace=workspace,
+                    runtime_root=task_runtime_root,
+                    home=home,
+                    git_dir=None,
+                    aws_env_file=aws_env_file,
+                    profile_config_readonly=profile_config,
+                    auth_store_readonly=auth_store,
+                    worktree_mount_source=worktree_view,
+                    workspace_readonly=True,
+                    workspace_mount_source=workspace_view,
+                )
+                command = [
+                    *research_common,
+                    self.config.openclaw_binary,
+                    "--profile",
+                    self.config.openclaw_profile,
+                    "agent",
+                    "--local",
+                    "--agent",
+                    agent_id,
+                    "--session-key",
+                    session_key,
+                    "--message-file",
+                    str(prompt_path),
+                    "--thinking",
+                    self.config.openclaw_thinking,
+                    "--timeout",
+                    str(per_task_timeout),
+                    "--json",
+                ]
+                turn_started = utc_now()
+                with self._lock:
+                    self._active.add(container_name)
+                try:
+                    proc = subprocess.run(
+                        command,
+                        cwd=worktree,
+                        text=True,
+                        capture_output=True,
+                        timeout=per_task_timeout + 90,
+                    )
+                    turn_returncode = proc.returncode
+                    stdout = redact_secrets(
+                        proc.stdout,
+                        extra_values=credential_values,
+                    )
+                    stderr = redact_secrets(
+                        proc.stderr,
+                        extra_values=credential_values,
+                    )
+                except FileNotFoundError as exc:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {self.config.container_runtime}"
+                    ) from exc
+                except subprocess.TimeoutExpired as exc:
+                    if not self._stop_container(container_name):
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: timed-out Council container could not be removed"
+                        ) from exc
+                    turn_returncode = 124
+                    stdout = redact_secrets(
+                        _as_text(exc.stdout),
+                        extra_values=credential_values,
+                    )
+                    stderr = redact_secrets(
+                        _as_text(exc.stderr),
+                        extra_values=credential_values,
+                    )
+                finally:
+                    with self._lock:
+                        self._active.discard(container_name)
+                runs.append(
+                    {
+                        "task_id": task.task_id,
+                        "agent_role": task.agent_role,
+                        "expected_agent_identifier": task.expected_agent_identifier,
+                        "agent_id": agent_id,
+                        "session_key_sha256": hashlib.sha256(
+                            session_key.encode("utf-8")
+                        ).hexdigest(),
+                        "expected_result_path": task.expected_result_path,
+                        "private_result_path": str(private_result_path),
+                        "started_at_utc": turn_started,
+                        "finished_at_utc": utc_now(),
+                        "returncode": turn_returncode,
+                        "stdout_tail": stdout[-4_000:],
+                        "stderr_tail": stderr[-4_000:],
+                    }
+                )
+                if turn_returncode != 0:
+                    returncode = turn_returncode
+                    break
+                private_results.append((task, private_result_path))
+        finally:
+            self._cleanup_aws_environment(aws_env_file, None)
+
+        if returncode == 0:
+            if len(private_results) != len(tasks):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: Council ingress result count is incomplete"
+                )
+            validated_results: list[tuple[CouncilIngressTask, dict[str, Any]]] = []
+            for task, private_result_path in private_results:
+                if (
+                    private_result_path.is_symlink()
+                    or not private_result_path.is_file()
+                    or private_result_path.stat().st_size <= 0
+                    or private_result_path.stat().st_size > 2 * 1024 * 1024
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result is missing or unsafe"
+                    )
+                raw_result = private_result_path.read_text(encoding="utf-8")
+                if redact_secrets(
+                    raw_result,
+                    extra_values=credential_values,
+                ) != raw_result:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result contains secret material"
+                    )
+                try:
+                    result_payload = json.loads(raw_result)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result is invalid JSON"
+                    ) from exc
+                if (
+                    not isinstance(result_payload, dict)
+                    or result_payload.get("report_id") != job.report_id
+                    or result_payload.get("task_id") != task.task_id
+                    or result_payload.get("agent_role") != task.agent_role
+                    or result_payload.get("agent_identifier")
+                    != task.expected_agent_identifier
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result identity mismatch"
+                    )
+                validation_reasons = _validate_private_council_result(
+                    worktree=worktree,
+                    workspace=workspace,
+                    report_id=job.report_id,
+                    task=task,
+                    payload=result_payload,
+                )
+                if validation_reasons:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result failed formal validation"
+                    )
+                validated_results.append((task, result_payload))
+            _promote_council_result_set(
+                workspace=workspace,
+                validated_results=validated_results,
+            )
+            for task, _result_payload in validated_results:
+                runs_by_task = next(
+                    run for run in runs if run["task_id"] == task.task_id
+                )
+                runs_by_task["imported_result_sha256"] = hashlib.sha256(
+                    (workspace / task.expected_result_path).read_bytes()
+                ).hexdigest()
+
+        finished = utc_now()
+        primary_agent_id = job.agent_id or (
+            f"factorforge-web-{job.job_id.removeprefix('job_')}"
+        )
+        primary_session_key = job.agent_session_key or (
+            f"agent:{primary_agent_id}:{job.job_id}"
+        )
+        result_path = (
+            self.config.state_root
+            / "jobs"
+            / job.job_id
+            / f"council_ingress_{_stamp(finished)}.json"
+        )
+        payload: dict[str, Any] = {
+            "version": "factorforge_console_council_ingress_v1",
+            "execution_mode": "container",
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "agent_id": primary_agent_id,
+            "independent_agent_count": len(runs),
+            "required_agent_count": len(tasks),
+            "resume": True,
+            "started_at_utc": started,
+            "finished_at_utc": finished,
+            "returncode": returncode,
+            "error_code": "" if returncode == 0 else BLOCK_AGENT_RUNTIME_FAILED,
+            "runs": runs,
+        }
+        _write_private_json(result_path, payload)
+        return AgentRunResult(
+            returncode=returncode,
+            agent_id=primary_agent_id,
+            session_key=primary_session_key,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            stdout_tail=json.dumps(
+                {
+                    "council_agents_completed": sum(
+                        1 for run in runs if run["returncode"] == 0
+                    ),
+                    "council_agents_required": len(tasks),
+                },
+                sort_keys=True,
+            ),
+            stderr_tail="" if returncode == 0 else "Council ingress agent failed",
             result_path=str(result_path),
         )
 
@@ -518,10 +909,13 @@ class ContainerizedOpenClawResearchAgentAdapter:
         workspace: Path,
         runtime_root: Path,
         home: Path,
-        git_dir: Path,
+        git_dir: Path | None,
         aws_env_file: Path | None,
         profile_config_readonly: Path | None,
         auth_store_readonly: Path | None,
+        worktree_mount_source: Path | None = None,
+        workspace_readonly: bool = False,
+        workspace_mount_source: Path | None = None,
     ) -> list[str]:
         command = [
             self.config.container_runtime,
@@ -555,13 +949,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             "--mount",
-            _mount(worktree, readonly=True),
+            _mount(
+                worktree_mount_source or worktree,
+                readonly=True,
+                target=worktree,
+            ),
             "--mount",
-            _mount(workspace, readonly=False),
+            _mount(
+                workspace_mount_source or workspace,
+                readonly=workspace_readonly,
+                target=workspace,
+            ),
             "--mount",
             _mount(runtime_root, readonly=False),
-            "--mount",
-            _mount(git_dir, readonly=True),
             "--env",
             f"HOME={home}",
             "--env",
@@ -569,30 +969,41 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--env",
             f"FACTORFORGE_FACTOR_WORKSPACE={workspace}",
             "--env",
-            f"GIT_DIR={git_dir}",
-            "--env",
-            f"GIT_WORK_TREE={worktree}",
-            "--env",
-            "GIT_OPTIONAL_LOCKS=0",
-            "--env",
             "PYTHONUNBUFFERED=1",
             "--env",
             "AWS_EC2_METADATA_DISABLED=true",
-            "--env",
-            f"HTTP_PROXY={self.config.container_proxy_url}",
-            "--env",
-            f"HTTPS_PROXY={self.config.container_proxy_url}",
-            "--env",
-            f"FACTORFORGE_S3_PROXY_URL={self.config.container_proxy_url}",
-            "--env",
-            f"http_proxy={self.config.container_proxy_url}",
-            "--env",
-            f"https_proxy={self.config.container_proxy_url}",
             "--env",
             f"NO_PROXY={urlsplit(self.config.container_model_broker_url).hostname}",
             "--env",
             f"no_proxy={urlsplit(self.config.container_model_broker_url).hostname}",
         ]
+        if git_dir is not None:
+            command.extend(
+                [
+                    "--mount",
+                    _mount(git_dir, readonly=True),
+                    "--env",
+                    f"GIT_DIR={git_dir}",
+                    "--env",
+                    f"GIT_WORK_TREE={worktree}",
+                    "--env",
+                    "GIT_OPTIONAL_LOCKS=0",
+                ]
+            )
+        if workspace_mount_source is None:
+            for relative in (
+                "manifest.json",
+                "identity/web_research_request.json",
+                "identity/data_catalog_summary.json",
+                "identity/factor_knowledge_summary.json",
+                "identity/web_research_runtime.md",
+                "identity/web_agent_task.md",
+                "identity/web_agent_resume.md",
+                "reports/user_hypothesis.md",
+            ):
+                protected = workspace / relative
+                if protected.is_file() and not protected.is_symlink():
+                    command.extend(["--mount", _mount(protected, readonly=True)])
         if aws_env_file is not None:
             command.extend(["--env-file", str(aws_env_file)])
         if profile_config_readonly is not None:
@@ -600,23 +1011,6 @@ class ContainerizedOpenClawResearchAgentAdapter:
         if auth_store_readonly is not None:
             command.extend(["--mount", _mount(auth_store_readonly, readonly=True)])
         python_paths = [str(worktree)]
-        if self.config.data_api_pythonpath:
-            data_api_package = self._data_api_package_root()
-            bridge_root = worktree / DATA_API_BRIDGE_RELATIVE
-            command.extend(["--mount", _mount(data_api_package, readonly=True)])
-            command.extend(
-                ["--env", f"FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT={data_api_package}"]
-            )
-            python_paths.insert(0, str(bridge_root))
-        mounted_data_roots: set[Path] = set()
-        if self.config.data_catalogs:
-            command.extend(["--env", f"FACTORFORGE_STATE_CATALOG={self.config.data_catalogs[0]}"])
-            command.extend(["--env", f"FACTORFORGE_DATA_CATALOG={self.config.data_catalogs[0]}"])
-            for catalog in self.config.data_catalogs:
-                root = catalog.parent.parent if catalog.parent.name == "catalogs" else catalog.parent
-                if root not in mounted_data_roots:
-                    command.extend(["--mount", _mount(root, readonly=True)])
-                    mounted_data_roots.add(root)
         command.extend(["--env", f"PYTHONPATH={os.pathsep.join(python_paths)}"])
         for key in ("AWS_REGION", "AWS_DEFAULT_REGION"):
             if os.getenv(key):
@@ -682,19 +1076,41 @@ class ContainerizedOpenClawResearchAgentAdapter:
     def _prepare_aws_environment(
         self,
         job_id: str,
+        *,
+        allow_missing_history: bool = False,
+        include_aws_credentials: bool = True,
     ) -> tuple[Path | None, tuple[str, ...], Path | None]:
+        scan_root = self.config.model_broker_secret_scan_root
+        scan_path = scan_root / f"{self.config.installation_id}.{job_id}.secrets"
+        scan_existed = scan_path.exists() or scan_path.is_symlink()
+        first_issuance = False
         if re.fullmatch(r"job_[a-f0-9]{10}", job_id):
-            self._mark_credential_material_may_have_been_issued(job_id)
+            state = self.credential_material_state(job_id)
+            if state == "unknown":
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: credential material state is uninitialized"
+                )
+            if state == "not_issued":
+                if not allow_missing_history:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: credential issuance was not armed"
+                    )
+                first_issuance = True
+            if state == "may_have_been_issued" and not scan_existed and not allow_missing_history:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior denied-secret registry is missing"
+                )
         credentials: _AwsCredentialLease | None = None
-        try:
-            credentials = _load_aws_credentials(
-                self.config.aws_readonly_role_name,
-                self.config.aws_host_role_name,
-                self.config.aws_account_id,
-            )
-        except RuntimeError:
-            if self.config.data_catalogs and not self.config.auth_disabled:
-                raise
+        if include_aws_credentials:
+            try:
+                credentials = _load_aws_credentials(
+                    self.config.aws_readonly_role_name,
+                    self.config.aws_host_role_name,
+                    self.config.aws_account_id,
+                )
+            except RuntimeError:
+                if self.config.data_catalogs and not self.config.auth_disabled:
+                    raise
         broker_client_token = self._broker_client_token()
         env_path: Path | None = None
         secret_values = (broker_client_token,)
@@ -713,27 +1129,12 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: task credential lease already exists"
                 )
-            lines = [
-                f"AWS_ACCESS_KEY_ID={credentials.access_key}",
-                f"AWS_SECRET_ACCESS_KEY={credentials.secret_key}",
-                f"AWS_SESSION_TOKEN={credentials.token}",
-                f"AWS_CREDENTIAL_EXPIRATION={credentials.expires_at.isoformat()}",
-            ]
-            descriptor = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                os.write(descriptor, ("\n".join(lines) + "\n").encode("utf-8"))
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
             secret_values = (
                 broker_client_token,
                 credentials.access_key,
                 credentials.secret_key,
                 credentials.token,
             )
-        scan_root = self.config.model_broker_secret_scan_root
-        scan_path = scan_root / f"{self.config.installation_id}.{job_id}.secrets"
-        scan_existed = scan_path.exists() or scan_path.is_symlink()
         try:
             if (
                 scan_root.is_symlink()
@@ -768,12 +1169,44 @@ class ContainerizedOpenClawResearchAgentAdapter:
             scan_path.chmod(0o640)
             _activate_denied_secret_registry(scan_path)
         except (OSError, RuntimeError) as exc:
-            if env_path is not None:
-                env_path.unlink(missing_ok=True)
             if not scan_existed:
                 scan_path.unlink(missing_ok=True)
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: model broker secret scanner registration failed"
+            ) from exc
+        try:
+            if first_issuance and credentials is not None:
+                self._mark_credential_material_may_have_been_issued(job_id)
+            if credentials is not None and env_path is not None:
+                lines = [
+                    f"AWS_ACCESS_KEY_ID={credentials.access_key}",
+                    f"AWS_SECRET_ACCESS_KEY={credentials.secret_key}",
+                    f"AWS_SESSION_TOKEN={credentials.token}",
+                    f"AWS_CREDENTIAL_EXPIRATION={credentials.expires_at.isoformat()}",
+                ]
+                descriptor = os.open(
+                    env_path,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                try:
+                    payload = ("\n".join(lines) + "\n").encode("utf-8")
+                    offset = 0
+                    while offset < len(payload):
+                        offset += os.write(descriptor, payload[offset:])
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                _fsync_directory(env_path.parent)
+        except (OSError, RuntimeError) as exc:
+            if env_path is not None:
+                env_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: task credential lease publication failed"
             ) from exc
         return env_path, merged_values, scan_path
 
@@ -789,10 +1222,57 @@ class ContainerizedOpenClawResearchAgentAdapter:
         scan_path = self._denied_secret_path(job_id)
         return _read_denied_secret_file(scan_path)
 
+    def prepare_host_data_environment(
+        self,
+        job_id: str,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        env_path, denied_values, _scan_path = self._prepare_aws_environment(
+            job_id,
+            allow_missing_history=(
+                self.credential_material_state(job_id) == "not_issued"
+            ),
+        )
+        if env_path is None:
+            if self.config.data_catalogs and not self.config.auth_disabled:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: host data lease is unavailable"
+                )
+            return {}, denied_values
+        try:
+            metadata = env_path.lstat()
+            if (
+                env_path.is_symlink()
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o077
+                or metadata.st_size > 16 * 1024
+            ):
+                raise RuntimeError("host data lease file is unsafe")
+            entries: dict[str, str] = {}
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if not separator or key in entries or not value or "\x00" in value:
+                    raise RuntimeError("host data lease file is invalid")
+                entries[key] = value
+            required = {
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "AWS_CREDENTIAL_EXPIRATION",
+            }
+            if set(entries) != required:
+                raise RuntimeError("host data lease file is invalid")
+            return entries, denied_values
+        except (OSError, UnicodeError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: host data lease publication failed"
+            ) from exc
+        finally:
+            self._cleanup_aws_environment(env_path, None)
+
     def credential_material_state(self, job_id: str) -> str:
         marker_root = self._credential_material_marker_root()
         if not marker_root.exists() and not marker_root.is_symlink():
-            return "not_issued"
+            return "unknown"
         try:
             root_metadata = marker_root.lstat()
         except OSError as exc:
@@ -805,7 +1285,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError("credential material state root is unsafe")
         marker = self._credential_material_marker_path(job_id)
         if not marker.exists() and not marker.is_symlink():
-            return "not_issued"
+            return "unknown"
         try:
             descriptor = os.open(
                 marker,
@@ -822,24 +1302,64 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError("credential material state marker is unsafe") from exc
         finally:
             os.close(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or payload != (
-            "factorforge_console_credential_material_may_have_been_issued_v1\n"
-        ):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
             raise RuntimeError("credential material state marker is unsafe")
-        return "may_have_been_issued"
+        states = {
+            "factorforge_console_credential_material_not_issued_v1\n": "not_issued",
+            "factorforge_console_credential_material_may_have_been_issued_v1\n": (
+                "may_have_been_issued"
+            ),
+        }
+        if payload not in states:
+            raise RuntimeError("credential material state marker is unsafe")
+        return states[payload]
+
+    def deactivate_denied_secrets(self, job_id: str) -> None:
+        _deactivate_denied_secret_registry(self._denied_secret_path(job_id))
 
     def clear_denied_secrets(self, job_id: str) -> None:
         self._cleanup_aws_environment(None, self._denied_secret_path(job_id))
         marker = self._credential_material_marker_path(job_id)
-        if self.credential_material_state(job_id) == "may_have_been_issued":
+        if self.credential_material_state(job_id) != "unknown":
             marker.unlink()
 
-    def _mark_credential_material_may_have_been_issued(self, job_id: str) -> None:
-        marker = self._credential_material_marker_path(job_id)
-        if marker.exists() or marker.is_symlink():
-            if self.credential_material_state(job_id) != "may_have_been_issued":
-                raise RuntimeError("credential material state marker is unsafe")
+    def _initialize_credential_material_state(self, job_id: str, *, resume: bool) -> None:
+        if self.credential_material_state(job_id) != "unknown":
             return
+        self._write_credential_material_state(
+            job_id,
+            "may_have_been_issued" if resume else "not_issued",
+            replace=False,
+        )
+
+    def _mark_credential_material_may_have_been_issued(self, job_id: str) -> None:
+        state = self.credential_material_state(job_id)
+        if state == "may_have_been_issued":
+            return
+        if state != "not_issued":
+            raise RuntimeError("credential material state marker is unsafe")
+        self._write_credential_material_state(
+            job_id,
+            "may_have_been_issued",
+            replace=True,
+        )
+
+    def _write_credential_material_state(
+        self,
+        job_id: str,
+        state: str,
+        *,
+        replace: bool,
+    ) -> None:
+        payloads = {
+            "not_issued": b"factorforge_console_credential_material_not_issued_v1\n",
+            "may_have_been_issued": (
+                b"factorforge_console_credential_material_may_have_been_issued_v1\n"
+            ),
+        }
+        if state not in payloads:
+            raise RuntimeError("credential material state is invalid")
+        marker = self._credential_material_marker_path(job_id)
         marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         root_metadata = marker.parent.lstat()
         if (
@@ -848,19 +1368,27 @@ class ContainerizedOpenClawResearchAgentAdapter:
             or root_metadata.st_mode & 0o077
         ):
             raise RuntimeError("credential material state root is unsafe")
+        destination = marker
+        if replace:
+            destination = marker.parent / f".{marker.name}.{uuid.uuid4().hex}.tmp"
         descriptor = os.open(
-            marker,
+            destination,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
             0o600,
         )
         try:
-            payload = b"factorforge_console_credential_material_may_have_been_issued_v1\n"
+            payload = payloads[state]
             offset = 0
             while offset < len(payload):
                 offset += os.write(descriptor, payload[offset:])
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        if replace:
+            try:
+                destination.replace(marker)
+            finally:
+                destination.unlink(missing_ok=True)
         _fsync_directory(marker.parent)
 
     def _credential_material_marker_path(self, job_id: str) -> Path:
@@ -1313,9 +1841,66 @@ print(json.dumps({'status': 'PASS', 'dataset_count': len(datasets), 'row_count':
             self._cleanup_aws_environment(env_file, denied_secret_file)
 
 
-def _mount(path: Path, *, readonly: bool) -> str:
+def _mount(
+    path: Path,
+    *,
+    readonly: bool,
+    target: Path | None = None,
+) -> str:
     mode = ",readonly" if readonly else ""
-    return f"type=bind,src={path},dst={path}{mode}"
+    return f"type=bind,src={path},dst={target or path}{mode}"
+
+
+def _validate_private_council_result(
+    *,
+    worktree: Path,
+    workspace: Path,
+    report_id: str,
+    task: CouncilIngressTask,
+    payload: dict[str, Any],
+) -> list[str]:
+    manifest_path = (
+        workspace
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"dispatch_manifest__{report_id}.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected_task = next(
+        (
+            item
+            for item in manifest.get("agent_tasks") or []
+            if isinstance(item, dict) and item.get("task_id") == task.task_id
+        ),
+        None,
+    )
+    if not isinstance(expected_task, dict):
+        return ["Council task is absent from dispatch manifest"]
+    validator_path = (
+        worktree
+        / "skills"
+        / "factor-forge-step6"
+        / "scripts"
+        / "validate_agentic_council_result.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        f"factorforge_console_council_validator_{uuid.uuid4().hex}",
+        validator_path,
+    )
+    if spec is None or spec.loader is None:
+        return ["Council result validator is unavailable"]
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.FF = workspace
+    module.OBJ = workspace / "objects"
+    reasons = module.validate_agentic_result(
+        payload,
+        expected_task=expected_task,
+        expected_report_id=report_id,
+    )
+    return [str(reason) for reason in reasons]
 
 
 def _as_text(value: object) -> str:
@@ -1326,6 +1911,111 @@ def _as_text(value: object) -> str:
 
 def _stamp(value: str) -> str:
     return value.replace(":", "").replace("-", "")
+
+
+def _ensure_workspace_parent(path: Path, *, root: Path) -> None:
+    root_path = root.resolve(strict=True)
+    destination = path.absolute()
+    try:
+        relative_parent = destination.parent.relative_to(root_path)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: Council ingress path escapes workspace"
+        ) from exc
+    current = root_path
+    for part in relative_parent.parts:
+        if part in {"", ".", ".."}:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Council ingress path is unsafe"
+            )
+        current = current / part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Council ingress directory is unavailable"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Council ingress directory is unsafe"
+            )
+
+
+def _promote_council_result_set(
+    *,
+    workspace: Path,
+    validated_results: list[tuple[CouncilIngressTask, dict[str, Any]]],
+) -> None:
+    if not validated_results:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: Council result set is empty"
+        )
+    relative_parents = {
+        Path(task.expected_result_path).parent
+        for task, _payload in validated_results
+    }
+    if len(relative_parents) != 1:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: Council result set has multiple roots"
+        )
+    relative_root = next(iter(relative_parents))
+    if relative_root.is_absolute() or ".." in relative_root.parts:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: Council result root is unsafe"
+        )
+    result_root = workspace / relative_root
+    _ensure_workspace_parent(result_root, root=workspace)
+    if result_root.exists() or result_root.is_symlink():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: Council result root already exists"
+        )
+    staging_root = result_root.parent / (
+        f".{result_root.name}.console-stage-{uuid.uuid4().hex}"
+    )
+    staging_root.mkdir(mode=0o700)
+    staging_root.chmod(0o700)
+    try:
+        expected_names: set[str] = set()
+        for task, result_payload in validated_results:
+            relative_result = Path(task.expected_result_path)
+            if (
+                relative_result.parent != relative_root
+                or not relative_result.name
+                or relative_result.name in expected_names
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: Council result identity is unsafe"
+                )
+            expected_names.add(relative_result.name)
+            write_text_atomic(
+                staging_root / relative_result.name,
+                json.dumps(
+                    result_payload,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                root=staging_root,
+            )
+        staged_names = {
+            item.name
+            for item in staging_root.iterdir()
+            if item.is_file() and not item.is_symlink()
+        }
+        if staged_names != expected_names:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: Council staged result set is incomplete"
+            )
+        os.replace(staging_root, result_root)
+    except Exception:
+        if staging_root.exists() and not staging_root.is_symlink():
+            shutil.rmtree(staging_root)
+        raise
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
@@ -1565,3 +2255,12 @@ def _validate_profile_policy(
         or models[0].get("maxTokens") != 16384
     ):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model budget is invalid")
+
+
+def _safe_runtime_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-._")[:96]
+    if not token:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Council task identity is unsafe"
+        )
+    return token

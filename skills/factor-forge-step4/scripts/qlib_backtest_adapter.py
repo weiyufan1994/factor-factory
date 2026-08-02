@@ -66,6 +66,18 @@ def _to_jsonable(value: Any) -> Any:
     return value
 
 
+def _uses_tradeable_web_timing(report_id: str) -> bool:
+    fsm_path = FF / 'objects' / 'factor_spec_master' / f'factor_spec_master__{report_id}.json'
+    if not fsm_path.exists():
+        return False
+    payload = json.loads(fsm_path.read_text(encoding='utf-8'))
+    contract = payload.get('evaluation_contract') if isinstance(payload, dict) else {}
+    return (
+        isinstance(contract, dict)
+        and contract.get('version') == 'factorforge_web_evaluation_contract_v2'
+    )
+
+
 def _write_line_plot(df: pd.DataFrame, cols: list[str], path: Path, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(10, 4.5))
@@ -279,6 +291,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'extensible_metrics': True,
         }
 
+    web_tradeable_timing = _uses_tradeable_web_timing(report_id)
     factor_df, signal_col, factor_id = load_factor_values_with_signal(report_id)
     factor_df = factor_df[['ts_code', 'trade_date', signal_col]].copy()
     daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
@@ -293,7 +306,10 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         instrument_col='ts_code',
         date_col='trade_date',
         price_col='close',
+        return_col=None if web_tradeable_timing else 'pct_chg',
         horizon=1,
+        entry_offset=1 if web_tradeable_timing else 0,
+        exit_offset=2 if web_tradeable_timing else None,
     )
 
     merged = factor_df.merge(
@@ -327,6 +343,20 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         'report_id': report_id,
         'factor_id': factor_id,
         'signal_name': signal_col,
+        'signal_timing_contract': (
+            {
+                'version': 'factorforge_signal_timing_contract_v2',
+                'signal_timestamp_policy': 'after_close_t',
+                'position_entry_policy': 'close_t_plus_1',
+                'return_window': 'close_t_plus_1_to_close_t_plus_2',
+                'forward_return_source': 'close.shift(-2) / close.shift(-1) - 1',
+            }
+            if web_tradeable_timing
+            else {
+                'version': 'factorforge_signal_timing_contract_v1',
+                'forward_return_source': 'pct_chg.shift(-1)',
+            }
+        ),
         'input_summary': {
             'sample_window': cfg.get('sample_window', {}),
             'factor_rows': int(len(factor_df)),

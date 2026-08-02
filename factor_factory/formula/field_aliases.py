@@ -14,6 +14,7 @@ FIELD_ALIASES = {
     'float_market_cap': ['float_market_cap', 'free_float_mv'],
     'amount': ['amount'],
     'open': ['open'],
+    'pre_close': ['pre_close'],
     'high': ['high'],
     'low': ['low'],
     'close': ['close'],

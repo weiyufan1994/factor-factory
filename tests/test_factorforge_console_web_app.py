@@ -235,11 +235,11 @@ def test_submit_research_and_api_hide_private_paths(research_console):
             "title": "Overnight information diffusion",
             "factor_id_hint": "OVERNIGHT_INFO",
             "hypothesis": "News spreads after dinner and becomes observable at the next open.",
-            "universe": "a_share_core",
+            "universe": "a_share_all",
             "sample_start": "2016-01-01",
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
-            "transaction_cost_bps": "10",
+            "transaction_cost_bps": "30",
             "source_url": "",
         }
     ).encode("utf-8")

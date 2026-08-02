@@ -97,6 +97,38 @@ def select_daily_basic_fields_for_required_formula_fields(required_fields: list[
         if field in {'ts_code', 'trade_date'} or field in expanded_required
     ]
 
+
+def select_clean_daily_fields_for_formula(
+    required_fields: list[str] | None,
+    formula_ir: dict | None,
+) -> list[str]:
+    """Bind Step3/Step4 Data API queries to the validated Formula IR schema."""
+    fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    resolved = (
+        formula_ir.get('resolved_fields')
+        if isinstance(formula_ir, dict) and isinstance(formula_ir.get('resolved_fields'), dict)
+        else {}
+    )
+    candidates = [
+        str(resolved.get(str(field)) or field).strip().lower()
+        for field in (required_fields or [])
+        if str(field).strip()
+    ]
+    derived = {'volume', 'returns', 'return', 'ret', 'vwap'}
+    daily_basic = set(DAILY_BASIC_DATASET_FIELDS)
+    for field in candidates:
+        if (
+            field in derived
+            or _adv_window(field) is not None
+            or field in daily_basic
+            or field in MONEYFLOW_SIGNAL_FIELDS
+            or field in {'ts_code', 'trade_date'}
+        ):
+            continue
+        if field not in fields:
+            fields.append(field)
+    return fields
+
 DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_preserved_from_formal_step2_raw_direct_code_contract',
     'source_code_preserved_from_step2_direct_code_contract',
@@ -1348,7 +1380,7 @@ def materialize_shared_daily_slice(
     local_dir.mkdir(parents=True, exist_ok=True)
     needs_cross_sectional_sample = requires_cross_sectional_sample(formula_ir)
     step3_sample_universe: str | list[str] = 'a_share_all' if needs_cross_sectional_sample else ['000001.SZ', '000002.SZ']
-    daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    daily_fields = select_clean_daily_fields_for_formula(required_fields, formula_ir)
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
     daily_basic_required = len(daily_basic_fields) > 2
     full_query_window = data_api_window_bounds(sample_window)
@@ -1610,7 +1642,7 @@ def build_local_price_volume_snapshots(
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
     step3_sample_universe = ['000001.SZ', '000002.SZ']
-    daily_fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
+    daily_fields = select_clean_daily_fields_for_formula(required_fields, formula_ir)
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
     daily_basic_required = len(daily_basic_fields) > 2

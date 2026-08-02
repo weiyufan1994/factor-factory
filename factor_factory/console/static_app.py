@@ -21,9 +21,17 @@ from factor_factory.console.catalog_health import catalogs_healthy
 from factor_factory.console.auth import SESSION_MAX_AGE_SECONDS
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.discovery import discover_miner_campaigns
-from factor_factory.console.models import ResearchRequest
+from factor_factory.console.models import (
+    PILOT_UNIVERSE,
+    ResearchRequest,
+    validate_pilot_evaluation_request,
+)
 from factor_factory.console.readers import read_miner_campaign
-from factor_factory.console.run_service import ResearchQueueService, ResearchRunService
+from factor_factory.console.run_service import (
+    BLOCK_RESUME_TRUST_INVALID,
+    ResearchQueueService,
+    ResearchRunService,
+)
 from factor_factory.console.store import ResearchJobStore
 from factor_factory.console.task_manifest import create_miner_campaign_task, read_console_tasks
 from factor_factory.console.summary import render_dashboard
@@ -288,7 +296,16 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 except ValueError as exc:
                     self._send_json(409, {"error": "invalid_state", "message": str(exc)})
                     return
-                except RuntimeError:
+                except RuntimeError as exc:
+                    if str(exc).startswith(BLOCK_RESUME_TRUST_INVALID):
+                        self._send_json(
+                            409,
+                            {
+                                "error": "resume_not_safe",
+                                "message": "该任务缺少可信续跑证据，请新建隔离研究任务。",
+                            },
+                        )
+                        return
                     self._send_json(503, {"error": "research_runtime_unavailable"})
                     return
                 self._redirect(f"/research/{job_id}")
@@ -325,11 +342,11 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                     title=_field(fields, "title"),
                     hypothesis=_field(fields, "hypothesis"),
                     factor_id_hint=_field(fields, "factor_id_hint"),
-                    universe=_field(fields, "universe", "a_share_core"),
+                    universe=_field(fields, "universe", PILOT_UNIVERSE),
                     sample_start=_field(fields, "sample_start", "2016-01-01"),
                     sample_end=_field(fields, "sample_end", "2025-07-11"),
                     forward_horizon=_field(fields, "forward_horizon", "1d"),
-                    transaction_cost_bps=float(_field(fields, "transaction_cost_bps", "10")),
+                    transaction_cost_bps=float(_field(fields, "transaction_cost_bps", "30")),
                     source_url=_field(fields, "source_url"),
                 )
                 _validate_request_choices(request)
@@ -469,10 +486,7 @@ def _research_action(path: str) -> tuple[str, str] | None:
 
 
 def _validate_request_choices(request: ResearchRequest) -> None:
-    if request.universe not in {"a_share_core", "csi300", "csi500", "all_a_share"}:
-        raise ValueError("unsupported universe")
-    if request.forward_horizon not in {"1d", "5d", "20d"}:
-        raise ValueError("unsupported forward horizon")
+    validate_pilot_evaluation_request(request)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", request.sample_start):
         raise ValueError("invalid sample_start")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", request.sample_end):

@@ -38,6 +38,7 @@
     "scripts/write_factorforge_miner_data_split_manifest.py"
   ],
   "console_web_pilot": [
+    "scripts/materialize_factorforge_web_research.py",
     "scripts/refresh_factorforge_console_catalog.py",
     "scripts/run_factorforge_console.py",
     "scripts/run_factorforge_model_broker.py"

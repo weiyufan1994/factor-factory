@@ -22,7 +22,7 @@ def _request(title: str = "Overnight information diffusion"):
         factor_id_hint=title,
         sample_start="2016-01-01",
         sample_end="2025-07-11",
-        transaction_cost_bps=10,
+        transaction_cost_bps=30,
     )
 
 
@@ -85,6 +85,30 @@ def test_research_request_rejects_unsafe_or_oversized_values():
     ResearchRequest(title="idea", hypothesis="test", source_url="https://example.com/report")
     with pytest.raises(ValueError, match="between 0 and 200"):
         ResearchRequest(title="idea", hypothesis="test", transaction_cost_bps=201)
+
+
+def test_web_pilot_rejects_evaluation_contract_it_cannot_execute():
+    from factor_factory.console.models import (
+        ResearchRequest,
+        validate_pilot_evaluation_request,
+    )
+
+    with pytest.raises(ValueError, match="only 1d"):
+        validate_pilot_evaluation_request(
+            ResearchRequest(title="idea", hypothesis="test", forward_horizon="5d")
+        )
+    with pytest.raises(ValueError, match="30 bps"):
+        validate_pilot_evaluation_request(
+            ResearchRequest(title="idea", hypothesis="test", transaction_cost_bps=10)
+        )
+    with pytest.raises(ValueError, match="a_share_all"):
+        validate_pilot_evaluation_request(
+            ResearchRequest(
+                title="idea",
+                hypothesis="test",
+                universe="csi300",
+            )
+        )
 
 
 def test_research_request_rejects_dns_resolution_to_private_address(monkeypatch):
@@ -285,15 +309,56 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     )
     prompt = build_agent_prompt(job, worktree=worktree, workspace=workspace, config=config, resume=False)
     assert str(workspace) in prompt
-    assert str(catalog.resolve()) in prompt
+    assert str(catalog.resolve()) not in prompt
     assert "run_factorforge_ultimate_loop.py" in prompt
     assert "Do not run" in prompt
-    assert "Data API and catalogs are read-only" in prompt
+    assert "agent has no Data API, catalog-file, S3, or raw-data access" in prompt
     assert "never as a broker report" in prompt
-    assert "from factorforge_data_api import DataApiClient, DataQuery" in prompt
+    assert "no Data API package, catalog file, S3 credential, or raw dataset mount" in prompt
     assert "Never enumerate environment variables or credential material" in prompt
     assert "scripts/run_factorforge_ultimate.py" in prompt
+    assert "the materializer" in prompt
+    assert "Do not author or execute custom Python" in prompt
+    assert "identity/web_research_runtime.md" in prompt
+    assert "identity/data_catalog_summary.json" in prompt
+    assert "identity/factor_knowledge_summary.json" in prompt
+    assert "skills/factor-forge-ultimate/SKILL.md" not in prompt
     assert "identity/web_execution_ledger.md" in prompt
+    assert "host exclusively materializes and runs formal Step3 through Step6" in prompt
+    assert "execution_status=AUTHORING_COMPLETE" in prompt
+
+
+def test_container_agent_refuses_prompt_symlink_escape(tmp_path):
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+    from factor_factory.console.models import ResearchJob
+
+    worktree = tmp_path / "worktree"
+    workspace = worktree / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("must remain unchanged\n", encoding="utf-8")
+    (workspace / "identity" / "web_agent_resume.md").symlink_to(outside)
+    config = ConsoleConfig(
+        source_repo=worktree,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    job = ResearchJob(
+        job_id="job_1234567890",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="REPORT",
+        request=_request(),
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe atomic-write destination"):
+        adapter.run(job, worktree=worktree, workspace=workspace, resume=True)
+    assert outside.read_text(encoding="utf-8") == "must remain unchanged\n"
 
 
 def test_agent_readiness_requires_healthy_dedicated_profile(tmp_path, monkeypatch):
@@ -479,6 +544,7 @@ def test_console_config_rejects_multiple_production_catalogs(tmp_path):
 
 def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_path, monkeypatch):
     import subprocess
+    import factor_factory.console.container_agent_adapter as adapter_module
 
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.container_agent_adapter import ContainerizedOpenClawResearchAgentAdapter
@@ -487,6 +553,18 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     source = tmp_path / "source"
     workspace = source / "factor_research" / "FACTOR" / "research"
     workspace.mkdir(parents=True)
+    protected_task_files = (
+        workspace / "manifest.json",
+        workspace / "identity" / "web_research_request.json",
+        workspace / "identity" / "data_catalog_summary.json",
+        workspace / "identity" / "factor_knowledge_summary.json",
+        workspace / "identity" / "web_research_runtime.md",
+        workspace / "identity" / "web_agent_task.md",
+        workspace / "reports" / "user_hypothesis.md",
+    )
+    for protected in protected_task_files:
+        protected.parent.mkdir(parents=True, exist_ok=True)
+        protected.write_text("{}\n" if protected.suffix == ".json" else "fixture\n", encoding="utf-8")
     catalog_root = tmp_path / "data-runtime"
     catalog = catalog_root / "catalogs" / "catalog.json"
     catalog.parent.mkdir(parents=True)
@@ -522,7 +600,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         auth_disabled=True,
     )
     job = ResearchJob(
-        job_id="job_123abc",
+        job_id="job_123abc4567",
         factor_id="FACTOR",
         research_id="research",
         report_id="report",
@@ -566,7 +644,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
             payload.setdefault("agents", {})["list"] = [
                 {"id": "main"},
                 {
-                    "id": "factorforge-web-123abc",
+                    "id": "factorforge-web-123abc4567",
                     "workspace": str(source.resolve()),
                     "agentDir": str(
                         (
@@ -600,8 +678,17 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert broker_readiness_registry_seen
     assert not (broker_scan_root / "active.registry").exists()
     assert not (broker_scan_root / f"{config.installation_id}.readiness.secrets").exists()
+    monkeypatch.setattr(
+        adapter_module,
+        "_load_aws_credentials",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("agent authoring must not request an AWS lease")
+        ),
+    )
     result = adapter.run(job, worktree=source, workspace=workspace, resume=False)
     assert result.returncode == 0
+    assert adapter.denied_secret_values(job.job_id) == (broker_client_token,)
+    assert adapter.credential_material_state(job.job_id) == "not_issued"
     probe_commands = [
         command
         for command in calls
@@ -634,22 +721,28 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert "--local" in research_command
     assert research_command[research_command.index("--network") + 1] == config.container_network
     assert research_command[research_command.index("--dns") + 1] == "127.0.0.1"
-    assert f"HTTPS_PROXY={config.container_proxy_url}" in research_command
-    assert f"FACTORFORGE_S3_PROXY_URL={config.container_proxy_url}" in research_command
+    assert f"HTTP_PROXY={config.container_proxy_url}" not in research_command
+    assert f"HTTPS_PROXY={config.container_proxy_url}" not in research_command
+    assert f"http_proxy={config.container_proxy_url}" not in research_command
+    assert f"https_proxy={config.container_proxy_url}" not in research_command
+    assert f"FACTORFORGE_S3_PROXY_URL={config.container_proxy_url}" not in research_command
     assert f"NO_PROXY={urlsplit(config.container_model_broker_url).hostname}" in research_command
     assert "AWS_EC2_METADATA_DISABLED=true" in research_command
     assert f"type=bind,src={source.resolve()},dst={source.resolve()},readonly" in research_command
     assert f"type=bind,src={workspace.resolve()},dst={workspace.resolve()}" in research_command
-    assert f"type=bind,src={catalog_root.resolve()},dst={catalog_root.resolve()},readonly" in research_command
+    for protected in protected_task_files:
+        assert f"type=bind,src={protected.resolve()},dst={protected.resolve()},readonly" in research_command
+    assert f"type=bind,src={catalog_root.resolve()},dst={catalog_root.resolve()},readonly" not in research_command
     assert (
         f"type=bind,src={data_api_package.resolve()},dst={data_api_package.resolve()},readonly"
-        in research_command
+        not in research_command
     )
-    assert f"FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT={data_api_package.resolve()}" in research_command
-    assert f"FACTORFORGE_DATA_CATALOG={catalog.resolve()}" in research_command
+    assert f"FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT={data_api_package.resolve()}" not in research_command
+    assert f"FACTORFORGE_DATA_CATALOG={catalog.resolve()}" not in research_command
+    assert "--env-file" not in research_command
     python_path = next(item for item in research_command if item.startswith("PYTHONPATH="))
     assert str(data_api.resolve()) not in python_path
-    assert str(source.resolve() / "deploy" / "factorforge-console" / "data-api-bridge") in python_path
+    assert python_path == f"PYTHONPATH={source.resolve()}"
     assert f"type=bind,src={git_view.resolve()},dst={git_view.resolve()},readonly" in research_command
     assert f"GIT_DIR={git_view.resolve()}" in research_command
     assert f"GIT_WORK_TREE={source.resolve()}" in research_command
@@ -667,6 +760,202 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     tmpfs_index = research_command.index("--tmpfs")
     assert research_command[tmpfs_index + 1].startswith("/tmp:rw,nosuid,nodev,size=")
     assert str(marker_root) not in " ".join(research_command)
+    adapter.clear_denied_secrets(job.job_id)
+
+
+@pytest.mark.parametrize("fail_second_import", [False, True])
+def test_container_council_ingress_isolates_routes_before_host_import(
+    tmp_path,
+    monkeypatch,
+    fail_second_import,
+):
+    import subprocess
+    import factor_factory.console.container_agent_adapter as adapter_module
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+    from factor_factory.console.council_ingress import CouncilIngressTask
+    from factor_factory.console.models import ResearchJob
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    workspace.mkdir(parents=True)
+    token = "broker-client-token-for-council-ingress-test"
+    token_file = tmp_path / "broker-client-token"
+    token_file.write_text(token, encoding="utf-8")
+    token_file.chmod(0o600)
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        openclaw_auth_seed_db=_auth_seed(tmp_path / "seed.sqlite", key=token),
+        model_broker_client_token_file=token_file,
+        model_broker_secret_scan_root=tmp_path / "broker-scan",
+        openclaw_profile_template=(
+            Path(__file__).resolve().parents[1]
+            / "deploy"
+            / "factorforge-console"
+            / "openclaw.json.example"
+        ),
+        container_runtime="docker-test",
+        agent_container_image="factorforge-agent:test",
+        auth_disabled=True,
+    )
+    tasks = tuple(
+        CouncilIngressTask(
+            task_id=f"route_{index}",
+            agent_role=f"role_{index}",
+            expected_agent_identifier=f"independent_agent_{index}",
+            task_packet_path=f"council/task_{index}.json",
+            task_packet_sha256=f"hash-{index}",
+            expected_result_path=f"council/results/result_{index}.json",
+        )
+        for index in (1, 2)
+    )
+    for task in tasks:
+        packet = workspace / task.task_packet_path
+        packet.parent.mkdir(parents=True, exist_ok=True)
+        packet.write_text(
+            json.dumps({"task_id": task.task_id}) + "\n",
+            encoding="utf-8",
+        )
+    job = ResearchJob(
+        job_id="job_council1234",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="REPORT",
+        request=_request(),
+        base_commit="a" * 40,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    git_view = config.state_root / "jobs" / job.job_id / "container-agent" / "engine.git"
+    git_view.mkdir(parents=True)
+    monkeypatch.setattr(adapter, "_prepare_git_view", lambda **_: git_view)
+    monkeypatch.setattr(adapter, "_initialize_credential_material_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adapter, "credential_material_state", lambda _job_id: "not_issued")
+    monkeypatch.setattr(
+        adapter,
+        "_prepare_aws_environment",
+        lambda *_args, **_kwargs: (None, (token,), None),
+    )
+    monkeypatch.setattr(adapter, "_cleanup_aws_environment", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adapter, "_run_runtime", lambda *_args, **_kwargs: "{}")
+    monkeypatch.setattr(adapter, "_validate_agent_binding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        adapter_module,
+        "_validate_private_council_result",
+        lambda **_kwargs: [],
+    )
+    original_write_text_atomic = adapter_module.write_text_atomic
+    staged_write_count = 0
+
+    def write_text_with_injected_failure(path, text, **kwargs):
+        nonlocal staged_write_count
+        if ".console-stage-" in path.parent.name:
+            staged_write_count += 1
+            if fail_second_import and staged_write_count == 2:
+                raise OSError("injected second Council result write failure")
+        return original_write_text_atomic(path, text, **kwargs)
+
+    monkeypatch.setattr(
+        adapter_module,
+        "write_text_atomic",
+        write_text_with_injected_failure,
+    )
+    research_commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        research_commands.append(command)
+        prompt_path = Path(command[command.index("--message-file") + 1])
+        prompt = prompt_path.read_text(encoding="utf-8")
+        private_output = Path(
+            prompt.split("Write exactly one JSON result and no other workspace file:\n", 1)[1]
+            .splitlines()[0]
+        )
+        task = tasks[len(research_commands) - 1]
+        private_output.write_text(
+            json.dumps(
+                {
+                    "report_id": job.report_id,
+                    "task_id": task.task_id,
+                    "agent_role": task.agent_role,
+                    "agent_identifier": task.expected_agent_identifier,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    if fail_second_import:
+        with pytest.raises(
+            OSError,
+            match="injected second Council result write failure",
+        ):
+            adapter.run_council_ingress(
+                job,
+                worktree=source,
+                workspace=workspace,
+                tasks=tasks,
+            )
+        result_root = workspace / Path(tasks[0].expected_result_path).parent
+        assert not result_root.exists()
+        assert not list(
+            result_root.parent.glob(f".{result_root.name}.console-stage-*")
+        )
+        assert not any(
+            (workspace / task.expected_result_path).exists() for task in tasks
+        )
+        return
+
+    result = adapter.run_council_ingress(
+        job,
+        worktree=source,
+        workspace=workspace,
+        tasks=tasks,
+    )
+
+    assert result.returncode == 0
+    assert len(research_commands) == 2
+    view_sources = []
+    for index, command in enumerate(research_commands):
+        worktree_mount = next(
+            item
+            for item in command
+            if item.startswith("type=bind,src=")
+            and f",dst={source.resolve()},readonly" in item
+        )
+        worktree_source = Path(
+            worktree_mount.split("src=", 1)[1].split(",dst=", 1)[0]
+        )
+        assert worktree_source != source.resolve()
+        assert not (worktree_source / "skills").exists()
+        assert "GIT_DIR=" not in command
+        assert not any(
+            item.startswith(("HTTP_PROXY=", "HTTPS_PROXY=", "http_proxy=", "https_proxy="))
+            for item in command
+        )
+        workspace_mount = next(
+            item
+            for item in command
+            if item.startswith("type=bind,src=")
+            and f",dst={workspace.resolve()},readonly" in item
+        )
+        assert f"src={workspace.resolve()}," not in workspace_mount
+        source_path = Path(
+            workspace_mount.split("src=", 1)[1].split(",dst=", 1)[0]
+        )
+        view_sources.append(source_path)
+        visible_packets = sorted(source_path.rglob("task_*.json"))
+        assert len(visible_packets) == 1
+        assert visible_packets[0].name == f"task_{index + 1}.json"
+    assert view_sources[0] != view_sources[1]
+    assert all((workspace / task.expected_result_path).is_file() for task in tasks)
+    assert (workspace / "identity" / "web_agent_resume.md").is_file()
+    assert Path(result.result_path).is_relative_to(config.state_root)
+    assert not Path(result.result_path).is_relative_to(workspace)
 
 
 def test_container_agent_git_view_is_shallow_exact_and_reusable(tmp_path):
@@ -834,8 +1123,15 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
     )
     adapter = ContainerizedOpenClawResearchAgentAdapter(config)
     job_id = "job_1234567890"
+    assert adapter.credential_material_state(job_id) == "unknown"
+    adapter._initialize_credential_material_state(job_id, resume=False)
     assert adapter.credential_material_state(job_id) == "not_issued"
-    lease_path, values, scan_path = adapter._prepare_aws_environment(job_id)
+    adapter._initialize_credential_material_state(job_id, resume=True)
+    assert adapter.credential_material_state(job_id) == "not_issued"
+    lease_path, values, scan_path = adapter._prepare_aws_environment(
+        job_id,
+        allow_missing_history=True,
+    )
     assert adapter.credential_material_state(job_id) == "may_have_been_issued"
     assert adapter._credential_material_marker_path(job_id) == (
         config.state_root / "credential-states" / f"{job_id}.marker"
@@ -853,11 +1149,104 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
     adapter._cleanup_aws_environment(lease_path, None)
     assert not lease_path.exists()
     assert scan_path.exists()
+    host_env, host_denied_values = adapter.prepare_host_data_environment(job_id)
+    assert set(host_env) == {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_CREDENTIAL_EXPIRATION",
+    }
+    assert host_env["AWS_SESSION_TOKEN"] == "temporary-session-token-for-test"
+    assert "temporary-session-token-for-test" in host_denied_values
+    assert not lease_path.exists()
+    assert scan_path.exists()
+    adapter.deactivate_denied_secrets(job_id)
+    assert adapter.credential_material_state(job_id) == "may_have_been_issued"
+    assert scan_path.exists()
+    assert not (scan_root / "active.registry").exists()
     assert adapter.denied_secret_values(job_id) == values
     adapter.clear_denied_secrets(job_id)
-    assert adapter.credential_material_state(job_id) == "not_issued"
+    assert adapter.credential_material_state(job_id) == "unknown"
     assert not scan_path.exists()
     assert not (scan_root / "active.registry").exists()
+
+
+def test_initial_sts_failure_does_not_consume_credential_issuance_state(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.container_agent_adapter as adapter_module
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+        _AwsCredentialLease,
+    )
+
+    token_file = tmp_path / "broker-client-token"
+    token_file.write_text("broker-client-token-for-sts-retry-test", encoding="utf-8")
+    token_file.chmod(0o600)
+    scan_root = tmp_path / "broker-scan"
+    scan_root.mkdir(mode=0o770)
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("{}\n", encoding="utf-8")
+    config = ConsoleConfig(
+        source_repo=tmp_path / "source",
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        data_catalogs=(catalog,),
+        catalog_receipt=tmp_path / "catalog-receipt.json",
+        data_api_pythonpath=tmp_path / "data-api",
+        data_api_commit="a" * 40,
+        invite_password="pilot-access-8f7c2a1e6d4b",
+        cookie_secret="session-signing-4c9e8b2f7a1d6c3e5f0b9a8d",
+        agent_container_image=f"sha256:{'b' * 64}",
+        model_broker_client_token_file=token_file,
+        model_broker_secret_scan_root=scan_root,
+        aws_readonly_role_name="factorforge-console-read-role",
+        aws_host_role_name="factorforge-console-host-role",
+        aws_account_id="525164180577",
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    job_id = "job_abcdef1234"
+    adapter._initialize_credential_material_state(job_id, resume=False)
+
+    monkeypatch.setattr(
+        adapter_module,
+        "_load_aws_credentials",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("STS unavailable")),
+    )
+    with pytest.raises(RuntimeError, match="STS unavailable"):
+        adapter._prepare_aws_environment(job_id, allow_missing_history=True)
+
+    registry = scan_root / f"{config.installation_id}.{job_id}.secrets"
+    assert adapter.credential_material_state(job_id) == "not_issued"
+    assert not registry.exists()
+    assert not (scan_root / "active.registry").exists()
+
+    monkeypatch.setattr(
+        adapter_module,
+        "_load_aws_credentials",
+        lambda *_args: _AwsCredentialLease(
+            access_key="RETRYACCESSKEYFORTEST",
+            secret_key="retry-secret-for-test",
+            token="retry-session-token-for-test",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+            method="assume-role",
+            caller_arn=(
+                "arn:aws:sts::525164180577:assumed-role/"
+                "factorforge-console-read-role/session"
+            ),
+        ),
+    )
+    lease_path, _values, registry_path = adapter._prepare_aws_environment(
+        job_id,
+        allow_missing_history=True,
+    )
+    assert adapter.credential_material_state(job_id) == "may_have_been_issued"
+    assert lease_path is not None and lease_path.is_file()
+    assert registry_path == registry and registry.is_file()
+    adapter._cleanup_aws_environment(lease_path, None)
+    adapter.clear_denied_secrets(job_id)
 
 
 def test_crash_resume_retains_and_merges_prior_denied_secret_values(tmp_path, monkeypatch):
@@ -917,6 +1306,8 @@ def test_crash_resume_retains_and_merges_prior_denied_secret_values(tmp_path, mo
         ),
     )
 
+    adapter._initialize_credential_material_state(job_id, resume=True)
+    assert adapter.credential_material_state(job_id) == "may_have_been_issued"
     lease_path, values, scan_path = adapter._prepare_aws_environment(job_id)
 
     assert scan_path == registry
@@ -926,6 +1317,55 @@ def test_crash_resume_retains_and_merges_prior_denied_secret_values(tmp_path, mo
     assert "new-session-token-for-resume-test" in registry.read_text(encoding="utf-8")
     adapter._cleanup_aws_environment(lease_path, None)
     adapter.clear_denied_secrets(job_id)
+
+
+def test_legacy_resume_without_denied_secret_history_blocks_before_new_lease(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.container_agent_adapter as adapter_module
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    token_file = tmp_path / "broker-client-token"
+    token_file.write_text("broker-client-token-for-legacy-test", encoding="utf-8")
+    token_file.chmod(0o600)
+    scan_root = tmp_path / "broker-scan"
+    scan_root.mkdir(mode=0o770)
+    config = ConsoleConfig(
+        source_repo=tmp_path / "source",
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        model_broker_client_token_file=token_file,
+        model_broker_secret_scan_root=scan_root,
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    job_id = "job_0123456789"
+    legacy_runtime = config.state_root / "jobs" / job_id / "container-agent"
+    legacy_runtime.mkdir(parents=True)
+    (legacy_runtime / "credential-material-issued.marker").write_text(
+        "factorforge_console_credential_material_may_have_been_issued_v1\n",
+        encoding="utf-8",
+    )
+    lease_called = False
+
+    def fail_if_lease_requested(*_args):
+        nonlocal lease_called
+        lease_called = True
+        raise AssertionError("a replacement lease must not be issued")
+
+    monkeypatch.setattr(adapter_module, "_load_aws_credentials", fail_if_lease_requested)
+    adapter._initialize_credential_material_state(job_id, resume=True)
+
+    assert adapter.credential_material_state(job_id) == "may_have_been_issued"
+    with pytest.raises(RuntimeError, match="prior denied-secret registry is missing") as exc:
+        adapter._prepare_aws_environment(job_id)
+    assert BLOCK_AGENT_RUNTIME_UNAVAILABLE in str(exc.value)
+    assert lease_called is False
 
 
 def test_aws_credentials_are_assumed_from_distinct_host_role(monkeypatch):

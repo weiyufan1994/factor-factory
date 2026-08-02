@@ -203,7 +203,7 @@ def case_auto_revision_needed_dispatch_default(root: Path) -> dict[str, Any]:
     strategy = final_strategy(root, rid)
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and rc.get("status") == "awaiting_agent_results"
         and rc.get("effective_mode") == "agentic_dispatch_manifest"
         and rc.get("formal_council_status") == "awaiting_agent_results"

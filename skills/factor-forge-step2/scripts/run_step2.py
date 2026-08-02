@@ -640,6 +640,20 @@ def build_step2_research_contract(
     ]))
     if not similar_case_lessons:
         similar_case_lessons = ['No similar prior case was imported from Step1/graph; treat this as a cold-start prior and write back lessons after Step6.']
+    knowledge_reference_contract = {
+        'schema_version': 'factorforge_knowledge_reference_contract_v1',
+        'source': 'factor_knowledge_graph' if (factor_knowledge_context.get('node_count') or 0) > 0 else 'cold_start_or_unavailable',
+        'context_schema_version': factor_knowledge_context.get('schema_version'),
+        'node_count': factor_knowledge_context.get('node_count') or 0,
+        'edge_count': factor_knowledge_context.get('edge_count') or 0,
+        'retrieval_error': factor_knowledge_context.get('retrieval_error'),
+        'not_same_factor_unless_identity_matches': True,
+        **(
+            discipline.get('knowledge_reference_contract')
+            if isinstance(discipline.get('knowledge_reference_contract'), dict)
+            else {}
+        ),
+    }
     return {
         'target_statistic': infer_target_statistic(primary, aim),
         'economic_mechanism': infer_economic_mechanism(primary, aim, thesis),
@@ -657,15 +671,7 @@ def build_step2_research_contract(
         ),
         'similar_case_lessons_imported': similar_case_lessons,
         'factor_knowledge_context': factor_knowledge_context,
-        'knowledge_reference_contract': {
-            'schema_version': 'factorforge_knowledge_reference_contract_v1',
-            'source': 'factor_knowledge_graph' if (factor_knowledge_context.get('node_count') or 0) > 0 else 'cold_start_or_unavailable',
-            'context_schema_version': factor_knowledge_context.get('schema_version'),
-            'node_count': factor_knowledge_context.get('node_count') or 0,
-            'edge_count': factor_knowledge_context.get('edge_count') or 0,
-            'retrieval_error': factor_knowledge_context.get('retrieval_error'),
-            'not_same_factor_unless_identity_matches': True,
-        },
+        'knowledge_reference_contract': knowledge_reference_contract,
         'producer': 'step2_research_contract',
     }
 
@@ -880,6 +886,22 @@ def build_challenger_spec_from_canonical_formula(report_id: str, aim: Dict[str, 
 def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thesis: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
     variables = list(dict.fromkeys(as_list(aim.get('candidate_variables')) + as_list(thesis.get('key_variables')) + as_list(report_map.get('variables'))))
     formula_text = str((aim.get('final_factor') or {}).get('assembly_steps', [''])[0] or thesis.get('raw_formula_text') or f'hypothesis_score({", ".join(str(x) for x in variables)})')
+    formula_ir = thesis.get('formula_ir') if isinstance(thesis.get('formula_ir'), dict) else None
+    if aim.get('implementation_mode') == 'operator':
+        if not formula_ir or formula_ir.get('parse_status') != 'success':
+            formula_ir = parse_formula(formula_text)
+        if formula_ir.get('parse_status') == 'success':
+            variables = list(formula_ir.get('required_fields') or variables)
+    operators = list(dict.fromkeys(as_list(thesis.get('operators')) + ['change()', 'rank()', 'zscore()', 'lag_guard()']))
+    if formula_ir and formula_ir.get('parse_status') == 'success':
+        operators = [f'{operator}()' for operator in (formula_ir.get('operator_set') or [])]
+    evaluation_contract = (
+        thesis.get('evaluation_contract')
+        if isinstance(thesis.get('evaluation_contract'), dict)
+        else aim.get('evaluation_contract')
+        if isinstance(aim.get('evaluation_contract'), dict)
+        else {}
+    )
     return {
         'factor_id': (aim.get('final_factor') or {}).get('name') or aim.get('title') or report_id,
         'report_id': report_id,
@@ -887,7 +909,14 @@ def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thes
         'source_type': 'natural_language_hypothesis',
         'producer': 'step2_hypothesis_spec_builder',
         'raw_formula_text': formula_text,
-        'operators': list(dict.fromkeys(as_list(thesis.get('operators')) + ['change()', 'rank()', 'zscore()', 'lag_guard()'])),
+        'formula_ir': formula_ir,
+        'formula_parse_error': (
+            '; '.join(str(item) for item in (formula_ir.get('parse_errors') or []))
+            if formula_ir and formula_ir.get('parse_status') != 'success'
+            else None
+        ),
+        'qlib_expression': to_qlib_expression(formula_ir) if formula_ir else None,
+        'operators': operators,
         'required_inputs': variables or ['close', 'return'],
         'time_series_steps': [
             'Convert the stated hypothesis into lag-safe feature changes or levels.',
@@ -901,7 +930,13 @@ def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thes
         'preprocessing': ['Use standard universe filters and enforce data availability at rebalance time.'],
         'normalization': ['Cross-sectional rank or z-score; exact choice requires review when the hypothesis is underspecified.'],
         'neutralization': ['Style/industry neutralization is an evaluation variant unless the hypothesis explicitly requires it.'],
-        'rebalance_frequency': 'monthly by default for fundamental hypotheses unless Step3B justifies another cadence',
+        'rebalance_frequency': evaluation_contract.get('rebalance_frequency') or 'monthly by default for fundamental hypotheses unless Step3B justifies another cadence',
+        'availability_lags': evaluation_contract.get('availability_lags') or thesis.get('availability_lags') or [],
+        'missing_data_policy': evaluation_contract.get('missing_data_policy') or thesis.get('missing_data_policy') or '',
+        'forward_horizon': evaluation_contract.get('forward_horizon') or thesis.get('forward_horizon') or '',
+        'transaction_cost_bps': evaluation_contract.get('transaction_cost_bps'),
+        'cost_model_id': evaluation_contract.get('cost_model_id') or thesis.get('cost_model_id') or '',
+        'evaluation_contract': evaluation_contract,
         'implementation_assumptions': [
             'Natural-language intake is a research contract, not executable code.',
             'Ambiguous variables and lags remain human-review items until resolved.',
@@ -1019,6 +1054,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         'implementation_mode': implementation_mode,
         'producer': producer,
         'upstream_producer': upstream_producer,
+        'evaluation_contract': primary.get('evaluation_contract') or {},
         'source_metadata': {
             'factor_id': aim.get('factor_id'),
             'source_name': aim.get('source_name'),
@@ -1045,6 +1081,12 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'normalization': primary.get('normalization', []),
             'neutralization': primary.get('neutralization', []),
             'rebalance_frequency': primary.get('rebalance_frequency', ''),
+            'availability_lags': primary.get('availability_lags', []),
+            'missing_data_policy': primary.get('missing_data_policy', ''),
+            'forward_horizon': primary.get('forward_horizon', ''),
+            'transaction_cost_bps': primary.get('transaction_cost_bps'),
+            'cost_model_id': primary.get('cost_model_id', ''),
+            'evaluation_contract': primary.get('evaluation_contract') or {},
             'implementation_assumptions': primary.get('implementation_assumptions', []),
             'operator_subgraph': (hybrid_contract or {}).get('operator_subgraph'),
             'custom_blocks': (hybrid_contract or {}).get('custom_blocks') or primary.get('custom_blocks') or [],
@@ -1214,6 +1256,7 @@ def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> Non
         'mechanism_math_contract_v2': master.get('mechanism_math_contract_v2') or {},
         'learning_and_innovation': master.get('learning_and_innovation') or {},
         'knowledge_reference_contract': master.get('knowledge_reference_contract') or {},
+        'evaluation_contract': master.get('evaluation_contract') or {},
     }
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)
 

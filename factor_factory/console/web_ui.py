@@ -8,6 +8,13 @@ from factor_factory.console.models import ResearchJob
 
 
 ACTIVE_STATUSES = {"QUEUED", "ALLOCATING", "RESEARCHING", "VERIFYING"}
+NON_RESUMABLE_SECURITY_ERRORS = {
+    "BLOCK_FACTORFORGE_CONSOLE_AGENT_WRITE_SCOPE_INVALID",
+    "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED",
+    "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID",
+    "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID",
+    "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_CLEANUP_FAILED",
+}
 
 
 STATUS_LABELS = {
@@ -133,11 +140,11 @@ def _research_form(csrf_token: str) -> str:
       <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
       <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" placeholder="由系统生成也可以"></div>
       <div class="field span-2"><label for="hypothesis">因子想法与经济假设</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="描述现象、可能的付款方、信息形成时间、希望检验的数学关系和你认为会失败的条件。" required></textarea></div>
-      <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_core">A 股核心可投资池</option><option value="csi300">沪深 300</option><option value="csi500">中证 500</option><option value="all_a_share">全部 A 股（按 Data API 过滤）</option></select></div>
-      <div class="field"><label for="horizon">收益观察期</label><select id="horizon" name="forward_horizon"><option value="1d">下一交易日</option><option value="5d">未来 5 日</option><option value="20d">未来 20 日</option></select></div>
+      <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
+      <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘后形成信号 → 下一交易日收盘成交 → 再下一交易日收盘退出（Pilot 固定）</div></div>
       <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="2016-01-01" required></div>
       <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="2025-07-11" required></div>
-      <div class="field"><label for="cost">单边成本（bps）</label><input id="cost" name="transaction_cost_bps" type="number" min="0" max="200" step="0.5" value="10" required></div>
+      <div class="field"><label>交易成本模型</label><input type="hidden" name="transaction_cost_bps" value="30"><div class="fixed-contract">换手 × 30 bps（Pilot 固定）</div></div>
       <div class="form-actions span-2"><p>提交后立即分配独立 Git worktree；现有 Data API 只读。</p><button class="button primary" type="submit">进入研究队列</button></div>
     </form>
     """
@@ -200,7 +207,13 @@ def _decision_panel(job: ResearchJob, result: dict[str, Any], csrf_token: str) -
     next_actions = _string_list(result.get("next_actions"))
     summary = str(result.get("summary") or job.error_message or "研究证据正在生成。")
     action = ""
-    if job.execution_status in {"REVIEW_REQUIRED", "BLOCKED", "FAILED"} and job.workspace_path:
+    can_resume = bool(
+        job.execution_status in {"REVIEW_REQUIRED", "BLOCKED", "FAILED"}
+        and job.workspace_path
+        and result.get("host_attestation_id")
+        and job.error_code not in NON_RESUMABLE_SECURITY_ERRORS
+    )
+    if can_resume:
         action = f"""
         <form method="post" action="/research/{escape(job.job_id)}/resume" class="inline-form">
           <input type="hidden" name="csrf" value="{escape(csrf_token)}">
@@ -490,7 +503,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .job-table { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--surface); }.job-table-head,.job-row { display:grid; grid-template-columns:minmax(280px,2fr) minmax(150px,1fr) 120px 135px 150px; align-items:center; gap:12px; padding:11px 14px; }.job-table-head { background:#e9edec; color:var(--muted); font-size:12px; font-weight:700; }.job-row { min-height:68px; text-decoration:none; border-top:1px solid var(--line); }.job-row:hover { background:#f7faf8; }.job-main { display:grid; gap:3px; }.job-main strong { font-size:15px; }.job-main span,.job-row time,.job-stage { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .status-badge { display:inline-flex; min-height:26px; align-items:center; padding:3px 8px; border:1px solid var(--line); border-radius:999px; white-space:nowrap; font-size:12px; font-weight:700; }.status-researching,.status-verifying,.status-allocating { color:var(--blue); background:var(--blue-soft); border-color:#bad4df; }.status-completed { color:var(--green); background:var(--green-soft); border-color:#b9d8c7; }.status-blocked,.status-failed { color:var(--red); background:var(--red-soft); border-color:#e7bdb7; }.status-review_required,.status-queued { color:var(--amber); background:var(--amber-soft); border-color:#e6d09f; }
 .verdict-accept{color:var(--green)}.verdict-reject,.verdict-block{color:var(--red)}.verdict-iterate,.verdict-partial{color:var(--amber)}
-.research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label { font-weight:700; }.field input,.field textarea,.field select { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.field textarea { resize:vertical; min-height:160px; }.span-2 { grid-column:span 2; }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
+.research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label { font-weight:700; }.field input,.field textarea,.field select,.fixed-contract { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.fixed-contract { background:#f3f6f5; color:var(--muted); }.field textarea { resize:vertical; min-height:160px; }.span-2 { grid-column:span 2; }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
 .breadcrumbs { display:flex; gap:8px; color:var(--muted); margin-bottom:22px; }.breadcrumbs a { color:var(--blue); }.detail-heading { align-items:flex-start; }.detail-heading>div { max-width:900px; }.idea-summary { max-width:900px; white-space:pre-line; color:#3d4a50; font-size:15px; }.identity-band { margin-top:22px; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; }.identity-band div { padding:13px 15px; border-right:1px solid var(--line); display:grid; gap:2px; }.identity-band div:last-child{border-right:0}.identity-band span { color:var(--muted); font-size:12px; }.identity-band strong { overflow-wrap:anywhere; }
 .stage-list { list-style:none; margin:12px 0 0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:6px; overflow:hidden; }.stage { min-height:70px; padding:13px; display:flex; gap:10px; align-items:flex-start; background:#fff; border-right:1px solid var(--line); }.stage:last-child{border-right:0}.stage-dot { width:9px; height:9px; border-radius:50%; margin-top:6px; background:#aab3b6; flex:none; }.stage>div { display:grid; }.stage span:last-child { color:var(--muted); font-size:12px; }.stage-done .stage-dot,.stage-pass .stage-dot{background:var(--green)}.stage-active .stage-dot{background:var(--blue)}.stage-blocked .stage-dot{background:var(--red)}
 .decision-panel { margin-top:26px; padding:18px; border:1px solid var(--line); border-left:4px solid var(--blue); background:#fff; border-radius:5px; }.decision-panel.verdict-accept{border-left-color:var(--green)}.decision-panel.verdict-reject,.decision-panel.verdict-block{border-left-color:var(--red)}.decision-head { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }.decision-head div { display:grid; }.decision-head span { color:var(--muted); font-size:12px; }.decision-head strong { font-size:16px; }.decision-list { margin-top:12px; }.decision-list ul { margin:6px 0 0; padding-left:20px; }

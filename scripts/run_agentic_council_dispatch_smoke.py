@@ -156,7 +156,7 @@ def case_dispatch_happy(root: Path) -> dict[str, Any]:
     iteration = load_json(root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json")
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and (proof.get("revision_council") or {}).get("status") == "awaiting_agent_results"
         and (proof.get("revision_council") or {}).get("effective_mode") == "agentic_dispatch_manifest"
         and manifest.get("agent_task_count") == 5
@@ -203,7 +203,7 @@ def case_dispatch_runtime_policy(root: Path, runtime: str, *, provider: str | No
     first_packet = load_json(root / tasks[0]["task_packet_path"]) if tasks else {}
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and validate["rc"] == 0
         and policy.get("runtime") == runtime
         and first_packet.get("runtime_dispatch_policy") == policy
@@ -644,10 +644,9 @@ def case_finalize_all_real_agent_results(root: Path) -> dict[str, Any]:
     for task in manifest.get("agent_tasks") or []:
         payload = fake_real_agent_result(root, rid, task, include_identifier=True)
         write_json(root / task["expected_result_path"], payload)
-    collect = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/collect_agentic_council_results.py", "--report-id", rid])
     before_code = directory_digest(root / "generated_code" / rid)
     before_clean = directory_digest(root / "data" / "clean")
-    proc = run_cmd(root, [sys.executable, "skills/factor-forge-step6/scripts/finalize_agentic_council_dispatch.py", "--report-id", rid])
+    proc, proof = run_ultimate_dispatch(root, rid)
     after_code = directory_digest(root / "generated_code" / rid)
     after_clean = directory_digest(root / "data" / "clean")
     summary = load_json(council_dir(root, rid) / f"revision_council_summary__{rid}.json")
@@ -661,8 +660,11 @@ def case_finalize_all_real_agent_results(root: Path) -> dict[str, Any]:
     }
     ok = (
         all(item["rc"] == 0 for item in runs)
-        and collect["rc"] == 0
         and proc["rc"] == 0
+        and proof.get("status") == "PASS"
+        and (proof.get("revision_council") or {}).get("status") == "completed"
+        and (proof.get("revision_council") or {}).get("formal_council_status")
+        == "agentic_results_completed"
         and summary.get("selection_source") == "agentic_results"
         and len(summary.get("valid_agent_results") or []) == 5
         and final.get("source") == "revision_council"
@@ -678,8 +680,8 @@ def case_finalize_all_real_agent_results(root: Path) -> dict[str, Any]:
         "finalize validates, merges, attaches, and preserves canonical write boundaries",
         {
             "setup_runs": runs,
-            "collect": collect,
-            "finalize": proc,
+            "wrapper_finalize": proc,
+            "revision_council": proof.get("revision_council"),
             "selection_source": summary.get("selection_source"),
             "valid_agent_results": len(summary.get("valid_agent_results") or []),
             "selected_ids": selected_ids,

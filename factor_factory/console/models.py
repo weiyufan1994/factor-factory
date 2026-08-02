@@ -44,6 +44,10 @@ VALID_COUNCIL_STATUSES = {
 TASK_CONTRACT_VERSION = "factorforge_console_task_v1"
 RESULT_CONTRACT_VERSION = "factorforge_console_result_v1"
 RESEARCH_REQUEST_VERSION = "factorforge_console_research_request_v1"
+PILOT_FORWARD_HORIZON = "1d"
+PILOT_TRANSACTION_COST_BPS = 30.0
+PILOT_COST_MODEL_ID = "factorforge_step4_turnover_30bps_v1"
+PILOT_UNIVERSE = "a_share_all"
 RESEARCH_JOB_VERSION = "factorforge_console_research_job_v1"
 
 
@@ -112,11 +116,11 @@ class ResearchRequest:
     title: str
     hypothesis: str
     factor_id_hint: str = ""
-    universe: str = "a_share_core"
+    universe: str = PILOT_UNIVERSE
     sample_start: str = "2016-01-01"
     sample_end: str = "2025-07-11"
     forward_horizon: str = "1d"
-    transaction_cost_bps: float = 10.0
+    transaction_cost_bps: float = PILOT_TRANSACTION_COST_BPS
     model: str = ""
     source_url: str = ""
 
@@ -144,13 +148,31 @@ class ResearchRequest:
             title=str(payload.get("title") or ""),
             hypothesis=str(payload.get("hypothesis") or ""),
             factor_id_hint=str(payload.get("factor_id_hint") or ""),
-            universe=str(payload.get("universe") or "a_share_core"),
+            universe=str(payload.get("universe") or PILOT_UNIVERSE),
             sample_start=str(payload.get("sample_start") or "2016-01-01"),
             sample_end=str(payload.get("sample_end") or "2025-07-11"),
             forward_horizon=str(payload.get("forward_horizon") or "1d"),
-            transaction_cost_bps=float(payload.get("transaction_cost_bps", 10.0)),
+            transaction_cost_bps=float(
+                payload.get("transaction_cost_bps", PILOT_TRANSACTION_COST_BPS)
+            ),
             model=str(payload.get("model") or ""),
             source_url=str(payload.get("source_url") or ""),
+        )
+
+
+def validate_pilot_evaluation_request(request: ResearchRequest) -> None:
+    """Fail closed when the web Pilot cannot execute the submitted evaluation contract."""
+    if request.universe != PILOT_UNIVERSE:
+        raise ValueError(
+            f"web Pilot supports only the {PILOT_UNIVERSE} universe"
+        )
+    if request.forward_horizon != PILOT_FORWARD_HORIZON:
+        raise ValueError(
+            f"web Pilot supports only {PILOT_FORWARD_HORIZON} forward horizon"
+        )
+    if float(request.transaction_cost_bps) != PILOT_TRANSACTION_COST_BPS:
+        raise ValueError(
+            "web Pilot supports only the formal Step4 30 bps turnover cost model"
         )
 
 

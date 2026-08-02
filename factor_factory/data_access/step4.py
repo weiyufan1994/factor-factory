@@ -132,20 +132,29 @@ def build_forward_return_frame(
     instrument_col: str = 'ts_code',
     date_col: str = 'trade_date',
     price_col: str = 'close',
-    return_col: str = 'pct_chg',
+    return_col: str | None = 'pct_chg',
     horizon: int = 1,
+    entry_offset: int = 0,
+    exit_offset: int | None = None,
 ) -> pd.DataFrame:
     if horizon <= 0:
         raise ValueError('horizon must be positive')
+    if entry_offset < 0:
+        raise ValueError('entry_offset must be non-negative')
+    resolved_exit_offset = entry_offset + horizon if exit_offset is None else exit_offset
+    if resolved_exit_offset <= entry_offset:
+        raise ValueError('exit_offset must be greater than entry_offset')
 
     enriched = add_datetime_column(daily_df, date_col=date_col)
     enriched = enriched.sort_values([instrument_col, 'datetime'])
-    if return_col in enriched.columns:
+    if entry_offset == 0 and resolved_exit_offset == horizon and return_col and return_col in enriched.columns:
         next_ret = pd.to_numeric(enriched[return_col], errors='coerce').groupby(enriched[instrument_col], sort=False).shift(-1) / 100.0
         if horizon == 1:
             enriched[f'future_return_{horizon}d'] = next_ret
             return enriched
 
-    future_price = enriched.groupby(instrument_col, sort=False)[price_col].shift(-horizon)
-    enriched[f'future_return_{horizon}d'] = future_price / enriched[price_col] - 1
+    grouped_price = enriched.groupby(instrument_col, sort=False)[price_col]
+    entry_price = grouped_price.shift(-entry_offset) if entry_offset else enriched[price_col]
+    exit_price = grouped_price.shift(-resolved_exit_offset)
+    enriched[f'future_return_{horizon}d'] = exit_price / entry_price - 1
     return enriched

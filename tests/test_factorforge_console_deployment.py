@@ -156,7 +156,14 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     statements = {item["Sid"]: item for item in policy["Statement"]}
     assert statements["DenyAnyS3UseOutsideDedicatedEndpoint"]["Resource"] == "*"
     assert statements["DenyMutationEvenIfAnotherPolicyIsAttached"]["Resource"] == "*"
-    assert statements["DenyReadOutsideApprovedBucket"]["Effect"] == "Deny"
+    assert statements["DenyBucketDiscoveryOutsideApprovedBucket"]["Effect"] == "Deny"
+    assert statements["DenyObjectReadOutsidePilotInputs"]["Effect"] == "Deny"
+    assert statements["DenyListOutsidePilotPrefixes"]["Effect"] == "Deny"
+    policy_text = json.dumps(policy, sort_keys=True)
+    assert "tushares/" not in policy_text
+    assert "yufan-data-lake/factorforge/*" not in policy_text
+    assert "factorforge/data/catalog/data_catalog.json" in policy_text
+    assert "factorforge/datamart/clean_daily_bar/v1/*" in policy_text
 
 
 def test_agent_image_uses_a_resolvable_pinned_s3_dependency_set() -> None:

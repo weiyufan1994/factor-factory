@@ -34,6 +34,22 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def resolve_graph_node_path(raw_path: str | Path) -> Path:
+    path = Path(raw_path).expanduser()
+    parts = path.parts
+    for marker in (("knowledge", "因子工厂"), ("knowledge", "factor_factory")):
+        for index in range(len(parts) - len(marker) + 1):
+            if tuple(parts[index : index + len(marker)]) != marker:
+                continue
+            remapped = REPO_ROOT.joinpath(*parts[index:])
+            if remapped.is_file():
+                return remapped
+            return remapped
+    if path.is_file():
+        return path
+    return path
+
+
 def resolve_tags(raw_tags: list[str] | None, taxonomy_path: Path | str = DEFAULT_TAXONOMY) -> tuple[set[str], dict[str, list[str]]]:
     taxonomy = load_json(Path(taxonomy_path).expanduser()) if Path(taxonomy_path).expanduser().exists() else {}
     aliases = taxonomy.get("aliases") or {}
@@ -144,7 +160,7 @@ def retrieve_factor_knowledge_context(
     full_nodes: list[dict[str, Any]] = []
     for _score, overlap, row in scored_rows[:top_k]:
         source_node_path = row.get("source_node_path")
-        full_node = load_json(Path(source_node_path)) if source_node_path else row
+        full_node = load_json(resolve_graph_node_path(source_node_path)) if source_node_path else row
         full_nodes.append(compact_node(full_node, row, overlap))
 
     selected_ids = {node["id"] for node in full_nodes}

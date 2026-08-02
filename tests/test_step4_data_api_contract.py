@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -127,3 +128,94 @@ def test_step4_rejects_backtest_base_cache_with_polluted_daily_basic_controls(tm
 
     assert cached_path is None
     assert profile is None
+
+
+def test_web_evaluation_contract_must_match_step4_semantics():
+    run_step4 = _load_run_step4()
+    contract = {
+        "version": "factorforge_web_evaluation_contract_v2",
+        "rebalance_frequency": "daily",
+        "signal_timestamp_policy": "after_close_t",
+        "position_entry_policy": "close_t_plus_1",
+        "availability_lags": ["t open is available after the opening auction"],
+        "missing_data_policy": "drop and audit missing rows",
+        "forward_horizon": "1d",
+        "label_policy": {
+            "horizon": "one_trading_day_after_execution",
+            "return_type": "simple",
+            "entry_price_field": "close",
+            "exit_price_field": "close",
+            "execution_lag_sessions": 1,
+            "holding_period_sessions": 1,
+            "return_window": "close_t_plus_1_to_close_t_plus_2",
+        },
+        "transaction_cost_bps": 30.0,
+        "cost_model_id": "factorforge_step4_turnover_30bps_v1",
+        "cost_formula": "one_way_turnover * 0.003",
+    }
+    fsm = {
+        "evaluation_contract": contract,
+        "canonical_spec": {"evaluation_contract": contract},
+    }
+
+    run_step4.validate_web_evaluation_contract(fsm)
+    fsm["evaluation_contract"] = {**contract, "transaction_cost_bps": 10.0}
+    with pytest.raises(SystemExit, match="WEB_EVALUATION_CONTRACT_UNSUPPORTED"):
+        run_step4.validate_web_evaluation_contract(fsm)
+
+
+def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(tmp_path):
+    run_step4 = _load_run_step4()
+    factor_df = pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": "20260102", "signal": 1.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260105", "signal": 2.0},
+        ]
+    )
+    daily_df = pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": "20260102", "close": 100.0, "pct_chg": 0.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260105", "close": 110.0, "pct_chg": 2.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260106", "close": 121.0, "pct_chg": 3.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260107", "close": 108.9, "pct_chg": 4.0},
+        ]
+    )
+    factor_path = tmp_path / "factor.parquet"
+    daily_path = tmp_path / "daily.parquet"
+    factor_df.to_parquet(factor_path, index=False)
+    daily_df.to_parquet(daily_path, index=False)
+    contract = {
+        "version": "factorforge_web_evaluation_contract_v2",
+        "label_policy": {
+            "horizon": "one_trading_day_after_execution",
+            "return_type": "simple",
+            "entry_price_field": "close",
+            "exit_price_field": "close",
+            "execution_lag_sessions": 1,
+            "holding_period_sessions": 1,
+            "return_window": "close_t_plus_1_to_close_t_plus_2",
+        },
+    }
+
+    context = run_step4.build_shared_evaluation_context(
+        report_id="R",
+        factor_id="F",
+        implementation_mode_decision={"implementation_mode": "operator"},
+        base_identity={"spec_hash": "spec", "code_hash": "code"},
+        run_dir=tmp_path / "run",
+        factor_df=factor_df,
+        daily_df=daily_df,
+        signal_col="signal",
+        factor_parquet_path=factor_path,
+        daily_input_path=daily_path,
+        target_window={"start": "20260102", "end": "20260107"},
+        effective_target_window={"start": "20260102", "end": "20260107"},
+        evaluation_contract=contract,
+    )
+
+    merged = pd.read_parquet(context["paths"]["merged_signal_return_parquet"])
+    first = float(merged.loc[merged["trade_date"] == "20260102", "future_return_1d"].iloc[0])
+    assert first == pytest.approx(121.0 / 110.0 - 1.0)
+    assert first != pytest.approx(0.02)
+    assert context["version"] == "factorforge_shared_evaluation_context_v2"
+    assert context["label_policy"] == contract["label_policy"]

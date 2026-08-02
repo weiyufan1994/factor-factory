@@ -128,6 +128,14 @@ documenting that close-after-market factor values at t are evaluated against
 next-trading-day returns (`pct_chg.shift(-1)`), merged on `datetime` and `code`.
 Same-day returns must not be used as IC or NAV labels.
 
+For `factorforge_web_evaluation_contract_v2`, the stricter executable timing
+overrides that legacy diagnostic alignment: a signal formed after close t is
+entered at close t+1 and exited at close t+2. The label must be computed as
+`close.shift(-2) / close.shift(-1) - 1`; `pct_chg` is not an allowed substitute.
+The shared evaluation context must use
+`factorforge_shared_evaluation_context_v2` and preserve this exact policy for
+every backend and Council revision metric.
+
 Intraday signals need an explicit timing evaluator instead of being judged only
 by the default daily close-after-market label. If a factor uses minute/tick data
 with a cutoff such as 14:50 or 14:55, Step4 must record

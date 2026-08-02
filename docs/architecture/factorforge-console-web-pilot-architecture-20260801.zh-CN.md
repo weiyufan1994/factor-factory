@@ -84,7 +84,8 @@ flowchart LR
   Q --> C["任务专属只读根文件系统容器"]
   C --> AG["任务专属 OpenClaw local agent/session/state"]
   AG --> FW
-  AG --> S["S3 allowlist proxy"]
+  Q --> H["Host formal executor + 短期只读 lease"]
+  H --> S["S3 allowlist proxy"]
   S --> D["Data API / approved datamarts 只读"]
   AG --> B["固定模型 broker"]
   B --> M["DeepSeek Reasoner"]
@@ -119,16 +120,16 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 
 - 无聊天频道、无 cron、无 heartbeat。
 - 不挂载用户 HOME、其他 agent state、其他 factor worktree 或共享 OAuth 数据库。
-- engine worktree、固定 Data API 子包和 catalog root 只读挂载；仅当前 factor workspace 和当前任务 agent state 可写。Data API 经容器专用 bridge 加载，不能用旧 Data API checkout 覆盖当前 Factor Forge package。
+- engine worktree 只读挂载；仅当前 factor workspace 和当前任务 agent state 可写。研究 agent 不挂载 Data API 子包、catalog root 或原始数据，只读取 workspace 内由 Host 生成并只读覆盖的 catalog summary。固定 Data API 与真实 catalog 只供后续 Host formal subprocess 使用。
 - 每个任务生成只含固定 base commit 的 shallow Git view，并以只读 `GIT_DIR` 挂载；正式脚本可以执行 `rev-parse/show/status`，但 agent 不读取控制仓库完整 Git 历史。
 - 容器使用只读 rootfs、drop all capabilities、no-new-privileges、pids/memory/CPU 限额和独立 tmpfs。
 - OpenClaw profile 在研究容器内再次只读挂载；禁用 bootstrap/global skills/elevated/agent-to-agent，只允许固定工具集合。
-- 认证 seed 必须是非 symlink、权限不宽于 `0600`、且只含一个指定 provider 的 broker client token；研究容器不持有真实模型 key。真实 key 只由独立 `factorforge-model` broker 读取并注入固定上游请求。runner 同时向 broker 注册 client token 与当前 AWS lease 的精确 secret 值，broker 对模型请求执行常见 AWS 形态、原值、JSON 解码值和 base64 值扫描并 fail closed；同一组值也用于公开结果与 artifact 扫描。IAM endpoint 绑定仍是防止任意分片编码绕过后的最终权限边界。
-- EC2 host role 只承担 SSM 管理和 `AssumeRole`，不直接拥有 S3 数据权限。source identity 必须同时匹配固定 AWS 账号、host role 和完整 STS ARN；runner 每次再获取独立 data-read role 的一小时 lease，并再次核对账号、角色与完整 assumed-role ARN。凭证必须含 session token 和有效期，经容器外 `0600` lease 注入当前任务，容器内禁用 metadata，任务结束删除。data-read role 没有 SSM 权限，S3 policy 将读取绑定到专用 VPC endpoint，并显式拒绝 mutation。
+- 认证 seed 必须是非 symlink、权限不宽于 `0600`、且只含一个指定 provider 的 broker client token；研究容器不持有真实模型 key、AWS lease 或原始 Data API。真实模型 key 只由独立 `factorforge-model` broker 读取并注入固定上游请求。Agent turn 开始前，runner 先把 broker client token 注册到 denied-secret registry；Host formal lease 取得后再把其精确 secret 值追加到同一 registry，供错误、公开结果与 artifact 扫描。broker 对模型请求执行原值、常见 AWS 形态、JSON 解码值和 base64 值扫描并 fail closed。
+- EC2 host role 只承担 SSM 管理和 `AssumeRole`，不直接拥有 S3 数据权限。source identity 必须同时匹配固定 AWS 账号、host role 和完整 STS ARN；Agent authoring 完成后，runner 再获取独立 data-read role 的一小时 lease，并核对账号、角色与完整 assumed-role ARN。凭证必须含 session token 和有效期，只通过内存环境注入 Host formal subprocess；临时 `0600` env-file 在 subprocess 启动前删除，metadata fallback 禁用。data-read role 没有 SSM 权限，S3 policy 将读取绑定到专用 VPC endpoint，并显式拒绝 mutation。Pilot v1 额外把对象读取限制为精确 production catalog 与 `factorforge/datamart/clean_daily_bar/v1/`，不允许 `factorforge/*` 或 `tushares/*` 通配读取。
 - 服务重启只回收同时带 managed 和本 installation id 标签的遗留容器；任何停止/删除失败都使 runner readiness BLOCK。中断任务转为待复核，禁止旧 turn 与新 turn 重叠。
 - 任务 secret registry 存在加密 EBS 的专用最小权限目录中，跨 broker、runner 和主机重启保留，恢复时与新 lease 合并。单并发 runner 原子维护唯一 `active.registry` 指针；broker 只读取该指针指定的任务 registry，且只有它存在并包含固定 client token 时才接受请求，历史任务 registry 不能替代当前任务。只有任务完成公开扫描后才销毁 active 指针与 registry，防止崩溃前凭据片段在恢复后漏过检查。
 
-容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口；`INPUT` 也拒绝来自该 bridge 的所有主机地址和端口，只在 bridge gateway 上放行 S3 proxy 与模型 broker。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-reasoner`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
+容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口；`INPUT` 也拒绝来自该 bridge 的所有主机地址和端口，只在 bridge gateway 上暴露 S3 proxy 与模型 broker 的网络端点。这里的端点可达不等于研究 Agent 获得数据能力：Agent 容器没有 AWS lease、Data API 包、catalog/raw mount 或可用 DNS，且其任务合同禁止调用 S3 proxy；该端点只服务 runner 的启动期只读探针。Host formal 数据读取使用另行取得并核验的临时 lease。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-reasoner`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
 
 当前 Pilot 固定使用 `deepseek/deepseek-reasoner` 和 `thinking=high`。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 
@@ -136,20 +137,23 @@ DeepSeek 在 Pilot 威胁模型中是受信任的数据处理方，但不是凭�
 
 ### 3.4 Ultimate 执行
 
-Agent 先读取仓库内正式 skills，然后：
+执行分成互不替代的 Agent authoring 与 Host formal execution：
 
-1. 把网页输入当作 `natural_language_hypothesis`，不伪造研报来源。
-2. 生成 Step1/Step2 语义研究对象和 mechanism/math contracts。
-3. Step3-6 只调用 `scripts/run_factorforge_ultimate.py`。
-4. 不调用现有 `run_factorforge_ultimate_loop.py`，直至其 workspace 和审批语义缺陷关闭。
-5. 缺数据、缺 Council 证据或无法完成时形成可审计 pause/BLOCK，不编造结果。
-6. 最后写 `identity/web_agent_completion.json`，但网页仍以正式 Ultimate artifact 为主证据核验。
+1. Agent 把网页输入当作 `natural_language_hypothesis`，只填写受约束的 Formula IR 研究计划；不得伪造研报来源或自定义 Python。
+2. fresh turn 只允许写计划、短 execution ledger 和 authoring completion；普通 resume turn 只允许写当前正式 pause 明确点名的 memo。唯一例外是已由上一代完整 attestation 绑定的 `agentic_dispatch_manifest`：Runner 为每个 required route 启动独立 Agent、独立 session、最小只读 engine/workspace view 和 Host 私有输出目录。每个 Agent 只能看到自己的 task packet，不能看到 engine/validator 源码、其他 route 或其结果；Host 等全部结果通过 secret、identity 和正式 Council validator 后，先写同目录 staging，再以一次目录 rename 原子发布 dispatch 预先声明的完整 `agent_results/`。任一步失败都会清理 staging、保持正式结果目录不存在并保留 `RUNNING` lifecycle，不能把部分结果认作合法 Council。任何 Step1-6、Council 合并/总结、runtime proof 或其他路径写入立即 BLOCK。
+3. Agent 退出后，Host 对 workspace 做前后哈希差异校验，再由 Host 独立运行 materializer 与唯一正式入口 `scripts/run_factorforge_ultimate.py`。
+4. Host 在正式执行前另行 AssumeRole 取得新的短期 data-read lease，只通过子进程环境传给 materializer/Ultimate，立即删除 lease 文件，并把新凭据并入任务脱敏 registry；EC2 host role 本身不获得 S3 读取权。
+5. Host 在 agent workspace 外保存 materializer/Ultimate 的精确 argv、cwd、时间、return code、base commit、read-only lease 注入状态和 Ultimate proof SHA-256；网页公开前必须验证这份 receipt 与当前 proof 一致。
+6. 不调用现有 `run_factorforge_ultimate_loop.py`，直至其 workspace 和审批语义缺陷关闭。
+7. 缺数据、缺 Council 证据或无法完成时形成可审计 pause/BLOCK，不编造结果。Agent 的 `web_agent_completion.json` 只是 authoring receipt，永远不是正式研究证明。
 
 Console 不信任 completion、wrapper exit code 或 artifact 的“自报状态”。终态必须重新调用仓库已有的 `validate_protocol_bundle(stage="final")` 和 `validate_factor_proof_certificate()`；持久化 verifier 必须与重算 verdict、report/factor identity 一致。任何来源的显式 false/BLOCK 或相互矛盾均优先，dry-run 永远没有 formal proof eligibility。
 
 内部证据读取与浏览器发布是两条独立路径：内部读取允许合法 artifact 记录服务器路径，但只接受当前 workspace 内的非 symlink、限长 JSON；对外字段、blocker、next action 和下载 artifact 再单独脱敏。禁止用“公开扫描失败”代替正式证据验证。
 
 Council 只有 synthesis 和 summary 都达到正式终态，且 certificate 与重新计算的 protocol/factor/research/report identity 完全一致时，才可能 `formal_proof_eligible=true`。任一显式 `BLOCK/FAIL/false` 优先于自报 `PASS`。
+
+Council 首轮 `PAUSED/awaiting_agent_results` 是合法中间态，不是终点。用户显式继续后，Runner 先验证旧 workspace evidence tree，再将私有 lifecycle 置为 `RUNNING`，执行上述隔离 result ingress；随后 Host Ultimate 必须依次验证 dispatch、collect results、finalize/merge/attach 并重跑 Step6 validator。只有这一 Host 命令链成功，才写下一代 receipt、evidence tree 和 attestation；缺结果、结果无效或越界写入均不可反复以同一个 PAUSED 洗白。
 
 ## 4. 任务生命周期
 
@@ -164,6 +168,7 @@ QUEUED
 - `COMPLETED + REJECT`：研究协议完成，因子被否决。
 - `REVIEW_REQUIRED`：证据处于合法暂停，用户可从网页明确点击继续。
 - 网页继续只写 `web_user_resume`，不能伪造 human approval 或 official promotion。
+- 续跑起点只从 Host 私有、不可变的 v2 attestation + v2 formal receipt 父链 + current pointer + 完整 workspace evidence tree 推导，不能从 workspace 内未认证 artifact 单独推导，也不接受修复前 v1 回执。Runner 在任何 allocation、Agent 或 Host formal 操作前，必须把 Host 私有 lifecycle 从不存在/`RESUMABLE` 原子推进为 `RUNNING`；只有新的完整 attestation 写成且凭证清理成功后才能转为 `RESUMABLE` 或 `TERMINAL`。任何残留 `RUNNING`、`NON_RESUMABLE`、已有 lifecycle 却被共享账本伪装为 fresh，或 non-resumable marker 都禁止 Agent 再次进入。Agent 写入越界、worktree 隔离失败或凭证 registry 异常的原 workspace 只保留取证用途。
 - 未知异常统一 BLOCK 并保留证据，不让后台 worker thread 静默死亡。
 
 ## 5. 信任边界
@@ -217,8 +222,10 @@ QUEUED
 - 页面能区分 protocol、factor、Council 和 proof eligibility。
 - REJECT/BLOCK/pause 仍展示完整研究方法和证据链。
 - Git 写入审计没有 workspace 外路径。
-- 容器无法访问 metadata、localhost、RFC1918、任意公网或 proxy 上的模型原站；只能通过固定 broker 使用模型，并通过 allowlisted proxy 读取 S3/Data API。
-- 容器无法绕过 allowlisted proxy 访问任意公网 host，S3 IAM 仍无写入/删除权限。
+- Agent 容器无法访问 metadata、localhost、RFC1918、任意公网、S3、Data API、catalog 或 proxy 上的模型原站；只能通过固定 broker 使用模型。
+- 只有 Agent 退出且写入边界通过后，Host formal executor 才能取得短期只读 data lease；它无法绕过 allowlisted proxy 访问任意公网 host，S3 IAM 仍无写入/删除权限。
 - 伪造 certificate、verifier BLOCK、空 Council summary、dry-run REJECT、report identity 混用均不能产生正式 PASS。
+- Agent 修改正式 artifact、伪造 Ultimate report、改写 resume 预注册计划或利用 prompt symlink 逃逸均必须在 Host 正式执行前 BLOCK。
+- 公开结果必须绑定 workspace 外的不可变 Host v2 formal-execution receipt 与 v2 attestation；Ultimate argv、proof hash、完整 workspace evidence tree 和续跑父链都必须重新核对。
 
 这是一项“Web 能安全驱动正式框架”的 proof，不等于任一因子已 `ACCEPT`，也不等于多租户生产 SaaS 已完成。

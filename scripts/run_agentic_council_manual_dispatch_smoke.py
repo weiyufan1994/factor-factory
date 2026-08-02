@@ -339,7 +339,7 @@ def case_manual_dispatch_happy(root: Path) -> dict[str, Any]:
     after_clean = directory_digest(root / "data" / "clean")
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and (proof.get("revision_council") or {}).get("status") == "awaiting_agent_results"
         and manual.get("adapter") == "manual_file"
         and policy.get("runtime") == "manual_file"
@@ -381,7 +381,7 @@ def case_runtime_policy(root: Path, runtime: str, expected_phrases: list[str], *
     text = first_assignment_markdown(root, rid)
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and validate["rc"] == 0
         and policy.get("runtime") == runtime
         and policy == dispatch.get("runtime_dispatch_policy")

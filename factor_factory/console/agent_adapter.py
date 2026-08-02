@@ -15,6 +15,7 @@ from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.models import ResearchJob
 from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import utc_now
+from factor_factory.console.web_research_plan import write_text_atomic
 
 
 BLOCK_AGENT_RUNTIME_UNAVAILABLE = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE"
@@ -45,6 +46,12 @@ class ResearchAgentAdapter(Protocol):
         ...
 
     def healthcheck(self) -> bool:
+        ...
+
+    def prepare_host_data_environment(
+        self,
+        job_id: str,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
         ...
 
 
@@ -81,14 +88,20 @@ class OpenClawResearchAgentAdapter:
     def healthcheck(self) -> bool:
         return True
 
+    def prepare_host_data_environment(
+        self,
+        job_id: str,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        return {}, ()
+
     def run(self, job: ResearchJob, *, worktree: Path, workspace: Path, resume: bool) -> AgentRunResult:
         agent_id = job.agent_id or f"factorforge-web-{job.job_id.removeprefix('job_')}"
         session_key = job.agent_session_key or f"agent:{agent_id}:{job.job_id}"
         prompt_path = workspace / "identity" / ("web_agent_resume.md" if resume else "web_agent_task.md")
-        prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(
+        write_text_atomic(
+            prompt_path,
             build_agent_prompt(job, worktree=worktree, workspace=workspace, config=self.config, resume=resume),
-            encoding="utf-8",
+            root=workspace,
         )
         started = utc_now()
         if not resume or not job.agent_id:
@@ -281,7 +294,7 @@ def build_agent_prompt(
     config: ConsoleConfig,
     resume: bool,
 ) -> str:
-    catalogs = "\n".join(f"- {path}" for path in config.data_catalogs) or "- use the configured Data API catalog"
+    catalogs = "- `identity/data_catalog_summary.json` (operator-authored, read-only projection)"
     action = "Resume the existing formal run from its current verified pause." if resume else "Start a new formal run from the submitted natural-language hypothesis."
     return f"""# Factor Forge Web Research Task
 
@@ -296,11 +309,18 @@ You are the sole runtime researcher for one isolated Factor Forge task. {action}
 - engine worktree: {worktree}
 - active factor workspace: {workspace}
 
-Read and follow these skills literally before acting:
+The operator has already projected the installed Ultimate, Researcher and
+Research Brain contracts into this task-local runtime packet. Read only these
+five files before acting:
 
-- {worktree / 'skills' / 'factor-forge-ultimate' / 'SKILL.md'}
-- {worktree / 'skills' / 'factor-forge-researcher' / 'SKILL.md'}
-- {worktree / 'skills' / 'factor-forge-research-brain' / 'SKILL.md'}
+- {workspace / 'identity' / 'web_research_runtime.md'}
+- {workspace / 'identity' / 'web_research_request.json'}
+- {workspace / 'identity' / 'data_catalog_summary.json'}
+- {workspace / 'identity' / 'factor_knowledge_summary.json'}
+- {workspace / 'identity' / 'web_research_plan.json'}
+
+The formal validators and `scripts/run_factorforge_ultimate.py` remain the
+source of truth. Do not read whole skill files or validator/wrapper source.
 
 ## Submitted research object
 
@@ -316,33 +336,33 @@ Read and follow these skills literally before acting:
 
 {catalogs}
 
-The Data API runtime is already mounted and verified by the operator. Use its public Python
-interface (`from factorforge_data_api import DataApiClient, DataQuery`) or the formal Factor
-Forge scripts that consume the configured catalog. Its implementation directory is deliberately
-outside the OpenClaw file-reader boundary; do not inspect, copy, or modify that implementation.
+The agent receives no Data API package, catalog file, S3 credential, or raw dataset mount.
+Use only the operator-authored catalog summary to design the legal information set and Formula
+IR field requirements. After authoring exits, the host obtains a separate short-lived read-only
+lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 
 ## Mandatory execution contract
 
 1. Treat this as a natural_language_hypothesis, never as a broker report and never invent attribution.
 2. All factor-specific code, notes, raw model responses, metrics, Council packets, knowledge and results must stay under the exact active factor workspace above.
-3. Do not write to another factor_research directory, repo-root knowledge, repo-root data, shared clean data, another worktree, or any cloud dataset. Data API and catalogs are read-only inputs.
-4. Do not run `run_factorforge_ultimate_loop.py`. Author the semantic Step1/Step2 and research-protocol artifacts as the current agent, validate them, then use only `scripts/run_factorforge_ultimate.py` for formal Step3 through Step6.
+3. Do not write to another factor_research directory, repo-root knowledge, repo-root data, shared clean data, another worktree, or any cloud dataset. The task-local catalog summary is descriptive only; the agent has no Data API, catalog-file, S3, or raw-data access.
+4. Do not run `run_factorforge_ultimate_loop.py`, the materializer, Step scripts, or `scripts/run_factorforge_ultimate.py`. Fill the task-local web research plan with a Formula IR-compatible factor law, or on resume write only the artifact required by the named pause. Do not author or execute custom Python. The host exclusively materializes and runs formal Step3 through Step6 after your process exits.
 5. Never use fixtures, deterministic fallback, local mock, smoke evidence or dry-run output as formal research proof. A missing dataset must produce a precise BLOCK/data request, not invented evidence.
-6. Resolve Ultimate pause states yourself where the installed skill permits: mechanism memo, independent Council role packets, Council synthesis and evidence interpretation. Do not use the unimplemented `real_agent`/`remote_api` wrapper adapters.
+6. On resume, write only the exact named research memo permitted by the current pause. The host owns Council dispatch, synthesis, evidence interpretation, and every formal wrapper invocation. Do not use the unimplemented `real_agent`/`remote_api` wrapper adapters.
 7. Keep preferred, null and alternative hypotheses distinct. Record economic payer, mathematical object, legal information set, falsifiers, component ablations, costs, long-side economics, IS/OOS boundary and proof-certificate status.
 8. A process exit code or wrapper PASS is not a factor verdict. Finish only with formal ACCEPT, REJECT, BLOCK, or an honest REVIEW_REQUIRED pause.
 9. Do not create a revision child or record human approval unless an existing artifact under `identity/` explicitly authorizes this resume. Automated action must never be labeled human approval.
 10. Before finishing, verify the workspace manifest and inspect Git status. Any write outside the active workspace is a blocking failure.
-11. Network egress is restricted to the model API and approved read-only S3 bucket. Do not upload, POST, tunnel or encode Data API content to any external destination, and do not attempt to bypass the proxy.
+11. Network egress is restricted to the fixed model broker. Do not attempt to reach S3, Data API, catalog storage, raw data, arbitrary websites, or any other network destination, and do not attempt to bypass the proxy.
 12. The runtime has already completed operator-owned model, network, credential and Data API readiness checks. Never enumerate environment variables or credential material; never run `env`/`printenv`, read `/proc/*/environ`, query instance metadata, inspect AWS credential/config files, or inspect the OpenClaw auth database. Never print, hash, transform, persist or return any API key, access key, session token, password or broker token. If credentials appear unexpectedly, stop and record a BLOCK without reproducing them.
-13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the three named skills and use the existing validators plus `scripts/run_factorforge_ultimate.py`; use the Data API only through its public interface and configured catalog.
-14. Read each named skill once. Do not recursively dump whole referenced documents or repeatedly re-read skill files. After the first pass, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then execute; use targeted line ranges or searches only when a validator exposes a specific contract gap.
+13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the task-local runtime packet and stop after the research plan or named resume artifact is complete; the Host alone uses the Data API through its public interface and pinned catalog after agent authoring exits.
+14. Do not recursively dump documents or inspect internal schemas. After reading the five packet files, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then complete the plan or pause artifact. Host validation errors are returned on the next task state; they are not permission to reverse engineer validators.
 
 Write a final machine-readable record to:
 
 `{workspace / 'identity' / 'web_agent_completion.json'}`
 
-It must contain `version=factorforge_web_agent_completion_v1`, all immutable identity fields, `execution_status`, `protocol_status`, `factor_verdict`, `council_status`, `formal_proof_eligible`, `summary`, `blockers`, `next_actions`, and relative artifact paths. Do not include secrets or absolute paths in that record.
+It must contain `version=factorforge_web_agent_completion_v1`, all immutable identity fields, `execution_status=AUTHORING_COMPLETE`, `protocol_status=NOT_STARTED`, `factor_verdict=UNKNOWN`, `council_status=NOT_STARTED`, `formal_proof_eligible=false`, a summary limited to the plan or named memo you authored, blockers, next actions, and relative artifact paths. This is an agent authoring receipt, not formal research evidence. Do not include secrets or absolute paths in that record.
 """
 
 

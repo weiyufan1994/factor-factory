@@ -56,6 +56,7 @@ from factor_factory.runtime_context import (
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
 TRADE_DATE_FETCH_STATE_DATASETS = {'intraday_retained_chip_state_v1'}
+WEB_EVALUATION_CONTRACT_VERSION = 'factorforge_web_evaluation_contract_v2'
 
 STEP4_RUN_METADATA_OWNED_FIELDS = {
     'report_id',
@@ -82,6 +83,47 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'formal_signal_coverage',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+
+
+def validate_web_evaluation_contract(fsm: dict[str, Any]) -> None:
+    contract = fsm.get('evaluation_contract') if isinstance(fsm.get('evaluation_contract'), dict) else {}
+    if contract.get('version') != WEB_EVALUATION_CONTRACT_VERSION:
+        return
+    expected = {
+        'rebalance_frequency': 'daily',
+        'signal_timestamp_policy': 'after_close_t',
+        'position_entry_policy': 'close_t_plus_1',
+        'forward_horizon': '1d',
+        'label_policy': {
+            'horizon': 'one_trading_day_after_execution',
+            'return_type': 'simple',
+            'entry_price_field': 'close',
+            'exit_price_field': 'close',
+            'execution_lag_sessions': 1,
+            'holding_period_sessions': 1,
+            'return_window': 'close_t_plus_1_to_close_t_plus_2',
+        },
+        'transaction_cost_bps': 30.0,
+        'cost_model_id': 'factorforge_step4_turnover_30bps_v1',
+        'cost_formula': 'one_way_turnover * 0.003',
+    }
+    failures = [
+        field
+        for field, expected_value in expected.items()
+        if contract.get(field) != expected_value
+    ]
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    if canonical.get('evaluation_contract') != contract:
+        failures.append('canonical_spec.evaluation_contract')
+    if not isinstance(contract.get('availability_lags'), list) or not contract.get('availability_lags'):
+        failures.append('availability_lags')
+    if not str(contract.get('missing_data_policy') or '').strip():
+        failures.append('missing_data_policy')
+    if failures:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_WEB_EVALUATION_CONTRACT_UNSUPPORTED: '
+            + ','.join(failures)
+        )
 
 
 def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step4') -> dict[str, Any]:
@@ -1231,8 +1273,10 @@ def build_shared_evaluation_context(
     daily_input_path: Path,
     target_window: dict[str, Any],
     effective_target_window: dict[str, Any],
+    evaluation_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    run_dir.mkdir(parents=True, exist_ok=True)
     factor_signal_path = run_dir / f'factor_signal__{report_id}.parquet'
     daily_forward_returns_path = run_dir / f'daily_forward_returns__{report_id}.parquet'
     merged_path = run_dir / f'merged_signal_return__{report_id}.parquet'
@@ -1247,12 +1291,19 @@ def build_shared_evaluation_context(
     missing_daily_cols = [col for col in required_daily_cols if col not in daily_df.columns]
     if missing_daily_cols:
         raise ValueError(f'shared evaluation context requires daily columns: {missing_daily_cols}')
+    web_tradeable_timing = (
+        isinstance(evaluation_contract, dict)
+        and evaluation_contract.get('version') == WEB_EVALUATION_CONTRACT_VERSION
+    )
     daily_forward = build_forward_return_frame(
         daily_df[[col for col in ['ts_code', 'trade_date', 'close', 'pct_chg'] if col in daily_df.columns]].rename(columns={'ts_code': 'code'}),
         instrument_col='code',
         date_col='trade_date',
         price_col='close',
+        return_col=None if web_tradeable_timing else 'pct_chg',
         horizon=1,
+        entry_offset=1 if web_tradeable_timing else 0,
+        exit_offset=2 if web_tradeable_timing else None,
     )
     merged = factor_signal[['datetime', 'trade_date', 'code', signal_col]].merge(
         daily_forward[['datetime', 'code', 'future_return_1d']],
@@ -1271,16 +1322,24 @@ def build_shared_evaluation_context(
         'factor_values_hash': sha256_file(factor_parquet_path),
         'daily_input_hash': sha256_file(daily_input_path),
         'daily_input_path': str(daily_input_path),
-        'label_policy': {
-            'horizon': 'T+1',
-            'return_type': 'simple',
-            'price_field': 'close',
-        },
+        'label_policy': (
+            dict(evaluation_contract['label_policy'])
+            if web_tradeable_timing
+            else {
+                'horizon': 'T+1',
+                'return_type': 'simple',
+                'price_field': 'close',
+            }
+        ),
         'target_window': target_window,
         'effective_target_window': effective_target_window,
     }
     context = {
-        'version': 'factorforge_shared_evaluation_context_v1',
+        'version': (
+            'factorforge_shared_evaluation_context_v2'
+            if web_tradeable_timing
+            else 'factorforge_shared_evaluation_context_v1'
+        ),
         'enabled': True,
         'report_id': report_id,
         'factor_id': factor_id,
@@ -2987,6 +3046,7 @@ def main() -> None:
             return
 
         fsm = load_json(input_paths['factor_spec_master'])
+        validate_web_evaluation_contract(fsm)
         dpm = load_json(input_paths['data_prep_master'])
         handoff = load_json(input_paths['handoff_to_step4'])
         base_identity = handoff.get('artifact_identity') or fsm.get('artifact_identity') or {}
@@ -3441,9 +3501,21 @@ def main() -> None:
             })
             run_status = 'failed'
             failure_reason = token
+        web_evaluation_contract = (
+            fsm.get('evaluation_contract')
+            if isinstance(fsm.get('evaluation_contract'), dict)
+            and fsm.get('evaluation_contract', {}).get('version')
+            == WEB_EVALUATION_CONTRACT_VERSION
+            else None
+        )
+        shared_context_version = (
+            'factorforge_shared_evaluation_context_v2'
+            if web_evaluation_contract is not None
+            else 'factorforge_shared_evaluation_context_v1'
+        )
         shared_context: dict[str, Any] | None = None
         shared_context_profile: dict[str, Any] = {
-            'version': 'factorforge_shared_evaluation_context_v1',
+            'version': shared_context_version,
             'enabled': False,
             'built': False,
             'used_by_step4': False,
@@ -3469,9 +3541,10 @@ def main() -> None:
                 daily_input_path=evaluation_daily_file,
                 target_window=target_window,
                 effective_target_window={'start': effective_target_start, 'end': effective_target_end},
+                evaluation_contract=web_evaluation_contract,
             )
             shared_context_profile = {
-                'version': 'factorforge_shared_evaluation_context_v1',
+                'version': shared_context_version,
                 'enabled': True,
                 'built': True,
                 'used_by_step4': False,

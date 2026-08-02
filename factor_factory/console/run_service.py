@@ -1979,7 +1979,6 @@ def _allowed_agent_write_paths(
     }
     required = {
         "identity/web_execution_ledger.md",
-        "identity/web_agent_completion.json",
     }
     if not resume:
         if council_ingress_tasks:

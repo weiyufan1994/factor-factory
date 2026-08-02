@@ -140,12 +140,12 @@ DeepSeek 在 Pilot 威胁模型中是受信任的数据处理方，但不是凭�
 执行分成互不替代的 Agent authoring 与 Host formal execution：
 
 1. Agent 把网页输入当作 `natural_language_hypothesis`，只填写受约束的 Formula IR 研究计划；不得伪造研报来源或自定义 Python。
-2. fresh turn 只允许写计划、短 execution ledger 和 authoring completion；普通 resume turn 只允许写当前正式 pause 明确点名的 memo。唯一例外是已由上一代完整 attestation 绑定的 `agentic_dispatch_manifest`：Runner 为每个 required route 启动独立 Agent、独立 session、最小只读 engine/workspace view 和 Host 私有输出目录。每个 Agent 只能看到自己的 task packet，不能看到 engine/validator 源码、其他 route 或其结果；Host 等全部结果通过 secret、identity 和正式 Council validator 后，先写同目录 staging，再以一次目录 rename 原子发布 dispatch 预先声明的完整 `agent_results/`。任一步失败都会清理 staging、保持正式结果目录不存在并保留 `RUNNING` lifecycle，不能把部分结果认作合法 Council。任何 Step1-6、Council 合并/总结、runtime proof 或其他路径写入立即 BLOCK。
+2. fresh turn 只允许写计划和短 execution ledger；普通 resume turn 只允许写短 ledger 与当前正式 pause 明确点名的 memo。上一代 `web_agent_completion.json` 仅为兼容性可选写入，Host 不读取其自报状态，也不把它作为 authoring 必需门槛。唯一例外是已由上一代完整 attestation 绑定的 `agentic_dispatch_manifest`：Runner 为每个 required route 启动独立 Agent、独立 session、最小只读 engine/workspace view 和 Host 私有输出目录。每个 Agent 只能看到自己的 task packet，不能看到 engine/validator 源码、其他 route 或其结果；Host 等全部结果通过 secret、identity 和正式 Council validator 后，先写同目录 staging，再以一次目录 rename 原子发布 dispatch 预先声明的完整 `agent_results/`。任一步失败都会清理 staging、保持正式结果目录不存在并保留 `RUNNING` lifecycle，不能把部分结果认作合法 Council。任何 Step1-6、Council 合并/总结、runtime proof 或其他路径写入立即 BLOCK。
 3. Agent 退出后，Host 对 workspace 做前后哈希差异校验，再由 Host 独立运行 materializer 与唯一正式入口 `scripts/run_factorforge_ultimate.py`。
 4. Host 在正式执行前另行 AssumeRole 取得新的短期 data-read lease，只通过子进程环境传给 materializer/Ultimate，立即删除 lease 文件，并把新凭据并入任务脱敏 registry；EC2 host role 本身不获得 S3 读取权。
 5. Host 在 agent workspace 外保存 materializer/Ultimate 的精确 argv、cwd、时间、return code、base commit、read-only lease 注入状态和 Ultimate proof SHA-256；网页公开前必须验证这份 receipt 与当前 proof 一致。
 6. 不调用现有 `run_factorforge_ultimate_loop.py`，直至其 workspace 和审批语义缺陷关闭。
-7. 缺数据、缺 Council 证据或无法完成时形成可审计 pause/BLOCK，不编造结果。Agent 的 `web_agent_completion.json` 只是 authoring receipt，永远不是正式研究证明。
+7. 缺数据、缺 Council 证据或无法完成时形成可审计 pause/BLOCK，不编造结果。Host 只依据已验证计划、必需的 execution ledger 和私有 agent-run receipt 接受 authoring handoff；兼容性 completion 文件及其任何字段永远不参与状态判定或正式研究证明。
 
 Console 不信任 completion、wrapper exit code 或 artifact 的“自报状态”。终态必须重新调用仓库已有的 `validate_protocol_bundle(stage="final")` 和 `validate_factor_proof_certificate()`；持久化 verifier 必须与重算 verdict、report/factor identity 一致。任何来源的显式 false/BLOCK 或相互矛盾均优先，dry-run 永远没有 formal proof eligibility。
 

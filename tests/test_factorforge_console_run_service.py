@@ -1321,18 +1321,38 @@ def test_agent_write_boundary_allows_plan_but_rejects_formal_evidence(tmp_path):
         report_id="REPORT",
         resume=False,
     )
+    assert "identity/web_agent_completion.json" in allowed
+    assert "identity/web_agent_completion.json" not in required
     _write_json(workspace / "identity" / "web_research_plan.json", {"version": "plan"})
+    with pytest.raises(
+        RuntimeError,
+        match="missing:identity/web_execution_ledger.md",
+    ):
+        _validate_agent_write_boundary_impl(
+            workspace,
+            before=before,
+            allowed=allowed,
+            required=required,
+        )
     (workspace / "identity" / "web_execution_ledger.md").write_text(
         "authored\n",
         encoding="utf-8",
     )
-    _write_json(
-        workspace / "identity" / "web_agent_completion.json",
-        {"execution_status": "AUTHORING_COMPLETE"},
-    )
     _validate_agent_write_boundary_impl(
         workspace,
         before=before,
+        allowed=allowed,
+        required=required,
+    )
+
+    before_optional_receipt = _workspace_file_snapshot(workspace)
+    _write_json(
+        workspace / "identity" / "web_agent_completion.json",
+        {"execution_status": "COMPLETED", "formal_proof_eligible": True},
+    )
+    _validate_agent_write_boundary_impl(
+        workspace,
+        before=before_optional_receipt,
         allowed=allowed,
         required=required,
     )
@@ -1352,6 +1372,101 @@ def test_agent_write_boundary_allows_plan_but_rejects_formal_evidence(tmp_path):
             allowed=allowed,
             required=required,
         )
+
+
+def test_agent_write_boundary_resume_requires_ledger_not_completion(tmp_path):
+    workspace = tmp_path / "workspace"
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / "ultimate_run_report__REPORT.json"
+    )
+    _write_json(proof_path, {"status": "PAUSED"})
+    before = _workspace_file_snapshot(workspace)
+    allowed, required = _allowed_agent_write_paths(
+        workspace,
+        report_id="REPORT",
+        resume=True,
+        trusted_resume_proof_sha256=_file_sha256(proof_path),
+    )
+    assert "identity/web_agent_completion.json" in allowed
+    assert "identity/web_agent_completion.json" not in required
+    with pytest.raises(
+        RuntimeError,
+        match="missing:identity/web_execution_ledger.md",
+    ):
+        _validate_agent_write_boundary_impl(
+            workspace,
+            before=before,
+            allowed=allowed,
+            required=required,
+        )
+    (workspace / "identity").mkdir(parents=True, exist_ok=True)
+    (workspace / "identity" / "web_execution_ledger.md").write_text(
+        "resumed\n",
+        encoding="utf-8",
+    )
+    _validate_agent_write_boundary_impl(
+        workspace,
+        before=before,
+        allowed=allowed,
+        required=required,
+    )
+
+
+def test_agent_write_boundary_mechanism_resume_still_requires_named_memo(tmp_path):
+    workspace = tmp_path / "workspace"
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / "ultimate_run_report__REPORT.json"
+    )
+    _write_json(
+        proof_path,
+        {
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+            },
+        },
+    )
+    before = _workspace_file_snapshot(workspace)
+    allowed, required = _allowed_agent_write_paths(
+        workspace,
+        report_id="REPORT",
+        resume=True,
+        trusted_resume_proof_sha256=_file_sha256(proof_path),
+    )
+    memo_path = (
+        workspace
+        / "objects"
+        / "research_iteration_master"
+        / "main_agent_mechanism_memo__REPORT.json"
+    )
+    (workspace / "identity").mkdir(parents=True, exist_ok=True)
+    (workspace / "identity" / "web_execution_ledger.md").write_text(
+        "mechanism memo authored\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="missing:objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json",
+    ):
+        _validate_agent_write_boundary_impl(
+            workspace,
+            before=before,
+            allowed=allowed,
+            required=required,
+        )
+    _write_json(memo_path, {"status": "ready"})
+    _validate_agent_write_boundary_impl(
+        workspace,
+        before=before,
+        allowed=allowed,
+        required=required,
+    )
 
 
 def test_runner_health_is_single_flight_cached_under_concurrency(tmp_path):

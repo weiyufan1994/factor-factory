@@ -327,7 +327,8 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "skills/factor-forge-ultimate/SKILL.md" not in prompt
     assert "identity/web_execution_ledger.md" in prompt
     assert "host exclusively materializes and runs formal Step3 through Step6" in prompt
-    assert "execution_status=AUTHORING_COMPLETE" in prompt
+    assert "host derives authoring status" in prompt
+    assert "web_agent_completion.json" not in prompt
 
 
 def test_container_agent_refuses_prompt_symlink_escape(tmp_path):

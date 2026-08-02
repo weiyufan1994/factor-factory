@@ -359,11 +359,11 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the task-local runtime packet and stop after the research plan or named resume artifact is complete; the Host alone uses the Data API through its public interface and pinned catalog after agent authoring exits.
 14. Do not recursively dump documents or inspect internal schemas. After reading the six packet files, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then complete the plan or pause artifact. The read-only authoring contract and preflight output are sufficient to correct plan syntax; do not inspect validator source.
 
-Write a final machine-readable record to:
-
-`{workspace / 'identity' / 'web_agent_completion.json'}`
-
-It must contain `version=factorforge_web_agent_completion_v1`, all immutable identity fields, `execution_status=AUTHORING_COMPLETE`, `protocol_status=NOT_STARTED`, `factor_verdict=UNKNOWN`, `council_status=NOT_STARTED`, `formal_proof_eligible=false`, a summary limited to the plan or named memo you authored, blockers, next actions, and relative artifact paths. This is an agent authoring receipt, not formal research evidence. Do not include secrets or absolute paths in that record.
+The host derives authoring status from the validated plan, execution ledger and private
+agent-run receipt. Do not create a separate completion-status artifact or claim that formal
+research ran. On a fresh run, exit only after the plan is complete and its preflight returns
+PASS; on resume, exit after the exact permitted pause artifact is complete. Do not include
+secrets or absolute paths in the execution ledger.
 """
 
 

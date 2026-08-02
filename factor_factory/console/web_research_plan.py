@@ -629,10 +629,10 @@ After completing the plan, run this authoring-only check:
 `python3 {worktree / 'scripts' / 'validate_factorforge_web_research_plan.py'} --workspace-root {workspace} --plan {workspace / 'identity' / 'web_research_plan.json'}`
 
 This command does not access data, materialize artifacts, or start Ultimate.
-Correct only the named fields and rerun it until `verdict=PASS`. Do not write
-`web_agent_completion.json` with `execution_status=AUTHORING_COMPLETE` until the
-preflight passes. If the contract cannot be satisfied with the available fields,
-record an explicit BLOCK instead of inventing an input.
+Correct only the named fields and rerun it until `verdict=PASS`. Do not claim
+authoring completion in the execution ledger until the preflight passes. If the
+contract cannot be satisfied with the available fields, record an explicit BLOCK
+instead of inventing an input.
 
 ## Host-Owned Formal Execution
 
@@ -651,11 +651,10 @@ commit, and the resulting wrapper-proof hash outside the agent workspace.
 An Ultimate pause, data request, REJECT, or BLOCK is a valid honest research
 outcome. A runtime crash, fixture, dry run, smoke, or ad hoc backtest is not.
 Never label an automated action as human approval and never claim that formal
-execution occurred inside your authoring receipt.
+execution occurred inside your execution ledger.
 
-Before finishing, write `identity/web_agent_completion.json`, verify the
-workspace manifest, and confirm Git changes exist only below this factor
-workspace.
+Before finishing, verify the workspace manifest, keep the execution ledger under
+4,000 characters, and confirm writes exist only below this factor workspace.
 """
 
 

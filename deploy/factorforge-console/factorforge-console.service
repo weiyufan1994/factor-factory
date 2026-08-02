@@ -12,7 +12,7 @@ WorkingDirectory=/srv/factorforge/control
 Environment=HOME=/var/lib/factorforge-console/web-home
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=/etc/factorforge-console/console.env
-ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_console.py --mode web --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --ledger-root /var/lib/factorforge-console/ledger --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --catalog /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
+ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_console.py --mode web --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --ledger-root /var/lib/factorforge-console/ledger --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --data-api-pythonpath /srv/factorforge/data-api --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=5
 UMask=0007

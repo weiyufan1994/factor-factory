@@ -130,6 +130,10 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     assert "/var/lib/factorforge-console/secret-scan" in broker_unit
     assert "/run/factorforge-console-model-broker/denied-secrets" not in broker_unit
     assert "--mode web" in web_unit and "--mode worker" in runner_unit
+    assert "--catalog" not in web_unit and "--catalog" not in runner_unit
+    assert "FACTORFORGE_DATA_CATALOGS=" in (
+        REPO_ROOT / "deploy/factorforge-console/factorforge-console.env.example"
+    ).read_text(encoding="utf-8")
     assert "com.docker.network.bridge.name" in network_script
     assert '--gateway "${expected_gateway}"' in network_script
     assert "FF_CONSOLE_HOST" in network_script

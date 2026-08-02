@@ -1161,6 +1161,8 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "identical JSON objects" in prompt
     assert "any Step script or validator" in prompt
     assert "exact validator above" not in prompt
+    assert "RankIC and\n   PearsonIC are evaluation statistics" in prompt
+    assert "must not describe IC" in prompt
     assert "Required Authoring Preflight" not in prompt
     assert "six packet files" not in prompt
     assert "Fill the task-local web research plan" not in prompt

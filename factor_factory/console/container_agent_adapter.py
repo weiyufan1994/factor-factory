@@ -36,6 +36,23 @@ from factor_factory.console.store import utc_now
 
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
+REQUIRED_COMPACTION_POLICY = {
+    "mode": "safeguard",
+    "reserveTokens": 24000,
+    "reserveTokensFloor": 20000,
+    "keepRecentTokens": 12000,
+    "recentTurnsPreserve": 1,
+    "maxHistoryShare": 0.5,
+    "identifierPolicy": "strict",
+    "qualityGuard": {"enabled": True, "maxRetries": 1},
+    "midTurnPrecheck": {"enabled": True},
+    "postIndexSync": "off",
+    "postCompactionSections": [],
+    "truncateAfterCompaction": True,
+    "maxActiveTranscriptBytes": "2mb",
+    "notifyUser": False,
+    "memoryFlush": {"enabled": False},
+}
 REQUIRED_PROXY_URL = "http://172.29.0.1:3128"
 REQUIRED_MODEL_BROKER_URL = "http://172.29.0.1:8781"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
@@ -1508,6 +1525,11 @@ def _validate_profile_policy(
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile must skip bootstrap and global skills"
         )
+    compaction = defaults.get("compaction") or {}
+    if any(compaction.get(key) != value for key, value in REQUIRED_COMPACTION_POLICY.items()):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container compaction policy is invalid"
+        )
     if tools.get("allow") != REQUIRED_CONTAINER_TOOLS:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container tool allowlist is invalid")
     exec_policy = tools.get("exec") or {}
@@ -1533,3 +1555,13 @@ def _validate_profile_policy(
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model endpoint is invalid")
     if deepseek.get("request") not in (None, {}):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model request policy is invalid")
+    models = deepseek.get("models") or []
+    if (
+        not isinstance(models, list)
+        or len(models) != 1
+        or not isinstance(models[0], dict)
+        or models[0].get("id") != "deepseek-reasoner"
+        or models[0].get("contextWindow") != 131072
+        or models[0].get("maxTokens") != 16384
+    ):
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model budget is invalid")

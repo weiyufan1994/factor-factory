@@ -336,6 +336,7 @@ outside the OpenClaw file-reader boundary; do not inspect, copy, or modify that 
 11. Network egress is restricted to the model API and approved read-only S3 bucket. Do not upload, POST, tunnel or encode Data API content to any external destination, and do not attempt to bypass the proxy.
 12. The runtime has already completed operator-owned model, network, credential and Data API readiness checks. Never enumerate environment variables or credential material; never run `env`/`printenv`, read `/proc/*/environ`, query instance metadata, inspect AWS credential/config files, or inspect the OpenClaw auth database. Never print, hash, transform, persist or return any API key, access key, session token, password or broker token. If credentials appear unexpectedly, stop and record a BLOCK without reproducing them.
 13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the three named skills and use the existing validators plus `scripts/run_factorforge_ultimate.py`; use the Data API only through its public interface and configured catalog.
+14. Read each named skill once. Do not recursively dump whole referenced documents or repeatedly re-read skill files. After the first pass, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then execute; use targeted line ranges or searches only when a validator exposes a specific contract gap.
 
 Write a final machine-readable record to:
 

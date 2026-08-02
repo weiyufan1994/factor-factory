@@ -293,6 +293,7 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "from factorforge_data_api import DataApiClient, DataQuery" in prompt
     assert "Never enumerate environment variables or credential material" in prompt
     assert "scripts/run_factorforge_ultimate.py" in prompt
+    assert "identity/web_execution_ledger.md" in prompt
 
 
 def test_agent_readiness_requires_healthy_dedicated_profile(tmp_path, monkeypatch):
@@ -785,6 +786,16 @@ def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
         payload["tools"]["exec"][key] = value
         with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
             _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["agents"]["defaults"]["compaction"]["midTurnPrecheck"] = {"enabled": False}
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["models"]["providers"]["deepseek"]["models"][0]["maxTokens"] = 65536
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
 
 
 def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, monkeypatch):

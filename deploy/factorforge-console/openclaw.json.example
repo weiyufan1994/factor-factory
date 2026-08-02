@@ -13,7 +13,7 @@
             "reasoning": true,
             "input": ["text"],
             "contextWindow": 131072,
-            "maxTokens": 65536
+            "maxTokens": 16384
           }
         ]
       }
@@ -39,6 +39,23 @@
       "heartbeat": {
         "every": "0m",
         "target": "none"
+      },
+      "compaction": {
+        "mode": "safeguard",
+        "reserveTokens": 24000,
+        "reserveTokensFloor": 20000,
+        "keepRecentTokens": 12000,
+        "recentTurnsPreserve": 1,
+        "maxHistoryShare": 0.5,
+        "identifierPolicy": "strict",
+        "qualityGuard": {"enabled": true, "maxRetries": 1},
+        "midTurnPrecheck": {"enabled": true},
+        "postIndexSync": "off",
+        "postCompactionSections": [],
+        "truncateAfterCompaction": true,
+        "maxActiveTranscriptBytes": "2mb",
+        "notifyUser": false,
+        "memoryFlush": {"enabled": false}
       }
     }
   },

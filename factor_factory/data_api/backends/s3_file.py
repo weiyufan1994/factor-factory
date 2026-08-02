@@ -28,8 +28,8 @@ def load_s3_file(entry: CatalogDataset, query: DataQuery, columns: list[str]) ->
     region = os.getenv('FACTORFORGE_S3_REGION') or os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION')
     if not region:
         region = fs.resolve_s3_region(bucket)
-    timeout_kwargs = _s3_timeout_kwargs()
-    filesystem = fs.S3FileSystem(region=region, **timeout_kwargs) if region else fs.S3FileSystem(**timeout_kwargs)
+    filesystem_kwargs = _s3_filesystem_kwargs()
+    filesystem = fs.S3FileSystem(region=region, **filesystem_kwargs) if region else fs.S3FileSystem(**filesystem_kwargs)
     partitioning = 'hive'
     if entry.partition_columns:
         partition_schema = pa.schema([(column, pa.large_string()) for column in entry.partition_columns])
@@ -69,6 +69,14 @@ def _s3_timeout_kwargs() -> dict[str, float]:
         'request_timeout': float(os.getenv('FACTORFORGE_S3_REQUEST_TIMEOUT') or '60'),
         'connect_timeout': float(os.getenv('FACTORFORGE_S3_CONNECT_TIMEOUT') or '10'),
     }
+
+
+def _s3_filesystem_kwargs() -> dict[str, object]:
+    kwargs: dict[str, object] = dict(_s3_timeout_kwargs())
+    proxy_url = str(os.getenv('FACTORFORGE_S3_PROXY_URL') or '').strip()
+    if proxy_url:
+        kwargs['proxy_options'] = proxy_url
+    return kwargs
 
 
 def _download_s3_object_to_temp(uri: str) -> Path:

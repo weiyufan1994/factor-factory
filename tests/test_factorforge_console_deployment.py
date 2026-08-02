@@ -151,7 +151,14 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
         '-s "${NETWORK_SUBNET}" -j REJECT'
     ) in network_script
     assert "-j REJECT" in network_script
-    assert (REPO_ROOT / "deploy/factorforge-console/requirements-host.txt").is_file()
+    host_requirements = (
+        REPO_ROOT / "deploy/factorforge-console/requirements-host.txt"
+    ).read_text(encoding="utf-8")
+    assert "pyarrow==25.0.0" in host_requirements
+    assert (
+        "ExecStartPre=/opt/factorforge-console/venv/bin/python -c "
+        '"import pyarrow, pyarrow.fs; assert pyarrow.__version__ == \'25.0.0\'"'
+    ) in runner_unit
 
     statements = {item["Sid"]: item for item in policy["Statement"]}
     assert statements["DenyAnyS3UseOutsideDedicatedEndpoint"]["Resource"] == "*"

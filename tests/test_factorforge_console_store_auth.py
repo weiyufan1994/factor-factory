@@ -606,11 +606,22 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         for command in calls
         if len(command) > 1 and command[1] == "run" and "python3" in command
     ]
-    assert len(probe_commands) == 8
-    assert any("https://example.com" in command for command in probe_commands)
-    assert any("169.254.169.254" in " ".join(command) for command in probe_commands)
-    assert any("factorforge-console-egress-probe.example.com" in command for command in probe_commands)
-    assert all(command[command.index("--dns") + 1] == "127.0.0.1" for command in probe_commands)
+    assert len(probe_commands) == 9
+    egress_probes = [command for command in probe_commands if "--dns" in command]
+    assert len(egress_probes) == 8
+    assert any("https://example.com" in command for command in egress_probes)
+    assert any("169.254.169.254" in " ".join(command) for command in egress_probes)
+    assert any("factorforge-console-egress-probe.example.com" in command for command in egress_probes)
+    assert all(command[command.index("--dns") + 1] == "127.0.0.1" for command in egress_probes)
+    marker_root = config.state_root / "credential-states"
+    boundary_probes = [
+        command for command in probe_commands if str(marker_root) in command
+    ]
+    assert len(boundary_probes) == 1
+    boundary_probe = boundary_probes[0]
+    assert boundary_probe[boundary_probe.index("--network") + 1] == "none"
+    assert "--read-only" in boundary_probe
+    assert boundary_probe[-1] == str(marker_root)
     run_commands = [
         command
         for command in calls
@@ -654,6 +665,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert f"type=bind,src={profile_path},dst={profile_path},readonly" in research_command
     tmpfs_index = research_command.index("--tmpfs")
     assert research_command[tmpfs_index + 1].startswith("/tmp:rw,nosuid,nodev,size=")
+    assert str(marker_root) not in " ".join(research_command)
 
 
 def test_container_agent_git_view_is_shallow_exact_and_reusable(tmp_path):
@@ -814,6 +826,9 @@ def test_aws_credential_lease_file_stays_outside_container_runtime(tmp_path, mon
     assert adapter.credential_material_state(job_id) == "not_issued"
     lease_path, values, scan_path = adapter._prepare_aws_environment(job_id)
     assert adapter.credential_material_state(job_id) == "may_have_been_issued"
+    assert adapter._credential_material_marker_path(job_id) == (
+        config.state_root / "credential-states" / f"{job_id}.marker"
+    )
     assert lease_path == config.state_root / "credential-leases" / f"{job_id}.env"
     assert scan_path == scan_root / f"{config.installation_id}.{job_id}.secrets"
     assert (scan_root / "active.registry").read_text(encoding="utf-8").strip() == scan_path.name

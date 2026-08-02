@@ -119,6 +119,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 self.config.aws_account_id,
             )
         self._validate_egress_policy()
+        self._validate_credential_state_mount_boundary()
         if self.config.data_catalogs and not self.config.auth_disabled:
             self._validate_data_api_read_smoke()
         return f"container:{self.config.agent_container_image}"
@@ -772,6 +773,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
         return _read_denied_secret_file(scan_path)
 
     def credential_material_state(self, job_id: str) -> str:
+        marker_root = self._credential_material_marker_root()
+        if not marker_root.exists() and not marker_root.is_symlink():
+            return "not_issued"
+        try:
+            root_metadata = marker_root.lstat()
+        except OSError as exc:
+            raise RuntimeError("credential material state root is unsafe") from exc
+        if (
+            marker_root.is_symlink()
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_mode & 0o077
+        ):
+            raise RuntimeError("credential material state root is unsafe")
         marker = self._credential_material_marker_path(job_id)
         if not marker.exists() and not marker.is_symlink():
             return "not_issued"
@@ -810,7 +824,13 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 raise RuntimeError("credential material state marker is unsafe")
             return
         marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker.parent.chmod(0o700)
+        root_metadata = marker.parent.lstat()
+        if (
+            marker.parent.is_symlink()
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_mode & 0o077
+        ):
+            raise RuntimeError("credential material state root is unsafe")
         descriptor = os.open(
             marker,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
@@ -831,13 +851,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: task identity is invalid"
             )
-        return (
-            self.config.state_root
-            / "jobs"
-            / job_id
-            / "container-agent"
-            / "credential-material-issued.marker"
-        )
+        return self._credential_material_marker_root() / f"{job_id}.marker"
+
+    def _credential_material_marker_root(self) -> Path:
+        return self.config.state_root / "credential-states"
 
     def _denied_secret_path(self, job_id: str) -> Path:
         if not re.fullmatch(r"job_[a-f0-9]{10}", job_id):
@@ -1130,6 +1147,48 @@ raise SystemExit(0 if accepted else 1)
                 )
         finally:
             self._cleanup_aws_environment(readiness_env, readiness_registry)
+
+    def _validate_credential_state_mount_boundary(self) -> None:
+        script = r"""
+import sys
+from pathlib import Path
+
+private_root = Path(sys.argv[1])
+if private_root.exists():
+    raise SystemExit(2)
+try:
+    private_root.mkdir(parents=True)
+except OSError:
+    raise SystemExit(0)
+raise SystemExit(3)
+"""
+        self._run_runtime(
+            [
+                self.config.container_runtime,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--pids-limit",
+                "64",
+                "--memory",
+                "128m",
+                "--cpus",
+                "0.25",
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                self.config.agent_container_image,
+                "python3",
+                "-c",
+                script,
+                str(self._credential_material_marker_root()),
+            ],
+            timeout=20,
+            label="credential state container mount-boundary probe",
+        )
 
     def _validate_data_api_read_smoke(self) -> None:
         if not self.config.data_catalogs or self.config.data_api_pythonpath is None:

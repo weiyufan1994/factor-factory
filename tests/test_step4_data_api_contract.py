@@ -130,6 +130,114 @@ def test_step4_rejects_backtest_base_cache_with_polluted_daily_basic_controls(tm
     assert profile is None
 
 
+def test_step4_optional_legacy_paths_skip_permission_errors(monkeypatch):
+    run_step4 = _load_run_step4()
+    worker_cache = Path(
+        "/home/ubuntu/factorforge_data_api_cache/backtest_base_daily_controls_v1"
+    )
+    worker_parent = worker_cache.parent
+    legacy_qlib = Path("/home/ubuntu/.qlib/qlib_data/cn_data")
+    legacy_minute = Path(
+        "/home/ubuntu/factorforge_data_api_cache/"
+        "s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6"
+    )
+    legacy_minute_alt = Path("/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min")
+    inaccessible_exists = {
+        worker_cache,
+        legacy_qlib,
+        legacy_minute,
+    }
+    original_exists = Path.exists
+    original_is_dir = Path.is_dir
+
+    def guarded_exists(path):
+        if path in inaccessible_exists:
+            raise PermissionError("optional legacy path is outside the service boundary")
+        if path == worker_parent:
+            return True
+        if path == legacy_minute_alt:
+            return True
+        return original_exists(path)
+
+    def guarded_is_dir(path):
+        if path == legacy_minute_alt:
+            raise PermissionError("optional legacy directory check denied")
+        return original_is_dir(path)
+
+    monkeypatch.delenv("FACTORFORGE_BACKTEST_BASE_CACHE_ROOT", raising=False)
+    monkeypatch.delenv("FACTORFORGE_DATA_CACHE", raising=False)
+    monkeypatch.delenv("FACTORFORGE_LOCAL_MINUTE_ROOT", raising=False)
+    monkeypatch.delenv("FACTORFORGE_LOCAL_DATA_ROOT", raising=False)
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+
+    assert run_step4._backtest_base_cache_root() == (
+        Path.home() / ".cache" / "factorforge_data_api" / "backtest_base_daily_controls_v1"
+    )
+    assert legacy_qlib not in [
+        path
+        for path in run_step4._default_qlib_provider_candidates("R")
+        if run_step4._legacy_path_if_accessible(path) is not None
+    ]
+    assert run_step4._local_minute_partition_roots() == []
+
+
+def test_step4_explicit_qlib_provider_permission_error_blocks(tmp_path, monkeypatch):
+    run_step4 = _load_run_step4()
+    explicit = tmp_path / "qlib-provider"
+    original_exists = Path.exists
+
+    def guarded_exists(path):
+        if path == explicit:
+            raise PermissionError("configured qlib provider is inaccessible")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+
+    with pytest.raises(SystemExit, match="BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE"):
+        run_step4.preflight_qlib_native("R", {"provider_uri": str(explicit)})
+
+
+@pytest.mark.parametrize(
+    ("setting", "relative"),
+    [
+        ("FACTORFORGE_LOCAL_MINUTE_ROOT", ""),
+        ("FACTORFORGE_LOCAL_DATA_ROOT", "分钟数据/raw/stk_mins_1min"),
+        (
+            "FACTORFORGE_DATA_CACHE",
+            "s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6",
+        ),
+    ],
+)
+def test_step4_explicit_minute_path_permission_error_blocks(
+    tmp_path,
+    monkeypatch,
+    setting,
+    relative,
+):
+    run_step4 = _load_run_step4()
+    root = tmp_path / setting.lower()
+    candidate = root / relative if relative else root
+    original_exists = Path.exists
+
+    def guarded_exists(path):
+        if path == candidate:
+            raise PermissionError("configured minute path is inaccessible")
+        return original_exists(path)
+
+    for name in (
+        "FACTORFORGE_LOCAL_MINUTE_ROOT",
+        "FACTORFORGE_LOCAL_DATA_ROOT",
+        "FACTORFORGE_DATA_CACHE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(setting, str(root))
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+
+    with pytest.raises(SystemExit, match="BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE"):
+        run_step4._local_minute_partition_roots()
+
+
 def test_web_evaluation_contract_must_match_step4_semantics():
     run_step4 = _load_run_step4()
     contract = {

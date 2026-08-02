@@ -37,6 +37,46 @@ def _legacy_path_if_accessible(path: Path) -> Path | None:
         return None
 
 
+def _optional_path_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _configured_optional_directory(
+    path: Path,
+    *,
+    setting: str,
+    require_exists: bool,
+) -> Path | None:
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        raise SystemExit(
+            f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} accessibility failed '
+            f'({type(exc).__name__})'
+        ) from exc
+    if not exists:
+        if require_exists:
+            raise SystemExit(
+                f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} does not exist'
+            )
+        return None
+    try:
+        is_directory = path.is_dir()
+    except OSError as exc:
+        raise SystemExit(
+            f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} directory check failed '
+            f'({type(exc).__name__})'
+        ) from exc
+    if not is_directory:
+        raise SystemExit(
+            f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} is not a directory'
+        )
+    return path
+
+
 REPO_ROOT = (
     Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser()
     if os.getenv('FACTORFORGE_REPO_ROOT')
@@ -1060,11 +1100,24 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
     started = time.perf_counter()
     explicit_provider = _provider_uri_from_backend_config(backend_cfg)
     if explicit_provider:
-        candidate_paths = [_resolve_provider_path(explicit_provider)]
+        explicit_path = _resolve_provider_path(explicit_provider)
+        provider_path = _configured_optional_directory(
+            explicit_path,
+            setting='QLIB_PROVIDER_URI',
+            require_exists=True,
+        )
+        candidate_paths = [explicit_path]
     else:
         candidate_paths = _default_qlib_provider_candidates(report_id)
-
-    provider_path = next((path for path in candidate_paths if path.exists()), None)
+        provider_path = next(
+            (
+                path
+                for path in candidate_paths
+                if _legacy_path_if_accessible(path) is not None
+                and _optional_path_is_dir(path)
+            ),
+            None,
+        )
     provider_present = provider_path is not None
     qlib_import_checked = True
     qlib_import_ok: bool | None = None
@@ -1659,18 +1712,41 @@ def _z_by_trade_date(frame: pd.DataFrame, col: str) -> pd.Series:
 
 
 def _local_minute_partition_roots() -> list[Path]:
-    candidates = []
+    roots: list[Path] = []
     if os.environ.get('FACTORFORGE_LOCAL_MINUTE_ROOT'):
-        candidates.append(Path(os.environ['FACTORFORGE_LOCAL_MINUTE_ROOT']))
+        explicit = _configured_optional_directory(
+            Path(os.environ['FACTORFORGE_LOCAL_MINUTE_ROOT']),
+            setting='FACTORFORGE_LOCAL_MINUTE_ROOT',
+            require_exists=True,
+        )
+        if explicit is not None:
+            roots.append(explicit)
     if os.environ.get('FACTORFORGE_LOCAL_DATA_ROOT'):
-        candidates.append(Path(os.environ['FACTORFORGE_LOCAL_DATA_ROOT']) / '分钟数据' / 'raw' / 'stk_mins_1min')
+        explicit = _configured_optional_directory(
+            Path(os.environ['FACTORFORGE_LOCAL_DATA_ROOT']) / '分钟数据' / 'raw' / 'stk_mins_1min',
+            setting='FACTORFORGE_LOCAL_DATA_ROOT',
+            require_exists=False,
+        )
+        if explicit is not None and explicit not in roots:
+            roots.append(explicit)
     if os.environ.get('FACTORFORGE_DATA_CACHE'):
-        candidates.append(Path(os.environ['FACTORFORGE_DATA_CACHE']) / 's3_parquet' / 'minute_bar-raw_v1-0b2b836c57d763c6')
-    candidates.append(Path('/home/ubuntu/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6'))
-    candidates.append(Path('/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min'))
-    roots = []
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_dir() and candidate not in roots:
+        explicit = _configured_optional_directory(
+            Path(os.environ['FACTORFORGE_DATA_CACHE']) / 's3_parquet' / 'minute_bar-raw_v1-0b2b836c57d763c6',
+            setting='FACTORFORGE_DATA_CACHE',
+            require_exists=False,
+        )
+        if explicit is not None and explicit not in roots:
+            roots.append(explicit)
+    legacy_candidates = [
+        Path('/home/ubuntu/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6'),
+        Path('/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min'),
+    ]
+    for candidate in legacy_candidates:
+        if (
+            _legacy_path_if_accessible(candidate) is not None
+            and _optional_path_is_dir(candidate)
+            and candidate not in roots
+        ):
             roots.append(candidate)
     return roots
 
@@ -2548,7 +2624,13 @@ def _backtest_base_cache_root() -> Path:
     if cache_root:
         return Path(cache_root).expanduser() / 'backtest_base_daily_controls_v1'
     worker_cache = Path('/home/ubuntu/factorforge_data_api_cache/backtest_base_daily_controls_v1')
-    if worker_cache.exists() or worker_cache.parent.exists():
+    try:
+        worker_cache_exists = worker_cache.exists()
+    except OSError:
+        worker_cache_exists = None
+    if worker_cache_exists is True:
+        return worker_cache
+    if worker_cache_exists is False and _legacy_path_if_accessible(worker_cache.parent) is not None:
         return worker_cache
     return Path.home() / '.cache' / 'factorforge_data_api' / 'backtest_base_daily_controls_v1'
 

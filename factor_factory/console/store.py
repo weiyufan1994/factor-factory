@@ -35,6 +35,7 @@ class ResearchJobStore:
         except OSError:
             pass
         self.path = self.state_root / "console.sqlite3"
+        self._create_shared_database_file()
         self._lock = threading.RLock()
         self._initialize()
 
@@ -43,7 +44,27 @@ class ResearchJobStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=30000")
+        self._ensure_shared_database_permissions()
         return connection
+
+    def _create_shared_database_file(self) -> None:
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(self.path, flags, 0o660)
+        os.close(descriptor)
+        self._ensure_shared_database_permissions()
+
+    def _ensure_shared_database_permissions(self) -> None:
+        for candidate in (
+            self.path,
+            Path(f"{self.path}-wal"),
+            Path(f"{self.path}-shm"),
+        ):
+            try:
+                candidate.chmod(0o660, follow_symlinks=False)
+            except (FileNotFoundError, PermissionError):
+                continue
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
@@ -97,10 +118,7 @@ class ResearchJobStore:
                 );
                 """
             )
-        try:
-            os.chmod(self.path, 0o660)
-        except OSError:
-            pass
+            self._ensure_shared_database_permissions()
 
     def healthcheck(self) -> bool:
         try:

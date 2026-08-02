@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -142,6 +143,18 @@ def test_job_store_uses_external_sqlite_and_serial_claiming(tmp_path):
     assert "workspace_path" not in public
     assert "agent_session_key" not in public
     assert public["factor_verdict"] == "REJECT"
+
+
+def test_job_store_keeps_sqlite_database_and_sidecars_group_writable(tmp_path):
+    from factor_factory.console.store import ResearchJobStore
+
+    store = ResearchJobStore(tmp_path / "state")
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o660
+
+    with store._connect():
+        sidecars = [Path(f"{store.path}-wal"), Path(f"{store.path}-shm")]
+        assert all(path.exists() for path in sidecars)
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o660 for path in sidecars)
 
 
 def test_service_restart_pauses_inflight_job_without_duplicate_queue(tmp_path):

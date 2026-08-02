@@ -562,6 +562,45 @@ class _PausedThenResumeFailureAdapter:
         raise RuntimeError(f"{self.token}: injected resume failure")
 
 
+class _PausedThenNonzeroResumeAdapter:
+    def __init__(self, state_root: Path) -> None:
+        self.state_root = state_root
+        self.calls = 0
+        self._paused = _PausedAdapter()
+
+    def run(
+        self,
+        job,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume: bool,
+        resume_task=None,
+    ):
+        from factor_factory.console.agent_adapter import AgentRunResult
+
+        self.calls += 1
+        if not resume:
+            return self._paused.run(
+                job,
+                worktree=worktree,
+                workspace=workspace,
+                resume=False,
+            )
+        result_path = self.state_root / "jobs" / job.job_id / "nonzero_resume.json"
+        _write_json(result_path, {"returncode": 1})
+        return AgentRunResult(
+            returncode=1,
+            agent_id="agent-nonzero",
+            session_key="session-nonzero",
+            started_at_utc="2026-08-02T00:00:00Z",
+            finished_at_utc="2026-08-02T00:01:00Z",
+            stdout_tail="",
+            stderr_tail="safe agent failure",
+            result_path=str(result_path),
+        )
+
+
 class _CouncilPauseThenLeaseFailureAdapter:
     def __init__(self, state_root: Path) -> None:
         self.state_root = state_root
@@ -1190,7 +1229,7 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
 
     memo["producer"] = "current_main_agent"
     _write_json(memo_path, memo)
-    service._validate_agent_resume_artifact(
+    validation = service._validate_agent_resume_artifact(
         job,
         workspace,
         resume_trust={
@@ -1201,9 +1240,32 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
         agent_result=agent_result,
     )
 
+    from factor_factory.console.run_service import (
+        _require_validated_resume_artifacts_unchanged,
+    )
+
+    memo["council_questions"] = ["late replacement"]
+    _write_json(memo_path, memo)
+    with pytest.raises(RuntimeError, match="validated resume artifact changed"):
+        _require_validated_resume_artifacts_unchanged(
+            workspace,
+            state_root=service.config.state_root,
+            resume_task=resume_task,
+            validation=validation,
+        )
+    memo["council_questions"] = []
+    _write_json(memo_path, memo)
+
     agent_run = json.loads(result_path.read_text(encoding="utf-8"))
     agent_run["resume_attempt_id"] = f"resume_{'b' * 32}"
     _write_json(result_path, agent_run)
+    with pytest.raises(RuntimeError, match="validated agent receipt changed"):
+        _require_validated_resume_artifacts_unchanged(
+            workspace,
+            state_root=service.config.state_root,
+            resume_task=resume_task,
+            validation=validation,
+        )
     with pytest.raises(RuntimeError, match="agent_run_receipt_binding_invalid"):
         service._validate_agent_resume_artifact(
             job,
@@ -1267,6 +1329,151 @@ def test_failed_mechanism_resume_restores_exact_parent_evidence_tree(tmp_path):
     ).exists()
 
 
+def test_mechanism_metric_projection_preserves_backend_conflicts_and_step5_fields():
+    from factor_factory.console.run_service import (
+        _complete_mechanism_metric_facts,
+        _questionnaire_metric_matches_projection,
+    )
+
+    metrics, availability = _complete_mechanism_metric_facts(
+        {},
+        {
+            "coverage_summary": {"coverage_ratio": 1.0},
+            "backend_summary": [
+                {
+                    "backend": "self_quant",
+                    "status": "PASS",
+                    "key_metrics": {
+                        "rank_ic_mean": 0.03,
+                        "top_decile_mean_return": 0.0012,
+                        "bottom_decile_mean_return": -0.0008,
+                        "coverage_ratio": 0.94,
+                        "annualization_factor": 252,
+                        "long_side_mean_return_daily": 0.0004,
+                    },
+                },
+                {
+                    "backend": "qlib",
+                    "status": "PASS",
+                    "key_metrics": {
+                        "rank_ic_mean": -0.01,
+                        "top_decile_mean_return": 0.0007,
+                        "bottom_decile_mean_return": -0.0003,
+                        "coverage_ratio": 0.91,
+                        "final_account": 1000123.45,
+                        "nonzero_turnover_rows": 1234,
+                    },
+                },
+            ]
+        },
+    )
+
+    assert metrics["rank_ic_mean"]["status"] == "backend_conflict"
+    assert metrics["coverage_ratio"]["status"] == "backend_conflict"
+    assert metrics["coverage_ratio"]["reported_aggregate"] == 1.0
+    assert {
+        item["value"]
+        for item in metrics["rank_ic_mean"]["backend_observations"]
+    } == {0.03, -0.01}
+    assert "top_decile_mean_return" in metrics["backend_metric_conflicts"]
+    assert "bottom_decile_mean_return" in metrics["backend_metric_conflicts"]
+    assert "coverage_ratio" in metrics["backend_metric_conflicts"]
+    assert metrics["backend_metrics"][0]["metrics"]["coverage_ratio"] == 0.94
+    assert metrics["backend_metrics"][0]["metrics"]["annualization_factor"] == 252
+    assert (
+        metrics["backend_metrics"][0]["metrics"]["long_side_mean_return_daily"]
+        == 0.0004
+    )
+    assert metrics["backend_metrics"][1]["metrics"]["final_account"] == 1000123.45
+    assert metrics["backend_metrics"][1]["metrics"]["nonzero_turnover_rows"] == 1234
+    assert "annualization_factor" not in metrics["backend_metrics"][0][
+        "promoted_metric_keys"
+    ]
+    assert availability["backends"][1]["metrics"]["rank_ic_mean"] == -0.01
+    assert _questionnaire_metric_matches_projection(metrics, "rank_ic_mean", -0.01)
+    assert not _questionnaire_metric_matches_projection(metrics, "rank_ic_mean", 0.5)
+
+
+def test_mechanism_metric_projection_never_treats_disputed_aggregate_as_authoritative():
+    from factor_factory.console.run_service import (
+        _complete_mechanism_metric_facts,
+        _questionnaire_metric_matches_projection,
+    )
+
+    metrics, _availability = _complete_mechanism_metric_facts(
+        {"headline_metrics": {"rank_ic_mean": 0.02}},
+        {
+            "backend_summary": [
+                {
+                    "backend": "self_quant",
+                    "status": "PASS",
+                    "key_metrics": {"rank_ic_mean": 0.03},
+                },
+                {
+                    "backend": "qlib",
+                    "status": "PASS",
+                    "key_metrics": {"rank_ic_mean": -0.01},
+                },
+            ]
+        },
+    )
+
+    assert metrics["rank_ic_mean"]["status"] == "backend_conflict"
+    assert metrics["rank_ic_mean"]["reported_aggregate"] == 0.02
+    assert _questionnaire_metric_matches_projection(metrics, "rank_ic_mean", 0.03)
+    assert _questionnaire_metric_matches_projection(metrics, "rank_ic_mean", -0.01)
+    assert not _questionnaire_metric_matches_projection(metrics, "rank_ic_mean", 0.02)
+
+
+@pytest.mark.parametrize(
+    "key_metrics",
+    [
+        {f"metric_{index}": index for index in range(101)},
+        {"rank_ic_mean": float("nan")},
+    ],
+)
+def test_mechanism_metric_projection_rejects_unbounded_or_nonfinite_backend_metrics(
+    key_metrics,
+):
+    from factor_factory.console.run_service import _complete_mechanism_metric_facts
+
+    with pytest.raises(RuntimeError, match="backend metric facts rejected bounds"):
+        _complete_mechanism_metric_facts(
+            {},
+            {
+                "backend_summary": [
+                    {
+                        "backend": "unsafe_backend",
+                        "status": "PASS",
+                        "key_metrics": key_metrics,
+                    }
+                ]
+            },
+        )
+
+
+def test_mechanism_metric_projection_rejects_excessive_nesting_without_recursion_error():
+    from factor_factory.console.run_service import _complete_mechanism_metric_facts
+
+    nested = 1
+    for _index in range(1200):
+        nested = {"nested": nested}
+
+    with pytest.raises(RuntimeError, match="backend metric facts rejected bounds"):
+        _complete_mechanism_metric_facts(
+            {},
+            {
+                "backend_summary": [
+                    {
+                        "backend": "deep_backend",
+                        "status": "PASS",
+                        "key_metrics": {"rank_ic_mean": nested},
+                    }
+                ]
+            },
+        )
+
+
 @pytest.mark.parametrize("malformed", ["{not-json", "[]"])
 def test_malformed_mechanism_memo_is_retryable_and_restores_parent_tree(
     tmp_path,
@@ -1327,6 +1534,34 @@ def test_resume_prelaunch_unavailable_restores_and_remains_resumable(tmp_path):
 
     blocked = store.get_job(job.job_id)
     assert blocked.error_code == BLOCK_AGENT_RUNTIME_UNAVAILABLE
+    assert blocked.result["host_attestation_id"] == paused.result[
+        "host_attestation_id"
+    ]
+    assert stable_json_hash(_workspace_evidence_tree(workspace)) == parent_tree_sha256
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+    assert adapter.calls == 2
+
+
+def test_nonzero_resume_restores_parent_tree_and_remains_resumable(tmp_path):
+    adapter = _PausedThenNonzeroResumeAdapter(tmp_path / "state")
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Nonzero mechanism resume"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    parent_tree_sha256 = stable_json_hash(_workspace_evidence_tree(workspace))
+
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert (
+        blocked.error_code
+        == "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED"
+    )
     assert blocked.result["host_attestation_id"] == paused.result[
         "host_attestation_id"
     ]
@@ -1916,6 +2151,37 @@ def test_web_result_redacts_exact_and_base64_temporary_credentials():
     assert serialized.count("[redacted]") >= 4
 
 
+def test_private_receipt_snapshot_uses_validated_bytes_and_ignores_later_source_change(
+    tmp_path,
+):
+    from factor_factory.console.run_service import _copy_immutable_regular_file
+
+    source = tmp_path / "agent_receipt.json"
+    snapshot = tmp_path / "agent_receipt.snapshot.json"
+    source.write_text('{"returncode": 0}\n', encoding="utf-8")
+    expected_sha256 = _file_sha256(source)
+
+    copied_sha256 = _copy_immutable_regular_file(
+        source,
+        snapshot,
+        expected_sha256=expected_sha256,
+        block_token="BLOCK_TEST",
+        label="agent receipt",
+    )
+    source.write_text('{"returncode": 1}\n', encoding="utf-8")
+
+    assert copied_sha256 == expected_sha256
+    assert _file_sha256(snapshot) == expected_sha256
+    with pytest.raises(RuntimeError, match="changed during snapshot"):
+        _copy_immutable_regular_file(
+            source,
+            tmp_path / "agent_receipt.rejected.json",
+            expected_sha256=expected_sha256,
+            block_token="BLOCK_TEST",
+            label="agent receipt",
+        )
+
+
 def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
     from factor_factory.console.agent_adapter import AgentRunResult
     from factor_factory.console.ultimate_reader import UltimateRunSummary
@@ -2055,15 +2321,20 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
     }
 
     service._begin_private_execution(job, resume=False)
+    attested_workspace = service._snapshot_workspace_evidence(job, workspace)
+    original_step4_before_attestation = step4_evidence.read_bytes()
+    _write_json(step4_evidence, {"report_id": job.report_id, "status": "RACED"})
     relative = _ORIGINAL_WRITE_HOST_ATTESTATION(
         service,
         job=job,
         workspace=workspace,
+        evidence_root=attested_workspace,
         summary=summary,
         agent_result=agent_result,
         web_materialization={"formula_hash": "formula-hash"},
         formal_execution=formal_execution,
     )
+    step4_evidence.write_bytes(original_step4_before_attestation)
     service._finish_private_execution(
         job,
         status="RESUMABLE",
@@ -2077,7 +2348,23 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
     assert payload["host_evidence_reader_invoked"] is True
     assert payload["host_observed_ultimate_process"] is True
     assert payload["formal_execution_receipt_sha256"] == _file_sha256(receipt_path)
+    assert payload["formal_execution_receipt_source_id"] == formal_execution[
+        "receipt_id"
+    ]
+    assert payload["agent_result_source_id"] == result_path.relative_to(
+        service.config.state_root
+    ).as_posix()
+    assert payload["agent_result_id"] != payload["agent_result_source_id"]
+    assert _file_sha256(
+        service.config.state_root / payload["agent_result_id"]
+    ) == _file_sha256(result_path)
     assert payload["evidence_hashes"]["wrapper_report"]["sha256"]
+    assert payload["evidence_hashes"]["step4_report"]["sha256"] == hashlib.sha256(
+        original_step4_before_attestation
+    ).hexdigest()
+    assert payload["workspace_snapshot_id"] == attested_workspace.relative_to(
+        service.config.state_root
+    ).as_posix()
     trusted = _ORIGINAL_VALIDATE_TRUSTED_RESUME_CONTEXT(
         service,
         job,
@@ -2114,10 +2401,15 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
         resume=True,
         resume_trust=trusted,
     )
+    resumed_attested_workspace = service._snapshot_workspace_evidence(
+        job,
+        workspace,
+    )
     resumed_relative = _ORIGINAL_WRITE_HOST_ATTESTATION(
         service,
         job=job,
         workspace=workspace,
+        evidence_root=resumed_attested_workspace,
         summary=summary,
         agent_result=agent_result,
         web_materialization={"formula_hash": "formula-hash"},

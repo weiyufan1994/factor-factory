@@ -77,6 +77,13 @@ class _AwsCredentialLease:
     caller_arn: str
 
 
+@dataclass(frozen=True)
+class _ResumeWorkspaceView:
+    root: Path
+    writable_relatives: tuple[str, ...]
+    remove_if_empty_relatives: tuple[str, ...]
+
+
 class ContainerizedOpenClawResearchAgentAdapter:
     """Run one OpenClaw local agent in one disposable container per factor task."""
 
@@ -254,6 +261,15 @@ class ContainerizedOpenClawResearchAgentAdapter:
             job.job_id,
             phase_id=resume_task.attempt_id if resume_task is not None else None,
         )
+        resume_workspace_view = (
+            self._prepare_resume_workspace_view(
+                runtime_root=runtime_root,
+                workspace=workspace,
+                resume_task=resume_task,
+            )
+            if resume_task is not None
+            else None
+        )
         git_dir = self._prepare_git_view(
             runtime_root=runtime_root,
             worktree=worktree,
@@ -281,10 +297,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
             aws_env_file=None,
             profile_config_readonly=None,
             auth_store_readonly=None,
-            protected_workspace_relatives=(
-                (resume_task.contract_relative, *resume_task.protected_inputs)
-                if resume_task is not None
+            workspace_readonly=resume_workspace_view is not None,
+            workspace_mount_source=(
+                resume_workspace_view.root if resume_workspace_view is not None else None
+            ),
+            writable_workspace_relatives=(
+                resume_workspace_view.writable_relatives
+                if resume_workspace_view is not None
                 else ()
+            ),
+            writable_workspace_source_root=(
+                resume_workspace_view.root
+                if resume_workspace_view is not None
+                else None
             ),
         )
         model = job.request.model or self.config.openclaw_model
@@ -325,10 +350,21 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 aws_env_file=aws_env_file,
                 profile_config_readonly=profile_config,
                 auth_store_readonly=auth_store,
-                protected_workspace_relatives=(
-                    (resume_task.contract_relative, *resume_task.protected_inputs)
-                    if resume_task is not None
+                workspace_readonly=resume_workspace_view is not None,
+                workspace_mount_source=(
+                    resume_workspace_view.root
+                    if resume_workspace_view is not None
+                    else None
+                ),
+                writable_workspace_relatives=(
+                    resume_workspace_view.writable_relatives
+                    if resume_workspace_view is not None
                     else ()
+                ),
+                writable_workspace_source_root=(
+                    resume_workspace_view.root
+                    if resume_workspace_view is not None
+                    else None
                 ),
             )
             command = [
@@ -385,6 +421,12 @@ class ContainerizedOpenClawResearchAgentAdapter:
             # Keep the exact denied-value registry until the runner has
             # validated and published the task's public evidence set.
             self._cleanup_aws_environment(aws_env_file, None)
+
+        if resume_workspace_view is not None and returncode == 0:
+            self._promote_resume_workspace_view(
+                resume_workspace_view,
+                workspace=workspace,
+            )
 
         finished = utc_now()
         result_path = self.config.state_root / "jobs" / job.job_id / f"agent_run_{_stamp(finished)}.json"
@@ -845,6 +887,187 @@ class ContainerizedOpenClawResearchAgentAdapter:
             auth_store.chmod(0o600)
         return runtime_root, home, agent_dir, profile_config
 
+    def _prepare_resume_workspace_view(
+        self,
+        *,
+        runtime_root: Path,
+        workspace: Path,
+        resume_task: AgentResumeTask,
+    ) -> _ResumeWorkspaceView:
+        view_root = runtime_root / "resume-workspace-view"
+        if view_root.exists() or view_root.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace view already exists"
+            )
+        view_root.mkdir(mode=0o700)
+        view_root.chmod(0o700)
+
+        prompt_relative = "identity/web_agent_resume.md"
+        safe_read_relatives = tuple(
+            dict.fromkeys(
+                (
+                    resume_task.contract_relative,
+                    *resume_task.read_only_inputs,
+                    prompt_relative,
+                )
+            )
+        )
+        for relative in safe_read_relatives:
+            source = _safe_workspace_relative_file(
+                workspace,
+                relative,
+                must_exist=True,
+            )
+            destination = _safe_view_relative_path(view_root, relative)
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.copy2(source, destination)
+            destination.chmod(0o400)
+
+        facts_path = _safe_workspace_relative_file(
+            workspace,
+            resume_task.facts_relative,
+            must_exist=True,
+        )
+        try:
+            facts = json.loads(facts_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume facts packet is invalid"
+            ) from exc
+        formula_facts = (
+            facts.get("formula_facts")
+            if isinstance(facts, dict) and isinstance(facts.get("formula_facts"), dict)
+            else {}
+        )
+        formula = str(formula_facts.get("formula") or "").strip()
+        fields = formula_facts.get("fields")
+        operators = formula_facts.get("operators")
+        if (
+            not formula
+            or not isinstance(fields, list)
+            or not fields
+            or not isinstance(operators, list)
+            or not operators
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume formula facts are incomplete"
+            )
+        safe_spec_relative = (
+            "objects/factor_spec_master/"
+            f"factor_spec_master__{resume_task.report_id}.json"
+        )
+        safe_spec_path = _safe_view_relative_path(view_root, safe_spec_relative)
+        safe_spec_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        safe_spec_path.write_text(
+            json.dumps(
+                {
+                    "report_id": resume_task.report_id,
+                    "factor_id": resume_task.factor_id,
+                    "canonical_spec": {
+                        "formula_text": formula,
+                        "required_inputs": fields,
+                        "operators": operators,
+                    },
+                    "projection": "agent_safe_formula_facts_only",
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        safe_spec_path.chmod(0o400)
+
+        writable_relatives = tuple(
+            dict.fromkeys(
+                (
+                    resume_task.required_output_relative,
+                    resume_task.optional_output_relative,
+                    "identity/web_execution_ledger.md",
+                )
+            )
+        )
+        for relative in writable_relatives:
+            target = _safe_workspace_relative_file(
+                workspace,
+                relative,
+                must_exist=False,
+            )
+            if relative in {
+                resume_task.required_output_relative,
+                resume_task.optional_output_relative,
+            }:
+                if target.exists() or target.is_symlink():
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume output already exists"
+                    )
+            elif not target.is_file() or target.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume ledger is unsafe"
+                )
+            view_target = _safe_view_relative_path(view_root, relative)
+            view_target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            view_target.touch(mode=0o600, exist_ok=False)
+
+        return _ResumeWorkspaceView(
+            root=view_root,
+            writable_relatives=writable_relatives,
+            remove_if_empty_relatives=(resume_task.optional_output_relative,),
+        )
+
+    def _promote_resume_workspace_view(
+        self,
+        view: _ResumeWorkspaceView,
+        *,
+        workspace: Path,
+    ) -> None:
+        root = workspace.resolve(strict=True)
+        optional_relatives = set(view.remove_if_empty_relatives)
+        for relative in view.writable_relatives:
+            source = _safe_workspace_relative_file(
+                view.root,
+                relative,
+                must_exist=True,
+            )
+            if source.stat().st_size > 2 * 1024 * 1024:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output is too large"
+                )
+            try:
+                staged_text = source.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output is not valid UTF-8"
+                ) from exc
+            target = _safe_workspace_relative_file(
+                root,
+                relative,
+                must_exist=(relative == "identity/web_execution_ledger.md"),
+            )
+            if relative == "identity/web_execution_ledger.md":
+                try:
+                    parent_ledger = target.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: parent execution ledger is invalid"
+                    ) from exc
+                if staged_text:
+                    separator = "" if not parent_ledger or parent_ledger.endswith("\n") else "\n"
+                    write_text_atomic(
+                        target,
+                        f"{parent_ledger}{separator}{staged_text}",
+                        root=root,
+                    )
+                continue
+            if relative in optional_relatives and not staged_text:
+                continue
+            if target.exists() or target.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output promotion target exists"
+                )
+            write_text_atomic(target, staged_text, root=root)
+
     def _broker_client_token(self) -> str:
         try:
             return read_private_token_file(
@@ -980,6 +1203,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
         workspace_readonly: bool = False,
         workspace_mount_source: Path | None = None,
         protected_workspace_relatives: tuple[str, ...] = (),
+        writable_workspace_relatives: tuple[str, ...] = (),
+        writable_workspace_source_root: Path | None = None,
     ) -> list[str]:
         command = [
             self.config.container_runtime,
@@ -1080,6 +1305,24 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     continue
                 if protected.is_file() and not protected.is_symlink():
                     command.extend(["--mount", _mount(protected, readonly=True)])
+        for relative in writable_workspace_relatives:
+            writable = _safe_workspace_relative_file(
+                writable_workspace_source_root
+                or workspace_mount_source
+                or workspace,
+                relative,
+                must_exist=True,
+            )
+            command.extend(
+                [
+                    "--mount",
+                    _mount(
+                        writable,
+                        readonly=False,
+                        target=workspace / relative,
+                    ),
+                ]
+            )
         if aws_env_file is not None:
             command.extend(["--env-file", str(aws_env_file)])
         if profile_config_readonly is not None:
@@ -1925,6 +2168,66 @@ def _mount(
 ) -> str:
     mode = ",readonly" if readonly else ""
     return f"type=bind,src={path},dst={target or path}{mode}"
+
+
+def _safe_workspace_relative_file(
+    workspace: Path,
+    relative: str,
+    *,
+    must_exist: bool,
+) -> Path:
+    root = workspace.resolve(strict=True)
+    relative_path = Path(relative)
+    if (
+        not relative
+        or relative_path.is_absolute()
+        or relative_path == Path(".")
+        or ".." in relative_path.parts
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace path is unsafe"
+        )
+    current = root
+    for part in relative_path.parts[:-1]:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace parent is unavailable"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace parent is unsafe"
+            )
+    path = root / relative_path
+    if path.is_symlink():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace file is a symlink"
+        )
+    if must_exist and not path.is_file():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace file is missing"
+        )
+    if path.exists() and not path.is_file():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace target is not a file"
+        )
+    return path
+
+
+def _safe_view_relative_path(root: Path, relative: str) -> Path:
+    relative_path = Path(relative)
+    if (
+        not relative
+        or relative_path.is_absolute()
+        or relative_path == Path(".")
+        or ".." in relative_path.parts
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume view path is unsafe"
+        )
+    return root / relative_path
 
 
 def _validate_private_council_result(

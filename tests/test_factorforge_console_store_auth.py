@@ -477,6 +477,125 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     assert str(marker) not in joined
 
 
+def test_container_resume_uses_facts_only_workspace_view(tmp_path):
+    from dataclasses import replace
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    (workspace / "objects/research_iteration_master").mkdir(parents=True)
+    task = replace(
+        _resume_task(),
+        read_only_inputs=(
+            "identity/web_main_agent_mechanism_facts.json",
+            "identity/web_main_agent_mechanism_answer_form.json",
+        ),
+        protected_inputs=(
+            "objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.json",
+        ),
+    )
+    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / task.facts_relative).write_text(
+        json.dumps(
+            {
+                "formula_facts": {
+                    "formula": "divide(minus(close, open), pre_close)",
+                    "fields": ["close", "open", "pre_close"],
+                    "operators": ["divide", "minus"],
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / "identity/web_agent_resume.md").write_text(
+        "facts only\n", encoding="utf-8"
+    )
+    (workspace / "identity/web_execution_ledger.md").write_text(
+        "parent ledger\n", encoding="utf-8"
+    )
+    protected = workspace / task.protected_inputs[0]
+    protected.write_text(
+        json.dumps({"deterministic_interpretation": "must stay hidden"}) + "\n",
+        encoding="utf-8",
+    )
+
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    view = adapter._prepare_resume_workspace_view(
+        runtime_root=runtime_root,
+        workspace=workspace,
+        resume_task=task,
+    )
+
+    assert not (view.root / task.protected_inputs[0]).exists()
+    safe_spec = json.loads(
+        (
+            view.root
+            / "objects/factor_spec_master/factor_spec_master__REPORT.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert safe_spec["projection"] == "agent_safe_formula_facts_only"
+    assert "deterministic_interpretation" not in json.dumps(safe_spec)
+    assert (
+        view.root / "identity/web_execution_ledger.md"
+    ).read_text(encoding="utf-8") == ""
+    assert not (workspace / task.required_output_relative).exists()
+    command = adapter._container_prefix(
+        container_name="resume-facts-only-test",
+        job_id="job_1234567890",
+        worktree=source,
+        workspace=workspace,
+        runtime_root=runtime_root,
+        home=runtime_root,
+        git_dir=None,
+        aws_env_file=None,
+        profile_config_readonly=None,
+        auth_store_readonly=None,
+        workspace_readonly=True,
+        workspace_mount_source=view.root,
+        writable_workspace_relatives=view.writable_relatives,
+        writable_workspace_source_root=view.root,
+    )
+    joined = " ".join(command)
+    assert f"src={view.root},dst={workspace},readonly" in joined
+    assert f"src={workspace},dst={workspace}" not in joined
+    assert str(protected) not in joined
+    assert f"src={view.root / task.required_output_relative}" in joined
+    assert f"src={workspace / task.required_output_relative}" not in joined
+    assert f"src={workspace / 'identity/web_execution_ledger.md'}" not in joined
+
+    (view.root / task.required_output_relative).write_text(
+        '{"memo": "phase local"}\n',
+        encoding="utf-8",
+    )
+    (view.root / "identity/web_execution_ledger.md").write_text(
+        "phase ledger\n",
+        encoding="utf-8",
+    )
+    adapter._promote_resume_workspace_view(view, workspace=workspace)
+
+    assert (workspace / task.required_output_relative).read_text(
+        encoding="utf-8"
+    ) == '{"memo": "phase local"}\n'
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "parent ledger\nphase ledger\n"
+
+
 def test_agent_readiness_requires_healthy_dedicated_profile(tmp_path, monkeypatch):
     import subprocess
 

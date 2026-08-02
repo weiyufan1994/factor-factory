@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -116,6 +119,14 @@ class ResumeRestoreState:
     initially_absent_directories: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ValidatedAgentResumeArtifacts:
+    attempt_id: str
+    workspace_file_sha256: tuple[tuple[str, str], ...]
+    agent_run_receipt_id: str
+    agent_run_receipt_sha256: str
+
+
 MECHANISM_METRIC_KEYS = frozenset(
     {
         "metric_period",
@@ -157,6 +168,15 @@ MECHANISM_METRIC_KEYS = frozenset(
         "monotonicity_score",
         "decile_monotonicity",
         "quintile_monotonicity",
+        "top_decile_mean_return",
+        "bottom_decile_mean_return",
+        "group_top_decile_mean_return",
+        "group_bottom_decile_mean_return",
+        "coverage_ratio",
+        "coverage_rate",
+        "valid_observation_ratio",
+        "long_end_return",
+        "long_end_annual_return",
     }
 )
 MECHANISM_METRIC_PREFIXES = (
@@ -562,6 +582,7 @@ class ResearchRunService:
         resume_trust: dict[str, Any] | None = None
         resume_route: ResumeRoute | None = None
         resume_task: AgentResumeTask | None = None
+        validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None
         resume_restore_state: ResumeRestoreState | None = None
         resume_parent_restored = False
         private_completion_status: str | None = None
@@ -818,7 +839,11 @@ class ResearchRunService:
                     workspace,
                     before=agent_write_snapshot,
                     allowed=allowed_agent_writes,
-                    required=required_agent_outputs,
+                    required=(
+                        required_agent_outputs
+                        if agent_result.returncode == 0
+                        else set()
+                    ),
                 )
             if agent_result.returncode != 0:
                 raise RuntimeError(
@@ -829,7 +854,7 @@ class ResearchRunService:
                 and resume_route is not None
                 and resume_route.kind == RESUME_KIND_MECHANISM_AGENT
             ):
-                self._validate_agent_resume_artifact(
+                validated_resume_artifacts = self._validate_agent_resume_artifact(
                     current_job,
                     workspace,
                     resume_trust=resume_trust or {},
@@ -837,6 +862,13 @@ class ResearchRunService:
                     agent_result=agent_result,
                 )
 
+            if validated_resume_artifacts is not None:
+                _require_validated_resume_artifacts_unchanged(
+                    workspace,
+                    state_root=self.config.state_root,
+                    resume_task=resume_task,
+                    validation=validated_resume_artifacts,
+                )
             isolation_failures = audit_factor_worktree(worktree, workspace)
             if isolation_failures:
                 raise RuntimeError(f"{BLOCK_ISOLATION_AUDIT_FAILED}: {'; '.join(isolation_failures)}")
@@ -864,23 +896,41 @@ class ResearchRunService:
                 host_data_env=host_data_env,
                 resume_trust=resume_trust,
             )
+            if validated_resume_artifacts is not None:
+                _require_validated_resume_artifacts_unchanged(
+                    workspace,
+                    state_root=self.config.state_root,
+                    resume_task=resume_task,
+                    validation=validated_resume_artifacts,
+                )
             isolation_failures = audit_factor_worktree(worktree, workspace)
             if isolation_failures:
                 raise RuntimeError(f"{BLOCK_ISOLATION_AUDIT_FAILED}: {'; '.join(isolation_failures)}")
-            web_materialization = validate_materialized_web_research(workspace)
-            summary = read_ultimate_workspace(workspace, report_id=job.report_id)
+            attested_workspace = self._snapshot_workspace_evidence(
+                current_job,
+                workspace,
+            )
+            web_materialization = validate_materialized_web_research(
+                attested_workspace
+            )
+            summary = read_ultimate_workspace(
+                attested_workspace,
+                report_id=job.report_id,
+            )
             self._validate_summary_identity(current_job, summary)
             host_attestation_id = self._write_host_attestation(
                 job=current_job,
                 workspace=workspace,
+                evidence_root=attested_workspace,
                 summary=summary,
                 agent_result=agent_result,
                 web_materialization=web_materialization,
                 formal_execution=formal_execution,
                 resume_task=resume_task,
+                validated_resume_artifacts=validated_resume_artifacts,
             )
             publication_id, public_artifacts = publish_official_artifacts(
-                workspace,
+                attested_workspace,
                 self.config.state_root / "public" / job.job_id,
                 role_artifact_ids=summary.artifact_ids,
                 identity={
@@ -1988,27 +2038,151 @@ class ResearchRunService:
                     f"{BLOCK_EVIDENCE_IDENTITY_MISMATCH}: {key} expected={value!r} actual={actual!r}"
                 )
 
+    def _snapshot_workspace_evidence(
+        self,
+        job: ResearchJob,
+        workspace: Path,
+    ) -> Path:
+        source_root = workspace.resolve(strict=True)
+        state_root = self.config.state_root.resolve(strict=True)
+        snapshot_parent = (
+            state_root / "attestations" / job.job_id / "snapshots"
+        )
+        snapshot_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        snapshot_parent.chmod(0o700)
+        suffix = f"{_stamp(utc_now())}_{uuid.uuid4().hex[:12]}"
+        final_root = snapshot_parent / f"workspace_{suffix}"
+        temporary_root = snapshot_parent / f".workspace_{suffix}.tmp"
+        temporary_root.mkdir(mode=0o700)
+        try:
+            source_entries = _workspace_evidence_tree(source_root)
+            for relative, expected_sha256 in source_entries.items():
+                relative_path = Path(relative)
+                source = source_root / relative_path
+                resolved = source.resolve(strict=True)
+                try:
+                    resolved.relative_to(source_root)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"{BLOCK_ISOLATION_AUDIT_FAILED}: snapshot source escapes workspace"
+                    ) from exc
+                if source.is_symlink() or not source.is_file():
+                    raise RuntimeError(
+                        f"{BLOCK_ISOLATION_AUDIT_FAILED}: snapshot source is unsafe"
+                    )
+                destination = temporary_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                source_descriptor = os.open(
+                    source,
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                destination_descriptor = os.open(
+                    destination,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                digest = hashlib.sha256()
+                try:
+                    source_before = os.fstat(source_descriptor)
+                    if not stat.S_ISREG(source_before.st_mode):
+                        raise RuntimeError(
+                            f"{BLOCK_ISOLATION_AUDIT_FAILED}: snapshot source is not regular"
+                        )
+                    while True:
+                        chunk = os.read(source_descriptor, 1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        offset = 0
+                        while offset < len(chunk):
+                            offset += os.write(
+                                destination_descriptor,
+                                chunk[offset:],
+                            )
+                    os.fsync(destination_descriptor)
+                    source_after = os.fstat(source_descriptor)
+                finally:
+                    os.close(destination_descriptor)
+                    os.close(source_descriptor)
+                if (
+                    source_before.st_ino != source_after.st_ino
+                    or source_before.st_size != source_after.st_size
+                    or source_before.st_mtime_ns != source_after.st_mtime_ns
+                    or digest.hexdigest() != expected_sha256
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_ISOLATION_AUDIT_FAILED}: workspace changed during evidence snapshot"
+                    )
+            source_entries_after = _workspace_evidence_tree(source_root)
+            snapshot_entries = _workspace_evidence_tree(temporary_root)
+            if (
+                source_entries_after != source_entries
+                or snapshot_entries != source_entries
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_ISOLATION_AUDIT_FAILED}: workspace evidence snapshot is inconsistent"
+                )
+            for path in sorted(temporary_root.rglob("*"), reverse=True):
+                path.chmod(0o500 if path.is_dir() else 0o400)
+            temporary_root.chmod(0o500)
+            temporary_root.replace(final_root)
+        except Exception:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+            raise
+        return final_root
+
     def _write_host_attestation(
         self,
         *,
         job: ResearchJob,
         workspace: Path,
+        evidence_root: Path,
         summary: UltimateRunSummary,
         agent_result: AgentRunResult,
         web_materialization: dict[str, str],
         formal_execution: dict[str, Any],
         resume_task: AgentResumeTask | None = None,
+        validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
     ) -> str:
-        evidence_hashes: dict[str, dict[str, str]] = {}
         workspace_root = workspace.resolve(strict=True)
+        state_root = self.config.state_root.resolve(strict=True)
+        snapshot_root = evidence_root.resolve(strict=True)
+        expected_snapshot_parent = (
+            state_root / "attestations" / job.job_id / "snapshots"
+        ).resolve(strict=True)
+        try:
+            snapshot_relative = snapshot_root.relative_to(state_root)
+            snapshot_root.relative_to(expected_snapshot_parent)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_ISOLATION_AUDIT_FAILED}: attestation evidence is not a host snapshot"
+            ) from exc
+        if (
+            snapshot_root.parent != expected_snapshot_parent
+            or not snapshot_root.name.startswith("workspace_")
+            or snapshot_root.is_symlink()
+            or not snapshot_root.is_dir()
+            or snapshot_root.stat().st_mode & 0o222
+        ):
+            raise RuntimeError(
+                f"{BLOCK_ISOLATION_AUDIT_FAILED}: attestation evidence snapshot is unsafe"
+            )
+        workspace_entries = _workspace_evidence_tree(snapshot_root)
+        evidence_hashes: dict[str, dict[str, str]] = {}
         for role, artifact_id in sorted(summary.artifact_ids.items()):
             relative_input = Path(artifact_id)
             if relative_input.is_absolute() or ".." in relative_input.parts:
                 raise RuntimeError(
                     f"{BLOCK_ISOLATION_AUDIT_FAILED}: attested evidence identity is unsafe"
                 )
-            lexical = workspace_root / relative_input
-            current = workspace_root
+            lexical = snapshot_root / relative_input
+            current = snapshot_root
             for part in relative_input.parts:
                 current = current / part
                 if current.is_symlink():
@@ -2017,7 +2191,7 @@ class ResearchRunService:
                     )
             candidate = lexical.resolve(strict=True)
             try:
-                relative = candidate.relative_to(workspace_root)
+                relative = candidate.relative_to(snapshot_root)
             except ValueError as exc:
                 raise RuntimeError(
                     f"{BLOCK_ISOLATION_AUDIT_FAILED}: attested evidence escapes workspace"
@@ -2028,10 +2202,9 @@ class ResearchRunService:
                 )
             evidence_hashes[role] = {
                 "artifact_id": relative.as_posix(),
-                "sha256": _sha256(candidate),
+                "sha256": workspace_entries[relative.as_posix()],
             }
 
-        state_root = self.config.state_root.resolve(strict=True)
         agent_result_raw = Path(agent_result.result_path).expanduser()
         if agent_result_raw.is_symlink():
             raise RuntimeError(
@@ -2052,48 +2225,102 @@ class ResearchRunService:
             raise RuntimeError(
                 "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: agent result record is unsafe"
             )
+        immutable_suffix = snapshot_root.name.removeprefix("workspace_")
+        agent_receipt_snapshot_path = (
+            snapshot_root.parent / f"agent_receipt_{immutable_suffix}.json"
+        )
+        expected_agent_receipt_sha256 = (
+            validated_resume_artifacts.agent_run_receipt_sha256
+            if validated_resume_artifacts is not None
+            else None
+        )
+        agent_receipt_snapshot_sha256 = _copy_immutable_regular_file(
+            agent_result_path,
+            agent_receipt_snapshot_path,
+            expected_sha256=expected_agent_receipt_sha256,
+            block_token=BLOCK_RESUME_TRUST_INVALID,
+            label="agent run receipt",
+        )
+        agent_receipt_snapshot_relative = (
+            agent_receipt_snapshot_path.relative_to(state_root).as_posix()
+        )
         resume_artifact_binding: dict[str, Any] | None = None
+        if resume_task is None and validated_resume_artifacts is not None:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: fresh attestation carries resume artifacts"
+            )
         if resume_task is not None:
-            memo_path = _read_regular_workspace_file(
-                workspace_root,
-                resume_task.required_output_relative,
-            )
-            contract_path = _read_regular_workspace_file(
-                workspace_root,
-                resume_task.contract_relative,
-            )
+            if validated_resume_artifacts is None:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: resumed attestation lacks validated agent artifacts"
+                )
+            if any(
+                workspace_entries.get(relative) != digest
+                for relative, digest in validated_resume_artifacts.workspace_file_sha256
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: host snapshot disagrees with validated resume artifacts"
+                )
+            if (
+                validated_resume_artifacts.agent_run_receipt_id
+                != agent_result_relative.as_posix()
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt identity changed"
+                )
             resume_artifact_binding = {
                 "version": "factorforge_console_agent_resume_artifact_binding_v1",
-                "attempt_id": resume_task.attempt_id,
+                "attempt_id": validated_resume_artifacts.attempt_id,
                 "agent_id": agent_result.agent_id,
-                "agent_run_receipt_id": agent_result_relative.as_posix(),
-                "agent_run_receipt_sha256": _sha256(agent_result_path),
-                "resume_contract_sha256": _sha256(contract_path),
+                "agent_run_receipt_id": agent_receipt_snapshot_relative,
+                "agent_run_receipt_sha256": agent_receipt_snapshot_sha256,
+                "agent_run_receipt_source_id": (
+                    validated_resume_artifacts.agent_run_receipt_id
+                ),
+                "resume_contract_sha256": dict(
+                    validated_resume_artifacts.workspace_file_sha256
+                )[resume_task.contract_relative],
                 "mechanism_memo_artifact_id": resume_task.required_output_relative,
-                "mechanism_memo_sha256": _sha256(memo_path),
+                "mechanism_memo_sha256": dict(
+                    validated_resume_artifacts.workspace_file_sha256
+                )[resume_task.required_output_relative],
             }
 
-        receipt_id = str(formal_execution.get("receipt_id") or "")
-        receipt_relative = Path(receipt_id)
+        source_receipt_id = str(formal_execution.get("receipt_id") or "")
+        receipt_relative = Path(source_receipt_id)
         if receipt_relative.is_absolute() or ".." in receipt_relative.parts:
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt identity is unsafe"
             )
-        receipt_path = (state_root / receipt_relative).resolve(strict=True)
+        source_receipt_path = (state_root / receipt_relative).resolve(strict=True)
         try:
-            receipt_path.relative_to(state_root)
+            source_receipt_path.relative_to(state_root)
         except ValueError as exc:
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt escapes host state"
             ) from exc
-        if receipt_path.is_symlink() or not receipt_path.is_file():
+        if source_receipt_path.is_symlink() or not source_receipt_path.is_file():
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt is unsafe"
             )
-        if _sha256(receipt_path) != str(formal_execution.get("receipt_sha256") or ""):
+        formal_receipt_sha256 = str(formal_execution.get("receipt_sha256") or "")
+        if not formal_receipt_sha256:
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt hash mismatch"
             )
+        formal_receipt_snapshot_path = (
+            snapshot_root.parent / f"formal_receipt_{immutable_suffix}.json"
+        )
+        formal_receipt_snapshot_sha256 = _copy_immutable_regular_file(
+            source_receipt_path,
+            formal_receipt_snapshot_path,
+            expected_sha256=formal_receipt_sha256,
+            block_token=BLOCK_HOST_FORMAL_EXECUTION_FAILED,
+            label="formal execution receipt",
+        )
+        receipt_path = formal_receipt_snapshot_path
+        receipt_id = receipt_path.relative_to(state_root).as_posix()
+        formal_receipt_sha256 = formal_receipt_snapshot_sha256
         formal_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         expected_receipt_identity = {
             "job_id": job.job_id,
@@ -2202,7 +2429,7 @@ class ResearchRunService:
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt resume trust invalid"
             )
         wrapper_path = (
-            workspace_root
+            snapshot_root
             / "objects"
             / "runtime_context"
             / f"ultimate_run_report__{job.report_id}.json"
@@ -2216,15 +2443,14 @@ class ResearchRunService:
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal proof is not bound to receipt"
             )
 
-        workspace_entries = _workspace_evidence_tree(workspace_root)
         attestation_root = state_root / "attestations"
         attestation_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         attestation_root.chmod(0o700)
         immutable_root = attestation_root / job.job_id
         immutable_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         immutable_root.chmod(0o700)
-        immutable_suffix = f"{_stamp(utc_now())}_{uuid.uuid4().hex[:12]}"
-        evidence_tree_path = immutable_root / f"evidence_tree_{immutable_suffix}.json"
+        attestation_suffix = f"{_stamp(utc_now())}_{uuid.uuid4().hex[:12]}"
+        evidence_tree_path = immutable_root / f"evidence_tree_{attestation_suffix}.json"
         evidence_tree_payload = {
             "version": "factorforge_console_workspace_evidence_tree_v1",
             **expected_receipt_identity,
@@ -2253,8 +2479,9 @@ class ResearchRunService:
             ),
             "host_observed_ultimate_process": True,
             "agent_returncode": agent_result.returncode,
-            "agent_result_id": agent_result_relative.as_posix(),
-            "agent_result_sha256": _sha256(agent_result_path),
+            "agent_result_id": agent_receipt_snapshot_relative,
+            "agent_result_sha256": agent_receipt_snapshot_sha256,
+            "agent_result_source_id": agent_result_relative.as_posix(),
             "agent_resume_artifact_binding": resume_artifact_binding,
             "host_evidence_reader_invoked": True,
             "host_terminal_formal_validation_status": (
@@ -2270,10 +2497,12 @@ class ResearchRunService:
                 else "BLOCK"
             ),
             "summary_sha256": stable_json_hash(summary.to_dict()),
-            "workspace_manifest_sha256": _sha256(workspace_root / "manifest.json"),
+            "workspace_manifest_sha256": _sha256(snapshot_root / "manifest.json"),
+            "workspace_snapshot_id": snapshot_relative.as_posix(),
             "web_materialization": web_materialization,
             "formal_execution_receipt_id": receipt_id,
-            "formal_execution_receipt_sha256": _sha256(receipt_path),
+            "formal_execution_receipt_sha256": formal_receipt_sha256,
+            "formal_execution_receipt_source_id": source_receipt_id,
             "ultimate_argv_sha256": formal_execution["ultimate_argv_sha256"],
             "ultimate_returncode": formal_execution["ultimate_returncode"],
             "evidence_hashes": evidence_hashes,
@@ -2282,7 +2511,11 @@ class ResearchRunService:
             "workspace_evidence_tree_root_sha256": stable_json_hash(workspace_entries),
             "attested_at_utc": utc_now(),
         }
-        attestation_path = immutable_root / f"attestation_{immutable_suffix}.json"
+        if _sha256(receipt_path) != formal_receipt_sha256:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt changed during attestation"
+            )
+        attestation_path = immutable_root / f"attestation_{attestation_suffix}.json"
         _write_json_atomic(
             attestation_path,
             payload,
@@ -2556,7 +2789,11 @@ class ResearchRunService:
         for key, value in questionnaire_metric_facts.items():
             if (
                 key in metric_facts
-                and stable_json_hash(metric_facts[key]) != stable_json_hash(value)
+                and not _questionnaire_metric_matches_projection(
+                    metric_facts,
+                    key,
+                    value,
+                )
             ):
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: questionnaire metric fact mismatch:{key}"
@@ -2811,7 +3048,7 @@ class ResearchRunService:
         resume_trust: dict[str, Any],
         resume_task: AgentResumeTask | None,
         agent_result: AgentRunResult,
-    ) -> None:
+    ) -> ValidatedAgentResumeArtifacts:
         if resume_task is None:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: typed resume task missing"
@@ -2920,6 +3157,8 @@ class ResearchRunService:
             )
 
         state_root = self.config.state_root.resolve(strict=True)
+        agent_result_path: Path | None = None
+        agent_result_relative: Path | None = None
         agent_result_raw = Path(agent_result.result_path).expanduser()
         if agent_result_raw.is_symlink():
             failures.append("agent_run_receipt_unsafe")
@@ -3005,6 +3244,98 @@ class ResearchRunService:
                 f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: "
                 + ",".join(dict.fromkeys(failures))
             )
+        if agent_result_path is None or agent_result_relative is None:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: agent run receipt was not validated"
+            )
+        validated_workspace_relatives = tuple(
+            sorted(
+                set(resume_task.protected_inputs)
+                | {
+                    contract_relative,
+                    expected_output,
+                    answer_form_relative,
+                    spec_relative,
+                }
+            )
+        )
+        return ValidatedAgentResumeArtifacts(
+            attempt_id=resume_task.attempt_id,
+            workspace_file_sha256=tuple(
+                (
+                    relative,
+                    _sha256(_read_regular_workspace_file(workspace, relative)),
+                )
+                for relative in validated_workspace_relatives
+            ),
+            agent_run_receipt_id=agent_result_relative.as_posix(),
+            agent_run_receipt_sha256=_sha256(agent_result_path),
+        )
+
+
+def _require_validated_resume_artifacts_unchanged(
+    workspace: Path,
+    *,
+    state_root: Path,
+    resume_task: AgentResumeTask | None,
+    validation: ValidatedAgentResumeArtifacts,
+) -> None:
+    if (
+        resume_task is None
+        or validation.attempt_id != resume_task.attempt_id
+        or not validation.workspace_file_sha256
+        or not validation.agent_run_receipt_id
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated resume artifact identity is incomplete"
+        )
+    expected_workspace_hashes = dict(validation.workspace_file_sha256)
+    if len(expected_workspace_hashes) != len(validation.workspace_file_sha256):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated resume artifact paths are duplicated"
+        )
+    required_paths = {
+        resume_task.contract_relative,
+        resume_task.required_output_relative,
+    }
+    if not required_paths.issubset(expected_workspace_hashes):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated resume artifact set is incomplete"
+        )
+    for relative, expected_sha256 in expected_workspace_hashes.items():
+        path = _read_regular_workspace_file(workspace, relative)
+        if not expected_sha256 or _sha256(path) != expected_sha256:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: validated resume artifact changed:{relative}"
+            )
+
+    root = state_root.resolve(strict=True)
+    receipt_relative = Path(validation.agent_run_receipt_id)
+    if (
+        receipt_relative.is_absolute()
+        or ".." in receipt_relative.parts
+        or receipt_relative.parts[:2] != ("jobs", resume_task.job_id)
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt identity is unsafe"
+        )
+    receipt_path = root / receipt_relative
+    try:
+        resolved_receipt = receipt_path.resolve(strict=True)
+        resolved_receipt.relative_to(root)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt is unavailable"
+        ) from exc
+    if (
+        receipt_path.is_symlink()
+        or not resolved_receipt.is_file()
+        or not validation.agent_run_receipt_sha256
+        or _sha256(resolved_receipt) != validation.agent_run_receipt_sha256
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt changed"
+        )
 
 
 def _normalized_operator_name(value: Any) -> str:
@@ -3081,20 +3412,89 @@ def _mechanism_formula_facts(factor_spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _metric_fact_value(value: Any) -> Any | None:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, list) and len(value) <= 100:
-        projected = [_metric_fact_value(item) for item in value]
-        return projected if all(item is not None for item in projected) else None
-    if isinstance(value, dict) and len(value) <= 100:
-        projected_dict: dict[str, Any] = {}
-        for key, item in value.items():
-            projected = _metric_fact_value(item)
-            if projected is None and item is not None:
-                return None
-            projected_dict[str(key)] = projected
-        return projected_dict
-    return None
+    budget = {"nodes": 0, "text_bytes": 0}
+
+    def project(item: Any, *, depth: int) -> Any | None:
+        if depth > 8:
+            raise ValueError("metric fact nesting exceeds limit")
+        budget["nodes"] += 1
+        if budget["nodes"] > 2048:
+            raise ValueError("metric fact node count exceeds limit")
+        if item is None or isinstance(item, bool):
+            return item
+        if isinstance(item, int):
+            if item.bit_length() > 1024:
+                raise ValueError("metric fact integer exceeds limit")
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("metric fact number must be finite")
+            return item
+        if isinstance(item, str):
+            encoded_size = len(item.encode("utf-8"))
+            if encoded_size > 4096:
+                raise ValueError("metric fact string exceeds limit")
+            budget["text_bytes"] += encoded_size
+            if budget["text_bytes"] > 128 * 1024:
+                raise ValueError("metric fact text budget exceeds limit")
+            return item
+        if isinstance(item, list):
+            if len(item) > 100:
+                raise ValueError("metric fact list width exceeds limit")
+            return [project(child, depth=depth + 1) for child in item]
+        if isinstance(item, dict):
+            if len(item) > 100:
+                raise ValueError("metric fact mapping width exceeds limit")
+            projected_dict: dict[str, Any] = {}
+            for raw_key, child in item.items():
+                key = str(raw_key)
+                key_size = len(key.encode("utf-8"))
+                if key_size > 256:
+                    raise ValueError("metric fact key exceeds limit")
+                budget["text_bytes"] += key_size
+                if budget["text_bytes"] > 128 * 1024:
+                    raise ValueError("metric fact text budget exceeds limit")
+                if key in projected_dict:
+                    raise ValueError("metric fact keys collide after normalization")
+                projected_dict[key] = project(child, depth=depth + 1)
+            return projected_dict
+        raise ValueError("metric fact value type is unsupported")
+
+    projected = project(value, depth=0)
+    try:
+        serialized_size = len(
+            json.dumps(
+                projected,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric fact cannot be serialized") from exc
+    if serialized_size > 256 * 1024:
+        raise ValueError("metric fact serialized size exceeds limit")
+    return projected
+
+
+def _questionnaire_metric_matches_projection(
+    metric_facts: dict[str, Any],
+    key: str,
+    questionnaire_value: Any,
+) -> bool:
+    expected_hash = stable_json_hash(questionnaire_value)
+    conflicts = metric_facts.get("backend_metric_conflicts")
+    conflict = conflicts.get(key) if isinstance(conflicts, dict) else None
+    if isinstance(conflict, dict):
+        observations = conflict.get("backend_observations")
+        if not isinstance(observations, list):
+            return False
+        return any(
+            isinstance(observation, dict)
+            and stable_json_hash(observation.get("value")) == expected_hash
+            for observation in observations
+        )
+    return stable_json_hash(metric_facts.get(key)) == expected_hash
 
 
 def _project_metric_mapping(
@@ -3103,6 +3503,10 @@ def _project_metric_mapping(
 ) -> None:
     if not isinstance(candidate, dict):
         return
+    if len(candidate) > 512:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: metric mapping width exceeds limit"
+        )
     for raw_key, raw_value in candidate.items():
         key = str(raw_key)
         if (
@@ -3110,9 +3514,13 @@ def _project_metric_mapping(
             and not key.startswith(MECHANISM_METRIC_PREFIXES)
         ):
             continue
-        value = _metric_fact_value(raw_value)
-        if value is not None or raw_value is None:
-            target[key] = value
+        try:
+            value = _metric_fact_value(raw_value)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: metric fact projection rejected bounds"
+            ) from exc
+        target[key] = value
 
 
 def _complete_mechanism_metric_facts(
@@ -3129,30 +3537,82 @@ def _complete_mechanism_metric_facts(
     ):
         _project_metric_mapping(metrics, candidate)
     backends: list[dict[str, Any]] = []
+    backend_observations: dict[str, list[dict[str, Any]]] = {}
     for index, item in enumerate(evaluation.get("backend_summary") or []):
         if not isinstance(item, dict):
             continue
-        backend_metrics: dict[str, Any] = {}
-        _project_metric_mapping(backend_metrics, item.get("key_metrics"))
-        _project_metric_mapping(metrics, backend_metrics)
-        backends.append(
-            {
-                "index": index,
-                "backend": str(
-                    item.get("backend")
-                    or item.get("name")
-                    or item.get("backend_id")
-                    or f"backend_{index}"
-                ),
-                "status": str(item.get("status") or item.get("verdict") or ""),
-                "metric_keys": sorted(backend_metrics),
-            }
+        try:
+            raw_backend_metrics = _metric_fact_value(item.get("key_metrics"))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: backend metric facts rejected bounds"
+            ) from exc
+        backend_metrics = (
+            raw_backend_metrics
+            if isinstance(raw_backend_metrics, dict)
+            else {}
         )
+        promoted_backend_metrics: dict[str, Any] = {}
+        _project_metric_mapping(
+            promoted_backend_metrics,
+            item.get("key_metrics"),
+        )
+        backend_name = str(
+            item.get("backend")
+            or item.get("name")
+            or item.get("backend_id")
+            or f"backend_{index}"
+        )
+        backend_status = str(item.get("status") or item.get("verdict") or "")
+        backend_record = {
+            "index": index,
+            "backend": backend_name,
+            "status": backend_status,
+            "metric_keys": sorted(backend_metrics),
+            "promoted_metric_keys": sorted(promoted_backend_metrics),
+            "metrics": backend_metrics,
+        }
+        backends.append(backend_record)
+        for key, value in promoted_backend_metrics.items():
+            backend_observations.setdefault(key, []).append(
+                {
+                    "index": index,
+                    "backend": backend_name,
+                    "status": backend_status,
+                    "value": value,
+                }
+            )
     coverage = (
         evaluation.get("coverage_summary")
         if isinstance(evaluation.get("coverage_summary"), dict)
         else {}
     )
+    _project_metric_mapping(metrics, coverage)
+    backend_conflicts: dict[str, Any] = {}
+    for key, observations in sorted(backend_observations.items()):
+        unique_values = {
+            stable_json_hash(observation["value"])
+            for observation in observations
+        }
+        if key in metrics:
+            canonical_hash = stable_json_hash(metrics[key])
+            if unique_values != {canonical_hash}:
+                conflict = {
+                    "status": "backend_conflict",
+                    "reported_aggregate": metrics[key],
+                    "backend_observations": observations,
+                }
+                metrics[key] = conflict
+                backend_conflicts[key] = conflict
+        elif len(unique_values) == 1:
+            metrics[key] = observations[0]["value"]
+        else:
+            conflict = {
+                "status": "backend_conflict",
+                "backend_observations": observations,
+            }
+            metrics[key] = conflict
+            backend_conflicts[key] = conflict
     for key in ("row_count", "date_count", "ticker_count", "period_count"):
         if key in coverage:
             metrics[f"coverage_{key}"] = coverage[key]
@@ -3165,6 +3625,9 @@ def _complete_mechanism_metric_facts(
         metrics["monotonicity_diagnostic"] = long_side_review[
             "monotonicity_diagnostic"
         ]
+    metrics["backend_metrics"] = backends
+    if backend_conflicts:
+        metrics["backend_metric_conflicts"] = backend_conflicts
     required_core = (
         "rank_ic_mean",
         "rank_ic_ir",
@@ -3195,7 +3658,12 @@ def _complete_mechanism_metric_facts(
         ),
         "backends": backends,
     }
-    if not metrics:
+    substantive_metric_keys = {
+        key
+        for key in metrics
+        if key not in {"backend_metrics", "backend_metric_conflicts"}
+    }
+    if not substantive_metric_keys:
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: validated Step4/5 metric facts are missing"
         )
@@ -3928,6 +4396,96 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _copy_immutable_regular_file(
+    source: Path,
+    destination: Path,
+    *,
+    expected_sha256: str | None,
+    block_token: str,
+    label: str,
+) -> str:
+    try:
+        if (
+            source.is_symlink()
+            or not source.is_file()
+            or destination.exists()
+            or destination.is_symlink()
+            or destination.parent.is_symlink()
+            or not destination.parent.is_dir()
+        ):
+            raise RuntimeError(f"{block_token}: {label} snapshot path is unsafe")
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        digest = hashlib.sha256()
+        try:
+            source_before = os.fstat(source_descriptor)
+            if (
+                not stat.S_ISREG(source_before.st_mode)
+                or source_before.st_nlink != 1
+                or source_before.st_size <= 0
+                or source_before.st_size > 2 * 1024 * 1024
+            ):
+                raise RuntimeError(
+                    f"{block_token}: {label} source is not a bounded private file"
+                )
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                offset = 0
+                while offset < len(chunk):
+                    offset += os.write(destination_descriptor, chunk[offset:])
+            os.fsync(destination_descriptor)
+            source_after = os.fstat(source_descriptor)
+        finally:
+            os.close(destination_descriptor)
+            os.close(source_descriptor)
+        path_after = source.stat(follow_symlinks=False)
+        actual_sha256 = digest.hexdigest()
+        if (
+            source_before.st_ino != source_after.st_ino
+            or source_before.st_ino != path_after.st_ino
+            or source_before.st_size != source_after.st_size
+            or source_before.st_size != path_after.st_size
+            or source_before.st_mtime_ns != source_after.st_mtime_ns
+            or source_before.st_mtime_ns != path_after.st_mtime_ns
+            or (expected_sha256 is not None and actual_sha256 != expected_sha256)
+        ):
+            raise RuntimeError(f"{block_token}: {label} changed during snapshot")
+        destination.chmod(0o400)
+        directory = os.open(
+            destination.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return actual_sha256
+    except RuntimeError:
+        if destination.is_file() and not destination.is_symlink():
+            destination.unlink()
+        raise
+    except OSError as exc:
+        if destination.is_file() and not destination.is_symlink():
+            destination.unlink()
+        raise RuntimeError(f"{block_token}: {label} snapshot failed") from exc
 
 
 def _write_json_atomic(

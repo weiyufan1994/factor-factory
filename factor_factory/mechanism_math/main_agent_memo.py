@@ -755,7 +755,17 @@ def _text_blob(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True).lower()
 
 
-def _memo_claim_text(memo: dict[str, Any]) -> str:
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [item for nested in value.values() for item in _string_values(nested)]
+    if isinstance(value, list):
+        return [item for nested in value for item in _string_values(nested)]
+    return []
+
+
+def _memo_claim_strings(memo: dict[str, Any]) -> list[str]:
     payload = {
         "formula_component_map": memo.get("formula_component_map"),
         "economic_hypothesis": memo.get("economic_hypothesis"),
@@ -763,19 +773,66 @@ def _memo_claim_text(memo: dict[str, Any]) -> str:
         "evidence_comparison": memo.get("evidence_comparison"),
         "council_questions": memo.get("council_questions"),
     }
-    return _text_blob(payload)
+    return _string_values(payload)
+
+
+def _memo_claim_text(memo: dict[str, Any]) -> str:
+    return "\n".join(_memo_claim_strings(memo)).lower()
 
 
 def _claims_correlation_or_covariance_from_text(text: str) -> bool:
-    terms = [
-        "correlation",
-        "covariance",
-        "rolling rank covariance",
-        "rolling rank correlation",
+    token_pattern = (
+        r"(?:correlat(?:e[sd]?|ed|ing|ion(?:s|al|ally)?|ive(?:ly)?)|"
+        r"covari(?:ance(?:s)?|ant|ation(?:s)?)|corr|cov)"
+    )
+    token_re = re.compile(rf"(?<![a-z0-9_])({token_pattern})(?![a-z0-9_])")
+    paired_terms = rf"{token_pattern}(?:\s*(?:/|or|and|或|、)\s*{token_pattern})?"
+    absence_patterns = [
+        re.compile(
+            rf"^(?:the\s+)?(?:formula|expression|estimator|model|it)\s+"
+            rf"(?:has|contains|uses|includes|implies)\s+no\s+(?:an?\s+)?"
+            rf"(?P<target>{paired_terms})(?:\s+(?:operator|claim))?$"
+        ),
+        re.compile(
+            rf"^(?:the\s+)?(?:formula|expression|estimator|model|it)\s+"
+            rf"does\s+not\s+(?:use|contain|include|imply|estimate)\s+(?:an?\s+)?"
+            rf"(?P<target>{paired_terms})(?:\s+(?:operator|claim))?$"
+        ),
+        re.compile(
+            rf"^without\s+(?:implying|using|assuming|claiming)\s+"
+            rf"(?P<target>{paired_terms})$"
+        ),
+        re.compile(
+            rf"^(?P<target>{paired_terms})(?:\s+(?:operator|claim))?\s+"
+            rf"(?:is|are)\s+"
+            r"(?:absent|not\s+used|not\s+present)$"
+        ),
+        re.compile(
+            rf"^(?:本)?(?:公式|表达式|模型|估计量)\s*(?:无|不含|未使用|没有)\s*"
+            rf"(?P<target>{paired_terms})(?:\s*算子)?$"
+        ),
     ]
-    if any(term in text for term in terms):
-        return True
-    return bool(re.search(r"(^|[^a-z0-9_])(corr|cov)([^a-z0-9_]|$)", text))
+    evaluation_re = re.compile(
+        r"^(?:daily\s+)?cross-sectional\s+"
+        r"(?:spearman|pearson)(?:\s*/\s*(?:spearman|pearson))?\s+"
+        r"(?:rank\s+)?correlation\s+(?:of|between)\s+[^,;；。\n]{1,96}?\s+"
+        r"(?:with|and)\s+(?:forward\s+return|r_[a-z0-9_,:+>\-]+)$"
+    )
+
+    normalized = str(text or "").lower().strip().rstrip(".!?。").rstrip()
+    tokens = list(token_re.finditer(normalized))
+    if not tokens:
+        return False
+    for pattern in absence_patterns:
+        match = pattern.fullmatch(normalized)
+        if match is None:
+            continue
+        target_start, target_end = match.span("target")
+        if all(target_start <= token.start() and token.end() <= target_end for token in tokens):
+            return False
+    if len(tokens) == 1 and evaluation_re.fullmatch(normalized):
+        return False
+    return True
 
 
 def _claims_unjustified_dependence_from_text(text: str) -> bool:
@@ -945,14 +1002,14 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     if not isinstance(observed, dict) or not observed:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_EVIDENCE_COMPARISON_MISSING")
     op = memo.get("operator_claim_consistency") if isinstance(memo.get("operator_claim_consistency"), dict) else {}
-    claim_text = _memo_claim_text(memo)
+    claim_strings = _memo_claim_strings(memo)
     claims_corr_cov = (
         op.get("claims_correlation_or_covariance") is True
-        or _claims_correlation_or_covariance_from_text(claim_text)
+        or any(_claims_correlation_or_covariance_from_text(item) for item in claim_strings)
     )
     claims_dependence = (
         op.get("claims_dependence_without_operator_justification") is True
-        or _claims_unjustified_dependence_from_text(claim_text)
+        or any(_claims_unjustified_dependence_from_text(item.lower()) for item in claim_strings)
     )
     has_corr_cov_operator = (
         op.get("formula_has_correlation_or_covariance_operator") is True

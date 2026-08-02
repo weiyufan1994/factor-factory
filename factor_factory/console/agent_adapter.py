@@ -570,9 +570,10 @@ quote them.
    regressions, quantile tests, costs, or the whole-factor backtest. RankIC and
    PearsonIC are evaluation statistics, not correlation/covariance operators
    in the factor formula. If the immutable operator list contains none of
-   `correlation`, `covariance`, `corr`, or `cov`, do not make a correlation or
-   covariance mechanism claim; refer to observed `rank_ic` and `pearson_ic`
-   metrics by those exact names instead.
+   `correlation`, `covariance`, `corr`, or `cov`, do not write any of those
+   words, their plurals, or their derived forms in any research field, even to
+   state their absence. Set the corresponding flags to `false` and refer to
+   observed `rank_ic` and `pearson_ic` metrics by those exact names instead.
 7. Update `identity/web_execution_ledger.md` with a concise record under 2,000
    characters. Do not include secrets or absolute paths in that ledger.
 8. Build the complete memo in reasoning, then use exactly one write call for

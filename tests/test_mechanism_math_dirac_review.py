@@ -3,6 +3,10 @@ from __future__ import annotations
 import copy
 
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract_v2
+from factor_factory.mechanism_math.main_agent_memo import (
+    _claims_correlation_or_covariance_from_text,
+    validate_main_agent_mechanism_memo,
+)
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 from factor_factory.revision_council.validator import validate_revision_council_proposal
 
@@ -47,6 +51,110 @@ def test_mechanism_math_requires_formula_implied_information_review():
     failures = validate_mechanism_math_contract(mutated)
 
     assert any(f["code"] == "BLOCK_MECHANISM_MATH_V2_FORMULA_IMPLIED_REVIEW_MISSING" for f in failures)
+
+
+def test_operator_claim_scan_keeps_positive_corr_cov_claims_blockable():
+    assert _claims_correlation_or_covariance_from_text(
+        "The formula is a rolling rank correlation estimator of price and volume."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The formula is a Pearson correlation estimator of price and volume."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The formula is not without covariance."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "Daily cross-sectional Pearson correlation of F, while the formula is a covariance estimator, with forward return."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The formula is a correlation estimator but has no covariance claim."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The estimator is covariance-based and does not use correlation."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The formula estimates correlations between price and volume."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The estimator models rolling covariances."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "This is a correlational price-volume estimator."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "It is false that the formula has no correlation operator."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "The formula has no correlation operator, except that it does."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "公式无 correlation 算子，但实际上有。"
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "Without implying correlation, except that the formula does."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "Daily cross-sectional Pearson correlation of F with forward return; this is also the formula mechanism."
+    )
+    assert _claims_correlation_or_covariance_from_text(
+        "Daily cross-sectional Pearson correlation of F with forward return = the formula mechanism."
+    )
+
+
+def test_operator_claim_scan_ignores_explicit_corr_cov_absence():
+    assert not _claims_correlation_or_covariance_from_text(
+        "The formula has no correlation operator."
+    )
+    assert not _claims_correlation_or_covariance_from_text(
+        "The formula has no correlation/covariance operator."
+    )
+    assert not _claims_correlation_or_covariance_from_text(
+        "公式无 correlation/covariance 算子。"
+    )
+
+
+def test_operator_claim_scan_ignores_named_evaluation_correlation():
+    assert not _claims_correlation_or_covariance_from_text(
+        "Daily cross-sectional Spearman/Pearson correlation of F with forward return."
+    )
+
+
+def _operator_claim_failures(claim: str) -> list[str]:
+    signature = {
+        "rank_ic": "expected rank IC direction is compared with observed evidence",
+        "long_side": "expected long-side return is compared with observed evidence",
+        "cost_adjusted": "expected net return is compared with observed evidence",
+        "monotonicity": "expected ordering is compared with observed evidence",
+        "turnover": "expected turnover is compared with observed evidence",
+    }
+    return validate_main_agent_mechanism_memo(
+        {
+            "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+            "math_hypothesis": {
+                "why_not_generic_template": claim,
+                "expected_metric_signature": signature,
+            },
+            "expected_metric_signature": dict(signature),
+            "operator_claim_consistency": {
+                "claims_correlation_or_covariance": False,
+                "formula_has_correlation_or_covariance_operator": False,
+                "claims_dependence_without_operator_justification": False,
+            },
+        }
+    )
+
+
+def test_operator_claim_validator_uses_structured_string_values():
+    token = "BLOCK_MAIN_AGENT_MECHANISM_MEMO_OPERATOR_CLAIM_CONTRADICTION"
+    assert token not in _operator_claim_failures(
+        "公式无 correlation/covariance 算子。"
+    )
+    assert token not in _operator_claim_failures(
+        "Daily cross-sectional Spearman/Pearson correlation of F with forward return."
+    )
+    assert token in _operator_claim_failures(
+        "The formula is a correlation estimator but has no covariance claim."
+    )
 
 
 def test_mechanism_math_unclassified_unexpected_implication_blocks():

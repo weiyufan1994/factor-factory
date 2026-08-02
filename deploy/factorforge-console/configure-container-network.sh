@@ -4,11 +4,13 @@ set -euo pipefail
 NETWORK_NAME="${FACTORFORGE_CONSOLE_CONTAINER_NETWORK:-factorforge-console-egress}"
 NETWORK_SUBNET="${FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET:-172.29.0.0/24}"
 BRIDGE_NAME="${FACTORFORGE_CONSOLE_CONTAINER_BRIDGE_NAME:-br-ff-console}"
+expected_gateway="$(python3 -c 'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1], strict=True).network_address + 1)' "${NETWORK_SUBNET}")"
 
 if ! docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
   docker network create \
     --driver bridge \
     --subnet "${NETWORK_SUBNET}" \
+    --gateway "${expected_gateway}" \
     --opt com.docker.network.bridge.enable_ip_masquerade=true \
     --opt "com.docker.network.bridge.name=${BRIDGE_NAME}" \
     "${NETWORK_NAME}" >/dev/null
@@ -19,7 +21,6 @@ ipv6_enabled="$(docker network inspect "${NETWORK_NAME}" --format '{{.EnableIPv6
 internal_network="$(docker network inspect "${NETWORK_NAME}" --format '{{.Internal}}')"
 proxy_gateway="$(docker network inspect "${NETWORK_NAME}" --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}')"
 actual_bridge="$(docker network inspect "${NETWORK_NAME}" --format '{{index .Options "com.docker.network.bridge.name"}}')"
-expected_gateway="$(python3 -c 'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1], strict=True).network_address + 1)' "${NETWORK_SUBNET}")"
 if [[ "${actual_subnet}" != "${NETWORK_SUBNET}" || "${ipv6_enabled}" != "false" || "${internal_network}" != "false" || "${actual_bridge}" != "${BRIDGE_NAME}" ]]; then
   echo "Factor Forge Console network metadata does not match the required policy" >&2
   exit 1

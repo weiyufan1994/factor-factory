@@ -131,6 +131,7 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     assert "/run/factorforge-console-model-broker/denied-secrets" not in broker_unit
     assert "--mode web" in web_unit and "--mode worker" in runner_unit
     assert "com.docker.network.bridge.name" in network_script
+    assert '--gateway "${expected_gateway}"' in network_script
     assert "FF_CONSOLE_HOST" in network_script
     assert (
         'iptables -w 5 -I INPUT 1 -i "${BRIDGE_NAME}" -s "${NETWORK_SUBNET}" '

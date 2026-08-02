@@ -46,6 +46,30 @@ def test_model_broker_timeout_cannot_exceed_agent_lease_budget(tmp_path: Path) -
         )
 
 
+def test_model_broker_does_not_rechmod_a_preprovisioned_secret_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from factor_factory.console.model_broker import ModelBrokerConfig
+
+    denied_root = tmp_path / "denied-secrets"
+    denied_root.mkdir(mode=0o770)
+    denied_root.chmod(0o2770)
+    original_chmod = Path.chmod
+
+    def guarded_chmod(path: Path, mode: int, *args, **kwargs) -> None:
+        if path == denied_root:
+            raise AssertionError("preprovisioned secret root must not be re-chmodded")
+        original_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", guarded_chmod)
+    ModelBrokerConfig(
+        api_key_file=tmp_path / "unused-key",
+        client_token_file=tmp_path / "unused-client-token",
+        denied_secret_root=denied_root,
+    )
+
+
 def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: Path) -> None:
     from factor_factory.console.model_broker import (
         FactorForgeModelBrokerServer,

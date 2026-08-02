@@ -107,7 +107,8 @@ class ModelBrokerConfig:
         if root.is_symlink():
             raise RuntimeError("model broker denied-secret root is unsafe")
         root.mkdir(mode=0o770, exist_ok=True)
-        root.chmod(0o2770)
+        if stat.S_IMODE(root.stat().st_mode) != 0o2770:
+            root.chmod(0o2770)
         metadata = root.stat()
         if not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o007:
             raise RuntimeError("model broker denied-secret root permissions are unsafe")

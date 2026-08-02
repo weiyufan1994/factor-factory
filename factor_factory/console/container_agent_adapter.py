@@ -49,8 +49,8 @@ from factor_factory.console.web_research_plan import write_text_atomic
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
 REQUIRED_COMPACTION_POLICY = {
     "mode": "safeguard",
-    "reserveTokens": 24000,
-    "reserveTokensFloor": 20000,
+    "reserveTokens": 16384,
+    "reserveTokensFloor": 12000,
     "keepRecentTokens": 12000,
     "recentTurnsPreserve": 1,
     "maxHistoryShare": 0.5,

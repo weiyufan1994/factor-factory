@@ -1931,6 +1931,11 @@ def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
         _validate_profile_policy(payload)
 
     payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["agents"]["defaults"]["compaction"]["reserveTokens"] = 24_000
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
     payload["models"]["providers"]["deepseek"]["models"][0]["maxTokens"] = 65536
     with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
         _validate_profile_policy(payload)

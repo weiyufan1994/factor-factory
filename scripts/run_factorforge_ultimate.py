@@ -272,18 +272,19 @@ def load_json_if_exists(path: Path) -> dict[str, Any]:
 
 
 DATA_REQUEST_BLOCKER_PATTERNS = (
+    'BLOCK_FACTORFORGE_DATA_REQUEST_REQUIRED',
+    'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING',
+    'BLOCK_STEP4_DATA_API_FETCH_FAILED',
+    'BLOCK_STEP4_DATA_CONTRACT_MISSING',
+    'BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED',
+    'BLOCK_STEP4_MINUTE_DERIVED_STATE_EMPTY',
+    'BLOCK_MINUTE_DERIVED_STATE_COVERAGE_INCOMPLETE',
     'missing_data_api',
     'Data API could not resolve',
-    'Data API catalog',
     'dataset_not_found',
     'missing_intraday_flow_proxy_dataset',
     'Required clean/precomputed intraday proxy dataset',
     'BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED',
-    'raw minute',
-    'raw-minute',
-    'full-window IO',
-    'full window IO',
-    'datamart',
 )
 
 
@@ -335,6 +336,36 @@ def extract_missing_datasets(payload: Any) -> list[str]:
     return deduped
 
 
+def feasibility_has_data_blocker(feasibility: dict[str, Any]) -> bool:
+    if not feasibility:
+        return False
+    verdicts = {
+        str(feasibility.get(key) or '').strip().lower()
+        for key in ('feasibility', 'final_result', 'status', 'verdict')
+    }
+    if verdicts & {'block', 'blocked', 'fail', 'failed', 'missing', 'unavailable'}:
+        return True
+    if feasibility.get('blocked') is True:
+        return True
+    blocked_items = feasibility.get('blocked_items')
+    if isinstance(blocked_items, list) and bool(blocked_items):
+        return True
+
+    def has_explicit_missing_list(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'missing_datasets' and isinstance(item, list):
+                    if any(str(dataset).strip() for dataset in item):
+                        return True
+                elif has_explicit_missing_list(item):
+                    return True
+        elif isinstance(value, list):
+            return any(has_explicit_missing_list(item) for item in value)
+        return False
+
+    return has_explicit_missing_list(feasibility)
+
+
 def data_request_candidate_from_failure(
     *,
     report_id: str,
@@ -346,12 +377,13 @@ def data_request_candidate_from_failure(
         return None
     feasibility_path = ctx.objects_root / 'validation' / f'data_feasibility_report__{report_id}.json'
     feasibility = load_json_if_exists(feasibility_path)
+    feasibility_blocked = feasibility_has_data_blocker(feasibility)
     combined = output
-    if feasibility:
+    if feasibility_blocked:
         combined += '\n' + json.dumps(feasibility, ensure_ascii=False)
     if not any(pattern in combined for pattern in DATA_REQUEST_BLOCKER_PATTERNS):
         return None
-    missing_datasets = extract_missing_datasets(feasibility)
+    missing_datasets = extract_missing_datasets(feasibility) if feasibility_blocked else []
     if 'intraday_flow_distribution_moments_v1' in combined and 'intraday_flow_distribution_moments_v1' not in missing_datasets:
         missing_datasets.insert(0, 'intraday_flow_distribution_moments_v1')
     if 'daily_basic_backtest_base' in combined and 'daily_basic_backtest_base' not in missing_datasets:

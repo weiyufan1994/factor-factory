@@ -9,6 +9,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -1011,6 +1012,29 @@ def resolve_backend_script_path(raw_path: str | None) -> Path | None:
     return REPO_ROOT / p
 
 
+def _backend_error_class(output: str) -> str:
+    missing_module = re.search(
+        r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]",
+        output,
+    )
+    if missing_module:
+        return f'ModuleNotFoundError:{missing_module.group(1)}'
+    for error_class in (
+        'ModuleNotFoundError',
+        'ImportError',
+        'PermissionError',
+        'FileNotFoundError',
+        'MemoryError',
+        'TimeoutExpired',
+        'OSError',
+        'ValueError',
+        'KeyError',
+    ):
+        if error_class in output:
+            return error_class
+    return 'backend_process_failed'
+
+
 def run_backend_script(
     report_id: str,
     backend: str,
@@ -1056,11 +1080,16 @@ def run_backend_script(
         env['QLIB_PROVIDER_URI'] = str(provider_uri)
 
     result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
-    if result.stdout:
-        print(result.stdout, end='')
-    if result.stderr:
-        print(result.stderr, end='')
-    return result.returncode, f'cmd={" ".join(cmd)}'
+    backend_output = (result.stderr or result.stdout or '').strip()
+    error_class = _backend_error_class(backend_output) if result.returncode else None
+    exec_note = (
+        f'backend={backend}; adapter={script_path.name}; '
+        f'returncode={result.returncode}'
+    )
+    if error_class:
+        exec_note += f'; error_class={error_class}'
+    print(f'[BACKEND] {exec_note}')
+    return result.returncode, exec_note
 
 
 def _backend_timing_key(backend: str | None) -> str:

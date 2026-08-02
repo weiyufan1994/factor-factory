@@ -17,9 +17,11 @@ dependencies = [
 
 [project.optional-dependencies]
 step4 = [
+  "matplotlib>=3.10",
   "pyarrow>=14.0",
 ]
 qlib = [
+  "matplotlib>=3.10",
   "pyarrow>=14.0",
   "pyqlib>=0.9.7",
 ]

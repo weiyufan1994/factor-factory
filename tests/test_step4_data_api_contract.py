@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -47,6 +48,29 @@ def _write_catalog(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return catalog_path
+
+
+def test_backend_failure_note_preserves_only_sanitized_error_class(tmp_path, monkeypatch):
+    run_step4 = _load_run_step4()
+    backend = tmp_path / "backend.py"
+    backend.write_text(
+        "raise ModuleNotFoundError(\"No module named 'required_backend_package'; token=TOPSECRET\")\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_step4, "runtime_python", lambda: Path(sys.executable))
+
+    returncode, note = run_step4.run_backend_script(
+        "REPORT",
+        "self_quant_analyzer",
+        backend,
+        tmp_path / "payload.json",
+        {},
+    )
+
+    assert returncode == 1
+    assert "error_class=ModuleNotFoundError:required_backend_package" in note
+    assert "TOPSECRET" not in note
+    assert str(tmp_path) not in note
 
 
 def test_step4_materializes_full_inputs_from_data_api_contract(tmp_path, monkeypatch):

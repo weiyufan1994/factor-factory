@@ -58,6 +58,72 @@ def test_data_request_candidate_not_created_for_plain_code_failure(tmp_path):
     assert candidate is None
 
 
+def test_data_request_candidate_not_created_when_ready_feasibility_mentions_catalog(tmp_path):
+    ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
+    feasibility = ctx.objects_root / 'validation' / 'data_feasibility_report__REPORT.json'
+    feasibility.parent.mkdir(parents=True)
+    feasibility.write_text(
+        '''
+        {
+          "final_result": "ready",
+          "checks": [{"name": "daily_history", "status": "pass"}],
+          "data_api_resolution": {
+            "clean_daily_bar": {
+              "dataset_id": "clean_daily_bar",
+              "status": "ready",
+              "access_mode": "catalog",
+              "missing_datasets": []
+            }
+          }
+        }
+        ''',
+        encoding='utf-8',
+    )
+
+    candidate = data_request_candidate_from_failure(
+        report_id='REPORT',
+        command_name='validate_step4',
+        output=(
+            'Data API catalog was loaded successfully. '
+            'BLOCK_NO_SUCCESSFUL_BACKEND: ModuleNotFoundError: matplotlib'
+        ),
+        ctx=ctx,
+    )
+
+    assert candidate is None
+
+
+def test_ready_feasibility_dataset_id_does_not_override_actual_missing_dataset(tmp_path):
+    ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
+    feasibility = ctx.objects_root / 'validation' / 'data_feasibility_report__REPORT.json'
+    feasibility.parent.mkdir(parents=True)
+    feasibility.write_text(
+        '''
+        {
+          "final_result": "ready",
+          "data_api_resolution": {
+            "clean_daily_bar": {
+              "dataset_id": "clean_daily_bar",
+              "status": "ready",
+              "missing_datasets": []
+            }
+          }
+        }
+        ''',
+        encoding='utf-8',
+    )
+
+    candidate = data_request_candidate_from_failure(
+        report_id='REPORT',
+        command_name='validate_step4',
+        output='Required clean/precomputed intraday proxy dataset is absent.',
+        ctx=ctx,
+    )
+
+    assert candidate is not None
+    assert candidate['requested_dataset_id'] == 'intraday_derived_datamart'
+
+
 def test_write_data_request_candidate_writes_local_and_data_api_inbox(tmp_path, monkeypatch):
     data_api_root = tmp_path / 'factor-factory-data-api'
     (data_api_root / 'scripts').mkdir(parents=True)

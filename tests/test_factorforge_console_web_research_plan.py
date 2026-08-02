@@ -14,6 +14,7 @@ from factor_factory.console.web_research_plan import (
     WebResearchPlanError,
     required_web_resume_start_step,
     resolve_workspace_approved_catalog,
+    stable_json_hash,
     validate_materialized_web_research,
     validate_plan,
     write_text_atomic,
@@ -67,7 +68,13 @@ def _write_catalog(tmp_path: Path) -> Path:
                         "columns": ["ts_code", "trade_date", "open", "pre_close"],
                         "metadata": {"schema_version": "daily_bar_v1", "qa_verdict": "ACCEPT"},
                         "uri": "s3://approved-read-only/clean_daily_bar",
-                    }
+                    },
+                    {
+                        "dataset_id": "raw_minute_bar",
+                        "columns": ["ts_code", "trade_time", "close", "vol"],
+                        "metadata": {"schema_version": "minute_bar_v1", "qa_verdict": "ACCEPT"},
+                        "uri": "s3://not-projected-to-web-authoring/raw_minute_bar",
+                    },
                 ]
             }
         ),
@@ -280,6 +287,9 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
     summary = json.loads((workspace / "identity" / "data_catalog_summary.json").read_text(encoding="utf-8"))
     assert summary["catalogs"][0]["entries"][0]["name"] == "clean_daily_bar"
     assert "open" in summary["catalogs"][0]["entries"][0]["columns"]
+    assert [entry["name"] for entry in summary["catalogs"][0]["entries"]] == [
+        "clean_daily_bar"
+    ]
     contract = json.loads(
         (workspace / "identity" / "web_research_authoring_contract.json").read_text(
             encoding="utf-8"
@@ -303,8 +313,12 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
         encoding="utf-8"
     )
     assert "validate_factorforge_web_research_plan.py" in guide
+    assert "python3 -B" in guide
     assert "controls and strata" in guide
     assert "`mul`, `sub` and `div` are" in guide
+    assert "only datasets the Web" in guide
+    assert "do not recompute, shorten or hand-copy the" in guide
+    assert "contract hash" in guide
 
     try:
         validate_plan(plan, workspace=workspace)
@@ -347,6 +361,34 @@ def test_authoring_preflight_passes_valid_plan_and_reports_formula_contract(tmp_
     assert result["formal_research_started"] is False
     assert result["required_fields"] == ["open", "pre_close"]
     assert result["operator_set"] == ["divide", "minus", "negate"]
+
+
+def test_authoring_preflight_reports_exact_host_contract_reference(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    contract = json.loads(
+        (workspace / "identity" / "web_research_authoring_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_hash = stable_json_hash(contract)
+    plan["authoring_contract"]["sha256"] = expected_hash[:-2]
+
+    with pytest.raises(WebResearchPlanError) as invalid:
+        validate_plan(plan, workspace=workspace)
+
+    assert invalid.value.token == BLOCK_PLAN_INVALID
+    assert (
+        f"authoring_contract.sha256_expected:{expected_hash}"
+        in invalid.value.reasons
+    )
 
 
 def test_authoring_preflight_blocks_v5_style_prose_aliases_and_bad_enums(tmp_path):

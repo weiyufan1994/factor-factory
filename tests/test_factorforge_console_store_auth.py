@@ -324,6 +324,7 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "identity/factor_knowledge_summary.json" in prompt
     assert "identity/web_research_authoring_contract.json" in prompt
     assert "authoring preflight command" in prompt
+    assert "preserve its Host-filled `identity` and `authoring_contract` objects exactly" in prompt
     assert "skills/factor-forge-ultimate/SKILL.md" not in prompt
     assert "identity/web_execution_ledger.md" in prompt
     assert "host exclusively materializes and runs formal Step3 through Step6" in prompt
@@ -732,6 +733,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     assert f"FACTORFORGE_S3_PROXY_URL={config.container_proxy_url}" not in research_command
     assert f"NO_PROXY={urlsplit(config.container_model_broker_url).hostname}" in research_command
     assert "AWS_EC2_METADATA_DISABLED=true" in research_command
+    assert "PYTHONDONTWRITEBYTECODE=1" in research_command
     assert f"type=bind,src={source.resolve()},dst={source.resolve()},readonly" in research_command
     assert f"type=bind,src={workspace.resolve()},dst={workspace.resolve()}" in research_command
     for protected in protected_task_files:

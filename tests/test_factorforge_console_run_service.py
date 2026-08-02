@@ -1292,6 +1292,7 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
     assert env["FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT"] == str(
         data_api_package.resolve()
     )
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     probe = subprocess.run(
         [
             sys.executable,

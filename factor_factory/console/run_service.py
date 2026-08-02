@@ -143,6 +143,7 @@ def _configure_host_formal_python_environment(
             python_paths.append(canonical_value)
             seen_python_paths.add(canonical_value)
     env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
 def _require_resume_request_allowed(job: ResearchJob) -> None:

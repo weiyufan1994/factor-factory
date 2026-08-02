@@ -971,6 +971,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--env",
             "PYTHONUNBUFFERED=1",
             "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
             "AWS_EC2_METADATA_DISABLED=true",
             "--env",
             f"NO_PROXY={urlsplit(self.config.container_model_broker_url).hostname}",

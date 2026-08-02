@@ -63,6 +63,7 @@ ROUTE_FAMILIES = {
     "null_alias_counterexample",
 }
 WEB_NON_FORMULA_DAILY_FIELDS = frozenset({"ts_code", "trade_date"})
+WEB_AUTHORING_DATASETS = frozenset({"clean_daily_bar"})
 WEB_FORMULA_OPERATORS = frozenset(
     name
     for name, metadata in SUPPORTED_OPERATORS.items()
@@ -576,6 +577,11 @@ Do not read whole skill files, validator source, wrapper source, or recursive
 reference documents. If a command blocks, correct the named plan field; do not
 reverse engineer the framework.
 
+The catalog summary is an authoring projection containing only datasets the Web
+v1 Formula IR executor can consume. Omitted catalog entries remain available to
+the Host catalog but are intentionally outside this authoring contract; do not
+infer that they are missing or request them from the network.
+
 ## Researcher Work
 
 Replace every `{PLACEHOLDER}` in `identity/web_research_plan.json` with your own
@@ -612,6 +618,11 @@ Choose `economic_mechanism.return_source_family`,
 finite values in the authoring contract. Keep the submitted outer sample bounds
 unchanged and enforce `is_start <= is_end < oos_start <= oos_end`.
 
+The plan template's `identity` and `authoring_contract` objects are Host-filled
+bindings. Preserve their exact values; do not recompute, shorten or hand-copy the
+contract hash. If preflight reports `authoring_contract.sha256_expected:<hash>`,
+restore that exact value and rerun preflight.
+
 Web plan v1 does not execute agent-authored Python: the trusted Formula IR code
 generator creates the formal implementation after parsing and field checks.
 Unsupported syntax, raw-minute dependencies, or derived-state requirements must
@@ -626,7 +637,7 @@ precise BLOCK, never fabricated evidence.
 
 After completing the plan, run this authoring-only check:
 
-`python3 {worktree / 'scripts' / 'validate_factorforge_web_research_plan.py'} --workspace-root {workspace} --plan {workspace / 'identity' / 'web_research_plan.json'}`
+`python3 -B {worktree / 'scripts' / 'validate_factorforge_web_research_plan.py'} --workspace-root {workspace} --plan {workspace / 'identity' / 'web_research_plan.json'}`
 
 This command does not access data, materialize artifacts, or start Ultimate.
 Correct only the named fields and rerun it until `verdict=PASS`. Do not claim
@@ -715,7 +726,9 @@ def summarize_catalogs(catalogs: Iterable[Path]) -> dict[str, Any]:
         path = Path(catalog).expanduser().resolve(strict=True)
         payload = json.loads(path.read_text(encoding="utf-8"))
         entries = []
-        for name, entry in _catalog_entries(payload)[:80]:
+        for name, entry in _catalog_entries(payload):
+            if name not in WEB_AUTHORING_DATASETS:
+                continue
             metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
             entries.append(
                 {
@@ -1253,7 +1266,14 @@ def validate_plan(
         workspace,
         plan,
     ):
-        reasons.append("authoring_contract")
+        if contract_reference.get("version") != AUTHORING_CONTRACT_VERSION:
+            reasons.append(
+                f"authoring_contract.version_expected:{AUTHORING_CONTRACT_VERSION}"
+            )
+        reasons.append(
+            "authoring_contract.sha256_expected:"
+            + stable_json_hash(authoring_contract)
+        )
     daily_columns = set(_clean_daily_columns(catalog_summary))
     if not daily_columns:
         reasons.append("data_plan.clean_daily_bar_catalog_missing")

@@ -858,6 +858,30 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     ) == "phase ledger\n"
     assert (view.root / task.optional_output_relative).read_text(encoding="utf-8") == ""
 
+    duplicated_closing_delimiter = phase_view("duplicated-closing-delimiter")
+    valid_delivery = json.dumps(
+        {
+            "status": "MEMO_DRAFT_COMPLETE",
+            "memo": {"a": "first"},
+            "ledger": "phase ledger",
+        }
+    )
+    adapter._stage_resume_terminal_delivery(
+        duplicated_closing_delimiter,
+        terminal_text=valid_delivery + '"}',
+        resume_task=task,
+    )
+    assert (
+        duplicated_closing_delimiter.root / task.required_output_relative
+    ).read_text(encoding="utf-8") == '{"a":"first"}\n'
+
+    with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("arbitrary-trailing-text"),
+            terminal_text=valid_delivery + " trailing text",
+            resume_task=task,
+        )
+
     with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
         adapter._stage_resume_terminal_delivery(
             phase_view("invalid-json"),

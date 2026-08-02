@@ -1198,9 +1198,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
         try:
             delivery = json.loads(terminal_text)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is invalid JSON"
-            ) from exc
+            # Some model transports duplicate the final ledger quote and object
+            # delimiter. Recover only that exact, unambiguous suffix; every
+            # other form of trailing or malformed output remains fail-closed.
+            try:
+                delivery, parsed_end = json.JSONDecoder().raw_decode(terminal_text)
+            except json.JSONDecodeError:
+                delivery = None
+                parsed_end = -1
+            if parsed_end < 0 or terminal_text[parsed_end:] != '"}':
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is invalid JSON"
+                ) from exc
         if (
             not isinstance(delivery, dict)
             or set(delivery) != RESUME_TERMINAL_DELIVERY_KEYS

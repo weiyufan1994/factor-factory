@@ -490,6 +490,9 @@ def _build_agent_resume_prompt(
    Return exactly one minified JSON object, without Markdown fences or any text
    before or after it, using this envelope:
    `{{"status":"MEMO_DRAFT_COMPLETE","memo":{{...completed answer form...}},"ledger":"..."}}`.
+   JSON-escape every quote, backslash, and line break inside string values.
+   Serialize the top-level object exactly once: after the ledger's closing
+   quote, emit one closing `}}` and stop; never repeat the final `"}}` pair.
    The Host parses the terminal envelope, validates it, and performs the only
    permitted artifact write to `{workspace / task.required_output_relative}`."""
         ledger_step = """7. Put a concise execution record under 1,600 characters in the envelope's

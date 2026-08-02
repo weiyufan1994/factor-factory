@@ -237,6 +237,20 @@ class _CredentialEchoAdapter(_TerminalRejectAdapter):
         self.cleared = True
 
 
+class _EarlyRuntimeFailureAdapter:
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        raise RuntimeError(
+            "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE: "
+            "container agent initialization failed"
+        )
+
+    def denied_secret_values(self, job_id: str):
+        raise RuntimeError("task denied-secret registry is missing")
+
+    def clear_denied_secrets(self, job_id: str):
+        return None
+
+
 def _service(tmp_path: Path, adapter):
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.run_service import ResearchRunService
@@ -383,6 +397,19 @@ def test_service_redacts_exact_temporary_credentials_and_clears_registry(
     assert adapter.secret.encode("utf-8") not in b"".join(
         path.read_bytes() for path in public_root.rglob("*") if path.is_file()
     )
+
+
+def test_early_runtime_failure_keeps_original_block_reason_without_registry(tmp_path):
+    _source, store, service = _service(tmp_path, _EarlyRuntimeFailureAdapter())
+    job = service.submit(_request("Early runtime failure"))
+
+    service.run_once()
+    blocked = store.get_job(job.job_id)
+
+    assert blocked.execution_status == "BLOCKED"
+    assert blocked.error_code == "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE"
+    assert "container agent initialization failed" in blocked.error_message
+    assert "CREDENTIAL_REGISTRY_INVALID" not in blocked.error_message
 
 
 def test_web_result_redacts_exact_and_base64_temporary_credentials():

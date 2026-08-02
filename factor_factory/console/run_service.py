@@ -328,7 +328,7 @@ class ResearchRunService:
                 try:
                     denied_values = _adapter_denied_values(self.agent_adapter, job.job_id)
                 except (OSError, RuntimeError, ValueError):
-                    message = "BLOCK_FACTORFORGE_CONSOLE_CREDENTIAL_REGISTRY_INVALID"
+                    denied_values = ()
             token = message.split(":", 1)[0] if message.startswith("BLOCK_") else "BLOCK_FACTORFORGE_CONSOLE_RUN_FAILED"
             self.store.update_job(
                 job.job_id,

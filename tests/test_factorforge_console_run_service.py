@@ -1167,6 +1167,8 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "knowledge, or any file. Do not run" in prompt
     assert "E[r_i,t+h | F_t, formula_specific_state_i,t]" in prompt
     assert "identical JSON objects" in prompt
+    assert "top-level `falsification_tests` as a JSON list with at least two" in prompt
+    assert "does not satisfy\n     this required top-level field" in prompt
     assert "any Step script or\n   validator" in prompt
     assert "exact validator above" not in prompt
     assert "RankIC and\n   PearsonIC are evaluation statistics" in prompt

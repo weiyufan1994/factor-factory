@@ -431,13 +431,20 @@ class FactorWorktreeAllocator:
             and existing_workspace.is_dir()
             and existing_manifest.is_file()
         ):
+            try:
+                persisted_manifest = json.loads(existing_manifest.read_text(encoding="utf-8"))
+                persisted_commit = str(persisted_manifest.get("base_commit") or "")
+            except (OSError, UnicodeError, json.JSONDecodeError, AttributeError) as exc:
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: allocation manifest invalid"
+                ) from exc
             return self.validate_allocation(
                 factor_id=factor_id,
                 research_id=research_id,
                 report_id=report_id,
                 persisted_worktree_path=existing_worktree,
                 persisted_workspace_path=existing_workspace,
-                persisted_base_commit=self.base_commit,
+                persisted_base_commit=persisted_commit,
             )
 
         with self._worktree_lock():
@@ -667,12 +674,17 @@ class FactorWorktreeAllocator:
                 raise WorktreeAllocationError(
                     f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: allocation manifest invalid"
                 ) from exc
+            task_base_commit = str(persisted_base_commit or "").lower()
+            if not re.fullmatch(r"[0-9a-f]{40,64}", task_base_commit):
+                raise WorktreeAllocationError(
+                    f"{BLOCK_WORKTREE_GIT_FAILED}: persisted base commit mismatch"
+                )
             expected_manifest = {
                 "factor_id": factor_id,
                 "research_id": research_id,
                 "report_id": report_id,
                 "source_repo": str(self.source_repo),
-                "base_commit": self.base_commit,
+                "base_commit": task_base_commit,
                 "worktree_path": str(supplied_worktree),
                 "workspace_path": str(supplied_workspace),
             }
@@ -683,12 +695,19 @@ class FactorWorktreeAllocator:
                 raise WorktreeAllocationError(
                     f"{BLOCK_WORKTREE_WORKSPACE_INVALID}: allocation manifest identity mismatch"
                 )
-            if str(persisted_base_commit or "").lower() != self.base_commit:
+            resolved_task_commit = _git(
+                self.source_repo,
+                "rev-parse",
+                "--verify",
+                f"{task_base_commit}^{{commit}}",
+                failure_token=BLOCK_WORKTREE_GIT_FAILED,
+            ).lower()
+            if resolved_task_commit != task_base_commit:
                 raise WorktreeAllocationError(
                     f"{BLOCK_WORKTREE_GIT_FAILED}: persisted base commit mismatch"
                 )
             checked_out_commit = _git(supplied_worktree, "rev-parse", "HEAD")
-            if checked_out_commit.lower() != self.base_commit:
+            if checked_out_commit.lower() != task_base_commit:
                 raise WorktreeAllocationError(
                     f"{BLOCK_WORKTREE_GIT_FAILED}: resumed worktree commit mismatch"
                 )
@@ -709,7 +728,7 @@ class FactorWorktreeAllocator:
                 "--porcelain",
                 failure_token=BLOCK_WORKTREE_GIT_FAILED,
             )
-            expected_record = f"worktree {supplied_worktree}\nHEAD {self.base_commit}\ndetached"
+            expected_record = f"worktree {supplied_worktree}\nHEAD {task_base_commit}\ndetached"
             if expected_record not in registered:
                 raise WorktreeAllocationError(
                     f"{BLOCK_WORKTREE_GIT_FAILED}: resumed worktree registration mismatch"
@@ -720,14 +739,14 @@ class FactorWorktreeAllocator:
                 factor_id=factor_id,
                 research_id=research_id,
                 report_id=report_id,
-                base_commit=self.base_commit,
+                base_commit=task_base_commit,
             )
             return WorktreeAllocation(
                 factor_id=factor_id,
                 research_id=research_id,
                 report_id=report_id,
                 source_repo=self.source_repo,
-                base_commit=self.base_commit,
+                base_commit=task_base_commit,
                 worktree_path=supplied_worktree,
                 workspace_path=supplied_workspace,
                 manifest_path=manifest_path,

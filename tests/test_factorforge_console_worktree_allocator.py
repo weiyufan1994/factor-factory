@@ -183,6 +183,35 @@ def test_resume_revalidates_exact_allocation_and_rejects_tampering(tmp_path):
         )
 
 
+def test_resume_keeps_task_pinned_commit_after_source_deployment(tmp_path):
+    source = _make_source_repo(tmp_path)
+    original_allocator = _allocator(tmp_path, source)
+    allocation = original_allocator.allocate(
+        factor_id="FACTOR_PINNED_RESUME",
+        research_id="research_pinned_resume",
+        report_id="report_pinned_resume",
+    )
+
+    (source / "deployment-marker.txt").write_text("next deployment\n", encoding="utf-8")
+    _git(source, "add", "deployment-marker.txt")
+    _git(source, "commit", "-m", "next deployment")
+    current_commit = _git(source, "rev-parse", "HEAD").stdout.strip()
+    assert current_commit != allocation.base_commit
+
+    upgraded_allocator = _allocator(tmp_path, source)
+    resumed = upgraded_allocator.validate_allocation(
+        factor_id=allocation.factor_id,
+        research_id=allocation.research_id,
+        report_id=allocation.report_id,
+        persisted_worktree_path=allocation.worktree_path,
+        persisted_workspace_path=allocation.workspace_path,
+        persisted_base_commit=allocation.base_commit,
+    )
+
+    assert resumed.base_commit == allocation.base_commit
+    assert _git(resumed.worktree_path, "rev-parse", "HEAD").stdout.strip() == allocation.base_commit
+
+
 def test_allocate_adopts_complete_orphan_manifest_after_ledger_crash(tmp_path):
     source = _make_source_repo(tmp_path)
     allocator = _allocator(tmp_path, source)

@@ -1161,6 +1161,9 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "MEMO_DRAFT_COMPLETE" in prompt
     assert "phase\n   workspace is read-only" in prompt
     assert "Return exactly one minified JSON object" in prompt
+    assert "answer form is the sole source\n   of truth for every immutable value" in prompt
+    assert "preserve `source_refs`\n   as the answer form's exact string-valued JSON object" in prompt
+    assert "never copy, merge, or substitute them into `source_refs`" in prompt
     assert "performs the only\n   permitted artifact write" in prompt
     assert "Do not call\n   a write or edit tool" in prompt
     assert "hard-blocks at 20,000 bytes" in prompt

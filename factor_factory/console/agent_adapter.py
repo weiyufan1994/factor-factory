@@ -568,7 +568,11 @@ quote them.
 {delivery_step}
 2. Preserve `resume_attempt_id`, identity, source refs, formula syntax,
    observed metrics, component IDs/subexpressions/operators, and
-   formula/operator-presence flags exactly.
+   formula/operator-presence flags exactly. The answer form is the sole source
+   of truth for every immutable value. In particular, preserve `source_refs`
+   as the answer form's exact string-valued JSON object. The facts packet's
+   `source_artifacts` objects and SHA256 values are provenance evidence only;
+   never copy, merge, or substitute them into `source_refs`.
 3. Independently fill every blank research field. Set `producer` to
    `current_main_agent`; set authoring mode to `current_agent_freeform`, role to
    `main_agent`, and `answered_without_deterministic_template` to `true`.

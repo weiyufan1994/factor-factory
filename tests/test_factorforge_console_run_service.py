@@ -944,6 +944,8 @@ def test_resume_refreshes_read_only_packet_without_overwriting_agent_plan(tmp_pa
 
 
 def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_path, monkeypatch):
+    from dataclasses import replace
+
     from factor_factory.console.agent_adapter import AgentRunResult, build_agent_prompt
     from factor_factory.console.models import ResearchJob
 
@@ -1155,11 +1157,17 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "DO_NOT_LEAK_QUESTIONNAIRE_INTERPRETATION" not in prompt
     assert contract["answer_form"] in prompt
     assert contract["validation_command"] not in prompt
-    assert "pinned formal validator after your clean exit" in prompt
+    assert "pinned formal validator after your\n   clean exit" in prompt
     assert "MEMO_DRAFT_COMPLETE" in prompt
+    assert "phase\n   workspace is read-only" in prompt
+    assert "Return exactly one minified JSON object" in prompt
+    assert "performs the only\n   permitted artifact write" in prompt
+    assert "Do not call\n   a write or edit tool" in prompt
+    assert "hard-blocks at 20,000 bytes" in prompt
+    assert "knowledge, or any file. Do not run" in prompt
     assert "E[r_i,t+h | F_t, formula_specific_state_i,t]" in prompt
     assert "identical JSON objects" in prompt
-    assert "any Step script or validator" in prompt
+    assert "any Step script or\n   validator" in prompt
     assert "exact validator above" not in prompt
     assert "RankIC and\n   PearsonIC are evaluation statistics" in prompt
     assert "must not describe IC" in prompt
@@ -1167,6 +1175,22 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "Required Authoring Preflight" not in prompt
     assert "six packet files" not in prompt
     assert "Fill the task-local web research plan" not in prompt
+
+    shared_gateway_prompt = build_agent_prompt(
+        job,
+        worktree=source,
+        workspace=workspace,
+        config=replace(service.config, execution_mode="shared_gateway"),
+        resume=True,
+        resume_task=resume_task,
+    )
+    assert f"Copy `{answer_form_path}` to" in shared_gateway_prompt
+    assert "use exactly one write call for\n   the memo" in shared_gateway_prompt
+    assert "Return exactly\n   `MEMO_DRAFT_COMPLETE`" in shared_gateway_prompt
+    assert "Return exactly one minified JSON object" not in shared_gateway_prompt
+    assert "workspace is read-only" not in shared_gateway_prompt
+    assert "knowledge, or any file outside the required memo" in shared_gateway_prompt
+    assert "knowledge, or any file. Do not run" not in shared_gateway_prompt
 
     memo_path = workspace / contract["required_output"]
     memo = json.loads(answer_form_path.read_text(encoding="utf-8"))

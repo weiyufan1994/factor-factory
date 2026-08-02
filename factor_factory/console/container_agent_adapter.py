@@ -48,7 +48,11 @@ from factor_factory.console.web_research_plan import write_text_atomic
 
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
-REQUIRED_RESUME_CONTAINER_TOOLS = ["read", "write"]
+REQUIRED_RESUME_CONTAINER_TOOLS = ["read"]
+RESUME_TERMINAL_DELIVERY_KEYS = {"status", "memo", "ledger"}
+RESUME_MEMO_MAX_BYTES = 20_000
+RESUME_LEDGER_MAX_CHARACTERS = 1_600
+RESUME_TERMINAL_MAX_BYTES = 32_000
 REQUIRED_COMPACTION_POLICY = {
     "mode": "safeguard",
     "reserveTokens": 16384,
@@ -306,7 +310,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             git_dir=git_dir,
             aws_env_file=None,
             profile_config_readonly=None,
-            auth_store_readonly=None,
+            auth_store_path=None,
             workspace_readonly=resume_workspace_view is not None,
             workspace_mount_source=(
                 resume_workspace_view.root if resume_workspace_view is not None else None
@@ -365,8 +369,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 git_dir=git_dir,
                 aws_env_file=aws_env_file,
                 profile_config_readonly=profile_config,
-                auth_store_readonly=auth_store,
-                workspace_readonly=False,
+                auth_store_path=auth_store,
+                workspace_readonly=resume_workspace_view is not None,
                 workspace_mount_source=(
                     resume_workspace_view.root
                     if resume_workspace_view is not None
@@ -405,6 +409,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "--json",
             ]
             started = utc_now()
+            raw_stdout = ""
+            raw_stderr = ""
             with self._lock:
                 self._active.add(container_name)
             try:
@@ -416,8 +422,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     timeout=self.config.agent_timeout_seconds + 90,
                 )
                 returncode = proc.returncode
-                stdout = redact_secrets(proc.stdout, extra_values=credential_values)
-                stderr = redact_secrets(proc.stderr, extra_values=credential_values)
+                raw_stdout = proc.stdout
+                raw_stderr = proc.stderr
+                stdout = redact_secrets(raw_stdout, extra_values=credential_values)
+                stderr = redact_secrets(raw_stderr, extra_values=credential_values)
                 error_code = "" if returncode == 0 else BLOCK_AGENT_RUNTIME_FAILED
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -428,8 +436,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     raise RuntimeError(
                         f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out agent container could not be removed"
                     ) from exc
-                stdout = redact_secrets(_as_text(exc.stdout), extra_values=credential_values)
-                stderr = redact_secrets(_as_text(exc.stderr), extra_values=credential_values)
+                raw_stdout = _as_text(exc.stdout)
+                raw_stderr = _as_text(exc.stderr)
+                stdout = redact_secrets(raw_stdout, extra_values=credential_values)
+                stderr = redact_secrets(raw_stderr, extra_values=credential_values)
                 returncode = 124
                 error_code = BLOCK_AGENT_RUNTIME_TIMEOUT
             finally:
@@ -440,13 +450,33 @@ class ContainerizedOpenClawResearchAgentAdapter:
             # validated and published the task's public evidence set.
             self._cleanup_aws_environment(aws_env_file, None)
 
+        try:
+            validate_auth_database(
+                auth_store,
+                provider=self.config.openclaw_auth_provider,
+                label="phase credential store",
+                expected_key=self._broker_client_token(),
+            )
+        except (OSError, RuntimeError):
+            returncode = 1
+            error_code = BLOCK_AGENT_RUNTIME_FAILED
+            stderr = (
+                f"{stderr}\n{BLOCK_AGENT_RUNTIME_FAILED}: "
+                "phase credential store failed post-run validation"
+            ).strip()
+
         if resume_workspace_view is not None and returncode == 0:
             try:
-                terminal_text = _validate_openclaw_terminal_status(stdout, stderr)
-                if terminal_text != "MEMO_DRAFT_COMPLETE":
-                    raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_FAILED}: resume agent terminal marker is invalid"
-                    )
+                terminal_text = _validate_openclaw_terminal_status(
+                    raw_stdout,
+                    raw_stderr,
+                )
+                self._stage_resume_terminal_delivery(
+                    resume_workspace_view,
+                    terminal_text=terminal_text,
+                    resume_task=resume_task,
+                    extra_secret_values=credential_values,
+                )
                 self._promote_resume_workspace_view(
                     resume_workspace_view,
                     workspace=workspace,
@@ -619,7 +649,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     git_dir=None,
                     aws_env_file=None,
                     profile_config_readonly=None,
-                    auth_store_readonly=None,
+                    auth_store_path=None,
                     worktree_mount_source=worktree_view,
                     workspace_readonly=True,
                     workspace_mount_source=workspace_view,
@@ -676,7 +706,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     git_dir=None,
                     aws_env_file=aws_env_file,
                     profile_config_readonly=profile_config,
-                    auth_store_readonly=auth_store,
+                    auth_store_path=auth_store,
                     worktree_mount_source=worktree_view,
                     workspace_readonly=True,
                     workspace_mount_source=workspace_view,
@@ -741,6 +771,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 finally:
                     with self._lock:
                         self._active.discard(container_name)
+                try:
+                    validate_auth_database(
+                        auth_store,
+                        provider=self.config.openclaw_auth_provider,
+                        label=f"Council credential store {index} post-run",
+                        expected_key=self._broker_client_token(),
+                    )
+                except (OSError, RuntimeError):
+                    turn_returncode = 1
+                    stderr = (
+                        f"{stderr}\n{BLOCK_AGENT_RUNTIME_FAILED}: "
+                        "Council credential store failed post-run validation"
+                    ).strip()
                 runs.append(
                     {
                         "task_id": task.task_id,
@@ -1131,6 +1174,97 @@ class ContainerizedOpenClawResearchAgentAdapter:
             allowed_entry_relatives=allowed_entry_relatives,
             writable_relatives=writable_relatives,
             remove_if_empty_relatives=(resume_task.optional_output_relative,),
+        )
+
+    def _stage_resume_terminal_delivery(
+        self,
+        view: _ResumeWorkspaceView,
+        *,
+        terminal_text: str,
+        resume_task: AgentResumeTask | None,
+        extra_secret_values: tuple[str, ...] = (),
+    ) -> None:
+        if resume_task is None:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery lacks task identity"
+            )
+        if (
+            not terminal_text.strip()
+            or len(terminal_text.encode("utf-8")) > RESUME_TERMINAL_MAX_BYTES
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is missing or too large"
+            )
+        try:
+            delivery = json.loads(terminal_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is invalid JSON"
+            ) from exc
+        if (
+            not isinstance(delivery, dict)
+            or set(delivery) != RESUME_TERMINAL_DELIVERY_KEYS
+            or delivery.get("status") != "MEMO_DRAFT_COMPLETE"
+            or not isinstance(delivery.get("memo"), dict)
+            or not isinstance(delivery.get("ledger"), str)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery schema is invalid"
+            )
+
+        memo_text = json.dumps(
+            delivery["memo"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) + "\n"
+        ledger = delivery["ledger"].strip()
+        ledger_text = f"{ledger}\n" if ledger else ""
+        if len(memo_text.encode("utf-8")) > RESUME_MEMO_MAX_BYTES:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal memo exceeds byte budget"
+            )
+        if not ledger or len(ledger) > RESUME_LEDGER_MAX_CHARACTERS:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal ledger is missing or too large"
+            )
+        for label, text in (("memo", memo_text), ("ledger", ledger_text)):
+            if redact_secrets(text, extra_values=extra_secret_values) != text:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal {label} contains secret material"
+                )
+
+        expected_writable = {
+            resume_task.required_output_relative,
+            resume_task.optional_output_relative,
+            "identity/web_execution_ledger.md",
+        }
+        if set(view.writable_relatives) != expected_writable:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal output boundary is invalid"
+            )
+        _audit_resume_workspace_view(view)
+        for relative in view.writable_relatives:
+            if _read_stable_workspace_file_bytes(
+                view.root,
+                relative,
+                max_bytes=2 * 1024 * 1024,
+                error_code=BLOCK_AGENT_RUNTIME_FAILED,
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume phase output changed before Host staging"
+                )
+        _replace_text_atomic_existing(
+            view.root,
+            resume_task.required_output_relative,
+            memo_text,
+            expected_bytes=b"",
+        )
+        _replace_text_atomic_existing(
+            view.root,
+            "identity/web_execution_ledger.md",
+            ledger_text,
+            expected_bytes=b"",
         )
 
     def _promote_resume_workspace_view(
@@ -1605,7 +1739,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         git_dir: Path | None,
         aws_env_file: Path | None,
         profile_config_readonly: Path | None,
-        auth_store_readonly: Path | None,
+        auth_store_path: Path | None,
         worktree_mount_source: Path | None = None,
         workspace_readonly: bool = False,
         workspace_mount_source: Path | None = None,
@@ -1751,8 +1885,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             command.extend(["--env-file", str(aws_env_file)])
         if profile_config_readonly is not None:
             command.extend(["--mount", _mount(profile_config_readonly, readonly=True)])
-        if auth_store_readonly is not None:
-            command.extend(["--mount", _mount(auth_store_readonly, readonly=True)])
+        if auth_store_path is not None:
+            command.extend(["--mount", _mount(auth_store_path, readonly=False)])
         python_paths = [str(worktree)]
         command.extend(["--env", f"PYTHONPATH={os.pathsep.join(python_paths)}"])
         for key in ("AWS_REGION", "AWS_DEFAULT_REGION"):
@@ -3111,6 +3245,7 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
         if isinstance(metadata, dict)
         else None
     )
+    replay_invalid = metadata.get("replayInvalid") if isinstance(metadata, dict) else None
     payload_texts = (
         [
             str(item.get("text") or "").strip()
@@ -3141,6 +3276,7 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
             optional_final_text is not None
             and not isinstance(optional_final_text, str)
         )
+        or (replay_invalid is not None and not isinstance(replay_invalid, bool))
         or not (
             payload_texts
             or (
@@ -3152,6 +3288,10 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
     ):
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt schema is invalid"
+        )
+    if replay_invalid is True:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal replay is invalid"
         )
     final_text = (
         optional_final_text.strip()

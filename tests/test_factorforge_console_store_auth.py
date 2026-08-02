@@ -461,7 +461,6 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     assert resume_root != initial_root
     assert json.loads(resume_profile.read_text(encoding="utf-8"))["tools"]["allow"] == [
         "read",
-        "write",
     ]
     assert not (resume_home / marker.name).exists()
     command = adapter._container_prefix(
@@ -474,12 +473,16 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
         git_dir=None,
         aws_env_file=None,
         profile_config_readonly=resume_profile,
-        auth_store_readonly=resume_agent / "openclaw-agent.sqlite",
+        auth_store_path=resume_agent / "openclaw-agent.sqlite",
     )
     joined = " ".join(command)
     assert f"src={resume_root},dst={resume_root}" in joined
     assert f"src={initial_root},dst={initial_root}" not in joined
     assert str(marker) not in joined
+    assert (
+        f"src={resume_agent / 'openclaw-agent.sqlite'},"
+        f"dst={resume_agent / 'openclaw-agent.sqlite'},readonly"
+    ) not in joined
 
 
 def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
@@ -574,8 +577,8 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
         git_dir=None,
         aws_env_file=None,
         profile_config_readonly=None,
-        auth_store_readonly=None,
-        workspace_readonly=False,
+        auth_store_path=None,
+        workspace_readonly=True,
         workspace_mount_source=view.root,
         protected_workspace_relatives=tuple(
             relative for relative, _digest in view.read_only_file_sha256
@@ -592,7 +595,7 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
         for target in mount_targets
     )
     assert f"src={view.root},dst={workspace}" in joined
-    assert f"src={view.root},dst={workspace},readonly" not in joined
+    assert f"src={view.root},dst={workspace},readonly" in joined
     assert f"src={workspace},dst={workspace}" not in joined
     assert str(protected) not in joined
     for relative, _digest in view.read_only_file_sha256:
@@ -777,7 +780,146 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     ) == "parent ledger\nphase ledger\n"
 
 
-def test_container_resume_zero_exit_with_empty_outputs_is_failure(
+def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
+    from dataclasses import replace
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    (workspace / "objects/research_iteration_master").mkdir(parents=True)
+    task = replace(
+        _resume_task(),
+        read_only_inputs=(
+            "identity/web_main_agent_mechanism_facts.json",
+            "identity/web_main_agent_mechanism_answer_form.json",
+        ),
+    )
+    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / task.facts_relative).write_text(
+        json.dumps(
+            {
+                "formula_facts": {
+                    "formula": "divide(minus(close, open), pre_close)",
+                    "fields": ["close", "open", "pre_close"],
+                    "operators": ["divide", "minus"],
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
+    (workspace / "identity/web_agent_resume.md").write_text(
+        "facts only\n", encoding="utf-8"
+    )
+    (workspace / "identity/web_execution_ledger.md").write_text(
+        "parent ledger\n", encoding="utf-8"
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=source,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        )
+    )
+
+    def phase_view(name: str):
+        runtime_root = tmp_path / name
+        runtime_root.mkdir()
+        return adapter._prepare_resume_workspace_view(
+            runtime_root=runtime_root,
+            workspace=workspace,
+            resume_task=task,
+        )
+
+    view = phase_view("valid")
+    adapter._stage_resume_terminal_delivery(
+        view,
+        terminal_text=json.dumps(
+            {
+                "status": "MEMO_DRAFT_COMPLETE",
+                "memo": {"z": "last", "a": "first"},
+                "ledger": "phase ledger",
+            }
+        ),
+        resume_task=task,
+    )
+    assert (view.root / task.required_output_relative).read_text(
+        encoding="utf-8"
+    ) == '{"a":"first","z":"last"}\n'
+    assert (view.root / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ) == "phase ledger\n"
+    assert (view.root / task.optional_output_relative).read_text(encoding="utf-8") == ""
+
+    with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("invalid-json"),
+            terminal_text="MEMO_DRAFT_COMPLETE",
+            resume_task=task,
+        )
+    with pytest.raises(RuntimeError, match="delivery schema is invalid"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("extra-key"),
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": {},
+                    "ledger": "phase ledger",
+                    "extra": True,
+                }
+            ),
+            resume_task=task,
+        )
+    with pytest.raises(RuntimeError, match="memo exceeds byte budget"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("oversized-memo"),
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": {"text": "x" * 20_000},
+                    "ledger": "phase ledger",
+                }
+            ),
+            resume_task=task,
+        )
+    with pytest.raises(RuntimeError, match="ledger is missing or too large"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("oversized-ledger"),
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": {},
+                    "ledger": "x" * 1_601,
+                }
+            ),
+            resume_task=task,
+        )
+    prechanged = phase_view("prechanged")
+    (prechanged.root / task.required_output_relative).write_text(
+        "agent wrote directly\n", encoding="utf-8"
+    )
+    with pytest.raises(RuntimeError, match="changed before Host staging"):
+        adapter._stage_resume_terminal_delivery(
+            prechanged,
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": {},
+                    "ledger": "phase ledger",
+                }
+            ),
+            resume_task=task,
+        )
+
+
+def test_container_resume_requires_host_staged_terminal_delivery(
     tmp_path,
     monkeypatch,
 ):
@@ -885,6 +1027,8 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
     )
     research_commands: list[list[str]] = []
 
+    terminal_text = "MEMO_DRAFT_COMPLETE"
+
     def fake_run(command, **_kwargs):
         research_commands.append(command)
         return subprocess.CompletedProcess(
@@ -892,10 +1036,10 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
             0,
             stdout=json.dumps(
                 {
-                    "payloads": [{"text": "MEMO_DRAFT_COMPLETE"}],
+                    "payloads": [{"text": terminal_text}],
                     "meta": {
                         "agentMeta": {"provider": "deepseek", "model": "reasoner"},
-                        "finalAssistantVisibleText": "MEMO_DRAFT_COMPLETE",
+                        "finalAssistantVisibleText": terminal_text,
                     },
                 }
             ),
@@ -915,7 +1059,7 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
     receipt = json.loads(Path(result.result_path).read_text(encoding="utf-8"))
     assert receipt["returncode"] == 1
     assert receipt["error_code"] == BLOCK_AGENT_RUNTIME_FAILED
-    assert "resume output is empty" in receipt["stderr_tail"]
+    assert "resume terminal delivery is invalid JSON" in receipt["stderr_tail"]
     assert not (workspace / task.required_output_relative).exists()
     assert (workspace / "identity/web_execution_ledger.md").read_text(
         encoding="utf-8"
@@ -929,7 +1073,7 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
         for item in research_command
         if item.startswith("type=bind,src=")
         and f",dst={workspace.resolve()}" in item
-        and not item.endswith(",readonly")
+        and item.endswith(",readonly")
     )
     view_root = Path(
         workspace_mount.split("src=", 1)[1].split(",dst=", 1)[0]
@@ -941,7 +1085,49 @@ def test_container_resume_zero_exit_with_empty_outputs_is_failure(
         f"src={view_root / task.required_output_relative}" in item
         for item in research_command
     )
+    auth_store = (
+        config.state_root
+        / "jobs"
+        / job.job_id
+        / "container-agent-phases"
+        / task.attempt_id
+        / "agent/openclaw-agent.sqlite"
+    )
+    assert any(
+        f"src={auth_store},dst={auth_store}" in item
+        and not item.endswith(",readonly")
+        for item in research_command
+    )
 
+    terminal_text = json.dumps(
+        {
+            "status": "MEMO_DRAFT_COMPLETE",
+            "memo": {"leaked_value": token},
+            "ledger": "phase ledger",
+        }
+    )
+    secret_task = replace(task, attempt_id=f"resume_{'d' * 32}")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter,
+            "_promote_resume_workspace_view",
+            lambda *_args, **_kwargs: None,
+        )
+        secret_result = adapter.run(
+            job,
+            worktree=source,
+            workspace=workspace,
+            resume=True,
+            resume_task=secret_task,
+        )
+    assert secret_result.returncode == 1
+    secret_receipt_text = Path(secret_result.result_path).read_text(encoding="utf-8")
+    assert "resume terminal memo contains secret material" in secret_receipt_text
+    assert token not in secret_receipt_text
+
+    terminal_text = json.dumps(
+        {"status": "MEMO_DRAFT_COMPLETE", "memo": {}, "ledger": "phase ledger"}
+    )
     io_failure_task = replace(task, attempt_id=f"resume_{'b' * 32}")
     with monkeypatch.context() as patcher:
         patcher.setattr(
@@ -1064,6 +1250,13 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
     cancelled["meta"]["status"] = "cancelled"
     with pytest.raises(RuntimeError, match="terminal agent error"):
         _validate_openclaw_terminal_status(json.dumps(cancelled), "")
+    replay_invalid = json.loads(receipt("Memo authored."))
+    replay_invalid["meta"]["replayInvalid"] = True
+    with pytest.raises(RuntimeError, match="terminal replay is invalid"):
+        _validate_openclaw_terminal_status(json.dumps(replay_invalid), "")
+    replay_invalid["meta"]["replayInvalid"] = "true"
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(json.dumps(replay_invalid), "")
     with pytest.raises(RuntimeError, match="stderr reported a terminal agent error"):
         _validate_openclaw_terminal_status(
             receipt("Memo authored and validator passed."),

@@ -371,6 +371,7 @@ def build_agent_prompt(
             worktree=worktree,
             workspace=workspace,
             task=resume_task,
+            execution_mode=config.execution_mode,
         )
     if resume_task is not None:
         raise RuntimeError(
@@ -459,6 +460,7 @@ def _build_agent_resume_prompt(
     worktree: Path,
     workspace: Path,
     task: AgentResumeTask,
+    execution_mode: str,
 ) -> str:
     expected_identity = (
         task.job_id == job.job_id
@@ -481,6 +483,42 @@ def _build_agent_resume_prompt(
         f"- {workspace / relative}" for relative in task.read_only_inputs
     )
     model_families = ", ".join(task.allowed_model_families)
+    if execution_mode == "container":
+        delivery_step = f"""1. Build the completed memo from
+   `{workspace / task.answer_form_relative}` in reasoning only. The phase
+   workspace is read-only and no research file may be written by the agent.
+   Return exactly one minified JSON object, without Markdown fences or any text
+   before or after it, using this envelope:
+   `{{"status":"MEMO_DRAFT_COMPLETE","memo":{{...completed answer form...}},"ledger":"..."}}`.
+   The Host parses the terminal envelope, validates it, and performs the only
+   permitted artifact write to `{workspace / task.required_output_relative}`."""
+        ledger_step = """7. Put a concise execution record under 1,600 characters in the envelope's
+   `ledger` string. Do not include secrets or absolute paths."""
+        exit_step = """8. Before returning, check the completed memo once in reasoning for identity,
+   required fields, exact immutable metrics, operator consistency, and byte
+   budget. Then return the single terminal JSON envelope and exit. Do not call
+   a write or edit tool, do not attempt a correction turn, and do not run any
+   command or validator. The Host runs the pinned formal validator after your
+   clean exit."""
+        modification_boundary = """Do not modify the contract, facts packet, answer form,
+   questionnaire, factor spec/case/evaluation, Ultimate proof, plan, data,
+   knowledge, or any file."""
+    else:
+        delivery_step = f"""1. Copy `{workspace / task.answer_form_relative}` to
+   `{workspace / task.required_output_relative}`. Write only the required memo
+   and `identity/web_execution_ledger.md`; do not probe other paths, create
+   sibling temporary files, or retry a failed write more than once."""
+        ledger_step = """7. Update `identity/web_execution_ledger.md` with a concise record under
+   1,600 characters. Do not include secrets or absolute paths."""
+        exit_step = """8. Build the complete memo in reasoning, then use exactly one write call for
+   the memo and exactly one write call for the ledger. Do not edit or read either
+   generated file afterward and do not run any command or validator. The Host
+   runs the pinned formal validator after your clean exit. Return exactly
+   `MEMO_DRAFT_COMPLETE` with no summary or further tool call, then exit."""
+        modification_boundary = """Do not modify the contract, facts packet, answer form,
+   questionnaire, factor spec/case/evaluation, Ultimate proof, plan, data,
+   knowledge, or any file outside the required memo and
+   `identity/web_execution_ledger.md`."""
     return f"""# Factor Forge Step6 Mechanism Resume Task
 
 You are the sole mechanism researcher for one Host-verified Step6 pause. This
@@ -524,12 +562,7 @@ quote them.
 
 ## Required deliverable
 
-1. Copy `{workspace / task.answer_form_relative}` to
-   `{workspace / task.required_output_relative}`.
-   The Host has pre-created the required memo, optional Markdown, and execution
-   ledger as ordinary files in a phase-private workspace. Write only those
-   exact files. Do not probe other paths, create sibling temporary files, or
-   retry a failed write more than once.
+{delivery_step}
 2. Preserve `resume_attempt_id`, identity, source refs, formula syntax,
    observed metrics, component IDs/subexpressions/operators, and
    formula/operator-presence flags exactly.
@@ -546,8 +579,11 @@ quote them.
    canned shorthand such as "investors", "market participants", "generic
    payer", "the factor captures alpha", "signed price state", "volume
    participation gate", or "liquidity or turnover shock". Keep each answer
-   between 120 and 600 characters and the complete serialized memo under
-   20,000 UTF-8 bytes. Concision must not omit contradictory observed metrics.
+   between 120 and 400 characters. Keep the memo below 18,000 UTF-8 bytes when
+   serialized as minified JSON; the Host hard-blocks at 20,000 bytes. The
+   existing answer form is already a substantial part of that budget, so use
+   compact formula-specific prose and do not repeat immutable facts. Concision
+   must not omit contradictory observed metrics.
 5. Complete the mathematical contract with these exact structural rules:
    - `math_hypothesis.process_or_distribution` must contain an explicit model
      equation using `=` and explain the formula-specific state, process, or
@@ -574,20 +610,11 @@ quote them.
    words, their plurals, or their derived forms in any research field, even to
    state their absence. Set the corresponding flags to `false` and refer to
    observed `rank_ic` and `pearson_ic` metrics by those exact names instead.
-7. Update `identity/web_execution_ledger.md` with a concise record under 2,000
-   characters. Do not include secrets or absolute paths in that ledger.
-8. Build the complete memo in reasoning, then use exactly one write call for
-   the memo and exactly one write call for the ledger. Do not edit or read either
-   generated file afterward and do not run any command or validator. The Host
-   runs the pinned formal validator after your clean exit. Return exactly
-   `MEMO_DRAFT_COMPLETE` with no summary or further tool call, then exit. Do not write
-the optional Markdown unless useful. Do not modify the contract, facts packet,
-answer form, questionnaire, factor spec/case/evaluation, Ultimate proof, plan,
-data, knowledge, or any file outside the required memo and execution ledger. Do not run the
-materializer, any Step script or validator, Council,
-Ultimate, custom Python, data access, network probes, credential inspection, or
-environment enumeration. Never claim a factor verdict; the Host resumes formal
-Step6 and Council after your process exits.
+{ledger_step}
+{exit_step} {modification_boundary} Do not run the materializer, any Step script or
+   validator, Council, Ultimate, custom Python, data access, network probes,
+   credential inspection, or environment enumeration. Never claim a factor
+   verdict; the Host resumes formal Step6 and Council after your process exits.
 """
 
 

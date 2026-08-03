@@ -64,6 +64,7 @@ REQUIRED_RESUME_CONTAINER_TOOLS = ["read"]
 RESUME_TERMINAL_DELIVERY_KEYS = {"status", "memo", "ledger"}
 RESUME_LEDGER_MAX_CHARACTERS = 1_600
 RESUME_TERMINAL_MAX_BYTES = 32_000
+RESUME_TERMINAL_PLAIN_PREFIX_MAX_BYTES = 1_024
 REQUIRED_COMPACTION_POLICY = {
     "mode": "safeguard",
     "reserveTokens": 16384,
@@ -84,6 +85,42 @@ REQUIRED_COMPACTION_POLICY = {
 REQUIRED_PROXY_URL = "http://172.29.0.1:3128"
 REQUIRED_MODEL_BROKER_URL = "http://172.29.0.1:8781"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
+
+
+def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
+    if (
+        not prefix.strip()
+        or len(prefix.encode("utf-8"))
+        > RESUME_TERMINAL_PLAIN_PREFIX_MAX_BYTES
+        or "{" in prefix
+        or "}" in prefix
+        or "```" in prefix
+        or "~~~" in prefix
+        or any(
+            character not in "\r\n\t" and not character.isprintable()
+            for character in prefix
+        )
+    ):
+        return False
+
+    lines = [line.strip() for line in prefix.splitlines() if line.strip()]
+    for line in lines:
+        prose = re.sub(r"^(?:[-*]|[0-9]{1,2}[.)])\s+", "", line)
+        if not prose or not prose[0].isalpha() or prose.startswith(("[", "]")):
+            return False
+        try:
+            _json_value, parsed_end = json.JSONDecoder().raw_decode(prose)
+        except json.JSONDecodeError:
+            continue
+        if (
+            parsed_end == len(prose)
+            or not (
+                prose[parsed_end].isalnum()
+                or prose[parsed_end] == "_"
+            )
+        ):
+            return False
+    return bool(lines)
 
 
 @dataclass(frozen=True)
@@ -1247,21 +1284,48 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is missing or too large"
             )
+        accepted_prefix = ""
         try:
             delivery = json.loads(terminal_text)
         except json.JSONDecodeError as exc:
-            # Some model transports duplicate the final ledger quote and object
-            # delimiter. Recover only that exact, unambiguous suffix; every
-            # other form of trailing or malformed output remains fail-closed.
+            # Recover only transport forms that still contain one unambiguous
+            # delivery object; all trailing or structurally prefixed output blocks.
             try:
                 delivery, parsed_end = json.JSONDecoder().raw_decode(terminal_text)
             except json.JSONDecodeError:
                 delivery = None
                 parsed_end = -1
             if parsed_end < 0 or terminal_text[parsed_end:] != '"}':
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is invalid JSON"
-                ) from exc
+                object_start = terminal_text.find("{")
+                prefix = terminal_text[:object_start] if object_start > 0 else ""
+                try:
+                    prefixed_delivery, object_end = json.JSONDecoder().raw_decode(
+                        terminal_text,
+                        object_start,
+                    )
+                except (json.JSONDecodeError, ValueError):
+                    prefixed_delivery = None
+                    object_end = -1
+                if (
+                    not _is_bounded_plain_resume_prefix(prefix)
+                    or object_end != len(terminal_text)
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is invalid JSON"
+                    ) from exc
+                delivery = prefixed_delivery
+                accepted_prefix = prefix
+        if (
+            accepted_prefix
+            and redact_secrets(
+                accepted_prefix,
+                extra_values=extra_secret_values,
+            )
+            != accepted_prefix
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal prefix contains secret material"
+            )
         if (
             not isinstance(delivery, dict)
             or set(delivery) != RESUME_TERMINAL_DELIVERY_KEYS

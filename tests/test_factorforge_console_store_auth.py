@@ -1673,6 +1673,71 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         duplicated_closing_delimiter.root / task.required_output_relative
     ).read_text(encoding="utf-8") == '{"a":"first"}\n'
 
+    bounded_plain_prefix = phase_view("bounded-plain-prefix")
+    adapter._stage_resume_terminal_delivery(
+        bounded_plain_prefix,
+        terminal_text=(
+            "All six authorized inputs were reviewed; `component_links` is "
+            '`[\\"formula_root\\"]`; the exact delivery follows.\n\n'
+            + valid_delivery
+        ),
+        resume_task=task,
+    )
+    assert (
+        bounded_plain_prefix.root / task.required_output_relative
+    ).read_text(encoding="utf-8") == '{"a":"first"}\n'
+
+    with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("structured-prefix"),
+            terminal_text='self-check {"not":"the delivery"}\n' + valid_delivery,
+            resume_task=task,
+        )
+
+    with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("oversized-prefix"),
+            terminal_text=("x" * 1_025) + valid_delivery,
+            resume_task=task,
+        )
+
+    with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("code-fence-prefix"),
+            terminal_text="```json\n" + valid_delivery,
+            resume_task=task,
+        )
+
+    for name, prefix in (
+        ("array-prefix", '["prior"]\n'),
+        ("json-scalar-prefix", "null\n"),
+        ("json-scalar-extra-token-prefix", "null true\n"),
+        ("json-scalar-bracket-boundary-prefix", "null]next\n"),
+        ("json-scalar-unicode-boundary-prefix", "null，next\n"),
+        ("bullet-json-scalar-prefix", "- null\n"),
+        ("numbered-json-scalar-prefix", "1. true\n"),
+        ("malformed-array-prefix", "[prior]\n"),
+        ("tilde-fence-prefix", "~~~json\n"),
+    ):
+        with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+            adapter._stage_resume_terminal_delivery(
+                phase_view(name),
+                terminal_text=prefix + valid_delivery,
+                resume_task=task,
+            )
+
+    prefix_secret = "resume-prefix-secret-material-for-regression"
+    with pytest.raises(RuntimeError, match="prefix contains secret material"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("secret-prefix"),
+            terminal_text=(
+                f"All inputs including {prefix_secret} were reviewed.\n"
+                + valid_delivery
+            ),
+            resume_task=task,
+            extra_secret_values=(prefix_secret,),
+        )
+
     with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
         adapter._stage_resume_terminal_delivery(
             phase_view("arbitrary-trailing-text"),

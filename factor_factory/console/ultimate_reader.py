@@ -477,6 +477,11 @@ def _load_evidence(root: Path) -> tuple[dict[str, list[_Evidence]], list[str]]:
                 if not candidate.is_file():
                     continue
                 artifact_id = candidate.relative_to(root).as_posix()
+                if role == "wrapper_report" and re.search(
+                    r"__prior_[0-9a-f]{12}(?:_[1-9][0-9]*)?$",
+                    candidate.stem,
+                ):
+                    continue
                 identity = (role, artifact_id)
                 if identity in seen:
                     continue

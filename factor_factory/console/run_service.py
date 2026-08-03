@@ -2248,6 +2248,10 @@ class ResearchRunService:
                                 destination_descriptor,
                                 chunk[offset:],
                             )
+                    os.utime(
+                        destination_descriptor,
+                        ns=(source_before.st_atime_ns, source_before.st_mtime_ns),
+                    )
                     os.fsync(destination_descriptor)
                     source_after = os.fstat(source_descriptor)
                 finally:
@@ -2317,6 +2321,15 @@ class ResearchRunService:
                 f"{BLOCK_ISOLATION_AUDIT_FAILED}: attestation evidence snapshot is unsafe"
             )
         workspace_entries = _workspace_evidence_tree(snapshot_root)
+        expected_wrapper_artifact_id = (
+            "objects/runtime_context/"
+            f"ultimate_run_report__{job.report_id}.json"
+        )
+        if summary.artifact_ids.get("wrapper_report") != expected_wrapper_artifact_id:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: "
+                "current wrapper summary binding is invalid"
+            )
         evidence_hashes: dict[str, dict[str, str]] = {}
         for role, artifact_id in sorted(summary.artifact_ids.items()):
             relative_input = Path(artifact_id)

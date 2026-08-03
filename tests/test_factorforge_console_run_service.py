@@ -2611,7 +2611,10 @@ def test_private_receipt_snapshot_rejects_destination_parent_swap(
 
 def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
     from factor_factory.console.agent_adapter import AgentRunResult
-    from factor_factory.console.ultimate_reader import UltimateRunSummary
+    from factor_factory.console.ultimate_reader import (
+        UltimateRunSummary,
+        read_ultimate_workspace,
+    )
 
     _source, store, service = _service(tmp_path, _TerminalRejectAdapter())
     job = service.submit(_request("Host attestation"))
@@ -2802,6 +2805,30 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
     assert trusted["start_step"] == "6"
     assert trusted["ultimate_proof_sha256"] == _file_sha256(evidence)
 
+    prior_proof_sha256 = _file_sha256(evidence)
+    archived_evidence = evidence.with_name(
+        f"{evidence.stem}__prior_{prior_proof_sha256[:12]}{evidence.suffix}"
+    )
+    evidence.replace(archived_evidence)
+    _write_json(
+        evidence,
+        {
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "status": "PAUSED",
+            "failure": None,
+            "main_agent_mechanism_memo": {
+                "status": "awaiting_main_agent_mechanism_memo_revision",
+            },
+        },
+    )
+    os.utime(archived_evidence, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(evidence, ns=(2_000_000_000, 2_000_000_000))
+    current_proof_sha256 = _file_sha256(evidence)
+    assert current_proof_sha256 != prior_proof_sha256
+
+    service._begin_private_execution(job, resume=True)
     resumed_ultimate_argv = list(ultimate_argv)
     resumed_ultimate_argv[resumed_ultimate_argv.index("3")] = "6"
     resumed_commands = [
@@ -2833,25 +2860,81 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
         job,
         workspace,
     )
+    snapshot_current = resumed_attested_workspace / evidence.relative_to(workspace)
+    snapshot_archive = resumed_attested_workspace / archived_evidence.relative_to(
+        workspace
+    )
+    assert snapshot_current.stat().st_mtime_ns == evidence.stat().st_mtime_ns
+    assert snapshot_archive.stat().st_mtime_ns == archived_evidence.stat().st_mtime_ns
+    resumed_summary = read_ultimate_workspace(
+        resumed_attested_workspace,
+        report_id=job.report_id,
+    )
+    assert resumed_summary.artifact_ids["wrapper_report"] == evidence.relative_to(
+        workspace
+    ).as_posix()
+    with pytest.raises(
+        RuntimeError,
+        match="current wrapper summary binding is invalid",
+    ):
+        _ORIGINAL_WRITE_HOST_ATTESTATION(
+            service,
+            job=job,
+            workspace=workspace,
+            evidence_root=resumed_attested_workspace,
+            summary=replace(
+                resumed_summary,
+                artifact_ids={
+                    **resumed_summary.artifact_ids,
+                    "wrapper_report": archived_evidence.relative_to(
+                        workspace
+                    ).as_posix(),
+                },
+            ),
+            agent_result=agent_result,
+            web_materialization={"formula_hash": "formula-hash"},
+            formal_execution=resumed_formal_execution,
+        )
     resumed_relative = _ORIGINAL_WRITE_HOST_ATTESTATION(
         service,
         job=job,
         workspace=workspace,
         evidence_root=resumed_attested_workspace,
-        summary=summary,
+        summary=resumed_summary,
         agent_result=agent_result,
         web_materialization={"formula_hash": "formula-hash"},
         formal_execution=resumed_formal_execution,
     )
+    service._finish_private_execution(
+        job,
+        status="RESUMABLE",
+        attestation_id=resumed_relative,
+    )
     assert resumed_relative != relative
     assert attestation.is_file()
+    resumed_attestation = json.loads(
+        (service.config.state_root / resumed_relative).read_text(encoding="utf-8")
+    )
+    assert resumed_attestation["evidence_hashes"]["wrapper_report"] == {
+        "artifact_id": evidence.relative_to(workspace).as_posix(),
+        "sha256": current_proof_sha256,
+    }
+    service._begin_private_execution(job, resume=True)
     resumed_trusted = _ORIGINAL_VALIDATE_TRUSTED_RESUME_CONTEXT(
         service,
         job,
         worktree=allocation.worktree_path,
         workspace=workspace,
+        private_execution_started=True,
     )
     assert resumed_trusted["start_step"] == "6"
+    assert resumed_trusted["ultimate_proof_sha256"] == current_proof_sha256
+    assert resumed_trusted["attestation_id"] == resumed_relative
+    service._finish_private_execution(
+        job,
+        status="RESUMABLE",
+        attestation_id=resumed_relative,
+    )
 
     original_step4 = step4_evidence.read_bytes()
     _write_json(step4_evidence, {"report_id": job.report_id, "status": "FORGED"})

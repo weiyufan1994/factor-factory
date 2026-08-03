@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,82 @@ def _formal_wrapper_contract(*, formal: bool = True) -> dict:
             "satisfied": True,
         },
     }
+
+
+def test_archived_wrapper_is_never_selected_as_current_even_when_newer(
+    tmp_path: Path,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    workspace = tmp_path / "workspace"
+    current = _wrapper_path(workspace)
+    archived = current.with_name(
+        f"{current.stem}__prior_deadbeef0000{current.suffix}"
+    )
+    _write_json(
+        current,
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_CURRENT",
+            "research_id": RESEARCH_ID,
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "status": "awaiting_main_agent_mechanism_memo_revision",
+            },
+        },
+    )
+    _write_json(
+        archived,
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_ARCHIVED",
+            "research_id": RESEARCH_ID,
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "status": "awaiting_main_agent_mechanism_memo",
+            },
+        },
+    )
+    os.utime(current, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(archived, ns=(2_000_000_000, 2_000_000_000))
+
+    summary = read_ultimate_workspace(workspace, report_id=REPORT_ID)
+
+    assert summary.factor_id == "FACTOR_CURRENT"
+    assert summary.artifact_ids["wrapper_report"] == current.relative_to(
+        workspace
+    ).as_posix()
+
+
+def test_prior_text_inside_report_id_does_not_hide_current_wrapper(
+    tmp_path: Path,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    report_id = f"{REPORT_ID}__prior_name"
+    workspace = tmp_path / "workspace"
+    current = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{report_id}.json"
+    )
+    _write_json(
+        current,
+        {
+            "report_id": report_id,
+            "factor_id": "FACTOR_LEGITIMATE",
+            "research_id": RESEARCH_ID,
+            "status": "PAUSED",
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace, report_id=report_id)
+
+    assert summary.factor_id == "FACTOR_LEGITIMATE"
+    assert summary.artifact_ids["wrapper_report"] == current.relative_to(
+        workspace
+    ).as_posix()
 
 
 def test_wrapper_pass_does_not_override_paused_council(tmp_path: Path) -> None:

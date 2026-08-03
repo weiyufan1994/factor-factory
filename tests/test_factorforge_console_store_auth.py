@@ -812,6 +812,12 @@ def test_container_resume_prompt_requests_only_agent_owned_research_patch(tmp_pa
     assert "canonical `component_id` strings" in prompt
     assert "fields must each be JSON arrays (possibly empty)" in prompt
     assert "never\n   scalar strings" in prompt
+    assert "`mechanism_qa.formula_state_answer`" in prompt
+    assert "`mechanism_qa.estimator_mapping_answer`" in prompt
+    assert '["close","open","pre_close"]' in prompt
+    assert "each answer independently must\n   literally include" in prompt
+    assert "Aliases such as `G`, `R`, or `J` do\n   not count" in prompt
+    assert "satisfying one answer does not satisfy the other" in prompt
     assert (
         "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry"
         in prompt

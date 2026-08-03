@@ -7,6 +7,8 @@ from factor_factory.mechanism_math.main_agent_memo import (
     _claims_correlation_or_covariance_from_text,
     _has_explicit_forward_price_payoff,
     _has_explicit_named_return_payoff,
+    _require_open_answer,
+    formula_specific_qa_terms,
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
@@ -119,6 +121,79 @@ def test_operator_claim_scan_ignores_named_evaluation_correlation():
     assert not _claims_correlation_or_covariance_from_text(
         "Daily cross-sectional Spearman/Pearson correlation of F with forward return."
     )
+
+
+def test_formula_specific_qa_terms_normalize_prompt_and_validator_collections():
+    expected = {"close", "foo"}
+    assert formula_specific_qa_terms(
+        "rank(foo)",
+        operators=["rank"],
+        fields=["close"],
+    ) == expected
+    assert formula_specific_qa_terms(
+        "rank(foo)",
+        operators={"rank"},
+        fields=frozenset({"close"}),
+    ) == expected
+    assert formula_specific_qa_terms(
+        "rank(divide(close, open))",
+        operators=set(),
+        fields=frozenset(),
+    ) == {"close", "open"}
+    assert formula_specific_qa_terms(
+        "rank(divide())",
+        operators=set(),
+        fields=frozenset(),
+    ) == set()
+
+
+def test_formula_specific_answers_each_require_a_literal_locked_token():
+    formula_terms = formula_specific_qa_terms(
+        "divide(abs(open - pre_close), close)",
+        operators={"divide", "abs"},
+        fields={"open", "pre_close", "close"},
+    )
+    alias_only = (
+        "G, R, and J identify the measured object and its mapping while the "
+        "derivation states why the constructed magnitude tracks the latent "
+        "condition at the legal information time."
+    )
+
+    def answer_failures(state_answer: str, estimator_answer: str) -> list[str]:
+        failures: list[str] = []
+        qa = {
+            "formula_state_answer": state_answer,
+            "estimator_mapping_answer": estimator_answer,
+        }
+        for field in qa:
+            _require_open_answer(
+                failures,
+                qa,
+                field,
+                formula_terms=formula_terms,
+                generic_terms=[],
+            )
+        return failures
+
+    state_blocker = (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_NOT_FORMULA_SPECIFIC:"
+        "formula_state_answer"
+    )
+    estimator_blocker = (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_NOT_FORMULA_SPECIFIC:"
+        "estimator_mapping_answer"
+    )
+    assert answer_failures(alias_only, alias_only) == [
+        state_blocker,
+        estimator_blocker,
+    ]
+    assert answer_failures(f"{alias_only} open", alias_only) == [
+        estimator_blocker
+    ]
+    assert answer_failures(
+        f"{alias_only} open",
+        f"{alias_only} pre_close",
+    ) == []
 
 
 def test_explicit_forward_price_payoff_is_a_legal_target_functional():

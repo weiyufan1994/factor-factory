@@ -19,6 +19,7 @@ from factor_factory.console.store import utc_now
 from factor_factory.console.web_research_plan import write_text_atomic
 from factor_factory.mechanism_math.main_agent_memo import (
     MAX_MECHANISM_MEMO_REVISIONS,
+    formula_specific_qa_terms,
 )
 
 
@@ -926,6 +927,18 @@ def _build_agent_resume_prompt(
         separators=(",", ":"),
         sort_keys=True,
     )
+    formula_features = fact_lock["formula_features"]
+    formula_specific_tokens_json = json.dumps(
+        sorted(
+            formula_specific_qa_terms(
+                fact_lock["formula"],
+                operators=formula_features.get("operators"),
+                fields=formula_features.get("fields"),
+            )
+        ),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
     if execution_mode == "container":
         rehydration_notice = """After delivery, the Host starts from the hash-bound
 answer form and overlays only the allowlisted research fields in your patch.
@@ -1106,6 +1119,13 @@ formula tokens, or paraphrasing the rejected answer is another failure.
    participation gate", or "liquidity or turnover shock". Keep each answer
    between 100 and 260 characters. {budget_instruction} Concision must not omit
    contradictory observed metrics from the reasoning.
+   For both `mechanism_qa.formula_state_answer` and
+   `mechanism_qa.estimator_mapping_answer`, each answer independently must
+   literally include at least one exact accepted token from this Host-derived
+   JSON list: `{formula_specific_tokens_json}`. The Host lowercases each answer
+   and applies a literal substring match. Aliases such as `G`, `R`, or `J` do
+   not count unless the same answer also contains an exact listed token;
+   satisfying one answer does not satisfy the other.
 5. Complete the mathematical contract with these exact structural rules:
    - `math_hypothesis.process_or_distribution` must contain an explicit model
      equation using `=` and explain the formula-specific state, process, or

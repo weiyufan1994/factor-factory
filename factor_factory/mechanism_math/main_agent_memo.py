@@ -99,6 +99,49 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def formula_specific_qa_terms(
+    formula_text: Any,
+    *,
+    operators: Any = (),
+    fields: Any = (),
+) -> set[str]:
+    """Return the literal formula terms accepted by the open-answer gate."""
+    operator_items = (
+        operators
+        if isinstance(operators, (set, frozenset))
+        else _as_list(operators)
+    )
+    field_items = (
+        fields if isinstance(fields, (set, frozenset)) else _as_list(fields)
+    )
+    return {
+        term
+        for term in (
+            set(re.findall(r"[a-z_][a-z0-9_]*", str(formula_text or "").lower()))
+            | {
+                str(item).lower()
+                for item in operator_items
+                if str(item).strip()
+            }
+            | {
+                str(item).lower()
+                for item in field_items
+                if str(item).strip()
+            }
+        )
+        if term
+        not in {
+            "rank",
+            "plus",
+            "minus",
+            "multiply",
+            "divide",
+            "negate",
+            "signedpower",
+        }
+    }
+
+
 def _nonempty_str_list(value: Any, min_count: int = 2) -> bool:
     return isinstance(value, list) and len([item for item in value if isinstance(item, str) and item.strip()]) >= min_count
 
@@ -1312,11 +1355,11 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     operators = _operator_set(factor_spec or {}, understanding)
     fields = _field_set(factor_spec or {}, understanding)
     trusted_information_fields = _field_set(factor_spec or {}, trusted_understanding)
-    formula_terms = {
-        term
-        for term in set(re.findall(r"[a-z_][a-z0-9_]*", formula_text)) | operators | fields
-        if term not in {"rank", "plus", "minus", "multiply", "divide", "negate", "signedpower"}
-    }
+    formula_terms = formula_specific_qa_terms(
+        formula_text,
+        operators=operators,
+        fields=fields,
+    )
     qa_generic_terms = [
         "investors",
         "market participants",

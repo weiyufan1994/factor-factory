@@ -334,6 +334,12 @@ def test_named_return_target_requires_the_same_structured_contract():
     assert _has_explicit_named_return_payoff(
         "E[return_{i,t+1} | F_t, drift_state_t]"
     )
+    assert _has_explicit_named_return_payoff(
+        "E[r_{i,t+1->t+2} | F_{i,t}]"
+    )
+    assert _has_explicit_named_return_payoff(
+        r"E[r_{i,t+1\to t+h} | F_{i,t}]"
+    )
     assert not _has_explicit_named_return_payoff(
         "E[x | F_t]; forward return diagnostic"
     )
@@ -343,6 +349,25 @@ def test_named_return_target_requires_the_same_structured_contract():
     assert not _has_explicit_named_return_payoff(
         "E[r_{i,t+4097} | F_t, S_{i,t}]"
     )
+    assert not _has_explicit_named_return_payoff(
+        "E[r_{i,t+2->t+1} | F_{i,t}]"
+    )
+    assert not _has_explicit_named_return_payoff(
+        "E[r_{i,t+1->t+2} | F_{i,t+1}]"
+    )
+    assert not _has_explicit_named_return_payoff(
+        "E[r_{i,t+1->t+2} | F_{label,t}]"
+    )
+    for invalid_filtration in [
+        "F_{tp01,t}",
+        "F_{tplus01,t}",
+        "F_{t,i}",
+        "F_{i,j,t}",
+        "F_{i,t,j}",
+    ]:
+        assert not _has_explicit_named_return_payoff(
+            f"E[r_{{i,t+1->t+2}} | {invalid_filtration}]"
+        )
 
 
 def test_formal_validator_has_no_named_return_keyword_bypass():
@@ -381,6 +406,10 @@ def test_formal_validator_has_no_named_return_keyword_bypass():
         "E[x | F_t]; forward return diagnostic",
     ]:
         assert blocker in target_failures(target)
+    assert blocker not in target_failures(
+        "E[r_{i,t+1->t+2} | F_{i,t}], "
+        "r=close_{i,t+2}/close_{i,t+1}-1, known at after_close_t"
+    )
     assert blocker in target_failures(
         "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, observed_state_{i,t}]",
         {"formula_features": {"fields": ["observed_state"]}},
@@ -397,6 +426,11 @@ def test_formal_validator_has_no_named_return_keyword_bypass():
         "E[close_{i,,t+2}/close_{i,t+1}-1 | F_t]",
         "E[close_{,t+2}/close-1 | F_t]",
         "E[close_{i$,t+2}/close_{i$,t+1}-1 | F_t]",
+        "E[r_{i,t+1->t+2} | F_{tp01,t}]",
+        "E[r_{i,t+1->t+2} | F_{tplus01,t}]",
+        "E[r_{i,t+1->t+2} | F_{t,i}]",
+        "E[r_{i,t+1->t+2} | F_{i,j,t}]",
+        "E[r_{i,t+1->t+2} | F_{i,t,j}]",
     ]:
         assert blocker in target_failures(target)
 

@@ -161,7 +161,10 @@ def _has_explicit_named_return_payoff(
 
 
 def _is_forward_return_time_range(value: str) -> bool:
-    parts = value.split(":")
+    normalized = value.replace("→", "->").replace(r"\to", "->")
+    if ":" in normalized and "->" in normalized:
+        return False
+    parts = normalized.split("->") if "->" in normalized else normalized.split(":")
     if len(parts) not in {1, 2}:
         return False
     offsets: list[int | str] = []
@@ -191,7 +194,12 @@ def _conditional_target_payoff(
     value: Any,
     allowed_information_names: set[str] | None,
 ) -> str | None:
-    compact = re.sub(r"\s+", "", str(value or "").lower()).replace("−", "-")
+    compact = (
+        re.sub(r"\s+", "", str(value or "").lower())
+        .replace("−", "-")
+        .replace("→", "->")
+        .replace(r"\to", "->")
+    )
     trusted_information_names = set(TRUSTED_INFORMATION_NAMES)
     trusted_information_names.update(
         str(name).strip().lower()
@@ -293,10 +301,22 @@ def _is_nonanticipative_information_item(
 
 
 def _is_filtration_item(item: str) -> bool:
-    return re.fullmatch(
+    if re.fullmatch(
         r"(?:f_t|f_\{t\}|\\math(?:cal|scr)\{f\}_(?:t|\{t\}))",
         item,
-    ) is not None
+    ) is not None:
+        return True
+    indexed = re.fullmatch(r"f_\{(?P<index>[^{}]+)\}", item)
+    if indexed is None:
+        return False
+    parts = indexed.group("index").split(",")
+    if len(parts) != 2 or not parts[0] or parts[1] != "t":
+        return False
+    identity = parts[0]
+    return bool(
+        re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", identity)
+        and not _information_name_has_future_semantics(identity)
+    )
 
 
 def _information_name_is_admissible(name: str, allowed_names: set[str]) -> bool:
@@ -305,7 +325,7 @@ def _information_name_is_admissible(name: str, allowed_names: set[str]) -> bool:
 
 def _information_name_has_future_semantics(name: str) -> bool:
     return re.search(
-        r"(?:future|forward|fwd|target|label|outcome|next|lead|lookahead|tomorrow|tp[1-9]|tplus[1-9])",
+        r"(?:future|forward|fwd|target|label|outcome|next|lead|lookahead|tomorrow|(?:tp|tplus)0*[1-9][0-9]*)",
         name,
     ) is not None
 

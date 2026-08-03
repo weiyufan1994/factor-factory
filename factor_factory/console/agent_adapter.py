@@ -949,7 +949,10 @@ subject to formal validation."""
    `economic_state`, `mathematical_object`, `expected_role`, and `metric_link`
    for each canonical component, in canonical order. In `evidence_comparison`,
    include only `mechanism_supported`, `contradictions`,
-   `revision_implications`, and `kill_criteria_triggered`. In
+   `revision_implications`, and `kill_criteria_triggered`:
+   `mechanism_supported` must be one non-empty string, while the other three
+   fields must each be JSON arrays (possibly empty) of non-empty strings, never
+   scalar strings. In
    `operator_claim_consistency`, include exactly
    `claims_correlation_or_covariance`,
    `claims_dependence_without_operator_justification`,

@@ -810,6 +810,8 @@ def test_container_resume_prompt_requests_only_agent_owned_research_patch(tmp_pa
     assert "Every listed patch field is required" in prompt
     assert "formula_state_estimator.component_links" in prompt
     assert "canonical `component_id` strings" in prompt
+    assert "fields must each be JSON arrays (possibly empty)" in prompt
+    assert "never\n   scalar strings" in prompt
     assert "hard-blocks\n   the patch at 16,000 bytes" in prompt
     assert "the patch at 16,000 bytes and the memo at 24,000 bytes" in prompt
 

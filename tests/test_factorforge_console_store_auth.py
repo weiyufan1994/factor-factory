@@ -1687,6 +1687,18 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         bounded_plain_prefix.root / task.required_output_relative
     ).read_text(encoding="utf-8") == '{"a":"first"}\n'
 
+    runtime_length_prefix = (
+        "All authorized inputs were reviewed. "
+        + ("Each pinned metric and identity field was checked. " * 25)
+        + "The exact delivery follows.\n\n"
+    )
+    assert 1_024 < len(runtime_length_prefix.encode("utf-8")) < 2_048
+    adapter._stage_resume_terminal_delivery(
+        phase_view("runtime-length-plain-prefix"),
+        terminal_text=runtime_length_prefix + valid_delivery,
+        resume_task=task,
+    )
+
     with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
         adapter._stage_resume_terminal_delivery(
             phase_view("structured-prefix"),
@@ -1697,7 +1709,7 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
         adapter._stage_resume_terminal_delivery(
             phase_view("oversized-prefix"),
-            terminal_text=("x" * 1_025) + valid_delivery,
+            terminal_text=("x" * 2_049) + valid_delivery,
             resume_task=task,
         )
 

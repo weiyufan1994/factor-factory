@@ -14,6 +14,7 @@ import sys
 import threading
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,7 +28,11 @@ from factor_factory.console.agent_adapter import (
     BLOCK_AGENT_RUNTIME_UNAVAILABLE,
     AgentRunResult,
     AgentResumeTask,
+    RESUME_MEMO_COMPONENT_IDENTITY_FIELDS,
+    RESUME_MEMO_HOST_REHYDRATED_FIELDS,
     RESUME_MEMO_MAX_BYTES,
+    RESUME_MEMO_OPERATOR_FLAG_FIELDS,
+    RESUME_PROMPT_INPUT_MAX_BYTES,
     build_agent_prompt,
     build_agent_session_key,
     copy_auth_database,
@@ -476,6 +481,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     terminal_text=terminal_text,
                     resume_task=resume_task,
                     extra_secret_values=credential_values,
+                    rehydrate_immutable_fields=True,
                 )
                 self._promote_resume_workspace_view(
                     resume_workspace_view,
@@ -1183,6 +1189,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         terminal_text: str,
         resume_task: AgentResumeTask | None,
         extra_secret_values: tuple[str, ...] = (),
+        rehydrate_immutable_fields: bool = False,
     ) -> None:
         if resume_task is None:
             raise RuntimeError(
@@ -1221,8 +1228,36 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery schema is invalid"
             )
 
-        memo_text = json.dumps(
+        model_memo_text = json.dumps(
             delivery["memo"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) + "\n"
+        if len(model_memo_text.encode("utf-8")) > RESUME_MEMO_MAX_BYTES:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal memo exceeds byte budget"
+            )
+        if (
+            redact_secrets(
+                model_memo_text,
+                extra_values=extra_secret_values,
+            )
+            != model_memo_text
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal memo contains secret material"
+            )
+
+        memo = delivery["memo"]
+        if rehydrate_immutable_fields:
+            memo = _rehydrate_resume_memo_immutable_fields(
+                view.root,
+                resume_task,
+                memo,
+            )
+        memo_text = json.dumps(
+            memo,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -3417,6 +3452,82 @@ def _read_stable_workspace_file_bytes(
             max_bytes=max_bytes,
             error_code=error_code,
         )
+
+
+def _rehydrate_resume_memo_immutable_fields(
+    workspace: Path,
+    resume_task: AgentResumeTask,
+    memo: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        answer_form = json.loads(
+            _read_stable_workspace_file_bytes(
+                workspace,
+                resume_task.answer_form_relative,
+                max_bytes=RESUME_PROMPT_INPUT_MAX_BYTES,
+                error_code=BLOCK_AGENT_RUNTIME_FAILED,
+            ).decode("utf-8")
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is invalid"
+        ) from exc
+    if not isinstance(answer_form, dict):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is invalid"
+        )
+
+    rehydrated = deepcopy(memo)
+    if any(
+        field not in answer_form
+        for field in RESUME_MEMO_HOST_REHYDRATED_FIELDS
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+        )
+    for field in RESUME_MEMO_HOST_REHYDRATED_FIELDS:
+        rehydrated[field] = deepcopy(answer_form[field])
+
+    answer_evidence = answer_form.get("evidence_comparison")
+    memo_evidence = rehydrated.get("evidence_comparison")
+    if isinstance(answer_evidence, dict) and isinstance(memo_evidence, dict):
+        memo_evidence["observed_metrics"] = deepcopy(
+            answer_evidence.get("observed_metrics")
+        )
+
+    answer_operator = answer_form.get("operator_claim_consistency")
+    memo_operator = rehydrated.get("operator_claim_consistency")
+    if isinstance(answer_operator, dict) and isinstance(memo_operator, dict):
+        for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS:
+            if field not in answer_operator:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+                )
+            memo_operator[field] = deepcopy(answer_operator[field])
+
+    answer_components = answer_form.get("formula_component_map")
+    memo_components = rehydrated.get("formula_component_map")
+    if (
+        isinstance(answer_components, list)
+        and isinstance(memo_components, list)
+        and len(answer_components) == len(memo_components)
+    ):
+        for answer_component, memo_component in zip(
+            answer_components,
+            memo_components,
+        ):
+            if not isinstance(answer_component, dict) or not isinstance(
+                memo_component,
+                dict,
+            ):
+                continue
+            for field in RESUME_MEMO_COMPONENT_IDENTITY_FIELDS:
+                if field not in answer_component:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+                    )
+                memo_component[field] = deepcopy(answer_component[field])
+    return rehydrated
 
 
 def _safe_workspace_relative_file(

@@ -1167,6 +1167,8 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     )
     assert "identify that implementation mismatch\nexplicitly" in prompt
     assert "never invent the\nmissing component" in prompt
+    assert "Host rehydrates machine-owned immutable\nvalues" in prompt
+    assert "does not alter or fill any research\nclaim" in prompt
     assert "pinned formal validator after your\n   clean exit" in prompt
     assert "MEMO_DRAFT_COMPLETE" in prompt
     assert "phase\n   workspace is read-only" in prompt
@@ -1208,6 +1210,8 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "workspace is read-only" not in shared_gateway_prompt
     assert "knowledge, or any file outside the required memo" in shared_gateway_prompt
     assert "knowledge, or any file. Do not run" not in shared_gateway_prompt
+    assert "Host rehydrates machine-owned" not in shared_gateway_prompt
+    assert "shared-gateway development path does not\nrehydrate" in shared_gateway_prompt
 
     with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
         build_agent_prompt(

@@ -22,6 +22,9 @@ from factor_factory.console.agent_adapter import (
     AgentResumeTask,
     AgentRunResult,
     ResearchAgentAdapter,
+    RESUME_MEMO_COMPONENT_IDENTITY_FIELDS,
+    RESUME_MEMO_IMMUTABLE_FIELDS,
+    RESUME_MEMO_OPERATOR_FLAG_FIELDS,
 )
 from factor_factory.console.artifact_service import SafeArtifact, publish_official_artifacts
 from factor_factory.console.catalog_health import catalogs_healthy, require_catalogs_healthy
@@ -3129,18 +3132,7 @@ class ResearchRunService:
         )
         factor_spec = _read_regular_workspace_json(workspace, spec_relative)
         failures = validate_main_agent_mechanism_memo(memo, factor_spec)
-        immutable_fields = (
-            "contract_version",
-            "resume_attempt_id",
-            "report_id",
-            "factor_id",
-            "source_refs",
-            "formula",
-            "formula_understanding",
-            "canonical_write_permission",
-            "execution_allowed_by_default",
-        )
-        for field in immutable_fields:
+        for field in RESUME_MEMO_IMMUTABLE_FIELDS:
             if stable_json_hash(memo.get(field)) != stable_json_hash(
                 answer_form.get(field)
             ):
@@ -3221,7 +3213,7 @@ class ResearchRunService:
             for index, (memo_component, form_component) in enumerate(
                 zip(memo_components, form_components)
             ):
-                for field in ("component_id", "formula_subexpression", "operators"):
+                for field in RESUME_MEMO_COMPONENT_IDENTITY_FIELDS:
                     memo_value = memo_component.get(field) if isinstance(memo_component, dict) else None
                     form_value = form_component.get(field) if isinstance(form_component, dict) else None
                     if stable_json_hash(memo_value) != stable_json_hash(form_value):
@@ -3238,12 +3230,7 @@ class ResearchRunService:
             if isinstance(answer_form.get("operator_claim_consistency"), dict)
             else {}
         )
-        for field in (
-            "formula_has_correlation_or_covariance_operator",
-            "has_sign_or_threshold",
-            "has_volume_ratio",
-            "has_additive_rank_raw_ratio",
-        ):
+        for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS:
             if memo_operator.get(field) != form_operator.get(field):
                 failures.append(
                     f"immutable_field_changed:operator_claim_consistency.{field}"

@@ -60,6 +60,10 @@ def _resume_task():
 
 def _resume_answer_form():
     return {
+        "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+        "resume_attempt_id": f"resume_{'a' * 32}",
+        "report_id": "REPORT",
+        "factor_id": "FACTOR",
         "formula": "divide(minus(close, open), pre_close)",
         "formula_understanding": {
             "formula_features": {
@@ -88,6 +92,8 @@ def _resume_answer_form():
         "evidence_comparison": {
             "observed_metrics": {"rank_ic_mean": -0.0078}
         },
+        "canonical_write_permission": False,
+        "execution_allowed_by_default": False,
     }
 
 
@@ -98,7 +104,16 @@ def _write_resume_prompt_inputs(
     answer_form: dict | None = None,
 ):
     task = task or _resume_task()
-    answer_form = answer_form or _resume_answer_form()
+    answer_form = json.loads(
+        json.dumps(answer_form or _resume_answer_form(), ensure_ascii=False)
+    )
+    answer_form.update(
+        {
+            "resume_attempt_id": task.attempt_id,
+            "report_id": task.report_id,
+            "factor_id": task.factor_id,
+        }
+    )
     answer_bytes = (
         json.dumps(answer_form, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -1041,6 +1056,87 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         encoding="utf-8"
     ) == "phase ledger\n"
     assert (view.root / task.optional_output_relative).read_text(encoding="utf-8") == ""
+
+    canonicalized = phase_view("canonicalized")
+    model_memo = _resume_answer_form()
+    model_memo["source_refs"] = {"wrong": "model-owned-copy"}
+    model_memo["canonical_write_permission"] = True
+    model_memo["execution_allowed_by_default"] = True
+    model_memo["evidence_comparison"] = {
+        "observed_metrics": {},
+        "mechanism_supported": "no",
+    }
+    model_memo["operator_claim_consistency"][
+        "has_additive_rank_raw_ratio"
+    ] = True
+    model_memo["formula_component_map"][0].update(
+        {
+            "component_id": "invented_identity",
+            "formula_subexpression": "multiply(open, close)",
+            "operators": ["multiply"],
+            "economic_state": "model-authored research state",
+        }
+    )
+    adapter._stage_resume_terminal_delivery(
+        canonicalized,
+        terminal_text=json.dumps(
+            {
+                "status": "MEMO_DRAFT_COMPLETE",
+                "memo": model_memo,
+                "ledger": "phase ledger",
+            }
+        ),
+        resume_task=task,
+        rehydrate_immutable_fields=True,
+    )
+    canonical_memo = json.loads(
+        (canonicalized.root / task.required_output_relative).read_text(
+            encoding="utf-8"
+        )
+    )
+    canonical_answer = json.loads(
+        (canonicalized.root / task.answer_form_relative).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert canonical_memo["source_refs"] == canonical_answer["source_refs"]
+    assert (
+        canonical_memo["evidence_comparison"]["observed_metrics"]
+        == canonical_answer["evidence_comparison"]["observed_metrics"]
+    )
+    assert (
+        canonical_memo["operator_claim_consistency"][
+            "has_additive_rank_raw_ratio"
+        ]
+        is False
+    )
+    assert canonical_memo["formula_component_map"][0]["component_id"] == "formula_root"
+    assert (
+        canonical_memo["formula_component_map"][0]["economic_state"]
+        == "model-authored research state"
+    )
+    assert canonical_memo["evidence_comparison"]["mechanism_supported"] == "no"
+    assert canonical_memo["canonical_write_permission"] is True
+    assert canonical_memo["execution_allowed_by_default"] is True
+
+    locked_secret = "locked-field-secret-for-rehydration-test"
+    secret_in_locked_field = phase_view("secret-in-locked-field")
+    secret_memo = _resume_answer_form()
+    secret_memo["source_refs"] = {"leaked": locked_secret}
+    with pytest.raises(RuntimeError, match="memo contains secret material"):
+        adapter._stage_resume_terminal_delivery(
+            secret_in_locked_field,
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": secret_memo,
+                    "ledger": "phase ledger",
+                }
+            ),
+            resume_task=task,
+            extra_secret_values=(locked_secret,),
+            rehydrate_immutable_fields=True,
+        )
 
     duplicated_closing_delimiter = phase_view("duplicated-closing-delimiter")
     valid_delivery = json.dumps(

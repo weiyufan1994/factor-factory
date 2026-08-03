@@ -38,6 +38,37 @@ RESUME_FACT_LOCK_MAX_NODES = 2_048
 RESUME_FACT_LOCK_MAX_CONTAINER_ITEMS = 512
 RESUME_FACT_LOCK_MAX_STRING_BYTES = 4_096
 RESUME_FACT_LOCK_MAX_KEY_BYTES = 256
+RESUME_MEMO_IMMUTABLE_FIELDS = (
+    "contract_version",
+    "resume_attempt_id",
+    "report_id",
+    "factor_id",
+    "source_refs",
+    "formula",
+    "formula_understanding",
+    "canonical_write_permission",
+    "execution_allowed_by_default",
+)
+RESUME_MEMO_HOST_REHYDRATED_FIELDS = (
+    "contract_version",
+    "resume_attempt_id",
+    "report_id",
+    "factor_id",
+    "source_refs",
+    "formula",
+    "formula_understanding",
+)
+RESUME_MEMO_COMPONENT_IDENTITY_FIELDS = (
+    "component_id",
+    "formula_subexpression",
+    "operators",
+)
+RESUME_MEMO_OPERATOR_FLAG_FIELDS = (
+    "formula_has_correlation_or_covariance_operator",
+    "has_sign_or_threshold",
+    "has_volume_ratio",
+    "has_additive_rank_raw_ratio",
+)
 
 
 @dataclass(frozen=True)
@@ -722,12 +753,6 @@ def _build_resume_prompt_fact_lock(
     observed_metrics = (
         evidence.get("observed_metrics") if isinstance(evidence, dict) else None
     )
-    operator_fields = (
-        "formula_has_correlation_or_covariance_operator",
-        "has_sign_or_threshold",
-        "has_volume_ratio",
-        "has_additive_rank_raw_ratio",
-    )
     if (
         not isinstance(formula, str)
         or not formula.strip()
@@ -750,7 +775,7 @@ def _build_resume_prompt_fact_lock(
         or not isinstance(operator_claims, dict)
         or any(
             not isinstance(operator_claims.get(field), bool)
-            for field in operator_fields
+            for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS
         )
         or not isinstance(observed_metrics, dict)
         or not observed_metrics
@@ -769,7 +794,8 @@ def _build_resume_prompt_fact_lock(
         "formula_features": formula_features,
         "observed_metrics": observed_metrics,
         "operator_presence_flags": {
-            field: operator_claims[field] for field in operator_fields
+            field: operator_claims[field]
+            for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS
         },
         "source_refs": source_refs,
     }
@@ -822,6 +848,9 @@ def _build_agent_resume_prompt(
         sort_keys=True,
     )
     if execution_mode == "container":
+        rehydration_notice = """After delivery, the Host rehydrates machine-owned immutable
+values from the hash-bound answer form; this does not alter or fill any research
+claim, and every research-owned field remains subject to formal validation."""
         delivery_step = f"""1. Build the completed memo from
    `{workspace / task.answer_form_relative}` in reasoning only. The phase
    workspace is read-only and no research file may be written by the agent.
@@ -845,6 +874,9 @@ def _build_agent_resume_prompt(
    questionnaire, factor spec/case/evaluation, Ultimate proof, plan, data,
    knowledge, or any file."""
     else:
+        rehydration_notice = """The shared-gateway development path does not
+rehydrate immutable fields. Preserve every locked value literally in the
+written memo; any omission or change blocks formal validation."""
         delivery_step = f"""1. Copy `{workspace / task.answer_form_relative}` to
    `{workspace / task.required_output_relative}`. Write only the required memo
    and `identity/web_execution_ledger.md`; do not probe other paths, create
@@ -918,6 +950,8 @@ not part of the implemented formula. If the submitted economic idea needs a
 component absent from the exact formula, identify that implementation mismatch
 explicitly and treat it as a falsifier or kill criterion; never invent the
 missing component.
+
+{rehydration_notice}
 
 ## Required deliverable
 

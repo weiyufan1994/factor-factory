@@ -27,6 +27,7 @@ from factor_factory.console.agent_adapter import (
     BLOCK_AGENT_RUNTIME_UNAVAILABLE,
     AgentRunResult,
     AgentResumeTask,
+    RESUME_MEMO_MAX_BYTES,
     build_agent_prompt,
     build_agent_session_key,
     copy_auth_database,
@@ -50,7 +51,6 @@ from factor_factory.console.web_research_plan import write_text_atomic
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
 REQUIRED_RESUME_CONTAINER_TOOLS = ["read"]
 RESUME_TERMINAL_DELIVERY_KEYS = {"status", "memo", "ledger"}
-RESUME_MEMO_MAX_BYTES = 20_000
 RESUME_LEDGER_MAX_CHARACTERS = 1_600
 RESUME_TERMINAL_MAX_BYTES = 32_000
 REQUIRED_COMPACTION_POLICY = {

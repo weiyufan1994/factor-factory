@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,21 @@ BLOCK_AGENT_RUNTIME_UNAVAILABLE = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVA
 BLOCK_AGENT_ORPHANED_WRITER = "BLOCK_FACTORFORGE_CONSOLE_AGENT_ORPHANED_WRITER"
 BLOCK_AGENT_RUNTIME_FAILED = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED"
 BLOCK_AGENT_RUNTIME_TIMEOUT = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_TIMEOUT"
+BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+RESUME_MEMO_MAX_BYTES = 20_000
+# Eight open answers plus the required economic/math fields must fit before
+# terminal staging adds its trailing newline.
+RESUME_MEMO_COMPLETION_RESERVE_BYTES = 12_000
+RESUME_ANSWER_FORM_MAX_BYTES = (
+    RESUME_MEMO_MAX_BYTES - RESUME_MEMO_COMPLETION_RESERVE_BYTES - 1
+)
+RESUME_PROMPT_INPUT_MAX_BYTES = 128 * 1024
+RESUME_FACT_LOCK_MAX_BYTES = RESUME_ANSWER_FORM_MAX_BYTES
+RESUME_FACT_LOCK_MAX_DEPTH = 8
+RESUME_FACT_LOCK_MAX_NODES = 2_048
+RESUME_FACT_LOCK_MAX_CONTAINER_ITEMS = 512
+RESUME_FACT_LOCK_MAX_STRING_BYTES = 4_096
+RESUME_FACT_LOCK_MAX_KEY_BYTES = 256
 
 
 @dataclass(frozen=True)
@@ -454,6 +470,321 @@ secrets or absolute paths in the execution ledger.
 """
 
 
+def _resume_prompt_error(detail: str) -> RuntimeError:
+    return RuntimeError(f"{BLOCK_RESUME_TRUST_INVALID}: {detail}")
+
+
+def _read_stable_resume_prompt_bytes(
+    workspace: Path,
+    relative: str,
+    *,
+    max_bytes: int = RESUME_PROMPT_INPUT_MAX_BYTES,
+) -> bytes:
+    relative_path = Path(relative)
+    if (
+        not relative
+        or relative_path.is_absolute()
+        or relative_path == Path(".")
+        or ".." in relative_path.parts
+    ):
+        raise _resume_prompt_error("resume prompt input path is invalid")
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_descriptor: int | None = None
+    file_descriptor: int | None = None
+    try:
+        root = workspace.resolve(strict=True)
+        if not root.is_absolute():
+            raise OSError("workspace root is not absolute")
+        directory_descriptor = os.open("/", directory_flags)
+        for part in root.parts[1:]:
+            next_descriptor = os.open(
+                part,
+                directory_flags,
+                dir_fd=directory_descriptor,
+            )
+            os.close(directory_descriptor)
+            directory_descriptor = next_descriptor
+        for part in relative_path.parts[:-1]:
+            next_descriptor = os.open(
+                part,
+                directory_flags,
+                dir_fd=directory_descriptor,
+            )
+            os.close(directory_descriptor)
+            directory_descriptor = next_descriptor
+
+        name = relative_path.parts[-1]
+        file_descriptor = os.open(name, file_flags, dir_fd=directory_descriptor)
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size < 0
+            or before.st_size > max_bytes
+        ):
+            raise OSError("resume prompt input is unsafe or too large")
+
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(file_descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(file_descriptor)
+        path_after = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        path_identity = (
+            path_after.st_dev,
+            path_after.st_ino,
+            path_after.st_mode,
+            path_after.st_nlink,
+            path_after.st_size,
+            path_after.st_mtime_ns,
+            path_after.st_ctime_ns,
+        )
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if (
+            before_identity != after_identity
+            or after_identity != path_identity
+            or after.st_nlink != 1
+            or path_after.st_nlink != 1
+            or not stat.S_ISREG(path_after.st_mode)
+            or len(payload) != before.st_size
+        ):
+            raise OSError("resume prompt input changed while reading")
+        return payload
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        raise _resume_prompt_error("resume prompt input is invalid") from exc
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+
+
+def _parse_resume_prompt_json(payload: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise _resume_prompt_error("resume prompt input is invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise _resume_prompt_error("resume prompt input must be an object")
+    return parsed
+
+
+def _validate_resume_fact_lock_shape(value: Any) -> None:
+    node_count = 0
+
+    def visit(item: Any, *, depth: int) -> None:
+        nonlocal node_count
+        node_count += 1
+        if (
+            depth > RESUME_FACT_LOCK_MAX_DEPTH
+            or node_count > RESUME_FACT_LOCK_MAX_NODES
+        ):
+            raise _resume_prompt_error("resume fact lock exceeds structural budget")
+        if item is None or isinstance(item, bool):
+            return
+        if isinstance(item, str):
+            if len(item.encode("utf-8")) > RESUME_FACT_LOCK_MAX_STRING_BYTES:
+                raise _resume_prompt_error("resume fact lock string is too large")
+            return
+        if isinstance(item, int):
+            return
+        if isinstance(item, float):
+            if item != item or item in (float("inf"), float("-inf")):
+                raise _resume_prompt_error(
+                    "resume fact lock contains a non-finite number"
+                )
+            return
+        if isinstance(item, list):
+            if len(item) > RESUME_FACT_LOCK_MAX_CONTAINER_ITEMS:
+                raise _resume_prompt_error("resume fact lock list is too large")
+            for child in item:
+                visit(child, depth=depth + 1)
+            return
+        if isinstance(item, dict):
+            if len(item) > RESUME_FACT_LOCK_MAX_CONTAINER_ITEMS:
+                raise _resume_prompt_error("resume fact lock object is too large")
+            for key, child in item.items():
+                if (
+                    not isinstance(key, str)
+                    or len(key.encode("utf-8")) > RESUME_FACT_LOCK_MAX_KEY_BYTES
+                ):
+                    raise _resume_prompt_error("resume fact lock key is invalid")
+                visit(child, depth=depth + 1)
+            return
+        raise _resume_prompt_error("resume fact lock contains an unsupported value")
+
+    visit(value, depth=0)
+
+
+def _read_resume_prompt_json(workspace: Path, relative: str) -> dict[str, Any]:
+    return _parse_resume_prompt_json(
+        _read_stable_resume_prompt_bytes(workspace, relative)
+    )
+
+
+def _build_resume_prompt_fact_lock(
+    workspace: Path,
+    task: AgentResumeTask,
+) -> dict[str, Any]:
+    contract = _read_resume_prompt_json(workspace, task.contract_relative)
+    expected_contract_fields = {
+        "version": task.version,
+        "attempt_id": task.attempt_id,
+        "job_id": task.job_id,
+        "factor_id": task.factor_id,
+        "research_id": task.research_id,
+        "report_id": task.report_id,
+        "answer_form": task.answer_form_relative,
+    }
+    input_sha256 = contract.get("input_sha256")
+    expected_answer_sha256 = (
+        input_sha256.get(task.answer_form_relative)
+        if isinstance(input_sha256, dict)
+        else None
+    )
+    if (
+        any(
+            contract.get(field) != expected
+            for field, expected in expected_contract_fields.items()
+        )
+        or not isinstance(expected_answer_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_answer_sha256) is None
+    ):
+        raise _resume_prompt_error("resume contract binding is invalid")
+    answer_form_bytes = _read_stable_resume_prompt_bytes(
+        workspace,
+        task.answer_form_relative,
+    )
+    if not secrets.compare_digest(
+        hashlib.sha256(answer_form_bytes).hexdigest(),
+        expected_answer_sha256,
+    ):
+        raise _resume_prompt_error("resume answer form hash mismatch")
+    answer_form = _parse_resume_prompt_json(answer_form_bytes)
+    answer_form_minified = json.dumps(
+        answer_form,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(answer_form_minified) > RESUME_ANSWER_FORM_MAX_BYTES:
+        raise _resume_prompt_error(
+            "resume answer form leaves insufficient completion budget"
+        )
+    formula = answer_form.get("formula")
+    formula_understanding = answer_form.get("formula_understanding")
+    formula_features = (
+        formula_understanding.get("formula_features")
+        if isinstance(formula_understanding, dict)
+        else None
+    )
+    source_refs = answer_form.get("source_refs")
+    components = answer_form.get("formula_component_map")
+    operator_claims = answer_form.get("operator_claim_consistency")
+    evidence = answer_form.get("evidence_comparison")
+    observed_metrics = (
+        evidence.get("observed_metrics") if isinstance(evidence, dict) else None
+    )
+    operator_fields = (
+        "formula_has_correlation_or_covariance_operator",
+        "has_sign_or_threshold",
+        "has_volume_ratio",
+        "has_additive_rank_raw_ratio",
+    )
+    if (
+        not isinstance(formula, str)
+        or not formula.strip()
+        or not isinstance(formula_features, dict)
+        or not isinstance(source_refs, dict)
+        or not source_refs
+        or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in source_refs.items()
+        )
+        or not isinstance(components, list)
+        or not components
+        or any(
+            not isinstance(component, dict)
+            or not isinstance(component.get("component_id"), str)
+            or not isinstance(component.get("formula_subexpression"), str)
+            or not isinstance(component.get("operators"), list)
+            for component in components
+        )
+        or not isinstance(operator_claims, dict)
+        or any(
+            not isinstance(operator_claims.get(field), bool)
+            for field in operator_fields
+        )
+        or not isinstance(observed_metrics, dict)
+        or not observed_metrics
+    ):
+        raise _resume_prompt_error("resume fact lock is invalid")
+    fact_lock = {
+        "formula": formula,
+        "formula_component_identity": [
+            {
+                "component_id": component["component_id"],
+                "formula_subexpression": component["formula_subexpression"],
+                "operators": component["operators"],
+            }
+            for component in components
+        ],
+        "formula_features": formula_features,
+        "observed_metrics": observed_metrics,
+        "operator_presence_flags": {
+            field: operator_claims[field] for field in operator_fields
+        },
+        "source_refs": source_refs,
+    }
+    _validate_resume_fact_lock_shape(fact_lock)
+    serialized = json.dumps(
+        fact_lock,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(serialized) > RESUME_FACT_LOCK_MAX_BYTES:
+        raise _resume_prompt_error("resume fact lock exceeds byte budget")
+    return fact_lock
+
+
 def _build_agent_resume_prompt(
     job: ResearchJob,
     *,
@@ -483,6 +814,13 @@ def _build_agent_resume_prompt(
         f"- {workspace / relative}" for relative in task.read_only_inputs
     )
     model_families = ", ".join(task.allowed_model_families)
+    fact_lock = _build_resume_prompt_fact_lock(workspace, task)
+    fact_lock_json = json.dumps(
+        fact_lock,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     if execution_mode == "container":
         delivery_step = f"""1. Build the completed memo from
    `{workspace / task.answer_form_relative}` in reasoning only. The phase
@@ -562,6 +900,24 @@ an accepted economic or mathematical interpretation. The Host also protects
 upstream audit artifacts, including the deterministic questionnaire and full
 factor artifacts, but those are not authorized research inputs: do not read or
 quote them.
+
+## Host-pinned fact lock
+
+The Host inserted the following verified JSON directly into this task. It is
+authoritative even when the title or submitted hypothesis suggests a richer
+formula. Do not rely on a tool call to acquire these facts, and do not add,
+remove, round, reinterpret, or replace any locked value.
+
+```json
+{fact_lock_json}
+```
+
+The final memo must preserve every corresponding locked value exactly. A field,
+operator, threshold, interaction, hinge, rank, or ratio absent from this lock is
+not part of the implemented formula. If the submitted economic idea needs a
+component absent from the exact formula, identify that implementation mismatch
+explicitly and treat it as a falsifier or kill criterion; never invent the
+missing component.
 
 ## Required deliverable
 

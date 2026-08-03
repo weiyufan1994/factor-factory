@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -54,6 +55,102 @@ def _resume_task():
         protected_inputs=(),
         allowed_model_families=("stochastic_process",),
         validation_command="validate memo",
+    )
+
+
+def _resume_answer_form():
+    return {
+        "formula": "divide(minus(close, open), pre_close)",
+        "formula_understanding": {
+            "formula_features": {
+                "fields": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
+            }
+        },
+        "source_refs": {
+            "factor_spec_master": "objects/factor_spec_master/factor_spec_master__REPORT.json",
+            "factor_case_master": "objects/factor_case_master/factor_case_master__REPORT.json",
+            "evaluation_summary": "objects/validation/factor_evaluation__REPORT.json",
+        },
+        "formula_component_map": [
+            {
+                "component_id": "formula_root",
+                "formula_subexpression": "divide(minus(close, open), pre_close)",
+                "operators": ["divide", "minus"],
+            }
+        ],
+        "operator_claim_consistency": {
+            "formula_has_correlation_or_covariance_operator": False,
+            "has_sign_or_threshold": False,
+            "has_volume_ratio": False,
+            "has_additive_rank_raw_ratio": False,
+        },
+        "evidence_comparison": {
+            "observed_metrics": {"rank_ic_mean": -0.0078}
+        },
+    }
+
+
+def _write_resume_prompt_inputs(
+    workspace: Path,
+    *,
+    task=None,
+    answer_form: dict | None = None,
+):
+    task = task or _resume_task()
+    answer_form = answer_form or _resume_answer_form()
+    answer_bytes = (
+        json.dumps(answer_form, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    answer_path = workspace / task.answer_form_relative
+    answer_path.parent.mkdir(parents=True, exist_ok=True)
+    answer_path.write_bytes(answer_bytes)
+    contract = {
+        "version": task.version,
+        "attempt_id": task.attempt_id,
+        "job_id": task.job_id,
+        "factor_id": task.factor_id,
+        "research_id": task.research_id,
+        "report_id": task.report_id,
+        "answer_form": task.answer_form_relative,
+        "input_sha256": {
+            task.answer_form_relative: hashlib.sha256(answer_bytes).hexdigest(),
+        },
+    }
+    contract_path = workspace / task.contract_relative
+    contract_path.parent.mkdir(parents=True, exist_ok=True)
+    contract_path.write_text(
+        json.dumps(contract, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return task
+
+
+def _build_resume_prompt_for_test(tmp_path: Path, workspace: Path, task):
+    from factor_factory.console.agent_adapter import build_agent_prompt
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.models import ResearchJob
+
+    worktree = workspace.parents[2]
+    job = ResearchJob(
+        job_id=task.job_id,
+        factor_id=task.factor_id,
+        research_id=task.research_id,
+        report_id=task.report_id,
+        request=_request(),
+    )
+    return build_agent_prompt(
+        job,
+        worktree=worktree,
+        workspace=workspace,
+        config=ConsoleConfig(
+            source_repo=worktree,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        ),
+        resume=True,
+        resume_task=task,
     )
 
 
@@ -373,6 +470,7 @@ def test_container_agent_refuses_prompt_symlink_escape(tmp_path):
     worktree = tmp_path / "worktree"
     workspace = worktree / "factor_research" / "FACTOR" / "research"
     (workspace / "identity").mkdir(parents=True)
+    task = _write_resume_prompt_inputs(workspace)
     outside = tmp_path / "outside.md"
     outside.write_text("must remain unchanged\n", encoding="utf-8")
     (workspace / "identity" / "web_agent_resume.md").symlink_to(outside)
@@ -397,9 +495,97 @@ def test_container_agent_refuses_prompt_symlink_escape(tmp_path):
             worktree=worktree,
             workspace=workspace,
             resume=True,
-            resume_task=_resume_task(),
+            resume_task=task,
         )
     assert outside.read_text(encoding="utf-8") == "must remain unchanged\n"
+
+
+def test_resume_prompt_rejects_answer_form_hard_link(tmp_path):
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    task = _write_resume_prompt_inputs(workspace)
+    answer_path = workspace / task.answer_form_relative
+    answer_bytes = answer_path.read_bytes()
+    answer_path.unlink()
+    outside = tmp_path / "outside-answer-form.json"
+    outside.write_bytes(answer_bytes)
+    os.link(outside, answer_path)
+
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        _build_resume_prompt_for_test(tmp_path, workspace, task)
+
+
+def test_resume_prompt_rejects_answer_form_hash_mismatch(tmp_path):
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    task = _write_resume_prompt_inputs(workspace)
+    answer_path = workspace / task.answer_form_relative
+    answer_path.write_bytes(answer_path.read_bytes() + b" ")
+
+    with pytest.raises(RuntimeError, match="resume answer form hash mismatch"):
+        _build_resume_prompt_for_test(tmp_path, workspace, task)
+
+
+def test_resume_prompt_rejects_oversized_fact_lock_value(tmp_path):
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    answer_form = _resume_answer_form()
+    answer_form["formula_understanding"]["formula_features"]["oversized"] = (
+        "x" * 4_097
+    )
+    task = _write_resume_prompt_inputs(
+        workspace,
+        answer_form=answer_form,
+    )
+
+    with pytest.raises(RuntimeError, match="resume fact lock string is too large"):
+        _build_resume_prompt_for_test(tmp_path, workspace, task)
+
+
+def test_resume_prompt_enforces_answer_form_completion_budget_boundary(tmp_path):
+    from factor_factory.console.agent_adapter import RESUME_ANSWER_FORM_MAX_BYTES
+
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    answer_form = _resume_answer_form()
+    metrics = answer_form["evidence_comparison"]["observed_metrics"]
+    metrics["budget_padding_a"] = ""
+    metrics["budget_padding_b"] = ""
+    empty_size = len(
+        json.dumps(
+            answer_form,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    padding_bytes = RESUME_ANSWER_FORM_MAX_BYTES - empty_size
+    assert 0 < padding_bytes <= 8_192
+    first_padding = min(4_096, padding_bytes)
+    metrics["budget_padding_a"] = "x" * first_padding
+    metrics["budget_padding_b"] = "x" * (padding_bytes - first_padding)
+    task = _write_resume_prompt_inputs(
+        workspace,
+        answer_form=answer_form,
+    )
+    assert len(
+        json.dumps(
+            answer_form,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ) == RESUME_ANSWER_FORM_MAX_BYTES
+    assert "## Host-pinned fact lock" in _build_resume_prompt_for_test(
+        tmp_path,
+        workspace,
+        task,
+    )
+
+    metrics["budget_padding_b"] += "x"
+    _write_resume_prompt_inputs(
+        workspace,
+        task=task,
+        answer_form=answer_form,
+    )
+    with pytest.raises(RuntimeError, match="insufficient completion budget"):
+        _build_resume_prompt_for_test(tmp_path, workspace, task)
 
 
 def test_resume_agent_session_is_fresh_and_does_not_reuse_long_context(monkeypatch):
@@ -508,7 +694,7 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
             "objects/research_iteration_master/main_agent_mechanism_questionnaire__REPORT.json",
         ),
     )
-    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    _write_resume_prompt_inputs(workspace, task=task)
     (workspace / task.facts_relative).write_text(
         json.dumps(
             {
@@ -522,7 +708,6 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
         + "\n",
         encoding="utf-8",
     )
-    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
     (workspace / "identity/web_agent_resume.md").write_text(
         "facts only\n", encoding="utf-8"
     )
@@ -799,7 +984,7 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
             "identity/web_main_agent_mechanism_answer_form.json",
         ),
     )
-    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    _write_resume_prompt_inputs(workspace, task=task)
     (workspace / task.facts_relative).write_text(
         json.dumps(
             {
@@ -813,7 +998,6 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
     (workspace / "identity/web_agent_resume.md").write_text(
         "facts only\n", encoding="utf-8"
     )
@@ -971,7 +1155,7 @@ def test_container_resume_requires_host_staged_terminal_delivery(
             "identity/web_main_agent_mechanism_answer_form.json",
         ),
     )
-    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    _write_resume_prompt_inputs(workspace, task=task)
     (workspace / task.facts_relative).write_text(
         json.dumps(
             {
@@ -985,7 +1169,6 @@ def test_container_resume_requires_host_staged_terminal_delivery(
         + "\n",
         encoding="utf-8",
     )
-    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
     (workspace / "identity/web_execution_ledger.md").write_text(
         "parent ledger\n",
         encoding="utf-8",
@@ -1131,6 +1314,7 @@ def test_container_resume_requires_host_staged_terminal_delivery(
         }
     )
     secret_task = replace(task, attempt_id=f"resume_{'d' * 32}")
+    _write_resume_prompt_inputs(workspace, task=secret_task)
     with monkeypatch.context() as patcher:
         patcher.setattr(
             adapter,
@@ -1153,6 +1337,7 @@ def test_container_resume_requires_host_staged_terminal_delivery(
         {"status": "MEMO_DRAFT_COMPLETE", "memo": {}, "ledger": "phase ledger"}
     )
     io_failure_task = replace(task, attempt_id=f"resume_{'b' * 32}")
+    _write_resume_prompt_inputs(workspace, task=io_failure_task)
     with monkeypatch.context() as patcher:
         patcher.setattr(
             adapter,
@@ -1176,6 +1361,7 @@ def test_container_resume_requires_host_staged_terminal_delivery(
     assert "resume promotion I/O failure:OSError" in io_failure_receipt["stderr_tail"]
 
     orphan_task = replace(task, attempt_id=f"resume_{'c' * 32}")
+    _write_resume_prompt_inputs(workspace, task=orphan_task)
     with monkeypatch.context() as patcher:
         patcher.setattr(
             adapter,
@@ -1483,7 +1669,7 @@ def test_resume_view_binds_phase_inputs_to_parent_tree_baseline(
         ),
         protected_inputs=(),
     )
-    (workspace / task.contract_relative).write_text("{}\n", encoding="utf-8")
+    _write_resume_prompt_inputs(workspace, task=task)
     facts_path = workspace / task.facts_relative
     facts_path.write_text(
         json.dumps(
@@ -1498,7 +1684,6 @@ def test_resume_view_binds_phase_inputs_to_parent_tree_baseline(
         + "\n",
         encoding="utf-8",
     )
-    (workspace / task.answer_form_relative).write_text("{}\n", encoding="utf-8")
     (workspace / "identity/web_agent_resume.md").write_text(
         "facts only\n",
         encoding="utf-8",

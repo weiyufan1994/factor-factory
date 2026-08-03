@@ -3211,8 +3211,10 @@ class ResearchRunService:
             failures.append("immutable_field_changed:evidence_comparison.observed_metrics")
         memo_components = memo.get("formula_component_map") or []
         form_components = answer_form.get("formula_component_map") or []
-        if not isinstance(memo_components, list) or len(memo_components) < len(
-            form_components
+        if (
+            not isinstance(memo_components, list)
+            or not isinstance(form_components, list)
+            or len(memo_components) != len(form_components)
         ):
             failures.append("immutable_field_changed:formula_component_map.required_components")
         else:

@@ -1157,6 +1157,16 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "DO_NOT_LEAK_QUESTIONNAIRE_INTERPRETATION" not in prompt
     assert contract["answer_form"] in prompt
     assert contract["validation_command"] not in prompt
+    assert "## Host-pinned fact lock" in prompt
+    assert '"formula":"divide(minus(close, open), pre_close)"' in prompt
+    assert '"rank_ic_mean":-0.0078' in prompt
+    assert '"has_additive_rank_raw_ratio":false' in prompt
+    assert (
+        "authoritative even when the title or submitted hypothesis suggests a richer"
+        in prompt
+    )
+    assert "identify that implementation mismatch\nexplicitly" in prompt
+    assert "never invent the\nmissing component" in prompt
     assert "pinned formal validator after your\n   clean exit" in prompt
     assert "MEMO_DRAFT_COMPLETE" in prompt
     assert "phase\n   workspace is read-only" in prompt
@@ -1198,6 +1208,19 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "workspace is read-only" not in shared_gateway_prompt
     assert "knowledge, or any file outside the required memo" in shared_gateway_prompt
     assert "knowledge, or any file. Do not run" not in shared_gateway_prompt
+
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        build_agent_prompt(
+            job,
+            worktree=source,
+            workspace=workspace,
+            config=service.config,
+            resume=True,
+            resume_task=replace(
+                resume_task,
+                answer_form_relative="../outside-answer-form.json",
+            ),
+        )
 
     memo_path = workspace / contract["required_output"]
     memo = json.loads(answer_form_path.read_text(encoding="utf-8"))
@@ -1277,6 +1300,30 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
         )
 
     memo["producer"] = "current_main_agent"
+    _write_json(memo_path, memo)
+    memo["formula_component_map"].append(
+        {
+            "component_id": "invented_gap_component",
+            "formula_subexpression": "divide(open, pre_close)",
+            "operators": ["divide"],
+        }
+    )
+    _write_json(memo_path, memo)
+    with pytest.raises(
+        RuntimeError,
+        match="formula_component_map.required_components",
+    ):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+    memo["formula_component_map"].pop()
     _write_json(memo_path, memo)
     validation = service._validate_agent_resume_artifact(
         job,

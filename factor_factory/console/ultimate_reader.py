@@ -17,6 +17,8 @@ SUMMARY_CONTRACT_VERSION = "factorforge_console_ultimate_summary_v1"
 VALID_FACTOR_VERDICTS = {"ACCEPT", "REJECT", "ITERATE", "BLOCK", "UNKNOWN"}
 PAUSE_STATES = {
     "awaiting_main_agent_mechanism_memo",
+    "awaiting_main_agent_mechanism_memo_revision",
+    "awaiting_main_agent_mechanism_manual_review",
     "awaiting_agent_results",
     "awaiting_main_agent_council_synthesis",
     "awaiting_next_derivation",

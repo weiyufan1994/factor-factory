@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -39,6 +40,7 @@ from factor_factory.mechanism_math.formula_specific import (
     validate_mechanism_formula_consistency,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
+    MAX_MECHANISM_MEMO_REVISIONS,
     build_main_agent_mechanism_questionnaire,
     formula_specific_derivation_from_main_agent_memo,
     render_main_agent_mechanism_questionnaire_markdown,
@@ -4484,6 +4486,11 @@ def main() -> None:
     main_agent_questionnaire_json_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_questionnaire__{report_id}.json'
     main_agent_questionnaire_md_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_questionnaire__{report_id}.md'
     main_agent_status_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo_status__{report_id}.json'
+    prior_main_agent_status = (
+        load_json(main_agent_status_path)
+        if main_agent_status_path.exists()
+        else {}
+    )
     main_agent_memo_ref = {
         'json_path': str(main_agent_memo_json_path),
         'markdown_path': str(main_agent_memo_md_path),
@@ -4750,11 +4757,13 @@ def main() -> None:
         mechanism_analysis.get('formula_specific_derivation') or {},
     )
     contract_failures: list[str] = []
+    memo_revision_failures: list[str] = []
     contract_failures.extend(factor_proof_failures)
     if formula_derivation_failures:
-        contract_failures.append('formula_specific_derivation_invalid:' + json.dumps(formula_derivation_failures, ensure_ascii=False))
+        memo_revision_failures.append('formula_specific_derivation_invalid:' + json.dumps(formula_derivation_failures, ensure_ascii=False))
     if mechanism_formula_consistency.get('failures'):
-        contract_failures.append('mechanism_formula_consistency_invalid:' + json.dumps(mechanism_formula_consistency.get('failures'), ensure_ascii=False))
+        memo_revision_failures.append('mechanism_formula_consistency_invalid:' + json.dumps(mechanism_formula_consistency.get('failures'), ensure_ascii=False))
+    contract_failures.extend(memo_revision_failures)
 
     handoff_to_step3b = build_handoff_to_step3b(iteration) if iteration['loop_action']['should_modify_step3b'] else None
     would_have_written = [
@@ -4785,6 +4794,91 @@ def main() -> None:
             reasons=prewrite_failures,
             would_have_written=would_have_written,
         )
+        if memo_revision_failures and set(prewrite_failures).issubset(
+            set(memo_revision_failures)
+        ):
+            current_memo_sha256 = hashlib.sha256(
+                main_agent_memo_json_path.read_bytes()
+            ).hexdigest()
+            prior_pause_status = prior_main_agent_status.get('status')
+            same_rejected_memo = (
+                prior_pause_status
+                in {
+                    'awaiting_main_agent_mechanism_memo_revision',
+                    'awaiting_main_agent_mechanism_manual_review',
+                }
+                and prior_main_agent_status.get('prior_memo_sha256')
+                == current_memo_sha256
+            )
+            prior_revision_number = (
+                int(prior_main_agent_status.get('revision_number') or 0)
+                if prior_pause_status
+                in {
+                    'awaiting_main_agent_mechanism_memo_revision',
+                    'awaiting_main_agent_mechanism_manual_review',
+                }
+                else 0
+            )
+            revision_number = (
+                prior_revision_number
+                if same_rejected_memo
+                or prior_pause_status
+                == 'awaiting_main_agent_mechanism_manual_review'
+                else prior_revision_number + 1
+            )
+            prior_memo_sha256 = current_memo_sha256
+            prewrite_block_path = (
+                OBJ
+                / 'validation'
+                / f'step6_prewrite_block__{report_id}.json'
+            )
+            manual_review_required = (
+                revision_number > MAX_MECHANISM_MEMO_REVISIONS
+            )
+            pause_status = (
+                'awaiting_main_agent_mechanism_manual_review'
+                if manual_review_required
+                else 'awaiting_main_agent_mechanism_memo_revision'
+            )
+            pause_token = (
+                'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW'
+                if manual_review_required
+                else 'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION'
+            )
+            status = {
+                'report_id': str(report_id),
+                'status': pause_status,
+                'token': pause_token,
+                'revision_number': revision_number,
+                'revision_failures': memo_revision_failures,
+                'prior_memo_sha256': prior_memo_sha256,
+                'questionnaire_sha256': hashlib.sha256(
+                    main_agent_questionnaire_json_path.read_bytes()
+                ).hexdigest(),
+                'prewrite_block_ref': str(
+                    prewrite_block_path.relative_to(FF)
+                ),
+                'prewrite_block_sha256': hashlib.sha256(
+                    prewrite_block_path.read_bytes()
+                ).hexdigest(),
+                'questionnaire_ref': main_agent_questionnaire_ref,
+                'expected_memo_ref': main_agent_memo_ref,
+                'prior_memo_ref': main_agent_memo_ref,
+                'next_action': (
+                    'Human review is required because the bounded mechanism memo revision budget is exhausted.'
+                    if manual_review_required
+                    else 'A fresh current main agent must replace the hash-bound rejected memo and resolve every formula-specific failure before Step6 can continue.'
+                ),
+                'canonical_write_permission': False,
+                'execution_allowed_by_default': False,
+                'final_step6_write_allowed': False,
+            }
+            write_json(main_agent_status_path, status)
+            print(pause_token)
+            raise SystemExit(
+                pause_token + ': '
+                + '; '.join(memo_revision_failures)
+            )
         raise SystemExit('STEP6_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
 
     iteration['loop_research_brief'] = write_loop_research_brief(iteration, bundle)

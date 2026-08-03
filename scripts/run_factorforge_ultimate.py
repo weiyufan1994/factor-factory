@@ -1146,7 +1146,19 @@ def main() -> int:
         proof['finished_at_utc'] = utc_now()
         if result.returncode != 0:
             output = (result.stdout_tail or '') + '\n' + (result.stderr_tail or '')
-            if name == 'run_step6' and 'AWAITING_MAIN_AGENT_MECHANISM_MEMO' in output:
+            mechanism_pause_token = next(
+                (
+                    token
+                    for token in (
+                        'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW',
+                        'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION',
+                        'AWAITING_MAIN_AGENT_MECHANISM_MEMO',
+                    )
+                    if token in output
+                ),
+                '',
+            )
+            if name == 'run_step6' and mechanism_pause_token:
                 proof['status'] = 'PAUSED'
                 proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.active_root, args.report_id)
                 proof['revision_council'] = {
@@ -1157,7 +1169,7 @@ def main() -> int:
                 proof['failure'] = None
                 proof['finished_at_utc'] = utc_now()
                 write_json_atomic(proof_path, proof)
-                print('AWAITING_MAIN_AGENT_MECHANISM_MEMO')
+                print(mechanism_pause_token)
                 print(f'[PROOF] {proof_path}')
                 return 0
             proof['status'] = 'FAIL'

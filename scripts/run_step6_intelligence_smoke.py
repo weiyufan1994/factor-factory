@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ from factor_factory.mechanism_math.formula_specific import (
     validate_mechanism_formula_consistency,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
+    MAX_MECHANISM_MEMO_REVISIONS,
     build_main_agent_mechanism_memo,
     render_main_agent_mechanism_memo_markdown,
 )
@@ -496,10 +498,10 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
     operators_l = operators.lower()
     if 'volume' in fields_l and ('correlation' in operators_l or 'close' in fields_l or 'high' in fields_l):
         selected_model_family = 'transient_impact'
-        process_text = 'r_i,t+1 follows a transient impact and liquidity-pressure process with imbalance decay, inventory transfer, or participation-driven state migration depending on the formula-defined state and evidence'
+        process_text = 'r_{i,t+1}=mu(state_{i,t})+rho*impact_{i,t}+epsilon_{i,t+1} is a transient impact and liquidity-pressure process with imbalance decay, inventory transfer, or participation-driven state migration depending on the formula-defined state and evidence'
     else:
         selected_model_family = 'stochastic_process'
-        process_text = 'r_i,t+1 follows a conditional stochastic return process with drift, reversal, impact decay, or state migration depending on the formula-defined state and evidence'
+        process_text = 'r_{i,t+1}=mu(state_{i,t})+sigma(state_{i,t})*epsilon_{i,t+1} is a conditional stochastic return process with drift, reversal, impact decay, or state migration depending on the formula-defined state and evidence'
     memo['producer'] = 'current_main_agent'
     memo['agent_authorship'] = {
         'authoring_mode': 'current_agent_freeform',
@@ -525,7 +527,7 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
             "liquidity demanders, or risk-transfer accounts whose behavior creates drift, reversal, impact decay, or state migration."
         ),
         'payoff_answer': (
-            "The payoff argument is E[r_i,t+1 | F_t, formula_state_i,t]; the sign must be determined by the stated state direction and must survive "
+            "The payoff argument is E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry t+1 close, exit t+2 close; the sign must be determined by the stated state direction and must survive "
             "long-side, cost-adjusted evidence rather than relying on short-leg diagnostics."
         ),
         'estimator_mapping_answer': (
@@ -547,6 +549,13 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
         'why_they_pay': 'they trade against the formula-defined state because belief adjustment, immediacy demand, or risk-transfer constraints can leave a next-horizon conditional payoff',
         'necessary_market_structure': 'the formula-defined state must predict legal next-horizon returns strongly enough to survive turnover and implementation costs',
     }
+    metric_signature = {
+        'rank_ic': 'rank IC sign must match the declared payoff direction',
+        'long_side': 'high-score long side must be positive if the state is monetizable',
+        'cost_adjusted': 'cost-adjusted return must remain positive after turnover and impact',
+        'monotonicity': 'quantile ordering must match the stated direction',
+        'turnover': 'turnover must not consume the expected payoff',
+    }
     memo['math_hypothesis'] = {
         'selected_model_family': selected_model_family,
         'why_this_model': 'the open-ended memo treats the formula output as a state variable in a conditional return process, with payoff sign and horizon tested by evidence',
@@ -554,16 +563,11 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
         'random_object': 'security-day forward return conditional on legal information set F_t and formula-defined state',
         'latent_state': 'formula-defined conditional return state from the actual fields and operators',
         'process_or_distribution': process_text,
-        'target_functional': 'E[r_i,t+1 | F_t, formula_state_i,t]',
+        'target_functional': 'E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry t+1 close, exit t+2 close',
         'formula_as_estimator': memo['mechanism_qa']['estimator_mapping_answer'],
-        'expected_metric_signature': {
-            'rank_ic': 'rank IC sign must match the declared payoff direction',
-            'long_side': 'high-score long side must be positive if the state is monetizable',
-            'cost_adjusted': 'cost-adjusted return must remain positive after turnover and impact',
-            'monotonicity': 'quantile ordering must match the stated direction',
-            'turnover': 'turnover must not consume the expected payoff',
-        },
+        'expected_metric_signature': dict(metric_signature),
     }
+    memo['expected_metric_signature'] = dict(metric_signature)
     memo_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.json'
     memo_md_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.md'
     write_json(memo_path, memo)
@@ -575,8 +579,21 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
 def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, factor_id: str | None = None, memo_mode: str = 'valid') -> dict[str, Any]:
     report_id = f'STEP6_INTEL_{case_name.upper()}'
     write_fixture(root, report_id, kind=kind, factor_id=factor_id)
-    if memo_mode == 'valid':
-        write_current_agent_memo_fixture(root, report_id)
+    if memo_mode in {'valid', 'generic_revision'}:
+        memo_path = write_current_agent_memo_fixture(root, report_id)
+        if memo_mode == 'generic_revision':
+            memo = read_json(memo_path)
+            memo['economic_hypothesis']['payer_or_counterparty'] = 'traders'
+            memo['economic_hypothesis']['why_they_pay'] = (
+                'Traders exchange against the score when the observed formula is high.'
+            )
+            memo['math_hypothesis']['process_or_distribution'] = (
+                'score_{i,t}=max(open divided by pre_close minus one, zero) '
+                'multiplied by max(one minus close divided by open, zero); '
+                'r_{i,t+1}=score_{i,t}+u_{i,t+1}.'
+            )
+            write_json(memo_path, memo)
+            memo_path.with_suffix('.md').unlink(missing_ok=True)
     run_master_path = root / 'objects' / 'factor_run_master' / f'factor_run_master__{report_id}.json'
     run_master = read_json(run_master_path) if run_master_path.exists() else {}
     current_identity = run_master.get('artifact_identity') or {}
@@ -620,6 +637,7 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
     official_path = root / 'objects' / 'factor_library_official' / f'factor_record__{report_id}.json'
     prewrite_block_path = root / 'objects' / 'validation' / f'step6_prewrite_block__{report_id}.json'
     main_agent_status_path = root / 'objects' / 'research_iteration_master' / f'main_agent_mechanism_memo_status__{report_id}.json'
+    main_agent_status = read_json(main_agent_status_path) if main_agent_status_path.exists() else {}
     forbidden_paths = forbidden_writeback_paths(root, report_id)
     forbidden_exists = {name: path.exists() for name, path in forbidden_paths.items()}
     forbidden_absent = not any(forbidden_exists.values())
@@ -653,6 +671,22 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
     )
     if forbidden_expression_terms:
         ok = False
+    if memo_mode == 'generic_revision':
+        ok = bool(
+            ok
+            and main_agent_status.get('status')
+            == 'awaiting_main_agent_mechanism_memo_revision'
+            and main_agent_status.get('token')
+            == 'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION'
+            and main_agent_status.get('revision_number') == 1
+            and main_agent_status.get('prior_memo_sha256')
+            and main_agent_status.get('questionnaire_sha256')
+            and main_agent_status.get('prewrite_block_sha256')
+            and any(
+                'BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC' in str(item)
+                for item in main_agent_status.get('revision_failures') or []
+            )
+        )
     loop_authorization = revision_strategy.get('loop_authorization')
     handoff_exists = forbidden_exists['handoff_to_step3b']
     rejected_lessons = case_comparison.get('rejected_lessons') or []
@@ -908,6 +942,137 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
             'search_policy_branch_templates': branch_templates,
         },
         'program_search_validation': program_search_validation,
+    }
+
+
+def run_mechanism_revision_budget_smoke(
+    root: Path,
+    report_id: str,
+) -> dict[str, Any]:
+    proof_path = (
+        root
+        / 'objects'
+        / 'runtime_context'
+        / f'ultimate_run_report__{report_id}.json'
+    )
+    memo_path = (
+        root
+        / 'objects'
+        / 'research_iteration_master'
+        / f'main_agent_mechanism_memo__{report_id}.json'
+    )
+    status_path = (
+        root
+        / 'objects'
+        / 'research_iteration_master'
+        / f'main_agent_mechanism_memo_status__{report_id}.json'
+    )
+    retrieval_index = (
+        root
+        / 'objects'
+        / 'retrieval'
+        / 'factorforge_retrieval_index__main_agent_memo_formula_revision_pauses.jsonl'
+    )
+    command = [
+        sys.executable,
+        'scripts/run_factorforge_ultimate.py',
+        '--report-id',
+        report_id,
+        '--start-step',
+        '6',
+        '--end-step',
+        '6',
+        '--skip-researcher-packets',
+        '--factorforge-root',
+        str(root),
+        '--allow-legacy-global-runtime',
+        '--council-mode',
+        'off',
+        '--allow-legacy-research-protocol-smoke',
+        '--proof-output',
+        str(proof_path),
+    ]
+    env = os.environ.copy()
+    env['FACTORFORGE_ROOT'] = str(root)
+    env['FACTORFORGE_RETRIEVAL_INDEX'] = str(retrieval_index)
+    env['FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL'] = '1'
+    env['FACTORFORGE_DISABLE_GRAPH_KNOWLEDGE_CONTEXT'] = '1'
+    attempts: list[dict[str, Any]] = []
+    initial_status = read_json(status_path)
+    initial_memo_sha256 = hashlib.sha256(memo_path.read_bytes()).hexdigest()
+
+    def execute(expected_number: int, *, mutate_memo: bool) -> None:
+        if mutate_memo:
+            memo = read_json(memo_path)
+            questions = list(memo.get('council_questions') or [])
+            questions.append(
+                f'Revision {expected_number}: challenge the concrete payer and stochastic equation.'
+            )
+            memo['council_questions'] = questions
+            write_json(memo_path, memo)
+        proc = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        status = read_json(status_path)
+        proof = read_json(proof_path)
+        memo_sha256 = hashlib.sha256(memo_path.read_bytes()).hexdigest()
+        expected_status = (
+            'awaiting_main_agent_mechanism_manual_review'
+            if expected_number > MAX_MECHANISM_MEMO_REVISIONS
+            else 'awaiting_main_agent_mechanism_memo_revision'
+        )
+        expected_token = (
+            'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW'
+            if expected_number > MAX_MECHANISM_MEMO_REVISIONS
+            else 'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION'
+        )
+        attempts.append(
+            {
+                'expected_revision_number': expected_number,
+                'memo_mutated': mutate_memo,
+                'returncode': proc.returncode,
+                'status': status.get('status'),
+                'token': status.get('token'),
+                'revision_number': status.get('revision_number'),
+                'memo_sha256': memo_sha256,
+                'proof_status': proof.get('status'),
+                'ok': (
+                    proc.returncode == 0
+                    and status.get('status') == expected_status
+                    and status.get('token') == expected_token
+                    and status.get('revision_number') == expected_number
+                    and proof.get('status') == 'PAUSED'
+                ),
+            }
+        )
+
+    execute(1, mutate_memo=False)
+    execute(2, mutate_memo=True)
+    execute(3, mutate_memo=True)
+    execute(4, mutate_memo=True)
+    execute(4, mutate_memo=False)
+    same_memo_does_not_consume_budget = (
+        initial_status.get('status')
+        == 'awaiting_main_agent_mechanism_memo_revision'
+        and initial_status.get('revision_number') == 1
+        and attempts[0]['ok']
+        and attempts[0]['revision_number'] == 1
+        and attempts[0]['memo_sha256'] == initial_memo_sha256
+    )
+    return {
+        'attempts': attempts,
+        'initial_revision_status': initial_status,
+        'initial_memo_sha256': initial_memo_sha256,
+        'same_memo_does_not_consume_budget': same_memo_does_not_consume_budget,
+        'manual_review_is_sticky': attempts[-1]['ok'],
+        'ok': (
+            same_memo_does_not_consume_budget
+            and all(item['ok'] for item in attempts)
+        ),
     }
 
 
@@ -2128,6 +2293,7 @@ def main() -> int:
         ('unknown_mechanism_cannot_promote', 'unknown_mechanism', 'BLOCK', 'mechanism_return_source_known', 'SMOKE_UNKNOWN'),
         ('mechanism_unclear_revision', 'unknown_mechanism_iterate', 'NO_OFFICIAL', 'rev_mechanism_challenge_001', 'SMOKE_UNKNOWN'),
         ('main_agent_memo_missing_pauses_before_handoff', 'open_close_intraday_position', 'PAUSE', 'AWAITING_MAIN_AGENT_MECHANISM_MEMO', 'SMOKE_OPEN_CLOSE_POSITION', 'missing'),
+        ('main_agent_memo_formula_revision_pauses', 'open_close_intraday_position', 'PAUSE', 'AWAITING_MAIN_AGENT_MECHANISM_MEMO', 'SMOKE_OPEN_CLOSE_POSITION', 'generic_revision'),
         ('open_close_intraday_position_revision', 'open_close_intraday_position', 'NO_PROMOTE', 'open_close_position_state', 'SMOKE_OPEN_CLOSE_POSITION'),
         ('similar_failure_imported', 'short_side_dominance', 'NO_PROMOTE', 'Retrieved failure lesson', 'SMOKE_PRICE_VOLUME'),
         ('similar_success_rejected_condition_mismatch', 'high_turnover_cost', 'NO_PROMOTE', 'turnover/cost', 'SMOKE_PRICE_VOLUME'),
@@ -2137,6 +2303,10 @@ def main() -> int:
         ('valid_promote_no_revision_needed', 'strong_mechanism_support', 'PROMOTE', 'strong_mechanism_support', 'SMOKE_PROMOTE'),
     ]
     results = [run_case(root, *case) for case in cases]
+    mechanism_revision_budget_smoke = run_mechanism_revision_budget_smoke(
+        root,
+        'STEP6_INTEL_MAIN_AGENT_MEMO_FORMULA_REVISION_PAUSES',
+    )
     program_search_plan_smoke = run_program_search_plan_smoke(root, 'STEP6_INTEL_HIGH_TURNOVER_REVISION')
     program_search_missing_templates_smoke = run_program_search_missing_templates_smoke(root, 'STEP6_INTEL_HIGH_TURNOVER_REVISION')
     program_search_forbidden_text_smoke = run_program_search_forbidden_text_smoke(root, 'STEP6_INTEL_HIGH_TURNOVER_REVISION')
@@ -2148,6 +2318,7 @@ def main() -> int:
     pollution = canonical_pollution(before)
     verdict = 'ACCEPT' if (
         all(item['ok'] for item in results)
+        and mechanism_revision_budget_smoke['ok']
         and program_search_plan_smoke['ok']
         and program_search_missing_templates_smoke['ok']
         and program_search_forbidden_text_smoke['ok']
@@ -2167,6 +2338,7 @@ def main() -> int:
         'factorforge_root': str(root),
         'root_is_tmp': True,
         'cases': results,
+        'mechanism_revision_budget_smoke': mechanism_revision_budget_smoke,
         'program_search_plan_smoke': program_search_plan_smoke,
         'program_search_missing_templates_smoke': program_search_missing_templates_smoke,
         'program_search_forbidden_text_smoke': program_search_forbidden_text_smoke,

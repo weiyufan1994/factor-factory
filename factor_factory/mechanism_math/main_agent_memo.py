@@ -12,6 +12,7 @@ CONTRACT_VERSION = "factorforge_main_agent_mechanism_memo_v1"
 QUESTIONNAIRE_VERSION = "factorforge_main_agent_mechanism_questionnaire_v1"
 PRODUCER = "step6_main_agent"
 MAX_TARGET_HORIZON = 4096
+MAX_MECHANISM_MEMO_REVISIONS = 3
 REQUIRED_QA_FIELDS = [
     "formula_state_answer",
     "economic_hypothesis_answer",

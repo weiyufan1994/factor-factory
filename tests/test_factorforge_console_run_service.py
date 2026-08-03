@@ -1109,6 +1109,7 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     answer_form = json.loads(answer_form_path.read_text(encoding="utf-8"))
     assert contract["pause_kind"] == "main_agent_mechanism_memo"
     assert contract["resume_start_step"] == "6"
+    assert contract["prior_output_sha256"] == {}
     assert contract["required_output"].endswith(
         "main_agent_mechanism_memo__REPORT.json"
     )
@@ -1121,6 +1122,11 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert facts["observed_metrics"]["pearson_ic_ir"] == 0.1257
     assert facts["observed_metrics"]["trading_cogs_annual"] == 0.6596
     assert facts["metric_availability"]["missing_core_metric_keys"] == []
+    assert facts["revision_context"] == {
+        "mode": "initial",
+        "revision_number": 0,
+        "failures": [],
+    }
     assert contract["facts"] in contract["agent_read_only_inputs"]
     assert not any("questionnaire" in item for item in contract["agent_read_only_inputs"])
     assert answer_form["producer"] == ""
@@ -1212,6 +1218,98 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "knowledge, or any file. Do not run" not in shared_gateway_prompt
     assert "Host rehydrates machine-owned" not in shared_gateway_prompt
     assert "shared-gateway development path does not\nrehydrate" in shared_gateway_prompt
+
+    revision_probe_paths = (
+        proof_path,
+        workspace / resume_task.status_relative,
+        contract_path,
+        workspace / resume_task.facts_relative,
+        answer_form_path,
+    )
+    revision_probe_baseline = {
+        path: path.read_bytes() for path in revision_probe_paths
+    }
+    prior_memo_path = workspace / resume_task.required_output_relative
+    _write_json(prior_memo_path, {"prior": "rejected memo"})
+    revision_prewrite_path = (
+        workspace / "objects/validation/step6_prewrite_block__REPORT.json"
+    )
+    _write_json(
+        revision_prewrite_path,
+        {"prewrite_blocked": True, "report_id": "REPORT"},
+    )
+    revision_failure = (
+        "formula_specific_derivation_invalid:"
+        "BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC"
+    )
+    revision_status = json.loads(
+        (workspace / resume_task.status_relative).read_text(encoding="utf-8")
+    )
+    revision_status.update(
+        {
+            "status": "awaiting_main_agent_mechanism_memo_revision",
+            "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION",
+            "revision_number": 1,
+            "revision_failures": [revision_failure],
+            "prior_memo_sha256": _file_sha256(prior_memo_path),
+            "questionnaire_sha256": _file_sha256(
+                workspace / resume_task.questionnaire_relative
+            ),
+            "prewrite_block_ref": (
+                "objects/validation/step6_prewrite_block__REPORT.json"
+            ),
+            "prewrite_block_sha256": _file_sha256(revision_prewrite_path),
+        }
+    )
+    _write_json(workspace / resume_task.status_relative, revision_status)
+    revision_proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    revision_proof["main_agent_mechanism_memo"]["status"] = (
+        "awaiting_main_agent_mechanism_memo_revision"
+    )
+    revision_proof["main_agent_mechanism_memo"]["token"] = (
+        "AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION"
+    )
+    _write_json(proof_path, revision_proof)
+    revision_task = service._write_agent_resume_contract(
+        job,
+        workspace,
+        resume_trust={
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+        },
+        attempt_id=f"resume_{'c' * 32}",
+    )
+    assert dict(revision_task.prior_output_sha256) == {
+        revision_task.required_output_relative: _file_sha256(prior_memo_path)
+    }
+    revision_contract = json.loads(
+        (workspace / revision_task.contract_relative).read_text(encoding="utf-8")
+    )
+    assert revision_contract["prior_output_sha256"] == dict(
+        revision_task.prior_output_sha256
+    )
+    revision_facts = json.loads(
+        (workspace / revision_task.facts_relative).read_text(encoding="utf-8")
+    )
+    assert revision_facts["revision_context"] == {
+        "mode": "revision",
+        "revision_number": 1,
+        "failures": [revision_failure],
+    }
+    revision_prompt = build_agent_prompt(
+        job,
+        worktree=source,
+        workspace=workspace,
+        config=service.config,
+        resume=True,
+        resume_task=revision_task,
+    )
+    assert "every listed failure is a hard\nrejection" in revision_prompt
+    assert "BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC" in revision_prompt
+    prior_memo_path.unlink()
+    revision_prewrite_path.unlink()
+    for path, content in revision_probe_baseline.items():
+        path.write_bytes(content)
 
     with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
         build_agent_prompt(
@@ -1341,8 +1439,82 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     )
 
     from factor_factory.console.run_service import (
+        _formal_owned_resume_relatives,
         _require_validated_resume_artifacts_unchanged,
+        _validate_formal_owned_artifact_transitions,
+        _workspace_evidence_tree,
     )
+
+    formal_owned = _formal_owned_resume_relatives(resume_task)
+    formal_owned_baseline = {
+        relative: (workspace / relative).read_bytes()
+        for relative in formal_owned
+    }
+    for relative in formal_owned:
+        (workspace / relative).write_text(
+            f"formal host rewrite:{relative}\n",
+            encoding="utf-8",
+        )
+    with pytest.raises(RuntimeError, match="validated resume artifact changed"):
+        _require_validated_resume_artifacts_unchanged(
+            workspace,
+            state_root=service.config.state_root,
+            resume_task=resume_task,
+            validation=validation,
+        )
+    _require_validated_resume_artifacts_unchanged(
+        workspace,
+        state_root=service.config.state_root,
+        resume_task=resume_task,
+        validation=validation,
+        allowed_workspace_changes=formal_owned,
+    )
+    validated_hashes = dict(validation.workspace_file_sha256)
+    formal_receipt = {
+        "formal_owned_artifact_transitions": {
+            relative: {
+                "before_sha256": validated_hashes[relative],
+                "after_sha256": _file_sha256(workspace / relative),
+                "changed": True,
+                "producer": "host_formal_pipeline",
+            }
+            for relative in formal_owned
+        }
+    }
+    snapshot_entries = _workspace_evidence_tree(workspace)
+    transitions = _validate_formal_owned_artifact_transitions(
+        formal_receipt=formal_receipt,
+        workspace_entries=snapshot_entries,
+        resume_task=resume_task,
+        validation=validation,
+    )
+    assert set(transitions) == formal_owned
+    non_boolean_receipt = json.loads(json.dumps(formal_receipt))
+    non_boolean_receipt["formal_owned_artifact_transitions"][
+        resume_task.status_relative
+    ]["changed"] = 1
+    with pytest.raises(RuntimeError, match="formal mutation receipt hash mismatch"):
+        _validate_formal_owned_artifact_transitions(
+            formal_receipt=non_boolean_receipt,
+            workspace_entries=snapshot_entries,
+            resume_task=resume_task,
+            validation=validation,
+        )
+    raced_relative = resume_task.status_relative
+    (workspace / raced_relative).write_text("raced after receipt\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="formal mutation receipt hash mismatch"):
+        _validate_formal_owned_artifact_transitions(
+            formal_receipt=formal_receipt,
+            workspace_entries=_workspace_evidence_tree(workspace),
+            resume_task=resume_task,
+            validation=validation,
+        )
+    (workspace / raced_relative).write_text(
+        f"formal host rewrite:{raced_relative}\n",
+        encoding="utf-8",
+    )
+    for relative, content in formal_owned_baseline.items():
+        (workspace / relative).write_bytes(content)
 
     memo["council_questions"] = ["late replacement"]
     _write_json(memo_path, memo)
@@ -1807,6 +1979,7 @@ def test_resume_classifier_distinguishes_all_known_resume_states(tmp_path):
         RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS,
         RESUME_KIND_HUMAN_NEXT_DERIVATION,
         RESUME_KIND_MECHANISM_AGENT,
+        _apply_execution_mode_resume_policy,
         _classify_resume_route,
     )
 
@@ -1840,6 +2013,44 @@ def test_resume_classifier_distinguishes_all_known_resume_states(tmp_path):
             },
         }
     ).kind == RESUME_KIND_MECHANISM_AGENT
+    revision_route = classify(
+        {
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "status": "awaiting_main_agent_mechanism_memo_revision",
+                "token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION",
+            },
+        }
+    )
+    assert revision_route.kind == RESUME_KIND_MECHANISM_AGENT
+    assert (
+        revision_route.pause_state
+        == "awaiting_main_agent_mechanism_memo_revision"
+    )
+    assert (
+        _apply_execution_mode_resume_policy(
+            revision_route,
+            execution_mode="container",
+        ).kind
+        == RESUME_KIND_MECHANISM_AGENT
+    )
+    assert (
+        _apply_execution_mode_resume_policy(
+            revision_route,
+            execution_mode="shared_gateway",
+        ).kind
+        == RESUME_KIND_HUMAN_NEXT_DERIVATION
+    )
+    manual_route = classify(
+        {
+            "status": "PAUSED",
+            "main_agent_mechanism_memo": {
+                "status": "awaiting_main_agent_mechanism_manual_review",
+                "token": "AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW",
+            },
+        }
+    )
+    assert manual_route.kind == RESUME_KIND_HUMAN_NEXT_DERIVATION
     assert classify(
         {
             "status": "PAUSED",
@@ -2326,6 +2537,7 @@ def test_private_receipt_snapshot_uses_validated_bytes_and_ignores_later_source_
     copied_sha256 = _copy_immutable_regular_file(
         source,
         snapshot,
+        root=tmp_path,
         expected_sha256=expected_sha256,
         block_token="BLOCK_TEST",
         label="agent receipt",
@@ -2338,10 +2550,54 @@ def test_private_receipt_snapshot_uses_validated_bytes_and_ignores_later_source_
         _copy_immutable_regular_file(
             source,
             tmp_path / "agent_receipt.rejected.json",
+            root=tmp_path,
             expected_sha256=expected_sha256,
             block_token="BLOCK_TEST",
             label="agent receipt",
         )
+
+
+def test_private_receipt_snapshot_rejects_destination_parent_swap(
+    tmp_path,
+    monkeypatch,
+):
+    from factor_factory.console.run_service import _copy_immutable_regular_file
+
+    root = tmp_path / "state"
+    source = root / "jobs/job_test/receipt.json"
+    destination_parent = root / "attestations/job_test/snapshots"
+    source.parent.mkdir(parents=True)
+    destination_parent.mkdir(parents=True)
+    source.write_text('{"returncode": 0}\n', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backup = destination_parent.with_name("snapshots-backup")
+    original_open = os.open
+    swapped = False
+
+    def swap_after_parent_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if str(path) == "snapshots" and dir_fd is not None and not swapped:
+            destination_parent.rename(backup)
+            destination_parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return descriptor
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", swap_after_parent_open)
+        with pytest.raises(RuntimeError, match="destination verification parent is unsafe"):
+            _copy_immutable_regular_file(
+                source,
+                destination_parent / "receipt.snapshot.json",
+                root=root,
+                expected_sha256=_file_sha256(source),
+                block_token="BLOCK_TEST",
+                label="agent receipt",
+            )
+
+    assert not (outside / "receipt.snapshot.json").exists()
+    assert not (backup / "receipt.snapshot.json").exists()
 
 
 def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
@@ -2454,6 +2710,7 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
             "base_commit": job.base_commit,
             "resume": False,
             "resume_parent": None,
+            "formal_owned_artifact_transitions": {},
             "commands": [
                 {
                     "name": "materialize_web_research",

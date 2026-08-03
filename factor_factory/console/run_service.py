@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,9 +56,11 @@ from factor_factory.console.worktree_allocator import (
     WorktreeAllocation,
     WorktreeAllocationError,
 )
+from factor_factory.console.workspace_transaction import workspace_transaction_lock
 from factor_factory.research_workspace import load_workspace_manifest, validate_workspace_manifest
 from factor_factory.mechanism_math.main_agent_memo import (
     CONTRACT_VERSION,
+    MAX_MECHANISM_MEMO_REVISIONS,
     REQUIRED_QA_FIELDS,
     validate_main_agent_mechanism_memo,
 )
@@ -106,8 +109,16 @@ RESUME_KIND_MECHANISM_AGENT = "mechanism_agent"
 RESUME_KIND_COUNCIL_INGRESS = "council_ingress"
 RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS = "human_council_synthesis"
 RESUME_KIND_HUMAN_NEXT_DERIVATION = "human_next_derivation"
-
-
+MECHANISM_MEMO_INITIAL_STATUS = "awaiting_main_agent_mechanism_memo"
+MECHANISM_MEMO_REVISION_STATUS = "awaiting_main_agent_mechanism_memo_revision"
+MECHANISM_MEMO_INITIAL_TOKEN = "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+MECHANISM_MEMO_REVISION_TOKEN = "AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION"
+MECHANISM_MEMO_MANUAL_REVIEW_STATUS = (
+    "awaiting_main_agent_mechanism_manual_review"
+)
+MECHANISM_MEMO_MANUAL_REVIEW_TOKEN = (
+    "AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW"
+)
 @dataclass(frozen=True)
 class ResumeRoute:
     kind: str
@@ -128,6 +139,8 @@ class ValidatedAgentResumeArtifacts:
     workspace_file_sha256: tuple[tuple[str, str], ...]
     agent_run_receipt_id: str
     agent_run_receipt_sha256: str
+    prior_output_archive_id: str = ""
+    prior_output_archive_sha256: str = ""
 
 
 MECHANISM_METRIC_KEYS = frozenset(
@@ -320,13 +333,29 @@ def _classify_resume_route(
     mechanism_token = str(mechanism.get("token") or "")
     mechanism_state = str(mechanism.get("status") or "")
     if (
-        mechanism_token == "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
-        and mechanism_state in {"", "awaiting_main_agent_mechanism_memo"}
+        (
+            mechanism_token == MECHANISM_MEMO_INITIAL_TOKEN
+            and mechanism_state in {"", MECHANISM_MEMO_INITIAL_STATUS}
+        )
+        or (
+            mechanism_token == MECHANISM_MEMO_REVISION_TOKEN
+            and mechanism_state == MECHANISM_MEMO_REVISION_STATUS
+        )
     ):
         return ResumeRoute(
             kind=RESUME_KIND_MECHANISM_AGENT,
             start_step="6",
-            pause_state="awaiting_main_agent_mechanism_memo",
+            pause_state=(mechanism_state or MECHANISM_MEMO_INITIAL_STATUS),
+            pause_token=mechanism_token,
+        )
+    if (
+        mechanism_token == MECHANISM_MEMO_MANUAL_REVIEW_TOKEN
+        and mechanism_state == MECHANISM_MEMO_MANUAL_REVIEW_STATUS
+    ):
+        return ResumeRoute(
+            kind=RESUME_KIND_HUMAN_NEXT_DERIVATION,
+            start_step="6",
+            pause_state="awaiting_next_derivation",
             pause_token=mechanism_token,
         )
 
@@ -378,6 +407,25 @@ def _classify_resume_route(
     )
 
 
+def _apply_execution_mode_resume_policy(
+    route: ResumeRoute,
+    *,
+    execution_mode: str,
+) -> ResumeRoute:
+    if (
+        route.kind == RESUME_KIND_MECHANISM_AGENT
+        and route.pause_token == MECHANISM_MEMO_REVISION_TOKEN
+        and execution_mode != "container"
+    ):
+        return ResumeRoute(
+            kind=RESUME_KIND_HUMAN_NEXT_DERIVATION,
+            start_step="6",
+            pause_state=MECHANISM_MEMO_REVISION_STATUS,
+            pause_token=MECHANISM_MEMO_REVISION_TOKEN,
+        )
+    return route
+
+
 def _human_resume_message(route: ResumeRoute) -> tuple[str, str]:
     if route.kind == RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS:
         return (
@@ -385,6 +433,14 @@ def _human_resume_message(route: ResumeRoute) -> tuple[str, str]:
             "请在专用 Council 综合审批入口选择方案、公式、证伪标准与终止条件。",
         )
     if route.kind == RESUME_KIND_HUMAN_NEXT_DERIVATION:
+        if (
+            route.pause_token == MECHANISM_MEMO_REVISION_TOKEN
+            and route.pause_state == MECHANISM_MEMO_REVISION_STATUS
+        ):
+            return (
+                "当前部署模式不支持对既有机制 memo 做可审计替换；任务保持暂停，未覆盖旧证据。",
+                "请切换到隔离容器执行模式，或由人工审查后新建独立研究任务。",
+            )
         return (
             "当前修订分支已被证伪，需要明确选择下一条数学推导方向。普通续跑不会自动生成或批准新分支。",
             "请在专用下一轮推导入口选择问题分类和研究对象后再继续。",
@@ -581,6 +637,8 @@ class ResearchRunService:
             self._run_job(job)
 
     def _run_job(self, job: ResearchJob) -> None:
+        transaction_stack = ExitStack()
+        transaction_release_failed = False
         denied_values: tuple[str, ...] = ()
         resume_trust: dict[str, Any] | None = None
         resume_route: ResumeRoute | None = None
@@ -620,6 +678,18 @@ class ResearchRunService:
                         resume_trust["ultimate_proof_sha256"]
                     ),
                 )
+                resume_route = _apply_execution_mode_resume_policy(
+                    resume_route,
+                    execution_mode=self.config.execution_mode,
+                )
+                if resume_route.kind == RESUME_KIND_MECHANISM_AGENT:
+                    transaction_stack.enter_context(
+                        workspace_transaction_lock(
+                            self.config.state_root,
+                            workspace,
+                            error_code=BLOCK_RESUME_TRUST_INVALID,
+                        )
+                    )
                 if resume_route.kind in {
                     RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS,
                     RESUME_KIND_HUMAN_NEXT_DERIVATION,
@@ -898,6 +968,8 @@ class ResearchRunService:
                 denied_values=denied_values,
                 host_data_env=host_data_env,
                 resume_trust=resume_trust,
+                resume_task=resume_task,
+                validated_resume_artifacts=validated_resume_artifacts,
             )
             if validated_resume_artifacts is not None:
                 _require_validated_resume_artifacts_unchanged(
@@ -905,6 +977,9 @@ class ResearchRunService:
                     state_root=self.config.state_root,
                     resume_task=resume_task,
                     validation=validated_resume_artifacts,
+                    allowed_workspace_changes=_formal_owned_resume_relatives(
+                        resume_task
+                    ),
                 )
             isolation_failures = audit_factor_worktree(worktree, workspace)
             if isolation_failures:
@@ -1097,7 +1172,11 @@ class ResearchRunService:
                 {"code": token, "exception_type": type(exc).__name__},
             )
         finally:
-            cleanup_succeeded = True
+            try:
+                transaction_stack.close()
+            except (OSError, RuntimeError):
+                transaction_release_failed = True
+            cleanup_succeeded = not transaction_release_failed
             release = getattr(self.agent_adapter, "deactivate_denied_secrets", None)
             if not callable(release):
                 release = getattr(self.agent_adapter, "clear_denied_secrets", None)
@@ -1127,6 +1206,31 @@ class ResearchRunService:
                         ),
                         finished_at_utc=utc_now(),
                     )
+            if transaction_release_failed:
+                try:
+                    self._mark_job_non_resumable(
+                        job,
+                        token=BLOCK_AGENT_ORPHANED_WRITER,
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    pass
+                self.store.update_job(
+                    job.job_id,
+                    execution_status="BLOCKED",
+                    protocol_status="BLOCK",
+                    factor_verdict="BLOCK",
+                    formal_proof_eligible=False,
+                    current_stage="blocked",
+                    error_code=BLOCK_AGENT_ORPHANED_WRITER,
+                    error_message=(
+                        "研究工作区单写者事务未能可靠释放；当前任务已禁止续跑，"
+                        "请新建隔离任务。"
+                    ),
+                    result=_result_without_resume_attestation(
+                        self.store.get_job(job.job_id) or job
+                    ),
+                    finished_at_utc=utc_now(),
+                )
             if cleanup_succeeded and private_completion_status is not None:
                 try:
                     self._finish_private_execution(
@@ -1754,6 +1858,8 @@ class ResearchRunService:
         denied_values: tuple[str, ...],
         host_data_env: dict[str, str] | None = None,
         resume_trust: dict[str, Any] | None = None,
+        resume_task: AgentResumeTask | None = None,
+        validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
     ) -> dict[str, Any]:
         if not self.config.data_catalogs:
             raise RuntimeError(
@@ -1893,6 +1999,8 @@ class ResearchRunService:
                 commands=commands,
                 resume=resume,
                 resume_trust=resume_trust,
+                resume_task=resume_task,
+                validated_resume_artifacts=validated_resume_artifacts,
             )
             detail = materialize["stderr_tail"] or materialize["stdout_tail"]
             raise RuntimeError(
@@ -1931,6 +2039,8 @@ class ResearchRunService:
             commands=commands,
             resume=resume,
             resume_trust=resume_trust,
+            resume_task=resume_task,
+            validated_resume_artifacts=validated_resume_artifacts,
         )
         if ultimate["timed_out"]:
             raise RuntimeError(
@@ -1947,6 +2057,8 @@ class ResearchRunService:
         commands: list[dict[str, Any]],
         resume: bool,
         resume_trust: dict[str, Any] | None = None,
+        resume_task: AgentResumeTask | None = None,
+        validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
     ) -> dict[str, Any]:
         if resume and not isinstance(resume_trust, dict):
             raise RuntimeError(
@@ -1956,6 +2068,31 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: fresh receipt cannot carry a trusted parent"
             )
+        if (resume_task is None) != (validated_resume_artifacts is None):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation audit identity is incomplete"
+            )
+        formal_owned_artifact_transitions: dict[str, dict[str, Any]] = {}
+        if resume_task is not None and validated_resume_artifacts is not None:
+            validated_hashes = dict(
+                validated_resume_artifacts.workspace_file_sha256
+            )
+            formal_owned_relatives = _formal_owned_resume_relatives(resume_task)
+            if not formal_owned_relatives.issubset(validated_hashes):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation audit baseline is incomplete"
+                )
+            for relative in sorted(formal_owned_relatives):
+                candidate = workspace / relative
+                after_sha256 = None
+                if candidate.is_file() and not candidate.is_symlink():
+                    after_sha256 = _sha256(candidate)
+                formal_owned_artifact_transitions[relative] = {
+                    "before_sha256": validated_hashes[relative],
+                    "after_sha256": after_sha256,
+                    "changed": after_sha256 != validated_hashes[relative],
+                    "producer": "host_formal_pipeline",
+                }
         proof_path = (
             workspace
             / "objects"
@@ -1992,6 +2129,9 @@ class ResearchRunService:
                 )
             ),
             "commands": commands,
+            "formal_owned_artifact_transitions": (
+                formal_owned_artifact_transitions
+            ),
             "ultimate_proof_sha256": (
                 _sha256(proof_path)
                 if proof_path.is_file() and not proof_path.is_symlink()
@@ -2240,6 +2380,7 @@ class ResearchRunService:
         agent_receipt_snapshot_sha256 = _copy_immutable_regular_file(
             agent_result_path,
             agent_receipt_snapshot_path,
+            root=state_root,
             expected_sha256=expected_agent_receipt_sha256,
             block_token=BLOCK_RESUME_TRUST_INVALID,
             label="agent run receipt",
@@ -2257,8 +2398,10 @@ class ResearchRunService:
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: resumed attestation lacks validated agent artifacts"
                 )
+            formal_owned_relatives = _formal_owned_resume_relatives(resume_task)
             if any(
-                workspace_entries.get(relative) != digest
+                relative not in formal_owned_relatives
+                and workspace_entries.get(relative) != digest
                 for relative, digest in validated_resume_artifacts.workspace_file_sha256
             ):
                 raise RuntimeError(
@@ -2270,6 +2413,32 @@ class ResearchRunService:
             ):
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt identity changed"
+                )
+            prior_archive_snapshot_id = ""
+            prior_archive_snapshot_sha256 = ""
+            if validated_resume_artifacts.prior_output_archive_id:
+                prior_archive_source = _read_private_resume_archive(
+                    self.config.state_root,
+                    resume_task,
+                )
+                prior_archive_snapshot_path = (
+                    snapshot_root.parent
+                    / f"prior_memo_archive_{immutable_suffix}.json"
+                )
+                prior_archive_snapshot_sha256 = _copy_immutable_regular_file(
+                    prior_archive_source,
+                    prior_archive_snapshot_path,
+                    root=state_root,
+                    expected_sha256=(
+                        validated_resume_artifacts.prior_output_archive_sha256
+                    ),
+                    block_token=BLOCK_RESUME_TRUST_INVALID,
+                    label="prior mechanism memo archive",
+                )
+                prior_archive_snapshot_id = (
+                    prior_archive_snapshot_path.relative_to(
+                        state_root
+                    ).as_posix()
                 )
             resume_artifact_binding = {
                 "version": "factorforge_console_agent_resume_artifact_binding_v1",
@@ -2287,6 +2456,12 @@ class ResearchRunService:
                 "mechanism_memo_sha256": dict(
                     validated_resume_artifacts.workspace_file_sha256
                 )[resume_task.required_output_relative],
+                "prior_mechanism_memo_archive_id": (
+                    prior_archive_snapshot_id
+                ),
+                "prior_mechanism_memo_archive_sha256": (
+                    prior_archive_snapshot_sha256
+                ),
             }
 
         source_receipt_id = str(formal_execution.get("receipt_id") or "")
@@ -2317,6 +2492,7 @@ class ResearchRunService:
         formal_receipt_snapshot_sha256 = _copy_immutable_regular_file(
             source_receipt_path,
             formal_receipt_snapshot_path,
+            root=state_root,
             expected_sha256=formal_receipt_sha256,
             block_token=BLOCK_HOST_FORMAL_EXECUTION_FAILED,
             label="formal execution receipt",
@@ -2343,6 +2519,14 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt identity mismatch"
             )
+        formal_owned_artifact_transitions = (
+            _validate_formal_owned_artifact_transitions(
+                formal_receipt=formal_receipt,
+                workspace_entries=workspace_entries,
+                resume_task=resume_task,
+                validation=validated_resume_artifacts,
+            )
+        )
         if (
             self.config.execution_mode == "container"
             and not self.config.auth_disabled
@@ -2506,6 +2690,9 @@ class ResearchRunService:
             "formal_execution_receipt_id": receipt_id,
             "formal_execution_receipt_sha256": formal_receipt_sha256,
             "formal_execution_receipt_source_id": source_receipt_id,
+            "formal_owned_artifact_transitions": (
+                formal_owned_artifact_transitions
+            ),
             "ultimate_argv_sha256": formal_execution["ultimate_argv_sha256"],
             "ultimate_returncode": formal_execution["ultimate_returncode"],
             "evidence_hashes": evidence_hashes,
@@ -2655,7 +2842,11 @@ class ResearchRunService:
         pause_token = str(pause.get("token") or "")
         if (
             str(proof.get("status") or "").upper() != "PAUSED"
-            or pause_token != "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+            or pause_token
+            not in {
+                MECHANISM_MEMO_INITIAL_TOKEN,
+                MECHANISM_MEMO_REVISION_TOKEN,
+            }
             or str(resume_trust.get("start_step") or "") != "6"
         ):
             raise RuntimeError(
@@ -2693,9 +2884,20 @@ class ResearchRunService:
         factor_spec = _read_regular_workspace_json(workspace, spec_relative)
         factor_case = _read_regular_workspace_json(workspace, case_relative)
         evaluation = _read_regular_workspace_json(workspace, evaluation_relative)
+        mechanism_status = str(status.get("status") or "")
+        expected_pause_token = (
+            MECHANISM_MEMO_REVISION_TOKEN
+            if mechanism_status == MECHANISM_MEMO_REVISION_STATUS
+            else MECHANISM_MEMO_INITIAL_TOKEN
+        )
         if (
-            status.get("status") != "awaiting_main_agent_mechanism_memo"
-            or status.get("token") != pause_token
+            mechanism_status
+            not in {
+                MECHANISM_MEMO_INITIAL_STATUS,
+                MECHANISM_MEMO_REVISION_STATUS,
+            }
+            or pause_token != expected_pause_token
+            or status.get("token") != expected_pause_token
             or str(status.get("report_id") or "") != job.report_id
             or questionnaire.get("contract_version")
             != "factorforge_main_agent_mechanism_questionnaire_v1"
@@ -2726,6 +2928,76 @@ class ResearchRunService:
             workspace
             / f"{rim}/main_agent_mechanism_memo__{job.report_id}.md"
         )
+        revision_failures: list[str] = []
+        revision_number = 0
+        prior_output_sha256: dict[str, str] = {}
+        prior_output_archive_id = ""
+        if mechanism_status == MECHANISM_MEMO_REVISION_STATUS:
+            raw_revision_failures = status.get("revision_failures")
+            revision_number = status.get("revision_number")
+            if (
+                not isinstance(raw_revision_failures, list)
+                or not raw_revision_failures
+                or len(raw_revision_failures) > 16
+                or any(
+                    not isinstance(item, str)
+                    or not item.strip()
+                    or len(item) > 2_000
+                    for item in raw_revision_failures
+                )
+                or not isinstance(revision_number, int)
+                or not 1 <= revision_number <= MAX_MECHANISM_MEMO_REVISIONS
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: mechanism revision failures are invalid"
+                )
+            revision_failures = [item.strip() for item in raw_revision_failures]
+            prior_memo_path = _read_regular_workspace_file(
+                workspace,
+                expected_memo_path.relative_to(workspace).as_posix(),
+            )
+            prior_memo_sha256 = _sha256(prior_memo_path)
+            if prior_memo_sha256 != str(status.get("prior_memo_sha256") or ""):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: prior mechanism memo hash mismatch"
+                )
+            prior_output_sha256[
+                expected_memo_path.relative_to(workspace).as_posix()
+            ] = prior_memo_sha256
+            expected_prewrite_relative = (
+                "objects/validation/"
+                f"step6_prewrite_block__{job.report_id}.json"
+            )
+            prewrite_path = _read_regular_workspace_file(
+                workspace,
+                expected_prewrite_relative,
+            )
+            if (
+                str(status.get("questionnaire_sha256") or "")
+                != _sha256(expected_questionnaire_path)
+                or str(status.get("prewrite_block_ref") or "")
+                != expected_prewrite_relative
+                or str(status.get("prewrite_block_sha256") or "")
+                != _sha256(prewrite_path)
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: mechanism revision evidence binding mismatch"
+                )
+            prior_output_archive_id = (
+                f"jobs/{job.job_id}/resume-history/{attempt_id}/prior_memo.json"
+            )
+        else:
+            if expected_memo_path.exists() or expected_memo_path.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: initial mechanism memo already exists"
+                )
+        if (
+            expected_memo_markdown_path.exists()
+            or expected_memo_markdown_path.is_symlink()
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: prior optional mechanism memo is unsupported"
+            )
         if any(
             not _artifact_ref_path_matches(reference, key, expected)
             for reference, key, expected in (
@@ -2836,6 +3108,15 @@ class ResearchRunService:
             "evaluation_contract": _project_evaluation_contract(factor_spec),
             "observed_metrics": metric_facts,
             "metric_availability": metric_availability,
+            "revision_context": {
+                "mode": (
+                    "revision"
+                    if mechanism_status == MECHANISM_MEMO_REVISION_STATUS
+                    else "initial"
+                ),
+                "revision_number": revision_number,
+                "failures": revision_failures,
+            },
             "source_artifacts": {
                 key: {
                     "artifact_id": relative,
@@ -3002,7 +3283,6 @@ class ResearchRunService:
             "optional_output": optional_memo_relative,
             "allowed_writes": [
                 memo_relative,
-                optional_memo_relative,
                 "identity/web_execution_ledger.md",
             ],
             "required_writes": [
@@ -3017,6 +3297,8 @@ class ResearchRunService:
                 relative: _sha256(_read_regular_workspace_file(workspace, relative))
                 for relative in read_only_inputs
             },
+            "prior_output_sha256": prior_output_sha256,
+            "prior_output_archive_id": prior_output_archive_id,
             "host_audit_tree_sha256": stable_json_hash(protected_input_hashes),
         }
         _write_json_atomic(
@@ -3048,6 +3330,8 @@ class ResearchRunService:
             protected_inputs=protected_inputs,
             allowed_model_families=tuple(sorted(BASELINE_MODEL_FAMILIES)),
             validation_command=validation_command,
+            prior_output_sha256=tuple(sorted(prior_output_sha256.items())),
+            prior_output_archive_id=prior_output_archive_id,
         )
 
     def _validate_agent_resume_artifact(
@@ -3079,7 +3363,7 @@ class ResearchRunService:
                     resume_trust.get("ultimate_proof_sha256") or ""
                 ),
                 "pause_kind": "main_agent_mechanism_memo",
-                "pause_token": "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+                "pause_token": resume_task.pause_token,
                 "session_policy": "fresh_phase_agent",
                 "facts": resume_task.facts_relative,
                 "answer_form": resume_task.answer_form_relative,
@@ -3089,6 +3373,18 @@ class ResearchRunService:
         ):
             raise RuntimeError(
                 f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: resume contract identity mismatch"
+            )
+        contract_prior_outputs = contract.get("prior_output_sha256")
+        expected_prior_outputs = dict(resume_task.prior_output_sha256)
+        if (
+            not isinstance(contract_prior_outputs, dict)
+            or contract_prior_outputs != expected_prior_outputs
+            or len(expected_prior_outputs) != len(resume_task.prior_output_sha256)
+            or contract.get("prior_output_archive_id")
+            != resume_task.prior_output_archive_id
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: prior resume output binding mismatch"
             )
         protected_input_hashes = {
             relative: _sha256(
@@ -3244,6 +3540,23 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: agent run receipt was not validated"
             )
+        prior_output_archive_sha256 = ""
+        if resume_task.prior_output_archive_id:
+            prior_output_archive_path = _read_private_resume_archive(
+                self.config.state_root,
+                resume_task,
+            )
+            prior_output_archive_sha256 = _sha256(prior_output_archive_path)
+            if prior_output_archive_sha256 != expected_prior_outputs.get(
+                resume_task.required_output_relative
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: prior memo archive hash mismatch"
+                )
+        elif expected_prior_outputs:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: prior memo archive is missing"
+            )
         validated_workspace_relatives = tuple(
             sorted(
                 set(resume_task.protected_inputs)
@@ -3266,6 +3579,8 @@ class ResearchRunService:
             ),
             agent_run_receipt_id=agent_result_relative.as_posix(),
             agent_run_receipt_sha256=_sha256(agent_result_path),
+            prior_output_archive_id=resume_task.prior_output_archive_id,
+            prior_output_archive_sha256=prior_output_archive_sha256,
         )
 
 
@@ -3275,6 +3590,7 @@ def _require_validated_resume_artifacts_unchanged(
     state_root: Path,
     resume_task: AgentResumeTask | None,
     validation: ValidatedAgentResumeArtifacts,
+    allowed_workspace_changes: frozenset[str] = frozenset(),
 ) -> None:
     if (
         resume_task is None
@@ -3298,7 +3614,13 @@ def _require_validated_resume_artifacts_unchanged(
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: validated resume artifact set is incomplete"
         )
+    if not allowed_workspace_changes.issubset(expected_workspace_hashes):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: formal workspace mutation allowance is invalid"
+        )
     for relative, expected_sha256 in expected_workspace_hashes.items():
+        if relative in allowed_workspace_changes:
+            continue
         path = _read_regular_workspace_file(workspace, relative)
         if not expected_sha256 or _sha256(path) != expected_sha256:
             raise RuntimeError(
@@ -3332,6 +3654,140 @@ def _require_validated_resume_artifacts_unchanged(
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt changed"
         )
+    if validation.prior_output_archive_id != resume_task.prior_output_archive_id:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: prior memo archive identity changed"
+        )
+    if validation.prior_output_archive_id:
+        archive_path = _read_private_resume_archive(state_root, resume_task)
+        if (
+            not validation.prior_output_archive_sha256
+            or _sha256(archive_path)
+            != validation.prior_output_archive_sha256
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: prior memo archive changed"
+            )
+    elif validation.prior_output_archive_sha256:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: prior memo archive binding is invalid"
+        )
+
+
+def _formal_owned_resume_relatives(
+    resume_task: AgentResumeTask | None,
+) -> frozenset[str]:
+    if resume_task is None:
+        return frozenset()
+    return frozenset(
+        {
+            resume_task.status_relative,
+            resume_task.questionnaire_relative,
+            resume_task.questionnaire_markdown_relative,
+            (
+                "objects/runtime_context/"
+                f"ultimate_run_report__{resume_task.report_id}.json"
+            ),
+        }
+    )
+
+
+def _validate_formal_owned_artifact_transitions(
+    *,
+    formal_receipt: dict[str, Any],
+    workspace_entries: dict[str, str],
+    resume_task: AgentResumeTask | None,
+    validation: ValidatedAgentResumeArtifacts | None,
+) -> dict[str, dict[str, Any]]:
+    raw = formal_receipt.get("formal_owned_artifact_transitions")
+    if not isinstance(raw, dict):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation receipt is invalid"
+        )
+    if resume_task is None and validation is None:
+        if raw:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: non-mechanism receipt carries formal mutation claims"
+            )
+        return {}
+    if resume_task is None or validation is None:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation attestation identity is incomplete"
+        )
+
+    expected_relatives = _formal_owned_resume_relatives(resume_task)
+    if set(raw) != expected_relatives:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation receipt path set is invalid"
+        )
+    validated_hashes = dict(validation.workspace_file_sha256)
+    if not expected_relatives.issubset(validated_hashes):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation validation baseline is incomplete"
+        )
+    normalized: dict[str, dict[str, Any]] = {}
+    for relative in sorted(expected_relatives):
+        transition = raw.get(relative)
+        before_sha256 = validated_hashes[relative]
+        after_sha256 = workspace_entries.get(relative)
+        if (
+            not isinstance(transition, dict)
+            or set(transition)
+            != {"before_sha256", "after_sha256", "changed", "producer"}
+            or transition.get("before_sha256") != before_sha256
+            or transition.get("after_sha256") != after_sha256
+            or re.fullmatch(r"[0-9a-f]{64}", before_sha256) is None
+            or not isinstance(after_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", after_sha256) is None
+            or not isinstance(transition.get("changed"), bool)
+            or transition.get("changed") != (after_sha256 != before_sha256)
+            or transition.get("producer") != "host_formal_pipeline"
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation receipt hash mismatch:{relative}"
+            )
+        normalized[relative] = {
+            "before_sha256": before_sha256,
+            "after_sha256": after_sha256,
+            "changed": after_sha256 != before_sha256,
+            "producer": "host_formal_pipeline",
+        }
+    return normalized
+
+
+def _read_private_resume_archive(
+    state_root: Path,
+    resume_task: AgentResumeTask,
+) -> Path:
+    expected_id = (
+        f"jobs/{resume_task.job_id}/resume-history/"
+        f"{resume_task.attempt_id}/prior_memo.json"
+    )
+    if resume_task.prior_output_archive_id != expected_id:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: prior memo archive identity is unsafe"
+        )
+    root = state_root.resolve(strict=True)
+    archive = root / expected_id
+    try:
+        resolved = archive.resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: prior memo archive is unavailable"
+        ) from exc
+    metadata = resolved.stat()
+    if (
+        archive.is_symlink()
+        or not resolved.is_file()
+        or metadata.st_nlink != 1
+        or metadata.st_size > 2 * 1024 * 1024
+        or metadata.st_mode & 0o022
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: prior memo archive is unsafe"
+        )
+    return resolved
 
 
 def _normalized_operator_name(value: Any) -> str:
@@ -4029,7 +4485,11 @@ def _allowed_agent_write_paths(
         )
         if (
             str(proof.get("status") or "").upper() == "PAUSED"
-            and str(pause.get("token") or "") == "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+            and str(pause.get("token") or "")
+            in {
+                MECHANISM_MEMO_INITIAL_TOKEN,
+                MECHANISM_MEMO_REVISION_TOKEN,
+            }
         ):
             memo_json = (
                 "objects/research_iteration_master/"
@@ -4039,7 +4499,7 @@ def _allowed_agent_write_paths(
                 "objects/research_iteration_master/"
                 f"main_agent_mechanism_memo__{report_id}.md"
             )
-            allowed.update({memo_json, memo_md})
+            allowed.add(memo_json)
             required.add(memo_json)
     return allowed, required
 
@@ -4394,93 +4854,229 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+@contextmanager
+def _open_private_parent_fd(
+    root: Path,
+    path: Path,
+    *,
+    block_token: str,
+    label: str,
+):
+    root_path = root.resolve(strict=True)
+    candidate = path if path.is_absolute() else root_path / path
+    try:
+        relative = candidate.relative_to(root_path)
+    except ValueError as exc:
+        raise RuntimeError(f"{block_token}: {label} path escapes private state") from exc
+    if (
+        relative == Path(".")
+        or not relative.parts
+        or ".." in relative.parts
+    ):
+        raise RuntimeError(f"{block_token}: {label} path is unsafe")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(root_path, directory_flags)
+    try:
+        for part in relative.parts[:-1]:
+            next_descriptor = os.open(part, directory_flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise RuntimeError(
+                    f"{block_token}: {label} parent is unsafe"
+                )
+        yield descriptor, relative.parts[-1]
+    except OSError as exc:
+        raise RuntimeError(f"{block_token}: {label} parent is unsafe") from exc
+    finally:
+        os.close(descriptor)
+
+
 def _copy_immutable_regular_file(
     source: Path,
     destination: Path,
     *,
+    root: Path,
     expected_sha256: str | None,
     block_token: str,
     label: str,
 ) -> str:
+    destination_created = False
     try:
-        if (
-            source.is_symlink()
-            or not source.is_file()
-            or destination.exists()
-            or destination.is_symlink()
-            or destination.parent.is_symlink()
-            or not destination.parent.is_dir()
-        ):
-            raise RuntimeError(f"{block_token}: {label} snapshot path is unsafe")
-        source_descriptor = os.open(
+        with _open_private_parent_fd(
+            root,
             source,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        destination_descriptor = os.open(
+            block_token=block_token,
+            label=f"{label} source",
+        ) as (source_parent_descriptor, source_name), _open_private_parent_fd(
+            root,
             destination,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        digest = hashlib.sha256()
-        try:
-            source_before = os.fstat(source_descriptor)
-            if (
-                not stat.S_ISREG(source_before.st_mode)
-                or source_before.st_nlink != 1
-                or source_before.st_size <= 0
-                or source_before.st_size > 2 * 1024 * 1024
-            ):
-                raise RuntimeError(
-                    f"{block_token}: {label} source is not a bounded private file"
+            block_token=block_token,
+            label=f"{label} destination",
+        ) as (destination_parent_descriptor, destination_name):
+            source_descriptor = os.open(
+                source_name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=source_parent_descriptor,
+            )
+            destination_descriptor = -1
+            created_destination_metadata = None
+            try:
+                destination_descriptor = os.open(
+                    destination_name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=destination_parent_descriptor,
                 )
-            while True:
-                chunk = os.read(source_descriptor, 1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
-                offset = 0
-                while offset < len(chunk):
-                    offset += os.write(destination_descriptor, chunk[offset:])
-            os.fsync(destination_descriptor)
-            source_after = os.fstat(source_descriptor)
-        finally:
-            os.close(destination_descriptor)
-            os.close(source_descriptor)
-        path_after = source.stat(follow_symlinks=False)
-        actual_sha256 = digest.hexdigest()
-        if (
-            source_before.st_ino != source_after.st_ino
-            or source_before.st_ino != path_after.st_ino
-            or source_before.st_size != source_after.st_size
-            or source_before.st_size != path_after.st_size
-            or source_before.st_mtime_ns != source_after.st_mtime_ns
-            or source_before.st_mtime_ns != path_after.st_mtime_ns
-            or (expected_sha256 is not None and actual_sha256 != expected_sha256)
-        ):
-            raise RuntimeError(f"{block_token}: {label} changed during snapshot")
-        destination.chmod(0o400)
-        directory = os.open(
-            destination.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        return actual_sha256
+                destination_created = True
+                created_destination_metadata = os.fstat(destination_descriptor)
+                digest = hashlib.sha256()
+                try:
+                    source_before = os.fstat(source_descriptor)
+                    if (
+                        not stat.S_ISREG(source_before.st_mode)
+                        or source_before.st_nlink != 1
+                        or source_before.st_size <= 0
+                        or source_before.st_size > 2 * 1024 * 1024
+                    ):
+                        raise RuntimeError(
+                            f"{block_token}: {label} source is not a bounded private file"
+                        )
+                    while True:
+                        chunk = os.read(source_descriptor, 1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        offset = 0
+                        while offset < len(chunk):
+                            offset += os.write(destination_descriptor, chunk[offset:])
+                    os.fchmod(destination_descriptor, 0o400)
+                    os.fsync(destination_descriptor)
+                    source_after = os.fstat(source_descriptor)
+                    destination_metadata = os.fstat(destination_descriptor)
+                finally:
+                    os.close(destination_descriptor)
+                    destination_descriptor = -1
+                path_after = os.stat(
+                    source_name,
+                    dir_fd=source_parent_descriptor,
+                    follow_symlinks=False,
+                )
+                actual_sha256 = digest.hexdigest()
+                if (
+                    source_before.st_ino != source_after.st_ino
+                    or source_before.st_ino != path_after.st_ino
+                    or source_before.st_size != source_after.st_size
+                    or source_before.st_size != path_after.st_size
+                    or source_before.st_mtime_ns != source_after.st_mtime_ns
+                    or source_before.st_mtime_ns != path_after.st_mtime_ns
+                    or not stat.S_ISREG(destination_metadata.st_mode)
+                    or destination_metadata.st_nlink != 1
+                    or destination_metadata.st_mode & 0o222
+                    or (
+                        expected_sha256 is not None
+                        and actual_sha256 != expected_sha256
+                    )
+                ):
+                    raise RuntimeError(
+                        f"{block_token}: {label} changed during snapshot"
+                    )
+                parent_entry_metadata = os.stat(
+                    destination_name,
+                    dir_fd=destination_parent_descriptor,
+                    follow_symlinks=False,
+                )
+                with _open_private_parent_fd(
+                    root,
+                    destination,
+                    block_token=block_token,
+                    label=f"{label} destination verification",
+                ) as (verification_parent_descriptor, verification_name):
+                    path_entry_metadata = os.stat(
+                        verification_name,
+                        dir_fd=verification_parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                if any(
+                    metadata.st_dev != created_destination_metadata.st_dev
+                    or metadata.st_ino != created_destination_metadata.st_ino
+                    for metadata in (
+                        destination_metadata,
+                        parent_entry_metadata,
+                        path_entry_metadata,
+                    )
+                ):
+                    raise RuntimeError(
+                        f"{block_token}: {label} destination changed during snapshot"
+                    )
+                os.fsync(destination_parent_descriptor)
+                return actual_sha256
+            except (OSError, RuntimeError):
+                if destination_created and created_destination_metadata is not None:
+                    try:
+                        current_destination = os.stat(
+                            destination_name,
+                            dir_fd=destination_parent_descriptor,
+                            follow_symlinks=False,
+                        )
+                        if (
+                            current_destination.st_dev
+                            == created_destination_metadata.st_dev
+                            and current_destination.st_ino
+                            == created_destination_metadata.st_ino
+                        ):
+                            os.unlink(
+                                destination_name,
+                                dir_fd=destination_parent_descriptor,
+                            )
+                            os.fsync(destination_parent_descriptor)
+                            destination_created = False
+                    except (FileNotFoundError, OSError):
+                        pass
+                raise
+            finally:
+                if destination_descriptor >= 0:
+                    os.close(destination_descriptor)
+                os.close(source_descriptor)
     except RuntimeError:
-        if destination.is_file() and not destination.is_symlink():
-            destination.unlink()
+        if destination_created:
+            try:
+                with _open_private_parent_fd(
+                    root,
+                    destination,
+                    block_token=block_token,
+                    label=f"{label} cleanup",
+                ) as (parent_descriptor, name):
+                    os.unlink(name, dir_fd=parent_descriptor)
+                    os.fsync(parent_descriptor)
+            except (FileNotFoundError, OSError, RuntimeError):
+                pass
         raise
     except OSError as exc:
-        if destination.is_file() and not destination.is_symlink():
-            destination.unlink()
+        if destination_created:
+            try:
+                with _open_private_parent_fd(
+                    root,
+                    destination,
+                    block_token=block_token,
+                    label=f"{label} cleanup",
+                ) as (parent_descriptor, name):
+                    os.unlink(name, dir_fd=parent_descriptor)
+                    os.fsync(parent_descriptor)
+            except (FileNotFoundError, OSError, RuntimeError):
+                pass
         raise RuntimeError(f"{block_token}: {label} snapshot failed") from exc
 
 

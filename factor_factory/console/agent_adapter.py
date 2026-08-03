@@ -17,6 +17,9 @@ from factor_factory.console.models import ResearchJob
 from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import utc_now
 from factor_factory.console.web_research_plan import write_text_atomic
+from factor_factory.mechanism_math.main_agent_memo import (
+    MAX_MECHANISM_MEMO_REVISIONS,
+)
 
 
 BLOCK_AGENT_RUNTIME_UNAVAILABLE = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE"
@@ -108,6 +111,8 @@ class AgentResumeTask:
     protected_inputs: tuple[str, ...]
     allowed_model_families: tuple[str, ...]
     validation_command: str
+    prior_output_sha256: tuple[tuple[str, str], ...] = ()
+    prior_output_archive_id: str = ""
 
 
 class ResearchAgentAdapter(Protocol):
@@ -710,6 +715,11 @@ def _build_resume_prompt_fact_lock(
         if isinstance(input_sha256, dict)
         else None
     )
+    expected_facts_sha256 = (
+        input_sha256.get(task.facts_relative)
+        if isinstance(input_sha256, dict)
+        else None
+    )
     if (
         any(
             contract.get(field) != expected
@@ -717,6 +727,8 @@ def _build_resume_prompt_fact_lock(
         )
         or not isinstance(expected_answer_sha256, str)
         or re.fullmatch(r"[0-9a-f]{64}", expected_answer_sha256) is None
+        or not isinstance(expected_facts_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_facts_sha256) is None
     ):
         raise _resume_prompt_error("resume contract binding is invalid")
     answer_form_bytes = _read_stable_resume_prompt_bytes(
@@ -728,6 +740,36 @@ def _build_resume_prompt_fact_lock(
         expected_answer_sha256,
     ):
         raise _resume_prompt_error("resume answer form hash mismatch")
+    facts_bytes = _read_stable_resume_prompt_bytes(
+        workspace,
+        task.facts_relative,
+    )
+    if not secrets.compare_digest(
+        hashlib.sha256(facts_bytes).hexdigest(),
+        expected_facts_sha256,
+    ):
+        raise _resume_prompt_error("resume facts hash mismatch")
+    facts = _parse_resume_prompt_json(facts_bytes)
+    revision_context = facts.get("revision_context")
+    if (
+        not isinstance(revision_context, dict)
+        or revision_context.get("mode") not in {"initial", "revision"}
+        or not isinstance(revision_context.get("revision_number"), int)
+        or (
+            revision_context.get("revision_number") != 0
+            if revision_context.get("mode") == "initial"
+            else not 1
+            <= revision_context.get("revision_number")
+            <= MAX_MECHANISM_MEMO_REVISIONS
+        )
+        or not isinstance(revision_context.get("failures"), list)
+        or any(
+            not isinstance(item, str) or not item.strip() or len(item) > 2_000
+            for item in revision_context.get("failures") or []
+        )
+        or len(revision_context.get("failures") or []) > 16
+    ):
+        raise _resume_prompt_error("resume revision context is invalid")
     answer_form = _parse_resume_prompt_json(answer_form_bytes)
     answer_form_minified = json.dumps(
         answer_form,
@@ -797,6 +839,7 @@ def _build_resume_prompt_fact_lock(
             field: operator_claims[field]
             for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS
         },
+        "revision_context": revision_context,
         "source_refs": source_refs,
     }
     _validate_resume_fact_lock_shape(fact_lock)
@@ -829,7 +872,11 @@ def _build_agent_resume_prompt(
         task.version != "factorforge_console_resume_task_v1"
         or not expected_identity
         or task.pause_kind != "main_agent_mechanism_memo"
-        or task.pause_token != "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
+        or task.pause_token
+        not in {
+            "AWAITING_MAIN_AGENT_MECHANISM_MEMO",
+            "AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION",
+        }
         or task.resume_start_step != "6"
         or task.session_policy != "fresh_phase_agent"
     ):
@@ -950,6 +997,11 @@ not part of the implemented formula. If the submitted economic idea needs a
 component absent from the exact formula, identify that implementation mismatch
 explicitly and treat it as a falsifier or kill criterion; never invent the
 missing component.
+
+When `revision_context.mode` is `revision`, every listed failure is a hard
+rejection from the previous formal Step6 attempt. Resolve each failure with a
+materially more specific derivation. Renaming the same generic payer, repeating
+formula tokens, or paraphrasing the rejected answer is another failure.
 
 {rehydration_notice}
 

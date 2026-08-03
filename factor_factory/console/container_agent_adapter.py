@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -51,6 +50,10 @@ from factor_factory.console.model_broker import (
 )
 from factor_factory.console.store import utc_now
 from factor_factory.console.web_research_plan import write_text_atomic
+from factor_factory.console.workspace_transaction import (
+    workspace_transaction_lock,
+    workspace_transaction_lock_held,
+)
 
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
@@ -97,7 +100,8 @@ class _ResumeWorkspaceView:
     parent_tree_file_sha256: tuple[tuple[str, str], ...]
     parent_tree_directory_relatives: tuple[str, ...]
     parent_ledger_sha256: str
-    parent_output_absent_relatives: tuple[str, ...]
+    parent_output_bytes: tuple[tuple[str, bytes | None], ...]
+    prior_output_archive_id: str
     allowed_entry_relatives: tuple[str, ...]
     writable_relatives: tuple[str, ...]
     remove_if_empty_relatives: tuple[str, ...]
@@ -1093,7 +1097,6 @@ class ContainerizedOpenClawResearchAgentAdapter:
             dict.fromkeys(
                 (
                     resume_task.required_output_relative,
-                    resume_task.optional_output_relative,
                     "identity/web_execution_ledger.md",
                 )
             )
@@ -1104,10 +1107,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
             ledger_relative,
             max_bytes=2 * 1024 * 1024,
         )
-        parent_output_absent_relatives = (
+        parent_output_relatives = (
             resume_task.required_output_relative,
-            resume_task.optional_output_relative,
         )
+        prior_output_sha256 = dict(resume_task.prior_output_sha256)
+        if (
+            len(prior_output_sha256) != len(resume_task.prior_output_sha256)
+            or set(prior_output_sha256)
+            - {resume_task.required_output_relative}
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                for digest in prior_output_sha256.values()
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior resume output binding is invalid"
+            )
+        if bool(prior_output_sha256) != bool(
+            resume_task.prior_output_archive_id
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive binding is invalid"
+            )
+        if resume_task.prior_output_archive_id:
+            _prepare_private_resume_archive_path(
+                self.config.state_root,
+                resume_task,
+            )
+        parent_output_bytes: list[tuple[str, bytes | None]] = []
         for relative in writable_relatives:
             target = _safe_workspace_relative_file(
                 workspace,
@@ -1118,10 +1145,24 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 resume_task.required_output_relative,
                 resume_task.optional_output_relative,
             }:
-                if target.exists() or target.is_symlink():
-                    raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume output already exists"
+                expected_digest = prior_output_sha256.get(relative)
+                if expected_digest is None:
+                    if target.exists() or target.is_symlink():
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume output already exists"
+                        )
+                    parent_output_bytes.append((relative, None))
+                else:
+                    baseline = _read_stable_workspace_file_bytes(
+                        workspace,
+                        relative,
+                        max_bytes=2 * 1024 * 1024,
                     )
+                    if hashlib.sha256(baseline).hexdigest() != expected_digest:
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior resume output hash mismatch:{relative}"
+                        )
+                    parent_output_bytes.append((relative, baseline))
             elif not target.is_file() or target.is_symlink():
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume ledger is unsafe"
@@ -1147,7 +1188,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             workspace,
             excluded_file_relatives=(
                 ledger_relative,
-                *parent_output_absent_relatives,
+                *parent_output_relatives,
             ),
         )
         parent_tree_file_map = dict(parent_tree_files)
@@ -1176,10 +1217,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
             parent_tree_file_sha256=parent_tree_files,
             parent_tree_directory_relatives=parent_tree_directories,
             parent_ledger_sha256=hashlib.sha256(parent_ledger).hexdigest(),
-            parent_output_absent_relatives=parent_output_absent_relatives,
+            parent_output_bytes=tuple(parent_output_bytes),
+            prior_output_archive_id=resume_task.prior_output_archive_id,
             allowed_entry_relatives=allowed_entry_relatives,
             writable_relatives=writable_relatives,
-            remove_if_empty_relatives=(resume_task.optional_output_relative,),
+            remove_if_empty_relatives=(),
         )
 
     def _stage_resume_terminal_delivery(
@@ -1280,7 +1322,6 @@ class ContainerizedOpenClawResearchAgentAdapter:
 
         expected_writable = {
             resume_task.required_output_relative,
-            resume_task.optional_output_relative,
             "identity/web_execution_ledger.md",
         }
         if set(view.writable_relatives) != expected_writable:
@@ -1393,6 +1434,13 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 report_id=report_id,
             )
 
+        if (
+            view.prior_output_archive_id
+            and not workspace_transaction_lock_held(self.config.state_root, root)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: revision promotion lacks an outer workspace transaction"
+            )
         with self._workspace_promotion_lock(root):
             self._promote_staged_resume_outputs(
                 view,
@@ -1471,6 +1519,35 @@ class ContainerizedOpenClawResearchAgentAdapter:
         optional_relatives: set[str],
     ) -> None:
         _require_parent_workspace_tree_unchanged(view, root)
+        parent_output_bytes = dict(view.parent_output_bytes)
+        if (
+            len(parent_output_bytes) != len(view.parent_output_bytes)
+            or set(parent_output_bytes) != {
+                relative
+                for relative in view.writable_relatives
+                if relative != "identity/web_execution_ledger.md"
+            }
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output baseline is invalid"
+            )
+        for relative, baseline in parent_output_bytes.items():
+            exists = _workspace_relative_entry_exists(root, relative)
+            if baseline is None:
+                if exists:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output promotion target exists"
+                    )
+                continue
+            if not exists or _read_stable_workspace_file_bytes(
+                root,
+                relative,
+                max_bytes=2 * 1024 * 1024,
+                error_code=BLOCK_AGENT_RUNTIME_FAILED,
+            ) != baseline:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: prior resume output changed:{relative}"
+                )
         parent_ledger_bytes = _read_stable_workspace_file_bytes(
             root,
             "identity/web_execution_ledger.md",
@@ -1487,25 +1564,63 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_FAILED}: parent execution ledger is invalid"
             ) from exc
-        output_targets: dict[str, Path] = {}
-        for relative in view.parent_output_absent_relatives:
-            if _workspace_relative_entry_exists(root, relative):
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_FAILED}: resume output promotion target exists"
-                )
-            output_targets[relative] = root / relative
+        output_targets = {
+            relative: root / relative for relative in parent_output_bytes
+        }
 
         staged_ledger = staged_outputs["identity/web_execution_ledger.md"]
         separator = "" if not parent_ledger or parent_ledger.endswith("\n") else "\n"
         combined_ledger = f"{parent_ledger}{separator}{staged_ledger}"
         ledger_relative = "identity/web_execution_ledger.md"
+        archive_path: Path | None = None
+        archive_bytes: bytes | None = None
+        prior_baselines = [
+            baseline
+            for baseline in parent_output_bytes.values()
+            if baseline is not None
+        ]
+        if bool(view.prior_output_archive_id) != (len(prior_baselines) == 1):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive source is invalid"
+            )
         try:
-            for relative in view.parent_output_absent_relatives:
+            if view.prior_output_archive_id:
+                archive_bytes = prior_baselines[0]
+                archive_path = (
+                    self.config.state_root / view.prior_output_archive_id
+                )
+                _write_text_atomic_new(
+                    archive_path,
+                    archive_bytes.decode("utf-8"),
+                    root=self.config.state_root,
+                )
+                os.chmod(archive_path, 0o400, follow_symlinks=False)
+                if _read_stable_workspace_file_bytes(
+                    self.config.state_root,
+                    view.prior_output_archive_id,
+                    max_bytes=2 * 1024 * 1024,
+                    error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                ) != archive_bytes:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive changed"
+                    )
+            for relative, baseline in parent_output_bytes.items():
                 staged_text = staged_outputs[relative]
                 if relative in optional_relatives and not staged_text:
                     continue
-                target = output_targets[relative]
-                _write_text_atomic_new(target, staged_text, root=root)
+                if baseline is None:
+                    _write_text_atomic_new(
+                        output_targets[relative],
+                        staged_text,
+                        root=root,
+                    )
+                else:
+                    _replace_text_atomic_existing(
+                        root,
+                        relative,
+                        staged_text,
+                        expected_bytes=baseline,
+                    )
             _replace_text_atomic_existing(
                 root,
                 ledger_relative,
@@ -1517,7 +1632,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
             for relative, target in output_targets.items():
                 staged_text = staged_outputs[relative]
                 if relative in optional_relatives and not staged_text:
-                    if _workspace_relative_entry_exists(root, relative):
+                    if (
+                        parent_output_bytes[relative] is None
+                        and _workspace_relative_entry_exists(root, relative)
+                    ):
                         raise RuntimeError(
                             f"{BLOCK_AGENT_RUNTIME_FAILED}: unexpected optional output appeared"
                         )
@@ -1548,16 +1666,37 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 )
         except Exception as exc:
             rollback_failures: list[str] = []
-            for relative in output_targets:
+            for relative, baseline in parent_output_bytes.items():
                 try:
-                    if not _workspace_relative_entry_exists(root, relative):
+                    exists = _workspace_relative_entry_exists(root, relative)
+                    if baseline is None:
+                        if not exists:
+                            continue
+                        _unlink_workspace_file_if_matches(
+                            root,
+                            relative,
+                            expected_bytes=staged_outputs[relative].encode("utf-8"),
+                        )
                         continue
-                    _unlink_workspace_file_if_matches(
+                    if not exists:
+                        rollback_failures.append(relative)
+                        continue
+                    current = _read_stable_workspace_file_bytes(
                         root,
                         relative,
-                        expected_bytes=staged_outputs[relative].encode("utf-8"),
+                        max_bytes=2 * 1024 * 1024,
+                        error_code=BLOCK_AGENT_ORPHANED_WRITER,
                     )
-                except (OSError, RuntimeError):
+                    if current == staged_outputs[relative].encode("utf-8"):
+                        _replace_text_atomic_existing(
+                            root,
+                            relative,
+                            baseline.decode("utf-8"),
+                            expected_bytes=current,
+                        )
+                    elif current != baseline:
+                        rollback_failures.append(relative)
+                except (OSError, RuntimeError, UnicodeError):
                     rollback_failures.append(relative)
             try:
                 current_ledger = _read_stable_workspace_file_bytes(
@@ -1592,12 +1731,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     rollback_failures.append("identity/web_execution_ledger.md")
             except (OSError, RuntimeError):
                 rollback_failures.append("identity/web_execution_ledger.md")
-            for relative in view.parent_output_absent_relatives:
+            for relative, baseline in parent_output_bytes.items():
                 try:
-                    if _workspace_relative_entry_exists(root, relative):
+                    exists = _workspace_relative_entry_exists(root, relative)
+                    if baseline is None and exists:
+                        rollback_failures.append(relative)
+                    elif baseline is not None and (
+                        not exists
+                        or _read_stable_workspace_file_bytes(
+                            root,
+                            relative,
+                            max_bytes=2 * 1024 * 1024,
+                            error_code=BLOCK_AGENT_ORPHANED_WRITER,
+                        )
+                        != baseline
+                    ):
                         rollback_failures.append(relative)
                 except (OSError, RuntimeError):
                     rollback_failures.append(relative)
+            if archive_path is not None and archive_bytes is not None:
+                try:
+                    if archive_path.exists() or archive_path.is_symlink():
+                        _unlink_workspace_file_if_matches(
+                            self.config.state_root,
+                            view.prior_output_archive_id,
+                            expected_bytes=archive_bytes,
+                        )
+                except (OSError, RuntimeError):
+                    rollback_failures.append("prior_memo_archive")
             if rollback_failures:
                 raise RuntimeError(
                     f"{BLOCK_AGENT_ORPHANED_WRITER}: resume promotion rollback failed:"
@@ -1607,51 +1768,12 @@ class ContainerizedOpenClawResearchAgentAdapter:
 
     @contextmanager
     def _workspace_promotion_lock(self, workspace: Path):
-        lock_root = self.config.state_root / "workspace-promotion-locks"
-        lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if lock_root.is_symlink() or not lock_root.is_dir():
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: workspace promotion lock root is unsafe"
-            )
-        lock_root.chmod(0o700)
-        lock_root_metadata = lock_root.stat()
-        if (
-            lock_root_metadata.st_mode & 0o077
-            or lock_root_metadata.st_uid != os.geteuid()
+        with workspace_transaction_lock(
+            self.config.state_root,
+            workspace,
+            error_code=BLOCK_AGENT_RUNTIME_FAILED,
         ):
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: workspace promotion lock root is unsafe"
-            )
-        workspace_identity = hashlib.sha256(
-            str(workspace).encode("utf-8")
-        ).hexdigest()
-        lock_path = lock_root / f"{workspace_identity}.lock"
-        descriptor = os.open(
-            lock_path,
-            os.O_RDWR
-            | os.O_CREAT
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        try:
-            metadata = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_nlink != 1
-                or metadata.st_uid != os.geteuid()
-            ):
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_FAILED}: workspace promotion lock is unsafe"
-                )
-            os.fchmod(descriptor, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
             yield
-        finally:
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            finally:
-                os.close(descriptor)
 
     def _broker_client_token(self) -> str:
         try:
@@ -3091,7 +3213,7 @@ def _require_parent_workspace_tree_unchanged(
         workspace,
         excluded_file_relatives=(
             "identity/web_execution_ledger.md",
-            *view.parent_output_absent_relatives,
+            *(relative for relative, _baseline in view.parent_output_bytes),
         ),
     )
     if (
@@ -3574,6 +3696,93 @@ def _safe_workspace_relative_file(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace target is not a file"
         )
     return path
+
+
+def _prepare_private_resume_archive_path(
+    state_root: Path,
+    task: AgentResumeTask,
+) -> Path:
+    expected_relative = (
+        f"jobs/{task.job_id}/resume-history/"
+        f"{task.attempt_id}/prior_memo.json"
+    )
+    if (
+        task.prior_output_archive_id != expected_relative
+        or re.fullmatch(r"job_[A-Za-z0-9_-]{1,64}", task.job_id) is None
+        or re.fullmatch(r"resume_[a-f0-9]{32}", task.attempt_id) is None
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive identity is unsafe"
+        )
+    if state_root.is_symlink() or not state_root.is_dir():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive state root is unsafe"
+        )
+    root = state_root.resolve(strict=True)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_descriptor = os.open(root, directory_flags)
+    current_descriptor = root_descriptor
+    opened_descriptors: list[int] = []
+    try:
+        for index, part in enumerate(Path(expected_relative).parts[:-1]):
+            leaf_attempt = index == len(Path(expected_relative).parts[:-1]) - 1
+            try:
+                next_descriptor = os.open(
+                    part,
+                    directory_flags,
+                    dir_fd=current_descriptor,
+                )
+                if leaf_attempt:
+                    os.close(next_descriptor)
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive attempt already exists"
+                    )
+            except FileNotFoundError:
+                os.mkdir(part, 0o700, dir_fd=current_descriptor)
+                os.fsync(current_descriptor)
+                next_descriptor = os.open(
+                    part,
+                    directory_flags,
+                    dir_fd=current_descriptor,
+                )
+            metadata = os.fstat(next_descriptor)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077
+            ):
+                os.close(next_descriptor)
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive parent is unsafe"
+                )
+            opened_descriptors.append(next_descriptor)
+            current_descriptor = next_descriptor
+        try:
+            os.stat(
+                "prior_memo.json",
+                dir_fd=current_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive already exists"
+            )
+    except OSError as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive parent is unsafe"
+        ) from exc
+    finally:
+        for descriptor in reversed(opened_descriptors):
+            os.close(descriptor)
+        os.close(root_descriptor)
+    return root / expected_relative
 
 
 def _safe_view_relative_path(root: Path, relative: str) -> Path:

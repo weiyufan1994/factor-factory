@@ -120,6 +120,26 @@ def _write_resume_prompt_inputs(
     answer_path = workspace / task.answer_form_relative
     answer_path.parent.mkdir(parents=True, exist_ok=True)
     answer_path.write_bytes(answer_bytes)
+    facts_bytes = _write_resume_facts(
+        workspace,
+        task,
+        {
+            "formula_facts": {
+                "formula": answer_form["formula"],
+                "fields": answer_form["formula_understanding"]["formula_features"][
+                    "fields"
+                ],
+                "operators": answer_form["formula_understanding"][
+                    "formula_features"
+                ]["operators"],
+            },
+            "revision_context": {
+                "mode": "initial",
+                "revision_number": 0,
+                "failures": [],
+            },
+        },
+    )
     contract = {
         "version": task.version,
         "attempt_id": task.attempt_id,
@@ -130,6 +150,7 @@ def _write_resume_prompt_inputs(
         "answer_form": task.answer_form_relative,
         "input_sha256": {
             task.answer_form_relative: hashlib.sha256(answer_bytes).hexdigest(),
+            task.facts_relative: hashlib.sha256(facts_bytes).hexdigest(),
         },
     }
     contract_path = workspace / task.contract_relative
@@ -139,6 +160,31 @@ def _write_resume_prompt_inputs(
         encoding="utf-8",
     )
     return task
+
+
+def _write_resume_facts(workspace: Path, task, payload: dict) -> bytes:
+    payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    payload.setdefault(
+        "revision_context",
+        {"mode": "initial", "revision_number": 0, "failures": []},
+    )
+    facts_bytes = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    facts_path = workspace / task.facts_relative
+    facts_path.parent.mkdir(parents=True, exist_ok=True)
+    facts_path.write_bytes(facts_bytes)
+    contract_path = workspace / task.contract_relative
+    if contract_path.is_file():
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract.setdefault("input_sha256", {})[task.facts_relative] = (
+            hashlib.sha256(facts_bytes).hexdigest()
+        )
+        contract_path.write_text(
+            json.dumps(contract, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    return facts_bytes
 
 
 def _build_resume_prompt_for_test(tmp_path: Path, workspace: Path, task):
@@ -694,6 +740,9 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     from factor_factory.console.container_agent_adapter import (
         ContainerizedOpenClawResearchAgentAdapter,
     )
+    from factor_factory.console.workspace_transaction import (
+        workspace_transaction_lock,
+    )
 
     source = tmp_path / "source"
     workspace = source / "factor_research" / "FACTOR" / "research"
@@ -710,18 +759,16 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
         ),
     )
     _write_resume_prompt_inputs(workspace, task=task)
-    (workspace / task.facts_relative).write_text(
-        json.dumps(
-            {
-                "formula_facts": {
-                    "formula": "divide(minus(close, open), pre_close)",
-                    "fields": ["close", "open", "pre_close"],
-                    "operators": ["divide", "minus"],
-                }
+    _write_resume_facts(
+        workspace,
+        task,
+        {
+            "formula_facts": {
+                "formula": "divide(minus(close, open), pre_close)",
+                "fields": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        },
     )
     (workspace / "identity/web_agent_resume.md").write_text(
         "facts only\n", encoding="utf-8"
@@ -837,9 +884,9 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     unexpected.unlink()
 
     memo_path = view.root / task.required_output_relative
-    optional_path = view.root / task.optional_output_relative
+    ledger_path = view.root / "identity/web_execution_ledger.md"
     memo_path.unlink()
-    os.link(optional_path, memo_path)
+    os.link(ledger_path, memo_path)
     with pytest.raises(RuntimeError, match="resume workspace file is unsafe"):
         adapter._promote_resume_workspace_view(view, workspace=workspace)
     memo_path.unlink()
@@ -979,6 +1026,185 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
         encoding="utf-8"
     ) == "parent ledger\nphase ledger\n"
 
+    prior_memo = (workspace / task.required_output_relative).read_bytes()
+    revision_task = replace(
+        task,
+        attempt_id=f"resume_{'b' * 32}",
+        prior_output_sha256=((
+            task.required_output_relative,
+            hashlib.sha256(prior_memo).hexdigest(),
+        ),),
+        prior_output_archive_id=(
+            f"jobs/{task.job_id}/resume-history/"
+            f"resume_{'b' * 32}/prior_memo.json"
+        ),
+    )
+    revision_runtime = tmp_path / "runtime-revision"
+    revision_runtime.mkdir()
+    revision_view = adapter._prepare_resume_workspace_view(
+        runtime_root=revision_runtime,
+        workspace=workspace,
+        resume_task=revision_task,
+    )
+    revised_memo = '{"memo": "formula-specific revision"}\n'
+    (revision_view.root / task.required_output_relative).write_text(
+        revised_memo,
+        encoding="utf-8",
+    )
+    (revision_view.root / "identity/web_execution_ledger.md").write_text(
+        "revision ledger\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="lacks an outer workspace transaction"):
+        adapter._promote_resume_workspace_view(
+            revision_view,
+            workspace=workspace,
+        )
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert not (
+        config.state_root / revision_task.prior_output_archive_id
+    ).exists()
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter,
+            "_validate_resume_workspace_artifact",
+            lambda *_args, **_kwargs: None,
+        )
+        with workspace_transaction_lock(
+            config.state_root,
+            workspace,
+            error_code="BLOCK_TEST",
+        ):
+            adapter._promote_resume_workspace_view(
+                revision_view,
+                workspace=workspace,
+                worktree=source,
+                report_id=task.report_id,
+            )
+    assert (workspace / task.required_output_relative).read_text(
+        encoding="utf-8"
+    ) == revised_memo
+    assert (workspace / "identity/web_execution_ledger.md").read_text(
+        encoding="utf-8"
+    ).endswith("phase ledger\nrevision ledger\n")
+    archived_prior = config.state_root / revision_task.prior_output_archive_id
+    assert archived_prior.read_bytes() == prior_memo
+    assert archived_prior.stat().st_mode & 0o777 == 0o400
+
+    accepted_revision = (workspace / task.required_output_relative).read_bytes()
+    accepted_ledger = (workspace / "identity/web_execution_ledger.md").read_bytes()
+    rollback_task = replace(
+        revision_task,
+        attempt_id=f"resume_{'d' * 32}",
+        prior_output_sha256=((
+            task.required_output_relative,
+            hashlib.sha256(accepted_revision).hexdigest(),
+        ),),
+        prior_output_archive_id=(
+            f"jobs/{task.job_id}/resume-history/"
+            f"resume_{'d' * 32}/prior_memo.json"
+        ),
+    )
+    rollback_runtime = tmp_path / "runtime-revision-rollback"
+    rollback_runtime.mkdir()
+    rollback_view = adapter._prepare_resume_workspace_view(
+        runtime_root=rollback_runtime,
+        workspace=workspace,
+        resume_task=rollback_task,
+    )
+    (rollback_view.root / task.required_output_relative).write_text(
+        '{"memo": "rollback candidate"}\n',
+        encoding="utf-8",
+    )
+    (rollback_view.root / "identity/web_execution_ledger.md").write_text(
+        "rollback ledger\n",
+        encoding="utf-8",
+    )
+
+    def fail_revision_after_ledger_replace(
+        workspace_root,
+        relative,
+        text,
+        *,
+        expected_bytes,
+    ):
+        original_atomic_replace(
+            workspace_root,
+            relative,
+            text,
+            expected_bytes=expected_bytes,
+        )
+        if relative == "identity/web_execution_ledger.md" and "rollback ledger" in text:
+            raise OSError("injected revision ledger failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter_module,
+            "_replace_text_atomic_existing",
+            fail_revision_after_ledger_replace,
+        )
+        with pytest.raises(OSError, match="revision ledger failure"):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    rollback_view,
+                    workspace=workspace,
+                )
+    assert (workspace / task.required_output_relative).read_bytes() == accepted_revision
+    assert (workspace / "identity/web_execution_ledger.md").read_bytes() == accepted_ledger
+    assert not (
+        config.state_root / rollback_task.prior_output_archive_id
+    ).exists()
+
+    tamper_task = replace(
+        revision_task,
+        attempt_id=f"resume_{'e' * 32}",
+        prior_output_sha256=((
+            task.required_output_relative,
+            hashlib.sha256(accepted_revision).hexdigest(),
+        ),),
+        prior_output_archive_id=(
+            f"jobs/{task.job_id}/resume-history/"
+            f"resume_{'e' * 32}/prior_memo.json"
+        ),
+    )
+    tamper_runtime = tmp_path / "runtime-revision-tamper"
+    tamper_runtime.mkdir()
+    tamper_view = adapter._prepare_resume_workspace_view(
+        runtime_root=tamper_runtime,
+        workspace=workspace,
+        resume_task=tamper_task,
+    )
+    (tamper_view.root / task.required_output_relative).write_text(
+        '{"memo": "next revision"}\n',
+        encoding="utf-8",
+    )
+    (tamper_view.root / "identity/web_execution_ledger.md").write_text(
+        "next revision ledger\n",
+        encoding="utf-8",
+    )
+    (workspace / task.required_output_relative).write_text(
+        '{"memo": "concurrent tamper"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="prior resume output changed"):
+        with workspace_transaction_lock(
+            config.state_root,
+            workspace,
+            error_code="BLOCK_TEST",
+        ):
+            adapter._promote_resume_workspace_view(
+                tamper_view,
+                workspace=workspace,
+            )
+    assert not (
+        config.state_root / tamper_task.prior_output_archive_id
+    ).exists()
+    (workspace / task.required_output_relative).write_bytes(accepted_revision)
+
 
 def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     from dataclasses import replace
@@ -1000,18 +1226,16 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         ),
     )
     _write_resume_prompt_inputs(workspace, task=task)
-    (workspace / task.facts_relative).write_text(
-        json.dumps(
-            {
-                "formula_facts": {
-                    "formula": "divide(minus(close, open), pre_close)",
-                    "fields": ["close", "open", "pre_close"],
-                    "operators": ["divide", "minus"],
-                }
+    _write_resume_facts(
+        workspace,
+        task,
+        {
+            "formula_facts": {
+                "formula": "divide(minus(close, open), pre_close)",
+                "fields": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        },
     )
     (workspace / "identity/web_agent_resume.md").write_text(
         "facts only\n", encoding="utf-8"
@@ -1055,7 +1279,7 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     assert (view.root / "identity/web_execution_ledger.md").read_text(
         encoding="utf-8"
     ) == "phase ledger\n"
-    assert (view.root / task.optional_output_relative).read_text(encoding="utf-8") == ""
+    assert not (view.root / task.optional_output_relative).exists()
 
     canonicalized = phase_view("canonicalized")
     model_memo = _resume_answer_form()
@@ -1252,18 +1476,16 @@ def test_container_resume_requires_host_staged_terminal_delivery(
         ),
     )
     _write_resume_prompt_inputs(workspace, task=task)
-    (workspace / task.facts_relative).write_text(
-        json.dumps(
-            {
-                "formula_facts": {
-                    "formula": "divide(minus(close, open), pre_close)",
-                    "fields": ["close", "open", "pre_close"],
-                    "operators": ["divide", "minus"],
-                }
+    _write_resume_facts(
+        workspace,
+        task,
+        {
+            "formula_facts": {
+                "formula": "divide(minus(close, open), pre_close)",
+                "fields": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        },
     )
     (workspace / "identity/web_execution_ledger.md").write_text(
         "parent ledger\n",
@@ -1665,10 +1887,13 @@ def test_workspace_promotion_lock_serializes_console_writers(tmp_path):
     source = tmp_path / "source"
     workspace = source / "factor_research" / "FACTOR" / "research"
     workspace.mkdir(parents=True)
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o770)
+    state_root.chmod(0o770)
     adapter = ContainerizedOpenClawResearchAgentAdapter(
         ConsoleConfig(
             source_repo=source,
-            state_root=tmp_path / "state",
+            state_root=state_root,
             worktree_root=tmp_path / "runs",
             auth_disabled=True,
         )
@@ -1682,6 +1907,8 @@ def test_workspace_promotion_lock_serializes_console_writers(tmp_path):
             acquired.set()
 
     with adapter._workspace_promotion_lock(workspace):
+        with adapter._workspace_promotion_lock(workspace):
+            assert not acquired.is_set()
         thread = threading.Thread(target=contender, daemon=True)
         thread.start()
         assert started.wait(timeout=1)
@@ -1689,6 +1916,68 @@ def test_workspace_promotion_lock_serializes_console_writers(tmp_path):
     assert acquired.wait(timeout=1)
     thread.join(timeout=1)
     assert not thread.is_alive()
+    assert stat.S_IMODE(state_root.stat().st_mode) == 0o770
+
+
+def test_workspace_transaction_identity_includes_private_state_root(tmp_path):
+    from factor_factory.console.workspace_transaction import (
+        workspace_transaction_lock,
+        workspace_transaction_lock_held,
+    )
+
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    workspace.mkdir(parents=True)
+    trusted_state_root = tmp_path / "trusted-state"
+    trusted_state_root.mkdir(mode=0o770)
+    trusted_state_root.chmod(0o770)
+    unsafe_state_root = tmp_path / "unsafe-state"
+    unsafe_state_root.mkdir(mode=0o777)
+    unsafe_state_root.chmod(0o777)
+
+    with workspace_transaction_lock(
+        trusted_state_root,
+        workspace,
+        error_code="BLOCK_TEST",
+    ):
+        assert workspace_transaction_lock_held(trusted_state_root, workspace)
+        assert not workspace_transaction_lock_held(unsafe_state_root, workspace)
+        with pytest.raises(RuntimeError, match="state root is unsafe"):
+            with workspace_transaction_lock(
+                unsafe_state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                raise AssertionError("unsafe state root lock must not be acquired")
+
+    assert not (unsafe_state_root / "workspace-promotion-locks").exists()
+
+
+def test_private_resume_archive_rejects_ancestor_symlink_without_escape(tmp_path):
+    from dataclasses import replace
+
+    from factor_factory.console.container_agent_adapter import (
+        _prepare_private_resume_archive_path,
+    )
+
+    task = replace(
+        _resume_task(),
+        attempt_id=f"resume_{'c' * 32}",
+        prior_output_archive_id=(
+            "jobs/job_1234567890/resume-history/"
+            f"resume_{'c' * 32}/prior_memo.json"
+        ),
+    )
+    state_root = tmp_path / "state"
+    job_root = state_root / "jobs" / task.job_id
+    job_root.mkdir(parents=True, mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (job_root / "resume-history").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="archive parent is unsafe"):
+        _prepare_private_resume_archive_path(state_root, task)
+
+    assert not (outside / task.attempt_id).exists()
 
 
 def test_workspace_openat_chain_rejects_parent_symlink_swap(tmp_path, monkeypatch):
@@ -1766,19 +2055,16 @@ def test_resume_view_binds_phase_inputs_to_parent_tree_baseline(
         protected_inputs=(),
     )
     _write_resume_prompt_inputs(workspace, task=task)
-    facts_path = workspace / task.facts_relative
-    facts_path.write_text(
-        json.dumps(
-            {
-                "formula_facts": {
-                    "formula": "divide(minus(close, open), pre_close)",
-                    "fields": ["close", "open", "pre_close"],
-                    "operators": ["divide", "minus"],
-                }
+    _write_resume_facts(
+        workspace,
+        task,
+        {
+            "formula_facts": {
+                "formula": "divide(minus(close, open), pre_close)",
+                "fields": ["close", "open", "pre_close"],
+                "operators": ["divide", "minus"],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        },
     )
     (workspace / "identity/web_agent_resume.md").write_text(
         "facts only\n",
@@ -1799,6 +2085,7 @@ def test_resume_view_binds_phase_inputs_to_parent_tree_baseline(
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
     original_tree_snapshot = adapter_module._workspace_tree_snapshot
+    facts_path = workspace / task.facts_relative
 
     def mutate_before_tree_snapshot(*args, **kwargs):
         facts_path.write_text('{"changed": true}\n', encoding="utf-8")

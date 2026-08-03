@@ -1173,18 +1173,19 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     )
     assert "identify that implementation mismatch\nexplicitly" in prompt
     assert "never invent the\nmissing component" in prompt
-    assert "Host rehydrates machine-owned immutable\nvalues" in prompt
-    assert "does not alter or fill any research\nclaim" in prompt
+    assert "Host starts from the hash-bound\nanswer form" in prompt
+    assert "does not alter or fill any research claim" in prompt
     assert "pinned formal validator after your\n   clean exit" in prompt
     assert "MEMO_DRAFT_COMPLETE" in prompt
     assert "phase\n   workspace is read-only" in prompt
     assert "Return exactly one minified JSON object" in prompt
-    assert "answer form is the sole source\n   of truth for every immutable value" in prompt
-    assert "preserve `source_refs`\n   as the answer form's exact string-valued JSON object" in prompt
-    assert "never copy, merge, or substitute them into `source_refs`" in prompt
+    assert "Build the research-field patch" in prompt
+    assert "Do not copy machine-owned values into the patch" in prompt
+    assert "Host alone reconstructs identity,\n   source refs" in prompt
+    assert "Never include machine-owned fields" in prompt
     assert "performs the only\n   permitted artifact write" in prompt
     assert "Do not call\n   a write or edit tool" in prompt
-    assert "hard-blocks at 20,000 bytes" in prompt
+    assert "the patch at 16,000 bytes and the memo at 24,000 bytes" in prompt
     assert "knowledge, or any file. Do not run" in prompt
     assert "E[r_i,t+h | F_t, formula_specific_state_i,t]" in prompt
     assert "identical JSON objects" in prompt
@@ -1218,6 +1219,11 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "knowledge, or any file. Do not run" not in shared_gateway_prompt
     assert "Host rehydrates machine-owned" not in shared_gateway_prompt
     assert "shared-gateway development path does not\nrehydrate" in shared_gateway_prompt
+    assert "research-field patch" not in shared_gateway_prompt
+    assert "Do not copy machine-owned values into the patch" not in shared_gateway_prompt
+    assert "Host alone reconstructs identity" not in shared_gateway_prompt
+    assert "Keep the completed memo below 22,000 UTF-8 bytes" in shared_gateway_prompt
+    assert "answer form is the sole\n   source of truth" in shared_gateway_prompt
 
     revision_probe_paths = (
         proof_path,

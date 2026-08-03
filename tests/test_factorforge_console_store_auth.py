@@ -64,6 +64,13 @@ def _resume_answer_form():
         "resume_attempt_id": f"resume_{'a' * 32}",
         "report_id": "REPORT",
         "factor_id": "FACTOR",
+        "created_at_utc": "2026-08-03T00:00:00Z",
+        "producer": "",
+        "agent_authorship": {
+            "authoring_mode": "",
+            "agent_role": "",
+            "answered_without_deterministic_template": False,
+        },
         "formula": "divide(minus(close, open), pre_close)",
         "formula_understanding": {
             "formula_features": {
@@ -81,19 +88,161 @@ def _resume_answer_form():
                 "component_id": "formula_root",
                 "formula_subexpression": "divide(minus(close, open), pre_close)",
                 "operators": ["divide", "minus"],
+                "observable_estimator": "",
+                "economic_state": "",
+                "mathematical_object": "",
+                "expected_role": "",
+                "metric_link": "",
             }
         ],
+        "mechanism_qa": {
+            "formula_state_answer": "",
+            "economic_hypothesis_answer": "",
+            "math_model_answer": "",
+            "payer_answer": "",
+            "payoff_answer": "",
+            "estimator_mapping_answer": "",
+            "metric_signature_answer": "",
+            "falsification_answer": "",
+        },
+        "economic_hypothesis": {
+            "return_source_class": "",
+            "payer_or_counterparty": "",
+            "why_they_pay": "",
+            "necessary_market_structure": "",
+        },
+        "math_hypothesis": {
+            "selected_model_family": "",
+            "why_this_model": "",
+            "why_not_generic_template": "",
+            "random_object": "",
+            "latent_state": "",
+            "process_or_distribution": "",
+            "target_functional": "",
+            "formula_as_estimator": "",
+            "expected_metric_signature": {
+                "rank_ic": "",
+                "long_side": "",
+                "cost_adjusted": "",
+                "monotonicity": "",
+                "turnover": "",
+            },
+        },
+        "math_model_selection": {
+            "model_family": "",
+            "baseline_model": "",
+            "model_mutation": "",
+        },
+        "payer": {
+            "payer_or_counterparty": "",
+            "why_they_pay": "",
+            "necessary_market_structure": "",
+        },
+        "formula_state_estimator": {
+            "latent_state": "",
+            "observable_mapping": "",
+            "component_links": [],
+        },
+        "expected_metric_signature": {
+            "rank_ic": "",
+            "long_side": "",
+            "cost_adjusted": "",
+            "monotonicity": "",
+            "turnover": "",
+        },
+        "falsification_tests": [],
         "operator_claim_consistency": {
+            "claims_correlation_or_covariance": False,
             "formula_has_correlation_or_covariance_operator": False,
+            "claims_dependence_without_operator_justification": False,
+            "explicit_dependence_justification": "",
             "has_sign_or_threshold": False,
+            "sign_threshold_discussion_present": False,
             "has_volume_ratio": False,
+            "volume_ratio_participation_discussion_present": False,
             "has_additive_rank_raw_ratio": False,
+            "additive_scale_commensurability_discussion_present": False,
         },
         "evidence_comparison": {
-            "observed_metrics": {"rank_ic_mean": -0.0078}
+            "observed_metrics": {"rank_ic_mean": -0.0078},
+            "mechanism_supported": "",
+            "contradictions": [],
+            "revision_implications": [],
+            "kill_criteria_triggered": [],
         },
+        "council_questions": [],
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
+    }
+
+
+def _resume_research_patch():
+    answer_form = _resume_answer_form()
+    signature = {
+        key: "expected versus observed"
+        for key in answer_form["expected_metric_signature"]
+    }
+    return {
+        "producer": "current_main_agent",
+        "agent_authorship": {
+            "authoring_mode": "current_agent_freeform",
+            "agent_role": "main_agent",
+            "answered_without_deterministic_template": True,
+        },
+        "mechanism_qa": {
+            key: "formula-specific answer"
+            for key in answer_form["mechanism_qa"]
+        },
+        "economic_hypothesis": {
+            key: "formula-specific answer"
+            for key in answer_form["economic_hypothesis"]
+        },
+        "math_hypothesis": {
+            **{
+                key: "formula-specific answer"
+                for key in answer_form["math_hypothesis"]
+                if key != "expected_metric_signature"
+            },
+            "expected_metric_signature": dict(signature),
+        },
+        "math_model_selection": {
+            key: "formula-specific answer"
+            for key in answer_form["math_model_selection"]
+        },
+        "payer": {
+            key: "formula-specific answer" for key in answer_form["payer"]
+        },
+        "formula_state_estimator": {
+            "latent_state": "formula-specific answer",
+            "observable_mapping": "formula-specific answer",
+            "component_links": ["formula_root"],
+        },
+        "expected_metric_signature": dict(signature),
+        "falsification_tests": ["test one", "test two"],
+        "council_questions": [],
+        "formula_component_map": [
+            {
+                "observable_estimator": "formula-specific answer",
+                "economic_state": "formula-specific answer",
+                "mathematical_object": "formula-specific answer",
+                "expected_role": "formula-specific answer",
+                "metric_link": "formula-specific answer",
+            }
+        ],
+        "evidence_comparison": {
+            "mechanism_supported": "not supported",
+            "contradictions": ["observed contradiction"],
+            "revision_implications": [],
+            "kill_criteria_triggered": ["cost kill"],
+        },
+        "operator_claim_consistency": {
+            "claims_correlation_or_covariance": False,
+            "claims_dependence_without_operator_justification": False,
+            "explicit_dependence_justification": "",
+            "sign_threshold_discussion_present": False,
+            "volume_ratio_participation_discussion_present": False,
+            "additive_scale_commensurability_discussion_present": False,
+        },
     }
 
 
@@ -647,6 +796,22 @@ def test_resume_prompt_enforces_answer_form_completion_budget_boundary(tmp_path)
     )
     with pytest.raises(RuntimeError, match="insufficient completion budget"):
         _build_resume_prompt_for_test(tmp_path, workspace, task)
+
+
+def test_container_resume_prompt_requests_only_agent_owned_research_patch(tmp_path):
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    task = _write_resume_prompt_inputs(workspace)
+
+    prompt = _build_resume_prompt_for_test(tmp_path, workspace, task)
+
+    assert "research-field patch" in prompt
+    assert "Do not copy machine-owned values into the patch" in prompt
+    assert "never paste the observed-metrics object" in prompt
+    assert "Every listed patch field is required" in prompt
+    assert "formula_state_estimator.component_links" in prompt
+    assert "canonical `component_id` strings" in prompt
+    assert "hard-blocks\n   the patch at 16,000 bytes" in prompt
+    assert "the patch at 16,000 bytes and the memo at 24,000 bytes" in prompt
 
 
 def test_resume_agent_session_is_fresh_and_does_not_reuse_long_context(monkeypatch):
@@ -1282,25 +1447,11 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     assert not (view.root / task.optional_output_relative).exists()
 
     canonicalized = phase_view("canonicalized")
-    model_memo = _resume_answer_form()
-    model_memo["source_refs"] = {"wrong": "model-owned-copy"}
-    model_memo["canonical_write_permission"] = True
-    model_memo["execution_allowed_by_default"] = True
-    model_memo["evidence_comparison"] = {
-        "observed_metrics": {},
-        "mechanism_supported": "no",
-    }
-    model_memo["operator_claim_consistency"][
-        "has_additive_rank_raw_ratio"
-    ] = True
-    model_memo["formula_component_map"][0].update(
-        {
-            "component_id": "invented_identity",
-            "formula_subexpression": "multiply(open, close)",
-            "operators": ["multiply"],
-            "economic_state": "model-authored research state",
-        }
-    )
+    model_memo = _resume_research_patch()
+    model_memo["evidence_comparison"]["mechanism_supported"] = "no"
+    model_memo["formula_component_map"][0][
+        "economic_state"
+    ] = "model-authored research state"
     adapter._stage_resume_terminal_delivery(
         canonicalized,
         terminal_text=json.dumps(
@@ -1340,13 +1491,149 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         == "model-authored research state"
     )
     assert canonical_memo["evidence_comparison"]["mechanism_supported"] == "no"
-    assert canonical_memo["canonical_write_permission"] is True
-    assert canonical_memo["execution_allowed_by_default"] is True
+    assert canonical_memo["canonical_write_permission"] is False
+    assert canonical_memo["execution_allowed_by_default"] is False
+    assert canonical_memo["producer"] == "current_main_agent"
+
+    machine_owned_override = phase_view("machine-owned-override")
+    machine_override_patch = _resume_research_patch()
+    machine_override_patch["source_refs"] = {"wrong": "model-owned-copy"}
+    with pytest.raises(
+        RuntimeError,
+        match="research patch is invalid:top-level field set",
+    ):
+        adapter._stage_resume_terminal_delivery(
+            machine_owned_override,
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": machine_override_patch,
+                    "ledger": "phase ledger",
+                }
+            ),
+            resume_task=task,
+            rehydrate_immutable_fields=True,
+        )
+
+    component_override = _resume_research_patch()
+    component_override["formula_component_map"][0]["component_id"] = "invented"
+    metrics_override = _resume_research_patch()
+    metrics_override["evidence_comparison"]["observed_metrics"] = {}
+    operator_override = _resume_research_patch()
+    operator_override["operator_claim_consistency"][
+        "has_additive_rank_raw_ratio"
+    ] = True
+    for name, memo, expected in (
+        (
+            "component-identity-override",
+            component_override,
+            "research patch is invalid:component field",
+        ),
+        (
+            "observed-metrics-override",
+            metrics_override,
+            "research patch is invalid:evidence_comparison",
+        ),
+        (
+            "operator-presence-override",
+            operator_override,
+            "research patch is invalid:operator_claim_consistency",
+        ),
+    ):
+        with pytest.raises(RuntimeError, match=expected):
+            adapter._stage_resume_terminal_delivery(
+                phase_view(name),
+                terminal_text=json.dumps(
+                    {
+                        "status": "MEMO_DRAFT_COMPLETE",
+                        "memo": memo,
+                        "ledger": "phase ledger",
+                    }
+                ),
+                resume_task=task,
+                rehydrate_immutable_fields=True,
+            )
+
+    wrong_evidence_type = _resume_research_patch()
+    wrong_evidence_type["evidence_comparison"]["contradictions"] = {
+        "not": "a list"
+    }
+    wrong_component_type = _resume_research_patch()
+    wrong_component_type["formula_component_map"][0]["metric_link"] = 1
+    invented_component_link = _resume_research_patch()
+    invented_component_link["formula_state_estimator"]["component_links"] = [
+        "invented_component"
+    ]
+    wrong_council_type = _resume_research_patch()
+    wrong_council_type["council_questions"] = {"not": "a list"}
+    wrong_operator_type = _resume_research_patch()
+    wrong_operator_type["operator_claim_consistency"][
+        "claims_correlation_or_covariance"
+    ] = 1
+    blank_operator_justification = _resume_research_patch()
+    blank_operator_justification["operator_claim_consistency"].update(
+        {
+            "claims_dependence_without_operator_justification": True,
+            "explicit_dependence_justification": " ",
+        }
+    )
+    non_finite_component = _resume_research_patch()
+    non_finite_component["formula_component_map"][0]["metric_link"] = float("nan")
+    for name, memo, expected in (
+        (
+            "wrong-evidence-type",
+            wrong_evidence_type,
+            "research patch is invalid:evidence_comparison value type",
+        ),
+        (
+            "wrong-component-type",
+            wrong_component_type,
+            "research patch is invalid:component field",
+        ),
+        (
+            "invented-component-link",
+            invented_component_link,
+            "research patch is invalid:formula_state_estimator value type",
+        ),
+        (
+            "wrong-council-type",
+            wrong_council_type,
+            "research patch is invalid:council_questions value type",
+        ),
+        (
+            "wrong-operator-type",
+            wrong_operator_type,
+            "research patch is invalid:operator_claim_consistency value type",
+        ),
+        (
+            "blank-operator-justification",
+            blank_operator_justification,
+            "research patch is invalid:operator_claim_consistency value type",
+        ),
+        (
+            "non-finite-component",
+            non_finite_component,
+            "research patch is invalid:component field",
+        ),
+    ):
+        with pytest.raises(RuntimeError, match=expected):
+            adapter._stage_resume_terminal_delivery(
+                phase_view(name),
+                terminal_text=json.dumps(
+                    {
+                        "status": "MEMO_DRAFT_COMPLETE",
+                        "memo": memo,
+                        "ledger": "phase ledger",
+                    }
+                ),
+                resume_task=task,
+                rehydrate_immutable_fields=True,
+            )
 
     locked_secret = "locked-field-secret-for-rehydration-test"
     secret_in_locked_field = phase_view("secret-in-locked-field")
-    secret_memo = _resume_answer_form()
-    secret_memo["source_refs"] = {"leaked": locked_secret}
+    secret_memo = _resume_research_patch()
+    secret_memo["producer"] = locked_secret
     with pytest.raises(RuntimeError, match="memo contains secret material"):
         adapter._stage_resume_terminal_delivery(
             secret_in_locked_field,
@@ -1411,11 +1698,27 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
             terminal_text=json.dumps(
                 {
                     "status": "MEMO_DRAFT_COMPLETE",
-                    "memo": {"text": "x" * 20_000},
+                    "memo": {"text": "x" * 24_000},
                     "ledger": "phase ledger",
                 }
             ),
             resume_task=task,
+        )
+    with pytest.raises(RuntimeError, match="research patch exceeds byte budget"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("oversized-research-patch"),
+            terminal_text=json.dumps(
+                {
+                    "status": "MEMO_DRAFT_COMPLETE",
+                    "memo": {
+                        **_resume_research_patch(),
+                        "producer": "x" * 16_000,
+                    },
+                    "ledger": "phase ledger",
+                }
+            ),
+            resume_task=task,
+            rehydrate_immutable_fields=True,
         )
     with pytest.raises(RuntimeError, match="ledger is missing or too large"):
         adapter._stage_resume_terminal_delivery(
@@ -1652,7 +1955,11 @@ def test_container_resume_requires_host_staged_terminal_delivery(
     assert token not in secret_receipt_text
 
     terminal_text = json.dumps(
-        {"status": "MEMO_DRAFT_COMPLETE", "memo": {}, "ledger": "phase ledger"}
+        {
+            "status": "MEMO_DRAFT_COMPLETE",
+            "memo": _resume_research_patch(),
+            "ledger": "phase ledger",
+        }
     )
     io_failure_task = replace(task, attempt_id=f"resume_{'b' * 32}")
     _write_resume_prompt_inputs(workspace, task=io_failure_task)

@@ -27,10 +27,11 @@ BLOCK_AGENT_ORPHANED_WRITER = "BLOCK_FACTORFORGE_CONSOLE_AGENT_ORPHANED_WRITER"
 BLOCK_AGENT_RUNTIME_FAILED = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED"
 BLOCK_AGENT_RUNTIME_TIMEOUT = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_TIMEOUT"
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
-RESUME_MEMO_MAX_BYTES = 20_000
+RESUME_MEMO_MAX_BYTES = 24_000
+RESUME_MEMO_AGENT_PATCH_MAX_BYTES = 16_000
 # Eight open answers plus the required economic/math fields must fit before
 # terminal staging adds its trailing newline.
-RESUME_MEMO_COMPLETION_RESERVE_BYTES = 12_000
+RESUME_MEMO_COMPLETION_RESERVE_BYTES = 16_000
 RESUME_ANSWER_FORM_MAX_BYTES = (
     RESUME_MEMO_MAX_BYTES - RESUME_MEMO_COMPLETION_RESERVE_BYTES - 1
 )
@@ -52,15 +53,6 @@ RESUME_MEMO_IMMUTABLE_FIELDS = (
     "canonical_write_permission",
     "execution_allowed_by_default",
 )
-RESUME_MEMO_HOST_REHYDRATED_FIELDS = (
-    "contract_version",
-    "resume_attempt_id",
-    "report_id",
-    "factor_id",
-    "source_refs",
-    "formula",
-    "formula_understanding",
-)
 RESUME_MEMO_COMPONENT_IDENTITY_FIELDS = (
     "component_id",
     "formula_subexpression",
@@ -71,6 +63,46 @@ RESUME_MEMO_OPERATOR_FLAG_FIELDS = (
     "has_sign_or_threshold",
     "has_volume_ratio",
     "has_additive_rank_raw_ratio",
+)
+RESUME_MEMO_AGENT_DIRECT_FIELDS = (
+    "producer",
+    "agent_authorship",
+    "mechanism_qa",
+    "economic_hypothesis",
+    "math_hypothesis",
+    "math_model_selection",
+    "payer",
+    "formula_state_estimator",
+    "expected_metric_signature",
+    "falsification_tests",
+    "council_questions",
+)
+RESUME_MEMO_AGENT_COMPONENT_FIELDS = (
+    "observable_estimator",
+    "economic_state",
+    "mathematical_object",
+    "expected_role",
+    "metric_link",
+)
+RESUME_MEMO_AGENT_EVIDENCE_FIELDS = (
+    "mechanism_supported",
+    "contradictions",
+    "revision_implications",
+    "kill_criteria_triggered",
+)
+RESUME_MEMO_AGENT_OPERATOR_FIELDS = (
+    "claims_correlation_or_covariance",
+    "claims_dependence_without_operator_justification",
+    "explicit_dependence_justification",
+    "sign_threshold_discussion_present",
+    "volume_ratio_participation_discussion_present",
+    "additive_scale_commensurability_discussion_present",
+)
+RESUME_MEMO_AGENT_PATCH_FIELDS = (
+    *RESUME_MEMO_AGENT_DIRECT_FIELDS,
+    "formula_component_map",
+    "evidence_comparison",
+    "operator_claim_consistency",
 )
 
 
@@ -895,20 +927,57 @@ def _build_agent_resume_prompt(
         sort_keys=True,
     )
     if execution_mode == "container":
-        rehydration_notice = """After delivery, the Host rehydrates machine-owned immutable
-values from the hash-bound answer form; this does not alter or fill any research
-claim, and every research-owned field remains subject to formal validation."""
-        delivery_step = f"""1. Build the completed memo from
+        rehydration_notice = """After delivery, the Host starts from the hash-bound
+answer form and overlays only the allowlisted research fields in your patch.
+The Host supplies every machine-owned identity, formula, source reference,
+observed metric, operator-presence flag, timestamp, and permission flag. This
+does not alter or fill any research claim, and every agent-owned field remains
+subject to formal validation."""
+        delivery_step = f"""1. Build the research-field patch from
    `{workspace / task.answer_form_relative}` in reasoning only. The phase
    workspace is read-only and no research file may be written by the agent.
    Return exactly one minified JSON object, without Markdown fences or any text
    before or after it, using this envelope:
-   `{{"status":"MEMO_DRAFT_COMPLETE","memo":{{...completed answer form...}},"ledger":"..."}}`.
+   `{{"status":"MEMO_DRAFT_COMPLETE","memo":{{...research-field patch...}},"ledger":"..."}}`.
+   The `memo` patch may contain only these top-level fields:
+   `producer`, `agent_authorship`, `mechanism_qa`, `economic_hypothesis`,
+   `math_hypothesis`, `math_model_selection`, `payer`,
+   `formula_state_estimator`, `expected_metric_signature`,
+   `falsification_tests`, `council_questions`, `formula_component_map`,
+   `evidence_comparison`, and `operator_claim_consistency`.
+   In `formula_component_map`, include only `observable_estimator`,
+   `economic_state`, `mathematical_object`, `expected_role`, and `metric_link`
+   for each canonical component, in canonical order. In `evidence_comparison`,
+   include only `mechanism_supported`, `contradictions`,
+   `revision_implications`, and `kill_criteria_triggered`. In
+   `operator_claim_consistency`, include exactly
+   `claims_correlation_or_covariance`,
+   `claims_dependence_without_operator_justification`,
+   `explicit_dependence_justification`, `sign_threshold_discussion_present`,
+   `volume_ratio_participation_discussion_present`, and
+   `additive_scale_commensurability_discussion_present`; omit all
+   formula/operator-presence flags. Every listed patch field is required; do
+   not omit an empty list or a false boolean. Never include machine-owned fields
+   such as identity, timestamps, source refs, formula syntax, observed metrics,
+   component identities/operators, permission flags, or contract version.
+   Set `formula_state_estimator.component_links` to a non-empty, unique JSON
+   list of canonical `component_id` strings from the answer form; never use
+   objects, subexpressions, operators, or invented component IDs there.
    JSON-escape every quote, backslash, and line break inside string values.
    Serialize the top-level object exactly once: after the ledger's closing
    quote, emit one closing `}}` and stop; never repeat the final `"}}` pair.
    The Host parses the terminal envelope, validates it, and performs the only
    permitted artifact write to `{workspace / task.required_output_relative}`."""
+        immutable_step = """2. Do not copy machine-owned values into the patch. Use the
+   Host-pinned fact lock for reasoning and cite exact metric keys and values
+   only where needed in research prose. The Host alone reconstructs identity,
+   source refs, formula syntax, observed metrics, component
+   IDs/subexpressions/operators, and formula/operator-presence flags from the
+   answer form."""
+        budget_instruction = """Keep the research patch below 14,000 UTF-8 bytes
+   and the reconstructed memo below 22,000 UTF-8 bytes; the Host hard-blocks
+   the patch at 16,000 bytes and the memo at 24,000 bytes. Use compact
+   formula-specific prose and never paste the observed-metrics object."""
         ledger_step = """7. Put a concise execution record under 1,600 characters in the envelope's
    `ledger` string. Do not include secrets or absolute paths."""
         exit_step = """8. Before returning, check the completed memo once in reasoning for identity,
@@ -928,6 +997,16 @@ written memo; any omission or change blocks formal validation."""
    `{workspace / task.required_output_relative}`. Write only the required memo
    and `identity/web_execution_ledger.md`; do not probe other paths, create
    sibling temporary files, or retry a failed write more than once."""
+        immutable_step = """2. Preserve `resume_attempt_id`, identity, source refs,
+   formula syntax, observed metrics, component IDs/subexpressions/operators,
+   and formula/operator-presence flags exactly. The answer form is the sole
+   source of truth for every immutable value. Preserve `source_refs` as its
+   exact string-valued JSON object; never replace it with provenance objects or
+   SHA256 records from the facts packet."""
+        budget_instruction = """Keep the completed memo below 22,000 UTF-8 bytes;
+   the Host hard-blocks it at 24,000 bytes. Use compact formula-specific prose
+   and do not duplicate the observed-metrics object outside its canonical
+   field."""
         ledger_step = """7. Update `identity/web_execution_ledger.md` with a concise record under
    1,600 characters. Do not include secrets or absolute paths."""
         exit_step = """8. Build the complete memo in reasoning, then use exactly one write call for
@@ -1008,13 +1087,7 @@ formula tokens, or paraphrasing the rejected answer is another failure.
 ## Required deliverable
 
 {delivery_step}
-2. Preserve `resume_attempt_id`, identity, source refs, formula syntax,
-   observed metrics, component IDs/subexpressions/operators, and
-   formula/operator-presence flags exactly. The answer form is the sole source
-   of truth for every immutable value. In particular, preserve `source_refs`
-   as the answer form's exact string-valued JSON object. The facts packet's
-   `source_artifacts` objects and SHA256 values are provenance evidence only;
-   never copy, merge, or substitute them into `source_refs`.
+{immutable_step}
 3. Independently fill every blank research field. Set `producer` to
    `current_main_agent`; set authoring mode to `current_agent_freeform`, role to
    `main_agent`, and `answered_without_deterministic_template` to `true`.
@@ -1028,11 +1101,8 @@ formula tokens, or paraphrasing the rejected answer is another failure.
    canned shorthand such as "investors", "market participants", "generic
    payer", "the factor captures alpha", "signed price state", "volume
    participation gate", or "liquidity or turnover shock". Keep each answer
-   between 120 and 400 characters. Keep the memo below 18,000 UTF-8 bytes when
-   serialized as minified JSON; the Host hard-blocks at 20,000 bytes. The
-   existing answer form is already a substantial part of that budget, so use
-   compact formula-specific prose and do not repeat immutable facts. Concision
-   must not omit contradictory observed metrics.
+   between 100 and 260 characters. {budget_instruction} Concision must not omit
+   contradictory observed metrics from the reasoning.
 5. Complete the mathematical contract with these exact structural rules:
    - `math_hypothesis.process_or_distribution` must contain an explicit model
      equation using `=` and explain the formula-specific state, process, or

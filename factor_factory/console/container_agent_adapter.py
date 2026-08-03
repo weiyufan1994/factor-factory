@@ -27,10 +27,13 @@ from factor_factory.console.agent_adapter import (
     BLOCK_AGENT_RUNTIME_UNAVAILABLE,
     AgentRunResult,
     AgentResumeTask,
-    RESUME_MEMO_COMPONENT_IDENTITY_FIELDS,
-    RESUME_MEMO_HOST_REHYDRATED_FIELDS,
+    RESUME_MEMO_AGENT_COMPONENT_FIELDS,
+    RESUME_MEMO_AGENT_DIRECT_FIELDS,
+    RESUME_MEMO_AGENT_EVIDENCE_FIELDS,
+    RESUME_MEMO_AGENT_OPERATOR_FIELDS,
+    RESUME_MEMO_AGENT_PATCH_FIELDS,
+    RESUME_MEMO_AGENT_PATCH_MAX_BYTES,
     RESUME_MEMO_MAX_BYTES,
-    RESUME_MEMO_OPERATOR_FLAG_FIELDS,
     RESUME_PROMPT_INPUT_MAX_BYTES,
     build_agent_prompt,
     build_agent_session_key,
@@ -1276,9 +1279,16 @@ class ContainerizedOpenClawResearchAgentAdapter:
             separators=(",", ":"),
             sort_keys=True,
         ) + "\n"
-        if len(model_memo_text.encode("utf-8")) > RESUME_MEMO_MAX_BYTES:
+        model_memo_limit = (
+            RESUME_MEMO_AGENT_PATCH_MAX_BYTES
+            if rehydrate_immutable_fields
+            else RESUME_MEMO_MAX_BYTES
+        )
+        if len(model_memo_text.encode("utf-8")) > model_memo_limit:
             raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal memo exceeds byte budget"
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal "
+                f"{'research patch' if rehydrate_immutable_fields else 'memo'} "
+                "exceeds byte budget"
             )
         if (
             redact_secrets(
@@ -3576,6 +3586,195 @@ def _read_stable_workspace_file_bytes(
         )
 
 
+def _validate_resume_research_patch(
+    answer_form: dict[str, Any],
+    memo: dict[str, Any],
+) -> None:
+    def invalid_patch(detail: str) -> RuntimeError:
+        return RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal research patch "
+            f"is invalid:{detail}"
+        )
+
+    if set(memo) != set(RESUME_MEMO_AGENT_PATCH_FIELDS):
+        raise invalid_patch("top-level field set")
+
+    def exact_object(field: str) -> dict[str, Any]:
+        canonical = answer_form.get(field)
+        patch = memo.get(field)
+        if not isinstance(canonical, dict):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+            )
+        if not isinstance(patch, dict) or set(patch) != set(canonical):
+            raise invalid_patch(f"{field} field set")
+        return patch
+
+    def require_string_map(field: str) -> dict[str, Any]:
+        patch = exact_object(field)
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in patch.values()
+        ):
+            raise invalid_patch(f"{field} value type")
+        return patch
+
+    def require_string_list(field: str, *, minimum: int = 0) -> list[str]:
+        value = memo.get(field)
+        if (
+            not isinstance(value, list)
+            or len(value) < minimum
+            or any(not isinstance(item, str) or not item.strip() for item in value)
+        ):
+            raise invalid_patch(f"{field} value type")
+        return value
+
+    if memo.get("producer") != "current_main_agent":
+        raise invalid_patch("producer")
+    authorship = exact_object("agent_authorship")
+    if (
+        authorship.get("authoring_mode") != "current_agent_freeform"
+        or authorship.get("agent_role") != "main_agent"
+        or authorship.get("answered_without_deterministic_template") is not True
+    ):
+        raise invalid_patch("agent_authorship value")
+
+    require_string_map("mechanism_qa")
+    require_string_map("economic_hypothesis")
+    require_string_map("math_model_selection")
+    require_string_map("payer")
+
+    math_hypothesis = exact_object("math_hypothesis")
+    math_signature = math_hypothesis.get("expected_metric_signature")
+    canonical_math = answer_form["math_hypothesis"]
+    canonical_math_signature = canonical_math.get("expected_metric_signature")
+    if (
+        not isinstance(math_signature, dict)
+        or not isinstance(canonical_math_signature, dict)
+        or set(math_signature) != set(canonical_math_signature)
+        or any(
+            not isinstance(value, str) or not value.strip()
+            for value in math_signature.values()
+        )
+        or any(
+            not isinstance(value, str) or not value.strip()
+            for key, value in math_hypothesis.items()
+            if key != "expected_metric_signature"
+        )
+    ):
+        raise invalid_patch("math_hypothesis value type")
+
+    require_string_map("expected_metric_signature")
+    require_string_list("falsification_tests", minimum=2)
+    require_string_list("council_questions")
+
+    canonical_components = answer_form.get("formula_component_map")
+    patch_components = memo.get("formula_component_map")
+    if (
+        not isinstance(canonical_components, list)
+        or not canonical_components
+        or not isinstance(patch_components, list)
+        or len(canonical_components) != len(patch_components)
+    ):
+        raise invalid_patch("component count")
+    component_ids: list[str] = []
+    for canonical_component, patch_component in zip(
+        canonical_components,
+        patch_components,
+    ):
+        component_id = (
+            canonical_component.get("component_id")
+            if isinstance(canonical_component, dict)
+            else None
+        )
+        if not isinstance(component_id, str) or not component_id.strip():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+            )
+        component_ids.append(component_id)
+        if (
+            not isinstance(patch_component, dict)
+            or set(patch_component) != set(RESUME_MEMO_AGENT_COMPONENT_FIELDS)
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in patch_component.values()
+            )
+        ):
+            raise invalid_patch("component field")
+
+    state_estimator = exact_object("formula_state_estimator")
+    component_links = state_estimator.get("component_links")
+    if (
+        any(
+            not isinstance(state_estimator.get(field), str)
+            or not str(state_estimator.get(field)).strip()
+            for field in ("latent_state", "observable_mapping")
+        )
+        or not isinstance(component_links, list)
+        or not component_links
+        or any(not isinstance(item, str) or not item.strip() for item in component_links)
+        or len(component_links) != len(set(component_links))
+        or not set(component_links).issubset(component_ids)
+    ):
+        raise invalid_patch("formula_state_estimator value type")
+
+    canonical_evidence = answer_form.get("evidence_comparison")
+    evidence = memo.get("evidence_comparison")
+    if (
+        not isinstance(canonical_evidence, dict)
+        or not isinstance(canonical_evidence.get("observed_metrics"), dict)
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+        )
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != set(RESUME_MEMO_AGENT_EVIDENCE_FIELDS)
+    ):
+        raise invalid_patch("evidence_comparison field set")
+    if (
+        not isinstance(evidence.get("mechanism_supported"), str)
+        or not evidence["mechanism_supported"].strip()
+    ):
+        raise invalid_patch("evidence_comparison value type")
+    for field in (
+        "contradictions",
+        "revision_implications",
+        "kill_criteria_triggered",
+    ):
+        value = evidence.get(field)
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            raise invalid_patch("evidence_comparison value type")
+
+    canonical_operator_claims = answer_form.get("operator_claim_consistency")
+    operator_claims = memo.get("operator_claim_consistency")
+    if not isinstance(canonical_operator_claims, dict):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+        )
+    if (
+        not isinstance(operator_claims, dict)
+        or set(operator_claims) != set(RESUME_MEMO_AGENT_OPERATOR_FIELDS)
+    ):
+        raise invalid_patch("operator_claim_consistency field set")
+    explicit_justification = operator_claims.get(
+        "explicit_dependence_justification"
+    )
+    if (
+        not isinstance(explicit_justification, str)
+        or (explicit_justification != "" and not explicit_justification.strip())
+        or any(
+            operator_claims.get(field) not in (True, False)
+            or not isinstance(operator_claims.get(field), bool)
+            for field in RESUME_MEMO_AGENT_OPERATOR_FIELDS
+            if field != "explicit_dependence_justification"
+        )
+    ):
+        raise invalid_patch("operator_claim_consistency value type")
+
+
 def _rehydrate_resume_memo_immutable_fields(
     workspace: Path,
     resume_task: AgentResumeTask,
@@ -3599,56 +3798,57 @@ def _rehydrate_resume_memo_immutable_fields(
             f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is invalid"
         )
 
-    rehydrated = deepcopy(memo)
-    if any(
-        field not in answer_form
-        for field in RESUME_MEMO_HOST_REHYDRATED_FIELDS
-    ):
-        raise RuntimeError(
-            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
-        )
-    for field in RESUME_MEMO_HOST_REHYDRATED_FIELDS:
-        rehydrated[field] = deepcopy(answer_form[field])
+    _validate_resume_research_patch(answer_form, memo)
 
-    answer_evidence = answer_form.get("evidence_comparison")
-    memo_evidence = rehydrated.get("evidence_comparison")
-    if isinstance(answer_evidence, dict) and isinstance(memo_evidence, dict):
-        memo_evidence["observed_metrics"] = deepcopy(
-            answer_evidence.get("observed_metrics")
-        )
+    rehydrated = deepcopy(answer_form)
+    for field in RESUME_MEMO_AGENT_DIRECT_FIELDS:
+        if field in memo:
+            rehydrated[field] = deepcopy(memo[field])
 
-    answer_operator = answer_form.get("operator_claim_consistency")
-    memo_operator = rehydrated.get("operator_claim_consistency")
-    if isinstance(answer_operator, dict) and isinstance(memo_operator, dict):
-        for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS:
-            if field not in answer_operator:
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
-                )
-            memo_operator[field] = deepcopy(answer_operator[field])
-
-    answer_components = answer_form.get("formula_component_map")
-    memo_components = rehydrated.get("formula_component_map")
-    if (
-        isinstance(answer_components, list)
-        and isinstance(memo_components, list)
-        and len(answer_components) == len(memo_components)
-    ):
-        for answer_component, memo_component in zip(
-            answer_components,
-            memo_components,
+    if "formula_component_map" in memo:
+        canonical_components = answer_form.get("formula_component_map")
+        patch_components = memo["formula_component_map"]
+        if (
+            not isinstance(canonical_components, list)
+            or not canonical_components
+            or not isinstance(patch_components, list)
+            or len(canonical_components) != len(patch_components)
         ):
-            if not isinstance(answer_component, dict) or not isinstance(
-                memo_component,
-                dict,
+            raise invalid_patch("component count")
+        merged_components: list[dict[str, Any]] = []
+        for canonical_component, patch_component in zip(
+            canonical_components,
+            patch_components,
+        ):
+            if (
+                not isinstance(canonical_component, dict)
+                or not isinstance(patch_component, dict)
+                or set(patch_component) != set(RESUME_MEMO_AGENT_COMPONENT_FIELDS)
             ):
-                continue
-            for field in RESUME_MEMO_COMPONENT_IDENTITY_FIELDS:
-                if field not in answer_component:
-                    raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
-                    )
-                memo_component[field] = deepcopy(answer_component[field])
+                raise invalid_patch("component field")
+            merged_component = deepcopy(canonical_component)
+            merged_component.update(deepcopy(patch_component))
+            merged_components.append(merged_component)
+        rehydrated["formula_component_map"] = merged_components
+
+    for field, allowed_fields in (
+        ("evidence_comparison", RESUME_MEMO_AGENT_EVIDENCE_FIELDS),
+        ("operator_claim_consistency", RESUME_MEMO_AGENT_OPERATOR_FIELDS),
+    ):
+        if field not in memo:
+            continue
+        canonical_section = answer_form.get(field)
+        patch_section = memo[field]
+        if (
+            not isinstance(canonical_section, dict)
+            or not isinstance(patch_section, dict)
+            or set(patch_section) != set(allowed_fields)
+        ):
+            raise invalid_patch(field)
+        merged_section = deepcopy(canonical_section)
+        merged_section.update(deepcopy(patch_section))
+        rehydrated[field] = merged_section
+
     return rehydrated
 
 

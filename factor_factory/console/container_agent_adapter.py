@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1646,8 +1646,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
         separator = "" if not parent_ledger or parent_ledger.endswith("\n") else "\n"
         combined_ledger = f"{parent_ledger}{separator}{staged_ledger}"
         ledger_relative = "identity/web_execution_ledger.md"
-        archive_path: Path | None = None
         archive_bytes: bytes | None = None
+        archive_parent_descriptor: int | None = None
+        archive_name = ""
+        archive_created = False
         prior_baselines = [
             baseline
             for baseline in parent_output_bytes.values()
@@ -1657,188 +1659,233 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive source is invalid"
             )
-        try:
+        with ExitStack() as archive_stack:
             if view.prior_output_archive_id:
                 archive_bytes = prior_baselines[0]
-                archive_path = (
-                    self.config.state_root / view.prior_output_archive_id
+                (
+                    archive_parent_descriptor,
+                    archive_name,
+                ) = archive_stack.enter_context(
+                    _open_private_resume_archive_parent_fd(
+                        self.config.state_root,
+                        view.prior_output_archive_id,
+                        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                        create_parents=False,
+                        reject_existing_attempt=False,
+                        require_file_absent=True,
+                    )
                 )
-                _write_text_atomic_new(
-                    archive_path,
-                    archive_bytes.decode("utf-8"),
-                    root=self.config.state_root,
-                )
-                os.chmod(archive_path, 0o400, follow_symlinks=False)
-                if _read_stable_workspace_file_bytes(
-                    self.config.state_root,
-                    view.prior_output_archive_id,
-                    max_bytes=2 * 1024 * 1024,
-                    error_code=BLOCK_AGENT_RUNTIME_FAILED,
-                ) != archive_bytes:
-                    raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive changed"
-                    )
-            for relative, baseline in parent_output_bytes.items():
-                staged_text = staged_outputs[relative]
-                if relative in optional_relatives and not staged_text:
-                    continue
-                if baseline is None:
-                    _write_text_atomic_new(
-                        output_targets[relative],
-                        staged_text,
-                        root=root,
-                    )
-                else:
-                    _replace_text_atomic_existing(
-                        root,
-                        relative,
-                        staged_text,
-                        expected_bytes=baseline,
-                    )
-            _replace_text_atomic_existing(
-                root,
-                ledger_relative,
-                combined_ledger,
-                expected_bytes=parent_ledger_bytes,
-            )
-
-            _require_parent_workspace_tree_unchanged(view, root)
-            for relative, target in output_targets.items():
-                staged_text = staged_outputs[relative]
-                if relative in optional_relatives and not staged_text:
-                    if (
-                        parent_output_bytes[relative] is None
-                        and _workspace_relative_entry_exists(root, relative)
-                    ):
+            try:
+                if archive_bytes is not None:
+                    if archive_parent_descriptor is None or not archive_name:
                         raise RuntimeError(
-                            f"{BLOCK_AGENT_RUNTIME_FAILED}: unexpected optional output appeared"
+                            f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive parent is unavailable"
                         )
-                    continue
-                promoted = _read_stable_workspace_file_bytes(
-                    root,
-                    relative,
-                    max_bytes=2 * 1024 * 1024,
-                    error_code=BLOCK_AGENT_RUNTIME_FAILED,
-                )
-                if hashlib.sha256(promoted).hexdigest() != hashlib.sha256(
-                    staged_text.encode("utf-8")
-                ).hexdigest():
-                    raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_FAILED}: promoted output changed:{relative}"
+                    _require_private_resume_archive_parent_still_bound(
+                        self.config.state_root,
+                        view.prior_output_archive_id,
+                        archive_parent_descriptor,
+                        error_code=BLOCK_AGENT_RUNTIME_FAILED,
                     )
-            promoted_ledger = _read_stable_workspace_file_bytes(
-                root,
-                "identity/web_execution_ledger.md",
-                max_bytes=2 * 1024 * 1024,
-                error_code=BLOCK_AGENT_RUNTIME_FAILED,
-            )
-            if hashlib.sha256(promoted_ledger).hexdigest() != hashlib.sha256(
-                combined_ledger.encode("utf-8")
-            ).hexdigest():
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_FAILED}: promoted execution ledger changed"
-                )
-        except Exception as exc:
-            rollback_failures: list[str] = []
-            for relative, baseline in parent_output_bytes.items():
-                try:
-                    exists = _workspace_relative_entry_exists(root, relative)
+                    _write_private_resume_archive_at(
+                        archive_parent_descriptor,
+                        archive_name,
+                        archive_bytes,
+                        relative=view.prior_output_archive_id,
+                    )
+                    archive_created = True
+                    _require_private_resume_archive_parent_still_bound(
+                        self.config.state_root,
+                        view.prior_output_archive_id,
+                        archive_parent_descriptor,
+                        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                    )
+                for relative, baseline in parent_output_bytes.items():
+                    staged_text = staged_outputs[relative]
+                    if relative in optional_relatives and not staged_text:
+                        continue
                     if baseline is None:
-                        if not exists:
-                            continue
-                        _unlink_workspace_file_if_matches(
-                            root,
-                            relative,
-                            expected_bytes=staged_outputs[relative].encode("utf-8"),
+                        _write_text_atomic_new(
+                            output_targets[relative],
+                            staged_text,
+                            root=root,
                         )
-                        continue
-                    if not exists:
-                        rollback_failures.append(relative)
-                        continue
-                    current = _read_stable_workspace_file_bytes(
-                        root,
-                        relative,
-                        max_bytes=2 * 1024 * 1024,
-                        error_code=BLOCK_AGENT_ORPHANED_WRITER,
-                    )
-                    if current == staged_outputs[relative].encode("utf-8"):
+                    else:
                         _replace_text_atomic_existing(
                             root,
                             relative,
-                            baseline.decode("utf-8"),
-                            expected_bytes=current,
+                            staged_text,
+                            expected_bytes=baseline,
                         )
-                    elif current != baseline:
-                        rollback_failures.append(relative)
-                except (OSError, RuntimeError, UnicodeError):
-                    rollback_failures.append(relative)
-            try:
-                current_ledger = _read_stable_workspace_file_bytes(
+                _replace_text_atomic_existing(
+                    root,
+                    ledger_relative,
+                    combined_ledger,
+                    expected_bytes=parent_ledger_bytes,
+                )
+
+                _require_parent_workspace_tree_unchanged(view, root)
+                for relative, target in output_targets.items():
+                    staged_text = staged_outputs[relative]
+                    if relative in optional_relatives and not staged_text:
+                        if (
+                            parent_output_bytes[relative] is None
+                            and _workspace_relative_entry_exists(root, relative)
+                        ):
+                            raise RuntimeError(
+                                f"{BLOCK_AGENT_RUNTIME_FAILED}: unexpected optional output appeared"
+                            )
+                        continue
+                    promoted = _read_stable_workspace_file_bytes(
+                        root,
+                        relative,
+                        max_bytes=2 * 1024 * 1024,
+                        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                    )
+                    if hashlib.sha256(promoted).hexdigest() != hashlib.sha256(
+                        staged_text.encode("utf-8")
+                    ).hexdigest():
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_RUNTIME_FAILED}: promoted output changed:{relative}"
+                        )
+                promoted_ledger = _read_stable_workspace_file_bytes(
                     root,
                     "identity/web_execution_ledger.md",
                     max_bytes=2 * 1024 * 1024,
                     error_code=BLOCK_AGENT_RUNTIME_FAILED,
                 )
-                if current_ledger == combined_ledger.encode("utf-8"):
-                    _replace_text_atomic_existing(
-                        root,
-                        ledger_relative,
-                        parent_ledger,
-                        expected_bytes=current_ledger,
+                if hashlib.sha256(promoted_ledger).hexdigest() != hashlib.sha256(
+                    combined_ledger.encode("utf-8")
+                ).hexdigest():
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: promoted execution ledger changed"
                     )
-                elif current_ledger != parent_ledger_bytes:
-                    rollback_failures.append("identity/web_execution_ledger.md")
-            except (OSError, RuntimeError):
-                rollback_failures.append("identity/web_execution_ledger.md")
-            try:
-                _require_parent_workspace_tree_unchanged(view, root)
-            except (OSError, RuntimeError):
-                rollback_failures.append("parent_workspace_evidence_tree")
-            try:
-                rolled_back_ledger = _read_stable_workspace_file_bytes(
-                    root,
-                    "identity/web_execution_ledger.md",
-                    max_bytes=2 * 1024 * 1024,
-                    error_code=BLOCK_AGENT_ORPHANED_WRITER,
-                )
-                if rolled_back_ledger != parent_ledger_bytes:
-                    rollback_failures.append("identity/web_execution_ledger.md")
-            except (OSError, RuntimeError):
-                rollback_failures.append("identity/web_execution_ledger.md")
-            for relative, baseline in parent_output_bytes.items():
-                try:
-                    exists = _workspace_relative_entry_exists(root, relative)
-                    if baseline is None and exists:
-                        rollback_failures.append(relative)
-                    elif baseline is not None and (
-                        not exists
-                        or _read_stable_workspace_file_bytes(
+                if archive_created and archive_parent_descriptor is not None:
+                    _require_private_resume_archive_parent_still_bound(
+                        self.config.state_root,
+                        view.prior_output_archive_id,
+                        archive_parent_descriptor,
+                        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                    )
+                archive_parent_descriptor = None
+                archive_stack.close()
+            except Exception as exc:
+                rollback_failures: list[str] = []
+                for relative, baseline in parent_output_bytes.items():
+                    try:
+                        exists = _workspace_relative_entry_exists(root, relative)
+                        if baseline is None:
+                            if not exists:
+                                continue
+                            _unlink_workspace_file_if_matches(
+                                root,
+                                relative,
+                                expected_bytes=staged_outputs[relative].encode("utf-8"),
+                            )
+                            continue
+                        if not exists:
+                            rollback_failures.append(relative)
+                            continue
+                        current = _read_stable_workspace_file_bytes(
                             root,
                             relative,
                             max_bytes=2 * 1024 * 1024,
                             error_code=BLOCK_AGENT_ORPHANED_WRITER,
                         )
-                        != baseline
-                    ):
+                        if current == staged_outputs[relative].encode("utf-8"):
+                            _replace_text_atomic_existing(
+                                root,
+                                relative,
+                                baseline.decode("utf-8"),
+                                expected_bytes=current,
+                            )
+                        elif current != baseline:
+                            rollback_failures.append(relative)
+                    except (OSError, RuntimeError, UnicodeError):
                         rollback_failures.append(relative)
-                except (OSError, RuntimeError):
-                    rollback_failures.append(relative)
-            if archive_path is not None and archive_bytes is not None:
                 try:
-                    if archive_path.exists() or archive_path.is_symlink():
-                        _unlink_workspace_file_if_matches(
-                            self.config.state_root,
-                            view.prior_output_archive_id,
-                            expected_bytes=archive_bytes,
+                    current_ledger = _read_stable_workspace_file_bytes(
+                        root,
+                        "identity/web_execution_ledger.md",
+                        max_bytes=2 * 1024 * 1024,
+                        error_code=BLOCK_AGENT_RUNTIME_FAILED,
+                    )
+                    if current_ledger == combined_ledger.encode("utf-8"):
+                        _replace_text_atomic_existing(
+                            root,
+                            ledger_relative,
+                            parent_ledger,
+                            expected_bytes=current_ledger,
                         )
+                    elif current_ledger != parent_ledger_bytes:
+                        rollback_failures.append("identity/web_execution_ledger.md")
                 except (OSError, RuntimeError):
-                    rollback_failures.append("prior_memo_archive")
-            if rollback_failures:
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_ORPHANED_WRITER}: resume promotion rollback failed:"
-                    + ",".join(dict.fromkeys(rollback_failures))
-                ) from exc
-            raise
+                    rollback_failures.append("identity/web_execution_ledger.md")
+                try:
+                    _require_parent_workspace_tree_unchanged(view, root)
+                except (OSError, RuntimeError):
+                    rollback_failures.append("parent_workspace_evidence_tree")
+                try:
+                    rolled_back_ledger = _read_stable_workspace_file_bytes(
+                        root,
+                        "identity/web_execution_ledger.md",
+                        max_bytes=2 * 1024 * 1024,
+                        error_code=BLOCK_AGENT_ORPHANED_WRITER,
+                    )
+                    if rolled_back_ledger != parent_ledger_bytes:
+                        rollback_failures.append("identity/web_execution_ledger.md")
+                except (OSError, RuntimeError):
+                    rollback_failures.append("identity/web_execution_ledger.md")
+                for relative, baseline in parent_output_bytes.items():
+                    try:
+                        exists = _workspace_relative_entry_exists(root, relative)
+                        if baseline is None and exists:
+                            rollback_failures.append(relative)
+                        elif baseline is not None and (
+                            not exists
+                            or _read_stable_workspace_file_bytes(
+                                root,
+                                relative,
+                                max_bytes=2 * 1024 * 1024,
+                                error_code=BLOCK_AGENT_ORPHANED_WRITER,
+                            )
+                            != baseline
+                        ):
+                            rollback_failures.append(relative)
+                    except (OSError, RuntimeError):
+                        rollback_failures.append(relative)
+                if archive_created and archive_bytes is not None:
+                    try:
+                        if archive_parent_descriptor is not None and archive_name:
+                            _unlink_private_resume_archive_at(
+                                archive_parent_descriptor,
+                                archive_name,
+                                expected_bytes=archive_bytes,
+                                relative=view.prior_output_archive_id,
+                            )
+                        else:
+                            with _open_private_resume_archive_parent_fd(
+                                self.config.state_root,
+                                view.prior_output_archive_id,
+                                error_code=BLOCK_AGENT_ORPHANED_WRITER,
+                                create_parents=False,
+                                reject_existing_attempt=False,
+                                require_file_absent=False,
+                            ) as (rollback_parent_descriptor, rollback_name):
+                                _unlink_private_resume_archive_at(
+                                    rollback_parent_descriptor,
+                                    rollback_name,
+                                    expected_bytes=archive_bytes,
+                                    relative=view.prior_output_archive_id,
+                                )
+                    except (OSError, RuntimeError):
+                        rollback_failures.append("prior_memo_archive")
+                if rollback_failures:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_ORPHANED_WRITER}: resume promotion rollback failed:"
+                        + ",".join(dict.fromkeys(rollback_failures))
+                    ) from exc
+                raise
 
     @contextmanager
     def _workspace_promotion_lock(self, workspace: Path):
@@ -3354,6 +3401,211 @@ def _write_text_atomic_new(path: Path, text: str, *, root: Path) -> None:
                 pass
 
 
+def _write_private_resume_archive_at(
+    parent_descriptor: int,
+    name: str,
+    payload: bytes,
+    *,
+    relative: str,
+) -> None:
+    try:
+        os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive already exists"
+        )
+    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
+    temporary_exists = False
+    linked = False
+    file_identity: tuple[int, int] | None = None
+    descriptor_close_uncertain = False
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        temporary_exists = True
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(descriptor, payload[offset:])
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        written_metadata = os.fstat(descriptor)
+        file_identity = (written_metadata.st_dev, written_metadata.st_ino)
+        os.link(
+            temporary,
+            name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        linked = True
+        os.unlink(temporary, dir_fd=parent_descriptor)
+        temporary_exists = False
+        os.fsync(parent_descriptor)
+        published_metadata = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(published_metadata.st_mode)
+            or published_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(published_metadata.st_mode) != 0o400
+            or published_metadata.st_nlink != 1
+            or file_identity
+            != (published_metadata.st_dev, published_metadata.st_ino)
+            or _read_stable_file_at(
+                parent_descriptor,
+                name,
+                relative=relative,
+                max_bytes=2 * 1024 * 1024,
+                error_code=BLOCK_AGENT_RUNTIME_FAILED,
+            )
+            != payload
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: prior memo archive changed"
+            )
+        try:
+            os.close(descriptor)
+        except OSError as close_exc:
+            descriptor = None
+            descriptor_close_uncertain = True
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: prior memo archive descriptor close failed"
+            ) from close_exc
+        descriptor = None
+    except Exception as exc:
+        cleanup_failed = False
+        if linked:
+            try:
+                current = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if file_identity != (current.st_dev, current.st_ino):
+                    cleanup_failed = True
+                else:
+                    os.unlink(name, dir_fd=parent_descriptor)
+                    os.fsync(parent_descriptor)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                cleanup_failed = True
+        if temporary_exists:
+            try:
+                os.unlink(temporary, dir_fd=parent_descriptor)
+                temporary_exists = False
+                os.fsync(parent_descriptor)
+            except FileNotFoundError:
+                temporary_exists = False
+            except OSError:
+                cleanup_failed = True
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                descriptor_close_uncertain = True
+            descriptor = None
+        if cleanup_failed or descriptor_close_uncertain:
+            if (
+                isinstance(exc, RuntimeError)
+                and str(exc).startswith(BLOCK_AGENT_ORPHANED_WRITER)
+            ):
+                raise
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: prior memo archive cleanup failed"
+            ) from exc
+        raise
+
+
+def _require_private_resume_archive_parent_still_bound(
+    state_root: Path,
+    archive_relative: str,
+    expected_parent_descriptor: int,
+    *,
+    error_code: str,
+) -> None:
+    expected = os.fstat(expected_parent_descriptor)
+    with _open_private_resume_archive_parent_fd(
+        state_root,
+        archive_relative,
+        error_code=error_code,
+        create_parents=False,
+        reject_existing_attempt=False,
+        require_file_absent=False,
+    ) as (current_parent_descriptor, _name):
+        current = os.fstat(current_parent_descriptor)
+        if (expected.st_dev, expected.st_ino) != (current.st_dev, current.st_ino):
+            raise RuntimeError(
+                f"{error_code}: prior memo archive parent changed"
+            )
+
+
+def _unlink_private_resume_archive_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    expected_bytes: bytes,
+    relative: str,
+) -> None:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent_descriptor,
+    )
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o400
+            or before.st_nlink != 1
+            or before.st_size != len(expected_bytes)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: prior memo archive is unsafe"
+            )
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        current = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            b"".join(chunks) != expected_bytes
+            or (before.st_dev, before.st_ino)
+            != (current.st_dev, current.st_ino)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: prior memo archive changed"
+            )
+        os.unlink(name, dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _replace_text_atomic_existing(
     workspace: Path,
     relative: str,
@@ -3978,75 +4230,150 @@ def _prepare_private_resume_archive_path(
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive identity is unsafe"
         )
-    if state_root.is_symlink() or not state_root.is_dir():
+    with _open_private_resume_archive_parent_fd(
+        state_root,
+        expected_relative,
+        error_code=BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        create_parents=True,
+        reject_existing_attempt=True,
+        require_file_absent=True,
+    ):
+        pass
+    return state_root / expected_relative
+
+
+@contextmanager
+def _open_private_resume_archive_parent_fd(
+    state_root: Path,
+    archive_relative: str,
+    *,
+    error_code: str,
+    create_parents: bool,
+    reject_existing_attempt: bool,
+    require_file_absent: bool,
+):
+    parts = Path(archive_relative).parts
+    if (
+        len(parts) != 5
+        or parts[0] != "jobs"
+        or re.fullmatch(r"job_[A-Za-z0-9_-]{1,64}", parts[1]) is None
+        or parts[2] != "resume-history"
+        or re.fullmatch(r"resume_[a-f0-9]{32}", parts[3]) is None
+        or parts[4] != "prior_memo.json"
+    ):
         raise RuntimeError(
-            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive state root is unsafe"
+            f"{error_code}: prior memo archive identity is unsafe"
         )
-    root = state_root.resolve(strict=True)
+    try:
+        root_descriptor = _open_absolute_directory_fd(
+            state_root,
+            error_code=error_code,
+        )
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"{error_code}: prior memo archive state root is unsafe"
+        ) from exc
     directory_flags = (
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    root_descriptor = os.open(root, directory_flags)
     current_descriptor = root_descriptor
     opened_descriptors: list[int] = []
     try:
-        for index, part in enumerate(Path(expected_relative).parts[:-1]):
-            leaf_attempt = index == len(Path(expected_relative).parts[:-1]) - 1
-            try:
-                next_descriptor = os.open(
-                    part,
-                    directory_flags,
-                    dir_fd=current_descriptor,
-                )
-                if leaf_attempt:
-                    os.close(next_descriptor)
-                    raise RuntimeError(
-                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive attempt already exists"
-                    )
-            except FileNotFoundError:
-                os.mkdir(part, 0o700, dir_fd=current_descriptor)
-                os.fsync(current_descriptor)
-                next_descriptor = os.open(
-                    part,
-                    directory_flags,
-                    dir_fd=current_descriptor,
-                )
-            metadata = os.fstat(next_descriptor)
-            if (
-                not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid != os.geteuid()
-                or metadata.st_mode & 0o077
-            ):
-                os.close(next_descriptor)
-                raise RuntimeError(
-                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive parent is unsafe"
-                )
-            opened_descriptors.append(next_descriptor)
-            current_descriptor = next_descriptor
         try:
-            os.stat(
-                "prior_memo.json",
-                dir_fd=current_descriptor,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            pass
-        else:
+            root_metadata = os.fstat(root_descriptor)
+        except OSError as exc:
             raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive already exists"
+                f"{error_code}: prior memo archive state root is unsafe"
+            ) from exc
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid != os.geteuid()
+            or root_metadata.st_mode & 0o007
+        ):
+            raise RuntimeError(
+                f"{error_code}: prior memo archive state root is unsafe"
             )
-    except OSError as exc:
-        raise RuntimeError(
-            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: prior memo archive parent is unsafe"
-        ) from exc
+        trusted_group_id = root_metadata.st_gid
+        try:
+            for index, part in enumerate(parts[:-1]):
+                leaf_attempt = index == len(parts[:-1]) - 1
+                entry_preexisted = True
+                try:
+                    next_descriptor = os.open(
+                        part,
+                        directory_flags,
+                        dir_fd=current_descriptor,
+                    )
+                except FileNotFoundError:
+                    if not create_parents:
+                        raise
+                    entry_preexisted = False
+                    os.mkdir(part, 0o700, dir_fd=current_descriptor)
+                    os.fsync(current_descriptor)
+                    next_descriptor = os.open(
+                        part,
+                        directory_flags,
+                        dir_fd=current_descriptor,
+                    )
+                opened_descriptors.append(next_descriptor)
+                if leaf_attempt and reject_existing_attempt and entry_preexisted:
+                    raise RuntimeError(
+                        f"{error_code}: prior memo archive attempt already exists"
+                    )
+                metadata = os.fstat(next_descriptor)
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or metadata.st_mode & 0o007
+                    or (
+                        metadata.st_mode & 0o070
+                        and metadata.st_gid != trusted_group_id
+                    )
+                ):
+                    raise RuntimeError(
+                        f"{error_code}: prior memo archive parent is unsafe"
+                    )
+                current_descriptor = next_descriptor
+            if require_file_absent:
+                try:
+                    os.stat(
+                        parts[-1],
+                        dir_fd=current_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise RuntimeError(
+                        f"{error_code}: prior memo archive already exists"
+                    )
+        except OSError as exc:
+            raise RuntimeError(
+                f"{error_code}: prior memo archive parent is unsafe"
+            ) from exc
+        yield current_descriptor, parts[-1]
     finally:
+        active_exception = sys.exc_info()[1]
+        close_failures: list[OSError] = []
         for descriptor in reversed(opened_descriptors):
-            os.close(descriptor)
-        os.close(root_descriptor)
-    return root / expected_relative
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                close_failures.append(exc)
+        try:
+            os.close(root_descriptor)
+        except OSError as exc:
+            close_failures.append(exc)
+        if close_failures and not (
+            isinstance(active_exception, RuntimeError)
+            and str(active_exception).startswith(BLOCK_AGENT_ORPHANED_WRITER)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: prior memo archive parent descriptor close failed"
+            ) from (active_exception or close_failures[0])
 
 
 def _safe_view_relative_path(root: Path, relative: str) -> Path:

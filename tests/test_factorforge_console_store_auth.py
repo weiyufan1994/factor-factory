@@ -1199,6 +1199,13 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     ) == "parent ledger\nphase ledger\n"
 
     prior_memo = (workspace / task.required_output_relative).read_bytes()
+    config.state_root.chmod(0o750)
+    production_jobs_root = config.state_root / "jobs"
+    production_jobs_root.mkdir(exist_ok=True)
+    production_jobs_root.chmod(0o770)
+    production_job_root = production_jobs_root / task.job_id
+    production_job_root.mkdir(exist_ok=True)
+    production_job_root.chmod(0o770)
     revision_task = replace(
         task,
         attempt_id=f"resume_{'b' * 32}",
@@ -1236,6 +1243,350 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     assert not (
         config.state_root / revision_task.prior_output_archive_id
     ).exists()
+    revision_archive = config.state_root / revision_task.prior_output_archive_id
+    revision_attempt_root = revision_archive.parent
+    pre_revision_ledger = (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes()
+    validated_attempt_root = revision_attempt_root.with_name(
+        f"{revision_attempt_root.name}-validated"
+    )
+    revision_attempt_root.rename(validated_attempt_root)
+    revision_attempt_root.mkdir(mode=0o707)
+    revision_attempt_root.chmod(0o707)
+    with pytest.raises(RuntimeError, match="archive parent is unsafe"):
+        with workspace_transaction_lock(
+            config.state_root,
+            workspace,
+            error_code="BLOCK_TEST",
+        ):
+            adapter._promote_resume_workspace_view(
+                revision_view,
+                workspace=workspace,
+            )
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+    revision_attempt_root.rmdir()
+    validated_attempt_root.rename(revision_attempt_root)
+
+    original_private_archive_writer = (
+        adapter_module._write_private_resume_archive_at
+    )
+    detached_attempt_root = revision_attempt_root.with_name(
+        f"{revision_attempt_root.name}-detached"
+    )
+    archive_parent_swapped = False
+
+    def swap_archive_parent_after_validation(
+        parent_descriptor,
+        name,
+        payload,
+        *,
+        relative,
+    ):
+        nonlocal archive_parent_swapped
+        revision_attempt_root.rename(detached_attempt_root)
+        revision_attempt_root.mkdir(mode=0o700)
+        archive_parent_swapped = True
+        return original_private_archive_writer(
+            parent_descriptor,
+            name,
+            payload,
+            relative=relative,
+        )
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter_module,
+            "_write_private_resume_archive_at",
+            swap_archive_parent_after_validation,
+        )
+        with pytest.raises(RuntimeError, match="archive parent changed"):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    revision_view,
+                    workspace=workspace,
+                )
+    assert archive_parent_swapped is True
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+    assert not (detached_attempt_root / "prior_memo.json").exists()
+    revision_attempt_root.rmdir()
+    detached_attempt_root.rename(revision_attempt_root)
+
+    def retain_private_archive_temporary(path, *, dir_fd=None):
+        if (
+            str(path).startswith(".prior_memo.json.")
+            and str(path).endswith(".tmp")
+        ):
+            raise OSError("injected persistent private archive temporary failure")
+        return original_unlink(path, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "unlink", retain_private_archive_temporary)
+        with pytest.raises(
+            RuntimeError,
+            match="ORPHANED_WRITER.*prior memo archive cleanup failed",
+        ):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    revision_view,
+                    workspace=workspace,
+                )
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+    orphaned_private_archives = tuple(
+        revision_attempt_root.glob(".prior_memo.json.*.tmp")
+    )
+    assert len(orphaned_private_archives) == 1
+    assert orphaned_private_archives[0].read_bytes() == prior_memo
+    orphaned_private_archives[0].unlink()
+
+    original_archive_open = os.open
+    original_archive_close = os.close
+    captured_archive_descriptors: list[int] = []
+    archive_close_failure_injected = False
+
+    def capture_private_archive_descriptor(
+        path,
+        flags,
+        mode=0o777,
+        *,
+        dir_fd=None,
+    ):
+        descriptor = original_archive_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            str(path).startswith(".prior_memo.json.")
+            and str(path).endswith(".tmp")
+            and flags & os.O_WRONLY
+        ):
+            captured_archive_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_after_private_archive_close(descriptor):
+        nonlocal archive_close_failure_injected
+        if (
+            captured_archive_descriptors
+            and descriptor == captured_archive_descriptors[-1]
+            and not archive_close_failure_injected
+        ):
+            original_archive_close(descriptor)
+            archive_close_failure_injected = True
+            raise OSError("injected private archive close writeback failure")
+        return original_archive_close(descriptor)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", capture_private_archive_descriptor)
+        patcher.setattr(os, "close", fail_after_private_archive_close)
+        with pytest.raises(
+            RuntimeError,
+            match="ORPHANED_WRITER.*prior memo archive descriptor close failed",
+        ):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    revision_view,
+                    workspace=workspace,
+                )
+    assert archive_close_failure_injected is True
+    assert len(captured_archive_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(captured_archive_descriptors[0])
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+    assert not tuple(revision_attempt_root.glob(".prior_memo.json.*.tmp"))
+
+    original_parent_open = os.open
+    original_parent_close = os.close
+    captured_attempt_descriptors: list[int] = []
+    attempt_close_failure_injected = False
+
+    def capture_attempt_descriptor(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = original_parent_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            str(path) == revision_attempt_root.name
+            and dir_fd is not None
+            and not captured_attempt_descriptors
+        ):
+            captured_attempt_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_after_attempt_parent_close(descriptor):
+        nonlocal attempt_close_failure_injected
+        if (
+            captured_attempt_descriptors
+            and descriptor == captured_attempt_descriptors[0]
+            and not attempt_close_failure_injected
+        ):
+            original_parent_close(descriptor)
+            attempt_close_failure_injected = True
+            raise OSError("injected attempt parent close-after failure")
+        return original_parent_close(descriptor)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", capture_attempt_descriptor)
+        patcher.setattr(os, "close", fail_after_attempt_parent_close)
+        with pytest.raises(
+            RuntimeError,
+            match="ORPHANED_WRITER.*parent descriptor close failed",
+        ):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    revision_view,
+                    workspace=workspace,
+                )
+    assert attempt_close_failure_injected is True
+    assert len(captured_attempt_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(captured_attempt_descriptors[0])
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+
+    original_open_absolute = adapter_module._open_absolute_directory_fd
+    captured_state_root_descriptors: list[int] = []
+    root_close_failure_injected = False
+
+    def capture_state_root_descriptor(path, *, error_code):
+        descriptor = original_open_absolute(path, error_code=error_code)
+        if path == config.state_root and not captured_state_root_descriptors:
+            captured_state_root_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_before_state_root_close(descriptor):
+        nonlocal root_close_failure_injected
+        if (
+            captured_state_root_descriptors
+            and descriptor == captured_state_root_descriptors[0]
+            and not root_close_failure_injected
+        ):
+            root_close_failure_injected = True
+            raise OSError("injected state root close-before failure")
+        return original_parent_close(descriptor)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter_module,
+            "_open_absolute_directory_fd",
+            capture_state_root_descriptor,
+        )
+        patcher.setattr(os, "close", fail_before_state_root_close)
+        with pytest.raises(
+            RuntimeError,
+            match="ORPHANED_WRITER.*parent descriptor close failed",
+        ):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    revision_view,
+                    workspace=workspace,
+                )
+    assert root_close_failure_injected is True
+    assert len(captured_state_root_descriptors) == 1
+    os.fstat(captured_state_root_descriptors[0])
+    original_parent_close(captured_state_root_descriptors[0])
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+
+    combined_attempt_descriptors: list[int] = []
+    combined_close_failure_injected = False
+
+    def capture_combined_attempt_descriptor(
+        path,
+        flags,
+        mode=0o777,
+        *,
+        dir_fd=None,
+    ):
+        descriptor = original_parent_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            str(path) == revision_attempt_root.name
+            and dir_fd is not None
+            and not combined_attempt_descriptors
+        ):
+            combined_attempt_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_after_combined_attempt_close(descriptor):
+        nonlocal combined_close_failure_injected
+        if (
+            combined_attempt_descriptors
+            and descriptor == combined_attempt_descriptors[0]
+            and not combined_close_failure_injected
+        ):
+            original_parent_close(descriptor)
+            combined_close_failure_injected = True
+            raise OSError("injected close while orphan blocker is active")
+        return original_parent_close(descriptor)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", capture_combined_attempt_descriptor)
+        patcher.setattr(os, "unlink", retain_private_archive_temporary)
+        patcher.setattr(os, "close", fail_after_combined_attempt_close)
+        with pytest.raises(
+            RuntimeError,
+            match="ORPHANED_WRITER.*prior memo archive cleanup failed",
+        ):
+            with workspace_transaction_lock(
+                config.state_root,
+                workspace,
+                error_code="BLOCK_TEST",
+            ):
+                adapter._promote_resume_workspace_view(
+                    revision_view,
+                    workspace=workspace,
+                )
+    assert combined_close_failure_injected is True
+    assert len(combined_attempt_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(combined_attempt_descriptors[0])
+    assert (workspace / task.required_output_relative).read_bytes() == prior_memo
+    assert (
+        workspace / "identity/web_execution_ledger.md"
+    ).read_bytes() == pre_revision_ledger
+    assert not revision_archive.exists()
+    combined_orphaned_archives = tuple(
+        revision_attempt_root.glob(".prior_memo.json.*.tmp")
+    )
+    assert len(combined_orphaned_archives) == 1
+    assert combined_orphaned_archives[0].read_bytes() == prior_memo
+    combined_orphaned_archives[0].unlink()
+
     with monkeypatch.context() as patcher:
         patcher.setattr(
             adapter,
@@ -1262,6 +1613,7 @@ def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     archived_prior = config.state_root / revision_task.prior_output_archive_id
     assert archived_prior.read_bytes() == prior_memo
     assert archived_prior.stat().st_mode & 0o777 == 0o400
+    assert archived_prior.parent.stat().st_mode & 0o777 == 0o700
 
     accepted_revision = (workspace / task.required_output_relative).read_bytes()
     accepted_ledger = (workspace / "identity/web_execution_ledger.md").read_bytes()
@@ -2361,6 +2713,9 @@ def test_private_resume_archive_rejects_ancestor_symlink_without_escape(tmp_path
     state_root = tmp_path / "state"
     job_root = state_root / "jobs" / task.job_id
     job_root.mkdir(parents=True, mode=0o700)
+    state_root.chmod(0o700)
+    (state_root / "jobs").chmod(0o700)
+    job_root.chmod(0o700)
     outside = tmp_path / "outside"
     outside.mkdir()
     (job_root / "resume-history").symlink_to(outside, target_is_directory=True)
@@ -2369,6 +2724,156 @@ def test_private_resume_archive_rejects_ancestor_symlink_without_escape(tmp_path
         _prepare_private_resume_archive_path(state_root, task)
 
     assert not (outside / task.attempt_id).exists()
+
+
+def test_private_resume_archive_rejects_world_accessible_state_root(tmp_path):
+    from dataclasses import replace
+
+    from factor_factory.console.container_agent_adapter import (
+        _prepare_private_resume_archive_path,
+    )
+
+    task = replace(
+        _resume_task(),
+        attempt_id=f"resume_{'f' * 32}",
+        prior_output_archive_id=(
+            "jobs/job_1234567890/resume-history/"
+            f"resume_{'f' * 32}/prior_memo.json"
+        ),
+    )
+    state_root = tmp_path / "world-accessible-state"
+    state_root.mkdir(mode=0o707)
+    state_root.chmod(0o707)
+
+    with pytest.raises(RuntimeError, match="archive state root is unsafe"):
+        _prepare_private_resume_archive_path(state_root, task)
+
+    assert not (state_root / "jobs").exists()
+
+
+def test_private_resume_archive_openat_rejects_state_root_symlink_swap(
+    tmp_path,
+    monkeypatch,
+):
+    from dataclasses import replace
+
+    from factor_factory.console.container_agent_adapter import (
+        _prepare_private_resume_archive_path,
+    )
+
+    task = replace(
+        _resume_task(),
+        attempt_id=f"resume_{'1' * 32}",
+        prior_output_archive_id=(
+            "jobs/job_1234567890/resume-history/"
+            f"resume_{'1' * 32}/prior_memo.json"
+        ),
+    )
+    state_root = tmp_path / "state-root-race"
+    state_root.mkdir(mode=0o750)
+    state_root.chmod(0o750)
+    outside = tmp_path / "outside-state-root-race"
+    outside.mkdir(mode=0o750)
+    outside.chmod(0o750)
+    backup = tmp_path / "state-root-race-backup"
+    original_open = os.open
+    swapped = False
+
+    def swap_state_root_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if str(path) == state_root.name and dir_fd is not None and not swapped:
+            state_root.rename(backup)
+            state_root.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", swap_state_root_before_open)
+        with pytest.raises(RuntimeError, match="archive state root is unsafe"):
+            _prepare_private_resume_archive_path(state_root, task)
+
+    assert swapped is True
+    assert not (outside / "jobs").exists()
+    state_root.unlink()
+    backup.rename(state_root)
+
+
+def test_private_resume_archive_closes_descriptors_when_fstat_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.container_agent_adapter as adapter_module
+    from dataclasses import replace
+
+    task = replace(
+        _resume_task(),
+        attempt_id=f"resume_{'2' * 32}",
+        prior_output_archive_id=(
+            "jobs/job_1234567890/resume-history/"
+            f"resume_{'2' * 32}/prior_memo.json"
+        ),
+    )
+    original_open_absolute = adapter_module._open_absolute_directory_fd
+    original_open = os.open
+    original_fstat = os.fstat
+
+    state_root = tmp_path / "state-root-fstat"
+    state_root.mkdir(mode=0o750)
+    state_root.chmod(0o750)
+    captured_root_descriptor: list[int] = []
+
+    def capture_root_descriptor(path, *, error_code):
+        descriptor = original_open_absolute(path, error_code=error_code)
+        captured_root_descriptor.append(descriptor)
+        return descriptor
+
+    def fail_root_fstat(descriptor):
+        if captured_root_descriptor and descriptor == captured_root_descriptor[-1]:
+            raise OSError("injected root fstat failure")
+        return original_fstat(descriptor)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            adapter_module,
+            "_open_absolute_directory_fd",
+            capture_root_descriptor,
+        )
+        patcher.setattr(os, "fstat", fail_root_fstat)
+        with pytest.raises(RuntimeError, match="archive state root is unsafe"):
+            adapter_module._prepare_private_resume_archive_path(state_root, task)
+    assert len(captured_root_descriptor) == 1
+    with pytest.raises(OSError):
+        original_fstat(captured_root_descriptor[0])
+
+    child_state_root = tmp_path / "child-fstat"
+    jobs_root = child_state_root / "jobs"
+    jobs_root.mkdir(parents=True, mode=0o700)
+    child_state_root.chmod(0o700)
+    jobs_root.chmod(0o700)
+    captured_child_descriptor: list[int] = []
+
+    def capture_jobs_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if str(path) == "jobs" and dir_fd is not None:
+            captured_child_descriptor.append(descriptor)
+        return descriptor
+
+    def fail_child_fstat(descriptor):
+        if captured_child_descriptor and descriptor == captured_child_descriptor[-1]:
+            raise OSError("injected child fstat failure")
+        return original_fstat(descriptor)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "open", capture_jobs_open)
+        patcher.setattr(os, "fstat", fail_child_fstat)
+        with pytest.raises(RuntimeError, match="archive parent is unsafe"):
+            adapter_module._prepare_private_resume_archive_path(
+                child_state_root,
+                task,
+            )
+    assert len(captured_child_descriptor) == 1
+    with pytest.raises(OSError):
+        original_fstat(captured_child_descriptor[0])
 
 
 def test_workspace_openat_chain_rejects_parent_symlink_swap(tmp_path, monkeypatch):

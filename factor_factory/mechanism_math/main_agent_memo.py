@@ -11,6 +11,7 @@ from .formula_specific import BASELINE_MODEL_FAMILIES, build_formula_understandi
 CONTRACT_VERSION = "factorforge_main_agent_mechanism_memo_v1"
 QUESTIONNAIRE_VERSION = "factorforge_main_agent_mechanism_questionnaire_v1"
 PRODUCER = "step6_main_agent"
+MAX_TARGET_HORIZON = 4096
 REQUIRED_QA_FIELDS = [
     "formula_state_answer",
     "economic_hypothesis_answer",
@@ -40,6 +41,39 @@ MODEL_FAMILY_ALIASES = {
     "residualization": "projection_residualization",
 }
 
+TRUSTED_INFORMATION_NAMES = frozenset(
+    {
+        "amount",
+        "additive_score",
+        "close",
+        "control",
+        "controls",
+        "drift_state",
+        "estimated_state",
+        "factor",
+        "formula_state",
+        "high",
+        "latent_state",
+        "low",
+        "open",
+        "open_close_position_state",
+        "participation_ratio",
+        "pre_close",
+        "process_state",
+        "s",
+        "score",
+        "signal",
+        "signed_price_state",
+        "state",
+        "temporary_pressure",
+        "turnover_rate",
+        "volume",
+        "vwap",
+        "x",
+        "z",
+    }
+)
+
 
 def normalize_derivation_model_family(value: Any) -> str | None:
     raw = str(value or "").strip().lower()
@@ -66,6 +100,347 @@ def _as_list(value: Any) -> list[Any]:
 
 def _nonempty_str_list(value: Any, min_count: int = 2) -> bool:
     return isinstance(value, list) and len([item for item in value if isinstance(item, str) and item.strip()]) >= min_count
+
+
+def _has_explicit_forward_price_payoff(
+    value: Any,
+    allowed_information_names: set[str] | None = None,
+) -> bool:
+    payoff = _conditional_target_payoff(value, allowed_information_names)
+    if payoff is None:
+        return False
+    price_term = (
+        r"(?:close|open|vwap|price|p)"
+        r"(?:_\{[^{}]+\}|\.shift\(-(?:[1-9][0-9]{0,3}|h|n)\))?"
+    )
+    payoff_pattern = re.compile(
+        rf"(?P<numerator>{price_term})/"
+        rf"(?P<denominator>{price_term})-1(?:\.0+)?"
+    )
+    match = payoff_pattern.fullmatch(payoff)
+    if match is None:
+        return False
+    numerator = _price_term_time(match.group("numerator"))
+    denominator = _price_term_time(match.group("denominator"))
+    return _is_forward_price_ratio(numerator, denominator)
+
+
+def _has_explicit_named_return_payoff(
+    value: Any,
+    allowed_information_names: set[str] | None = None,
+) -> bool:
+    payoff = _conditional_target_payoff(value, allowed_information_names)
+    if payoff is None:
+        return False
+    named_return = re.fullmatch(
+        r"(?:r|return|forward_return)_\{(?P<braced>[^{}]+)\}"
+        r"|(?:r|return|forward_return)_(?P<identity>[a-z][a-z0-9_]*),"
+        r"(?P<plain>t\+(?:[0-9]{1,4}|k|h|n)(?::t\+(?:[0-9]{1,4}|k|h|n))?)",
+        payoff,
+    )
+    if named_return is None:
+        return False
+    index = named_return.group("braced")
+    if index is None:
+        identity = named_return.group("identity") or ""
+        if _information_name_has_future_semantics(identity):
+            return False
+        return _is_forward_return_time_range(named_return.group("plain") or "")
+    parts = index.split(",")
+    if not parts or any(not part for part in parts):
+        return False
+    time_parts = [part for part in parts if _is_forward_return_time_range(part)]
+    if len(time_parts) != 1:
+        return False
+    identities = [part for part in parts if part != time_parts[0]]
+    return all(
+        re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", part)
+        and not _information_name_has_future_semantics(part)
+        for part in identities
+    )
+
+
+def _is_forward_return_time_range(value: str) -> bool:
+    parts = value.split(":")
+    if len(parts) not in {1, 2}:
+        return False
+    offsets: list[int | str] = []
+    for part in parts:
+        match = re.fullmatch(r"t\+(?P<offset>[0-9]{1,4}|k|h|n)", part)
+        if match is None:
+            return False
+        offset = match.group("offset")
+        if offset.isdigit():
+            numeric = int(offset)
+            if numeric <= 0 or numeric > MAX_TARGET_HORIZON:
+                return False
+            offsets.append(numeric)
+        else:
+            offsets.append(offset)
+    if len(offsets) == 1:
+        return True
+    start, end = offsets
+    if not isinstance(start, int):
+        return False
+    if not isinstance(end, int):
+        return start == 1
+    return end >= start
+
+
+def _conditional_target_payoff(
+    value: Any,
+    allowed_information_names: set[str] | None,
+) -> str | None:
+    compact = re.sub(r"\s+", "", str(value or "").lower()).replace("−", "-")
+    trusted_information_names = set(TRUSTED_INFORMATION_NAMES)
+    trusted_information_names.update(
+        str(name).strip().lower()
+        for name in (allowed_information_names or set())
+        if re.fullmatch(r"[a-z][a-z0-9_]*", str(name).strip().lower())
+    )
+    body = _first_top_level_expectation_body(compact)
+    if body is None or body.count("|") != 1:
+        return None
+    payoff, information_set = body.split("|", 1)
+    if not _information_set_is_nonanticipative(
+        information_set,
+        trusted_information_names,
+    ):
+        return None
+    return _strip_balanced_outer_parentheses(payoff)
+
+
+def _information_set_is_nonanticipative(
+    value: str,
+    allowed_names: set[str],
+) -> bool:
+    items = _split_top_level_information_items(value)
+    return bool(items) and any(_is_filtration_item(item) for item in items) and all(
+        _is_nonanticipative_information_item(item, allowed_names) for item in items
+    )
+
+
+def _split_top_level_information_items(value: str) -> list[str] | None:
+    pairs = {"{": "}", "(": ")"}
+    stack: list[str] = []
+    items: list[str] = []
+    start = 0
+    for index, character in enumerate(value):
+        if character in pairs:
+            stack.append(pairs[character])
+        elif character in pairs.values():
+            if not stack or stack.pop() != character:
+                return None
+        elif character in "[]":
+            return None
+        elif character == "," and not stack:
+            item = value[start:index]
+            if not item:
+                return None
+            items.append(item)
+            start = index + 1
+    if stack:
+        return None
+    final_item = value[start:]
+    if not final_item:
+        return None
+    items.append(final_item)
+    return items
+
+
+def _is_nonanticipative_information_item(
+    item: str,
+    allowed_names: set[str],
+) -> bool:
+    if _is_filtration_item(item):
+        return True
+    shifted = re.fullmatch(
+        r"(?P<name>[a-z][a-z0-9_]*)\.shift\((?:0|[1-9][0-9]{0,3}|k|h|n)\)",
+        item,
+    )
+    if shifted is not None:
+        return _information_name_is_admissible(shifted.group("name"), allowed_names)
+    indexed = re.fullmatch(
+        r"(?P<name>[a-z][a-z0-9_]*?)_"
+        r"(?:\{(?P<braced>[^{}]+)\}|(?P<plain>t(?:-(?:[0-9]{1,4}|k|h|n))?))",
+        item,
+    )
+    if indexed is None:
+        return False
+    name = indexed.group("name")
+    if not _information_name_is_admissible(name, allowed_names):
+        return False
+    plain_time = indexed.group("plain")
+    if plain_time is not None:
+        return True
+    parts = (indexed.group("braced") or "").split(",")
+    if not parts or any(not part for part in parts):
+        return False
+    time_parts = [
+        part
+        for part in parts
+        if re.fullmatch(r"t(?:-(?:[0-9]{1,4}|k|h|n))?", part)
+    ]
+    if len(time_parts) != 1:
+        return False
+    identities = [part for part in parts if part != time_parts[0]]
+    return all(
+        re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", part)
+        and part != "f_t"
+        and not _information_name_has_future_semantics(part)
+        for part in identities
+    )
+
+
+def _is_filtration_item(item: str) -> bool:
+    return re.fullmatch(
+        r"(?:f_t|f_\{t\}|\\math(?:cal|scr)\{f\}_(?:t|\{t\}))",
+        item,
+    ) is not None
+
+
+def _information_name_is_admissible(name: str, allowed_names: set[str]) -> bool:
+    return name in allowed_names and not _information_name_has_future_semantics(name)
+
+
+def _information_name_has_future_semantics(name: str) -> bool:
+    return re.search(
+        r"(?:future|forward|fwd|target|label|outcome|next|lead|lookahead|tomorrow|tp[1-9]|tplus[1-9])",
+        name,
+    ) is not None
+
+
+def _first_top_level_expectation_body(value: str) -> str | None:
+    square_depth = 0
+    for index, character in enumerate(value):
+        if character == "[":
+            is_expectation = (
+                index > 0
+                and value[index - 1] == "e"
+                and (index < 2 or not re.fullmatch(r"[a-z0-9_]", value[index - 2]))
+            )
+            if square_depth == 0 and is_expectation:
+                depth = 1
+                for end in range(index + 1, len(value)):
+                    if value[end] == "[":
+                        depth += 1
+                    elif value[end] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            return value[index + 1 : end]
+                return None
+            square_depth += 1
+        elif character == "]":
+            square_depth -= 1
+            if square_depth < 0:
+                return None
+    return None
+
+
+def _strip_balanced_outer_parentheses(value: str) -> str:
+    stripped = value
+    while stripped.startswith("(") and stripped.endswith(")"):
+        depth = 0
+        closes_at_end = False
+        for index, character in enumerate(stripped):
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth < 0:
+                    return stripped
+                if depth == 0:
+                    closes_at_end = index == len(stripped) - 1
+                    break
+        if not closes_at_end:
+            break
+        stripped = stripped[1:-1]
+    return stripped
+
+
+def _price_term_time(
+    term: str,
+) -> tuple[str, int | str, tuple[str, ...]] | None:
+    parsed = re.fullmatch(
+        r"(?P<field>close|open|vwap|price|p)"
+        r"(?:(?:_\{(?P<index>[^{}]+)\})|(?:\.shift\(-(?P<shift>[1-9][0-9]{0,3}|h|n)\)))?",
+        term,
+    )
+    if parsed is None:
+        return None
+    field = parsed.group("field")
+    shift = parsed.group("shift")
+    if shift is not None:
+        if shift.isdigit():
+            numeric_shift = int(shift)
+            return (field, numeric_shift, ()) if numeric_shift <= MAX_TARGET_HORIZON else None
+        return field, shift, ()
+    index = parsed.group("index")
+    if index is None:
+        return field, 0, ()
+    index_parts = tuple(index.split(","))
+    if any(not part for part in index_parts):
+        return None
+    time_parts = tuple(
+        part
+        for part in index_parts
+        if re.fullmatch(r"t(?:[+-](?:[0-9]{1,4}|h|n))?", part)
+    )
+    if len(time_parts) != 1:
+        return None
+    time_part = time_parts[0]
+    identities = tuple(part for part in index_parts if part != time_part)
+    if not all(
+        re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", part)
+        for part in identities
+    ):
+        return None
+    time_match = re.fullmatch(
+        r"t(?:(?P<sign>[+-])(?P<offset>[0-9]{1,4}|h|n))?",
+        time_part,
+    )
+    if time_match is None:
+        return None
+    sign = time_match.group("sign")
+    offset = time_match.group("offset")
+    if sign is None or offset is None:
+        return field, 0, identities
+    if not offset.isdigit():
+        return (field, offset, identities) if sign == "+" else None
+    numeric_offset = int(offset)
+    if numeric_offset > MAX_TARGET_HORIZON:
+        return None
+    return (
+        field,
+        numeric_offset if sign == "+" else -numeric_offset,
+        identities,
+    )
+
+
+def _is_forward_price_ratio(
+    numerator: tuple[str, int | str, tuple[str, ...]] | None,
+    denominator: tuple[str, int | str, tuple[str, ...]] | None,
+) -> bool:
+    if numerator is None or denominator is None:
+        return False
+    numerator_field, numerator_time, numerator_identity = numerator
+    denominator_field, denominator_time, denominator_identity = denominator
+    if numerator_identity != denominator_identity:
+        return False
+    if isinstance(numerator_time, str):
+        return isinstance(denominator_time, int) and denominator_time <= 0
+    if numerator_time <= 0 or not isinstance(denominator_time, int):
+        return False
+    if numerator_time > denominator_time:
+        return True
+    if numerator_time != denominator_time:
+        return False
+    same_day_order = {"open": 0, "vwap": 1, "close": 2}
+    return (
+        numerator_field in same_day_order
+        and denominator_field in same_day_order
+        and same_day_order[numerator_field] > same_day_order[denominator_field]
+    )
 
 
 def _canonical(factor_spec: dict[str, Any]) -> dict[str, Any]:
@@ -912,8 +1287,10 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_MISSING")
     formula_text = str(memo.get("formula") or _formula_text(factor_spec or {}) or "").lower()
     understanding = memo.get("formula_understanding") if isinstance(memo.get("formula_understanding"), dict) else {}
+    trusted_understanding = build_formula_understanding(factor_spec or {})
     operators = _operator_set(factor_spec or {}, understanding)
     fields = _field_set(factor_spec or {}, understanding)
+    trusted_information_fields = _field_set(factor_spec or {}, trusted_understanding)
     formula_terms = {
         term
         for term in set(re.findall(r"[a-z_][a-z0-9_]*", formula_text)) | operators | fields
@@ -995,7 +1372,19 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     if process and set(re.findall(r"[a-z_]+", process)) <= formula_tokens:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_GENERIC")
     target = str(math.get("target_functional") or "").lower()
-    if not target or not ("r_" in target or "return" in target or "forward" in target) or not ("f_t" in target or "conditional" in target or "|" in target):
+    if (
+        not target
+        or not (
+            _has_explicit_named_return_payoff(
+                target,
+                allowed_information_names=trusted_information_fields,
+            )
+            or _has_explicit_forward_price_payoff(
+                target,
+                allowed_information_names=trusted_information_fields,
+            )
+        )
+    ):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TARGET_FUNCTIONAL_INVALID")
     evidence = memo.get("evidence_comparison") if isinstance(memo.get("evidence_comparison"), dict) else {}
     observed = evidence.get("observed_metrics") if isinstance(evidence, dict) else {}

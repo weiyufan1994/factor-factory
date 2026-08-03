@@ -5,6 +5,8 @@ import copy
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract_v2
 from factor_factory.mechanism_math.main_agent_memo import (
     _claims_correlation_or_covariance_from_text,
+    _has_explicit_forward_price_payoff,
+    _has_explicit_named_return_payoff,
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
@@ -117,6 +119,286 @@ def test_operator_claim_scan_ignores_named_evaluation_correlation():
     assert not _claims_correlation_or_covariance_from_text(
         "Daily cross-sectional Spearman/Pearson correlation of F with forward return."
     )
+
+
+def test_explicit_forward_price_payoff_is_a_legal_target_functional():
+    target = (
+        "E[close_{i,t+2}/close_{i,t+1} - 1 | F_t, S_{i,t}], "
+        "entry t+1 close, exit t+2 close"
+    )
+    assert _has_explicit_forward_price_payoff(target)
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{i,t+n}/close_{i,t}-1 | F_t, S_{i,t}]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        "E[close.shift(-n)/close-1 | F_t, S_{i,t}]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{i,t+1}/open_{i,t+1}-1 | F_t, S_{i,t}]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{asset,t+2}/close_{asset,t+1}-1 | F_t, S_{asset,t}]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        r"E[(close_{i,t+2}/close_{i,t+1}-1) | \mathcal{F}_{t}]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, S_{i,t-1}, close.shift(1)]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, S_{i,t-k}, close.shift(k)]"
+    )
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, observed_state_{i,t}]",
+        allowed_information_names={"observed_state"},
+    )
+
+
+def test_explicit_price_payoff_requires_future_net_return_and_expectation():
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t}/close_{i,t-1} - 1 | F_t, S_{i,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "close_{i,t+2}/close_{i,t+1} - 1 | F_t, S_{i,t}"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2} | F_t, S_{i,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2} | F_t]; diagnostic=x/y-1"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t}/close_{i,t-1}-1 | F_t], evaluated at t+2"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "We expect close_{i,t+2} conditional on F_t; scale=x/y-1"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | S_{i,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1not_a_payoff | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | stuff_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2garbage}/close_{i,t+1}-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{j,t+2}/close_{i,t+1}-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,,t+2}/close_{i,t+1}-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{,t+2}/close-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i$,t+2}/close_{i$,t+1}-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[(close_{i,t+2}/close_{i,t+1}-1)garbage | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1,garbage | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{j,t+2}/close.shift(-1)-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close.shift(-2)/close_{i,t+1}-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+3} | E[close_{i,t+2}/close_{i,t+1}-1 | F_t]]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[x | E[close_{i,t+2}/close_{i,t+1}-1 | F_t]]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+3} | F_t]; E[close_{i,t+2}/close_{i,t+1}-1 | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | S_{i,t} | F_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, close_{i,t+3}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, S_{i,t+1}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close.shift(-2)/close.shift(-1)-1 | F_t, close.shift(-3)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, S_{i,t+h}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, lead(close, 1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, delay(close, -1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, shift(close, -1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, close.shift(periods=-1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, delay(log(close), -1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, S_{i,t--1}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, S_{i,t^{+1}}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, future_close_{i,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, future_close.shift(0)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, next_close.shift(1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, lead_state.shift(0)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, lookahead_x.shift(2)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, tomorrow_close.shift(1)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | state_{f_t,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | state_{i,f_t,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, unknown_state_{i,t}]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, forward_return_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, fwd_return_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, target_return_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, label_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, outcome_t]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, forward_return.shift(0)]"
+    )
+    assert not _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, close_tp1_t]"
+    )
+
+
+def test_main_agent_validator_accepts_explicit_forward_price_payoff_target():
+    signature = {
+        "rank_ic": "expected rank IC direction compared with observed evidence",
+        "long_side": "expected long-side return compared with observed evidence",
+        "cost_adjusted": "expected net return compared with observed evidence",
+        "monotonicity": "expected ordering compared with observed evidence",
+        "turnover": "expected turnover compared with observed evidence",
+    }
+    failures = validate_main_agent_mechanism_memo(
+        {
+            "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+            "math_hypothesis": {
+                "target_functional": (
+                    "E[close_{i,t+2}/close_{i,t+1} - 1 | F_t, S_{i,t}]"
+                ),
+                "expected_metric_signature": signature,
+            },
+            "expected_metric_signature": dict(signature),
+        }
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TARGET_FUNCTIONAL_INVALID" not in failures
+
+
+def test_named_return_target_requires_the_same_structured_contract():
+    assert _has_explicit_named_return_payoff(
+        "E[r_{i,t+1:t+h} | F_t, S_{i,t}]"
+    )
+    assert _has_explicit_named_return_payoff(
+        "E[return_{i,t+1} | F_t, drift_state_t]"
+    )
+    assert not _has_explicit_named_return_payoff(
+        "E[x | F_t]; forward return diagnostic"
+    )
+    assert not _has_explicit_named_return_payoff(
+        "E[r_{i,t+999:t+h} | F_t, S_{i,t}]"
+    )
+    assert not _has_explicit_named_return_payoff(
+        "E[r_{i,t+4097} | F_t, S_{i,t}]"
+    )
+
+
+def test_formal_validator_has_no_named_return_keyword_bypass():
+    signature = {
+        "rank_ic": "expected rank IC direction compared with observed evidence",
+        "long_side": "expected long-side return compared with observed evidence",
+        "cost_adjusted": "expected net return compared with observed evidence",
+        "monotonicity": "expected ordering compared with observed evidence",
+        "turnover": "expected turnover compared with observed evidence",
+    }
+
+    def target_failures(target: str, understanding: dict | None = None) -> list[str]:
+        return validate_main_agent_mechanism_memo(
+            {
+                "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+                "formula_understanding": understanding or {},
+                "math_hypothesis": {
+                    "target_functional": target,
+                    "expected_metric_signature": signature,
+                },
+                "expected_metric_signature": dict(signature),
+            },
+            {
+                "canonical_spec": {
+                    "formula_text": "close",
+                    "required_inputs": ["close"],
+                }
+            },
+        )
+
+    blocker = "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TARGET_FUNCTIONAL_INVALID"
+    for target in [
+        "E[price_ratio | F_t, forward_return_t]",
+        "E[price_ratio | F_t, target_return_t]",
+        "E[future_price_level | F_t, forward_return_t]",
+        "E[x | F_t]; forward return diagnostic",
+    ]:
+        assert blocker in target_failures(target)
+    assert blocker in target_failures(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, observed_state_{i,t}]",
+        {"formula_features": {"fields": ["observed_state"]}},
+    )
+    huge_offset = "9" * 5_000
+    assert blocker in target_failures(f"E[r_{{i,t+{huge_offset}}} | F_t]")
+    assert blocker in target_failures(
+        f"E[close_{{i,t+{huge_offset}}}/close_{{i,t+1}}-1 | F_t]"
+    )
+    assert blocker not in target_failures(
+        "E[close_{asset,t+2}/close_{asset,t+1}-1 | F_t, S_{asset,t}]"
+    )
+    for target in [
+        "E[close_{i,,t+2}/close_{i,t+1}-1 | F_t]",
+        "E[close_{,t+2}/close-1 | F_t]",
+        "E[close_{i$,t+2}/close_{i$,t+1}-1 | F_t]",
+    ]:
+        assert blocker in target_failures(target)
 
 
 def _operator_claim_failures(claim: str) -> list[str]:

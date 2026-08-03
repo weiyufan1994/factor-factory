@@ -1110,10 +1110,14 @@ formula tokens, or paraphrasing the rejected answer is another failure.
    - `math_hypothesis.process_or_distribution` must contain an explicit model
      equation using `=` and explain the formula-specific state, process, or
      distribution. A prose restatement of operators is not a model.
-   - `math_hypothesis.target_functional` must name the forward return and legal
-     information set in conditional notation, for example
-     `E[r_i,t+h | F_t, formula_specific_state_i,t]`, with the actual state and
-     horizon substituted.
+   - `math_hypothesis.target_functional` must use this Pilot's exact executable
+     payoff and legal information-set form:
+     `E[close_{{i,t+2}}/close_{{i,t+1}}-1 | F_t, formula_state_{{i,t}}], entry
+     t+1 close, exit t+2 close`. The conditioning side may contain only `F_t`
+     and the simple current-time state symbol `formula_state_{{i,t}}`; never put
+     an assignment, formula expression, operator, future field, or prose inside
+     the expectation brackets. Put the formula-to-state equality in
+     `formula_as_estimator` and `formula_state_estimator.observable_mapping`.
    - Fill both `math_hypothesis.expected_metric_signature` and the top-level
      `expected_metric_signature` as identical JSON objects. Preserve and fill
      every scaffolded key: `rank_ic`, `long_side`, `cost_adjusted`,

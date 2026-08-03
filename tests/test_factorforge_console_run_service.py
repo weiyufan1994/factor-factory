@@ -1187,7 +1187,10 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "Do not call\n   a write or edit tool" in prompt
     assert "the patch at 16,000 bytes and the memo at 24,000 bytes" in prompt
     assert "knowledge, or any file. Do not run" in prompt
-    assert "E[r_i,t+h | F_t, formula_specific_state_i,t]" in prompt
+    assert (
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry"
+        in prompt
+    )
     assert "identical JSON objects" in prompt
     assert "top-level `falsification_tests` as a JSON list with at least two" in prompt
     assert "Every list item must be one\n     non-empty plain JSON string" in prompt

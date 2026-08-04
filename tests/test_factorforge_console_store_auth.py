@@ -2114,6 +2114,32 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         resume_task=task,
     )
 
+    formula_self_check_prefix = (
+        "All authorized inputs were reviewed. The target uses "
+        "`formula_state_{i,t}`, while `component_links=[\"formula_root\"]`. "
+        + ("Each pinned metric and identity field was checked. " * 24)
+        + "The exact delivery follows.\n\n"
+    )
+    assert 1_024 < len(formula_self_check_prefix.encode("utf-8")) < 2_048
+    adapter._stage_resume_terminal_delivery(
+        phase_view("formula-brace-prefix"),
+        terminal_text=formula_self_check_prefix + valid_delivery,
+        resume_task=task,
+    )
+
+    for name, prefix in (
+        ("incomplete-object-prefix", 'Self-check {"wrapper":'),
+        ("incomplete-array-prefix", 'Self-check ["wrapper",'),
+        ("labelled-array-prefix", 'Self-check ["prior"]'),
+        ("unclosed-inline-code-prefix", "Self-check `formula_state_{i,t}"),
+    ):
+        with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+            adapter._stage_resume_terminal_delivery(
+                phase_view(name),
+                terminal_text=prefix + valid_delivery,
+                resume_task=task,
+            )
+
     with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
         adapter._stage_resume_terminal_delivery(
             phase_view("structured-prefix"),

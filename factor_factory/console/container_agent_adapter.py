@@ -99,14 +99,22 @@ def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
         not prefix.strip()
         or len(prefix.encode("utf-8"))
         > RESUME_TERMINAL_PLAIN_PREFIX_MAX_BYTES
-        or "{" in prefix
-        or "}" in prefix
         or "```" in prefix
         or "~~~" in prefix
         or any(
             character not in "\r\n\t" and not character.isprintable()
             for character in prefix
         )
+    ):
+        return False
+
+    inline_parts = prefix.split("`")
+    if len(inline_parts) % 2 == 0:
+        return False
+    if any(
+        character in "{}[]"
+        for part in inline_parts[::2]
+        for character in part
     ):
         return False
 
@@ -135,6 +143,23 @@ def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
         ):
             return False
     return bool(lines)
+
+
+def _terminal_resume_delivery_candidates(
+    terminal_text: str,
+) -> list[tuple[int, dict[str, Any]]]:
+    decoder = json.JSONDecoder()
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for index, character in enumerate(terminal_text):
+        if character != "{":
+            continue
+        try:
+            value, parsed_end = decoder.raw_decode(terminal_text, index)
+        except json.JSONDecodeError:
+            continue
+        if parsed_end == len(terminal_text) and isinstance(value, dict):
+            candidates.append((index, value))
+    return candidates
 
 
 @dataclass(frozen=True)
@@ -1319,32 +1344,25 @@ class ContainerizedOpenClawResearchAgentAdapter:
             delivery = json.loads(terminal_text)
         except json.JSONDecodeError as exc:
             # Recover only transport forms that still contain one unambiguous
-            # delivery object; all trailing or structurally prefixed output blocks.
+            # delivery object; reject trailing or structurally prefixed output blocks.
             try:
                 delivery, parsed_end = json.JSONDecoder().raw_decode(terminal_text)
             except json.JSONDecodeError:
                 delivery = None
                 parsed_end = -1
             if parsed_end < 0 or terminal_text[parsed_end:] != '"}':
-                object_start = terminal_text.find("{")
-                prefix = terminal_text[:object_start] if object_start > 0 else ""
-                try:
-                    prefixed_delivery, object_end = json.JSONDecoder().raw_decode(
-                        terminal_text,
-                        object_start,
-                    )
-                except (json.JSONDecodeError, ValueError):
-                    prefixed_delivery = None
-                    object_end = -1
+                candidates = _terminal_resume_delivery_candidates(terminal_text)
                 if (
-                    not _is_bounded_plain_resume_prefix(prefix)
-                    or object_end != len(terminal_text)
+                    len(candidates) != 1
+                    or not _is_bounded_plain_resume_prefix(
+                        terminal_text[: candidates[0][0]]
+                    )
                 ):
                     raise RuntimeError(
                         f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal delivery is invalid JSON"
                     ) from exc
-                delivery = prefixed_delivery
-                accepted_prefix = prefix
+                object_start, delivery = candidates[0]
+                accepted_prefix = terminal_text[:object_start]
         if (
             accepted_prefix
             and redact_secrets(

@@ -317,6 +317,88 @@ def _text_blob(*values: Any) -> str:
     return " ".join(parts).lower()
 
 
+def _generic_payer_actor_label(value: Any) -> str | None:
+    """Return a generic actor label only when the actor field is itself generic."""
+    words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+    connectors = {"a", "an", "and", "or", "the"}
+    words = [word for word in words if word not in connectors]
+    normalized = " ".join(words)
+    generic_words = {
+        "counterparties",
+        "counterparty",
+        "generic",
+        "investors",
+        "market",
+        "participants",
+        "payer",
+        "traders",
+    }
+    if words and all(word in generic_words for word in words):
+        return normalized
+    return None
+
+
+def _has_explicit_stochastic_model(process: str) -> bool:
+    """Recognize compact model equations even when prose omits MODEL_KEYWORDS."""
+    normalized = process.translate(
+        str.maketrans({"β": "beta", "ε": "epsilon", "η": "eta", "λ": "lambda", "σ": "sigma"})
+    )
+    return_equation = re.search(
+        r"(?:^|[;,.]\s*)(?:r(?:_[a-z0-9_{}]+)?|return(?:_[a-z0-9_{}]+)?|dp(?:_[a-z0-9]+)?/p(?:_[a-z0-9]+)?)\s*=\s*([^;]+)",
+        normalized,
+    )
+    if return_equation is None:
+        return False
+    right_hand_side = return_equation.group(1)
+    has_coefficient = any(
+        marker in right_hand_side
+        for marker in {"alpha", "beta", "lambda", "mu", "phi", "rho", "theta"}
+    )
+    has_residual = any(
+        marker in right_hand_side
+        for marker in {"epsilon", "innovation", "residual", "shock", "+u", "+ u"}
+    )
+    has_conditional_error_law = bool(
+        re.search(
+            r"(?:epsilon|innovation|residual|shock|u)\s*\|\s*f[a-z0-9_{}]*\s*~\s*"
+            r"(?:n(?:ormal)?|gaussian)?\s*\(\s*0(?:\.0+)?\s*,[^)]*"
+            r"(?:sigma(?:\s*(?:\^\s*2|²))|variance|var\(\s*[^)\s][^)]*\))",
+            normalized,
+        )
+    )
+    return has_coefficient and has_residual and has_conditional_error_law
+
+
+def _has_stochastic_process_prose(process: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", process)
+    if len(words) < 8:
+        return False
+    stochastic_objects = {
+        "conditional",
+        "distribution",
+        "innovation",
+        "process",
+        "residual",
+        "shock",
+        "state",
+        "stochastic",
+    }
+    dynamics = {
+        "bayesian",
+        "decay",
+        "drift",
+        "jump",
+        "regime",
+        "reversal",
+        "reverse",
+        "transition",
+        "volatility",
+    }
+    return bool(stochastic_objects.intersection(words)) and bool(
+        dynamics.intersection(words)
+    )
+
+
 def _economic_text(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any]) -> str:
     spec_like = spec_like or {}
     canonical = _canonical(spec_like)
@@ -631,15 +713,15 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         "the counterparty implied by the economic hypothesis",
         "counterparty implied",
         "generic payer",
-        "market participants",
-        "investors",
-        "traders",
         "they pay only if",
         "constrained behavior, delayed information diffusion, risk transfer, or liquidity demand",
         "formula estimates the state",
         "estimated_state_t",
     ]
     generic_hits = [phrase for phrase in generic_phrases if phrase in payer_blob]
+    generic_actor = _generic_payer_actor_label(payer.get("payer_or_counterparty"))
+    if generic_actor:
+        generic_hits.append(generic_actor)
     expression = str(payer.get("expected_payoff_expression_or_argument") or "").strip().lower()
     if expression in {
         "e[r_{t+1:t+h} | f_t, estimated_state_t] must be monotone in the declared direction after costs.",
@@ -667,7 +749,14 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
     formula_tokens = {token for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", str(features.get("formula_text") or "").lower()) if len(token) > 2}
     model_hits = [token for token in MODEL_KEYWORDS if token in process]
     formula_hits = [token for token in formula_tokens if token in process]
-    if formula_hits and not model_hits:
+    compact_stochastic_model = _has_explicit_stochastic_model(process)
+    if baseline == "stochastic_process":
+        missing_model_assumption = not (
+            compact_stochastic_model or _has_stochastic_process_prose(process)
+        )
+    else:
+        missing_model_assumption = not model_hits
+    if missing_model_assumption and (formula_hits or baseline == "stochastic_process"):
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "process_or_distribution merely restates formula tokens without model assumption"})
     return failures
 

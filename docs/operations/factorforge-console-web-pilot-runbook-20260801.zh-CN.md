@@ -148,7 +148,8 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 - 任务详情不出现服务器绝对路径、session key 或原始日志。
 - Chatbox 消息刷新后保持顺序和类型；下一次运行的 `conversation_snapshot` 哈希可复算，代码消息仅作为文本。
 - Research Notebook 只显示当前 main-agent revision 或明确标记的 fallback；Math 页面只输出白名单 MathML/转义原文，生产 venv 必须安装固定版 `latex2mathml`。
-- 回测中心的 NAV、分组、IC 和年度收益必须指向当前 report 的正式 artifact；任何未生成模块显示 `not_produced`，不得用标量生成伪时序。
+- 回测中心必须输出 `factorforge_console_backtest_evidence_v2`；NAV、分组、IC、年度/月度收益、回撤与 turnover 必须指向当前 report 的正式 artifact，并能展示源 SHA-256。任何未生成模块显示 `not_produced`，不得用标量生成伪时序。
+- 用测试副本分别篡改 NAV 中间路径/final value、returns→NAV 复合关系、long-side=G10、turnover mean/初始值、decile final NAV/summary/counts、long-short identity，并注入重复日期、非法数值、CSV 多余字段、CRC 正确但像素流不可解码的 PNG；页面必须降级为 `EVIDENCE CONFLICT` 或 `INVALID EVIDENCE`，且不能保留 `FORMAL VERIFIED` 标签。CSV 聚合超过 8MiB 时也必须保守降级并保留来源 SHA。
 - 浏览器下载只能命中任务结果白名单中的不可变 publication set，不能直接读取 workspace。
 - `worktree_root/<factor>/<research>/repo` 与 workspace 一一对应。
 - 容器内 `git rev-parse HEAD` 必须命中任务 base commit，且 `GIT_DIR` 指向任务私有 shallow Git view，不指向控制仓库 `.git`。

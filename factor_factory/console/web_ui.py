@@ -361,16 +361,18 @@ def _backtest_center_section(job: ResearchJob, result: dict[str, Any]) -> str:
     charts = center.get("charts") if isinstance(center.get("charts"), dict) else {}
     evidence_class = str(center.get("evidence_class") or "FORMAL UNVERIFIED")
     consistency = center.get("consistency") if isinstance(center.get("consistency"), dict) else {}
-    conflict = consistency.get("status") == "CONFLICT"
+    conflict = consistency.get("status") == "CONFLICT" or evidence_class == "EVIDENCE CONFLICT"
     chart_evidence_label = "EVIDENCE CONFLICT" if conflict else evidence_class
     chart_evidence_class = "chart-evidence-conflict" if conflict else ""
     chart_order = [
         ("gross_nav_chart", "多头 Gross NAV"),
         ("net_nav_chart", "多头 Net NAV"),
         ("quantile_nav_chart", "Decile NAV"),
-        ("rank_ic_chart", "Rolling Rank IC"),
-        ("pearson_ic_chart", "Rolling Pearson IC"),
+        ("long_short_diagnostic_chart", "Long-short diagnostic NAV"),
+        ("rank_ic_chart", "Rank IC 时序"),
+        ("pearson_ic_chart", "Pearson IC 时序"),
         ("coverage_chart", "样本覆盖"),
+        ("quantile_counts_chart", "Decile 样本数量"),
     ]
     figures = []
     for role, label in chart_order:
@@ -387,23 +389,199 @@ def _backtest_center_section(job: ResearchJob, result: dict[str, Any]) -> str:
         for item in annual if isinstance(item, dict)
     )
     module_status = center.get("module_status") if isinstance(center.get("module_status"), dict) else {}
-    missing = [key for key, value in module_status.items() if value != "available"]
-    missing_html = (
-        '<div class="missing-proof"><strong>未生成的正式模块</strong><p>'
-        + escape("、".join(_metric_label(item) for item in missing))
-        + "。页面不会用汇总指标补画这些结果。</p></div>"
-        if missing
-        else ""
-    )
+    monthly = center.get("monthly_returns") if isinstance(center.get("monthly_returns"), list) else []
+    quantile = center.get("quantile_summary") if isinstance(center.get("quantile_summary"), list) else []
+    drawdown = center.get("drawdown") if isinstance(center.get("drawdown"), dict) else {}
+    turnover = center.get("turnover_profile") if isinstance(center.get("turnover_profile"), dict) else {}
+    provenance = center.get("provenance") if isinstance(center.get("provenance"), dict) else {}
     return f"""
     <section id="backtest" class="content-section backtest-section">
       <div class="section-heading"><div><p class="section-kicker">FORMAL EVALUATION</p><h2>回测中心</h2></div><span class="evidence-badge {'badge-conflict' if conflict else 'badge-formal'}">{escape(evidence_class)}</span></div>
+      <p class="section-note">只展示当前 report 的正式 Step4 证据；派生统计绑定原始文件 SHA。页面不会用汇总指标补画这些结果。</p>
       <div class="metric-grid">{metric_cells or '<p class="empty-inline">尚未生成正式指标</p>'}</div>
+      <div class="backtest-band"><h3>证据覆盖</h3>{_module_status_table(module_status)}</div>
       <div class="backtest-band"><h3>NAV 与分组表现</h3><div class="chart-grid">{''.join(figures) or '<p class="missing-proof">尚未发布可核验的 NAV / IC 时序图。</p>'}</div></div>
       <div class="backtest-band"><h3>分年度收益率</h3><div class="table-scroll"><table class="annual-table"><thead><tr><th>年份</th><th>Gross</th><th>Net (30 bps)</th></tr></thead><tbody>{annual_rows or '<tr><td colspan="3">未生成正式年度收益时序</td></tr>'}</tbody></table></div></div>
-      {missing_html}
+      <div class="backtest-band"><h3>分月收益矩阵</h3>{_monthly_return_table(monthly, annual)}</div>
+      <div class="backtest-band"><h3>Decile 诊断</h3>{_quantile_summary_table(quantile)}</div>
+      <div class="backtest-band"><h3>回撤与换手</h3>{_risk_turnover_tables(drawdown, turnover)}</div>
+      {_consistency_panel(consistency)}
+      <div class="backtest-band"><h3>证据来源</h3>{_backtest_provenance_table(job, provenance)}</div>
     </section>
     """
+
+
+def _module_status_table(module_status: dict[str, Any]) -> str:
+    if not module_status:
+        return '<p class="missing-proof">尚未生成模块覆盖合同。</p>'
+    labels = {
+        "available": "AVAILABLE",
+        "not_produced": "NOT PRODUCED",
+        "invalid_evidence": "INVALID EVIDENCE",
+        "evidence_conflict": "EVIDENCE CONFLICT",
+    }
+    rows = "".join(
+        f'<tr><th>{escape(_metric_label(key))}</th><td><span class="module-state module-{escape(str(value))}">{escape(labels.get(str(value), str(value).upper()))}</span></td></tr>'
+        for key, value in module_status.items()
+    )
+    return f'<div class="table-scroll module-table"><table><thead><tr><th>模块</th><th>正式状态</th></tr></thead><tbody>{rows}</tbody></table></div>'
+
+
+def _monthly_return_table(monthly: list[Any], annual: list[Any]) -> str:
+    valid = [item for item in monthly if isinstance(item, dict) and item.get("year")]
+    if not valid:
+        return '<p class="missing-proof">未生成可核验的分月收益；页面不会从年化标量反推。</p>'
+    years = sorted({int(item["year"]) for item in valid})
+    annual_by_year = {
+        int(item["year"]): item
+        for item in annual
+        if isinstance(item, dict) and item.get("year")
+    }
+    by_period = {
+        (int(item["year"]), int(item["month"])): item
+        for item in valid
+        if item.get("month")
+    }
+    rows: list[str] = []
+    for year in years:
+        for key, label in (("gross_return", "Gross"), ("net_return", "Net")):
+            cells = "".join(
+                _return_cell((by_period.get((year, month)) or {}).get(key))
+                for month in range(1, 13)
+            )
+            annual_value = (annual_by_year.get(year) or {}).get(key)
+            rows.append(
+                f'<tr><th>{year} {label}</th>{cells}{_return_cell(annual_value)}</tr>'
+            )
+    month_headers = "".join(f"<th>{month}月</th>" for month in range(1, 13))
+    return f'<div class="table-scroll return-matrix"><table><thead><tr><th>期间</th>{month_headers}<th>全年</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def _return_cell(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "<td>—</td>"
+    tone = "return-positive" if number > 0 else "return-negative" if number < 0 else ""
+    return f'<td class="{tone}">{escape(_format_percent(number))}</td>'
+
+
+def _quantile_summary_table(rows: list[Any]) -> str:
+    valid = [item for item in rows if isinstance(item, dict) and item.get("group")]
+    if not valid:
+        return '<p class="missing-proof">未生成正式 decile summary table。</p>'
+    body = "".join(
+        "<tr>"
+        f'<th>{escape(str(item.get("group") or ""))}</th>'
+        f'<td>{_format_percent(item.get("mean_daily_return"))}</td>'
+        f'<td>{escape(_format_value(item.get("daily_ir")))}</td>'
+        f'<td>{escape(_format_value(item.get("final_nav")))}</td>'
+        f'<td>{escape(_format_value(item.get("member_count_min")))}</td>'
+        f'<td>{escape(_format_value(item.get("member_count_median")))}</td>'
+        f'<td>{escape(_format_value(item.get("member_count_max")))}</td>'
+        "</tr>"
+        for item in valid
+    )
+    return '<div class="table-scroll quantile-table"><table><thead><tr><th>组别</th><th>日均收益</th><th>Daily IR</th><th>Final NAV</th><th>最少样本</th><th>样本中位数</th><th>最多样本</th></tr></thead><tbody>' + body + "</tbody></table></div>"
+
+
+def _risk_turnover_tables(drawdown: dict[str, Any], turnover: dict[str, Any]) -> str:
+    risk_rows = "".join(
+        "<tr>"
+        f'<th>{escape(label)}</th>'
+        f'<td>{_format_percent(item.get("max_drawdown"))}</td>'
+        f'<td>{escape(str(item.get("peak_date") or "—"))}</td>'
+        f'<td>{escape(str(item.get("trough_date") or "—"))}</td>'
+        f'<td>{escape(_recovery_label(item))}</td>'
+        f'<td>{escape(_format_value(item.get("underwater_days")))}</td>'
+        f'<td>{escape(_format_value(item.get("max_recovery_days")))}</td>'
+        "</tr>"
+        for key, label in (("gross", "Gross"), ("net", "Net"))
+        if isinstance((item := drawdown.get(key)), dict) and item
+    )
+    risk_table = (
+        '<div class="table-scroll risk-table"><table><thead><tr><th>序列</th><th>最大回撤</th><th>峰值日</th><th>谷底日</th><th>恢复日</th><th>最大回撤水下天数</th><th>最长恢复天数</th></tr></thead><tbody>'
+        + risk_rows
+        + "</tbody></table></div>"
+        if risk_rows
+        else '<p class="missing-proof">未生成可核验的 NAV 回撤几何。</p>'
+    )
+    turnover_table = (
+        '<div class="table-scroll turnover-table"><table><thead><tr><th>日均换手</th><th>中位数</th><th>P95</th><th>最大值</th><th>有效期数</th></tr></thead><tbody><tr>'
+        f'<td>{_format_percent(turnover.get("mean_daily"))}</td>'
+        f'<td>{_format_percent(turnover.get("median_daily"))}</td>'
+        f'<td>{_format_percent(turnover.get("p95_daily"))}</td>'
+        f'<td>{_format_percent(turnover.get("max_daily"))}</td>'
+        f'<td>{escape(_format_value(turnover.get("measurement_count")))}</td>'
+        "</tr></tbody></table></div>"
+        if turnover
+        else '<p class="missing-proof">未生成正式 long-side turnover table。</p>'
+    )
+    return f'<div class="risk-turnover-stack">{risk_table}{turnover_table}</div>'
+
+
+def _recovery_label(item: dict[str, Any]) -> str:
+    if item.get("recovery_date"):
+        return str(item["recovery_date"])
+    if item.get("recovered") and item.get("max_drawdown") == 0:
+        return "无回撤"
+    return "尚未恢复"
+
+
+def _consistency_panel(consistency: dict[str, Any]) -> str:
+    checks = consistency.get("checks") if isinstance(consistency.get("checks"), list) else []
+    conflicts = [item for item in checks if isinstance(item, dict) and item.get("status") == "CONFLICT"]
+    if not conflicts:
+        return ""
+    rows = "".join(
+        f'<li><strong>{escape(str(item.get("check") or "formal evidence"))}</strong><span>{escape(_consistency_detail(item))}</span></li>'
+        for item in conflicts
+    )
+    return f'<div class="evidence-conflict-panel"><strong>正式证据存在冲突</strong><ul>{rows}</ul></div>'
+
+
+def _consistency_detail(item: dict[str, Any]) -> str:
+    missing = item.get("missing_roles")
+    invalid = item.get("invalid_roles")
+    role_parts = []
+    if isinstance(missing, list) and missing:
+        role_parts.append("missing: " + ", ".join(str(value) for value in missing))
+    if isinstance(invalid, list) and invalid:
+        role_parts.append("invalid: " + ", ".join(str(value) for value in invalid))
+    if role_parts:
+        return " · ".join(role_parts)
+    if item.get("detail"):
+        return str(item["detail"])
+    if item.get("mismatches"):
+        return "mismatch: " + ", ".join(str(value) for value in item["mismatches"])
+    prefix = f'{item.get("group")}: ' if item.get("group") else ""
+    return (
+        prefix
+        + f'series={_format_value(item.get("series_value"))} · '
+        + f'formal={_format_value(item.get("formal_scalar_value"))}'
+    )
+
+
+def _backtest_provenance_table(job: ResearchJob, provenance: dict[str, Any]) -> str:
+    sources = provenance.get("sources") if isinstance(provenance.get("sources"), dict) else {}
+    if not sources:
+        return '<p class="missing-proof">尚无正式回测来源清单。</p>'
+    rows: list[str] = []
+    for role, source in sources.items():
+        if not isinstance(source, dict):
+            continue
+        artifact_id = str(source.get("artifact_id") or "")
+        href = f"/artifact/{escape(job.job_id)}/{_url_path(artifact_id)}" if artifact_id else ""
+        source_link = (
+            f'<a href="{href}" target="_blank" rel="noopener">{escape(artifact_id)}</a>'
+            if href
+            else "—"
+        )
+        sha = str(source.get("sha256") or "")
+        rows.append(
+            f'<tr><th>{escape(_metric_label(str(role)))}</th><td>{source_link}</td><td title="{escape(sha)}">{escape(sha[:16] + "…" if sha else "—")}</td></tr>'
+        )
+    return '<div class="table-scroll provenance-table"><table><thead><tr><th>角色</th><th>正式产物</th><th>SHA-256</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>"
 
 
 def _structured_value(value: Any, *, depth: int = 0) -> str:
@@ -681,15 +859,43 @@ def _metric_label(key: str) -> str:
         "monotonicity": "Quantile monotonicity",
         "gross_final_nav": "Gross final NAV",
         "net_final_nav": "Net final NAV",
+        "long_short_final_nav": "Long-short final NAV",
         "gross_sharpe": "Gross Sharpe",
         "net_sharpe": "Net Sharpe",
         "annual_volatility": "Annual volatility",
         "gross_net_nav": "Gross / net NAV",
+        "formal_step4_pack": "Required formal Step4 pack",
         "quantile_nav": "Quintile / decile NAV",
+        "quantile_summary": "Decile summary",
+        "long_short": "Long-short diagnostic",
         "annual_returns": "Annual returns",
-        "rank_ic_timeseries": "Rolling Rank IC",
-        "pearson_ic_timeseries": "Rolling Pearson IC",
-        "turnover_and_cost": "Turnover and cost",
+        "monthly_returns": "Monthly returns",
+        "rank_ic_timeseries": "Rank IC timeseries",
+        "pearson_ic_timeseries": "Pearson IC timeseries",
+        "coverage": "Signal coverage",
+        "drawdown_geometry": "Drawdown geometry",
+        "turnover_profile": "Turnover profile",
+        "cost_sensitivity": "Cost sensitivity",
+        "benchmark_excess": "Benchmark / excess NAV",
+        "ic_decay": "IC decay",
+        "stability_slices": "Year / regime stability",
+        "factor_exposure": "Industry / size / liquidity exposure",
+        "gross_nav_chart": "Gross NAV chart",
+        "net_nav_chart": "Net NAV chart",
+        "quantile_nav_chart": "Decile NAV chart",
+        "quantile_counts_chart": "Decile counts chart",
+        "long_short_diagnostic_chart": "Long-short NAV chart",
+        "rank_ic_chart": "Rank IC chart",
+        "pearson_ic_chart": "Pearson IC chart",
+        "coverage_chart": "Coverage chart",
+        "long_side_nav_table": "Gross / net NAV table",
+        "long_side_turnover_table": "Turnover table",
+        "quantile_summary_table": "Decile summary table",
+        "quantile_nav_table": "Decile NAV table",
+        "quantile_counts_table": "Decile counts table",
+        "quantile_returns_table": "Decile returns table",
+        "long_short_returns_table": "Long-short returns table",
+        "long_short_nav_table": "Long-short NAV table",
     }
     return labels.get(key, key.replace("_", " ").title())
 
@@ -721,6 +927,8 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _format_value(value: Any, *, long: bool = False) -> str:
+    if value is None:
+        return "—"
     if isinstance(value, bool):
         return "是" if value else "否"
     if isinstance(value, float):
@@ -856,7 +1064,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .notebook-flow { border-top:1px solid var(--line); }.notebook-step { display:grid; grid-template-columns:56px minmax(0,1fr); gap:18px; padding:20px 0; border-bottom:1px solid var(--line); }.notebook-index { color:var(--blue); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:18px; font-weight:800; }.notebook-step h3 { margin:0 0 10px; font-size:16px; }.structured-record { margin:0; border:1px solid var(--line); background:#fff; }.structured-record>div { display:grid; grid-template-columns:minmax(140px,220px) minmax(0,1fr); border-top:1px solid var(--line); }.structured-record>div:first-child { border-top:0; }.structured-record dt { padding:8px 10px; background:#eef1f0; font-size:12px; font-weight:700; overflow-wrap:anywhere; }.structured-record dd { margin:0; padding:8px 10px; min-width:0; }.structured-record p { margin:0; white-space:pre-line; }.structured-list { margin:0; padding-left:20px; }.structured-list>li { margin:5px 0; }
 .math-section { font-family:Georgia,"Times New Roman","Songti SC",serif; }.math-section .section-heading,.math-section .section-note,.math-section .evidence-badge { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }.math-chapter { margin-top:22px; }.math-chapter>h3 { margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid var(--ink); font-size:16px; }.math-definitions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0; border:1px solid var(--line); background:#fff; }.math-definitions>div { padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.math-definitions dt { font-variant:small-caps; color:var(--muted); }.math-definitions dd { margin:4px 0 0; overflow-wrap:anywhere; }.equation-block { position:relative; margin:0; min-height:88px; display:grid; align-content:center; padding:18px 64px 18px 22px; border-bottom:1px solid var(--line); background:#fff; }.equation-block:first-of-type { border-top:1px solid var(--line); }.equation-block figcaption { color:var(--muted); font-size:12px; }.equation-expression { margin-top:8px; font-family:"STIX Two Math","Cambria Math",Georgia,serif; font-size:17px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; }.equation-number { position:absolute; right:20px; top:50%; transform:translateY(-50%); }.derivation-list { list-style:none; margin:0; padding:0; }.derivation-list>li { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; padding:14px 0; border-bottom:1px solid var(--line); }.derivation-list>li>span { width:28px; height:28px; display:grid; place-items:center; border:1px solid var(--ink); border-radius:50%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }.derivation-list strong { display:block; margin-bottom:7px; }
 .rendered-math { display:block; overflow-x:auto; overflow-y:hidden; padding:3px 0; }.rendered-math math { min-width:max-content; font-size:1.05em; }.equation-source { font-family:"STIX Two Math","Cambria Math",Georgia,serif; }
-.backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.annual-table { width:100%; border-collapse:collapse; min-width:480px; }.annual-table th,.annual-table td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; }.annual-table th:first-child,.annual-table td:first-child { text-align:left; }.annual-table thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
+.backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.table-scroll table { width:100%; border-collapse:collapse; }.table-scroll th,.table-scroll td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }.table-scroll th:first-child,.table-scroll td:first-child { text-align:left; }.table-scroll thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.annual-table { min-width:480px; }.module-table table { min-width:520px; }.module-table th:first-child { width:70%; }.module-state { display:inline-block; min-width:118px; padding:2px 6px; border:1px solid var(--line); text-align:center; font-size:10px; font-weight:800; }.module-available { color:var(--green); background:var(--green-soft); }.module-not_produced { color:var(--muted); background:#eef1f0; }.module-invalid_evidence,.module-evidence_conflict { color:var(--red); background:var(--red-soft); }.return-matrix table { min-width:1080px; }.return-matrix td { font-variant-numeric:tabular-nums; }.return-positive { color:var(--green); background:#f1f8f4; }.return-negative { color:var(--red); background:#fff3f1; }.quantile-table table { min-width:800px; }.risk-turnover-stack { display:grid; gap:12px; }.risk-table table { min-width:900px; }.turnover-table table { min-width:620px; }.provenance-table table { min-width:900px; }.provenance-table th:first-child { width:190px; }.provenance-table td:nth-child(2) { max-width:600px; white-space:normal; overflow-wrap:anywhere; text-align:left; }.provenance-table a { color:var(--blue); }.evidence-conflict-panel { margin-top:18px; padding:14px; border-left:4px solid var(--red); background:var(--red-soft); color:var(--red); }.evidence-conflict-panel ul { margin:8px 0 0; padding-left:20px; }.evidence-conflict-panel li { margin:5px 0; }.evidence-conflict-panel li span { margin-left:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
 .login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }
 @media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}}

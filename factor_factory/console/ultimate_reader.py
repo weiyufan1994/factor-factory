@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import json
 import os
 import re
@@ -11,6 +9,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from factor_factory.console.backtest_evidence import (
+    BacktestArtifact,
+    artifact_validation_error,
+    build_backtest_evidence_bundle,
+)
 from factor_factory.research_conjecture import validate_protocol_bundle
 from factor_factory.research_proof import validate_factor_proof_certificate
 from factor_factory.ultimate_loop.state import validate_wrapper_proof_for_loop
@@ -27,6 +30,7 @@ PAUSE_STATES = {
     "awaiting_next_derivation",
 }
 MAX_EVIDENCE_BYTES = 12 * 1024 * 1024
+MAX_BACKTEST_TABLE_BYTES = 8 * 1024 * 1024
 BLOCK_FORMAL_VALIDATION_EXCEPTION = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VALIDATION_EXCEPTION"
 BLOCK_FORMAL_VERIFIER_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISSING"
 BLOCK_FORMAL_VERIFIER_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERIFIER_MISMATCH"
@@ -176,6 +180,7 @@ BACKTEST_ARTIFACT_FILENAMES = {
     "gross_nav_chart": "long_side_nav.png",
     "net_nav_chart": "cost_adjusted_long_side_nav.png",
     "quantile_nav_chart": "quantile_nav_10groups.png",
+    "quantile_counts_chart": "quantile_counts_10groups.png",
     "long_short_diagnostic_chart": "long_short_nav_10groups.png",
     "coverage_chart": "coverage_by_day.png",
     "long_side_returns_table": "long_side_returns.csv",
@@ -183,7 +188,10 @@ BACKTEST_ARTIFACT_FILENAMES = {
     "long_side_turnover_table": "long_side_turnover.csv",
     "quantile_returns_table": "quantile_returns_10groups.csv",
     "quantile_nav_table": "quantile_nav_10groups.csv",
+    "quantile_counts_table": "quantile_counts_10groups.csv",
     "quantile_summary_table": "quantile_summary_table.csv",
+    "long_short_returns_table": "long_short_returns_10groups.csv",
+    "long_short_nav_table": "long_short_nav_10groups.csv",
 }
 
 METRIC_ALIASES: dict[str, tuple[str, ...]] = {
@@ -229,6 +237,7 @@ METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "gross_final_nav": ("long_side_final_nav",),
     "net_final_nav": ("cost_adjusted_long_side_final_nav",),
+    "long_short_final_nav": ("long_short_final_nav",),
     "gross_sharpe": ("long_side_sharpe",),
     "net_sharpe": ("cost_adjusted_long_side_sharpe",),
     "annual_volatility": ("long_side_annual_volatility",),
@@ -1668,181 +1677,48 @@ def _backtest_center(
     core_metrics: dict[str, Any],
     formal_validation: _FormalValidation,
 ) -> dict[str, Any]:
-    evidence_class = (
-        "FORMAL VERIFIED"
-        if formal_validation.attempted
-        and formal_validation.protocol_verdict == "PASS"
-        else "FORMAL UNVERIFIED"
-    )
-    nav_summary: dict[str, Any] = {}
-    annual_returns: list[dict[str, Any]] = []
-    source_id = artifact_ids.get("long_side_nav_table")
-    source_sha256 = ""
-    if source_id:
+    artifacts: dict[str, BacktestArtifact] = {}
+    retained_table_bytes = 0
+    for role, artifact_id in artifact_ids.items():
         try:
-            data, _ = _read_internal_bytes(root, root / source_id)
-            source_sha256 = hashlib.sha256(data).hexdigest()
-            nav_summary, annual_returns = _summarize_nav_csv(data)
-        except (OSError, UnicodeError, ValueError, csv.Error):
-            nav_summary, annual_returns = {}, []
-    consistency = _nav_consistency(nav_summary, core_metrics)
-    chart_roles = {
-        key: value
-        for key, value in artifact_ids.items()
-        if key.endswith("_chart")
-    }
-    table_roles = {
-        key: value
-        for key, value in artifact_ids.items()
-        if key.endswith("_table")
-    }
-    required_modules = {
-        "gross_net_nav": bool(
-            chart_roles.get("gross_nav_chart")
-            and chart_roles.get("net_nav_chart")
+            data, _ = _read_internal_bytes(root, root / artifact_id)
+        except (OSError, ValueError):
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if role.endswith("_table"):
+            if retained_table_bytes + len(data) > MAX_BACKTEST_TABLE_BYTES:
+                artifacts[role] = BacktestArtifact(
+                    artifact_id=artifact_id,
+                    sha256=digest,
+                    byte_size=len(data),
+                    validation_error="aggregate backtest table memory budget exceeded",
+                )
+                continue
+            retained_table_bytes += len(data)
+            artifacts[role] = BacktestArtifact(
+                artifact_id=artifact_id,
+                data=data,
+                sha256=digest,
+                byte_size=len(data),
+            )
+        else:
+            validation_error = artifact_validation_error(role, data)
+            artifacts[role] = BacktestArtifact(
+                artifact_id=artifact_id,
+                sha256=digest,
+                byte_size=len(data),
+                validation_error=validation_error,
+                content_validated=not validation_error,
+            )
+    return build_backtest_evidence_bundle(
+        artifacts=artifacts,
+        core_metrics=core_metrics,
+        validator_verdict=formal_validation.protocol_verdict,
+        formal_verified=(
+            formal_validation.attempted
+            and formal_validation.protocol_verdict == "PASS"
         ),
-        "quantile_nav": bool(chart_roles.get("quantile_nav_chart")),
-        "annual_returns": bool(annual_returns),
-        "rank_ic_timeseries": bool(chart_roles.get("rank_ic_chart")),
-        "pearson_ic_timeseries": bool(chart_roles.get("pearson_ic_chart")),
-        "drawdown": bool(core_metrics.get("drawdown")),
-        "turnover_and_cost": bool(
-            core_metrics.get("turnover") or core_metrics.get("trading_cost")
-        ),
-        "fama_macbeth": bool(core_metrics.get("fama_macbeth")),
-    }
-    return {
-        "contract_version": "factorforge_console_backtest_center_v1",
-        "evidence_class": evidence_class,
-        "validator_verdict": formal_validation.protocol_verdict,
-        "metrics": _public_copy(core_metrics) or {},
-        "charts": chart_roles,
-        "tables": table_roles,
-        "nav_summary": nav_summary,
-        "annual_returns": annual_returns,
-        "module_status": {
-            key: "available" if available else "not_produced"
-            for key, available in required_modules.items()
-        },
-        "consistency": consistency,
-        "provenance": {
-            "annual_returns_source": source_id or "",
-            "annual_returns_source_sha256": source_sha256,
-            "annual_returns_derivation": (
-                "calendar-year return from formal gross/net NAV endpoints; no interpolation"
-                if annual_returns
-                else "not produced"
-            ),
-        },
-    }
-
-
-def _summarize_nav_csv(data: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    text = data.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
-    fields = list(reader.fieldnames or [])
-    if len(fields) < 2:
-        return {}, []
-    date_field = fields[0]
-    gross_field = next(
-        (field for field in fields if field == "long_side_nav"),
-        "",
     )
-    net_field = next(
-        (field for field in fields if field == "cost_adjusted_long_side_nav"),
-        "",
-    )
-    if not gross_field and not net_field:
-        return {}, []
-    rows: list[tuple[str, float | None, float | None]] = []
-    for row in reader:
-        date_text = str(row.get(date_field) or "").strip()
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", date_text):
-            continue
-        gross = _finite_float(row.get(gross_field)) if gross_field else None
-        net = _finite_float(row.get(net_field)) if net_field else None
-        if gross is None and net is None:
-            continue
-        rows.append((date_text[:10], gross, net))
-    if not rows:
-        return {}, []
-    rows.sort(key=lambda item: item[0])
-    by_year: dict[str, list[tuple[str, float | None, float | None]]] = {}
-    for row in rows:
-        by_year.setdefault(row[0][:4], []).append(row)
-    annual: list[dict[str, Any]] = []
-    prior_gross = 1.0
-    prior_net = 1.0
-    for year in sorted(by_year):
-        year_rows = by_year[year]
-        end_gross = next((item[1] for item in reversed(year_rows) if item[1] is not None), None)
-        end_net = next((item[2] for item in reversed(year_rows) if item[2] is not None), None)
-        annual.append(
-            {
-                "year": int(year),
-                "gross_return": (
-                    end_gross / prior_gross - 1.0
-                    if end_gross is not None and prior_gross > 0
-                    else None
-                ),
-                "net_return": (
-                    end_net / prior_net - 1.0
-                    if end_net is not None and prior_net > 0
-                    else None
-                ),
-            }
-        )
-        if end_gross is not None:
-            prior_gross = end_gross
-        if end_net is not None:
-            prior_net = end_net
-    final_gross = next((item[1] for item in reversed(rows) if item[1] is not None), None)
-    final_net = next((item[2] for item in reversed(rows) if item[2] is not None), None)
-    return (
-        {
-            "start_date": rows[0][0],
-            "end_date": rows[-1][0],
-            "period_count": len(rows),
-            "gross_final_nav": final_gross,
-            "net_final_nav": final_net,
-        },
-        annual,
-    )
-
-
-def _nav_consistency(
-    nav_summary: dict[str, Any],
-    core_metrics: dict[str, Any],
-) -> dict[str, Any]:
-    checks: list[dict[str, Any]] = []
-    for summary_key, metric_key in (
-        ("gross_final_nav", "gross_final_nav"),
-        ("net_final_nav", "net_final_nav"),
-    ):
-        observed = _finite_float(nav_summary.get(summary_key))
-        expected = _finite_float(core_metrics.get(metric_key))
-        if observed is None or expected is None:
-            continue
-        checks.append(
-            {
-                "metric": metric_key,
-                "status": "PASS" if abs(observed - expected) <= 1e-8 else "CONFLICT",
-                "series_value": observed,
-                "formal_scalar_value": expected,
-            }
-        )
-    status = "CONFLICT" if any(item["status"] == "CONFLICT" for item in checks) else "PASS"
-    return {"status": status if checks else "NOT_CHECKED", "checks": checks}
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number or number in {float("inf"), float("-inf")}:
-        return None
-    return number
 
 
 def _metric_containers(payload: dict[str, Any]) -> list[Any]:

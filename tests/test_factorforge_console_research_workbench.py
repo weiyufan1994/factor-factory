@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 from pathlib import Path
@@ -308,6 +309,7 @@ def test_reader_projects_current_agent_notebooks_and_formal_backtest_tables(
                 "rank_ic_mean": 0.021,
                 "long_side_final_nav": 1.32,
                 "cost_adjusted_long_side_final_nav": 1.1025,
+                "long_side_turnover_mean_daily": 0.25,
             },
         },
     )
@@ -320,13 +322,44 @@ def test_reader_projects_current_agent_notebooks_and_formal_backtest_tables(
         "2024-12-31,1.1,1.05\n",
         encoding="utf-8",
     )
+    (evaluation / "long_side_turnover.csv").write_text(
+        "datetime,long_side_turnover\n"
+        "2024-01-02,0.0\n"
+        "2024-12-31,0.2\n"
+        "2025-12-31,0.3\n",
+        encoding="utf-8",
+    )
+    (evaluation / "quantile_summary_table.csv").write_text(
+        "group,mean_daily_return,std_daily_return,daily_ir,final_nav,member_count_min,member_count_median,member_count_max\n"
+        + "".join(
+            f"G{group:02d},{(group - 5.5) * 0.0001:.6f},0.02,{(group - 5.5) * 0.01:.4f},{0.88 + group * 0.03:.2f},20,25,30\n"
+            for group in range(1, 11)
+        ),
+        encoding="utf-8",
+    )
+    (evaluation / "quantile_nav_10groups.csv").write_text(
+        "datetime," + ",".join(f"G{group:02d}" for group in range(1, 11)) + "\n"
+        "2024-01-02," + ",".join("1.0" for _ in range(10)) + "\n"
+        "2025-12-31," + ",".join(f"{0.88 + group * 0.03:.2f}" for group in range(1, 11)) + "\n",
+        encoding="utf-8",
+    )
+    (evaluation / "long_short_nav_10groups.csv").write_text(
+        "datetime,long_short_nav\n"
+        "2024-01-02,1.0\n"
+        "2025-12-31,1.10\n",
+        encoding="utf-8",
+    )
     for filename in (
         "long_side_nav.png",
         "cost_adjusted_long_side_nav.png",
         "quantile_nav_10groups.png",
         "rank_ic_timeseries.png",
     ):
-        (evaluation / filename).write_bytes(b"formal-chart-evidence")
+        (evaluation / filename).write_bytes(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            )
+        )
 
     summary = read_ultimate_workspace(workspace, report_id=REPORT_ID)
 
@@ -337,10 +370,20 @@ def test_reader_projects_current_agent_notebooks_and_formal_backtest_tables(
     assert summary.math_notebook["equations"][0]["title"] == "Factor law"
     assert summary.backtest_center["module_status"]["gross_net_nav"] == "available"
     assert summary.backtest_center["module_status"]["annual_returns"] == "available"
+    assert summary.backtest_center["contract_version"] == "factorforge_console_backtest_evidence_v2"
+    assert summary.backtest_center["module_status"]["monthly_returns"] == "available"
+    assert summary.backtest_center["module_status"]["turnover_profile"] == "available"
+    assert summary.backtest_center["module_status"]["quantile_summary"] == "available"
+    assert summary.backtest_center["module_status"]["long_short"] == "available"
     assert summary.backtest_center["annual_returns"] == [
         {"year": 2024, "gross_return": pytest.approx(0.1), "net_return": pytest.approx(0.05)},
         {"year": 2025, "gross_return": pytest.approx(0.2), "net_return": pytest.approx(0.05)},
     ]
+    assert len(summary.backtest_center["monthly_returns"]) == 3
+    assert summary.backtest_center["turnover_profile"]["mean_daily"] == pytest.approx(0.25)
+    assert summary.backtest_center["quantile_profile"]["final_nav_monotonic_direction"] == "ascending"
+    assert summary.backtest_center["long_short_profile"]["final_nav"] == pytest.approx(1.1)
+    assert len(summary.backtest_center["provenance"]["sources"]["long_side_nav_table"]["sha256"]) == 64
     assert summary.backtest_center["consistency"]["status"] == "PASS"
 
 
@@ -430,15 +473,25 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
             "equations": [{"title": "Payoff", "expression": r"\mathbb E[R|F]"}],
             "derivation_steps": [],
         },
-        backtest_center={
-            "evidence_class": "FORMAL UNVERIFIED",
-            "validator_verdict": "NOT_RUN",
-            "metrics": {"rank_ic": {"mean": 0.02}},
-            "charts": {},
-            "annual_returns": [],
-            "module_status": {"gross_net_nav": "not_produced"},
-            "consistency": {"status": "NOT_CHECKED"},
-        },
+            backtest_center={
+                "contract_version": "factorforge_console_backtest_evidence_v2",
+                "evidence_class": "FORMAL UNVERIFIED",
+                "validator_verdict": "NOT_RUN",
+                "metrics": {"rank_ic": {"mean": 0.02}},
+                "charts": {},
+                "annual_returns": [{"year": 2024, "gross_return": 0.12, "net_return": 0.08}],
+                "monthly_returns": [{"year": 2024, "month": 1, "gross_return": 0.02, "net_return": 0.01}],
+                "quantile_summary": [{"group": "G10", "mean_daily_return": 0.001, "daily_ir": 0.1, "final_nav": 1.2}],
+                "drawdown": {"gross": {"max_drawdown": -0.1, "peak_date": "2024-01-02", "trough_date": "2024-02-01", "recovery_date": None, "underwater_days": 30}},
+                "turnover_profile": {"mean_daily": 0.2, "median_daily": 0.18, "p95_daily": 0.4, "max_daily": 0.5, "measurement_count": 20},
+                "module_status": {
+                    "gross_net_nav": "not_produced",
+                    "monthly_returns": "available",
+                    "cost_sensitivity": "not_produced",
+                },
+                "consistency": {"status": "NOT_CHECKED"},
+                "provenance": {"sources": {}},
+            },
     )
     job.result = build_web_result(summary, publication_id="", public_artifacts=[])
     chart_id = "evaluations/report/self_quant_analyzer/long_side_nav.png"
@@ -453,6 +506,12 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
     assert "Research Notebook" in html
     assert ">Math<" in html
     assert "回测中心" in html
+    assert "分月收益矩阵" in html
+    assert "Decile 诊断" in html
+    assert "回撤与换手" in html
+    assert ">None<" not in html
+    assert "证据来源" in html
+    assert "Rolling Rank IC" not in html
     assert "任务记录" not in html
     assert "Test &lt;b&gt;escaped&lt;/b&gt; research input." in html
     assert "\\mathbb E[R|F]" in html

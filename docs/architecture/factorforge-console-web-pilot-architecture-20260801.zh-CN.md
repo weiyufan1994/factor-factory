@@ -162,7 +162,10 @@ Council 首轮 `PAUSED/awaiting_agent_results` 是合法中间态，不是终点
 1. `Chatbox` 按顺序保存经济假设、研报摘录、公式/算子、代码文本和研究方向。每次 Agent 运行只消费 Host 生成的限长、带 SHA-256 的不可变 conversation snapshot；用户代码永不因此获得执行权限。
 2. `Research Notebook` 只选择与当前 `report_id/factor_id/research_id` 全部一致、`producer=current_main_agent`、`agent_role=main_agent` 且 revision 最大的正式 mechanism memo，展示经济假设、模型选择、估计量映射、证据更新和证伪路线。没有合格 memo 时必须标记为 deterministic fallback；不得展示或声称保存模型私有原始思维链。
 3. `Math` 从同一 memo 投影定义、方程、推导步骤、假设与证伪条件。LaTeX 只在 Host 上转换为 MathML，并删除 annotation、事件、样式和 URI 属性；解析失败时转义显示原文，不加载外部 CDN 或执行用户内容。
-4. `回测中心` 只读取当前 report 的正式 Step4 指标、NAV/分组/IC 时序和 CSV。年度收益由正式 gross/net NAV 端点确定性派生并绑定源文件 SHA-256；缺 Pearson IC、分组 NAV 或其他模块时显示 `not_produced`，不得由汇总标量补画曲线。
+4. `回测中心` 只读取当前 report 的正式 Step4 指标、NAV/分组/IC 时序和 CSV，并统一投影为 `factorforge_console_backtest_evidence_v2`。年度/月度收益、gross/net 回撤几何和 turnover 分布只能从对应正式时序确定性派生，每个源文件记录 artifact id、SHA-256 和字节数；不得由年化、final NAV 等汇总标量补画时序。
+5. v2 回测证据包重新解析 Step4 标准合同要求的全部表，并核验 CSV 精确列数、PNG chunk/CRC/像素流可解码性、归一化起点、完整 10 组、returns→NAV 复合恒等式、gross returns + turnover × 30bps→net NAV、long-side returns=G10、G10-G01→long-short、summary/counts/nav 统计、gross/net final NAV、日均 turnover、回撤与恢复期。任一正式表/图不可解析、数值不一致，或 validator 自报 PASS 但必需证据包不完整时，模块状态分别变为 `invalid_evidence` / `evidence_conflict`，顶层证据等级变为 `EVIDENCE CONFLICT`，不能显示为 verified。
+6. 图表采用逐文件读取、校验后只保留 SHA/大小；待解析 CSV 的聚合原始字节预算为 8MiB。超预算表作为 `invalid_evidence` 保留来源信息，不把 17 个最大文件同时驻留内存。
+7. 回测模块覆盖必须显式列出 `available|not_produced|invalid_evidence|evidence_conflict`。当前 Step4 没有正式产出的 benchmark/excess NAV、cost sensitivity、IC decay、year/regime stability 或 factor exposure 继续显示 `not_produced`；Console 不自行创建新的回测定义。
 
 Agent claim、formal unverified、formal verified 和 evidence conflict 必须在 UI 中分开标记。模型来源使用 Host 运行收据中的 provider/model，不以网页选择框或 Agent 自报字段作为执行证明。
 
@@ -232,6 +235,8 @@ QUEUED
 - Data API 只读调用可用，或产生准确 data request。
 - 页面能区分 protocol、factor、Council 和 proof eligibility。
 - REJECT/BLOCK/pause 仍展示完整研究方法和证据链。
+- 回测中心能从正式 Step4 表投影 gross/net NAV、年度/月度收益、decile summary、long-short、回撤和 turnover；每项来源 SHA 可核对。
+- 篡改 NAV final value、turnover mean、decile final NAV 或写入非法/重复日期时，页面必须显示 `EVIDENCE CONFLICT` 或 `INVALID EVIDENCE`，不得继续显示 `FORMAL VERIFIED`。
 - Git 写入审计没有 workspace 外路径。
 - Agent 容器无法访问 metadata、localhost、RFC1918、任意公网、S3、Data API、catalog 或 proxy 上的模型原站；只能通过固定 broker 使用模型。
 - 只有 Agent 退出且写入边界通过后，Host formal executor 才能取得短期只读 data lease；它无法绕过 allowlisted proxy 访问任意公网 host，S3 IAM 仍无写入/删除权限。

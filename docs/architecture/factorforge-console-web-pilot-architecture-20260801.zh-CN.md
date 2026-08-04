@@ -133,6 +133,8 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 
 当前 Pilot 固定使用 `deepseek/deepseek-v4-flash` 和 `thinking=high`。模型目录按官方合同声明 1M context 和 384K 最大输出能力，但 Console 运行参数和主机 model broker 都把单次模型输出硬限制为 64K；缺省请求由 broker 注入该上限，任何更高请求直接拒绝。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 
+OpenClaw 的 `replayInvalid=true` 表示本轮执行过可能有副作用的工具、不能安全重放，不表示本轮研究结果失败。Console 只接受结构化终态、正常的 `livenessState=working`、无 `error/isError`，并继续独立验证研究计划和正式研究证据；`abandoned/blocked/paused`、`incomplete_turn` 或模型错误仍必须 fail closed。
+
 DeepSeek 在 Pilot 威胁模型中是受信任的数据处理方，但不是凭据持有方。Prompt 禁止上传原始 Data API 内容，broker 阻止当前 lease 的直接或常见编码泄漏；恶意 agent 对任意数据做分片编码无法仅靠内容过滤彻底识别，因此 data-read 凭据必须保持短期、无 SSM 权限且离开专用 VPC endpoint 无效。
 
 ### 3.4 Ultimate 执行

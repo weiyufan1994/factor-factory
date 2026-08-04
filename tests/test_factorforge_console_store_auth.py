@@ -2310,6 +2310,7 @@ def test_container_resume_requires_host_staged_terminal_delivery(
                     "meta": {
                         "agentMeta": {"provider": "deepseek", "model": "reasoner"},
                         "finalAssistantVisibleText": terminal_text,
+                        "livenessState": "working",
                     },
                 }
             ),
@@ -2462,7 +2463,8 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
             "agentMeta": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-flash",
-            }
+            },
+            "livenessState": "working",
         }
         if include_optional_final:
             metadata["finalAssistantVisibleText"] = final_text
@@ -2500,7 +2502,8 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
                 "agentMeta": {
                     "provider": "deepseek",
                     "model": "deepseek-v4-flash",
-                }
+                },
+                "livenessState": "working",
             }
         }
     )
@@ -2529,11 +2532,53 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
         _validate_openclaw_terminal_status(json.dumps(cancelled), "")
     replay_invalid = json.loads(receipt("Memo authored."))
     replay_invalid["meta"]["replayInvalid"] = True
-    with pytest.raises(RuntimeError, match="terminal replay is invalid"):
-        _validate_openclaw_terminal_status(json.dumps(replay_invalid), "")
+    replay_invalid["meta"]["livenessState"] = "working"
+    assert _validate_openclaw_terminal_status(
+        json.dumps(replay_invalid),
+        "",
+    ) == "Memo authored."
     replay_invalid["meta"]["replayInvalid"] = "true"
     with pytest.raises(RuntimeError, match="terminal receipt schema"):
         _validate_openclaw_terminal_status(json.dumps(replay_invalid), "")
+    missing_liveness = json.loads(receipt("Memo authored."))
+    del missing_liveness["meta"]["livenessState"]
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(json.dumps(missing_liveness), "")
+    null_liveness = json.loads(receipt("Memo authored."))
+    null_liveness["meta"]["livenessState"] = None
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(json.dumps(null_liveness), "")
+    empty_liveness = json.loads(receipt("Memo authored."))
+    empty_liveness["meta"]["livenessState"] = ""
+    with pytest.raises(RuntimeError, match="terminal liveness state"):
+        _validate_openclaw_terminal_status(json.dumps(empty_liveness), "")
+    for liveness_state in ("abandoned", "blocked", "paused"):
+        unusable = json.loads(receipt("Memo authored."))
+        unusable["meta"]["livenessState"] = liveness_state
+        with pytest.raises(RuntimeError, match="terminal liveness state"):
+            _validate_openclaw_terminal_status(json.dumps(unusable), "")
+    invalid_liveness_type = json.loads(receipt("Memo authored."))
+    invalid_liveness_type["meta"]["livenessState"] = True
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(
+            json.dumps(invalid_liveness_type),
+            "",
+        )
+    terminal_error = json.loads(receipt("Memo authored."))
+    terminal_error["meta"]["error"] = {"kind": "runtime_failure"}
+    with pytest.raises(RuntimeError, match="terminal agent error"):
+        _validate_openclaw_terminal_status(json.dumps(terminal_error), "")
+    incomplete_turn = json.loads(receipt("Memo authored."))
+    incomplete_turn["meta"]["error"] = {
+        "kind": "incomplete_turn",
+        "message": "Agent could not generate a response.",
+    }
+    with pytest.raises(RuntimeError, match="terminal agent error"):
+        _validate_openclaw_terminal_status(json.dumps(incomplete_turn), "")
+    explicit_error = json.loads(receipt("Memo authored."))
+    explicit_error["meta"]["isError"] = True
+    with pytest.raises(RuntimeError, match="terminal agent error"):
+        _validate_openclaw_terminal_status(json.dumps(explicit_error), "")
     with pytest.raises(RuntimeError, match="stderr reported a terminal agent error"):
         _validate_openclaw_terminal_status(
             receipt("Memo authored and validator passed."),
@@ -3273,6 +3318,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
                     "model": "deepseek-v4-flash",
                 },
                 "finalAssistantVisibleText": "Authoring complete.",
+                "livenessState": "working",
             },
         }
     )
@@ -3465,7 +3511,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         Path(incomplete.result_path).read_text(encoding="utf-8")
     )
     assert incomplete_receipt["error_code"] == BLOCK_AGENT_RUNTIME_FAILED
-    assert "terminal replay is invalid" in incomplete_receipt["stderr_tail"]
+    assert "terminal liveness state is not usable" in incomplete_receipt["stderr_tail"]
     adapter.clear_denied_secrets(job.job_id)
 
 

@@ -3761,6 +3761,9 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
         else None
     )
     replay_invalid = metadata.get("replayInvalid") if isinstance(metadata, dict) else None
+    liveness_state = (
+        metadata.get("livenessState") if isinstance(metadata, dict) else None
+    )
     payload_texts = (
         [
             str(item.get("text") or "").strip()
@@ -3792,6 +3795,7 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
             and not isinstance(optional_final_text, str)
         )
         or (replay_invalid is not None and not isinstance(replay_invalid, bool))
+        or not isinstance(liveness_state, str)
         or not (
             payload_texts
             or (
@@ -3804,10 +3808,12 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal receipt schema is invalid"
         )
-    if replay_invalid is True:
+    if liveness_state.strip().lower() != "working":
         raise RuntimeError(
-            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal replay is invalid"
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw terminal liveness state is not usable"
         )
+    # OpenClaw sets replayInvalid after tools with potential side effects. It
+    # controls retry safety; it does not invalidate an otherwise successful run.
     final_text = (
         optional_final_text.strip()
         if isinstance(optional_final_text, str) and optional_final_text.strip()

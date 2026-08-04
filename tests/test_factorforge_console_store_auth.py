@@ -2461,7 +2461,7 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
         metadata = {
             "agentMeta": {
                 "provider": "deepseek",
-                "model": "deepseek-reasoner",
+                "model": "deepseek-v4-flash",
             }
         }
         if include_optional_final:
@@ -2499,7 +2499,7 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
             "meta": {
                 "agentMeta": {
                     "provider": "deepseek",
-                    "model": "deepseek-reasoner",
+                    "model": "deepseek-v4-flash",
                 }
             }
         }
@@ -3310,7 +3310,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
                             / "agent"
                         ).resolve()
                     ),
-                    "model": "deepseek/deepseek-reasoner",
+                    "model": "deepseek/deepseek-v4-flash",
                 }
             ]
             profile.write_text(json.dumps(payload), encoding="utf-8")
@@ -3743,7 +3743,24 @@ def test_container_profile_policy_rejects_extra_tools_and_model_endpoint():
         _validate_profile_policy(payload)
 
     payload = json.loads(template.read_text(encoding="utf-8"))
-    payload["models"]["providers"]["deepseek"]["models"][0]["maxTokens"] = 65536
+    payload["models"]["providers"]["deepseek"]["models"][0]["maxTokens"] = 128000
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["models"]["providers"]["deepseek"]["models"][0]["id"] = "deepseek-reasoner"
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["agents"]["defaults"]["model"]["primary"] = "deepseek/deepseek-reasoner"
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        _validate_profile_policy(payload)
+
+    payload = json.loads(template.read_text(encoding="utf-8"))
+    payload["agents"]["defaults"]["models"]["deepseek/deepseek-v4-flash"]["params"][
+        "maxTokens"
+    ] = 384000
     with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
         _validate_profile_policy(payload)
 

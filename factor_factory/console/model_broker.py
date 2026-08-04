@@ -19,10 +19,25 @@ from factor_factory.console.secret_safety import contains_secret_values
 
 
 ALLOWED_MODEL_PATHS = {"/chat/completions", "/v1/chat/completions"}
+DEEPSEEK_PROVIDER = "deepseek"
+DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
+DEEPSEEK_V4_FLASH_OPENCLAW_MODEL = f"{DEEPSEEK_PROVIDER}/{DEEPSEEK_V4_FLASH_MODEL}"
+DEEPSEEK_V4_FLASH_CONTEXT_WINDOW = 1_000_000
+DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 384_000
+CONSOLE_MODEL_MAX_OUTPUT_TOKENS = 16_384
 ACTIVE_SECRET_REGISTRY_NAME = "active.registry"
 _SECRET_REGISTRY_BASENAME = re.compile(
     r"[a-z0-9][a-z0-9-]{7,62}\.(?:job_[a-f0-9]{10}|readiness)\.secrets"
 )
+
+
+def normalize_deepseek_openclaw_model(model: str) -> str:
+    """Map the public API model id to the single OpenClaw-qualified runtime id."""
+    if model in {DEEPSEEK_V4_FLASH_MODEL, DEEPSEEK_V4_FLASH_OPENCLAW_MODEL}:
+        return DEEPSEEK_V4_FLASH_OPENCLAW_MODEL
+    raise ValueError("model is not pinned to DeepSeek V4 Flash")
+
+
 _AWS_ACCESS_KEY = re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 _AWS_CREDENTIAL_ASSIGNMENT = re.compile(
     rb"(?i)AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)\s*[:=]\s*[^\s\"']{8,}"
@@ -47,7 +62,7 @@ class ModelBrokerConfig:
     listen_port: int = 8781
     allowed_network: str = "172.29.0.0/24"
     upstream_url: str = "https://api.deepseek.com"
-    allowed_model: str = "deepseek-reasoner"
+    allowed_model: str = DEEPSEEK_V4_FLASH_MODEL
     denied_secret_root: Path | None = None
     allow_gateway_source: bool = False
     max_request_bytes: int = 16 * 1024 * 1024
@@ -213,6 +228,20 @@ class FactorForgeModelBrokerHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict) or payload.get("model") != self.config.allowed_model:
             self._send_json(400, {"error": "model_not_allowed"})
             return
+        for field in ("max_tokens", "max_completion_tokens"):
+            requested = payload.get(field)
+            if requested is not None and (
+                isinstance(requested, bool)
+                or not isinstance(requested, int)
+                or requested <= 0
+                or requested > CONSOLE_MODEL_MAX_OUTPUT_TOKENS
+            ):
+                self._send_json(400, {"error": "model_output_limit_invalid"})
+                return
+        payload["max_tokens"] = min(
+            int(payload.get("max_tokens") or CONSOLE_MODEL_MAX_OUTPUT_TOKENS),
+            CONSOLE_MODEL_MAX_OUTPUT_TOKENS,
+        )
         try:
             denied_secrets = self._active_denied_secrets()
         except (OSError, RuntimeError):
@@ -229,7 +258,7 @@ class FactorForgeModelBrokerHandler(BaseHTTPRequestHandler):
         ):
             self._send_json(400, {"error": "credential_material_forbidden"})
             return
-        self._relay(body)
+        self._relay(canonical_body)
 
     def _relay(self, body: bytes) -> None:
         upstream = urlsplit(self.config.upstream_url)

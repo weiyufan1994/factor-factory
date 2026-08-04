@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from factor_factory.console.model_broker import (
+    DEEPSEEK_PROVIDER,
+    DEEPSEEK_V4_FLASH_OPENCLAW_MODEL,
+)
+
 
 PILOT_AWS_ACCOUNT_ID = "525164180577"
 
@@ -28,10 +33,10 @@ class ConsoleConfig:
     cookie_secure: bool = False
     openclaw_binary: str = "openclaw"
     openclaw_profile: str = "factorforge-console"
-    openclaw_model: str = "deepseek/deepseek-reasoner"
+    openclaw_model: str = DEEPSEEK_V4_FLASH_OPENCLAW_MODEL
     openclaw_thinking: str = "high"
     openclaw_resume_thinking: str = "medium"
-    openclaw_auth_provider: str = "deepseek"
+    openclaw_auth_provider: str = DEEPSEEK_PROVIDER
     openclaw_auth_seed_db: Path | None = None
     execution_mode: str = "container"
     container_runtime: str = "docker"
@@ -134,6 +139,11 @@ class ConsoleConfig:
             raise ValueError("unsupported OpenClaw thinking level")
         if self.execution_mode not in {"container", "shared_gateway"}:
             raise ValueError("execution_mode must be container or shared_gateway")
+        if self.execution_mode == "container" and (
+            self.openclaw_model != DEEPSEEK_V4_FLASH_OPENCLAW_MODEL
+            or self.openclaw_auth_provider != DEEPSEEK_PROVIDER
+        ):
+            raise ValueError("container execution requires the pinned DeepSeek V4 Flash model")
         if self.container_cpus <= 0 or self.container_pids_limit < 64:
             raise ValueError("invalid agent container resource limits")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}", self.container_network):
@@ -232,13 +242,19 @@ class ConsoleConfig:
             cookie_secure=os.getenv("FACTORFORGE_CONSOLE_COOKIE_SECURE", "0") == "1",
             openclaw_binary=os.getenv("FACTORFORGE_CONSOLE_OPENCLAW", "openclaw"),
             openclaw_profile=os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_PROFILE", "factorforge-console"),
-            openclaw_model=os.getenv("FACTORFORGE_CONSOLE_MODEL", "deepseek/deepseek-reasoner"),
+            openclaw_model=os.getenv(
+                "FACTORFORGE_CONSOLE_MODEL",
+                DEEPSEEK_V4_FLASH_OPENCLAW_MODEL,
+            ),
             openclaw_thinking=os.getenv("FACTORFORGE_CONSOLE_THINKING", "high"),
             openclaw_resume_thinking=os.getenv(
                 "FACTORFORGE_CONSOLE_RESUME_THINKING",
                 "medium",
             ),
-            openclaw_auth_provider=os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_AUTH_PROVIDER", "deepseek"),
+            openclaw_auth_provider=os.getenv(
+                "FACTORFORGE_CONSOLE_OPENCLAW_AUTH_PROVIDER",
+                DEEPSEEK_PROVIDER,
+            ),
             openclaw_auth_seed_db=(
                 Path(os.environ["FACTORFORGE_CONSOLE_OPENCLAW_AUTH_SEED_DB"])
                 if os.getenv("FACTORFORGE_CONSOLE_OPENCLAW_AUTH_SEED_DB")

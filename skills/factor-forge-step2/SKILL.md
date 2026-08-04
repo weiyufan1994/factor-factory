@@ -71,7 +71,7 @@ The output should be precise enough that two independent implementers would buil
 |------|-------|-------------|
 | Primary spec extraction | `minimax/MiniMax-M2.7` | Always — first pass |
 | Challenger spec extraction | `openai-codex/gpt-5.4` | Always — adversarial second pass |
-| Consistency auditor | `deepseek/deepseek-reasoner` | Always — judge alignment |
+| Consistency auditor | `deepseek/deepseek-v4-flash` | Always — judge alignment |
 | Chief finalizer | `openrouter/anthropic/claude-opus-4.6` | **Only on material disagreement** |
 
 > **Opus 4.6 policy**: Do NOT use in the normal flow. Use only when primary and challenger specs have substantive disagreement on core operators, required inputs, or reconstruction logic. Track usage.
@@ -235,9 +235,9 @@ Output ONLY valid JSON matching this schema:
 
 Save output as `/tmp/step2_challenger_raw_{report_id}.json`.
 
-### Step 2d: Consistency Audit (DeepSeek Reasoner)
+### Step 2d: Consistency Audit (DeepSeek V4 Flash)
 
-Use `deepseek/deepseek-reasoner` with this prompt:
+Use `deepseek/deepseek-v4-flash` with this prompt:
 
 ```
 You are the Consistency Auditor.

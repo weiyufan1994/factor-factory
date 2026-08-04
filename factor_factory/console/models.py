@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import ipaddress
+import re
 import socket
 from typing import Any
 from urllib.parse import urlsplit
@@ -48,7 +49,19 @@ PILOT_FORWARD_HORIZON = "1d"
 PILOT_TRANSACTION_COST_BPS = 30.0
 PILOT_COST_MODEL_ID = "factorforge_step4_turnover_30bps_v1"
 PILOT_UNIVERSE = "a_share_all"
+PILOT_MODEL = "deepseek-v4-flash"
 RESEARCH_JOB_VERSION = "factorforge_console_research_job_v1"
+RESEARCH_MESSAGE_VERSION = "factorforge_console_research_message_v1"
+VALID_MESSAGE_ROLES = {"user"}
+VALID_MESSAGE_CONTENT_KINDS = {"hypothesis", "report", "formula", "code", "decision"}
+_MESSAGE_SECRET_PATTERN = re.compile(
+    r"(?is)(?:"
+    r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|"
+    r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
+    r"\bsk-[A-Za-z0-9_-]{16,}\b|"
+    r"\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|password)\s*[:=]\s*[^\s,;]{8,}"
+    r")"
+)
 
 
 def _require_verdict(verdict: str) -> str:
@@ -115,6 +128,7 @@ def validate_public_source_url(value: str) -> None:
 class ResearchRequest:
     title: str
     hypothesis: str
+    input_kind: str = "hypothesis"
     factor_id_hint: str = ""
     universe: str = PILOT_UNIVERSE
     sample_start: str = "2016-01-01"
@@ -133,6 +147,10 @@ class ResearchRequest:
             raise ValueError("title is too long")
         if len(self.hypothesis) > 20_000:
             raise ValueError("hypothesis is too long")
+        if self.input_kind not in VALID_MESSAGE_CONTENT_KINDS - {"decision"}:
+            raise ValueError(f"invalid research input_kind: {self.input_kind!r}")
+        if self.model and self.model != PILOT_MODEL:
+            raise ValueError(f"web Pilot supports only the {PILOT_MODEL} model")
         validate_public_source_url(self.source_url)
         if not 0 <= float(self.transaction_cost_bps) <= 200:
             raise ValueError("transaction_cost_bps must be between 0 and 200")
@@ -147,6 +165,7 @@ class ResearchRequest:
         return cls(
             title=str(payload.get("title") or ""),
             hypothesis=str(payload.get("hypothesis") or ""),
+            input_kind=str(payload.get("input_kind") or "hypothesis"),
             factor_id_hint=str(payload.get("factor_id_hint") or ""),
             universe=str(payload.get("universe") or PILOT_UNIVERSE),
             sample_start=str(payload.get("sample_start") or "2016-01-01"),
@@ -158,6 +177,37 @@ class ResearchRequest:
             model=str(payload.get("model") or ""),
             source_url=str(payload.get("source_url") or ""),
         )
+
+
+@dataclass(frozen=True)
+class ResearchMessage:
+    message_id: str
+    job_id: str
+    sequence_no: int
+    role: str
+    content_kind: str
+    content: str
+    model: str = ""
+    idempotency_key: str = ""
+    created_at_utc: str = ""
+
+    def __post_init__(self) -> None:
+        if self.role not in VALID_MESSAGE_ROLES:
+            raise ValueError(f"invalid message role: {self.role!r}")
+        if self.content_kind not in VALID_MESSAGE_CONTENT_KINDS:
+            raise ValueError(f"invalid message content_kind: {self.content_kind!r}")
+        text = self.content.strip()
+        if not text:
+            raise ValueError("message content is required")
+        if len(text) > 20_000:
+            raise ValueError("message content is too long")
+        if _MESSAGE_SECRET_PATTERN.search(text):
+            raise ValueError("message content must not contain API keys, passwords, or private keys")
+        if self.sequence_no < 1:
+            raise ValueError("message sequence_no must be positive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"contract_version": RESEARCH_MESSAGE_VERSION, **asdict(self)}
 
 
 def validate_pilot_evaluation_request(request: ResearchRequest) -> None:

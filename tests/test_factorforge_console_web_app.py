@@ -394,3 +394,62 @@ def test_artifact_endpoint_serves_only_published_official_artifact(research_cons
     with pytest.raises(HTTPError) as failure:
         opener.open(f"{base_url}/artifact/{job.job_id}/../outside.json", timeout=3)
     assert failure.value.code == 404
+
+
+def test_chatbox_persists_messages_and_api_hides_control_events(research_console):
+    base_url, app = research_console
+    opener, dashboard = _login_opener(base_url)
+    csrf = _csrf(dashboard)
+    create_payload = urlencode(
+        {
+            "csrf": csrf,
+            "title": "Interactive research",
+            "hypothesis": "A payer-specific economic hypothesis.",
+            "content_kind": "hypothesis",
+            "model": "deepseek-v4-flash",
+            "universe": "a_share_all",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+        }
+    ).encode("utf-8")
+    response = opener.open(
+        Request(f"{base_url}/research", data=create_payload, method="POST"),
+        timeout=3,
+    )
+    match = re.search(r"/research/(job_[a-f0-9]{10})", response.url)
+    assert match
+    job_id = match.group(1)
+    detail_html = response.read().decode("utf-8")
+    assert "Chatbox" in detail_html
+    assert "Research Notebook" in detail_html
+    assert "任务记录" not in detail_html
+
+    message_payload = urlencode(
+        {
+            "csrf": csrf,
+            "content_kind": "formula",
+            "content": r"E[R_{t+1} | F_t, Z_t]",
+            "idempotency_key": "web-test-message-1",
+            "message_action": "save",
+        }
+    ).encode("utf-8")
+    opener.open(
+        Request(
+            f"{base_url}/research/{job_id}/messages",
+            data=message_payload,
+            method="POST",
+        ),
+        timeout=3,
+    ).read()
+
+    api_payload = json.loads(
+        opener.open(f"{base_url}/api/research/{job_id}", timeout=3).read()
+    )
+    assert [item["content_kind"] for item in api_payload["messages"]] == [
+        "hypothesis",
+        "formula",
+    ]
+    assert "events" not in api_payload
+    assert app.store.list_events(job_id)

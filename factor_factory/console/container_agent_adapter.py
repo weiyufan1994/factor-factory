@@ -49,6 +49,13 @@ from factor_factory.console.council_ingress import (
 from factor_factory.console.models import ResearchJob
 from factor_factory.console.model_broker import (
     ACTIVE_SECRET_REGISTRY_NAME,
+    CONSOLE_MODEL_MAX_OUTPUT_TOKENS,
+    DEEPSEEK_PROVIDER,
+    DEEPSEEK_V4_FLASH_CONTEXT_WINDOW,
+    DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
+    DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_FLASH_OPENCLAW_MODEL,
+    normalize_deepseek_openclaw_model,
     read_private_token_file,
 )
 from factor_factory.console.store import utc_now
@@ -370,7 +377,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 else ()
             ),
         )
-        model = job.request.model or self.config.openclaw_model
+        model = _pinned_container_model(job.request.model or self.config.openclaw_model)
         add_command = [
             *common,
             self.config.openclaw_binary,
@@ -564,6 +571,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "started_at_utc": started,
             "finished_at_utc": finished,
             "returncode": returncode,
+            "provider": self.config.openclaw_auth_provider,
+            "model": model,
             "error_code": error_code,
             "stdout_tail": stdout[-16_000:],
             "stderr_tail": stderr[-16_000:],
@@ -578,6 +587,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             stdout_tail=str(payload["stdout_tail"]),
             stderr_tail=str(payload["stderr_tail"]),
             result_path=str(result_path),
+            provider=self.config.openclaw_auth_provider,
+            model=model,
         )
 
     def run_council_ingress(
@@ -616,7 +627,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         )
         council_run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
         council_run_root.chmod(0o700)
-        model = job.request.model or self.config.openclaw_model
+        model = _pinned_container_model(job.request.model or self.config.openclaw_model)
         per_task_timeout = max(
             180,
             min(
@@ -951,6 +962,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "started_at_utc": started,
             "finished_at_utc": finished,
             "returncode": returncode,
+            "provider": self.config.openclaw_auth_provider,
+            "model": model,
             "error_code": "" if returncode == 0 else BLOCK_AGENT_RUNTIME_FAILED,
             "runs": runs,
         }
@@ -972,6 +985,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             ),
             stderr_tail="" if returncode == 0 else "Council ingress agent failed",
             result_path=str(result_path),
+            provider=self.config.openclaw_auth_provider,
+            model=model,
         )
 
     def _prepare_runtime(
@@ -4778,23 +4793,45 @@ def _validate_profile_policy(
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container tool policy is invalid")
     if plugins.get("allow") != []:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container plugin policy is invalid")
-    if set(providers) != {"deepseek"}:
+    if set(providers) != {DEEPSEEK_PROVIDER}:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model provider policy is invalid")
-    deepseek = providers.get("deepseek") or {}
+    deepseek = providers.get(DEEPSEEK_PROVIDER) or {}
     if deepseek.get("baseUrl") != expected_model_broker_url:
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model endpoint is invalid")
     if deepseek.get("request") not in (None, {}):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model request policy is invalid")
+    if defaults.get("model") != {
+        "primary": DEEPSEEK_V4_FLASH_OPENCLAW_MODEL,
+        "fallbacks": [],
+    }:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container primary model is invalid")
+    default_models = defaults.get("models") or {}
+    if set(default_models) != {DEEPSEEK_V4_FLASH_OPENCLAW_MODEL}:
+        raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model allowlist is invalid")
     models = deepseek.get("models") or []
     if (
         not isinstance(models, list)
         or len(models) != 1
         or not isinstance(models[0], dict)
-        or models[0].get("id") != "deepseek-reasoner"
-        or models[0].get("contextWindow") != 131072
-        or models[0].get("maxTokens") != 16384
+        or models[0].get("id") != DEEPSEEK_V4_FLASH_MODEL
+        or models[0].get("contextWindow") != DEEPSEEK_V4_FLASH_CONTEXT_WINDOW
+        or models[0].get("maxTokens") != DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
     ):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model budget is invalid")
+    model_policy = default_models.get(DEEPSEEK_V4_FLASH_OPENCLAW_MODEL) or {}
+    if model_policy.get("params") != {"maxTokens": CONSOLE_MODEL_MAX_OUTPUT_TOKENS}:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model runtime cap is invalid"
+        )
+
+
+def _pinned_container_model(model: str) -> str:
+    try:
+        return normalize_deepseek_openclaw_model(model)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container model is not pinned to DeepSeek V4 Flash"
+        ) from exc
 
 
 def _safe_runtime_token(value: str) -> str:

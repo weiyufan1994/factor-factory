@@ -7,13 +7,13 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "deepseek-reasoner",
-            "name": "DeepSeek Reasoner",
+            "id": "deepseek-v4-flash",
+            "name": "DeepSeek V4 Flash",
             "api": "openai-completions",
             "reasoning": true,
             "input": ["text"],
-            "contextWindow": 131072,
-            "maxTokens": 16384
+            "contextWindow": 1000000,
+            "maxTokens": 384000
           }
         ]
       }
@@ -25,11 +25,13 @@
       "skills": [],
       "skipBootstrap": true,
       "model": {
-        "primary": "deepseek/deepseek-reasoner",
+        "primary": "deepseek/deepseek-v4-flash",
         "fallbacks": []
       },
       "models": {
-        "deepseek/deepseek-reasoner": {}
+        "deepseek/deepseek-v4-flash": {
+          "params": {"maxTokens": 16384}
+        }
       },
       "maxConcurrent": 1,
       "subagents": {

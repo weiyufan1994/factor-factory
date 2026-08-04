@@ -26,6 +26,7 @@ from factor_factory.console.models import (
     ResearchRequest,
     validate_pilot_evaluation_request,
 )
+from factor_factory.console.model_broker import DEEPSEEK_V4_FLASH_MODEL
 from factor_factory.console.readers import read_miner_campaign
 from factor_factory.console.run_service import (
     BLOCK_RESUME_TRUST_INVALID,
@@ -187,7 +188,7 @@ def serve_research_console_server(
 
 def make_research_handler(application: ResearchConsoleApplication) -> type[BaseHTTPRequestHandler]:
     class ResearchConsoleHandler(BaseHTTPRequestHandler):
-        server_version = "FactorForgeConsole/1"
+        server_version = "FactorForgeConsole/2"
 
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
@@ -238,7 +239,10 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 if job is None:
                     self._send_html(404, render_not_found())
                     return
-                self._send_html(200, render_job(job, application.store.list_events(job_id), csrf))
+                self._send_html(
+                    200,
+                    render_job(job, application.store.list_messages(job_id), csrf),
+                )
                 return
             api_job_id = _path_job_id(path, prefix="/api/research/")
             if api_job_id:
@@ -247,7 +251,10 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                     self._send_json(404, {"error": "not_found"})
                     return
                 payload = job.to_dict()
-                payload["events"] = application.store.list_events(api_job_id)
+                payload["messages"] = [
+                    message.to_dict()
+                    for message in application.store.list_messages(api_job_id)
+                ]
                 self._send_json(200, payload)
                 return
             if path.startswith("/artifact/"):
@@ -281,6 +288,10 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 return
             if path == "/research":
                 self._create_research(fields)
+                return
+            message_job_id = _research_message_job_id(path)
+            if message_job_id:
+                self._add_research_message(message_job_id, fields)
                 return
             action = _research_action(path)
             if action:
@@ -341,12 +352,14 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 request = ResearchRequest(
                     title=_field(fields, "title"),
                     hypothesis=_field(fields, "hypothesis"),
+                    input_kind=_field(fields, "content_kind", "hypothesis"),
                     factor_id_hint=_field(fields, "factor_id_hint"),
                     universe=_field(fields, "universe", PILOT_UNIVERSE),
                     sample_start=_field(fields, "sample_start", "2016-01-01"),
                     sample_end=_field(fields, "sample_end", "2025-07-11"),
                     forward_horizon=_field(fields, "forward_horizon", "1d"),
                     transaction_cost_bps=float(_field(fields, "transaction_cost_bps", "30")),
+                    model=_field(fields, "model", DEEPSEEK_V4_FLASH_MODEL),
                     source_url=_field(fields, "source_url"),
                 )
                 _validate_request_choices(request)
@@ -358,6 +371,45 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 self._send_json(503, {"error": "research_runtime_unavailable"})
                 return
             self._redirect(f"/research/{job.job_id}")
+
+        def _add_research_message(
+            self,
+            job_id: str,
+            fields: dict[str, list[str]],
+        ) -> None:
+            job = application.store.get_job(job_id)
+            if job is None:
+                self._send_html(404, render_not_found())
+                return
+            try:
+                application.store.add_message(
+                    job_id,
+                    content_kind=_field(fields, "content_kind", "decision"),
+                    content=_field(fields, "content"),
+                    model=job.request.model or DEEPSEEK_V4_FLASH_MODEL,
+                    idempotency_key=_field(fields, "idempotency_key"),
+                )
+                if _field(fields, "message_action") == "save_and_resume":
+                    application.service.request_resume(job_id)
+            except KeyError:
+                self._send_html(404, render_not_found())
+                return
+            except ValueError as exc:
+                self._send_json(409, {"error": "invalid_message", "message": str(exc)})
+                return
+            except RuntimeError as exc:
+                if str(exc).startswith(BLOCK_RESUME_TRUST_INVALID):
+                    self._send_json(
+                        409,
+                        {
+                            "error": "resume_not_safe",
+                            "message": "研究消息已保存，但该任务缺少可信续跑证据。",
+                        },
+                    )
+                    return
+                self._send_json(503, {"error": "research_runtime_unavailable"})
+                return
+            self._redirect(f"/research/{job_id}#conversation")
 
         def _serve_artifact(self, path: str) -> None:
             parts = path.split("/", 3)
@@ -483,6 +535,11 @@ def _path_job_id(path: str, *, prefix: str) -> str:
 def _research_action(path: str) -> tuple[str, str] | None:
     match = re.fullmatch(r"/research/(job_[a-f0-9]{10})/(resume|cancel)", path)
     return (match.group(1), match.group(2)) if match else None
+
+
+def _research_message_job_id(path: str) -> str:
+    match = re.fullmatch(r"/research/(job_[a-f0-9]{10})/messages", path)
+    return match.group(1) if match else ""
 
 
 def _validate_request_choices(request: ResearchRequest) -> None:

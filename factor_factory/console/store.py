@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from factor_factory.console.models import ResearchJob, ResearchRequest
+from factor_factory.console.models import ResearchJob, ResearchMessage, ResearchRequest
 from factor_factory.research_workspace import safe_identity
 
 
@@ -110,6 +110,21 @@ class ResearchJobStore:
                 );
                 CREATE INDEX IF NOT EXISTS research_events_job
                     ON research_events(job_id, event_id);
+                CREATE TABLE IF NOT EXISTS research_messages (
+                    message_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES research_jobs(job_id),
+                    sequence_no INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content_kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    UNIQUE(job_id, sequence_no),
+                    UNIQUE(job_id, idempotency_key)
+                );
+                CREATE INDEX IF NOT EXISTS research_messages_job_sequence
+                    ON research_messages(job_id, sequence_no);
                 CREATE TABLE IF NOT EXISTS auth_sessions (
                     token_sha256 TEXT PRIMARY KEY,
                     created_at_utc TEXT NOT NULL,
@@ -118,7 +133,36 @@ class ResearchJobStore:
                 );
                 """
             )
+            self._backfill_initial_messages(connection)
             self._ensure_shared_database_permissions()
+
+    def _backfill_initial_messages(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT job_id, request_json, created_at_utc
+            FROM research_jobs AS jobs
+            WHERE NOT EXISTS (
+                SELECT 1 FROM research_messages AS messages
+                WHERE messages.job_id = jobs.job_id
+            )
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                request_payload = json.loads(str(row["request_json"]))
+                request = ResearchRequest.from_dict(request_payload)
+                self._insert_message(
+                    connection,
+                    job_id=str(row["job_id"]),
+                    role="user",
+                    content_kind=request.input_kind,
+                    content=request.hypothesis,
+                    model=request.model,
+                    idempotency_key=f"initial:{row['job_id']}",
+                    created_at_utc=str(row["created_at_utc"]),
+                )
+            except (json.JSONDecodeError, TypeError, ValueError, sqlite3.Error):
+                continue
 
     def healthcheck(self) -> bool:
         try:
@@ -184,6 +228,16 @@ class ResearchJobStore:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._insert_job(connection, job)
+            self._insert_message(
+                connection,
+                job_id=job.job_id,
+                role="user",
+                content_kind=request.input_kind,
+                content=request.hypothesis,
+                model=request.model,
+                idempotency_key=f"initial:{job.job_id}",
+                created_at_utc=now,
+            )
             self._insert_event(connection, job.job_id, "JOB_CREATED", "研究任务已进入队列", {})
             connection.execute("COMMIT")
         return job
@@ -337,6 +391,131 @@ class ResearchJobStore:
         with self._lock, self._connect() as connection:
             self._insert_event(connection, job_id, event_type, message, payload or {})
 
+    def add_message(
+        self,
+        job_id: str,
+        *,
+        content_kind: str,
+        content: str,
+        model: str = "",
+        idempotency_key: str,
+    ) -> ResearchMessage:
+        if not idempotency_key or len(idempotency_key) > 160:
+            raise ValueError("message idempotency key is invalid")
+        if self.get_job(job_id) is None:
+            raise KeyError(job_id)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM research_messages WHERE job_id=? AND idempotency_key=?",
+                (job_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                existing_message = self._row_to_message(existing)
+                if (
+                    existing_message.role != "user"
+                    or existing_message.content_kind != content_kind
+                    or existing_message.content != content.strip()
+                    or existing_message.model != model
+                ):
+                    raise ValueError(
+                        "message idempotency key conflicts with a different payload"
+                    )
+                connection.execute("COMMIT")
+                return existing_message
+            message = self._insert_message(
+                connection,
+                job_id=job_id,
+                role="user",
+                content_kind=content_kind,
+                content=content,
+                model=model,
+                idempotency_key=idempotency_key,
+                created_at_utc=utc_now(),
+            )
+            connection.execute("COMMIT")
+        return message
+
+    def _insert_message(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        role: str,
+        content_kind: str,
+        content: str,
+        model: str,
+        idempotency_key: str,
+        created_at_utc: str,
+    ) -> ResearchMessage:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sequence_no), 0) + 1 AS next_sequence FROM research_messages WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        sequence_no = int(row["next_sequence"])
+        message = ResearchMessage(
+            message_id=f"msg_{uuid.uuid4().hex}",
+            job_id=job_id,
+            sequence_no=sequence_no,
+            role=role,
+            content_kind=content_kind,
+            content=content.strip(),
+            model=model,
+            idempotency_key=idempotency_key,
+            created_at_utc=created_at_utc,
+        )
+        connection.execute(
+            """
+            INSERT INTO research_messages(
+                message_id, job_id, sequence_no, role, content_kind, content,
+                model, idempotency_key, created_at_utc
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                message.message_id,
+                message.job_id,
+                message.sequence_no,
+                message.role,
+                message.content_kind,
+                message.content,
+                message.model,
+                message.idempotency_key,
+                message.created_at_utc,
+            ),
+        )
+        return message
+
+    def list_messages(self, job_id: str, limit: int = 200) -> list[ResearchMessage]:
+        _total, messages = self.snapshot_messages(job_id, limit=limit)
+        return messages
+
+    def snapshot_messages(
+        self,
+        job_id: str,
+        *,
+        limit: int = 200,
+    ) -> tuple[int, list[ResearchMessage]]:
+        safe_limit = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                WITH message_total AS (
+                    SELECT COUNT(*) AS total_count
+                    FROM research_messages
+                    WHERE job_id=?
+                )
+                SELECT messages.*, message_total.total_count
+                FROM research_messages AS messages
+                CROSS JOIN message_total
+                WHERE messages.job_id=?
+                ORDER BY messages.sequence_no DESC
+                LIMIT ?
+                """,
+                (job_id, job_id, safe_limit),
+            ).fetchall()
+        total_count = int(rows[0]["total_count"]) if rows else 0
+        return total_count, [self._row_to_message(row) for row in reversed(rows)]
+
     def _insert_event(
         self,
         connection: sqlite3.Connection,
@@ -460,4 +639,18 @@ class ResearchJobStore:
             updated_at_utc=str(row["updated_at_utc"]),
             started_at_utc=str(row["started_at_utc"]),
             finished_at_utc=str(row["finished_at_utc"]),
+        )
+
+    @staticmethod
+    def _row_to_message(row: sqlite3.Row) -> ResearchMessage:
+        return ResearchMessage(
+            message_id=str(row["message_id"]),
+            job_id=str(row["job_id"]),
+            sequence_no=int(row["sequence_no"]),
+            role=str(row["role"]),
+            content_kind=str(row["content_kind"]),
+            content=str(row["content"]),
+            model=str(row["model"]),
+            idempotency_key=str(row["idempotency_key"]),
+            created_at_utc=str(row["created_at_utc"]),
         )

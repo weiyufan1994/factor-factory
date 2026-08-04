@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import hashlib
+import io
 import json
 import os
 import re
@@ -13,7 +16,7 @@ from factor_factory.research_proof import validate_factor_proof_certificate
 from factor_factory.ultimate_loop.state import validate_wrapper_proof_for_loop
 
 
-SUMMARY_CONTRACT_VERSION = "factorforge_console_ultimate_summary_v1"
+SUMMARY_CONTRACT_VERSION = "factorforge_console_ultimate_summary_v2"
 VALID_FACTOR_VERDICTS = {"ACCEPT", "REJECT", "ITERATE", "BLOCK", "UNKNOWN"}
 PAUSE_STATES = {
     "awaiting_main_agent_mechanism_memo",
@@ -38,6 +41,12 @@ ROLE_PATTERNS: dict[str, tuple[str, ...]] = {
     "proof_certificate": ("objects/research_protocol/factor_proof_certificate*.json",),
     "proof_verifier": ("objects/research_protocol/factor_proof_verifier_report*.json",),
     "quality_gate": ("objects/research_protocol/research_quality_gate*.json",),
+    "main_agent_mechanism_memo": (
+        "objects/research_iteration_master/main_agent_mechanism_memo__*.json",
+    ),
+    "loop_research_brief": (
+        "objects/research_iteration_master/loop_research_brief*.json",
+    ),
     "research_state": ("objects/research_protocol/research_state*.json",),
     "factor_spec": ("objects/factor_spec_master/factor_spec_master*.json",),
     "data_prep": ("objects/data_prep_master/data_prep_master*.json",),
@@ -138,6 +147,11 @@ MATH_FIELDS = (
     "falsification_tests",
     "mechanism_falsification_tests",
     "kill_criteria",
+    "selected_model_family",
+    "why_this_model",
+    "why_not_generic_template",
+    "process_or_distribution",
+    "formula_as_estimator",
 )
 ECONOMIC_FIELDS = (
     "preferred_claim",
@@ -150,7 +164,27 @@ ECONOMIC_FIELDS = (
     "observable_proxies",
     "current_limit",
     "failure_regimes",
+    "return_source_class",
+    "payer_or_counterparty",
+    "why_they_pay",
+    "necessary_market_structure",
 )
+
+BACKTEST_ARTIFACT_FILENAMES = {
+    "rank_ic_chart": "rank_ic_timeseries.png",
+    "pearson_ic_chart": "pearson_ic_timeseries.png",
+    "gross_nav_chart": "long_side_nav.png",
+    "net_nav_chart": "cost_adjusted_long_side_nav.png",
+    "quantile_nav_chart": "quantile_nav_10groups.png",
+    "long_short_diagnostic_chart": "long_short_nav_10groups.png",
+    "coverage_chart": "coverage_by_day.png",
+    "long_side_returns_table": "long_side_returns.csv",
+    "long_side_nav_table": "long_side_nav.csv",
+    "long_side_turnover_table": "long_side_turnover.csv",
+    "quantile_returns_table": "quantile_returns_10groups.csv",
+    "quantile_nav_table": "quantile_nav_10groups.csv",
+    "quantile_summary_table": "quantile_summary_table.csv",
+}
 
 METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "ic": ("ic", "pearson_ic", "ic_mean", "pearson_ic_mean"),
@@ -193,6 +227,12 @@ METRIC_ALIASES: dict[str, tuple[str, ...]] = {
         "decile_monotonicity",
         "quintile_monotonicity",
     ),
+    "gross_final_nav": ("long_side_final_nav",),
+    "net_final_nav": ("cost_adjusted_long_side_final_nav",),
+    "gross_sharpe": ("long_side_sharpe",),
+    "net_sharpe": ("cost_adjusted_long_side_sharpe",),
+    "annual_volatility": ("long_side_annual_volatility",),
+    "trading_cost": ("trading_cogs_annual", "trading_cogs_daily"),
 }
 
 _BLOCK_KEYS = {
@@ -261,6 +301,10 @@ class UltimateRunSummary:
     implementation_contract: dict[str, Any] = field(default_factory=dict)
     core_metrics: dict[str, Any] = field(default_factory=dict)
     metric_sources: dict[str, str] = field(default_factory=dict)
+    research_notebook: dict[str, Any] = field(default_factory=dict)
+    math_notebook: dict[str, Any] = field(default_factory=dict)
+    backtest_center: dict[str, Any] = field(default_factory=dict)
+    council: dict[str, Any] = field(default_factory=dict)
     blockers: list[str] = field(default_factory=list)
     next_actions: list[str] = field(default_factory=list)
     timestamps: dict[str, str] = field(default_factory=dict)
@@ -301,6 +345,7 @@ def read_ultimate_workspace(
 
     root = Path(workspace_root).expanduser().resolve(strict=True)
     evidence_by_role, evidence_errors = _load_evidence(root)
+    workspace_identity = _workspace_identity(root)
     latest_loop = _latest(evidence_by_role.get("loop_report", []))
     selected_report_id = report_id or _report_id_from_loop(latest_loop)
     if not selected_report_id:
@@ -312,6 +357,8 @@ def read_ultimate_workspace(
 
     selected: dict[str, _Evidence] = {}
     for role, records in evidence_by_role.items():
+        if role == "main_agent_mechanism_memo":
+            continue
         selected_record = _latest_for_report(records, selected_report_id)
         if selected_record is not None:
             selected[role] = selected_record
@@ -319,12 +366,31 @@ def read_ultimate_workspace(
             evidence_errors.append(
                 f"{BLOCK_EVIDENCE_LINEAGE_MISMATCH}:{role}:report_id={selected_report_id}"
             )
+    expected_factor_id = _string(workspace_identity.get("factor_id")) or _identifier(
+        selected, "factor_id"
+    )
+    expected_research_id = _string(
+        workspace_identity.get("research_id")
+    ) or _identifier(selected, "research_id")
+    memo_records = evidence_by_role.get("main_agent_mechanism_memo", [])
+    memo_record = _latest_main_agent_memo(
+        memo_records,
+        selected_report_id,
+        factor_id=expected_factor_id,
+        research_id=expected_research_id,
+    )
+    if memo_record is not None:
+        selected["main_agent_mechanism_memo"] = memo_record
+    elif selected_report_id and memo_records:
+        evidence_errors.append(
+            f"{BLOCK_EVIDENCE_LINEAGE_MISMATCH}:main_agent_mechanism_memo:"
+            f"report_id={selected_report_id}"
+        )
     matching_records = _matching_records(evidence_by_role, selected_report_id)
 
     report = selected_report_id or _identifier(selected, "report_id")
     factor_id = _identifier(selected, "factor_id")
     research_id = _identifier(selected, "research_id")
-    workspace_identity = _workspace_identity(root)
     factor_id = factor_id or _string(workspace_identity.get("factor_id"))
     research_id = research_id or _string(workspace_identity.get("research_id"))
 
@@ -334,6 +400,12 @@ def read_ultimate_workspace(
     paused_note = _payload(selected, "paused_note")
     terminal_rejection = _payload(selected, "terminal_rejection")
     quality = _payload(selected, "quality_gate")
+    main_agent_memo = _current_main_agent_memo(
+        _payload(selected, "main_agent_mechanism_memo"),
+        report_id=report,
+        factor_id=factor_id,
+        research_id=research_id,
+    )
     factor_case = _payload(selected, "factor_case")
     factor_spec = _payload(selected, "factor_spec")
     research_state = _payload(selected, "research_state")
@@ -413,6 +485,7 @@ def read_ultimate_workspace(
     )
 
     research_method, economic_game, math_mechanism = _research_contracts(
+        main_agent_memo=main_agent_memo,
         quality=quality,
         factor_case=factor_case,
         factor_spec=factor_spec,
@@ -424,6 +497,20 @@ def read_ultimate_workspace(
         factor_spec,
     )
     core_metrics, metric_sources = _core_metrics(selected)
+    research_notebook, math_notebook = _research_notebooks(
+        main_agent_memo=main_agent_memo,
+        research_method=research_method,
+        economic_game=economic_game,
+        math_mechanism=math_mechanism,
+    )
+    backtest_artifacts = _discover_backtest_artifacts(root, report)
+    backtest_center = _backtest_center(
+        root=root,
+        artifact_ids=backtest_artifacts,
+        core_metrics=core_metrics,
+        formal_validation=formal_validation,
+    )
+    council = _council_projection(selected, main_agent_memo)
     timestamps = _timestamps(selected)
     current_stage = (
         pause_state
@@ -451,10 +538,17 @@ def read_ultimate_workspace(
         implementation_contract=implementation_contract,
         core_metrics=core_metrics,
         metric_sources=metric_sources,
+        research_notebook=research_notebook,
+        math_notebook=math_notebook,
+        backtest_center=backtest_center,
+        council=council,
         blockers=blockers,
         next_actions=next_actions,
         timestamps=timestamps,
-        artifact_ids={role: item.artifact_id for role, item in sorted(selected.items())},
+        artifact_ids={
+            **{role: item.artifact_id for role, item in sorted(selected.items())},
+            **backtest_artifacts,
+        },
         evidence_errors=_dedupe(evidence_errors),
     )
 
@@ -477,7 +571,7 @@ def _load_evidence(root: Path) -> tuple[dict[str, list[_Evidence]], list[str]]:
                 if not candidate.is_file():
                     continue
                 artifact_id = candidate.relative_to(root).as_posix()
-                if role == "wrapper_report" and re.search(
+                if role in {"wrapper_report", "main_agent_mechanism_memo"} and re.search(
                     r"__prior_[0-9a-f]{12}(?:_[1-9][0-9]*)?$",
                     candidate.stem,
                 ):
@@ -513,6 +607,11 @@ def _workspace_identity(root: Path) -> dict[str, Any]:
 
 
 def _read_internal_json(root: Path, candidate: Path) -> tuple[Any, int]:
+    data, modified_ns = _read_internal_bytes(root, candidate)
+    return json.loads(data.decode("utf-8")), modified_ns
+
+
+def _read_internal_bytes(root: Path, candidate: Path) -> tuple[bytes, int]:
     try:
         relative = candidate.relative_to(root)
     except ValueError as exc:
@@ -563,7 +662,7 @@ def _read_internal_json(root: Path, candidate: Path) -> tuple[Any, int]:
         or len(data) != after.st_size
     ):
         raise ValueError("evidence changed during read")
-    return json.loads(data.decode("utf-8")), after.st_mtime_ns
+    return data, after.st_mtime_ns
 
 
 def _latest(records: Iterable[_Evidence]) -> _Evidence | None:
@@ -582,6 +681,50 @@ def _latest_for_report(records: list[_Evidence], report_id: str) -> _Evidence | 
             return _latest(matching)
         return None
     return _latest(records)
+
+
+def _latest_main_agent_memo(
+    records: list[_Evidence],
+    report_id: str,
+    *,
+    factor_id: str,
+    research_id: str,
+) -> _Evidence | None:
+    matching = [
+        item
+        for item in records
+        if not report_id or report_id in _record_report_ids(item.payload)
+    ]
+    if not matching:
+        return None
+    valid = [
+        item
+        for item in matching
+        if _current_main_agent_memo(
+            item.payload,
+            report_id=report_id,
+            factor_id=factor_id,
+            research_id=research_id,
+        )
+    ]
+    if not valid:
+        return None
+    return max(
+        valid,
+        key=lambda item: (
+            _revision_number(item.payload.get("revision_number")),
+            item.modified_ns,
+            item.artifact_id,
+        ),
+    )
+
+
+def _revision_number(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, number)
 
 
 def _matching_records(
@@ -638,6 +781,7 @@ def _first_identifier(
 def _identifier(selected: dict[str, _Evidence], key: str) -> str:
     for role in (
         "proof_certificate",
+        "main_agent_mechanism_memo",
         "quality_gate",
         "research_state",
         "factor_case",
@@ -1144,6 +1288,7 @@ def _execution_status(
 
 def _research_contracts(
     *,
+    main_agent_memo: dict[str, Any],
     quality: dict[str, Any],
     factor_case: dict[str, Any],
     factor_spec: dict[str, Any],
@@ -1154,7 +1299,9 @@ def _research_contracts(
         mechanism_contract = {}
     step2_context = _find_mapping(factor_spec, "step2_research_context")
 
-    economic_source = quality.get("economic_mechanism_contract")
+    economic_source = main_agent_memo.get("economic_hypothesis")
+    if not isinstance(economic_source, dict):
+        economic_source = quality.get("economic_mechanism_contract")
     if not isinstance(economic_source, dict):
         economic_source = mechanism_contract
     economic_game = _select_fields(economic_source, ECONOMIC_FIELDS)
@@ -1164,7 +1311,9 @@ def _research_contracts(
             ("economic_game", "economic_mechanism", "economic_hypothesis"),
         )
 
-    math_source = quality.get("mathematical_object_contract")
+    math_source = main_agent_memo.get("math_hypothesis")
+    if not isinstance(math_source, dict):
+        math_source = quality.get("mathematical_object_contract")
     if not isinstance(math_source, dict):
         math_source = mechanism_contract
     math_mechanism = _select_fields(math_source, MATH_FIELDS)
@@ -1182,6 +1331,11 @@ def _research_contracts(
         )
 
     research_method = {
+        "source_kind": (
+            "current_main_agent_memo" if main_agent_memo else "deterministic_fallback"
+        ),
+        "producer": _public_copy(main_agent_memo.get("producer")),
+        "revision_number": _public_copy(main_agent_memo.get("revision_number")),
         "mechanism_claim_level": _public_copy(quality.get("mechanism_claim_level")),
         "claim_level_assessment": _public_copy(quality.get("claim_level_assessment")),
         "falsification_plan": _public_copy(quality.get("falsification_plan")),
@@ -1202,6 +1356,208 @@ def _research_contracts(
         research_method["methodology"] = explicit_method
     research_method = {key: value for key, value in research_method.items() if value not in (None, {}, [])}
     return research_method, economic_game or None, math_mechanism or None
+
+
+def _current_main_agent_memo(
+    payload: dict[str, Any],
+    *,
+    report_id: str = "",
+    factor_id: str = "",
+    research_id: str = "",
+) -> dict[str, Any]:
+    if not payload:
+        return {}
+    if payload.get("contract_version") != "factorforge_main_agent_mechanism_memo_v1":
+        return {}
+    if str(payload.get("producer") or "") != "current_main_agent":
+        return {}
+    authorship = payload.get("agent_authorship")
+    if not isinstance(authorship, dict):
+        return {}
+    if (
+        authorship.get("authoring_mode") != "current_agent_freeform"
+        or authorship.get("agent_role") != "main_agent"
+        or authorship.get("answered_without_deterministic_template") is not True
+    ):
+        return {}
+    for key, expected in (
+        ("report_id", report_id),
+        ("factor_id", factor_id),
+        ("research_id", research_id),
+    ):
+        actual = _string(payload.get(key))
+        if not actual or (expected and actual != expected):
+            return {}
+    return payload
+
+
+def _research_notebooks(
+    *,
+    main_agent_memo: dict[str, Any],
+    research_method: dict[str, Any],
+    economic_game: Any,
+    math_mechanism: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_kind = (
+        "current_main_agent_memo" if main_agent_memo else "deterministic_fallback"
+    )
+    source_label = (
+        "CURRENT MAIN AGENT" if main_agent_memo else "EARLY DETERMINISTIC CONTRACT"
+    )
+    economic = (
+        _public_copy(main_agent_memo.get("economic_hypothesis"))
+        if main_agent_memo
+        else _public_copy(economic_game)
+    ) or {}
+    math = (
+        _public_copy(main_agent_memo.get("math_hypothesis"))
+        if main_agent_memo
+        else _public_copy(math_mechanism)
+    ) or {}
+    components = _public_copy(main_agent_memo.get("formula_component_map")) or []
+    evidence = _public_copy(main_agent_memo.get("evidence_comparison")) or {}
+    qa = _public_copy(main_agent_memo.get("mechanism_qa")) or {}
+    selection = _public_copy(main_agent_memo.get("math_model_selection")) or {}
+    estimator = _public_copy(main_agent_memo.get("formula_state_estimator")) or {}
+    falsifiers = _public_copy(main_agent_memo.get("falsification_tests")) or []
+    council_questions = _public_copy(main_agent_memo.get("council_questions")) or []
+    notebook = {
+        "contract_version": "factorforge_console_research_notebook_v1",
+        "source_kind": source_kind,
+        "source_label": source_label,
+        "producer": _public_copy(main_agent_memo.get("producer")) or "framework_projection",
+        "revision_number": _public_copy(main_agent_memo.get("revision_number")),
+        "stages": [
+            {
+                "id": "economic_hypothesis",
+                "title": "Economic hypothesis",
+                "content": economic,
+            },
+            {
+                "id": "model_selection",
+                "title": "Model selection",
+                "content": selection or math,
+            },
+            {
+                "id": "observable_mapping",
+                "title": "Observable estimator",
+                "content": {"estimator": estimator, "components": components},
+            },
+            {
+                "id": "evidence_update",
+                "title": "Evidence update",
+                "content": evidence,
+            },
+            {
+                "id": "falsification",
+                "title": "Falsification and open questions",
+                "content": {
+                    "mechanism_qa": qa,
+                    "falsification_tests": falsifiers,
+                    "council_questions": council_questions,
+                },
+            },
+        ],
+    }
+    equations: list[dict[str, str]] = []
+    equation_candidates = (
+        ("Factor law", main_agent_memo.get("formula"), "factor_law"),
+        ("Baseline process", math.get("process_or_distribution") or selection.get("baseline_model"), "process"),
+        ("Target functional", math.get("target_functional") or math.get("target_statistic"), "target"),
+        ("Observation equation", math.get("observation_equation"), "observation"),
+        ("Observable estimator", math.get("formula_as_estimator") or estimator.get("observable_mapping"), "estimator"),
+    )
+    for title, expression, equation_kind in equation_candidates:
+        if isinstance(expression, str) and expression.strip():
+            equations.append(
+                {
+                    "title": title,
+                    "expression": _sanitize_public_text(expression.strip()),
+                    "equation_kind": equation_kind,
+                }
+            )
+    definitions = {
+        "random_object": math.get("random_object"),
+        "information_set": math.get("information_set"),
+        "latent_state": math.get("latent_state") or estimator.get("latent_state"),
+        "model_family": math.get("selected_model_family") or selection.get("model_family"),
+        "payer": economic.get("payer_or_counterparty") or economic.get("payer"),
+    }
+    definitions = {key: value for key, value in definitions.items() if value not in (None, "")}
+    derivation_steps = [
+        {
+            "step": 1,
+            "title": "Market mechanism to state",
+            "statement": economic,
+        },
+        {
+            "step": 2,
+            "title": "State to mathematical model",
+            "statement": selection or {
+                "why_this_model": math.get("why_this_model"),
+                "why_not_generic_template": math.get("why_not_generic_template"),
+            },
+        },
+        {
+            "step": 3,
+            "title": "Model to observable estimator",
+            "statement": {"estimator": estimator, "components": components},
+        },
+        {
+            "step": 4,
+            "title": "Estimator to metric signature",
+            "statement": math.get("expected_metric_signature") or {},
+        },
+        {
+            "step": 5,
+            "title": "Evidence to accept, revise, or kill",
+            "statement": {"evidence": evidence, "falsification_tests": falsifiers},
+        },
+    ]
+    math_notebook = {
+        "contract_version": "factorforge_console_math_notebook_v1",
+        "source_kind": source_kind,
+        "source_label": source_label,
+        "definitions": _public_copy(definitions) or {},
+        "equations": equations,
+        "derivation_steps": _public_copy(derivation_steps) or [],
+        "assumptions": _public_copy(
+            economic.get("necessary_market_structure")
+            or math.get("necessary_conditions")
+            or []
+        ),
+        "falsification_tests": falsifiers,
+        "evidence_class": "AGENT CLAIM" if main_agent_memo else "FORMAL UNVERIFIED",
+    }
+    return notebook, math_notebook
+
+
+def _council_projection(
+    selected: dict[str, _Evidence],
+    main_agent_memo: dict[str, Any],
+) -> dict[str, Any]:
+    dispatch = _payload(selected, "council_dispatch")
+    summary = _payload(selected, "council_summary")
+    synthesis = _payload(selected, "council_synthesis")
+    questions = _public_copy(main_agent_memo.get("council_questions")) or []
+    routes = _first_public_value(
+        (summary, dispatch),
+        ("route_results", "routes", "assignments", "agent_results"),
+    )
+    projection = {
+        "questions": questions,
+        "routes": routes or [],
+        "synthesis": _first_public_value(
+            (synthesis, summary),
+            ("synthesis", "summary", "decision_rationale", "selected_revision"),
+        ),
+        "selected_revision": _public_copy(synthesis.get("selected_revision")),
+        "mutation": _first_public_value(
+            (synthesis, summary),
+            ("mutation", "selected_mutation", "revision_proposal", "formula_revision"),
+        ),
+    }
+    return {key: value for key, value in projection.items() if value not in (None, {}, [])}
 
 
 def _data_contract(
@@ -1286,6 +1642,207 @@ def _core_metrics(selected: dict[str, _Evidence]) -> tuple[dict[str, Any], dict[
             metrics["recovery"] = recovery
             sources["recovery"] = sources["drawdown"]
     return metrics, sources
+
+
+def _discover_backtest_artifacts(root: Path, report_id: str) -> dict[str, str]:
+    if not report_id or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", report_id):
+        return {}
+    base = root / "evaluations" / report_id / "self_quant_analyzer"
+    artifacts: dict[str, str] = {}
+    for role, filename in BACKTEST_ARTIFACT_FILENAMES.items():
+        candidate = base / filename
+        try:
+            data, _ = _read_internal_bytes(root, candidate)
+        except (OSError, ValueError):
+            continue
+        if not data:
+            continue
+        artifacts[role] = candidate.relative_to(root).as_posix()
+    return artifacts
+
+
+def _backtest_center(
+    *,
+    root: Path,
+    artifact_ids: dict[str, str],
+    core_metrics: dict[str, Any],
+    formal_validation: _FormalValidation,
+) -> dict[str, Any]:
+    evidence_class = (
+        "FORMAL VERIFIED"
+        if formal_validation.attempted
+        and formal_validation.protocol_verdict == "PASS"
+        else "FORMAL UNVERIFIED"
+    )
+    nav_summary: dict[str, Any] = {}
+    annual_returns: list[dict[str, Any]] = []
+    source_id = artifact_ids.get("long_side_nav_table")
+    source_sha256 = ""
+    if source_id:
+        try:
+            data, _ = _read_internal_bytes(root, root / source_id)
+            source_sha256 = hashlib.sha256(data).hexdigest()
+            nav_summary, annual_returns = _summarize_nav_csv(data)
+        except (OSError, UnicodeError, ValueError, csv.Error):
+            nav_summary, annual_returns = {}, []
+    consistency = _nav_consistency(nav_summary, core_metrics)
+    chart_roles = {
+        key: value
+        for key, value in artifact_ids.items()
+        if key.endswith("_chart")
+    }
+    table_roles = {
+        key: value
+        for key, value in artifact_ids.items()
+        if key.endswith("_table")
+    }
+    required_modules = {
+        "gross_net_nav": bool(
+            chart_roles.get("gross_nav_chart")
+            and chart_roles.get("net_nav_chart")
+        ),
+        "quantile_nav": bool(chart_roles.get("quantile_nav_chart")),
+        "annual_returns": bool(annual_returns),
+        "rank_ic_timeseries": bool(chart_roles.get("rank_ic_chart")),
+        "pearson_ic_timeseries": bool(chart_roles.get("pearson_ic_chart")),
+        "drawdown": bool(core_metrics.get("drawdown")),
+        "turnover_and_cost": bool(
+            core_metrics.get("turnover") or core_metrics.get("trading_cost")
+        ),
+        "fama_macbeth": bool(core_metrics.get("fama_macbeth")),
+    }
+    return {
+        "contract_version": "factorforge_console_backtest_center_v1",
+        "evidence_class": evidence_class,
+        "validator_verdict": formal_validation.protocol_verdict,
+        "metrics": _public_copy(core_metrics) or {},
+        "charts": chart_roles,
+        "tables": table_roles,
+        "nav_summary": nav_summary,
+        "annual_returns": annual_returns,
+        "module_status": {
+            key: "available" if available else "not_produced"
+            for key, available in required_modules.items()
+        },
+        "consistency": consistency,
+        "provenance": {
+            "annual_returns_source": source_id or "",
+            "annual_returns_source_sha256": source_sha256,
+            "annual_returns_derivation": (
+                "calendar-year return from formal gross/net NAV endpoints; no interpolation"
+                if annual_returns
+                else "not produced"
+            ),
+        },
+    }
+
+
+def _summarize_nav_csv(data: bytes) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    text = data.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    fields = list(reader.fieldnames or [])
+    if len(fields) < 2:
+        return {}, []
+    date_field = fields[0]
+    gross_field = next(
+        (field for field in fields if field == "long_side_nav"),
+        "",
+    )
+    net_field = next(
+        (field for field in fields if field == "cost_adjusted_long_side_nav"),
+        "",
+    )
+    if not gross_field and not net_field:
+        return {}, []
+    rows: list[tuple[str, float | None, float | None]] = []
+    for row in reader:
+        date_text = str(row.get(date_field) or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", date_text):
+            continue
+        gross = _finite_float(row.get(gross_field)) if gross_field else None
+        net = _finite_float(row.get(net_field)) if net_field else None
+        if gross is None and net is None:
+            continue
+        rows.append((date_text[:10], gross, net))
+    if not rows:
+        return {}, []
+    rows.sort(key=lambda item: item[0])
+    by_year: dict[str, list[tuple[str, float | None, float | None]]] = {}
+    for row in rows:
+        by_year.setdefault(row[0][:4], []).append(row)
+    annual: list[dict[str, Any]] = []
+    prior_gross = 1.0
+    prior_net = 1.0
+    for year in sorted(by_year):
+        year_rows = by_year[year]
+        end_gross = next((item[1] for item in reversed(year_rows) if item[1] is not None), None)
+        end_net = next((item[2] for item in reversed(year_rows) if item[2] is not None), None)
+        annual.append(
+            {
+                "year": int(year),
+                "gross_return": (
+                    end_gross / prior_gross - 1.0
+                    if end_gross is not None and prior_gross > 0
+                    else None
+                ),
+                "net_return": (
+                    end_net / prior_net - 1.0
+                    if end_net is not None and prior_net > 0
+                    else None
+                ),
+            }
+        )
+        if end_gross is not None:
+            prior_gross = end_gross
+        if end_net is not None:
+            prior_net = end_net
+    final_gross = next((item[1] for item in reversed(rows) if item[1] is not None), None)
+    final_net = next((item[2] for item in reversed(rows) if item[2] is not None), None)
+    return (
+        {
+            "start_date": rows[0][0],
+            "end_date": rows[-1][0],
+            "period_count": len(rows),
+            "gross_final_nav": final_gross,
+            "net_final_nav": final_net,
+        },
+        annual,
+    )
+
+
+def _nav_consistency(
+    nav_summary: dict[str, Any],
+    core_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    for summary_key, metric_key in (
+        ("gross_final_nav", "gross_final_nav"),
+        ("net_final_nav", "net_final_nav"),
+    ):
+        observed = _finite_float(nav_summary.get(summary_key))
+        expected = _finite_float(core_metrics.get(metric_key))
+        if observed is None or expected is None:
+            continue
+        checks.append(
+            {
+                "metric": metric_key,
+                "status": "PASS" if abs(observed - expected) <= 1e-8 else "CONFLICT",
+                "series_value": observed,
+                "formal_scalar_value": expected,
+            }
+        )
+    status = "CONFLICT" if any(item["status"] == "CONFLICT" for item in checks) else "PASS"
+    return {"status": status if checks else "NOT_CHECKED", "checks": checks}
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
 
 
 def _metric_containers(payload: dict[str, Any]) -> list[Any]:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import secrets
 from html import escape
 from typing import Any
 
-from factor_factory.console.models import ResearchJob
+from factor_factory.console.math_render import render_latex_math
+from factor_factory.console.models import PILOT_MODEL, ResearchJob, ResearchMessage
 
 
 ACTIVE_STATUSES = {"QUEUED", "ALLOCATING", "RESEARCHING", "VERIFYING"}
@@ -85,7 +87,7 @@ def render_dashboard(jobs: list[ResearchJob], csrf_token: str) -> str:
     return _page("研究任务 | Factor Forge", "\n".join(body))
 
 
-def render_job(job: ResearchJob, events: list[dict[str, Any]], csrf_token: str) -> str:
+def render_job(job: ResearchJob, messages: list[ResearchMessage], csrf_token: str) -> str:
     result = job.result or {}
     body = [
         _shell_header("研究详情", csrf_token),
@@ -100,15 +102,16 @@ def render_job(job: ResearchJob, events: list[dict[str, Any]], csrf_token: str) 
         _status_badge(job.execution_status),
         '</section>',
         _identity_band(job),
+        _workspace_nav(),
+        _conversation_section(job, messages, result, csrf_token),
         _stage_timeline(job, result),
         _decision_panel(job, result, csrf_token),
-        _metric_section(result),
-        _method_section(result),
+        _research_notebook_section(result),
+        _math_notebook_section(result),
+        _backtest_center_section(job, result),
         _data_implementation_section(result),
-        _chart_section(job, result),
         _council_section(result),
         _artifact_section(job, result),
-        _event_section(events),
         '</main>',
         _poll_script(job.job_id, job.updated_at_utc) if job.execution_status in ACTIVE_STATUSES else "",
     ]
@@ -143,13 +146,15 @@ def _research_form(csrf_token: str) -> str:
       <input type="hidden" name="csrf" value="{escape(csrf_token)}">
       <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
       <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" placeholder="由系统生成也可以"></div>
-      <div class="field span-2"><label for="hypothesis">因子想法与经济假设</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="描述现象、可能的付款方、信息形成时间、希望检验的数学关系和你认为会失败的条件。" required></textarea></div>
+      <div class="field"><label for="input-kind">输入类型</label><select id="input-kind" name="content_kind"><option value="hypothesis">经济假设</option><option value="report">研报摘录</option><option value="formula">公式 / 算子</option><option value="code">代码</option></select></div>
+      <div class="field"><label for="model">研究模型</label><select id="model" name="model"><option value="{escape(PILOT_MODEL)}">DeepSeek V4 Flash</option></select></div>
+      <div class="field span-2"><label for="hypothesis">研究输入</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="粘贴经济假设、研报内容、公式或代码。请同时说明现象、可能的付款方、信息形成时间和可证伪条件。" required></textarea></div>
       <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
       <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘后形成信号 → 下一交易日收盘成交 → 再下一交易日收盘退出（Pilot 固定）</div></div>
       <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="2016-01-01" required></div>
       <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="2025-07-11" required></div>
       <div class="field"><label>交易成本模型</label><input type="hidden" name="transaction_cost_bps" value="30"><div class="fixed-contract">换手 × 30 bps（Pilot 固定）</div></div>
-      <div class="form-actions span-2"><p>提交后立即分配独立 Git worktree；现有 Data API 只读。</p><button class="button primary" type="submit">进入研究队列</button></div>
+      <div class="form-actions span-2"><p>提交后异步运行 Ultimate；每个因子分配独立 Git worktree，Data API 只读。</p><button class="button primary" type="submit">开始研究</button></div>
     </form>
     """
 
@@ -181,9 +186,243 @@ def _identity_band(job: ResearchJob) -> str:
       <div><span>股票池</span><strong>{escape(job.request.universe)}</strong></div>
       <div><span>收益期</span><strong>{escape(job.request.forward_horizon)}</strong></div>
       <div><span>交易成本</span><strong>{job.request.transaction_cost_bps:g} bps</strong></div>
-      <div><span>隔离状态</span><strong>{'已分配独立 worktree' if job.workspace_path else '等待分配'}</strong></div>
+      <div><span>模型 / 隔离</span><strong>{escape(job.request.model or PILOT_MODEL)} · {'独立 worktree' if job.workspace_path else '等待分配'}</strong></div>
     </section>
     """
+
+
+def _workspace_nav() -> str:
+    return """
+    <nav class="workspace-nav" aria-label="研究工作区">
+      <a href="#conversation">Chatbox</a>
+      <a href="#notebook">Research Notebook</a>
+      <a href="#math">Math</a>
+      <a href="#backtest">回测中心</a>
+    </nav>
+    """
+
+
+def _conversation_section(
+    job: ResearchJob,
+    messages: list[ResearchMessage],
+    result: dict[str, Any],
+    csrf_token: str,
+) -> str:
+    message_rows = []
+    kind_labels = {
+        "hypothesis": "经济假设",
+        "report": "研报摘录",
+        "formula": "公式 / 算子",
+        "code": "代码",
+        "decision": "研究方向",
+    }
+    for message in messages:
+        content = escape(message.content)
+        if message.content_kind in {"formula", "code"}:
+            content_html = f'<pre class="message-code">{content}</pre>'
+        else:
+            content_html = f'<p>{content}</p>'
+        message_rows.append(
+            f"""
+            <article class="chat-message user-message">
+              <header><strong>你</strong><span>{escape(kind_labels.get(message.content_kind, message.content_kind))} · #{message.sequence_no}</span></header>
+              {content_html}
+            </article>
+            """
+        )
+    status_text = str(result.get("summary") or job.error_message or "研究任务已进入异步执行队列。")
+    message_rows.append(
+        f"""
+        <article class="chat-message forge-message">
+          <header><strong>Factor Forge</strong><span>{escape(STATUS_LABELS.get(job.execution_status, job.execution_status))}</span></header>
+          <p>{escape(status_text)}</p>
+        </article>
+        """
+    )
+    can_resume = bool(
+        job.execution_status in {"REVIEW_REQUIRED", "BLOCKED", "FAILED"}
+        and job.workspace_path
+        and result.get("host_attestation_id")
+        and job.error_code not in NON_RESUMABLE_SECURITY_ERRORS
+        and job.error_code not in GENERIC_RESUME_DISABLED_ERRORS
+    )
+    resume_button = (
+        '<button class="button primary" type="submit" name="message_action" value="save_and_resume">保存并继续研究</button>'
+        if can_resume
+        else ""
+    )
+    return f"""
+    <section id="conversation" class="content-section conversation-section">
+      <div class="section-heading"><div><p class="section-kicker">INPUT WORKSPACE</p><h2>Chatbox</h2></div><p>消息在下一次代理运行开始时形成哈希快照</p></div>
+      <div class="chat-thread">{''.join(message_rows)}</div>
+      <form method="post" action="/research/{escape(job.job_id)}/messages" class="message-composer">
+        <input type="hidden" name="csrf" value="{escape(csrf_token)}">
+        <input type="hidden" name="idempotency_key" value="web-{secrets.token_hex(16)}">
+        <div class="field"><label for="message-kind">输入类型</label><select id="message-kind" name="content_kind"><option value="decision">研究方向</option><option value="hypothesis">经济假设</option><option value="report">研报摘录</option><option value="formula">公式 / 算子</option><option value="code">代码</option></select></div>
+        <div class="field composer-input"><label for="message-content">继续补充</label><textarea id="message-content" name="content" rows="5" maxlength="20000" placeholder="补充证据、反例、数学方向或 Council 应检验的问题。代码只作为研究文本，不会在宿主机执行。" required></textarea></div>
+        <div class="composer-actions"><span>{escape(job.request.model or PILOT_MODEL)}</span><button class="button secondary" type="submit" name="message_action" value="save">保存上下文</button>{resume_button}</div>
+      </form>
+    </section>
+    """
+
+
+def _research_notebook_section(result: dict[str, Any]) -> str:
+    notebook = result.get("research_notebook") if isinstance(result.get("research_notebook"), dict) else {}
+    if not notebook:
+        return '<section id="notebook" class="content-section"><div class="section-heading"><h2>Research Notebook</h2><p>尚未形成研究推理记录</p></div></section>'
+    stages = notebook.get("stages") if isinstance(notebook.get("stages"), list) else []
+    stage_html = []
+    for index, stage in enumerate(stages, start=1):
+        if not isinstance(stage, dict):
+            continue
+        stage_html.append(
+            f"""
+            <article class="notebook-step">
+              <div class="notebook-index">{index:02d}</div>
+              <div><h3>{escape(str(stage.get('title') or stage.get('id') or 'Research step'))}</h3>{_structured_value(stage.get('content'))}</div>
+            </article>
+            """
+        )
+    source = str(notebook.get("source_label") or "UNKNOWN SOURCE")
+    revision = notebook.get("revision_number")
+    revision_text = f" · revision {escape(str(revision))}" if revision not in (None, "") else ""
+    return f"""
+    <section id="notebook" class="content-section notebook-section">
+      <div class="section-heading"><div><p class="section-kicker">AUDITABLE REASONING TRACE</p><h2>Research Notebook</h2></div><span class="evidence-badge badge-agent">{escape(source)}{revision_text}</span></div>
+      <p class="section-note">展示经济假设、模型选择、估计量映射、证据更新和被证伪路线；不是模型的私有原始思维链。</p>
+      <div class="notebook-flow">{''.join(stage_html)}</div>
+    </section>
+    """
+
+
+def _math_notebook_section(result: dict[str, Any]) -> str:
+    notebook = result.get("math_notebook") if isinstance(result.get("math_notebook"), dict) else {}
+    if not notebook:
+        return '<section id="math" class="content-section"><div class="section-heading"><h2>Math</h2><p>尚未形成结构化数学对象</p></div></section>'
+    definitions = notebook.get("definitions") if isinstance(notebook.get("definitions"), dict) else {}
+    definition_html = "".join(
+        f'<div><dt>{escape(str(key).replace("_", " "))}</dt><dd>{escape(_format_value(value, long=True))}</dd></div>'
+        for key, value in definitions.items()
+    )
+    equations = notebook.get("equations") if isinstance(notebook.get("equations"), list) else []
+    equation_html = []
+    for index, equation in enumerate(equations, start=1):
+        if not isinstance(equation, dict):
+            continue
+        equation_html.append(
+            f"""
+            <figure class="equation-block">
+              <figcaption>{escape(str(equation.get('title') or 'Equation'))}</figcaption>
+              <div class="equation-expression">{render_latex_math(str(equation.get('expression') or ''))}</div>
+              <span class="equation-number">({index})</span>
+            </figure>
+            """
+        )
+    derivations = notebook.get("derivation_steps") if isinstance(notebook.get("derivation_steps"), list) else []
+    derivation_html = []
+    for item in derivations:
+        if not isinstance(item, dict):
+            continue
+        derivation_html.append(
+            f'<li><span>{escape(str(item.get("step") or ""))}</span><div><strong>{escape(str(item.get("title") or ""))}</strong>{_structured_value(item.get("statement"))}</div></li>'
+        )
+    falsifiers = _string_list(notebook.get("falsification_tests"))
+    return f"""
+    <section id="math" class="content-section math-section">
+      <div class="section-heading"><div><p class="section-kicker">MODEL AND DERIVATION</p><h2>Math</h2></div><span class="evidence-badge badge-agent">{escape(str(notebook.get('evidence_class') or 'AGENT CLAIM'))}</span></div>
+      <div class="math-chapter"><h3>Definitions</h3><dl class="math-definitions">{definition_html}</dl></div>
+      <div class="math-chapter"><h3>Equations</h3>{''.join(equation_html) or '<p class="missing-proof">正式产物未提供可展示的方程。</p>'}</div>
+      <div class="math-chapter"><h3>Derivation</h3><ol class="derivation-list">{''.join(derivation_html)}</ol></div>
+      {_bullet_group('Falsification tests', falsifiers)}
+    </section>
+    """
+
+
+def _backtest_center_section(job: ResearchJob, result: dict[str, Any]) -> str:
+    center = result.get("backtest_center") if isinstance(result.get("backtest_center"), dict) else {}
+    metrics = center.get("metrics") if isinstance(center.get("metrics"), dict) else (
+        result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    )
+    evidence = result.get("metric_evidence") if isinstance(result.get("metric_evidence"), dict) else {}
+    metric_cells = "".join(
+        _metric_cell(
+            _metric_label(key),
+            value,
+            evidence.get(key) if isinstance(evidence.get(key), dict) else {},
+            metric_key=key,
+        )
+        for key, value in list(metrics.items())[:18]
+    )
+    artifacts = {
+        str(item.get("artifact_id") or ""): item
+        for item in (result.get("artifacts") or [])
+        if isinstance(item, dict)
+    }
+    charts = center.get("charts") if isinstance(center.get("charts"), dict) else {}
+    evidence_class = str(center.get("evidence_class") or "FORMAL UNVERIFIED")
+    consistency = center.get("consistency") if isinstance(center.get("consistency"), dict) else {}
+    conflict = consistency.get("status") == "CONFLICT"
+    chart_evidence_label = "EVIDENCE CONFLICT" if conflict else evidence_class
+    chart_evidence_class = "chart-evidence-conflict" if conflict else ""
+    chart_order = [
+        ("gross_nav_chart", "多头 Gross NAV"),
+        ("net_nav_chart", "多头 Net NAV"),
+        ("quantile_nav_chart", "Decile NAV"),
+        ("rank_ic_chart", "Rolling Rank IC"),
+        ("pearson_ic_chart", "Rolling Pearson IC"),
+        ("coverage_chart", "样本覆盖"),
+    ]
+    figures = []
+    for role, label in chart_order:
+        artifact_id = str(charts.get(role) or "")
+        if not artifact_id or artifact_id not in artifacts:
+            continue
+        href = f"/artifact/{escape(job.job_id)}/{_url_path(artifact_id)}"
+        figures.append(
+            f'<figure><a href="{href}" target="_blank" rel="noopener"><img src="{href}" alt="{escape(label)}"></a><figcaption><strong>{escape(label)}</strong><span class="{chart_evidence_class}">{escape(chart_evidence_label)}</span></figcaption></figure>'
+        )
+    annual = center.get("annual_returns") if isinstance(center.get("annual_returns"), list) else []
+    annual_rows = "".join(
+        f'<tr><th>{escape(str(item.get("year") or ""))}</th><td>{_format_percent(item.get("gross_return"))}</td><td>{_format_percent(item.get("net_return"))}</td></tr>'
+        for item in annual if isinstance(item, dict)
+    )
+    module_status = center.get("module_status") if isinstance(center.get("module_status"), dict) else {}
+    missing = [key for key, value in module_status.items() if value != "available"]
+    missing_html = (
+        '<div class="missing-proof"><strong>未生成的正式模块</strong><p>'
+        + escape("、".join(_metric_label(item) for item in missing))
+        + "。页面不会用汇总指标补画这些结果。</p></div>"
+        if missing
+        else ""
+    )
+    return f"""
+    <section id="backtest" class="content-section backtest-section">
+      <div class="section-heading"><div><p class="section-kicker">FORMAL EVALUATION</p><h2>回测中心</h2></div><span class="evidence-badge {'badge-conflict' if conflict else 'badge-formal'}">{escape(evidence_class)}</span></div>
+      <div class="metric-grid">{metric_cells or '<p class="empty-inline">尚未生成正式指标</p>'}</div>
+      <div class="backtest-band"><h3>NAV 与分组表现</h3><div class="chart-grid">{''.join(figures) or '<p class="missing-proof">尚未发布可核验的 NAV / IC 时序图。</p>'}</div></div>
+      <div class="backtest-band"><h3>分年度收益率</h3><div class="table-scroll"><table class="annual-table"><thead><tr><th>年份</th><th>Gross</th><th>Net (30 bps)</th></tr></thead><tbody>{annual_rows or '<tr><td colspan="3">未生成正式年度收益时序</td></tr>'}</tbody></table></div></div>
+      {missing_html}
+    </section>
+    """
+
+
+def _structured_value(value: Any, *, depth: int = 0) -> str:
+    if value in (None, "", {}, []):
+        return '<p class="missing-proof">Not yet produced.</p>'
+    if depth > 4:
+        return f'<p>{escape(_format_value(value, long=True))}</p>'
+    if isinstance(value, dict):
+        rows = "".join(
+            f'<div><dt>{escape(str(key).replace("_", " "))}</dt><dd>{_structured_value(child, depth=depth + 1)}</dd></div>'
+            for key, child in value.items()
+            if child not in (None, "", {}, [])
+        )
+        return f'<dl class="structured-record">{rows}</dl>'
+    if isinstance(value, list):
+        return '<ul class="structured-list">' + "".join(
+            f'<li>{_structured_value(item, depth=depth + 1)}</li>' for item in value[:40]
+        ) + "</ul>"
+    return f'<p>{escape(_format_value(value, long=True))}</p>'
 
 
 def _stage_timeline(job: ResearchJob, result: dict[str, Any]) -> str:
@@ -326,11 +565,13 @@ def _council_section(result: dict[str, Any]) -> str:
         return ""
     routes = council.get("routes") if isinstance(council.get("routes"), list) else []
     route_html = "".join(
-        f'<li><strong>{escape(str(item.get("route_family") or item.get("role") or "路线"))}</strong><span>{escape(str(item.get("verdict") or item.get("status") or ""))}</span><p>{escape(str(item.get("summary") or item.get("finding") or ""))}</p></li>'
-        for item in routes if isinstance(item, dict)
+        f'<li>{_structured_value(item)}</li>'
+        for item in routes[:20]
     )
-    synthesis = escape(str(council.get("synthesis") or council.get("summary") or ""))
-    return f'<section class="content-section"><div class="section-heading"><h2>Council</h2><p>独立路线与综合判断</p></div><p class="council-synthesis">{synthesis}</p><ul class="council-routes">{route_html}</ul></section>'
+    synthesis = council.get("synthesis") or council.get("summary")
+    questions = _string_list(council.get("questions"))
+    mutation = council.get("mutation")
+    return f'''<section class="content-section council-section"><div class="section-heading"><div><p class="section-kicker">ADVERSARIAL REVISION</p><h2>Council</h2></div><p>独立路线、数学反例与 mutation</p></div>{_bullet_group('Council questions', questions)}<div class="council-synthesis"><strong>综合判断</strong>{_structured_value(synthesis)}</div>{f'<div class="mutation-panel"><strong>Selected mutation</strong>{_structured_value(mutation)}</div>' if mutation else ''}<ul class="council-routes">{route_html}</ul></section>'''
 
 
 def _artifact_section(job: ResearchJob, result: dict[str, Any]) -> str:
@@ -367,8 +608,98 @@ def _status_stat(label: str, value: int, tone: str) -> str:
     return f'<div class="status-stat tone-{tone}"><span>{escape(label)}</span><strong>{value}</strong></div>'
 
 
-def _metric_cell(label: str, value: Any) -> str:
-    return f'<div class="metric-cell"><span>{escape(label)}</span><strong>{escape(_format_value(value))}</strong></div>'
+def _metric_cell(
+    label: str,
+    value: Any,
+    evidence: dict[str, Any] | None = None,
+    *,
+    metric_key: str = "",
+) -> str:
+    evidence = evidence or {}
+    evidence_class = str(evidence.get("evidence_class") or "FORMAL UNVERIFIED")
+    source = str(evidence.get("artifact_id") or "")
+    source_label = source.rsplit("/", 1)[-1] if source else "source pending"
+    primary, detail = _metric_value_parts(metric_key, value)
+    detail_html = f'<em>{escape(detail)}</em>' if detail else ""
+    return f'<div class="metric-cell"><span>{escape(label)}</span><strong>{escape(primary)}</strong>{detail_html}<small>{escape(evidence_class)} · {escape(source_label)}</small></div>'
+
+
+def _metric_value_parts(metric_key: str, value: Any) -> tuple[str, str]:
+    if not isinstance(value, dict):
+        return _format_value(value), ""
+
+    primary_fields = {
+        "rank_ic": "mean",
+        "ic": "mean",
+        "icir": "value",
+        "fama_macbeth": "lambda_mean",
+        "long_side_after_cost": "net_return_annual",
+        "turnover": "daily_turnover",
+        "trading_cost": "annual_cogs",
+        "drawdown": "max_drawdown",
+        "monotonicity": "score",
+    }
+    field = primary_fields.get(metric_key)
+    if field not in value:
+        field = next((name for name in ("value", "mean", "score") if name in value), None)
+    if field is None:
+        return _format_value(value, long=True), ""
+
+    raw_primary = value.get(field)
+    percent_fields = {
+        "max_drawdown",
+        "net_return_annual",
+        "annual_cogs",
+        "daily_turnover",
+    }
+    primary = _format_percent(raw_primary) if field in percent_fields else _format_value(raw_primary)
+    detail_labels = {
+        "period_count": "periods",
+        "t_stat": "t-stat",
+        "recovery_days": "recovery days",
+        "bucket_count": "buckets",
+    }
+    details = [
+        f"{detail_labels.get(name, name.replace('_', ' '))}: {_format_value(item)}"
+        for name, item in value.items()
+        if name != field
+    ]
+    return primary, " · ".join(details[:3])
+
+
+def _metric_label(key: str) -> str:
+    labels = {
+        "ic": "Pearson IC",
+        "rank_ic": "Rank IC",
+        "icir": "ICIR",
+        "fama_macbeth": "Fama-MacBeth risk premium",
+        "long_side_after_cost": "Long side after cost",
+        "turnover": "Turnover",
+        "trading_cost": "Trading cost",
+        "drawdown": "Maximum drawdown",
+        "recovery": "Recovery",
+        "monotonicity": "Quantile monotonicity",
+        "gross_final_nav": "Gross final NAV",
+        "net_final_nav": "Net final NAV",
+        "gross_sharpe": "Gross Sharpe",
+        "net_sharpe": "Net Sharpe",
+        "annual_volatility": "Annual volatility",
+        "gross_net_nav": "Gross / net NAV",
+        "quantile_nav": "Quintile / decile NAV",
+        "annual_returns": "Annual returns",
+        "rank_ic_timeseries": "Rolling Rank IC",
+        "pearson_ic_timeseries": "Rolling Pearson IC",
+        "turnover_and_cost": "Turnover and cost",
+    }
+    return labels.get(key, key.replace("_", " ").title())
+
+
+def _format_percent(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{number * 100:.2f}%"
 
 
 def _definition_row(label: str, value: Any) -> str:
@@ -512,13 +843,22 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .breadcrumbs { display:flex; gap:8px; color:var(--muted); margin-bottom:22px; }.breadcrumbs a { color:var(--blue); }.detail-heading { align-items:flex-start; }.detail-heading>div { max-width:900px; }.idea-summary { max-width:900px; white-space:pre-line; color:#3d4a50; font-size:15px; }.identity-band { margin-top:22px; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; }.identity-band div { padding:13px 15px; border-right:1px solid var(--line); display:grid; gap:2px; }.identity-band div:last-child{border-right:0}.identity-band span { color:var(--muted); font-size:12px; }.identity-band strong { overflow-wrap:anywhere; }
 .stage-list { list-style:none; margin:12px 0 0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:6px; overflow:hidden; }.stage { min-height:70px; padding:13px; display:flex; gap:10px; align-items:flex-start; background:#fff; border-right:1px solid var(--line); }.stage:last-child{border-right:0}.stage-dot { width:9px; height:9px; border-radius:50%; margin-top:6px; background:#aab3b6; flex:none; }.stage>div { display:grid; }.stage span:last-child { color:var(--muted); font-size:12px; }.stage-done .stage-dot,.stage-pass .stage-dot{background:var(--green)}.stage-active .stage-dot{background:var(--blue)}.stage-blocked .stage-dot{background:var(--red)}
 .decision-panel { margin-top:26px; padding:18px; border:1px solid var(--line); border-left:4px solid var(--blue); background:#fff; border-radius:5px; }.decision-panel.verdict-accept{border-left-color:var(--green)}.decision-panel.verdict-reject,.decision-panel.verdict-block{border-left-color:var(--red)}.decision-head { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }.decision-head div { display:grid; }.decision-head span { color:var(--muted); font-size:12px; }.decision-head strong { font-size:16px; }.decision-list { margin-top:12px; }.decision-list ul { margin:6px 0 0; padding-left:20px; }
-.metric-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.metric-cell { min-height:82px; display:grid; align-content:center; gap:4px; padding:12px 14px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.metric-cell span { color:var(--muted); font-size:12px; }.metric-cell strong { font-size:20px; overflow-wrap:anywhere; }
+.metric-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.metric-cell { min-height:96px; display:grid; align-content:center; gap:4px; padding:12px 14px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.metric-cell span { color:var(--muted); font-size:12px; }.metric-cell strong { font-size:20px; overflow-wrap:anywhere; }.metric-cell em { color:var(--muted); font-size:11px; font-style:normal; overflow-wrap:anywhere; }
 .definition-list { margin:0; border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.definition-list>div { display:grid; grid-template-columns:180px minmax(0,1fr); border-top:1px solid var(--line); }.definition-list>div:first-child{border-top:0}.definition-list dt { padding:12px 14px; background:#eef1f0; font-weight:700; }.definition-list dd { margin:0; padding:12px 14px; white-space:pre-line; overflow-wrap:anywhere; }
 .chart-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }.chart-grid figure { margin:0; border:1px solid var(--line); border-radius:6px; background:#fff; overflow:hidden; }.chart-grid img { display:block; width:100%; aspect-ratio:16/9; object-fit:contain; background:#fff; }.chart-grid figcaption { padding:9px 11px; border-top:1px solid var(--line); color:var(--muted); }
 .council-synthesis { padding:14px; margin:0 0 12px; background:var(--blue-soft); border-left:4px solid var(--blue); }.council-routes { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.council-routes li { border:1px solid var(--line); background:#fff; border-radius:5px; padding:12px; }.council-routes li>span { float:right; color:var(--muted); }.council-routes p { margin:8px 0 0; }
 .artifact-list,.event-list { list-style:none; margin:0; padding:0; border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.artifact-list li { display:flex; justify-content:space-between; gap:20px; padding:10px 12px; border-top:1px solid var(--line); }.artifact-list li:first-child,.event-list li:first-child{border-top:0}.artifact-list a { color:var(--blue); overflow-wrap:anywhere; }.artifact-list span { color:var(--muted); }.event-list li { display:grid; grid-template-columns:150px 190px minmax(0,1fr); gap:12px; padding:9px 12px; border-top:1px solid var(--line); }.event-list time { color:var(--muted); }
+.workspace-nav { margin-top:16px; display:flex; gap:4px; padding:4px; border:1px solid var(--line); background:#fff; position:sticky; top:66px; z-index:8; overflow-x:auto; }.workspace-nav a { padding:7px 11px; color:var(--muted); text-decoration:none; white-space:nowrap; border-bottom:2px solid transparent; }.workspace-nav a:hover { color:var(--ink); border-bottom-color:var(--blue); }
+.section-kicker { margin:0 0 2px; color:var(--blue); font-size:11px; font-weight:800; letter-spacing:0; }.section-note { margin:-2px 0 16px; color:var(--muted); }
+.conversation-section { scroll-margin-top:112px; }.chat-thread { display:grid; gap:10px; max-height:560px; overflow:auto; padding:14px; border:1px solid var(--line); background:#e9edec; }.chat-message { width:min(820px,92%); padding:12px 14px; border:1px solid var(--line); background:#fff; }.chat-message.user-message { justify-self:end; border-left:3px solid var(--green); }.chat-message.forge-message { justify-self:start; border-left:3px solid var(--blue); }.chat-message header { display:flex; justify-content:space-between; gap:16px; margin-bottom:6px; }.chat-message header span { color:var(--muted); font-size:11px; }.chat-message p { margin:0; white-space:pre-line; }.message-code { margin:0; padding:10px; overflow:auto; background:#f3f5f4; border:1px solid var(--line); white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+.message-composer { display:grid; grid-template-columns:190px minmax(0,1fr); gap:12px; padding:14px; border:1px solid var(--line); border-top:0; background:#fff; }.message-composer .composer-input { grid-column:2; grid-row:1 / span 2; }.message-composer textarea { min-height:116px; }.composer-actions { grid-column:1 / -1; display:flex; justify-content:flex-end; align-items:center; gap:8px; border-top:1px solid var(--line); padding-top:12px; }.composer-actions span { margin-right:auto; color:var(--muted); font-size:12px; }
+.notebook-section,.math-section,.backtest-section { scroll-margin-top:112px; }.evidence-badge { display:inline-flex; align-items:center; min-height:27px; padding:3px 8px; border:1px solid var(--line); font-size:11px; font-weight:800; white-space:nowrap; }.badge-agent { color:var(--blue); background:var(--blue-soft); }.badge-formal { color:var(--green); background:var(--green-soft); }.badge-conflict { color:var(--red); background:var(--red-soft); }
+.notebook-flow { border-top:1px solid var(--line); }.notebook-step { display:grid; grid-template-columns:56px minmax(0,1fr); gap:18px; padding:20px 0; border-bottom:1px solid var(--line); }.notebook-index { color:var(--blue); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:18px; font-weight:800; }.notebook-step h3 { margin:0 0 10px; font-size:16px; }.structured-record { margin:0; border:1px solid var(--line); background:#fff; }.structured-record>div { display:grid; grid-template-columns:minmax(140px,220px) minmax(0,1fr); border-top:1px solid var(--line); }.structured-record>div:first-child { border-top:0; }.structured-record dt { padding:8px 10px; background:#eef1f0; font-size:12px; font-weight:700; overflow-wrap:anywhere; }.structured-record dd { margin:0; padding:8px 10px; min-width:0; }.structured-record p { margin:0; white-space:pre-line; }.structured-list { margin:0; padding-left:20px; }.structured-list>li { margin:5px 0; }
+.math-section { font-family:Georgia,"Times New Roman","Songti SC",serif; }.math-section .section-heading,.math-section .section-note,.math-section .evidence-badge { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }.math-chapter { margin-top:22px; }.math-chapter>h3 { margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid var(--ink); font-size:16px; }.math-definitions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0; border:1px solid var(--line); background:#fff; }.math-definitions>div { padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.math-definitions dt { font-variant:small-caps; color:var(--muted); }.math-definitions dd { margin:4px 0 0; overflow-wrap:anywhere; }.equation-block { position:relative; margin:0; min-height:88px; display:grid; align-content:center; padding:18px 64px 18px 22px; border-bottom:1px solid var(--line); background:#fff; }.equation-block:first-of-type { border-top:1px solid var(--line); }.equation-block figcaption { color:var(--muted); font-size:12px; }.equation-expression { margin-top:8px; font-family:"STIX Two Math","Cambria Math",Georgia,serif; font-size:17px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; }.equation-number { position:absolute; right:20px; top:50%; transform:translateY(-50%); }.derivation-list { list-style:none; margin:0; padding:0; }.derivation-list>li { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; padding:14px 0; border-bottom:1px solid var(--line); }.derivation-list>li>span { width:28px; height:28px; display:grid; place-items:center; border:1px solid var(--ink); border-radius:50%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }.derivation-list strong { display:block; margin-bottom:7px; }
+.rendered-math { display:block; overflow-x:auto; overflow-y:hidden; padding:3px 0; }.rendered-math math { min-width:max-content; font-size:1.05em; }.equation-source { font-family:"STIX Two Math","Cambria Math",Georgia,serif; }
+.backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.annual-table { width:100%; border-collapse:collapse; min-width:480px; }.annual-table th,.annual-table td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; }.annual-table th:first-child,.annual-table td:first-child { text-align:left; }.annual-table thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
 .login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }
-@media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes{grid-template-columns:1fr}}
-@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.research-form{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}}
+@media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}}
+@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.research-form{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}}
 """

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from factor_factory.console.config import ConsoleConfig
+from factor_factory.console.model_broker import normalize_deepseek_openclaw_model
 from factor_factory.console.models import ResearchJob
 from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import utc_now
@@ -48,6 +49,7 @@ RESUME_MEMO_IMMUTABLE_FIELDS = (
     "resume_attempt_id",
     "report_id",
     "factor_id",
+    "research_id",
     "source_refs",
     "formula",
     "formula_understanding",
@@ -117,6 +119,8 @@ class AgentRunResult:
     stdout_tail: str
     stderr_tail: str
     result_path: str
+    provider: str = ""
+    model: str = ""
 
 
 @dataclass(frozen=True)
@@ -250,8 +254,16 @@ class OpenClawResearchAgentAdapter:
             root=workspace,
         )
         started = utc_now()
+        try:
+            runtime_model = normalize_deepseek_openclaw_model(
+                job.request.model or self.config.openclaw_model
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent model is not pinned to DeepSeek V4 Flash"
+            ) from exc
         if resume or not job.agent_id:
-            self._ensure_agent(agent_id, workspace, job.request.model or self.config.openclaw_model)
+            self._ensure_agent(agent_id, workspace, runtime_model)
         command = [
             *self._command_prefix(),
             "agent",
@@ -308,6 +320,8 @@ class OpenClawResearchAgentAdapter:
             "started_at_utc": started,
             "finished_at_utc": utc_now(),
             "returncode": returncode,
+            "provider": self.config.openclaw_auth_provider,
+            "model": runtime_model,
             "error_code": error_code,
             "stdout_tail": stdout[-16_000:],
             "stderr_tail": stderr[-16_000:],
@@ -322,6 +336,8 @@ class OpenClawResearchAgentAdapter:
             stdout_tail=str(payload["stdout_tail"]),
             stderr_tail=str(payload["stderr_tail"]),
             result_path=str(result_path),
+            provider=self.config.openclaw_auth_provider,
+            model=runtime_model,
         )
 
     def _ensure_agent(self, agent_id: str, workspace: Path, model: str) -> None:

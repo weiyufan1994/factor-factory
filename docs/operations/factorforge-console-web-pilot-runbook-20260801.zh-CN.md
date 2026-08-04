@@ -21,7 +21,7 @@ FACTORFORGE_CONSOLE_INVITE_PASSWORD=<shared invite password>
 FACTORFORGE_CONSOLE_COOKIE_SECRET=<at least 32 random bytes>
 FACTORFORGE_CONSOLE_COOKIE_SECURE=1
 FACTORFORGE_CONSOLE_OPENCLAW_PROFILE=factorforge-console
-FACTORFORGE_CONSOLE_MODEL=deepseek/deepseek-reasoner
+FACTORFORGE_CONSOLE_MODEL=deepseek/deepseek-v4-flash
 FACTORFORGE_CONSOLE_THINKING=high
 FACTORFORGE_CONSOLE_RESUME_THINKING=medium
 FACTORFORGE_CONSOLE_AGENT_TIMEOUT=3300
@@ -137,6 +137,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 - OpenClaw profile 的 model endpoint、plugin 和 tool allowlist。
 - auth seed provider/type/key 合法，且不含 SQLite WAL/SHM sidecar。
 - model broker denied-secret 目录只对 `factorforge-model` 与 runner 的专用 group 开放；`active.registry` 必须只指向当前任务的 registry，删除该目标后 broker `/healthz` 必须返回 503，即使目录中仍有历史 registry；当前 AWS lease 原值和常见编码不得通过模型请求。
+- model broker 只接受 `deepseek-v4-flash`，缺省注入 `max_tokens=16384`，并拒绝任何超过 16K 或类型非法的 `max_tokens/max_completion_tokens`。
 - active catalog receipt 的 role、hash、dataset count 和刷新时间有效。
 - 启动时只回收相同 installation id 的遗留 agent 容器；回收失败则 runner 不启动。
 - 容器 Data API read smoke 能从 active S3 catalog 对 `clean_daily_bar` 做真实单日读取。
@@ -145,6 +146,9 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 
 - `/healthz` 同时报告 ledger、worker、engine、agent runtime 和 catalog；任一失败返回 503。
 - 任务详情不出现服务器绝对路径、session key 或原始日志。
+- Chatbox 消息刷新后保持顺序和类型；下一次运行的 `conversation_snapshot` 哈希可复算，代码消息仅作为文本。
+- Research Notebook 只显示当前 main-agent revision 或明确标记的 fallback；Math 页面只输出白名单 MathML/转义原文，生产 venv 必须安装固定版 `latex2mathml`。
+- 回测中心的 NAV、分组、IC 和年度收益必须指向当前 report 的正式 artifact；任何未生成模块显示 `not_produced`，不得用标量生成伪时序。
 - 浏览器下载只能命中任务结果白名单中的不可变 publication set，不能直接读取 workspace。
 - `worktree_root/<factor>/<research>/repo` 与 workspace 一一对应。
 - 容器内 `git rev-parse HEAD` 必须命中任务 base commit，且 `GIT_DIR` 指向任务私有 shallow Git view，不指向控制仓库 `.git`。

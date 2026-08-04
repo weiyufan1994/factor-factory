@@ -1028,6 +1028,11 @@ class ResearchRunService:
                 denied_values,
             )
             result["host_attestation_id"] = host_attestation_id
+            result["model_execution"] = {
+                "provider": agent_result.provider,
+                "model": agent_result.model,
+                "provenance": "host_pinned_agent_runtime",
+            }
             execution_status = _web_execution_status(summary, agent_result.returncode)
             finished = utc_now() if execution_status in {"COMPLETED", "BLOCKED", "FAILED", "CANCELLED"} else ""
             error_code = ""
@@ -2679,6 +2684,8 @@ class ResearchRunService:
             ),
             "host_observed_ultimate_process": True,
             "agent_returncode": agent_result.returncode,
+            "agent_provider": agent_result.provider,
+            "agent_model": agent_result.model,
             "agent_result_id": agent_receipt_snapshot_relative,
             "agent_result_sha256": agent_receipt_snapshot_sha256,
             "agent_result_source_id": agent_result_relative.as_posix(),
@@ -2748,6 +2755,7 @@ class ResearchRunService:
         trusted_resume_start_step: str | None = None,
     ) -> None:
         workspace = allocation.workspace_path
+        conversation_snapshot = _conversation_snapshot(self.store, job)
         request_payload = {
             **job.request.to_dict(),
             "job_id": job.job_id,
@@ -2758,6 +2766,8 @@ class ResearchRunService:
             "allocation_manifest_sha256": _sha256(allocation.manifest_path),
             "submitted_at_utc": job.created_at_utc,
             "source_type": "natural_language_hypothesis",
+            "conversation_snapshot": conversation_snapshot,
+            "conversation_snapshot_sha256": conversation_snapshot["sha256"],
             "data_access": {
                 "mode": "read_only",
                 "catalog_count": len(self.config.data_catalogs),
@@ -3121,6 +3131,13 @@ class ResearchRunService:
             "evaluation_contract": _project_evaluation_contract(factor_spec),
             "observed_metrics": metric_facts,
             "metric_availability": metric_availability,
+            "conversation_snapshot": (
+                _read_regular_workspace_json(
+                    workspace,
+                    "identity/web_research_request.json",
+                ).get("conversation_snapshot")
+                or {}
+            ),
             "revision_context": {
                 "mode": (
                     "revision"
@@ -3158,6 +3175,7 @@ class ResearchRunService:
             "resume_attempt_id": attempt_id,
             "report_id": job.report_id,
             "factor_id": job.factor_id,
+            "research_id": job.research_id,
             "created_at_utc": utc_now(),
             "producer": "",
             "agent_authorship": {
@@ -3448,6 +3466,8 @@ class ResearchRunService:
                 failures.append(f"immutable_field_changed:{field}")
         if memo.get("resume_attempt_id") != resume_task.attempt_id:
             failures.append("resume_attempt_id_mismatch")
+        if memo.get("research_id") != job.research_id:
+            failures.append("research_id_mismatch")
         if memo.get("producer") != "current_main_agent":
             failures.append("producer_not_current_main_agent")
         authorship = (
@@ -4670,8 +4690,19 @@ def build_web_result(
     if summary.math_mechanism:
         research_method.setdefault("mathematical_object", summary.math_mechanism)
     data_implementation = {**summary.data_contract, **summary.implementation_contract}
+    metric_evidence_class = str(
+        summary.backtest_center.get("evidence_class") or "FORMAL UNVERIFIED"
+    )
+    metric_evidence = {
+        key: {
+            "evidence_class": metric_evidence_class,
+            "artifact_id": summary.metric_sources.get(key, ""),
+            "validator_verdict": summary.backtest_center.get("validator_verdict", "UNKNOWN"),
+        }
+        for key in summary.core_metrics
+    }
     return {
-        "contract_version": "factorforge_console_web_result_v1",
+        "contract_version": "factorforge_console_web_result_v2",
         "public_artifact_set_id": publication_id,
         "summary": _result_summary(summary),
         "execution_status": summary.execution_status,
@@ -4684,6 +4715,11 @@ def build_web_result(
         "data_implementation": data_implementation,
         "metrics": summary.core_metrics,
         "metric_sources": summary.metric_sources,
+        "metric_evidence": metric_evidence,
+        "research_notebook": summary.research_notebook,
+        "math_notebook": summary.math_notebook,
+        "backtest_center": summary.backtest_center,
+        "council": summary.council,
         "blockers": summary.blockers + summary.evidence_errors,
         "next_actions": summary.next_actions,
         "timestamps": summary.timestamps,
@@ -4691,6 +4727,55 @@ def build_web_result(
         "stages": _stage_records(summary),
         "artifacts": artifacts,
     }
+
+
+def _conversation_snapshot(
+    store: ResearchJobStore,
+    job: ResearchJob,
+) -> dict[str, Any]:
+    total_message_count, messages = store.snapshot_messages(job.job_id, limit=40)
+    projected: list[dict[str, Any]] = []
+    remaining = 40_000
+    content_truncated = False
+    for message in reversed(messages):
+        content = message.content.strip()
+        if not content or remaining <= 0:
+            if content:
+                content_truncated = True
+            continue
+        clipped = content[:remaining]
+        if clipped != content:
+            content_truncated = True
+        remaining -= len(clipped)
+        projected.append(
+            {
+                "message_id": message.message_id,
+                "sequence_no": message.sequence_no,
+                "role": message.role,
+                "content_kind": message.content_kind,
+                "content": clipped,
+                "model": message.model,
+                "created_at_utc": message.created_at_utc,
+            }
+        )
+    projected.reverse()
+    unsigned = {
+        "contract_version": "factorforge_console_conversation_snapshot_v1",
+        "job_id": job.job_id,
+        "message_count": len(projected),
+        "total_message_count": total_message_count,
+        "omitted_message_count": max(0, total_message_count - len(projected)),
+        "content_truncated": content_truncated,
+        "history_complete": (
+            total_message_count == len(projected) and not content_truncated
+        ),
+        "character_budget": 40_000,
+        "included_character_count": sum(
+            len(str(item.get("content") or "")) for item in projected
+        ),
+        "messages": projected,
+    }
+    return {**unsigned, "sha256": stable_json_hash(unsigned)}
 
 
 def _web_execution_status(summary: UltimateRunSummary, agent_returncode: int) -> str:

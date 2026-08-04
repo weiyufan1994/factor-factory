@@ -129,7 +129,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
 
         wrong_client = Request(
             f"{base_url}/chat/completions",
-            data=b'{"model":"deepseek-reasoner"}',
+            data=b'{"model":"deepseek-v4-flash"}',
             headers={"Authorization": "Bearer wrong-broker-client-token"},
             method="POST",
         )
@@ -140,7 +140,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
         request = Request(
             f"{base_url}/chat/completions",
             data=json.dumps(
-                {"model": "deepseek-reasoner", "messages": [{"role": "user", "content": "test"}]}
+                {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "test"}]}
             ).encode("utf-8"),
             headers={"Authorization": f"Bearer {client_token}", "Content-Type": "application/json"},
             method="POST",
@@ -151,26 +151,49 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
                 "path": "/chat/completions",
                 "authorization": "Bearer server-side-deepseek-key-test",
                 "payload": {
-                    "model": "deepseek-reasoner",
+                    "model": "deepseek-v4-flash",
                     "messages": [{"role": "user", "content": "test"}],
+                    "max_tokens": 16384,
                 },
             }
         ]
 
-        wrong_model = Request(
+        for denied_model in ("other", "deepseek-reasoner"):
+            wrong_model = Request(
+                f"{base_url}/chat/completions",
+                data=json.dumps({"model": denied_model}).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {client_token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with pytest.raises(HTTPError) as failure:
+                urlopen(wrong_model, timeout=3)
+            assert failure.value.code == 400
+        excessive_output = Request(
             f"{base_url}/chat/completions",
-            data=b'{"model":"other"}',
-            headers={"Authorization": f"Bearer {client_token}", "Content-Type": "application/json"},
+            data=json.dumps(
+                {
+                    "model": "deepseek-v4-flash",
+                    "messages": [{"role": "user", "content": "test"}],
+                    "max_tokens": 16_385,
+                }
+            ).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {client_token}",
+                "Content-Type": "application/json",
+            },
             method="POST",
         )
         with pytest.raises(HTTPError) as failure:
-            urlopen(wrong_model, timeout=3)
+            urlopen(excessive_output, timeout=3)
         assert failure.value.code == 400
         with pytest.raises(HTTPError) as failure:
             urlopen(
                 Request(
                     f"{base_url}/arbitrary",
-                    data=b'{"model":"deepseek-reasoner"}',
+                    data=b'{"model":"deepseek-v4-flash"}',
                     headers={"Authorization": f"Bearer {client_token}"},
                     method="POST",
                 ),
@@ -191,7 +214,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
                 f"{base_url}/chat/completions",
                 data=json.dumps(
                     {
-                        "model": "deepseek-reasoner",
+                        "model": "deepseek-v4-flash",
                         "messages": [{"role": "user", "content": leaked_value}],
                     }
                 ).encode("utf-8"),
@@ -208,7 +231,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
         unicode_escaped = Request(
             f"{base_url}/chat/completions",
             data=(
-                '{"model":"deepseek-reasoner","messages":['
+                '{"model":"deepseek-v4-flash","messages":['
                 '{"role":"user","content":"' + escaped_secret + '"}]}'
             ).encode("ascii"),
             headers={"Authorization": f"Bearer {client_token}", "Content-Type": "application/json"},

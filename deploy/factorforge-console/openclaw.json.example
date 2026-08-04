@@ -30,7 +30,7 @@
       },
       "models": {
         "deepseek/deepseek-v4-flash": {
-          "params": {"maxTokens": 16384}
+          "params": {"maxTokens": 65536}
         }
       },
       "maxConcurrent": 1,

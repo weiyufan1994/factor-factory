@@ -3200,6 +3200,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     import subprocess
     import factor_factory.console.container_agent_adapter as adapter_module
 
+    from factor_factory.console.agent_adapter import BLOCK_AGENT_RUNTIME_FAILED
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.container_agent_adapter import ContainerizedOpenClawResearchAgentAdapter
     from factor_factory.console.models import ResearchJob
@@ -3263,6 +3264,18 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     )
     calls: list[list[str]] = []
     broker_readiness_registry_seen = False
+    agent_stdout = json.dumps(
+        {
+            "payloads": [{"text": "Authoring complete."}],
+            "meta": {
+                "agentMeta": {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                },
+                "finalAssistantVisibleText": "Authoring complete.",
+            },
+        }
+    )
 
     def fake_run(command, **kwargs):
         nonlocal broker_readiness_registry_seen
@@ -3322,6 +3335,13 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
             assert active_name == f"{config.installation_id}.readiness.secrets"
             assert broker_client_token in readiness_registry.read_text(encoding="utf-8")
             broker_readiness_registry_seen = True
+        if "--message-file" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=agent_stdout,
+                stderr="embedded run agent end: isError=false\n",
+            )
         return subprocess.CompletedProcess(command, 0, stdout='{"status":"ok"}', stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -3416,6 +3436,36 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     tmpfs_index = research_command.index("--tmpfs")
     assert research_command[tmpfs_index + 1].startswith("/tmp:rw,nosuid,nodev,size=")
     assert str(marker_root) not in " ".join(research_command)
+
+    agent_stdout = json.dumps(
+        {
+            "payloads": [],
+            "meta": {
+                "agentMeta": {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                },
+                "replayInvalid": True,
+                "livenessState": "abandoned",
+                "error": {
+                    "kind": "incomplete_turn",
+                    "message": "Agent couldn't generate a response.",
+                },
+            },
+        }
+    )
+    incomplete = adapter.run(
+        job,
+        worktree=source,
+        workspace=workspace,
+        resume=False,
+    )
+    assert incomplete.returncode == 1
+    incomplete_receipt = json.loads(
+        Path(incomplete.result_path).read_text(encoding="utf-8")
+    )
+    assert incomplete_receipt["error_code"] == BLOCK_AGENT_RUNTIME_FAILED
+    assert "terminal replay is invalid" in incomplete_receipt["stderr_tail"]
     adapter.clear_denied_secrets(job.job_id)
 
 

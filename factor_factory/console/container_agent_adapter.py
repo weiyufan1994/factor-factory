@@ -521,12 +521,20 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "phase credential store failed post-run validation"
             ).strip()
 
-        if resume_workspace_view is not None and returncode == 0:
+        terminal_text = ""
+        if returncode == 0:
             try:
                 terminal_text = _validate_openclaw_terminal_status(
                     raw_stdout,
                     raw_stderr,
                 )
+            except RuntimeError as exc:
+                returncode = 1
+                error_code = BLOCK_AGENT_RUNTIME_FAILED
+                stderr = f"{stderr}\n{exc}".strip()
+
+        if resume_workspace_view is not None and returncode == 0:
+            try:
                 self._stage_resume_terminal_delivery(
                     resume_workspace_view,
                     terminal_text=terminal_text,

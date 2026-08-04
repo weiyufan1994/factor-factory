@@ -137,7 +137,7 @@ Mac 上只做 UI 开发时，可显式设置 `FACTORFORGE_CONSOLE_EXECUTION_MODE
 - OpenClaw profile 的 model endpoint、plugin 和 tool allowlist。
 - auth seed provider/type/key 合法，且不含 SQLite WAL/SHM sidecar。
 - model broker denied-secret 目录只对 `factorforge-model` 与 runner 的专用 group 开放；`active.registry` 必须只指向当前任务的 registry，删除该目标后 broker `/healthz` 必须返回 503，即使目录中仍有历史 registry；当前 AWS lease 原值和常见编码不得通过模型请求。
-- model broker 只接受 `deepseek-v4-flash`，缺省注入 `max_tokens=16384`，并拒绝任何超过 16K 或类型非法的 `max_tokens/max_completion_tokens`。
+- model broker 只接受 `deepseek-v4-flash`，缺省注入 `max_tokens=65536`，并拒绝任何超过 64K 或类型非法的 `max_tokens/max_completion_tokens`。
 - active catalog receipt 的 role、hash、dataset count 和刷新时间有效。
 - 启动时只回收相同 installation id 的遗留 agent 容器；回收失败则 runner 不启动。
 - 容器 Data API read smoke 能从 active S3 catalog 对 `clean_daily_bar` 做真实单日读取。

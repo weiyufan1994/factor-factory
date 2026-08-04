@@ -72,6 +72,7 @@ def test_model_broker_does_not_rechmod_a_preprovisioned_secret_root(
 
 def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: Path) -> None:
     from factor_factory.console.model_broker import (
+        CONSOLE_MODEL_MAX_OUTPUT_TOKENS,
         FactorForgeModelBrokerServer,
         ModelBrokerConfig,
     )
@@ -153,7 +154,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
                 "payload": {
                     "model": "deepseek-v4-flash",
                     "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 16384,
+                    "max_tokens": CONSOLE_MODEL_MAX_OUTPUT_TOKENS,
                 },
             }
         ]
@@ -177,7 +178,7 @@ def test_model_broker_injects_server_key_and_enforces_path_and_model(tmp_path: P
                 {
                     "model": "deepseek-v4-flash",
                     "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 16_385,
+                    "max_tokens": CONSOLE_MODEL_MAX_OUTPUT_TOKENS + 1,
                 }
             ).encode("utf-8"),
             headers={

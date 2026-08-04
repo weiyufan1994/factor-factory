@@ -131,7 +131,7 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 
 容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口；`INPUT` 也拒绝来自该 bridge 的所有主机地址和端口，只在 bridge gateway 上暴露 S3 proxy 与模型 broker 的网络端点。这里的端点可达不等于研究 Agent 获得数据能力：Agent 容器没有 AWS lease、Data API 包、catalog/raw mount 或可用 DNS，且其任务合同禁止调用 S3 proxy；该端点只服务 runner 的启动期只读探针。Host formal 数据读取使用另行取得并核验的临时 lease。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-v4-flash`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
 
-当前 Pilot 固定使用 `deepseek/deepseek-v4-flash` 和 `thinking=high`。模型目录按官方合同声明 1M context 和 384K 最大输出能力，但 Console 运行参数和主机 model broker 都把单次模型输出硬限制为 16K；缺省请求由 broker 注入该上限，任何更高请求直接拒绝。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
+当前 Pilot 固定使用 `deepseek/deepseek-v4-flash` 和 `thinking=high`。模型目录按官方合同声明 1M context 和 384K 最大输出能力，但 Console 运行参数和主机 model broker 都把单次模型输出硬限制为 64K；缺省请求由 broker 注入该上限，任何更高请求直接拒绝。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 
 DeepSeek 在 Pilot 威胁模型中是受信任的数据处理方，但不是凭据持有方。Prompt 禁止上传原始 Data API 内容，broker 阻止当前 lease 的直接或常见编码泄漏；恶意 agent 对任意数据做分片编码无法仅靠内容过滤彻底识别，因此 data-read 凭据必须保持短期、无 SSM 权限且离开专用 VPC endpoint 无效。
 

@@ -2090,6 +2090,18 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         bounded_plain_prefix.root / task.required_output_relative
     ).read_text(encoding="utf-8") == '{"a":"first"}\n'
 
+    markdown_summary_prefix = (
+        "All six authorized inputs were reviewed.\n\n"
+        "**Verification pass (reasoning):**\n"
+        "- Patch fields and immutable metrics were checked.\n"
+        "- Operator consistency and the byte budget were checked.\n\n"
+    )
+    adapter._stage_resume_terminal_delivery(
+        phase_view("markdown-summary-prefix"),
+        terminal_text=markdown_summary_prefix + valid_delivery,
+        resume_task=task,
+    )
+
     runtime_length_prefix = (
         "All authorized inputs were reviewed. "
         + ("Each pinned metric and identity field was checked. " * 25)

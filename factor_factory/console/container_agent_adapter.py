@@ -113,6 +113,13 @@ def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
     lines = [line.strip() for line in prefix.splitlines() if line.strip()]
     for line in lines:
         prose = re.sub(r"^(?:[-*]|[0-9]{1,2}[.)])\s+", "", line)
+        prose = re.sub(r"^#{1,6}\s+", "", prose)
+        if (
+            len(prose) >= 4
+            and prose[:2] in {"**", "__"}
+            and prose[-2:] == prose[:2]
+        ):
+            prose = prose[2:-2].strip()
         if not prose or not prose[0].isalpha() or prose.startswith(("[", "]")):
             return False
         try:

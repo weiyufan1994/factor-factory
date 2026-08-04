@@ -145,3 +145,50 @@ def test_stochastic_marker_words_without_model_structure_still_block() -> None:
             failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
             for failure in failures
         )
+
+
+def test_chinese_jump_threshold_equations_and_specific_payers_pass() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "jump_threshold"
+    )
+    derivation["selected_model_family"] = "jump_threshold"
+    derivation["process_or_distribution"] = (
+        "O_t=pre_close_t*(1+J_t), J_t 为不对称隔夜跳; C_t=O_t*(1+d_t); "
+        "S_t=-sign(J_t)*(1-sign(J_t)*sign(d_t))/2*v_t; "
+        "E[r_{i,t+1}|F_t,S_t]=alpha*S_t, 纠错假设 alpha>0。"
+    )
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "跳跃阈值模型把隔夜跳、确认失败边界和后续纠错收益连接起来。"
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
+def test_jump_words_without_threshold_state_structure_still_block() -> None:
+    malformed_models = (
+        "notes pending",
+        "a=b; c=d; jump S_t",
+        "open=close; relative_volume=1; jump S_t",
+        "open=pre_close; failed_close_confirmation=1; threshold sign(",
+        "open=epsilon; close=beta; jump",
+        "J_t=foo; S_t=sign(foo); E[r|F_t]=alpha*signal_t; jump",
+        "J_t=foo; S_t=sign(foo); E[r|F_t]=alpha*situation_t; jump",
+    )
+    for malformed_model in malformed_models:
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "jump_threshold"
+        )
+        derivation["selected_model_family"] = "jump_threshold"
+        derivation["process_or_distribution"] = malformed_model
+        derivation["profit_payer_derivation"]["math_model_link"] = "jump threshold"
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert any(
+            failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+            for failure in failures
+        )

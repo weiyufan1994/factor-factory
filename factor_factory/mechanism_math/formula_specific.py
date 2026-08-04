@@ -399,6 +399,56 @@ def _has_stochastic_process_prose(process: str) -> bool:
     )
 
 
+def _has_explicit_jump_threshold_model(process: str) -> bool:
+    jump_terms = {
+        "boundary",
+        "discontinuity",
+        "jump",
+        "stopping",
+        "threshold",
+        "不连续",
+        "停止时",
+        "边界",
+        "跳跃",
+        "隔夜跳",
+        "阈值",
+    }
+    state_assignment = re.search(
+        r"(?:^|;)\s*(?P<state>s(?:_[a-z0-9_{},]+)?)\s*=\s*(?P<definition>[^;]+)",
+        process,
+    )
+    state_name = state_assignment.group("state") if state_assignment else ""
+    state_definition = state_assignment.group("definition") if state_assignment else ""
+    has_threshold_gate = any(
+        marker in state_definition
+        for marker in {"1{", "indicator", "sign(", "threshold", "不连续", "边界", "阈值"}
+    ) or bool(re.search(r"(?:<=|>=|<|>)", state_definition))
+    has_jump_price_link = bool(
+        re.search(
+            r"(?:^|;)\s*(?:o|open|p|price)(?:_[a-z0-9_{}]+)?\s*=\s*[^;]*"
+            r"(?:j(?:_[a-z0-9_{}]+)?|jump|跳)",
+            process,
+        )
+        or re.search(r"(?:^|;)\s*j(?:_[a-z0-9_{}]+)?\s*=\s*[^;]+", process)
+    )
+    payoff_equation = re.search(r"e\[[^]]+\]\s*=\s*(?P<payoff>[^;]+)", process)
+    payoff_expression = payoff_equation.group("payoff") if payoff_equation else ""
+    has_payoff_state_link = bool(
+        state_name
+        and re.search(
+            rf"(?<![a-z0-9_]){re.escape(state_name)}(?![a-z0-9_])",
+            payoff_expression,
+        )
+    )
+    return (
+        process.count("=") >= 3
+        and any(term in process for term in jump_terms)
+        and has_jump_price_link
+        and has_threshold_gate
+        and has_payoff_state_link
+    )
+
+
 def _economic_text(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any]) -> str:
     spec_like = spec_like or {}
     canonical = _canonical(spec_like)
@@ -729,12 +779,12 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
     } or re.fullmatch(r"e\[r_\{?t\+1(?::t\+h)?\}?\s*\|\s*f_t,\s*estimated_state_t\].*", expression):
         generic_hits.append("generic expected payoff template")
     model_specific_terms = {
-        "valuation_identity": ["fcf", "cash-flow", "cash flow", "discount", "growth", "valuation"],
-        "state_space": ["latent", "bayesian", "signal", "update", "observation", "filtered"],
-        "transient_impact": ["impact", "imbalance", "inventory", "liquidity", "rho", "decay"],
-        "copula_rank_dependence": ["copula", "conditional rank", "rank state", "dependence"],
-        "jump_threshold": ["threshold", "stopping", "boundary", "discontinu", "tau"],
-        "stochastic_process": ["drift", "reversal", "jump", "volatility", "process", "regime"],
+        "valuation_identity": ["fcf", "cash-flow", "cash flow", "discount", "growth", "valuation", "现金流", "折现", "估值", "盈利增长", "剩余收益"],
+        "state_space": ["latent", "bayesian", "signal", "update", "observation", "filtered", "潜在", "贝叶斯", "信号", "更新", "观测", "滤波", "状态空间"],
+        "transient_impact": ["impact", "imbalance", "inventory", "liquidity", "rho", "decay", "冲击", "不平衡", "库存", "流动性", "衰减"],
+        "copula_rank_dependence": ["copula", "conditional rank", "rank state", "dependence", "条件秩", "秩状态", "依赖", "联结函数"],
+        "jump_threshold": ["threshold", "stopping", "boundary", "discontinu", "tau", "阈值", "停止时", "边界", "不连续", "跳跃", "隔夜跳"],
+        "stochastic_process": ["drift", "reversal", "jump", "volatility", "process", "regime", "漂移", "反转", "跳跃", "波动率", "过程", "状态转换"],
     }
     expected_terms = model_specific_terms.get(str(baseline))
     if expected_terms and not any(term in payer_blob for term in expected_terms):
@@ -754,9 +804,13 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         missing_model_assumption = not (
             compact_stochastic_model or _has_stochastic_process_prose(process)
         )
+    elif baseline == "jump_threshold":
+        missing_model_assumption = not _has_explicit_jump_threshold_model(process)
     else:
         missing_model_assumption = not model_hits
-    if missing_model_assumption and (formula_hits or baseline == "stochastic_process"):
+    if missing_model_assumption and (
+        formula_hits or baseline in {"jump_threshold", "stochastic_process"}
+    ):
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "process_or_distribution merely restates formula tokens without model assumption"})
     return failures
 

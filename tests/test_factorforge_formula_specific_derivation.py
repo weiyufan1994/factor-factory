@@ -147,6 +147,314 @@ def test_stochastic_marker_words_without_model_structure_still_block() -> None:
         )
 
 
+def test_chinese_transient_impact_decomposition_passes() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "结构模型 open/pre_close-1=s+u：s 为持久信息冲击，u 为开盘瞬时订单流冲击；"
+        "确认失败日 sign(close-open)=-sign(g) 即 u 主导。"
+        "条件期望 E[r_{i,t+1→t+2}|F_t,F_{i,t}]=theta*F_{i,t}，"
+        "假设 theta>0，观测 theta 符号为负。"
+    )
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "瞬时订单流冲击模型把开盘超调与后续收益连接起来。"
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
+def test_transient_impact_keywords_without_structural_model_still_block() -> None:
+    malformed_models = (
+        "open close pre_close relative_volume transient impact",
+        "冲击=冲击；衰减=衰减；收益",
+        "transient impact=temporary; return=impact",
+        "notes pending",
+        (
+            "transient impact with persistent and temporary states; "
+            "impact_state=persistent_state+temporary_state; "
+            "return=theta*unrelated_state"
+        ),
+        (
+            "transient impact with persistent and temporary states; "
+            "impact_{i,t}=persistent_{i,t}+temporary_{i,t}; "
+            "return_{i,t+1}=theta*unrelated_{i,t}"
+        ),
+        (
+            "transient impact with persistent and temporary states; "
+            "x=x+y-y; return=theta*z"
+        ),
+        (
+            "transient impact with persistent and temporary states; "
+            "x=2*x+y-y-x; return=theta*x"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "impact_state=persistent_state+temporary_state; "
+            "return=alphabet*impact_state"
+        ),
+        "transient impact with temporary decay; return=theta*statement+epsilon",
+        (
+            "transient impact; open=signal+noise; signal is persistent component, "
+            "noise is temporary component; E[r_t|F_t]=theta*formula_noise"
+        ),
+        (
+            "transient impact; multiply_state=signal+noise; "
+            "signal is persistent component, noise is temporary component; "
+            "E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "transient impact with persistent and temporary states; "
+            "impact_state=sign(foo)+bar; return=theta*sign(unrelated)"
+        ),
+        (
+            "x=a+b because impact state; "
+            "return=theta*z because transient impact state"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state+epsilon-epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state+0*epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*unrelated+impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta+impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "impact_state=rho*lagged_state+eta; "
+            "return=theta*unrelated under impact_state"
+        ),
+        (
+            "transient impact; open=s+u; s is not persistent component; "
+            "u is not temporary component; E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "非收益=theta*impact_state"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state-theta*impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=0*theta*impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*unrelated alongside impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*unrelated 配合 impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*unrelated,impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*unrelated|impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state)+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state/2-0.5*theta*impact_state+epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state+epsilon/2-0.5*epsilon"
+        ),
+        (
+            "transient impact with temporary decay; impact_state=foo-foo; "
+            "return=theta*impact_state"
+        ),
+        (
+            "transient impact; open=s+u; s is nonpersistent component; "
+            "u is nontemporary component; E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "transient impact; open=s+u; s is never persistent component; "
+            "u is never temporary component; E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "impact_state=rho*impact_state+eta; "
+            "return=theta*impact_state-theta*impact_state"
+        ),
+        (
+            "transient impact with temporary decay; impact_state=foo-foo+1; "
+            "return=theta*impact_state"
+        ),
+        (
+            "transient impact; open=s+u; s is persistent component; "
+            "u is temporary component; "
+            "E[r_t|F_t]=theta*F_t-theta*F_t"
+        ),
+        (
+            "transient impact; open=s-s+u-u+1; s is persistent component; "
+            "u is temporary component; E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state*epsilon"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state+epsilon^2"
+        ),
+        (
+            "transient impact with temporary decay; "
+            "return=theta*impact_state+unrelated_state*epsilon"
+        ),
+        (
+            "not transient impact with no temporary decay; "
+            "return=theta*impact_state+epsilon"
+        ),
+        (
+            "not transient impact with no temporary decay; "
+            "impact_state=rho*impact_state+eta; "
+            "return=theta*impact_state"
+        ),
+        (
+            "transient impact; open=s+u; s is persistent component; "
+            "s is not persistent component; u is temporary component; "
+            "u is not temporary component; E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "不存在瞬时冲击；不存在临时衰减；"
+            "return=theta*impact_state+epsilon"
+        ),
+        (
+            "transient impact; open=s+u; s is persistent component; "
+            "s 不为持久分量; u is temporary component; "
+            "E[r_t|F_t]=theta*F_t"
+        ),
+        (
+            "瞬时冲击不存在；临时衰减不存在；"
+            "return=theta*impact_state+epsilon"
+        ),
+        (
+            "transient impact does not exist; temporary decay does not exist; "
+            "return=theta*impact_state+epsilon"
+        ),
+        (
+            "nontransient impact with temporary decay; "
+            "return=theta*impact_state+epsilon"
+        ),
+        (
+            "nonimpact transient process with temporary decay; "
+            "return=theta*impact_state+epsilon"
+        ),
+        (
+            "transient impact; open=s_{i,t}+u_{i,t}; "
+            "s_{i,t} is persistent component; s_{i,t} 不为持久分量; "
+            "u_{i,t} is temporary component; E[r_t|F_t]=theta*F_t"
+        ),
+    )
+    for malformed_model in malformed_models:
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = malformed_model
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert any(
+            failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+            for failure in failures
+        )
+
+
+def test_transient_impact_reduced_form_accepts_greek_coefficients() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "transient impact with temporary decay; "
+        "return_{t+1}=θ*impact_state+ε"
+    )
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "transient impact links temporary order-flow pressure to future return."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+    for indexed_lambda in ("lambda_t", "lambda_{i,t}"):
+        derivation["process_or_distribution"] = (
+            "transient impact with temporary decay; "
+            f"return_{{t+1}}={indexed_lambda}*impact_state+epsilon"
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert failures == []
+
+    for positive_qualifier in (
+        "not only transient impact but also temporary decay",
+        "no-arbitrage transient impact with temporary decay",
+        "without loss of generality transient impact with temporary decay",
+        "缺乏流动性导致瞬时冲击并产生临时衰减",
+        "without arbitrage capital causing transient impact and temporary decay",
+    ):
+        derivation["process_or_distribution"] = (
+            f"{positive_qualifier}; return=theta*impact_state+epsilon"
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert failures == []
+
+    derivation["process_or_distribution"] = (
+        "transient impact; open=s_{i,t}+u_{i,t}; "
+        "s_{i,t} is persistent component; u_{i,t} is temporary component; "
+        "E[r_t|F_t]=theta*F_t"
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+    derivation["process_or_distribution"] = (
+        "transient impact with temporary decay; "
+        "return_{t+1}=2*theta*impact_state-theta*impact_state/2+epsilon"
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+    derivation["process_or_distribution"] = (
+        "transient impact with temporary decay; "
+        "return_{t+1}=theta*impact_state+2*epsilon-epsilon"
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
 def test_chinese_jump_threshold_equations_and_specific_payers_pass() -> None:
     derivation = deepcopy(_overnight_reversal_derivation())
     derivation["economic_to_math_model_selection"]["baseline_model_family"] = (

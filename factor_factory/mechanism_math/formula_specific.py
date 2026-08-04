@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import re
+from fractions import Fraction
 from typing import Any
 
 
@@ -399,6 +401,532 @@ def _has_stochastic_process_prose(process: str) -> bool:
     )
 
 
+def _has_explicit_transient_impact_model(
+    process: str,
+    formula_tokens: set[str],
+) -> bool:
+    """Recognize bounded structural/reduced-form transient-impact models."""
+    impact_terms = {
+        "impact",
+        "imbalance",
+        "order flow",
+        "transient",
+        "冲击",
+        "不平衡",
+        "订单流",
+        "超调",
+    }
+    decomposition_terms = {
+        "decay",
+        "persistent",
+        "temporary",
+        "transitory",
+        "持久",
+        "瞬时",
+        "临时",
+        "衰减",
+    }
+    payoff_terms = {
+        "e[",
+        "return",
+        "r_",
+        "收益",
+    }
+    normalized = process.translate(
+        str.maketrans(
+            {
+                "；": ";",
+                "。": ";",
+                "α": "alpha",
+                "β": "beta",
+                "θ": "theta",
+                "λ": "lambda",
+                "ρ": "rho",
+                "μ": "mu",
+                "ε": "epsilon",
+                "η": "eta",
+            }
+        )
+    )
+    process_lower = process.lower()
+
+    symbol_pattern = re.compile(
+        r"[a-zA-Z][a-zA-Z0-9]*(?:_(?:\{[^}]*\}|[a-zA-Z0-9]+))?"
+    )
+
+    def canonical_symbol(token: str) -> str:
+        if re.fullmatch(r"I_(?:\{[^}]*\}|[a-zA-Z0-9]+)", token):
+            return "impact_state"
+        if re.fullmatch(r"F_(?:\{[^}]*\}|[a-zA-Z0-9]+)", token):
+            return "formula_state"
+        lower = token.lower()
+        if "_{" in lower:
+            lower = lower.split("_{", 1)[0]
+        else:
+            match = re.fullmatch(r"(.+)_([ijknt]|t\d+)", lower)
+            if match:
+                lower = match.group(1)
+        return "lambda_coef" if lower == "lambda" else lower
+
+    def symbols(value: str) -> set[str]:
+        result: set[str] = set()
+        for match in symbol_pattern.finditer(value):
+            tail = value[match.end() :].lstrip()
+            if tail.startswith("("):
+                continue
+            symbol = canonical_symbol(match.group(0))
+            if symbol not in {"i", "j", "k", "n", "t"}:
+                result.add(symbol)
+        return result
+
+    canonical_role_text = symbol_pattern.sub(
+        lambda match: canonical_symbol(match.group(0)),
+        normalized,
+    ).lower()
+
+    def formula_rhs(value: str) -> str:
+        return re.split(
+            r"[，：]|(?:即|其中|假设|观测|依据|基于)|"
+            r"\s+(?:is|where|with|after|because|under|given|using|alongside|via)\b",
+            value,
+            maxsplit=1,
+        )[0].strip()
+
+    def canonical_expression(value: str) -> str:
+        return symbol_pattern.sub(
+            lambda match: canonical_symbol(match.group(0)),
+            value,
+        ).replace("^", "**")
+
+    allowed_calls = {"abs", "exp", "log", "mean", "mu", "sigma", "sign", "sqrt"}
+    allowed_binary_ops = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
+    allowed_unary_ops = (ast.UAdd, ast.USub)
+
+    def valid_ast(node: ast.AST) -> bool:
+        if isinstance(node, ast.Expression):
+            return valid_ast(node.body)
+        if isinstance(node, ast.Name):
+            return bool(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", node.id))
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        if isinstance(node, ast.UnaryOp):
+            return isinstance(node.op, allowed_unary_ops) and valid_ast(node.operand)
+        if isinstance(node, ast.BinOp):
+            return (
+                isinstance(node.op, allowed_binary_ops)
+                and valid_ast(node.left)
+                and valid_ast(node.right)
+            )
+        if isinstance(node, ast.Call):
+            return (
+                isinstance(node.func, ast.Name)
+                and node.func.id in allowed_calls
+                and not node.keywords
+                and bool(node.args)
+                and all(valid_ast(arg) for arg in node.args)
+            )
+        return False
+
+    def ast_names(node: ast.AST) -> set[str]:
+        function_names = {
+            child.func.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+        }
+        return {
+            child.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Name) and child.id not in function_names
+        }
+
+    def add_polynomials(
+        left: dict[tuple[str, ...], Fraction],
+        right: dict[tuple[str, ...], Fraction],
+        *,
+        right_sign: int = 1,
+    ) -> dict[tuple[str, ...], Fraction]:
+        result = dict(left)
+        for monomial, coefficient in right.items():
+            result[monomial] = result.get(monomial, Fraction(0)) + right_sign * coefficient
+            if result[monomial] == 0:
+                del result[monomial]
+        return result
+
+    def multiply_polynomials(
+        left: dict[tuple[str, ...], Fraction],
+        right: dict[tuple[str, ...], Fraction],
+    ) -> dict[tuple[str, ...], Fraction] | None:
+        if len(left) * len(right) > 64:
+            return None
+        result: dict[tuple[str, ...], Fraction] = {}
+        for left_monomial, left_coefficient in left.items():
+            for right_monomial, right_coefficient in right.items():
+                monomial = tuple(sorted(left_monomial + right_monomial))
+                result[monomial] = result.get(monomial, Fraction(0)) + (
+                    left_coefficient * right_coefficient
+                )
+                if result[monomial] == 0:
+                    del result[monomial]
+        return result
+
+    def polynomial(node: ast.AST) -> dict[tuple[str, ...], Fraction] | None:
+        if isinstance(node, ast.Expression):
+            return polynomial(node.body)
+        if isinstance(node, ast.Name):
+            return {(node.id,): Fraction(1)}
+        if isinstance(node, ast.Constant):
+            try:
+                return {(): Fraction(str(node.value))}
+            except (ValueError, ZeroDivisionError):
+                return None
+        if isinstance(node, ast.UnaryOp):
+            value = polynomial(node.operand)
+            if value is None:
+                return None
+            if isinstance(node.op, ast.USub):
+                return {monomial: -coefficient for monomial, coefficient in value.items()}
+            return value
+        if isinstance(node, ast.BinOp):
+            left = polynomial(node.left)
+            right = polynomial(node.right)
+            if left is None or right is None:
+                return None
+            if isinstance(node.op, ast.Add):
+                return add_polynomials(left, right)
+            if isinstance(node.op, ast.Sub):
+                return add_polynomials(left, right, right_sign=-1)
+            if isinstance(node.op, ast.Mult):
+                return multiply_polynomials(left, right)
+            if isinstance(node.op, ast.Div):
+                if set(right) != {()} or right[()] == 0:
+                    return None
+                return {
+                    monomial: coefficient / right[()]
+                    for monomial, coefficient in left.items()
+                }
+            if isinstance(node.op, ast.Pow):
+                if set(right) != {()} or right[()].denominator != 1:
+                    return None
+                exponent = int(right[()])
+                if exponent < 0 or exponent > 3:
+                    return None
+                result: dict[tuple[str, ...], Fraction] = {(): Fraction(1)}
+                for _ in range(exponent):
+                    product = multiply_polynomials(result, left)
+                    if product is None:
+                        return None
+                    result = product
+                return result
+        if isinstance(node, ast.Call):
+            opaque = "call:" + ast.dump(node, annotate_fields=False, include_attributes=False)
+            return {(opaque,): Fraction(1)}
+        return None
+
+    def parse_math(value: str) -> dict[str, Any] | None:
+        if re.search(r"[\u3400-\u9fff]", value):
+            return None
+        source = canonical_expression(value)
+        try:
+            tree = ast.parse(source, mode="eval")
+        except (SyntaxError, ValueError):
+            return None
+        if not valid_ast(tree):
+            return None
+        return {
+            "tree": tree,
+            "names": ast_names(tree),
+            "polynomial": polynomial(tree),
+        }
+
+    equations: list[dict[str, Any]] = []
+    for clause in normalized.split(";"):
+        if "=" not in clause:
+            continue
+        left, right = clause.split("=", 1)
+        left = left.rsplit(":", 1)[-1].strip()
+        right = formula_rhs(right)
+        left_math = parse_math(left)
+        right_math = parse_math(right)
+        if (
+            left
+            and right
+            and re.sub(r"\s+", "", left) != re.sub(r"\s+", "", right)
+            and right_math is not None
+            and not (
+                left_math is not None
+                and left_math["polynomial"] is not None
+                and left_math["polynomial"] == right_math["polynomial"]
+            )
+        ):
+            equations.append(
+                {
+                    "left": left,
+                    "right": right,
+                    "left_symbols": symbols(left),
+                    "right_symbols": set(right_math["names"]),
+                    "right_polynomial": right_math["polynomial"],
+                }
+            )
+
+    coefficient_terms = {
+        "alpha",
+        "beta",
+        "lambda",
+        "lambda_coef",
+        "rho",
+        "theta",
+        "mu",
+    }
+    residual_terms = {"epsilon", "eta", "innovation", "residual", "shock"}
+    semantic_states = {
+        "dislocation",
+        "dislocation_state",
+        "flow",
+        "flow_state",
+        "i",
+        "imbalance",
+        "imbalance_state",
+        "impact",
+        "impact_state",
+        "inventory",
+        "inventory_state",
+        "order_flow",
+        "order_flow_state",
+        "pressure",
+        "pressure_state",
+    }
+    payoff_equations: list[dict[str, Any]] = []
+    for equation in equations:
+        left_lower = str(equation["left"]).lower()
+        expectation_lhs = bool(
+            re.search(r"e\[[^\]]*(?:r(?:[_({]|$)|return(?:[_({]|$))", left_lower)
+        )
+        direct_return_lhs = bool(
+            re.match(r"^(?:r(?:[_({]|$)|return(?:[_({]|$))", left_lower)
+        )
+        chinese_return_lhs = bool(
+            re.fullmatch(r"(?:条件)?(?:预期|期望)?收益(?:率)?", left_lower.strip())
+        )
+        right_symbols = set(equation["right_symbols"])
+        if (
+            (expectation_lhs or direct_return_lhs or chinese_return_lhs)
+            and bool(coefficient_terms.intersection(right_symbols))
+        ):
+            equation["direct_return_lhs"] = direct_return_lhs
+            payoff_equations.append(equation)
+
+    def polynomial_contains(
+        equation: dict[str, Any],
+        required_groups: tuple[set[str], ...],
+    ) -> bool:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return False
+        return any(
+            coefficient != 0
+            and all(group.intersection(monomial) for group in required_groups)
+            for monomial, coefficient in expression.items()
+        )
+
+    def polynomial_symbols(equation: dict[str, Any]) -> set[str]:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return set()
+        return {
+            symbol
+            for monomial, coefficient in expression.items()
+            if coefficient != 0
+            for symbol in monomial
+            if not symbol.startswith("call:")
+        }
+
+    def has_independent_residual(equation: dict[str, Any]) -> bool:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return False
+        for monomial, coefficient in expression.items():
+            if coefficient == 0:
+                continue
+            residual_count = sum(symbol in residual_terms for symbol in monomial)
+            if residual_count == 1 and len(monomial) == 1:
+                return True
+        return False
+
+    reduced_form_bound = any(
+        equation.get("direct_return_lhs") is True
+        and polynomial_contains(equation, (coefficient_terms, semantic_states))
+        and has_independent_residual(equation)
+        for equation in payoff_equations
+    )
+
+    defined_impact_states: set[str] = set()
+    for equation in equations:
+        left_symbols = set(equation["left_symbols"])
+        right_symbols = polynomial_symbols(equation)
+        if (
+            len(left_symbols) != 1
+            or not re.search(r"[+\-*/]", str(equation["right"]))
+            or not equation.get("right_polynomial")
+        ):
+            continue
+        state = next(iter(left_symbols))
+        if state not in semantic_states:
+            continue
+        meaningful_right = right_symbols - coefficient_terms - residual_terms
+        if meaningful_right or residual_terms.intersection(right_symbols):
+            defined_impact_states.add(state)
+
+    structural_state_bound = any(
+        polynomial_contains(equation, (coefficient_terms, defined_impact_states))
+        for equation in payoff_equations
+    )
+
+    normalized_formula_tokens = {
+        canonical_symbol(token) for token in formula_tokens
+    }
+    persistent_terms = {"persistent", "持久"}
+    transient_terms = {"temporary", "transitory", "transient", "瞬时", "临时"}
+
+    def symbol_has_role(symbol: str, role_terms: set[str]) -> bool:
+        escaped = re.escape(symbol)
+        positive = False
+        negative = False
+        for role in role_terms:
+            role_pattern = (
+                rf"(?<![a-zA-Z]){re.escape(role)}(?![a-zA-Z])"
+                if role.isascii()
+                else re.escape(role)
+            )
+            for match in re.finditer(
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])\s*"
+                rf"(?:为|is|denotes|represents)\s*"
+                rf"(?P<qualifier>[^,，;]{{0,24}}){role_pattern}",
+                canonical_role_text,
+            ):
+                qualifier = match.group("qualifier")
+                if not re.search(
+                    r"(?:\bnot\b|\bnon(?:[- ]|$)|\bnever\b|\bno\b|\bwithout\b|"
+                    r"不是|不|非|无)",
+                    qualifier,
+                ):
+                    positive = True
+                else:
+                    negative = True
+            if re.search(
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])\s*"
+                rf"(?:不为|不是|并非|不具备|没有|无)\s*[^,，;]{{0,16}}{role_pattern}",
+                canonical_role_text,
+            ):
+                negative = True
+            for match in re.finditer(
+                rf"{role_pattern}\s*(?:component|state|分量|状态)?\s*"
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])",
+                canonical_role_text,
+            ):
+                prefix = canonical_role_text[max(0, match.start() - 12) : match.start()]
+                if not re.search(
+                    r"(?:\bnot\s*|\bnon(?:[- ]|$)|\bnever\s*|\bno\s*|"
+                    r"\bwithout\s*|不是|不|非|无)\s*$",
+                    prefix,
+                ):
+                    positive = True
+                else:
+                    negative = True
+        return positive and not negative
+
+    formula_decomposition_bound = False
+    formula_state_payoff = any(
+        polynomial_contains(
+            equation,
+            (coefficient_terms, {"f", "formula_state"}),
+        )
+        for equation in payoff_equations
+    )
+    if formula_state_payoff:
+        for equation in equations:
+            if not equation.get("right_polynomial"):
+                continue
+            left_symbols = set(equation["left_symbols"])
+            components = (
+                polynomial_symbols(equation)
+                - coefficient_terms
+                - residual_terms
+                - normalized_formula_tokens
+            )
+            persistent_components = {
+                symbol for symbol in components if symbol_has_role(symbol, persistent_terms)
+            }
+            transient_components = {
+                symbol for symbol in components if symbol_has_role(symbol, transient_terms)
+            }
+            if (
+                left_symbols.intersection(normalized_formula_tokens)
+                and persistent_components
+                and transient_components
+                and bool(persistent_components - transient_components)
+                and bool(transient_components - persistent_components)
+            ):
+                formula_decomposition_bound = True
+                break
+
+    bound_model = (
+        reduced_form_bound
+        or structural_state_bound
+        or formula_decomposition_bound
+    )
+
+    def contains_negated_term(terms: set[str]) -> bool:
+        for term in terms:
+            term_pattern = (
+                rf"(?<![a-zA-Z]){re.escape(term)}(?![a-zA-Z])"
+                if term.isascii()
+                else re.escape(term)
+            )
+            if term.isascii():
+                raw_term_pattern = rf"{re.escape(term)}(?![a-zA-Z])"
+                english_negations = (
+                    rf"\bnot\s+(?!only\b)(?:(?:a|an|the|any)\s+)?{term_pattern}",
+                    rf"\bno\s+(?!arbitrage\b)(?:(?:evidence|sign|presence)\s+of\s+)?"
+                    rf"{term_pattern}",
+                    rf"\bnever\s+(?:(?:shows|has|exhibits)\s+)?{term_pattern}",
+                    rf"\bwithout\s+(?!(?:loss\s+of\s+generality|arbitrage\s+capital)\b)"
+                    rf"(?:(?:a|an|the|any)\s+)?{term_pattern}",
+                    rf"\bnon[- ]?{raw_term_pattern}",
+                    rf"{term_pattern}\s+(?:does|do|did)\s+not\s+"
+                    rf"(?:exist|hold|occur|apply)",
+                    rf"{term_pattern}\s+(?:is|are)\s+"
+                    rf"(?:absent|false|invalid|not\s+present)",
+                )
+                if any(re.search(pattern, process_lower) for pattern in english_negations):
+                    return True
+                continue
+            if re.search(
+                rf"(?:不存在|没有(?:任何)?|并非|不是|不为|不具备|缺乏|无(?!套利))"
+                rf"(?:明显|可见|任何)?\s*{term_pattern}",
+                process_lower,
+            ):
+                return True
+            if re.search(
+                rf"{term_pattern}\s*(?:并)?(?:不存在|没有(?:出现|发生|成立)?|"
+                rf"不成立|缺失|无效)",
+                process_lower,
+            ):
+                return True
+        return False
+
+    mechanism_claim_negated = contains_negated_term(
+        impact_terms | decomposition_terms
+    )
+
+    return (
+        bound_model
+        and not mechanism_claim_negated
+        and any(term in process_lower for term in impact_terms)
+        and any(term in process_lower for term in decomposition_terms)
+        and any(term in process_lower for term in payoff_terms)
+    )
+
+
 def _has_explicit_jump_threshold_model(process: str) -> bool:
     jump_terms = {
         "boundary",
@@ -700,7 +1228,11 @@ def _process_for_baseline(baseline: str, features: dict[str, Any]) -> str:
     if baseline == "state_space":
         return "latent information state with delayed Bayesian updating or signal extraction under F_t"
     if baseline == "transient_impact":
-        return "transient price impact or order-imbalance state process with constrained liquidity demand"
+        return (
+            "transient order-flow impact state: I_{t+1}=rho*I_t+eta_t with |rho|<1; "
+            "impact_t=lambda*I_t; E[r_{t+1}|F_t,I_t]=-lambda*(1-rho)*I_t after "
+            "the temporary imbalance decays"
+        )
     if baseline == "copula_rank_dependence":
         return "rank-dependence or copula model linking monotone transforms to an economic latent state"
     if baseline == "jump_threshold":
@@ -794,7 +1326,8 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
             "code": "BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC",
             "message": f"profit payer derivation is generic or incomplete: {sorted(set(generic_hits))}",
         })
-    process = str(derivation.get("process_or_distribution") or "").lower()
+    process_text = str(derivation.get("process_or_distribution") or "")
+    process = process_text.lower()
     features = formula_features(spec_like or {}, mechanism_analysis or {})
     formula_tokens = {token for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", str(features.get("formula_text") or "").lower()) if len(token) > 2}
     model_hits = [token for token in MODEL_KEYWORDS if token in process]
@@ -804,12 +1337,18 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         missing_model_assumption = not (
             compact_stochastic_model or _has_stochastic_process_prose(process)
         )
+    elif baseline == "transient_impact":
+        missing_model_assumption = not _has_explicit_transient_impact_model(
+            process_text,
+            formula_tokens,
+        )
     elif baseline == "jump_threshold":
         missing_model_assumption = not _has_explicit_jump_threshold_model(process)
     else:
         missing_model_assumption = not model_hits
     if missing_model_assumption and (
-        formula_hits or baseline in {"jump_threshold", "stochastic_process"}
+        formula_hits
+        or baseline in {"jump_threshold", "stochastic_process", "transient_impact"}
     ):
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "process_or_distribution merely restates formula tokens without model assumption"})
     return failures

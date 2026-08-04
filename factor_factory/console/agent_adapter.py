@@ -1179,6 +1179,26 @@ formula tokens, or paraphrasing the rejected answer is another failure.
    words, their plurals, or their derived forms in any research field, even to
    state their absence. Set the corresponding flags to `false` and refer to
    observed `rank_ic` and `pearson_ic` metrics by those exact names instead.
+   Select the same economic model family in both model-family fields. When the
+   economic object is temporary price impact with a stable decay equation,
+   select `transient_impact` even though its representation is stochastic;
+   formula-specific drift, volatility, or regime models may still use
+   `stochastic_process`. Write multi-equation structural models as separate
+   semicolon-delimited equations and include an equation binding the formula's
+   actual observable state to the model components; a generic price equation
+   alone is insufficient.
+   If the Host-pinned operator facts set `has_sign_or_threshold` to `true`, the
+   memo must determine from the exact expression whether the branch is
+   economically active and discontinuous. State the exact zero/tie convention
+   and, when the boundary is active, its bucket or rank instability and
+   turnover consequences; if the branches are equivalent or continuous,
+   explain why those effects are absent. Only then set
+   `sign_threshold_discussion_present` to `true`. If `has_volume_ratio` is
+   `true`, identify the ratio's numerator, denominator, and window, then decide
+   from the exact expression whether it is a non-negative scale, a signed
+   estimator, or a direction-setting interaction. Do not infer its sign role
+   from the Host flag alone. Only then set
+   `volume_ratio_participation_discussion_present` to `true`.
 {ledger_step}
 {exit_step} {modification_boundary} Do not run the materializer, any Step script or
    validator, Council, Ultimate, custom Python, data access, network probes,

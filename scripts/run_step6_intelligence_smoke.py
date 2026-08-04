@@ -567,6 +567,14 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
         'formula_as_estimator': memo['mechanism_qa']['estimator_mapping_answer'],
         'expected_metric_signature': dict(metric_signature),
     }
+    memo['math_model_selection'] = {
+        'model_family': selected_model_family,
+        'baseline_model': process_text,
+        'model_mutation': (
+            'bind the conditional process to the exact formula component map '
+            'and immutable evidence signature'
+        ),
+    }
     memo['expected_metric_signature'] = dict(metric_signature)
     memo_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.json'
     memo_md_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.md'

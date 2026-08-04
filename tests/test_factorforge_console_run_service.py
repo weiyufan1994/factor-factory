@@ -1202,6 +1202,18 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "RankIC and\n   PearsonIC are evaluation statistics" in prompt
     assert "must not describe IC" in prompt
     assert "do not write any of those" in prompt
+    assert "Select the same economic model family in both model-family fields" in prompt
+    assert "select `transient_impact` even though its representation" in prompt
+    assert "regime models may still use\n   `stochastic_process`" in prompt
+    assert "semicolon-delimited equations and include an equation" in prompt
+    assert "observable state to the model components" in prompt
+    assert "whether the branch is\n   economically active and discontinuous" in prompt
+    assert "exact zero/tie convention" in prompt
+    assert "branches are equivalent or continuous" in prompt
+    assert "bucket or rank instability" in prompt
+    assert "numerator, denominator, and window" in prompt
+    assert "a non-negative scale, a signed\n   estimator" in prompt
+    assert "Do not infer its sign role\n   from the Host flag alone" in prompt
     assert "Required Authoring Preflight" not in prompt
     assert "six packet files" not in prompt
     assert "Fill the task-local web research plan" not in prompt
@@ -1621,6 +1633,50 @@ def test_main_agent_memo_metric_signature_filled_and_identical_passes_signature_
         "BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING"
         not in _metric_signature_failures(signature)
     )
+
+
+def _model_family_failures(selected: str, selection: str) -> list[str]:
+    from factor_factory.mechanism_math.main_agent_memo import (
+        validate_main_agent_mechanism_memo,
+    )
+
+    signature = {
+        "rank_ic": "expected sign compared with observed evidence",
+        "long_side": "expected long-side return compared with observed evidence",
+        "cost_adjusted": "expected net return compared with observed evidence",
+        "monotonicity": "expected ordering compared with observed evidence",
+        "turnover": "expected turnover compared with observed evidence",
+    }
+    return validate_main_agent_mechanism_memo(
+        {
+            "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+            "math_hypothesis": {
+                "selected_model_family": selected,
+                "expected_metric_signature": signature,
+            },
+            "math_model_selection": {
+                "model_family": selection,
+                "baseline_model": "state equation",
+                "model_mutation": "formula-specific observation equation",
+            },
+            "expected_metric_signature": dict(signature),
+        }
+    )
+
+
+def test_main_agent_memo_model_family_mismatch_blocks():
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in (
+        _model_family_failures("transient_impact", "stochastic_process")
+    )
+
+
+def test_main_agent_memo_model_family_aliases_normalize_before_comparison():
+    failures = _model_family_failures(
+        "price_volume_microstructure",
+        "transient_impact",
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID" not in failures
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" not in failures
 
 
 def test_failed_mechanism_resume_restores_exact_parent_evidence_tree(tmp_path):

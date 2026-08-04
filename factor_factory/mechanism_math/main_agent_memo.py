@@ -1426,9 +1426,21 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:expected_metric_signature")
     if not _nonempty_str_list(memo.get("falsification_tests"), min_count=2):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:falsification_tests")
-    selected_model_family = math.get("selected_model_family") or math.get("model_family")
-    if normalize_derivation_model_family(selected_model_family) is None:
+    selected_model_family = normalize_derivation_model_family(
+        math.get("selected_model_family") or math.get("model_family")
+    )
+    selection = (
+        memo.get("math_model_selection")
+        if isinstance(memo.get("math_model_selection"), dict)
+        else {}
+    )
+    selection_model_family = normalize_derivation_model_family(
+        selection.get("model_family")
+    )
+    if selected_model_family is None or selection_model_family is None:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID")
+    elif selected_model_family != selection_model_family:
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH")
     process = str(math.get("process_or_distribution") or "").lower()
     if not process or not any(term in process for term in ["=", "process", "distribution", "decay", "state", "follows", "conditional"]):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_GENERIC")

@@ -23,6 +23,7 @@ from factor_factory.console.agent_adapter import (
     AgentResumeTask,
     AgentRunResult,
     ResearchAgentAdapter,
+    RESUME_MEMO_MAX_BYTES,
     RESUME_MEMO_COMPONENT_IDENTITY_FIELDS,
     RESUME_MEMO_IMMUTABLE_FIELDS,
     RESUME_MEMO_OPERATOR_FLAG_FIELDS,
@@ -4421,8 +4422,19 @@ def _read_agent_resume_artifact_json(
 ) -> dict[str, Any]:
     path = _read_regular_workspace_file(workspace, relative)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        with path.open("rb") as handle:
+            raw = handle.read(RESUME_MEMO_MAX_BYTES + 1)
+    except OSError as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: invalid JSON:{relative}"
+        ) from exc
+    if len(raw) > RESUME_MEMO_MAX_BYTES:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: file too large:{relative}"
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: invalid JSON:{relative}"
         ) from exc

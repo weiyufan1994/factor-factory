@@ -798,6 +798,51 @@ def test_resume_prompt_enforces_answer_form_completion_budget_boundary(tmp_path)
         _build_resume_prompt_for_test(tmp_path, workspace, task)
 
 
+def test_container_resume_accepts_production_sized_answer_form(tmp_path):
+    from factor_factory.console.agent_adapter import (
+        RESUME_ANSWER_FORM_MAX_BYTES,
+        RESUME_MEMO_AGENT_PATCH_MAX_BYTES,
+        RESUME_MEMO_MAX_BYTES,
+    )
+
+    workspace = tmp_path / "source/factor_research/FACTOR/research"
+    answer_form = _resume_answer_form()
+    metrics = answer_form["evidence_comparison"]["observed_metrics"]
+    metrics["production_padding_a"] = ""
+    metrics["production_padding_b"] = ""
+    empty_size = len(
+        json.dumps(
+            answer_form,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    production_size = 8_120
+    padding_bytes = production_size - empty_size
+    assert 0 < padding_bytes <= 8_192
+    first_padding = min(4_096, padding_bytes)
+    metrics["production_padding_a"] = "x" * first_padding
+    metrics["production_padding_b"] = "x" * (padding_bytes - first_padding)
+    task = _write_resume_prompt_inputs(workspace, answer_form=answer_form)
+
+    assert production_size > RESUME_MEMO_MAX_BYTES - RESUME_MEMO_AGENT_PATCH_MAX_BYTES - 1
+    assert production_size <= RESUME_ANSWER_FORM_MAX_BYTES
+    assert len(
+        json.dumps(
+            answer_form,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ) == production_size
+    assert "## Host-pinned fact lock" in _build_resume_prompt_for_test(
+        tmp_path,
+        workspace,
+        task,
+    )
+
+
 def test_container_resume_prompt_requests_only_agent_owned_research_patch(tmp_path):
     workspace = tmp_path / "source/factor_research/FACTOR/research"
     task = _write_resume_prompt_inputs(workspace)

@@ -18,6 +18,7 @@ from factor_factory.console.run_service import (
     _allowed_agent_write_paths,
     _capture_resume_restore_state,
     _configure_host_formal_python_environment,
+    _read_agent_resume_artifact_json,
     _restore_resume_workspace,
     _validate_agent_write_boundary as _validate_agent_write_boundary_impl,
     _workspace_evidence_tree,
@@ -3279,6 +3280,22 @@ def test_agent_write_boundary_mechanism_resume_still_requires_named_memo(tmp_pat
         allowed=allowed,
         required=required,
     )
+
+
+def test_shared_gateway_resume_artifact_reader_enforces_memo_byte_limit(tmp_path):
+    from factor_factory.console.agent_adapter import RESUME_MEMO_MAX_BYTES
+
+    workspace = tmp_path / "workspace"
+    relative = "objects/research_iteration_master/main_agent_mechanism_memo__REPORT.json"
+    path = workspace / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"memo": "x" * RESUME_MEMO_MAX_BYTES}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="AGENT_RESUME_ARTIFACT_INVALID: file too large"):
+        _read_agent_resume_artifact_json(workspace, relative)
 
 
 def test_runner_health_is_single_flight_cached_under_concurrency(tmp_path):

@@ -31,9 +31,10 @@ BLOCK_AGENT_RUNTIME_TIMEOUT = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_TIMEOUT"
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
 RESUME_MEMO_MAX_BYTES = 24_000
 RESUME_MEMO_AGENT_PATCH_MAX_BYTES = 16_000
-# Eight open answers plus the required economic/math fields must fit before
-# terminal staging adds its trailing newline.
-RESUME_MEMO_COMPLETION_RESERVE_BYTES = 16_000
+RESUME_MEMO_AGENT_PATCH_TARGET_BYTES = 14_000
+# Reserve the prompt's 14 KB target for agent-authored research fields. The
+# separate 16 KB patch and 24 KB reconstructed-memo gates remain hard limits.
+RESUME_MEMO_COMPLETION_RESERVE_BYTES = RESUME_MEMO_AGENT_PATCH_TARGET_BYTES
 RESUME_ANSWER_FORM_MAX_BYTES = (
     RESUME_MEMO_MAX_BYTES - RESUME_MEMO_COMPLETION_RESERVE_BYTES - 1
 )
@@ -1006,7 +1007,7 @@ subject to formal validation."""
    source refs, formula syntax, observed metrics, component
    IDs/subexpressions/operators, and formula/operator-presence flags from the
    answer form."""
-        budget_instruction = """Keep the research patch below 14,000 UTF-8 bytes
+        budget_instruction = f"""Keep the research patch below {RESUME_MEMO_AGENT_PATCH_TARGET_BYTES:,} UTF-8 bytes
    and the reconstructed memo below 22,000 UTF-8 bytes; the Host hard-blocks
    the patch at 16,000 bytes and the memo at 24,000 bytes. Use compact
    formula-specific prose and never paste the observed-metrics object."""

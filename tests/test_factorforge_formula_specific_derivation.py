@@ -168,6 +168,331 @@ def test_chinese_transient_impact_decomposition_passes() -> None:
     assert failures == []
 
 
+def test_indexed_transient_state_dynamics_from_production_memo_pass() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g_{i,t}=s_{i,t}+u_{i,t}; "
+        "s_{i,t} iid(0,sigma_s^2) persistent news; "
+        "u_{i,t+1}=rho*u_{i,t}+eta_{i,t+1}, |rho|<1, "
+        "eta iid(0,sigma_e^2); "
+        "r_{i,t}=-(1-rho_d)*u_{i,t}+eps_{i,t}; "
+        "log v_{i,t}~N(mu_v,sigma_v^2) independent of sign(u); "
+        "gate=1 iff (open-pre_close)*(close-open)<0, and "
+        "P(|u|>|s||gate=1)>P(|u|>|s|)."
+    )
+    derivation["latent_state"] = (
+        "g=open/pre_close-1=s+u with s persistent news and u an AR(1) "
+        "temporary opening-flow component."
+    )
+    derivation["formula_as_estimator"] = (
+        "formula_state estimates -(1-rho)*E[u|F_t,gate=1] scaled by "
+        "relative volume; it estimates the temporary component, never s."
+    )
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "Transient opening impact u decays separately from persistent news s."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
+def test_transient_state_dynamics_require_stability_time_and_binding() -> None:
+    base = deepcopy(_overnight_reversal_derivation())
+    base["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    base["selected_model_family"] = "transient_impact"
+    base["latent_state"] = (
+        "g=s+u with s persistent news and u an AR(1) temporary impact state."
+    )
+    base["formula_as_estimator"] = (
+        "formula_state estimates temporary impact u, not persistent news s."
+    )
+    malformed_models = (
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|>1; r=beta*u+eps",
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1.2; r=beta*u+eps",
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1e2; r=beta*u+eps",
+        "g=s+u; u_{t+1}=rho*u_t+eta, not |rho|<1; r=beta*u+eps",
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, we do not assume |rho|<1; "
+            "r=beta*u+eps"
+        ),
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, not necessarily |rho|<1; "
+            "r=beta*u+eps"
+        ),
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1+1; r=beta*u+eps",
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1 and |rho|>1; "
+            "r=beta*u+eps"
+        ),
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "|rho|>1; r=beta*u+eps"
+        ),
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "|rho|>1.2; r=beta*u+eps"
+        ),
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "|rho|>=2; r=beta*u+eps"
+        ),
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "|rho|=1; r=beta*u+eps"
+        ),
+        (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "rho=2; r=beta*u+eps"
+        ),
+        "g=s+u; u_{t+1}=rho_d*u_t+eta, |rho|<1; r=beta*u+eps",
+        (
+            "g=s+u; u_{t+1}=2*rho_d*u_t-rho*u_t+eta, |rho_d|<1; "
+            "r=beta*u+eps"
+        ),
+        "g=s+u; u_{t+1}=2*rho*u_t+eta, |rho|<1; r=beta*u+eps",
+        "g=s+u; u_{t+1}=rho*u_t+2*u_t+eta, |rho|<1; r=beta*u+eps",
+        "g=s+u; u_{t+1}=rho*u_t+u_t^2+eta, |rho|<1; r=beta*u+eps",
+        "g=s+u; u_{t+1}=theta*u_t+eta, |rho|<1; r=beta*u+eps",
+        "g=s+u; u_{t+10}=rho*u_t+eta, |rho|<1; r=beta*u+eps",
+        "g=s+u; u=rho*u+eta, |rho|<1; r=beta*u+eps",
+        "g=s+r; r_{t+1}=rho*r_t+eps, |rho|<1; return=beta*r+eps",
+        "g=s+u; x_{t+1}=rho*x_t+eta, |rho|<1; r=beta*u+eps",
+    )
+    for malformed_model in malformed_models:
+        derivation = deepcopy(base)
+        derivation["process_or_distribution"] = malformed_model
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert any(
+            failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+            for failure in failures
+        )
+
+
+def test_dynamic_state_must_bind_to_formula_estimator() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "junk=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; return=beta*u+epsilon"
+    )
+    derivation["latent_state"] = "u is a temporary impact state."
+    derivation["formula_as_estimator"] = "formula_state estimates x, not u."
+    derivation["profit_payer_derivation"]["formula_state_link"] = (
+        "The factor estimates x rather than u."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert any(
+        failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+        for failure in failures
+    )
+
+
+def test_dynamic_state_formula_link_must_be_positive() -> None:
+    for formula_as_estimator in (
+        "formula_state does not estimate u.",
+        "formula_state is not expected to estimate u.",
+        "formula_state fails to estimate u.",
+        "formula_state doesn't estimate u.",
+        "formula_state estimates no u.",
+        "formula_state estimates neither u.",
+        "formula_state estimates every state except u.",
+        "formula_state estimates no exposure to u.",
+        "formula_state estimates without reference to u.",
+        "formula_state estimates a state other than u.",
+        "formula_state estimates a residual orthogonal to u.",
+        "公式不估计 u。",
+        "公式不会估计 u。",
+        "公式估计不了 u。",
+        "公式估计不到 u。",
+        "公式估计不出与 u 相关的状态。",
+        "公式估计除 u 以外的状态。",
+    ):
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "return=beta*u+epsilon"
+        )
+        derivation["latent_state"] = "u is a temporary impact state."
+        derivation["formula_as_estimator"] = formula_as_estimator
+        derivation["profit_payer_derivation"]["formula_state_link"] = (
+            "The factor estimates x rather than u."
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert any(
+            failure["code"]
+            == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+            for failure in failures
+        )
+
+
+def test_contradictory_formula_state_links_block() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; return=beta*u+epsilon"
+    )
+    derivation["latent_state"] = "u is a temporary impact state."
+    derivation["formula_as_estimator"] = "formula_state estimates u."
+    derivation["profit_payer_derivation"]["formula_state_link"] = (
+        "The factor does not estimate u."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert any(
+        failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+        for failure in failures
+    )
+
+
+def test_transient_role_cannot_be_assembled_across_derivation_fields() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; return=beta*u+epsilon"
+    )
+    derivation["latent_state"] = "u is"
+    derivation["formula_as_estimator"] = "formula_state estimates u."
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "temporary impact state."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert any(
+        failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+        for failure in failures
+    )
+
+
+def test_chinese_order_flow_imbalance_is_not_role_negation() -> None:
+    for formula_as_estimator in (
+        "公式基于订单流不平衡估计 u。",
+        "u 由订单流不平衡因子估计。",
+    ):
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1 and 订单流不平衡; "
+            "return=beta*u+epsilon"
+        )
+        derivation["latent_state"] = "u 为订单流不平衡的临时状态。"
+        derivation["formula_as_estimator"] = formula_as_estimator
+        derivation["profit_payer_derivation"]["formula_state_link"] = (
+            formula_as_estimator
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert failures == []
+
+
+def test_passive_formula_state_links_are_accepted() -> None:
+    for formula_as_estimator in (
+        "u is estimated by formula_state.",
+        "u 由公式估计。",
+    ):
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "return=beta*u+epsilon"
+        )
+        derivation["latent_state"] = "u is a temporary impact state."
+        derivation["formula_as_estimator"] = formula_as_estimator
+        derivation["profit_payer_derivation"]["formula_state_link"] = (
+            formula_as_estimator
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert failures == []
+
+
+def test_formula_state_links_allow_other_object_qualifiers() -> None:
+    for formula_as_estimator in (
+        "formula_state estimates a component independent of noise that represents u.",
+        "formula_state estimates a component orthogonal to beta that represents u.",
+        "formula_state estimates a no arbitrage projection of u.",
+        "公式估计非线性变换后的 u。",
+        "公式估计独立于噪声的 u。",
+    ):
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = (
+            "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+            "return=beta*u+epsilon"
+        )
+        derivation["latent_state"] = "u is a temporary impact state."
+        derivation["formula_as_estimator"] = formula_as_estimator
+        derivation["profit_payer_derivation"]["formula_state_link"] = (
+            formula_as_estimator
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert failures == []
+
+
+def test_transient_state_contrast_does_not_negate_model() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g=s+u; u_{t+1}=rho*u_t+eta, |rho|<1; "
+        "return=beta*u+epsilon"
+    )
+    derivation["latent_state"] = (
+        "u is the temporary impact state, not persistent news s."
+    )
+    derivation["formula_as_estimator"] = (
+        "formula_state estimates temporary impact u, not persistent news s."
+    )
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "Transient opening impact u decays separately from persistent news s."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
 def test_transient_impact_keywords_without_structural_model_still_block() -> None:
     malformed_models = (
         "open close pre_close relative_volume transient impact",
@@ -353,6 +678,11 @@ def test_transient_impact_keywords_without_structural_model_still_block() -> Non
             "transient impact does not exist; temporary decay does not exist; "
             "return=theta*impact_state+epsilon"
         ),
+        (
+            "transient impact exists; no temporary decay; "
+            "return=theta*impact_state+epsilon"
+        ),
+        "瞬时冲击存在；不存在临时衰减；return=theta*impact_state+epsilon",
         (
             "nontransient impact with temporary decay; "
             "return=theta*impact_state+epsilon"

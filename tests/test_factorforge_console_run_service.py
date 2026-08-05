@@ -13,6 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from factor_factory.console.conversation_ledger import (
+    CONVERSATION_LEDGER_REFERENCE_FIELD,
+)
 from factor_factory.console.run_service import ResearchRunService as _ResearchRunService
 from factor_factory.console.run_service import (
     _allowed_agent_write_paths,
@@ -21,6 +24,7 @@ from factor_factory.console.run_service import (
     _read_agent_resume_artifact_json,
     _restore_resume_workspace,
     _validate_agent_write_boundary as _validate_agent_write_boundary_impl,
+    _validate_host_conversation_ledger_binding,
     _workspace_evidence_tree,
     _workspace_file_snapshot,
 )
@@ -35,6 +39,33 @@ _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE = (
 _ORIGINAL_VALIDATE_TRUSTED_RESUME_CONTEXT = (
     _ResearchRunService._validate_trusted_resume_context
 )
+_ORIGINAL_VALIDATE_HOST_CONVERSATION_LEDGER_BINDING = (
+    _validate_host_conversation_ledger_binding
+)
+
+
+def _test_conversation_ledger_binding() -> dict:
+    root_sha256 = "c" * 64
+    return {
+        "version": "factorforge_console_host_conversation_ledger_binding_v1",
+        "mode": "initial",
+        "request_sha256": "d" * 64,
+        "current_checkpoint": {
+            "version": "factorforge_console_conversation_ledger_reference_v1",
+            "path": f"identity/conversation_ledger/checkpoint__000001__{root_sha256}.json",
+            "sha256": "e" * 64,
+            "root_sha256": root_sha256,
+            "message_count": 1,
+        },
+        "current_root_sha256": root_sha256,
+        "current_message_count": 1,
+        "parent_request_sha256": "",
+        "parent_checkpoint": None,
+        "parent_attestation_id": "",
+        "parent_attestation_sha256": "",
+        "parent_receipt_id": "",
+        "parent_receipt_sha256": "",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +135,11 @@ def _stub_materialized_web_contract(monkeypatch):
         module.ResearchRunService,
         "_validate_trusted_resume_context",
         trusted_resume_stub,
+    )
+    monkeypatch.setattr(
+        module,
+        "_validate_host_conversation_ledger_binding",
+        lambda **_kwargs: _test_conversation_ledger_binding(),
     )
 
 
@@ -845,6 +881,222 @@ def _request(title: str):
     from factor_factory.console.models import ResearchRequest
 
     return ResearchRequest(title=title, hypothesis="A testable economic and mathematical hypothesis.")
+
+
+def test_resume_request_artifact_failure_restores_parent_conversation_state(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    _source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+    job = service.submit(_request("Resume request transaction"))
+    allocation = service.allocator.allocate(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        implementation_mode="operator",
+    )
+    service._write_request_artifacts(job, allocation)
+    workspace = allocation.workspace_path
+    request_path = workspace / "identity" / "web_research_request.json"
+    guide_path = workspace / "identity" / "web_research_runtime.md"
+    request_before = request_path.read_bytes()
+    guide_before = guide_path.read_bytes()
+    checkpoints_before = {
+        path.name
+        for path in (workspace / "identity" / "conversation_ledger").iterdir()
+    }
+    store.add_message(
+        job.job_id,
+        content_kind="decision",
+        content="Append one bounded revision decision.",
+        model=job.request.model,
+        idempotency_key="resume-transaction-test",
+    )
+
+    def fail_after_partial_packet_write(**kwargs):
+        request_path.write_text(
+            json.dumps(kwargs["request"], ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        guide_path.write_text("partial runtime guide\n", encoding="utf-8")
+        raise RuntimeError("injected packet write failure")
+
+    monkeypatch.setattr(
+        module,
+        "write_web_research_packet",
+        fail_after_partial_packet_write,
+    )
+    with pytest.raises(RuntimeError, match="injected packet write failure"):
+        service._write_request_artifacts(
+            job,
+            allocation,
+            preserve_plan=True,
+            trusted_resume_start_step="6",
+            trusted_resume_context={
+                "attestation_id": (
+                    f"attestations/{job.job_id}/attestation_transaction_test.json"
+                ),
+                "attestation_sha256": "a" * 64,
+            },
+        )
+
+    assert request_path.read_bytes() == request_before
+    assert guide_path.read_bytes() == guide_before
+    assert {
+        path.name
+        for path in (workspace / "identity" / "conversation_ledger").iterdir()
+    } == checkpoints_before
+
+
+def test_host_conversation_binding_requires_real_parent_attestation(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    _source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+    job = service.submit(_request("Host conversation provenance"))
+    allocation = service.allocator.allocate(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        implementation_mode="operator",
+    )
+    job = store.update_job(
+        job.job_id,
+        base_commit=allocation.base_commit,
+        worktree_path=str(allocation.worktree_path),
+        workspace_path=str(allocation.workspace_path),
+    )
+    service._write_request_artifacts(job, allocation)
+    workspace = allocation.workspace_path
+    parent_request = json.loads(
+        (workspace / "identity" / "web_research_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    receipt_id = f"jobs/{job.job_id}/formal-execution/receipt_parent.json"
+    receipt_path = service.config.state_root / receipt_id
+    identity = {
+        "job_id": job.job_id,
+        "factor_id": job.factor_id,
+        "research_id": job.research_id,
+        "report_id": job.report_id,
+        "base_commit": job.base_commit,
+    }
+    _write_json(
+        receipt_path,
+        {
+            "version": "factorforge_console_host_formal_execution_v2",
+            **identity,
+        },
+    )
+    receipt_sha256 = _file_sha256(receipt_path)
+    attestation_id = (
+        f"attestations/{job.job_id}/attestation_conversation_parent.json"
+    )
+    attestation_path = service.config.state_root / attestation_id
+    _write_json(
+        attestation_path,
+        {
+            "version": "factorforge_console_host_execution_attestation_v2",
+            **identity,
+            "formal_execution_receipt_id": receipt_id,
+            "formal_execution_receipt_sha256": receipt_sha256,
+        },
+    )
+    attestation_sha256 = _file_sha256(attestation_path)
+    trusted_parent = {
+        "attestation_id": attestation_id,
+        "attestation_sha256": attestation_sha256,
+        "receipt_id": receipt_id,
+        "receipt_sha256": receipt_sha256,
+        "conversation_request_sha256": stable_json_hash(parent_request),
+        "conversation_ledger_checkpoint": parent_request[
+            CONVERSATION_LEDGER_REFERENCE_FIELD
+        ],
+    }
+    store.add_message(
+        job.job_id,
+        content_kind="decision",
+        content="Append one host-attested decision.",
+        model=job.request.model,
+        idempotency_key="host-provenance-test",
+    )
+    service._write_request_artifacts(
+        job,
+        allocation,
+        preserve_plan=True,
+        trusted_resume_start_step="6",
+        trusted_resume_context=trusted_parent,
+    )
+
+    binding = _ORIGINAL_VALIDATE_HOST_CONVERSATION_LEDGER_BINDING(
+        workspace=workspace,
+        state_root=service.config.state_root,
+        job=job,
+        resume=True,
+        resume_trust=trusted_parent,
+    )
+    assert binding["mode"] == "append"
+    assert binding["parent_attestation_id"] == attestation_id
+    assert binding["parent_attestation_sha256"] == attestation_sha256
+
+    wrong_sha_parent = {**trusted_parent, "attestation_sha256": "b" * 64}
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        _ORIGINAL_VALIDATE_HOST_CONVERSATION_LEDGER_BINDING(
+            workspace=workspace,
+            state_root=service.config.state_root,
+            job=job,
+            resume=True,
+            resume_trust=wrong_sha_parent,
+        )
+    nonexistent_parent = {
+        **trusted_parent,
+        "attestation_id": (
+            f"attestations/{job.job_id}/attestation_forged_nonexistent.json"
+        ),
+        "attestation_sha256": "b" * 64,
+    }
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        _ORIGINAL_VALIDATE_HOST_CONVERSATION_LEDGER_BINDING(
+            workspace=workspace,
+            state_root=service.config.state_root,
+            job=job,
+            resume=True,
+            resume_trust=nonexistent_parent,
+        )
+
+    catalog = tmp_path / "catalog.json"
+    _write_json(catalog, {"datasets": []})
+    service.config = replace(service.config, data_catalogs=(catalog,))
+    monkeypatch.setattr(
+        module,
+        "_validate_host_conversation_ledger_binding",
+        _ORIGINAL_VALIDATE_HOST_CONVERSATION_LEDGER_BINDING,
+    )
+
+    def subprocess_must_not_run(*_args, **_kwargs):
+        raise AssertionError("formal subprocess started before provenance validation")
+
+    monkeypatch.setattr(module.subprocess, "run", subprocess_must_not_run)
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE(
+            service,
+            job,
+            worktree=allocation.worktree_path,
+            workspace=workspace,
+            resume=True,
+            resume_trust={
+                **nonexistent_parent,
+                "start_step": "6",
+                "ultimate_proof_sha256": "f" * 64,
+            },
+            denied_values=(),
+            host_data_env={},
+        )
 
 
 def test_service_runs_two_factors_in_separate_worktrees_and_preserves_reject(
@@ -2700,6 +2952,7 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
         workspace_path=str(allocation.workspace_path),
     )
     workspace = allocation.workspace_path
+    service._write_request_artifacts(job, allocation)
     evidence = (
         workspace
         / "objects"
@@ -2791,6 +3044,7 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
             "base_commit": job.base_commit,
             "resume": False,
             "resume_parent": None,
+            "conversation_ledger_binding": _test_conversation_ledger_binding(),
             "formal_owned_artifact_transitions": {},
             "commands": [
                 {
@@ -2818,6 +3072,7 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
         "receipt_sha256": _file_sha256(receipt_path),
         "ultimate_argv_sha256": stable_json_hash(ultimate_argv),
         "ultimate_returncode": 0,
+        "conversation_ledger_binding": _test_conversation_ledger_binding(),
     }
 
     service._begin_private_execution(job, resume=False)
@@ -2851,6 +3106,10 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
     assert payload["formal_execution_receipt_source_id"] == formal_execution[
         "receipt_id"
     ]
+    assert payload["conversation_ledger_binding"] == _test_conversation_ledger_binding()
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))[
+        "conversation_ledger_binding"
+    ] == payload["conversation_ledger_binding"]
     assert payload["agent_result_source_id"] == result_path.relative_to(
         service.config.state_root
     ).as_posix()
@@ -2937,6 +3196,7 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
         commands=resumed_commands,
         resume=True,
         resume_trust=trusted,
+        conversation_ledger_binding=_test_conversation_ledger_binding(),
     )
     resumed_attested_workspace = service._snapshot_workspace_evidence(
         job,

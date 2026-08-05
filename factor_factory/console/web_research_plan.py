@@ -9,6 +9,7 @@ import stat
 import subprocess
 import uuid
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -17,6 +18,13 @@ from factor_factory.console.models import (
     PILOT_COST_MODEL_ID,
     PILOT_FORWARD_HORIZON,
     PILOT_TRANSACTION_COST_BPS,
+)
+from factor_factory.console.conversation_ledger import (
+    BLOCK_CONVERSATION_LEDGER_INVALID,
+    CONVERSATION_LEDGER_REFERENCE_FIELD,
+    plan_conversation_checkpoints,
+    validate_request_conversation_ledger,
+    write_planned_checkpoints,
 )
 from factor_factory.console.web_factor_proof import (
     RISK_PROOF_CONTROL_COLUMNS,
@@ -49,7 +57,16 @@ from factor_factory.research_workspace import (
 
 PLAN_VERSION = "factorforge_web_research_plan_v1"
 BOOTSTRAP_VERSION = "factorforge_web_research_bootstrap_v1"
-AUTHORING_CONTRACT_VERSION = "factorforge_web_research_authoring_contract_v1"
+AUTHORING_CONTRACT_VERSION = "factorforge_web_research_authoring_contract_v2"
+LEGACY_AUTHORING_CONTRACT_VERSION = "factorforge_web_research_authoring_contract_v1"
+AUTHORING_REQUEST_BINDING_SCOPE = "immutable_authoring_request_v1"
+AUTHORING_DYNAMIC_REQUEST_FIELDS = frozenset(
+    {
+        "conversation_snapshot",
+        "conversation_snapshot_sha256",
+        CONVERSATION_LEDGER_REFERENCE_FIELD,
+    }
+)
 PLACEHOLDER = "RESEARCHER_MUST_REPLACE"
 
 BLOCK_PLAN_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_INVALID"
@@ -296,6 +313,205 @@ def _noncanonical_formula_operator_calls(formula_text: str) -> list[str]:
     return sorted(set(aliases))
 
 
+def _authoring_request_binding(request: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in request.items()
+        if key not in AUTHORING_DYNAMIC_REQUEST_FIELDS
+    }
+
+
+def authoring_request_binding_hash(request: Mapping[str, Any]) -> str:
+    return stable_json_hash(_authoring_request_binding(request))
+
+
+def _legacy_conversation_prefix_matches_request_hash(
+    request: dict[str, Any],
+    expected_request_sha256: str,
+) -> bool:
+    snapshot = request.get("conversation_snapshot")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_request_sha256)
+        or not isinstance(snapshot, dict)
+        or snapshot.get("contract_version")
+        != "factorforge_console_conversation_snapshot_v1"
+        or snapshot.get("content_truncated") is not False
+        or snapshot.get("history_complete") is not True
+        or snapshot.get("omitted_message_count") != 0
+    ):
+        return False
+    messages = snapshot.get("messages")
+    if (
+        not isinstance(messages, list)
+        or any(not isinstance(item, dict) for item in messages)
+        or snapshot.get("message_count") != len(messages)
+        or snapshot.get("total_message_count") != len(messages)
+    ):
+        return False
+    current_unsigned = {
+        key: value for key, value in snapshot.items() if key != "sha256"
+    }
+    current_snapshot_sha256 = stable_json_hash(current_unsigned)
+    if (
+        snapshot.get("sha256") != current_snapshot_sha256
+        or request.get("conversation_snapshot_sha256")
+        != current_snapshot_sha256
+    ):
+        return False
+
+    for prefix_length in range(len(messages), -1, -1):
+        prefix = deepcopy(messages[:prefix_length])
+        candidate_unsigned = deepcopy(current_unsigned)
+        candidate_unsigned.update(
+            {
+                "message_count": prefix_length,
+                "total_message_count": prefix_length,
+                "omitted_message_count": 0,
+                "content_truncated": False,
+                "history_complete": True,
+                "included_character_count": sum(
+                    len(str(item.get("content") or "")) for item in prefix
+                ),
+                "messages": prefix,
+            }
+        )
+        candidate_snapshot_sha256 = stable_json_hash(candidate_unsigned)
+        candidate_request = deepcopy(request)
+        candidate_request["conversation_snapshot"] = {
+            **candidate_unsigned,
+            "sha256": candidate_snapshot_sha256,
+        }
+        candidate_request["conversation_snapshot_sha256"] = (
+            candidate_snapshot_sha256
+        )
+        candidate_request.pop(CONVERSATION_LEDGER_REFERENCE_FIELD, None)
+        if stable_json_hash(candidate_request) == expected_request_sha256:
+            return True
+    return False
+
+
+def _legacy_request_binding_matches(
+    workspace: Path,
+    request: dict[str, Any],
+    expected_request_sha256: str,
+) -> bool:
+    if _legacy_conversation_prefix_matches_request_hash(
+        request,
+        expected_request_sha256,
+    ):
+        return True
+    if CONVERSATION_LEDGER_REFERENCE_FIELD not in request:
+        return False
+    try:
+        ledger = validate_request_conversation_ledger(
+            workspace,
+            request,
+            expected_job_id=str(request.get("job_id") or ""),
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+    oldest_payload = ledger["chain"][0][1]
+    if (
+        oldest_payload.get("source") != "legacy_attested_request"
+        or oldest_payload.get("legacy_request_sha256")
+        != expected_request_sha256
+    ):
+        return False
+    legacy_messages = [
+        {
+            key: entry[key]
+            for key in (
+                "message_id",
+                "sequence_no",
+                "role",
+                "content_kind",
+                "content",
+                "model",
+                "created_at_utc",
+            )
+        }
+        for entry in oldest_payload["entries"]
+    ]
+    unsigned_snapshot = {
+        "contract_version": "factorforge_console_conversation_snapshot_v1",
+        "job_id": str(request.get("job_id") or ""),
+        "message_count": len(legacy_messages),
+        "total_message_count": len(legacy_messages),
+        "omitted_message_count": 0,
+        "content_truncated": False,
+        "history_complete": True,
+        "character_budget": 40_000,
+        "included_character_count": sum(
+            len(str(item.get("content") or "")) for item in legacy_messages
+        ),
+        "messages": legacy_messages,
+    }
+    legacy_snapshot_sha256 = stable_json_hash(unsigned_snapshot)
+    reconstructed = deepcopy(request)
+    reconstructed["conversation_snapshot"] = {
+        **unsigned_snapshot,
+        "sha256": legacy_snapshot_sha256,
+    }
+    reconstructed["conversation_snapshot_sha256"] = legacy_snapshot_sha256
+    reconstructed.pop(CONVERSATION_LEDGER_REFERENCE_FIELD, None)
+    return stable_json_hash(reconstructed) == expected_request_sha256
+
+
+def _legacy_authoring_contract_matches(
+    existing_contract: dict[str, Any],
+    expected_contract: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    workspace: Path,
+) -> bool:
+    existing_binding = existing_contract.get("host_input_binding")
+    expected_binding = expected_contract.get("host_input_binding")
+    if (
+        existing_contract.get("version") != LEGACY_AUTHORING_CONTRACT_VERSION
+        or not isinstance(existing_binding, dict)
+        or not isinstance(expected_binding, dict)
+        or "request_binding_scope" in existing_binding
+    ):
+        return False
+    legacy_request_sha256 = str(existing_binding.get("request_sha256") or "")
+    normalized = deepcopy(existing_contract)
+    normalized["version"] = AUTHORING_CONTRACT_VERSION
+    normalized_binding = normalized["host_input_binding"]
+    normalized_binding["request_sha256"] = expected_binding.get("request_sha256")
+    normalized_binding["request_binding_scope"] = AUTHORING_REQUEST_BINDING_SCOPE
+    return (
+        stable_json_hash(normalized) == stable_json_hash(expected_contract)
+        and _legacy_request_binding_matches(
+            workspace,
+            request,
+            legacy_request_sha256,
+        )
+    )
+
+
+def _authoring_contract_matches(
+    existing_contract: Any,
+    expected_contract: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    workspace: Path,
+    allow_legacy_conversation_extension: bool,
+) -> bool:
+    if not isinstance(existing_contract, dict):
+        return False
+    if stable_json_hash(existing_contract) == stable_json_hash(expected_contract):
+        return True
+    return bool(
+        allow_legacy_conversation_extension
+        and _legacy_authoring_contract_matches(
+            existing_contract,
+            expected_contract,
+            request,
+            workspace=workspace,
+        )
+    )
+
+
 def build_authoring_contract(
     request: dict[str, Any],
     *,
@@ -314,7 +530,8 @@ def build_authoring_contract(
         "version": AUTHORING_CONTRACT_VERSION,
         "immutable_host_authored": True,
         "host_input_binding": {
-            "request_sha256": stable_json_hash(request),
+            "request_sha256": authoring_request_binding_hash(request),
+            "request_binding_scope": AUTHORING_REQUEST_BINDING_SCOPE,
             "knowledge_summary_sha256": stable_json_hash(knowledge_summary),
             "catalog_summary_sha256": stable_json_hash(catalog_summary),
         },
@@ -1036,7 +1253,34 @@ def write_web_research_packet(
     trusted_resume_start_step: str | None = None,
 ) -> None:
     identity = workspace / "identity"
-    write_json_atomic(identity / "web_research_request.json", request, root=workspace)
+    if CONVERSATION_LEDGER_REFERENCE_FIELD not in request:
+        if preserve_existing_plan:
+            raise RuntimeError(
+                f"{BLOCK_CONVERSATION_LEDGER_INVALID}: resumed request lacks a checkpoint"
+            )
+        snapshot = request.get("conversation_snapshot")
+        if (
+            not isinstance(snapshot, dict)
+            or not isinstance(snapshot.get("messages"), list)
+            or not snapshot["messages"]
+            or snapshot.get("history_complete") is not True
+            or snapshot.get("content_truncated") is not False
+            or snapshot.get("omitted_message_count") != 0
+            or snapshot.get("message_count") != len(snapshot["messages"])
+            or snapshot.get("total_message_count") != len(snapshot["messages"])
+        ):
+            raise RuntimeError(
+                f"{BLOCK_CONVERSATION_LEDGER_INVALID}: fresh request lacks complete history"
+            )
+        request = deepcopy(request)
+        reference, planned = plan_conversation_checkpoints(
+            workspace,
+            job_id=str(request.get("job_id") or ""),
+            messages=snapshot["messages"],
+            existing_request=None,
+        )
+        request[CONVERSATION_LEDGER_REFERENCE_FIELD] = reference
+        write_planned_checkpoints(workspace, planned)
     bootstrap_path = identity / "web_research_bootstrap_result.json"
     freeze_research_inputs = False
     if preserve_existing_plan and bootstrap_path.is_file() and not bootstrap_path.is_symlink():
@@ -1081,8 +1325,15 @@ def write_web_research_packet(
             existing_contract = json.loads(
                 authoring_contract_path.read_text(encoding="utf-8")
             )
-            if stable_json_hash(existing_contract) != stable_json_hash(authoring_contract):
+            if not _authoring_contract_matches(
+                existing_contract,
+                authoring_contract,
+                request,
+                workspace=workspace,
+                allow_legacy_conversation_extension=True,
+            ):
                 raise RuntimeError("frozen web research authoring contract changed")
+    write_json_atomic(identity / "web_research_request.json", request, root=workspace)
     if not freeze_research_inputs or not authoring_contract_path.exists():
         write_json_atomic(
             authoring_contract_path,
@@ -1369,15 +1620,38 @@ def validate_plan(
     authoring_contract = json.loads(
         authoring_contract_path.read_text(encoding="utf-8")
     )
+    if (
+        authoring_contract.get("version") == AUTHORING_CONTRACT_VERSION
+        or CONVERSATION_LEDGER_REFERENCE_FIELD in request
+    ):
+        try:
+            validate_request_conversation_ledger(
+                workspace,
+                request,
+                expected_job_id=expected_identity["job_id"],
+            )
+        except RuntimeError as exc:
+            if str(exc).startswith(BLOCK_CONVERSATION_LEDGER_INVALID):
+                raise WebResearchPlanError(
+                    BLOCK_PLAN_IDENTITY_INVALID,
+                    [str(exc)],
+                ) from exc
+            raise
     expected_authoring_contract = build_authoring_contract(
         request,
         catalog_summary=catalog_summary,
         knowledge_summary=knowledge_summary,
     )
-    if (
-        not isinstance(authoring_contract, dict)
-        or stable_json_hash(authoring_contract)
-        != stable_json_hash(expected_authoring_contract)
+    legacy_plan_is_frozen = _legacy_authoring_contract_reference_allowed(
+        workspace,
+        plan,
+    )
+    if not _authoring_contract_matches(
+        authoring_contract,
+        expected_authoring_contract,
+        request,
+        workspace=workspace,
+        allow_legacy_conversation_extension=legacy_plan_is_frozen,
     ):
         raise WebResearchPlanError(
             BLOCK_PLAN_IDENTITY_INVALID,
@@ -1393,10 +1667,13 @@ def validate_plan(
         and str(contract_reference.get("sha256") or "")
         == stable_json_hash(authoring_contract)
     )
-    if not contract_reference_valid and not _legacy_authoring_contract_reference_allowed(
-        workspace,
-        plan,
-    ):
+    legacy_contract_reference_valid = bool(
+        legacy_plan_is_frozen
+        and contract_reference.get("version") == authoring_contract.get("version")
+        and str(contract_reference.get("sha256") or "")
+        == stable_json_hash(authoring_contract)
+    )
+    if not contract_reference_valid and not legacy_contract_reference_valid:
         if contract_reference.get("version") != AUTHORING_CONTRACT_VERSION:
             reasons.append(
                 f"authoring_contract.version_expected:{AUTHORING_CONTRACT_VERSION}"
@@ -1659,6 +1936,38 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
     bootstrap_path, bootstrap = read_regular(
         "identity/web_research_bootstrap_result.json"
     )
+    conversation_ledger: dict[str, Any] | None = None
+    if (
+        authoring_contract.get("version") == AUTHORING_CONTRACT_VERSION
+        or CONVERSATION_LEDGER_REFERENCE_FIELD in request
+    ):
+        bootstrap_conversation_reference = bootstrap.get(
+            "host_conversation_ledger_checkpoint"
+        )
+        try:
+            conversation_ledger = validate_request_conversation_ledger(
+                workspace,
+                request,
+                expected_job_id=str(request.get("job_id") or ""),
+                bootstrap_reference=(
+                    bootstrap_conversation_reference
+                    if isinstance(bootstrap_conversation_reference, dict)
+                    else None
+                ),
+            )
+        except RuntimeError as exc:
+            reasons.append(str(exc))
+        if (
+            conversation_ledger is not None
+            and not isinstance(bootstrap_conversation_reference, dict)
+        ):
+            oldest_payload = conversation_ledger["chain"][0][1]
+            if (
+                oldest_payload.get("source") != "legacy_attested_request"
+                or oldest_payload.get("legacy_request_sha256")
+                != str(bootstrap.get("host_request_sha256") or "")
+            ):
+                reasons.append("conversation_ledger.legacy_bootstrap_anchor")
     report_id = str(plan["identity"]["report_id"])
     _aim_path, aim = read_regular(
         f"objects/alpha_idea_master/alpha_idea_master__{report_id}.json"
@@ -1702,7 +2011,25 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         authoring_contract_path
     ):
         reasons.append("bootstrap.host_authoring_contract_sha256")
-    if str(bootstrap.get("host_request_sha256") or "") != stable_json_hash(request):
+    bootstrap_binding_scope = bootstrap.get("host_request_binding_scope")
+    bootstrap_binding_sha256 = str(
+        bootstrap.get("host_request_binding_sha256") or ""
+    )
+    bootstrap_request_sha256 = str(bootstrap.get("host_request_sha256") or "")
+    if bootstrap_binding_scope == AUTHORING_REQUEST_BINDING_SCOPE:
+        bootstrap_request_valid = (
+            bootstrap_binding_sha256 == authoring_request_binding_hash(request)
+        )
+    else:
+        bootstrap_request_valid = (
+            bootstrap_request_sha256 == stable_json_hash(request)
+            or _legacy_request_binding_matches(
+                workspace,
+                request,
+                bootstrap_request_sha256,
+            )
+        )
+    if not bootstrap_request_valid:
         reasons.append("bootstrap.host_request_sha256")
     if str(bootstrap.get("host_knowledge_summary_sha256") or "") != stable_json_hash(
         knowledge_summary
@@ -1713,7 +2040,24 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         if isinstance(authoring_contract.get("host_input_binding"), dict)
         else {}
     )
-    if str(binding.get("request_sha256") or "") != stable_json_hash(request):
+    binding_request_sha256 = str(binding.get("request_sha256") or "")
+    binding_scope = binding.get("request_binding_scope")
+    if binding_scope == AUTHORING_REQUEST_BINDING_SCOPE:
+        request_binding_valid = (
+            binding_request_sha256 == authoring_request_binding_hash(request)
+        )
+    elif authoring_contract.get("version") == LEGACY_AUTHORING_CONTRACT_VERSION:
+        request_binding_valid = (
+            binding_request_sha256 == stable_json_hash(request)
+            or _legacy_request_binding_matches(
+                workspace,
+                request,
+                binding_request_sha256,
+            )
+        )
+    else:
+        request_binding_valid = False
+    if not request_binding_valid:
         reasons.append("authoring_contract.host_input_binding.request_sha256")
     if str(binding.get("knowledge_summary_sha256") or "") != stable_json_hash(
         knowledge_summary

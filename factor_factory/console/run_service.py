@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,14 @@ from factor_factory.console.agent_adapter import (
 from factor_factory.console.artifact_service import SafeArtifact, publish_official_artifacts
 from factor_factory.console.catalog_health import catalogs_healthy, require_catalogs_healthy
 from factor_factory.console.config import ConsoleConfig
+from factor_factory.console.conversation_ledger import (
+    BLOCK_CONVERSATION_LEDGER_INVALID,
+    CONVERSATION_LEDGER_MAX_MESSAGES,
+    CONVERSATION_LEDGER_REFERENCE_FIELD,
+    plan_conversation_checkpoints,
+    validate_request_conversation_ledger,
+    write_planned_checkpoints,
+)
 from factor_factory.console.council_ingress import (
     CouncilIngressTask,
     load_council_ingress_tasks,
@@ -91,6 +100,9 @@ PRIVATE_LIFECYCLE_RUNNING = "RUNNING"
 PRIVATE_LIFECYCLE_RESUMABLE = "RESUMABLE"
 PRIVATE_LIFECYCLE_TERMINAL = "TERMINAL"
 PRIVATE_LIFECYCLE_NON_RESUMABLE = "NON_RESUMABLE"
+HOST_CONVERSATION_LEDGER_BINDING_VERSION = (
+    "factorforge_console_host_conversation_ledger_binding_v1"
+)
 
 NON_RESUMABLE_SECURITY_BLOCKERS = frozenset(
     {
@@ -429,6 +441,252 @@ def _require_resume_request_allowed(job: ResearchJob) -> None:
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: persisted workspace identity is incomplete"
         )
+
+
+def _read_host_conversation_parent(
+    *,
+    state_root: Path,
+    job: ResearchJob,
+    resume_trust: dict[str, Any],
+) -> None:
+    root = state_root.resolve(strict=True)
+
+    def read_host_json(
+        relative_value: Any,
+        expected_sha256: Any,
+        *,
+        label: str,
+    ) -> dict[str, Any]:
+        relative = Path(str(relative_value or ""))
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or len(relative.parts) < 3
+            or not re.fullmatch(r"[0-9a-f]{64}", str(expected_sha256 or ""))
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} identity is unsafe"
+            )
+        candidate = root / relative
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} uses a symlink"
+                )
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} is missing"
+            ) from exc
+        if candidate.is_symlink() or not resolved.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} is unsafe"
+            )
+        if _sha256(resolved) != str(expected_sha256):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} hash mismatch"
+            )
+        try:
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} is invalid JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation {label} is invalid"
+            )
+        return payload
+
+    attestation = read_host_json(
+        resume_trust.get("attestation_id"),
+        resume_trust.get("attestation_sha256"),
+        label="parent attestation",
+    )
+    receipt = read_host_json(
+        resume_trust.get("receipt_id"),
+        resume_trust.get("receipt_sha256"),
+        label="parent formal receipt",
+    )
+    expected_identity = {
+        "job_id": job.job_id,
+        "factor_id": job.factor_id,
+        "research_id": job.research_id,
+        "report_id": job.report_id,
+        "base_commit": job.base_commit,
+    }
+    if (
+        attestation.get("version")
+        != "factorforge_console_host_execution_attestation_v2"
+        or receipt.get("version")
+        != "factorforge_console_host_formal_execution_v2"
+        or any(
+            attestation.get(key) != value or receipt.get(key) != value
+            for key, value in expected_identity.items()
+        )
+        or attestation.get("formal_execution_receipt_id")
+        != resume_trust.get("receipt_id")
+        or attestation.get("formal_execution_receipt_sha256")
+        != resume_trust.get("receipt_sha256")
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: conversation parent host provenance is invalid"
+        )
+
+
+def _validate_host_conversation_ledger_binding(
+    *,
+    workspace: Path,
+    state_root: Path,
+    job: ResearchJob,
+    resume: bool,
+    resume_trust: dict[str, Any] | None,
+) -> dict[str, Any]:
+    request = _read_regular_workspace_json(
+        workspace,
+        "identity/web_research_request.json",
+    )
+    try:
+        ledger = validate_request_conversation_ledger(
+            workspace,
+            request,
+            expected_job_id=job.job_id,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: host conversation ledger validation failed"
+        ) from exc
+    current_reference = deepcopy(ledger["reference"])
+    current_payload = ledger["current"]
+    chain = ledger["chain"]
+    request_sha256 = stable_json_hash(request)
+    parent_reference: dict[str, Any] | None = None
+    parent_request_sha256 = ""
+    parent_attestation_id = ""
+    parent_attestation_sha256 = ""
+    parent_receipt_id = ""
+    parent_receipt_sha256 = ""
+
+    if not resume:
+        if (
+            resume_trust is not None
+            or len(chain) != 1
+            or current_payload.get("source") != "initial"
+            or current_payload.get("parent_checkpoint") is not None
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: fresh conversation ledger root is invalid"
+            )
+        mode = "initial"
+    else:
+        if not isinstance(resume_trust, dict):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: conversation parent trust is missing"
+            )
+        _read_host_conversation_parent(
+            state_root=state_root,
+            job=job,
+            resume_trust=resume_trust,
+        )
+        parent_attestation_id = str(resume_trust.get("attestation_id") or "")
+        parent_attestation_sha256 = str(
+            resume_trust.get("attestation_sha256") or ""
+        )
+        parent_receipt_id = str(resume_trust.get("receipt_id") or "")
+        parent_receipt_sha256 = str(resume_trust.get("receipt_sha256") or "")
+        parent_request_sha256 = str(
+            resume_trust.get("conversation_request_sha256") or ""
+        )
+        raw_parent_reference = resume_trust.get("conversation_ledger_checkpoint")
+        parent_reference = (
+            deepcopy(raw_parent_reference)
+            if isinstance(raw_parent_reference, dict)
+            else None
+        )
+        if not re.fullmatch(r"[0-9a-f]{64}", parent_request_sha256):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: parent conversation request hash is invalid"
+            )
+        if parent_reference is not None and current_reference == parent_reference:
+            if request_sha256 != parent_request_sha256:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: unchanged conversation request changed"
+                )
+            mode = "unchanged"
+        elif parent_reference is not None:
+            current_parent = current_payload.get("parent_checkpoint")
+            if (
+                current_payload.get("source") != "resume"
+                or not isinstance(current_parent, dict)
+                or any(
+                    current_parent.get(field) != parent_reference.get(field)
+                    for field in (
+                        "version",
+                        "path",
+                        "sha256",
+                        "root_sha256",
+                        "message_count",
+                    )
+                )
+                or current_parent.get("attestation_id") != parent_attestation_id
+                or current_parent.get("attestation_sha256")
+                != parent_attestation_sha256
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: conversation checkpoint parent is not host trusted"
+                )
+            mode = "append"
+        else:
+            oldest_payload = chain[0][1]
+            legacy_parent = oldest_payload.get("legacy_parent_attestation")
+            if (
+                oldest_payload.get("source") != "legacy_attested_request"
+                or oldest_payload.get("legacy_request_sha256")
+                != parent_request_sha256
+                or not isinstance(legacy_parent, dict)
+                or legacy_parent.get("attestation_id") != parent_attestation_id
+                or legacy_parent.get("attestation_sha256")
+                != parent_attestation_sha256
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: legacy conversation root is not host trusted"
+                )
+            if current_payload.get("source") == "resume":
+                current_parent = current_payload.get("parent_checkpoint")
+                if (
+                    not isinstance(current_parent, dict)
+                    or current_parent.get("attestation_id")
+                    != parent_attestation_id
+                    or current_parent.get("attestation_sha256")
+                    != parent_attestation_sha256
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: legacy conversation extension is not host trusted"
+                    )
+            elif current_payload.get("source") != "legacy_attested_request":
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: legacy conversation lineage is invalid"
+                )
+            mode = "legacy_migration"
+
+    return {
+        "version": HOST_CONVERSATION_LEDGER_BINDING_VERSION,
+        "mode": mode,
+        "request_sha256": request_sha256,
+        "current_checkpoint": current_reference,
+        "current_root_sha256": str(current_payload.get("root_sha256") or ""),
+        "current_message_count": int(current_payload.get("message_count") or 0),
+        "parent_request_sha256": parent_request_sha256,
+        "parent_checkpoint": parent_reference,
+        "parent_attestation_id": parent_attestation_id,
+        "parent_attestation_sha256": parent_attestation_sha256,
+        "parent_receipt_id": parent_receipt_id,
+        "parent_receipt_sha256": parent_receipt_sha256,
+    }
 
 
 def _classify_resume_route(
@@ -898,6 +1156,7 @@ class ResearchRunService:
                     allocation,
                     preserve_plan=True,
                     trusted_resume_start_step=str(resume_trust["start_step"]),
+                    trusted_resume_context=resume_trust,
                 )
                 self._write_resume_authorization(job, workspace)
                 if resume_route.kind == RESUME_KIND_MECHANISM_AGENT:
@@ -1927,6 +2186,58 @@ class ResearchRunService:
         else:
             raise invalid("formal receipt resume flag is invalid")
 
+        prior_conversation_binding = receipt.get("conversation_ledger_binding")
+        attested_conversation_binding = attestation.get(
+            "conversation_ledger_binding"
+        )
+        if (
+            prior_conversation_binding is not None
+            or attested_conversation_binding is not None
+        ):
+            if (
+                not isinstance(prior_conversation_binding, dict)
+                or not isinstance(attested_conversation_binding, dict)
+                or stable_json_hash(prior_conversation_binding)
+                != stable_json_hash(attested_conversation_binding)
+            ):
+                raise invalid("host conversation ledger binding is inconsistent")
+            prior_binding_resume_trust = None
+            if receipt_resume is True:
+                prior_binding_resume_trust = {
+                    "attestation_id": prior_conversation_binding.get(
+                        "parent_attestation_id"
+                    ),
+                    "attestation_sha256": prior_conversation_binding.get(
+                        "parent_attestation_sha256"
+                    ),
+                    "receipt_id": prior_conversation_binding.get(
+                        "parent_receipt_id"
+                    ),
+                    "receipt_sha256": prior_conversation_binding.get(
+                        "parent_receipt_sha256"
+                    ),
+                    "conversation_request_sha256": prior_conversation_binding.get(
+                        "parent_request_sha256"
+                    ),
+                    "conversation_ledger_checkpoint": prior_conversation_binding.get(
+                        "parent_checkpoint"
+                    ),
+                }
+            try:
+                verified_prior_binding = _validate_host_conversation_ledger_binding(
+                    workspace=workspace_root,
+                    state_root=state_root,
+                    job=job,
+                    resume=receipt_resume is True,
+                    resume_trust=prior_binding_resume_trust,
+                )
+            except RuntimeError as exc:
+                raise invalid("host conversation ledger binding cannot be verified") from exc
+            if stable_json_hash(verified_prior_binding) != stable_json_hash(
+                prior_conversation_binding
+            ):
+                raise invalid("host conversation ledger binding changed")
+
         proof_path = (
             workspace_root
             / "objects"
@@ -1958,6 +2269,13 @@ class ResearchRunService:
             raise invalid("trusted Ultimate proof is not safely resumable") from exc
         if start_step not in {"3", "4", "5", "6"}:
             raise invalid("trusted Ultimate proof has no legal resume point")
+        trusted_request = _read_regular_workspace_json(
+            workspace_root,
+            "identity/web_research_request.json",
+        )
+        trusted_conversation_reference = trusted_request.get(
+            CONVERSATION_LEDGER_REFERENCE_FIELD
+        )
         return {
             "start_step": start_step,
             "ultimate_proof_sha256": proof_sha256,
@@ -1966,6 +2284,12 @@ class ResearchRunService:
             "receipt_id": receipt_id,
             "receipt_sha256": receipt_sha256,
             "workspace_evidence_tree_root_sha256": stable_json_hash(entries),
+            "conversation_request_sha256": stable_json_hash(trusted_request),
+            "conversation_ledger_checkpoint": (
+                deepcopy(trusted_conversation_reference)
+                if isinstance(trusted_conversation_reference, dict)
+                else None
+            ),
         }
 
     def _write_host_formal_checkpoint_result(
@@ -2114,6 +2438,13 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: fresh execution cannot carry resume trust"
             )
+        conversation_ledger_binding = _validate_host_conversation_ledger_binding(
+            workspace=workspace,
+            state_root=self.config.state_root,
+            job=job,
+            resume=resume,
+            resume_trust=resume_trust,
+        )
 
         def run_host_command(
             name: str,
@@ -2187,6 +2518,7 @@ class ResearchRunService:
                 resume_trust=resume_trust,
                 resume_task=resume_task,
                 validated_resume_artifacts=validated_resume_artifacts,
+                conversation_ledger_binding=conversation_ledger_binding,
             )
             detail = materialize["stderr_tail"] or materialize["stdout_tail"]
             raise RuntimeError(
@@ -2227,6 +2559,7 @@ class ResearchRunService:
             resume_trust=resume_trust,
             resume_task=resume_task,
             validated_resume_artifacts=validated_resume_artifacts,
+            conversation_ledger_binding=conversation_ledger_binding,
         )
         if ultimate["timed_out"]:
             raise RuntimeError(
@@ -2297,6 +2630,7 @@ class ResearchRunService:
         resume_trust: dict[str, Any] | None = None,
         resume_task: AgentResumeTask | None = None,
         validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
+        conversation_ledger_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if resume and not isinstance(resume_trust, dict):
             raise RuntimeError(
@@ -2309,6 +2643,14 @@ class ResearchRunService:
         if (resume_task is None) != (validated_resume_artifacts is None):
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: formal mutation audit identity is incomplete"
+            )
+        if (
+            not isinstance(conversation_ledger_binding, dict)
+            or conversation_ledger_binding.get("version")
+            != HOST_CONVERSATION_LEDGER_BINDING_VERSION
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: formal conversation ledger binding is missing"
             )
         formal_owned_artifact_transitions: dict[str, dict[str, Any]] = {}
         if resume_task is not None and validated_resume_artifacts is not None:
@@ -2366,6 +2708,9 @@ class ResearchRunService:
                 if resume_trust is not None
                 else None
             ),
+            "conversation_ledger_binding": deepcopy(
+                conversation_ledger_binding
+            ),
             "readonly_data_lease_injected": bool(
                 commands
                 and all(
@@ -2409,6 +2754,9 @@ class ResearchRunService:
                     if item.get("name") == "run_factorforge_ultimate"
                 ),
                 None,
+            ),
+            "conversation_ledger_binding": deepcopy(
+                conversation_ledger_binding
             ),
         }
 
@@ -2885,6 +3233,56 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal receipt resume trust invalid"
             )
+        receipt_conversation_binding = formal_receipt.get(
+            "conversation_ledger_binding"
+        )
+        if (
+            not isinstance(receipt_conversation_binding, dict)
+            or receipt_conversation_binding.get("version")
+            != HOST_CONVERSATION_LEDGER_BINDING_VERSION
+            or stable_json_hash(receipt_conversation_binding)
+            != stable_json_hash(
+                formal_execution.get("conversation_ledger_binding")
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal conversation ledger binding invalid"
+            )
+        binding_resume_trust = None
+        if formal_receipt.get("resume") is True:
+            binding_resume_trust = {
+                "attestation_id": receipt_conversation_binding.get(
+                    "parent_attestation_id"
+                ),
+                "attestation_sha256": receipt_conversation_binding.get(
+                    "parent_attestation_sha256"
+                ),
+                "receipt_id": receipt_conversation_binding.get(
+                    "parent_receipt_id"
+                ),
+                "receipt_sha256": receipt_conversation_binding.get(
+                    "parent_receipt_sha256"
+                ),
+                "conversation_request_sha256": receipt_conversation_binding.get(
+                    "parent_request_sha256"
+                ),
+                "conversation_ledger_checkpoint": receipt_conversation_binding.get(
+                    "parent_checkpoint"
+                ),
+            }
+        snapshot_conversation_binding = _validate_host_conversation_ledger_binding(
+            workspace=snapshot_root,
+            state_root=state_root,
+            job=job,
+            resume=formal_receipt.get("resume") is True,
+            resume_trust=binding_resume_trust,
+        )
+        if stable_json_hash(snapshot_conversation_binding) != stable_json_hash(
+            receipt_conversation_binding
+        ):
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: attested conversation ledger changed"
+            )
         wrapper_path = (
             snapshot_root
             / "objects"
@@ -2965,6 +3363,9 @@ class ResearchRunService:
             "formal_owned_artifact_transitions": (
                 formal_owned_artifact_transitions
             ),
+            "conversation_ledger_binding": deepcopy(
+                receipt_conversation_binding
+            ),
             "ultimate_argv_sha256": formal_execution["ultimate_argv_sha256"],
             "ultimate_returncode": formal_execution["ultimate_returncode"],
             "evidence_hashes": evidence_hashes,
@@ -3005,9 +3406,59 @@ class ResearchRunService:
         *,
         preserve_plan: bool = False,
         trusted_resume_start_step: str | None = None,
+        trusted_resume_context: dict[str, Any] | None = None,
     ) -> None:
         workspace = allocation.workspace_path
-        conversation_snapshot = _conversation_snapshot(self.store, job)
+        total_messages, all_messages = self.store.snapshot_messages(
+            job.job_id,
+            limit=CONVERSATION_LEDGER_MAX_MESSAGES,
+        )
+        if total_messages != len(all_messages):
+            raise RuntimeError(
+                f"{BLOCK_CONVERSATION_LEDGER_INVALID}: message history exceeds the ledger budget"
+            )
+        conversation_snapshot = _conversation_snapshot_from_messages(
+            job.job_id,
+            total_messages,
+            all_messages[-40:],
+        )
+        existing_request: dict[str, Any] | None = None
+        request_path = workspace / "identity" / "web_research_request.json"
+        if preserve_plan:
+            if not request_path.is_file() or request_path.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: existing web research request is unsafe"
+                )
+            existing_request = json.loads(request_path.read_text(encoding="utf-8"))
+            if not isinstance(existing_request, dict):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: existing web research request is invalid"
+                )
+        parent_attestation_id = ""
+        parent_attestation_sha256 = ""
+        if preserve_plan:
+            if not isinstance(trusted_resume_context, dict):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: trusted parent attestation is missing"
+                )
+            parent_attestation_id = str(
+                trusted_resume_context.get("attestation_id") or ""
+            )
+            parent_attestation_sha256 = str(
+                trusted_resume_context.get("attestation_sha256") or ""
+            )
+        elif trusted_resume_context is not None:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: fresh request cannot carry resume trust"
+            )
+        conversation_reference, planned_checkpoints = plan_conversation_checkpoints(
+            workspace,
+            job_id=job.job_id,
+            messages=all_messages,
+            existing_request=existing_request,
+            parent_attestation_id=parent_attestation_id,
+            parent_attestation_sha256=parent_attestation_sha256,
+        )
         request_payload = {
             **job.request.to_dict(),
             "job_id": job.job_id,
@@ -3020,6 +3471,7 @@ class ResearchRunService:
             "source_type": "natural_language_hypothesis",
             "conversation_snapshot": conversation_snapshot,
             "conversation_snapshot_sha256": conversation_snapshot["sha256"],
+            CONVERSATION_LEDGER_REFERENCE_FIELD: conversation_reference,
             "data_access": {
                 "mode": "read_only",
                 "catalog_count": len(self.config.data_catalogs),
@@ -3030,11 +3482,24 @@ class ResearchRunService:
                 "repo_root_data_write_allowed": False,
             },
         }
-        _write_json_atomic(
-            workspace / "identity" / "web_research_request.json",
-            request_payload,
-            root=workspace,
-        )
+        source_path = workspace / "reports" / "user_hypothesis.md"
+        guide_path = workspace / "identity" / "web_research_runtime.md"
+        resume_restore_text: dict[Path, str | None] = {}
+        if preserve_plan:
+            for path in (source_path, request_path, guide_path):
+                if path.is_symlink() or (path.exists() and not path.is_file()):
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: resume request artifact is unsafe"
+                    )
+                resume_restore_text[path] = (
+                    path.read_text(encoding="utf-8") if path.is_file() else None
+                )
+        new_checkpoint_paths = [
+            workspace / relative
+            for relative, _payload in planned_checkpoints
+            if not (workspace / relative).exists()
+            and not (workspace / relative).is_symlink()
+        ]
         source_lines = [
             f"# {job.request.title}",
             "",
@@ -3053,20 +3518,40 @@ class ResearchRunService:
         ]
         if job.request.source_url:
             source_lines.extend(["", "## User Reference", "", job.request.source_url])
-        source_path = workspace / "reports" / "user_hypothesis.md"
-        write_text_atomic(
-            source_path,
-            "\n".join(source_lines) + "\n",
-            root=workspace,
-        )
-        write_web_research_packet(
-            workspace=workspace,
-            worktree=allocation.worktree_path,
-            request=request_payload,
-            catalogs=self.config.data_catalogs,
-            preserve_existing_plan=preserve_plan,
-            trusted_resume_start_step=trusted_resume_start_step,
-        )
+        try:
+            write_planned_checkpoints(workspace, planned_checkpoints)
+            write_text_atomic(
+                source_path,
+                "\n".join(source_lines) + "\n",
+                root=workspace,
+            )
+            write_web_research_packet(
+                workspace=workspace,
+                worktree=allocation.worktree_path,
+                request=request_payload,
+                catalogs=self.config.data_catalogs,
+                preserve_existing_plan=preserve_plan,
+                trusted_resume_start_step=trusted_resume_start_step,
+            )
+        except Exception:
+            if preserve_plan:
+                try:
+                    for path, prior_text in resume_restore_text.items():
+                        if path.is_symlink() or (path.exists() and not path.is_file()):
+                            raise RuntimeError("resume request rollback target is unsafe")
+                        if prior_text is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            write_text_atomic(path, prior_text, root=workspace)
+                    for path in reversed(new_checkpoint_paths):
+                        if path.is_symlink() or (path.exists() and not path.is_file()):
+                            raise RuntimeError("resume checkpoint rollback target is unsafe")
+                        path.unlink(missing_ok=True)
+                except (OSError, RuntimeError, UnicodeError) as rollback_exc:
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: resume request rollback failed"
+                    ) from rollback_exc
+            raise
 
     def _write_resume_authorization(self, job: ResearchJob, workspace: Path) -> None:
         payload = {
@@ -4997,6 +5482,18 @@ def _conversation_snapshot(
     job: ResearchJob,
 ) -> dict[str, Any]:
     total_message_count, messages = store.snapshot_messages(job.job_id, limit=40)
+    return _conversation_snapshot_from_messages(
+        job.job_id,
+        total_message_count,
+        messages,
+    )
+
+
+def _conversation_snapshot_from_messages(
+    job_id: str,
+    total_message_count: int,
+    messages: list[Any],
+) -> dict[str, Any]:
     projected: list[dict[str, Any]] = []
     remaining = 40_000
     content_truncated = False
@@ -5024,7 +5521,7 @@ def _conversation_snapshot(
     projected.reverse()
     unsigned = {
         "contract_version": "factorforge_console_conversation_snapshot_v1",
-        "job_id": job.job_id,
+        "job_id": job_id,
         "message_count": len(projected),
         "total_message_count": total_message_count,
         "omitted_message_count": max(0, total_message_count - len(projected)),

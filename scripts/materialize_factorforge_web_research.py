@@ -16,9 +16,11 @@ sys.path[:] = [item for item in sys.path if item != str(REPO_ROOT)]
 sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.console.web_research_plan import (
+    AUTHORING_REQUEST_BINDING_SCOPE,
     BOOTSTRAP_VERSION,
     BLOCK_PLAN_CATALOG_INVALID,
     WebResearchPlanError,
+    authoring_request_binding_hash,
     build_protocol_payloads,
     build_step1_payloads,
     resolve_workspace_approved_catalog,
@@ -27,6 +29,9 @@ from factor_factory.console.web_research_plan import (
     validate_materialized_web_research,
     validate_plan,
     write_json_atomic,
+)
+from factor_factory.console.conversation_ledger import (
+    CONVERSATION_LEDGER_REFERENCE_FIELD,
 )
 from factor_factory.console.web_factor_proof import prepare_web_factor_proof
 from factor_factory.research_conjecture import research_protocol_paths
@@ -178,6 +183,11 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
         "agent_authored_formula_hash": formula_ir["formula_hash"],
         "host_authoring_contract_sha256": sha256_file(authoring_contract_path),
         "host_request_sha256": stable_json_hash(request),
+        "host_request_binding_scope": AUTHORING_REQUEST_BINDING_SCOPE,
+        "host_request_binding_sha256": authoring_request_binding_hash(request),
+        "host_conversation_ledger_checkpoint": request.get(
+            CONVERSATION_LEDGER_REFERENCE_FIELD
+        ),
         "host_knowledge_summary_sha256": stable_json_hash(knowledge_summary),
         "approved_catalog_sha256": catalog_sha256,
         "trusted_codegen_only": True,

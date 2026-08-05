@@ -905,6 +905,12 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     source = tmp_path / "source"
     workspace = source / "factor_research" / "FACTOR" / "research"
     workspace.mkdir(parents=True)
+    conversation_ledger = workspace / "identity" / "conversation_ledger"
+    conversation_ledger.mkdir(parents=True)
+    (conversation_ledger / f"checkpoint__000001__{'a' * 64}.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
     config = ConsoleConfig(
         source_repo=source,
         state_root=tmp_path / "state",
@@ -949,6 +955,10 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     assert f"src={resume_root},dst={resume_root}" in joined
     assert f"src={initial_root},dst={initial_root}" not in joined
     assert str(marker) not in joined
+    assert (
+        f"src={conversation_ledger},dst={conversation_ledger},readonly"
+        in joined
+    )
     assert (
         f"src={resume_agent / 'openclaw-agent.sqlite'},"
         f"dst={resume_agent / 'openclaw-agent.sqlite'},readonly"

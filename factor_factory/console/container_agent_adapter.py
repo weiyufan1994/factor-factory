@@ -42,6 +42,7 @@ from factor_factory.console.agent_adapter import (
     validate_auth_database,
 )
 from factor_factory.console.config import ConsoleConfig
+from factor_factory.console.conversation_ledger import CONVERSATION_LEDGER_DIRECTORY
 from factor_factory.console.council_ingress import (
     CouncilIngressTask,
     build_council_task_prompt,
@@ -2177,6 +2178,23 @@ class ContainerizedOpenClawResearchAgentAdapter:
             )
         protected_relatives.extend(protected_workspace_relatives)
         protected_source_root = workspace_mount_source or workspace
+        ledger_candidate = protected_source_root / CONVERSATION_LEDGER_DIRECTORY
+        if ledger_candidate.exists() or ledger_candidate.is_symlink():
+            protected_ledger = _safe_workspace_relative_directory(
+                protected_source_root,
+                CONVERSATION_LEDGER_DIRECTORY,
+                must_exist=True,
+            )
+            command.extend(
+                [
+                    "--mount",
+                    _mount(
+                        protected_ledger,
+                        readonly=True,
+                        target=workspace / CONVERSATION_LEDGER_DIRECTORY,
+                    ),
+                ]
+            )
         for relative in dict.fromkeys(protected_relatives):
             try:
                 protected = _safe_workspace_relative_file(
@@ -4266,6 +4284,45 @@ def _safe_workspace_relative_file(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume workspace target is not a file"
         )
     return path
+
+
+def _safe_workspace_relative_directory(
+    workspace: Path,
+    relative: str,
+    *,
+    must_exist: bool,
+) -> Path:
+    root = workspace.resolve(strict=True)
+    relative_path = Path(relative)
+    if (
+        not relative
+        or relative_path.is_absolute()
+        or relative_path == Path(".")
+        or ".." in relative_path.parts
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: workspace directory path is unsafe"
+        )
+    current = root
+    for part in relative_path.parts:
+        current = current / part
+        if not current.exists() and not current.is_symlink():
+            if must_exist:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: workspace directory is missing"
+                )
+            return root / relative_path
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: workspace directory is unavailable"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: workspace directory is unsafe"
+            )
+    return root / relative_path
 
 
 def _prepare_private_resume_archive_path(

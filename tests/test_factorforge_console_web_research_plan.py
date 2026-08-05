@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from factor_factory.console.conversation_ledger import (
+    CONVERSATION_LEDGER_REFERENCE_FIELD,
+    plan_conversation_checkpoints,
+    write_planned_checkpoints,
+)
+
 from factor_factory.console.web_research_plan import (
     BLOCK_PLAN_INVALID,
     PLACEHOLDER,
     WebResearchPlanError,
+    authoring_request_binding_hash,
+    build_authoring_contract,
     required_web_resume_start_step,
     resolve_workspace_approved_catalog,
+    sha256_file,
     stable_json_hash,
     validate_materialized_web_research,
     validate_plan,
@@ -43,7 +54,7 @@ def _workspace(tmp_path: Path) -> Path:
 
 
 def _request() -> dict:
-    return {
+    request = {
         "job_id": "job_123abc4567",
         "factor_id": "WEB_FACTOR",
         "research_id": "web_research",
@@ -56,6 +67,136 @@ def _request() -> dict:
         "forward_horizon": "1d",
         "transaction_cost_bps": 30.0,
     }
+    message = {
+        "message_id": "msg_initial_hypothesis",
+        "sequence_no": 1,
+        "role": "user",
+        "content_kind": "hypothesis",
+        "content": request["hypothesis"],
+        "model": "deepseek-v4-flash",
+        "created_at_utc": "2026-08-05T00:00:01Z",
+    }
+    unsigned = {
+        "contract_version": "factorforge_console_conversation_snapshot_v1",
+        "job_id": request["job_id"],
+        "message_count": 1,
+        "total_message_count": 1,
+        "omitted_message_count": 0,
+        "content_truncated": False,
+        "history_complete": True,
+        "character_budget": 40_000,
+        "included_character_count": len(message["content"]),
+        "messages": [message],
+    }
+    snapshot = {**unsigned, "sha256": stable_json_hash(unsigned)}
+    request["conversation_snapshot"] = snapshot
+    request["conversation_snapshot_sha256"] = snapshot["sha256"]
+    return request
+
+
+def _conversation_snapshot(
+    contents: list[str],
+    *,
+    total_message_count: int | None = None,
+    content_truncated: bool = False,
+) -> dict:
+    messages = [
+        {
+            "message_id": f"msg_{index:02d}",
+            "sequence_no": index,
+            "role": "user",
+            "content_kind": "hypothesis" if index == 1 else "decision",
+            "content": content,
+            "model": "deepseek-v4-flash",
+            "created_at_utc": f"2026-08-05T00:00:0{index}Z",
+        }
+        for index, content in enumerate(contents, start=1)
+    ]
+    total = len(messages) if total_message_count is None else total_message_count
+    unsigned = {
+        "contract_version": "factorforge_console_conversation_snapshot_v1",
+        "job_id": "job_123abc4567",
+        "message_count": len(messages),
+        "total_message_count": total,
+        "omitted_message_count": max(0, total - len(messages)),
+        "content_truncated": content_truncated,
+        "history_complete": total == len(messages) and not content_truncated,
+        "character_budget": 40_000,
+        "included_character_count": sum(len(item["content"]) for item in messages),
+        "messages": messages,
+    }
+    return {**unsigned, "sha256": stable_json_hash(unsigned)}
+
+
+def _request_with_messages(
+    contents: list[str],
+    *,
+    total_message_count: int | None = None,
+    content_truncated: bool = False,
+) -> dict:
+    request = _request()
+    snapshot = _conversation_snapshot(
+        contents,
+        total_message_count=total_message_count,
+        content_truncated=content_truncated,
+    )
+    request["conversation_snapshot"] = snapshot
+    request["conversation_snapshot_sha256"] = snapshot["sha256"]
+    return request
+
+
+def _bind_resume_checkpoint(
+    workspace: Path,
+    request: dict,
+    *,
+    ledger_messages: list[dict] | None = None,
+) -> dict:
+    persisted_request = json.loads(
+        (workspace / "identity" / "web_research_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    reference, planned = plan_conversation_checkpoints(
+        workspace,
+        job_id=str(request["job_id"]),
+        messages=ledger_messages or request["conversation_snapshot"]["messages"],
+        existing_request=persisted_request,
+        parent_attestation_id="attestations/job_123abc4567/attestation_test.json",
+        parent_attestation_sha256="a" * 64,
+    )
+    write_planned_checkpoints(workspace, planned)
+    bound = dict(request)
+    bound[CONVERSATION_LEDGER_REFERENCE_FIELD] = reference
+    return bound
+
+
+def _request_with_bounded_history(
+    contents: list[str],
+    *,
+    visible_limit: int = 40,
+) -> tuple[dict, list[dict]]:
+    full_snapshot = _conversation_snapshot(contents)
+    all_messages = full_snapshot["messages"]
+    visible_messages = all_messages[-visible_limit:]
+    unsigned = {
+        "contract_version": "factorforge_console_conversation_snapshot_v1",
+        "job_id": "job_123abc4567",
+        "message_count": len(visible_messages),
+        "total_message_count": len(all_messages),
+        "omitted_message_count": len(all_messages) - len(visible_messages),
+        "content_truncated": False,
+        "history_complete": len(visible_messages) == len(all_messages),
+        "character_budget": 40_000,
+        "included_character_count": sum(
+            len(item["content"]) for item in visible_messages
+        ),
+        "messages": visible_messages,
+    }
+    snapshot = {**unsigned, "sha256": stable_json_hash(unsigned)}
+    request = _request()
+    request["conversation_snapshot"] = snapshot
+    request["conversation_snapshot_sha256"] = snapshot["sha256"]
+    return request, all_messages
 
 
 def _write_catalog(tmp_path: Path) -> Path:
@@ -299,10 +440,14 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
     operator_names = {
         item["name"] for item in contract["formula_ir_contract"]["supported_operators"]
     }
-    assert contract["version"] == "factorforge_web_research_authoring_contract_v1"
+    assert contract["version"] == "factorforge_web_research_authoring_contract_v2"
     assert contract["immutable_host_authored"] is True
-    assert contract["host_input_binding"]["request_sha256"] == stable_json_hash(
-        _request()
+    assert contract["host_input_binding"]["request_sha256"] == (
+        authoring_request_binding_hash(_request())
+    )
+    assert (
+        contract["host_input_binding"]["request_binding_scope"]
+        == "immutable_authoring_request_v1"
     )
     knowledge_summary = json.loads(
         (workspace / "identity" / "factor_knowledge_summary.json").read_text(
@@ -373,6 +518,109 @@ def test_authoring_preflight_passes_valid_plan_and_reports_formula_contract(tmp_
     assert result["formal_research_started"] is False
     assert result["required_fields"] == ["open", "pre_close"]
     assert result["operator_set"] == ["divide", "minus", "negate"]
+
+
+def test_v2_authoring_contract_excludes_append_only_conversation_context(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    initial_request = _request_with_messages(["Initial economic hypothesis."])
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=initial_request,
+        catalogs=[catalog],
+    )
+    catalog_summary = json.loads(
+        (workspace / "identity" / "data_catalog_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    knowledge_summary = json.loads(
+        (workspace / "identity" / "factor_knowledge_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    extended_request = _request_with_messages(
+        ["Initial economic hypothesis.", "Keep the frozen evidence and revise one mechanism field."]
+    )
+    initial_contract = build_authoring_contract(
+        initial_request,
+        catalog_summary=catalog_summary,
+        knowledge_summary=knowledge_summary,
+    )
+    extended_contract = build_authoring_contract(
+        extended_request,
+        catalog_summary=catalog_summary,
+        knowledge_summary=knowledge_summary,
+    )
+    assert initial_contract == extended_contract
+
+    mutated_request = dict(extended_request)
+    mutated_request["hypothesis"] = "A different economic hypothesis."
+    mutated_contract = build_authoring_contract(
+        mutated_request,
+        catalog_summary=catalog_summary,
+        knowledge_summary=knowledge_summary,
+    )
+    assert mutated_contract != initial_contract
+
+
+def test_resume_checkpoint_requires_job_scoped_parent_attestation(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    initial_request = _request_with_messages(["Initial economic hypothesis."])
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=initial_request,
+        catalogs=[catalog],
+    )
+    persisted_request = json.loads(
+        (workspace / "identity" / "web_research_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    extended_request = _request_with_messages(
+        ["Initial economic hypothesis.", "Append one decision."]
+    )
+    with pytest.raises(RuntimeError, match="CONVERSATION_LEDGER_INVALID"):
+        plan_conversation_checkpoints(
+            workspace,
+            job_id=str(initial_request["job_id"]),
+            messages=extended_request["conversation_snapshot"]["messages"],
+            existing_request=persisted_request,
+            parent_attestation_id=(
+                "attestations/job_other/attestation_wrong_parent.json"
+            ),
+            parent_attestation_sha256="a" * 64,
+        )
+
+
+def test_checkpoint_directory_symlink_blocks_without_external_side_effect(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    outside = tmp_path / "outside-ledger"
+    outside.mkdir(mode=0o755)
+    identity = workspace / "identity"
+    identity.mkdir(parents=True, exist_ok=True)
+    (identity / "conversation_ledger").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+    mode_before = stat.S_IMODE(outside.stat().st_mode)
+
+    with pytest.raises(RuntimeError, match="CONVERSATION_LEDGER_INVALID"):
+        write_web_research_packet(
+            workspace=workspace,
+            worktree=PROJECT_ROOT,
+            request=_request(),
+            catalogs=[catalog],
+        )
+    assert stat.S_IMODE(outside.stat().st_mode) == mode_before
+    assert list(outside.iterdir()) == []
+
+    write_planned_checkpoints(workspace, [])
+    assert stat.S_IMODE(outside.stat().st_mode) == mode_before
 
 
 def test_authoring_preflight_reports_exact_host_contract_reference(tmp_path):
@@ -1103,10 +1351,133 @@ def test_passed_materialization_is_idempotent_and_preregistration_is_immutable(t
     assert "BLOCK_FACTORFORGE_WEB_RESEARCH_IMPLEMENTATION_INVALID" in rewritten.stderr
 
 
+def test_legacy_v1_resume_accepts_only_append_only_conversation_context(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    initial_request = _request_with_messages(["Initial economic hypothesis."])
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=initial_request,
+        catalogs=[catalog],
+    )
+    _fill_plan(workspace)
+    env = {**os.environ, "FACTORFORGE_STATE_CATALOG": str(catalog)}
+    materialized = subprocess.run(
+        [
+            sys.executable,
+            "scripts/materialize_factorforge_web_research.py",
+            "--workspace-root",
+            str(workspace),
+            "--plan",
+            str(workspace / "identity" / "web_research_plan.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert materialized.returncode == 0, materialized.stderr
+
+    contract_path = workspace / "identity" / "web_research_authoring_contract.json"
+    plan_path = workspace / "identity" / "web_research_plan.json"
+    bootstrap_path = workspace / "identity" / "web_research_bootstrap_result.json"
+    request_path = workspace / "identity" / "web_research_request.json"
+    legacy_request = json.loads(request_path.read_text(encoding="utf-8"))
+    legacy_request.pop(CONVERSATION_LEDGER_REFERENCE_FIELD)
+    request_path.write_text(
+        json.dumps(legacy_request, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    shutil.rmtree(workspace / "identity" / "conversation_ledger")
+    legacy_contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    legacy_contract["version"] = "factorforge_web_research_authoring_contract_v1"
+    legacy_binding = legacy_contract["host_input_binding"]
+    legacy_binding.pop("request_binding_scope")
+    legacy_binding["request_sha256"] = stable_json_hash(initial_request)
+    contract_path.write_text(
+        json.dumps(legacy_contract, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    legacy_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    legacy_plan["authoring_contract"] = {
+        "version": legacy_contract["version"],
+        "sha256": stable_json_hash(legacy_contract),
+    }
+    plan_path.write_text(
+        json.dumps(legacy_plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    bootstrap = json.loads(bootstrap_path.read_text(encoding="utf-8"))
+    bootstrap["agent_authored_plan_sha256"] = sha256_file(plan_path)
+    bootstrap["host_authoring_contract_sha256"] = sha256_file(contract_path)
+    bootstrap["host_request_sha256"] = stable_json_hash(legacy_request)
+    bootstrap.pop("host_request_binding_scope", None)
+    bootstrap.pop("host_request_binding_sha256", None)
+    bootstrap.pop("host_conversation_ledger_checkpoint", None)
+    bootstrap_path.write_text(
+        json.dumps(bootstrap, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    frozen_contract = contract_path.read_bytes()
+    frozen_plan = plan_path.read_bytes()
+
+    extended_request = _request_with_messages(
+        ["Initial economic hypothesis.", "Keep frozen evidence; revise only the named mechanism field."]
+    )
+    extended_request = _bind_resume_checkpoint(workspace, extended_request)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=extended_request,
+        catalogs=[catalog],
+        preserve_existing_plan=True,
+        trusted_resume_start_step="6",
+    )
+    assert contract_path.read_bytes() == frozen_contract
+    assert plan_path.read_bytes() == frozen_plan
+    resumed_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert validate_plan(resumed_plan, workspace=workspace)[1]["formula_hash"]
+
+    long_contents = [
+        "Initial economic hypothesis.",
+        "Keep frozen evidence; revise only the named mechanism field.",
+        *[f"Append-only legacy research decision {index}." for index in range(3, 51)],
+    ]
+    long_request, ledger_messages = _request_with_bounded_history(long_contents)
+    long_request = _bind_resume_checkpoint(
+        workspace,
+        long_request,
+        ledger_messages=ledger_messages,
+    )
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=long_request,
+        catalogs=[catalog],
+        preserve_existing_plan=True,
+        trusted_resume_start_step="6",
+    )
+    assert validate_plan(resumed_plan, workspace=workspace)[1]["formula_hash"]
+
+    mutated_request = dict(long_request)
+    mutated_request["hypothesis"] = "A different economic hypothesis."
+    with pytest.raises(RuntimeError, match="frozen web research authoring contract changed"):
+        write_web_research_packet(
+            workspace=workspace,
+            worktree=PROJECT_ROOT,
+            request=mutated_request,
+            catalogs=[catalog],
+            preserve_existing_plan=True,
+            trusted_resume_start_step="6",
+        )
+
+
 def test_resume_packet_and_ultimate_enforce_exact_formal_pause(tmp_path):
     workspace = _workspace(tmp_path)
     catalog = _write_catalog(tmp_path)
-    request = _request()
+    request = _request_with_messages(["Initial economic hypothesis."])
     write_web_research_packet(
         workspace=workspace,
         worktree=PROJECT_ROOT,
@@ -1144,14 +1515,129 @@ def test_resume_packet_and_ultimate_enforce_exact_formal_pause(tmp_path):
     )
     assert required_web_resume_start_step(workspace, "WEB_REPORT") == "6"
 
+    extended_request = _request_with_messages(
+        ["Initial economic hypothesis.", "Revise only the paused mechanism artifact."]
+    )
+    extended_request = _bind_resume_checkpoint(workspace, extended_request)
     write_web_research_packet(
         workspace=workspace,
         worktree=PROJECT_ROOT,
-        request=request,
+        request=extended_request,
         catalogs=[catalog],
         preserve_existing_plan=True,
         trusted_resume_start_step="6",
     )
+    assert validate_materialized_web_research(workspace)["formula_hash"]
+    request_path = workspace / "identity" / "web_research_request.json"
+    valid_request_bytes = request_path.read_bytes()
+    plan = json.loads(
+        (workspace / "identity" / "web_research_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    current_reference = extended_request[CONVERSATION_LEDGER_REFERENCE_FIELD]
+    current_checkpoint = workspace / current_reference["path"]
+    branch_checkpoint = current_checkpoint.with_name(
+        f"checkpoint__000003__{current_reference['root_sha256']}.json"
+    )
+    shutil.copyfile(current_checkpoint, branch_checkpoint)
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_plan(plan, workspace=workspace)
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_materialized_web_research(workspace)
+    branch_checkpoint.unlink()
+
+    current_checkpoint_payload = json.loads(
+        current_checkpoint.read_text(encoding="utf-8")
+    )
+    ancestor_checkpoint = workspace / current_checkpoint_payload["parent_checkpoint"][
+        "path"
+    ]
+    ancestor_backup = workspace / "identity" / "conversation_ancestor.backup"
+    ancestor_checkpoint.rename(ancestor_backup)
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_materialized_web_research(workspace)
+    ancestor_backup.rename(ancestor_checkpoint)
+
+    renamed_checkpoint = current_checkpoint.with_name(
+        f"checkpoint__000003__{current_reference['root_sha256']}.json"
+    )
+    current_checkpoint.rename(renamed_checkpoint)
+    renamed_reference_request = json.loads(valid_request_bytes)
+    renamed_reference_request[CONVERSATION_LEDGER_REFERENCE_FIELD] = {
+        **current_reference,
+        "path": renamed_checkpoint.relative_to(workspace).as_posix(),
+    }
+    request_path.write_text(
+        json.dumps(renamed_reference_request, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_materialized_web_research(workspace)
+    renamed_checkpoint.rename(current_checkpoint)
+    request_path.write_bytes(valid_request_bytes)
+
+    divergent_request = _request_with_messages(
+        ["Initial economic hypothesis.", "Replacement decision that was never appended."]
+    )
+    divergent_request[CONVERSATION_LEDGER_REFERENCE_FIELD] = extended_request[
+        CONVERSATION_LEDGER_REFERENCE_FIELD
+    ]
+    request_path.write_text(
+        json.dumps(divergent_request, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_plan(plan, workspace=workspace)
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_materialized_web_research(workspace)
+
+    missing_history_request = dict(divergent_request)
+    missing_history_request.pop("conversation_snapshot")
+    missing_history_request.pop("conversation_snapshot_sha256")
+    missing_history_request.pop(CONVERSATION_LEDGER_REFERENCE_FIELD)
+    request_path.write_text(
+        json.dumps(missing_history_request, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_plan(plan, workspace=workspace)
+    with pytest.raises(WebResearchPlanError, match="CONVERSATION_LEDGER_INVALID"):
+        validate_materialized_web_research(workspace)
+    request_path.write_bytes(valid_request_bytes)
+
+    full_contents = [
+        "Initial economic hypothesis.",
+        "Revise only the paused mechanism artifact.",
+        *[f"Append-only research decision {index}." for index in range(3, 51)],
+    ]
+    bounded_request, ledger_messages = _request_with_bounded_history(full_contents)
+    bounded_request = _bind_resume_checkpoint(
+        workspace,
+        bounded_request,
+        ledger_messages=ledger_messages,
+    )
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=bounded_request,
+        catalogs=[catalog],
+        preserve_existing_plan=True,
+        trusted_resume_start_step="6",
+    )
+    assert validate_materialized_web_research(workspace)["formula_hash"]
+    bootstrap = json.loads(
+        (
+            workspace / "identity" / "web_research_bootstrap_result.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        bootstrap["host_request_binding_scope"]
+        == "immutable_authoring_request_v1"
+    )
+    assert bootstrap["host_request_binding_sha256"]
+
     guide = (workspace / "identity" / "web_research_runtime.md").read_text(
         encoding="utf-8"
     )

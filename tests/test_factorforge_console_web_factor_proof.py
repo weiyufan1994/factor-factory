@@ -66,6 +66,7 @@ def _write_shared_panel(
     direction: float,
     bad_label_date: bool = False,
     include_source_hash: bool = True,
+    tied_diagnostic_bucket_date: bool = False,
 ) -> None:
     rows = []
     for date_index, signal_date in enumerate(selected[:-2]):
@@ -82,7 +83,11 @@ def _write_shared_panel(
                     "datetime": pd.Timestamp(signal_date),
                     "trade_date": signal_date,
                     "code": f"{asset_index:06d}.SZ",
-                    "factor_value": float(asset_index),
+                    "factor_value": (
+                        float(0 if asset_index < 12 else asset_index - 11)
+                        if tied_diagnostic_bucket_date and date_index == 0
+                        else float(asset_index)
+                    ),
                     "future_return_1d": forward_return,
                     "label_start_date": label_start,
                     "label_end_date": selected[date_index + 2],
@@ -166,6 +171,35 @@ def test_web_factor_proof_blocks_any_oos_label_calendar_mismatch(
 
     with pytest.raises(ValueError, match="OOS label dates do not match"):
         finalize_web_factor_proof(workspace_root=root, plan=plan)
+
+
+def test_non_risk_premium_diagnostic_bucket_ties_do_not_block_formal_proof(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    calendar = _trusted_calendar_snapshot()
+    plan, selected = _plan(calendar["dates"])
+    assert plan["economic_mechanism"]["claim_class"] == "liquidity_rent"
+    prepare_web_factor_proof(workspace_root=root, plan=plan)
+    _write_shared_panel(
+        root,
+        selected,
+        direction=1.0,
+        tied_diagnostic_bucket_date=True,
+    )
+
+    result = finalize_web_factor_proof(workspace_root=root, plan=plan)
+
+    assert result["status"] == "PASS"
+    assert result["formal_proof_eligible"] is True
+    certificate = json.loads(
+        (root / result["factor_proof_certificate_ref"]).read_text(encoding="utf-8")
+    )
+    diagnostic = certificate["metrics"]["bucket_monotonicity"]
+    assert diagnostic["required_for_acceptance"] is False
+    assert diagnostic["status"] == "UNAVAILABLE"
+    assert "BUCKET_TIES_UNRESOLVED" in diagnostic["diagnostic_block_reason"]
 
 
 def test_web_factor_proof_preregistration_is_bound_to_exact_plan(

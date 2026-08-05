@@ -1212,6 +1212,7 @@ def test_resume_packet_and_ultimate_enforce_exact_formal_pause(tmp_path):
         ("BLOCK_DATA_REQUEST_PENDING", "run_step3", "3"),
         ("BLOCK_DATA_REQUEST_PENDING", "run_step4", "4"),
         ("FAIL", "validate_research_protocol_pre_council", "3"),
+        ("FAIL", "finalize_web_factor_proof", "4"),
         ("FAIL", "run_step5", "5"),
     ],
 )

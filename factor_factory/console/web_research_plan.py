@@ -967,6 +967,8 @@ def summarize_factor_knowledge(request: dict[str, Any]) -> dict[str, Any]:
 
 def _resume_step_for_command(command_name: str) -> str | None:
     name = str(command_name or "").lower()
+    if "finalize_web_factor_proof" in name:
+        return "4"
     if "validate_research_protocol_pre_council" in name:
         return "3"
     if "step3" in name:

@@ -1282,13 +1282,34 @@ def _build_metrics(
     }:
         bucket_count = int(bucket_spec["bucket_count"])
         expected_direction = str(bucket_spec["expected_direction"])
-        bucket_returns = _bucket_returns(
-            frame,
-            date_col=date_col,
-            signal_col=signal_col,
-            return_col=return_col,
-            bucket_count=bucket_count,
-        )
+        risk_required = spec["claim_class"] == "risk_premium"
+        try:
+            bucket_returns = _bucket_returns(
+                frame,
+                date_col=date_col,
+                signal_col=signal_col,
+                return_col=return_col,
+                bucket_count=bucket_count,
+            )
+        except ValueError as exc:
+            if (
+                risk_required
+                or "BLOCK_FACTORFORGE_METRIC_VERIFIER_BUCKET_TIES_UNRESOLVED"
+                not in str(exc)
+            ):
+                raise
+            metrics["bucket_monotonicity"] = {
+                "bucket_count": bucket_count,
+                "required_for_acceptance": False,
+                "evidence_role": "diagnostic_evidence",
+                "status": "UNAVAILABLE",
+                "diagnostic_block_reason": str(exc),
+                "expected_direction": expected_direction,
+                "period_count": int(frame[date_col].nunique()),
+            }
+            bucket_returns = None
+        if bucket_returns is None:
+            return metrics
         pairs_violated = sum(
             1
             for left, right in zip(bucket_returns, bucket_returns[1:])
@@ -1302,7 +1323,6 @@ def _build_metrics(
             )
         )
         pairs_total = bucket_count - 1
-        risk_required = spec["claim_class"] == "risk_premium"
         metrics["bucket_monotonicity"] = {
             "bucket_count": bucket_count,
             "required_for_acceptance": risk_required,

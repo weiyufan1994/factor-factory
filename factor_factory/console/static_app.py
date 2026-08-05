@@ -38,6 +38,7 @@ from factor_factory.console.task_manifest import create_miner_campaign_task, rea
 from factor_factory.console.summary import render_dashboard
 from factor_factory.console.web_ui import render_dashboard as render_research_dashboard
 from factor_factory.console.web_ui import render_job, render_login, render_not_found
+from factor_factory.console.web_factor_proof import trusted_calendar_healthy
 
 
 _JOB_ID = re.compile(r"job_[a-f0-9]{10}\Z")
@@ -564,6 +565,11 @@ def _health_checks(application: ResearchConsoleApplication) -> dict[str, bool]:
         ),
         "agent_runtime": bool(application.agent_runtime) if application.agent_runtime else True,
         "data_catalogs": catalogs_healthy(application.config),
+        "trusted_calendar": (
+            trusted_calendar_healthy()
+            if not application.config.auth_disabled
+            else True
+        ),
     }
 
 

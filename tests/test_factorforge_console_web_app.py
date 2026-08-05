@@ -6,6 +6,7 @@ import json
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from http.cookiejar import CookieJar
@@ -179,6 +180,39 @@ def test_invite_login_and_security_headers(research_console):
     assert "Content-Security-Policy" in opener.open(f"{base_url}/", timeout=3).headers
     assert "服务器路径" not in html
     assert 'name="source_url"' not in html
+
+
+def test_production_health_fails_when_trusted_calendar_is_missing(
+    research_console,
+    monkeypatch,
+):
+    import factor_factory.console.static_app as static_app
+
+    base_url, app = research_console
+    app.engine_commit = "a" * 40
+    monkeypatch.setattr(static_app, "trusted_calendar_healthy", lambda: False)
+
+    with pytest.raises(HTTPError) as failure:
+        urlopen(f"{base_url}/healthz", timeout=3)
+    assert failure.value.code == 503
+    assert b'"trusted_calendar":false' in failure.value.read()
+
+
+def test_auth_disabled_health_does_not_require_production_calendar(
+    research_console,
+    monkeypatch,
+):
+    import factor_factory.console.static_app as static_app
+
+    base_url, app = research_console
+    app.config = replace(app.config, auth_disabled=True)
+    app.config.source_repo.mkdir(parents=True, exist_ok=True)
+    app.engine_commit = "a" * 40
+    monkeypatch.setattr(static_app, "trusted_calendar_healthy", lambda: False)
+
+    response = urlopen(f"{base_url}/healthz", timeout=3)
+    assert response.status == 200
+    assert b'"trusted_calendar":true' in response.read()
 
 
 def test_rate_limiter_trusts_forwarded_address_only_from_loopback_proxy():

@@ -170,6 +170,19 @@ def _trusted_calendar_snapshot(*, workspace_root: Path | None = None) -> dict[st
     }
 
 
+def validate_trusted_calendar_snapshot() -> dict[str, Any]:
+    """Validate the independent production calendar before accepting formal work."""
+    return _trusted_calendar_snapshot()
+
+
+def trusted_calendar_healthy() -> bool:
+    try:
+        validate_trusted_calendar_snapshot()
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
 def _planned_signal_window(plan: dict[str, Any], calendar_dates: list[str]) -> dict[str, Any]:
     evidence = plan["evidence_policy"]
     oos_start = pd.Timestamp(str(evidence["oos_start"]), tz="UTC")

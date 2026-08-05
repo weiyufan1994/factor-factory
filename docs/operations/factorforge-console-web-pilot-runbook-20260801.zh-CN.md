@@ -49,12 +49,18 @@ FACTORFORGE_DATA_CATALOGS=<comma separated approved catalog paths>
 FACTORFORGE_CONSOLE_CATALOG_RECEIPT=<active catalog receipt path>
 FACTORFORGE_DATA_API_PYTHONPATH=<clean committed Data API package root>
 FACTORFORGE_CONSOLE_DATA_API_COMMIT=<exact 40-char Data API commit>
+FACTORFORGE_TRUSTED_TRADE_CAL_CSV=<independent pinned production trade calendar csv>
 ```
 
 禁止把真实值写入 Git、网页、artifact 或 agent prompt。
 
 生产服务每次启动只读下载 active catalog
 `s3://yufan-data-lake/factorforge/data/catalog/data_catalog.json` 到 Console 私有 state；不得用 repo 内旧 catalog 或 Mac 本地绝对路径替代 production truth。
+
+正式 proof 使用的交易日历必须独立于 factor workspace，且文件 SHA-256、开放日序列、日期边界和数量全部命中
+`docs/contracts/factorforge-trusted-trading-calendar-snapshots-v1.json` 的 production snapshot。Pilot 主机固定安装到
+`/var/lib/factorforge-console/data-api-runtime/reference/trade_cal.csv` 并通过
+`FACTORFORGE_TRUSTED_TRADE_CAL_CSV` 显式引用；缺失或哈希不一致时 Web/runner 不得启动，`/healthz` 必须返回 503。
 
 ## 3. Linux 主机布局
 

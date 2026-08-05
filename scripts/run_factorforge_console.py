@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import signal
@@ -28,6 +29,9 @@ from factor_factory.console.static_app import (  # noqa: E402
     serve_research_console_server,
 )
 from factor_factory.console.store import ResearchJobStore  # noqa: E402
+from factor_factory.console.web_factor_proof import (  # noqa: E402
+    validate_trusted_calendar_snapshot,
+)
 from factor_factory.console.worktree_allocator import FactorWorktreeAllocator  # noqa: E402
 
 
@@ -104,6 +108,13 @@ def main() -> None:
         data_api_pythonpath=args.data_api_pythonpath,
         auth_disabled=args.auth_disabled,
     )
+    if args.mode in {"web", "worker"} and not config.auth_disabled:
+        try:
+            validate_trusted_calendar_snapshot()
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise SystemExit(
+                f"Factor Forge trusted calendar preflight failed: {exc}"
+            ) from exc
     ledger_root = Path(args.ledger_root).expanduser() if args.ledger_root else config.state_root / "ledger"
     store = ResearchJobStore(ledger_root)
 

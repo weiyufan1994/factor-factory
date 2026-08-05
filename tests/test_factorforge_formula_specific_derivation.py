@@ -208,6 +208,202 @@ def test_indexed_transient_state_dynamics_from_production_memo_pass() -> None:
     assert failures == []
 
 
+def test_observable_bound_transient_model_from_v10_production_memo_passes() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g_{i,t}=open_{i,t}/pre_close_{i,t}-1=s_{i,t}+u_{i,t}; "
+        "s_{i,t} is persistent news absorbed by the t+1 close; "
+        "u_{i,t+1}=rho*u_{i,t}+eta_{i,t+1}, |rho|<1, "
+        "u is the temporary auction order-flow impact; "
+        "return_{i,t+2}=-(1-rho)*u_{i,t}+epsilon_{i,t+2}; "
+        "eta and epsilon are zero-mean innovations with finite variance."
+    )
+    derivation["latent_state"] = (
+        "g is the observable opening gap, s is persistent news, and u is the "
+        "temporary auction order-flow impact."
+    )
+    derivation["formula_as_estimator"] = (
+        "formula_state estimates u through the observed opening gap, failed "
+        "intraday confirmation gate, and relative volume."
+    )
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "Transient opening impact u decays separately from persistent news s."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
+def test_observable_binding_cannot_replace_required_transient_structure() -> None:
+    malformed_models = (
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u is temporary impact; return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is a state; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "open pre_close close volume sign mean transient temporary "
+            "impact return process formula"
+        ),
+        (
+            "g=open/pre_close-1<=junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1>=junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1==junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1!=junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u*epsilon"
+        ),
+        (
+            "g=open/pre_close-1, <=junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1 where ==junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1, where junk=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "return=theta*u+epsilon"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "收益=theta*u"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "收益=theta*u*epsilon"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "收益率=theta*u"
+        ),
+        (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            "收益率=theta*u*epsilon"
+        ),
+    )
+    for malformed_model in malformed_models:
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = malformed_model
+        derivation["latent_state"] = "s and u are separate candidate states."
+        derivation["formula_as_estimator"] = "formula_state estimates u."
+        derivation["profit_payer_derivation"]["math_model_link"] = (
+            "Impact state hypothesis under test."
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert any(
+            failure["code"]
+            == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
+            for failure in failures
+        )
+
+
+def test_chinese_expected_return_can_omit_realized_return_residual() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g=open/pre_close-1=s+u; s is persistent news; "
+        "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+        "预期收益=theta*u"
+    )
+    derivation["latent_state"] = (
+        "s is persistent news and u is temporary opening impact."
+    )
+    derivation["formula_as_estimator"] = "formula_state estimates u."
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "Transient opening impact u decays separately from persistent news s."
+    )
+
+    failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+    assert failures == []
+
+
+def test_fullwidth_colon_payoff_labels_pass() -> None:
+    for payoff in (
+        "模型：收益=theta*u+epsilon",
+        "模型：预期收益=theta*u",
+        "payoff：return=theta*u+epsilon",
+    ):
+        derivation = deepcopy(_overnight_reversal_derivation())
+        derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+            "transient_impact"
+        )
+        derivation["selected_model_family"] = "transient_impact"
+        derivation["process_or_distribution"] = (
+            "g=open/pre_close-1=s+u; s is persistent news; "
+            "u_{t+1}=rho*u_t+eta, |rho|<1; u is temporary impact; "
+            f"{payoff}"
+        )
+        derivation["latent_state"] = (
+            "s is persistent news and u is temporary opening impact."
+        )
+        derivation["formula_as_estimator"] = "formula_state estimates u."
+        derivation["profit_payer_derivation"]["math_model_link"] = (
+            "Transient opening impact u decays separately from persistent news s."
+        )
+
+        failures = validate_formula_specific_derivation(derivation, _spec(), {})
+
+        assert failures == []
+
+
 def test_transient_state_dynamics_require_stability_time_and_binding() -> None:
     base = deepcopy(_overnight_reversal_derivation())
     base["economic_to_math_model_selection"]["baseline_model_family"] = (

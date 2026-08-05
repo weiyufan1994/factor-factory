@@ -453,9 +453,7 @@ def _has_explicit_transient_impact_model(
     semantic_text = f"{process}; {semantic_context}".translate(translation)
     process_lower = semantic_text.lower()
 
-    symbol_pattern = re.compile(
-        r"[a-zA-Z][a-zA-Z0-9]*(?:_(?:\{[^}]*\}|[a-zA-Z0-9]+))?"
-    )
+    symbol_pattern = re.compile(r"[a-zA-Z][a-zA-Z0-9_]*(?:\{[^}]*\})?")
 
     def canonical_symbol(token: str) -> str:
         if re.fullmatch(r"I_(?:\{[^}]*\}|[a-zA-Z0-9]+)", token):
@@ -658,36 +656,45 @@ def _has_explicit_transient_impact_model(
 
     equations: list[dict[str, Any]] = []
     for clause in normalized.split(";"):
-        if "=" not in clause:
+        equality_parts = [
+            part.strip()
+            for part in re.split(r"(?<![<>=!])=(?!=)", clause)
+            if part.strip()
+        ]
+        if len(equality_parts) < 2:
             continue
-        left, right = clause.split("=", 1)
-        left = left.rsplit(":", 1)[-1].strip()
-        raw_right = right.strip()
-        right = formula_rhs(right)
+        left = re.split(r"[:：]", equality_parts[0])[-1].strip()
         left_math = parse_math(left)
-        right_math = parse_math(right)
-        if (
-            left
-            and right
-            and re.sub(r"\s+", "", left) != re.sub(r"\s+", "", right)
-            and right_math is not None
-            and not (
-                left_math is not None
-                and left_math["polynomial"] is not None
-                and left_math["polynomial"] == right_math["polynomial"]
-            )
-        ):
-            equations.append(
-                {
-                    "left": left,
-                    "right": right,
-                    "raw_right": raw_right,
-                    "clause": clause.strip(),
-                    "left_symbols": symbols(left),
-                    "right_symbols": set(right_math["names"]),
-                    "right_polynomial": right_math["polynomial"],
-                }
-            )
+        parsed_rights: list[tuple[str, str, dict[str, Any] | None]] = []
+        for candidate_right in equality_parts[1:]:
+            raw_right = candidate_right.strip()
+            right = raw_right if len(equality_parts) > 2 else formula_rhs(raw_right)
+            parsed_rights.append((raw_right, right, parse_math(right)))
+        if any(right_math is None for _, _, right_math in parsed_rights):
+            continue
+        for raw_right, right, right_math in parsed_rights:
+            if (
+                left
+                and right
+                and re.sub(r"\s+", "", left) != re.sub(r"\s+", "", right)
+                and right_math is not None
+                and not (
+                    left_math is not None
+                    and left_math["polynomial"] is not None
+                    and left_math["polynomial"] == right_math["polynomial"]
+                )
+            ):
+                equations.append(
+                    {
+                        "left": left,
+                        "right": right,
+                        "raw_right": raw_right,
+                        "clause": clause.strip(),
+                        "left_symbols": symbols(left),
+                        "right_symbols": set(right_math["names"]),
+                        "right_polynomial": right_math["polynomial"],
+                    }
+                )
 
     coefficient_terms = {
         "alpha",
@@ -725,15 +732,28 @@ def _has_explicit_transient_impact_model(
         direct_return_lhs = bool(
             re.match(r"^(?:r(?:[_({]|$)|return(?:[_({]|$))", left_lower)
         )
-        chinese_return_lhs = bool(
-            re.fullmatch(r"(?:条件)?(?:预期|期望)?收益(?:率)?", left_lower.strip())
+        chinese_direct_return_lhs = bool(
+            re.fullmatch(r"收益(?:率)?", left_lower.strip())
+        )
+        chinese_expected_return_lhs = bool(
+            re.fullmatch(
+                r"(?:(?:条件)?(?:预期|期望)收益(?:率)?|条件收益(?:率)?)",
+                left_lower.strip(),
+            )
         )
         right_symbols = set(equation["right_symbols"])
         if (
-            (expectation_lhs or direct_return_lhs or chinese_return_lhs)
+            (
+                expectation_lhs
+                or direct_return_lhs
+                or chinese_direct_return_lhs
+                or chinese_expected_return_lhs
+            )
             and bool(coefficient_terms.intersection(right_symbols))
         ):
-            equation["direct_return_lhs"] = direct_return_lhs
+            equation["direct_return_lhs"] = (
+                direct_return_lhs or chinese_direct_return_lhs
+            )
             payoff_equations.append(equation)
 
     def polynomial_contains(
@@ -1173,6 +1193,10 @@ def _has_explicit_transient_impact_model(
 
     structural_state_bound = any(
         polynomial_contains(equation, (coefficient_terms, defined_impact_states))
+        and (
+            equation.get("direct_return_lhs") is not True
+            or has_independent_residual(equation)
+        )
         for equation in payoff_equations
     )
 

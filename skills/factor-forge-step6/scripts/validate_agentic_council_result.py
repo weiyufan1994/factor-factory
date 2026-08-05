@@ -19,6 +19,14 @@ OBJ = FF / "objects"
 RESULT_VERSION = "factorforge_agentic_revision_council_result_v1"
 RESEARCH_PROTOCOL_VERSION = "factorforge_research_conjecture_protocol_v1"
 FORBIDDEN_TOKEN = "BLOCK_REVISION_COUNCIL_AGENTIC_FORBIDDEN_TEXT"
+TERMINAL_RECOMMENDATION_VALUES = {
+    "reject",
+    "kill",
+    "stop",
+    "terminal_reject",
+    "no_revision",
+    "no_derived_revision",
+}
 
 FORBIDDEN_PATTERNS = [
     "portfolio",
@@ -94,12 +102,9 @@ def nonempty_limiting_cases(value: Any, min_count: int = 2) -> bool:
 
 def terminal_recommendation_requested(result: dict[str, Any]) -> bool:
     rec = result.get("revision_or_kill_recommendation")
-    pieces: list[str] = []
-    if isinstance(rec, dict):
-        for key in ("recommendation", "reason", "decision", "summary"):
-            if isinstance(rec.get(key), str):
-                pieces.append(rec[key].lower())
-    return any(term in " ".join(pieces) for term in ("reject", "kill", "stop", "terminal", "no_revision"))
+    if not isinstance(rec, dict) or not isinstance(rec.get("recommendation"), str):
+        return False
+    return str(rec["recommendation"]).strip().lower() in TERMINAL_RECOMMENDATION_VALUES
 
 
 def terminal_control_fields(result: dict[str, Any]) -> dict[str, Any]:

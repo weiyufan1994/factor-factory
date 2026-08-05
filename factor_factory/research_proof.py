@@ -1214,6 +1214,23 @@ def _derive_verdict(
     return "ACCEPT", outcomes, reasons
 
 
+def derive_factor_proof_verdict(
+    payload: dict[str, Any],
+    *,
+    workspace_root: Path | None,
+) -> dict[str, Any]:
+    """Evaluate preregistered decision rules without trusting a declared verdict."""
+    verdict, outcomes, reasons = _derive_verdict(
+        payload,
+        workspace_root=workspace_root,
+    )
+    return {
+        "verdict": verdict,
+        "decision_rule_outcomes": outcomes,
+        "block_reasons": list(dict.fromkeys(reasons)),
+    }
+
+
 def validate_factor_proof_certificate(
     payload: dict[str, Any],
     *,

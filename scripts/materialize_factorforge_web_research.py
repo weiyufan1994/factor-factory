@@ -27,6 +27,7 @@ from factor_factory.console.web_research_plan import (
     validate_plan,
     write_json_atomic,
 )
+from factor_factory.console.web_factor_proof import prepare_web_factor_proof
 from factor_factory.research_conjecture import research_protocol_paths
 
 
@@ -135,6 +136,11 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
     for name, payload in protocol.items():
         write_json_atomic(protocol_paths[name], payload)
 
+    proof_preregistration = prepare_web_factor_proof(
+        workspace_root=workspace,
+        plan=plan,
+    )
+
     validations = [
         _validate_command(
             [sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", report_id],
@@ -178,6 +184,16 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
             "research_state": str(protocol_paths["state"].relative_to(workspace)),
             "research_conjecture": str(protocol_paths["conjecture"].relative_to(workspace)),
             "approach_registry": str(protocol_paths["approaches"].relative_to(workspace)),
+            "factor_proof_preregistration": (
+                f"objects/research_protocol/"
+                f"web_factor_proof_preregistration__{report_id}.json"
+            ),
+            "metric_verifier_spec": str(
+                proof_preregistration["metric_verifier_spec_ref"]
+            ),
+            "threshold_registration": str(
+                proof_preregistration["threshold_registration_ref"]
+            ),
         },
     }
     write_json_atomic(result_path, result)

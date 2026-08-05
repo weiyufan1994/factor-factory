@@ -145,6 +145,7 @@ def build_forward_return_frame(
     horizon: int = 1,
     entry_offset: int = 0,
     exit_offset: int | None = None,
+    include_label_path: bool = False,
 ) -> pd.DataFrame:
     if horizon <= 0:
         raise ValueError('horizon must be positive')
@@ -166,4 +167,14 @@ def build_forward_return_frame(
     entry_price = grouped_price.shift(-entry_offset) if entry_offset else enriched[price_col]
     exit_price = grouped_price.shift(-resolved_exit_offset)
     enriched[f'future_return_{horizon}d'] = exit_price / entry_price - 1
+    if include_label_path:
+        grouped_date = enriched.groupby(instrument_col, sort=False)[date_col]
+        enriched['label_start_date'] = (
+            grouped_date.shift(-entry_offset)
+            if entry_offset
+            else enriched[date_col]
+        )
+        enriched['label_end_date'] = grouped_date.shift(-resolved_exit_offset)
+        enriched['label_start_price'] = entry_price
+        enriched['label_end_price'] = exit_price
     return enriched

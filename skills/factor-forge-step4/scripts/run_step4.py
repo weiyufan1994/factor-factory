@@ -1385,7 +1385,16 @@ def build_shared_evaluation_context(
     factor_signal = factor_signal.rename(columns={'ts_code': 'code'}).copy()
     factor_signal['datetime'] = normalize_trade_date_series(factor_signal['trade_date'])
 
-    required_daily_cols = ['ts_code', 'trade_date', 'close']
+    proof_control_columns = (
+        [
+            str(column)
+            for column in (evaluation_contract.get('proof_control_columns') or [])
+            if str(column).strip()
+        ]
+        if isinstance(evaluation_contract, dict)
+        else []
+    )
+    required_daily_cols = ['ts_code', 'trade_date', 'close', *proof_control_columns]
     missing_daily_cols = [col for col in required_daily_cols if col not in daily_df.columns]
     if missing_daily_cols:
         raise ValueError(f'shared evaluation context requires daily columns: {missing_daily_cols}')
@@ -1394,7 +1403,17 @@ def build_shared_evaluation_context(
         and evaluation_contract.get('version') == WEB_EVALUATION_CONTRACT_VERSION
     )
     daily_forward = build_forward_return_frame(
-        daily_df[[col for col in ['ts_code', 'trade_date', 'close', 'pct_chg'] if col in daily_df.columns]].rename(columns={'ts_code': 'code'}),
+        daily_df[[
+            col
+            for col in [
+                'ts_code',
+                'trade_date',
+                'close',
+                'pct_chg',
+                *proof_control_columns,
+            ]
+            if col in daily_df.columns
+        ]].rename(columns={'ts_code': 'code'}),
         instrument_col='code',
         date_col='trade_date',
         price_col='close',
@@ -1402,9 +1421,21 @@ def build_shared_evaluation_context(
         horizon=1,
         entry_offset=1 if web_tradeable_timing else 0,
         exit_offset=2 if web_tradeable_timing else None,
+        include_label_path=web_tradeable_timing,
     )
+    forward_columns = ['datetime', 'code', 'future_return_1d']
+    if web_tradeable_timing:
+        forward_columns.extend(
+            [
+                'label_start_date',
+                'label_end_date',
+                'label_start_price',
+                'label_end_price',
+            ]
+        )
+        forward_columns.extend(proof_control_columns)
     merged = factor_signal[['datetime', 'trade_date', 'code', signal_col]].merge(
-        daily_forward[['datetime', 'code', 'future_return_1d']],
+        daily_forward[forward_columns],
         on=['datetime', 'code'],
         how='left',
     ).dropna(subset=[signal_col, 'future_return_1d'])

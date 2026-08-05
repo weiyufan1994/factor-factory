@@ -1395,6 +1395,7 @@ def materialize_shared_daily_slice(
     csv_output_policy: str | None = None,
     required_fields: list[str] | None = None,
     formula_ir: dict | None = None,
+    proof_control_fields: list[str] | None = None,
 ) -> dict:
     del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
@@ -1402,7 +1403,9 @@ def materialize_shared_daily_slice(
     needs_cross_sectional_sample = requires_cross_sectional_sample(formula_ir)
     step3_sample_universe: str | list[str] = 'a_share_all' if needs_cross_sectional_sample else ['000001.SZ', '000002.SZ']
     daily_fields = select_clean_daily_fields_for_formula(required_fields, formula_ir)
-    daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
+    daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(
+        [*(required_fields or []), *(proof_control_fields or [])]
+    )
     daily_basic_required = len(daily_basic_fields) > 2
     full_query_window = data_api_window_bounds(sample_window)
     executability_window = step3a_executability_window(sample_window, formula_ir=formula_ir)
@@ -1659,13 +1662,16 @@ def build_local_price_volume_snapshots(
     csv_output_policy: str | None = None,
     required_fields: list[str] | None = None,
     formula_ir: dict | None = None,
+    proof_control_fields: list[str] | None = None,
 ):
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
     step3_sample_universe = ['000001.SZ', '000002.SZ']
     daily_fields = select_clean_daily_fields_for_formula(required_fields, formula_ir)
     minute_fields = ['open', 'high', 'low', 'close', 'vol', 'amount']
-    daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(required_fields)
+    daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(
+        [*(required_fields or []), *(proof_control_fields or [])]
+    )
     daily_basic_required = len(daily_basic_fields) > 2
     full_query_window = data_api_window_bounds(sample_window)
     executability_window = step3a_executability_window(sample_window, formula_ir=formula_ir)
@@ -1853,6 +1859,7 @@ def build_local_price_volume_snapshots(
                 symbols=tickers,
                 required_fields=required_fields,
                 formula_ir=formula_ir,
+                proof_control_fields=proof_control_fields,
             )
             sample_actual = {
                 'start': str(minute_df['trade_date'].min()),
@@ -1982,6 +1989,7 @@ def build_local_daily_snapshot(
     csv_output_policy: str | None = None,
     required_fields: list[str] | None = None,
     formula_ir: dict | None = None,
+    proof_control_fields: list[str] | None = None,
 ):
     # Daily-only factors resolve the published clean_daily_bar Data API contract.
     return materialize_shared_daily_slice(
@@ -1990,6 +1998,7 @@ def build_local_daily_snapshot(
         csv_output_policy=csv_output_policy,
         required_fields=required_fields,
         formula_ir=formula_ir,
+        proof_control_fields=proof_control_fields,
     )
 
 
@@ -2234,12 +2243,25 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     canonical = fsm.get('canonical_spec', {})
     formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     required_fields = formula_required_daily_fields(fsm)
+    evaluation_contract = (
+        fsm.get('evaluation_contract')
+        if isinstance(fsm.get('evaluation_contract'), dict)
+        else {}
+    )
+    proof_control_columns = [
+        str(field)
+        for field in (evaluation_contract.get('proof_control_columns') or [])
+        if str(field).strip()
+    ]
     moneyflow_fields = moneyflow_required_fields(fsm)
     need_moneyflow = bool(moneyflow_fields)
     retained_chip_state = direct_code_uses_retained_chip_state(fsm)
     price_volume_minute = is_price_volume_minute_formula(canonical)
     direct_code_minute = (not retained_chip_state) and direct_code_requires_minute_inputs(fsm)
-    required = canonical.get('required_inputs', [])
+    required = list(dict.fromkeys([
+        *(canonical.get('required_inputs', []) or []),
+        *proof_control_columns,
+    ]))
     required_text = ' '.join(required)
     need_minute = (not need_moneyflow) and (not retained_chip_state) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
     need_daily = not need_moneyflow
@@ -2513,6 +2535,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             csv_output_policy=csv_output_policy,
             required_fields=required_fields,
             formula_ir=formula_ir,
+            proof_control_fields=proof_control_columns,
         )
         if price_volume_minute:
             notes.append('Formula-declared price-volume minute factors should prefer daily_basic_incremental for total_mv / circ_mv / turnover_rate / pe / pb when those fields are required.')
@@ -2544,6 +2567,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
             csv_output_policy=csv_output_policy,
             required_fields=required_fields,
             formula_ir=formula_ir,
+            proof_control_fields=proof_control_columns,
         )
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')

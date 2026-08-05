@@ -302,6 +302,20 @@ def classify_loop_state(
             handoff_to_step3b_exists=handoff_exists,
             prewrite_block_exists=prewrite_blocked,
         ).to_dict()
+    if wrapper_proof.get("status") == "PAUSED" and council_status == "awaiting_agent_results":
+        return LoopState(
+            outcome="awaiting_agent_results",
+            proof_status="PAUSED",
+            can_continue=False,
+            stop_reason="revision_council_awaiting_agent_results",
+            decision=decision,
+            loop_authorization=loop_authorization,
+            revision_needed=revision_needed if isinstance(revision_needed, bool) else None,
+            council_status=council_status,
+            official_record_exists=official_exists,
+            handoff_to_step3b_exists=handoff_exists,
+            prewrite_block_exists=prewrite_blocked,
+        ).to_dict()
 
     proof_reasons = validate_wrapper_proof_for_loop(
         wrapper_proof,

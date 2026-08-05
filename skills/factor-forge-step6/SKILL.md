@@ -149,6 +149,30 @@ Council result validator against its dispatch/task packet. Matching hashes alone
 are insufficient. A local contract mock is labeled `contract_mock_completed`
 and is never independent-agent research evidence.
 
+## Terminal Council Rejection
+
+Council may close a rejected branch only when all of the following hold:
+
+- every required dispatch route returns one result whose exact recommendation is
+  in the terminal enum (`reject`, `kill`, `stop`, `terminal_reject`,
+  `no_revision`, `no_derived_revision`); do not infer terminal intent from prose
+  or substrings;
+- no distinct mechanism derivation remains within the registered route/trial
+  budget;
+- the workspace contains a validated factor-proof certificate with derived
+  verdict `REJECT`;
+- the terminal-rejection artifact binds the dispatch manifest, Council summary,
+  result collection, every selected raw result, proof certificate and iteration
+  decision by path and SHA256; final replay must recompute the required task set,
+  collection counts and result identities from the dispatch manifest;
+- the final research-protocol validator accepts those semantic bindings.
+
+If another mathematically distinct route remains, write the bounded
+branch-falsification record and next-derivation questionnaire and return
+`awaiting_next_derivation`. If Council is not unanimous, return
+`awaiting_main_agent_council_synthesis`. Neither state is formal proof eligible,
+and neither may be presented as a completed factor decision.
+
 ## Root Synthesis
 
 The main agent must cover every registered route and state:

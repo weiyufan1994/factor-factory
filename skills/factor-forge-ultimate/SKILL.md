@@ -165,6 +165,14 @@ python3 scripts/validate_factorforge_factor_proof.py \
   --report-id <report_id>
 ```
 
+For a web-created task, its plan materializer performs the freeze-search and
+threshold-registration stages before Step4. The formal wrapper must run
+`scripts/finalize_factorforge_web_factor_proof.py` immediately after Step4
+validation. That finalizer releases and replays the exact plan-bound panel,
+writes the factor-proof certificate and bound verifier, and fails closed on
+plan, calendar, label, risk-control, panel or hash drift. Re-running an already
+finalized proof is permitted only as an identical verified replay.
+
 The release command binds actual OOS dates, at least 60 daily periods, panel
 hash, locked rules and the frozen trial ledger. The full verifier must consume
 that same panel and threshold file. The certificate validator replays the
@@ -239,6 +247,18 @@ sufficient. Local Council mocks prove only the contract and must report
 Only an explicit main-agent approval source may activate a revision. Approval
 runs Step6 validation and the final research protocol verifier; failure rolls
 back active handoff writes.
+
+A unanimous Council `reject` closes a web research task only through the
+terminal-rejection protocol. The close artifact must bind a validated formal
+factor-proof certificate whose derived verdict is `REJECT`, the dispatch
+manifest, Council summary and collection, every selected raw result, and the
+iteration decision. Final replay must verify hashes, dispatch identities,
+required-result counts and the exact terminal recommendation enum; prose and
+substring matches are not decisions. If a distinct registered route is still
+available, the wrapper must pause as `awaiting_next_derivation` and emit the
+bounded questionnaire. Non-unanimous Council output must pause as
+`awaiting_main_agent_council_synthesis`. Neither pause state is a terminal
+factor verdict or formal proof.
 
 ### 5. Decision and Loop
 

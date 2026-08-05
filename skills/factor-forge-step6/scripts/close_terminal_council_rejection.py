@@ -16,6 +16,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.runtime_context import resolve_factorforge_context
+from factor_factory.research_proof import (
+    factor_proof_certificate_path,
+    validate_factor_proof_certificate,
+)
 from validate_agentic_council_collection import validate_collection
 from validate_agentic_council_result import (
     expected_manifest_task,
@@ -32,15 +36,17 @@ TOKEN_ITERATION_MISSING = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_ITERATION_MISSING"
 TOKEN_VALIDATION_FAILED = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_VALIDATION_FAILED"
 TOKEN_HANDOFF_EXISTS = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_APPROVED_HANDOFF_EXISTS"
 TOKEN_PREMATURE_TERMINAL_REJECT = "BLOCK_PREMATURE_TERMINAL_REJECT_BEFORE_MAX_LOOPS"
+TOKEN_FACTOR_PROOF_NOT_REJECTED = (
+    "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_FACTOR_PROOF_NOT_REJECTED"
+)
 
-TERMINAL_RECOMMENDATION_TERMS = {
+TERMINAL_RECOMMENDATION_VALUES = {
     "reject",
     "kill",
     "stop",
-    "terminal",
+    "terminal_reject",
     "no_revision",
-    "no successor",
-    "do not continue",
+    "no_derived_revision",
 }
 
 
@@ -135,8 +141,33 @@ def next_derivation_questionnaire_paths(root: Path, report_id: str) -> tuple[Pat
 
 
 def resolve_under_root(root: Path, raw: Any) -> Path:
-    path = Path(str(raw))
-    return path if path.is_absolute() else root / path
+    resolved_root = root.expanduser().resolve(strict=False)
+    lexical = Path(str(raw)).expanduser()
+    if not lexical.is_absolute():
+        lexical = resolved_root / lexical
+    try:
+        lexical_relative = lexical.relative_to(resolved_root)
+    except ValueError:
+        block(
+            TOKEN_VALIDATION_FAILED,
+            {"reason": "workspace_path_escape_forbidden"},
+        )
+    cursor = resolved_root
+    if any(
+        (cursor := cursor / part).is_symlink()
+        for part in lexical_relative.parts
+    ):
+        block(
+            TOKEN_VALIDATION_FAILED,
+            {"reason": "workspace_path_symlink_forbidden"},
+        )
+    path = lexical.resolve(strict=False)
+    if path != resolved_root and resolved_root not in path.parents:
+        block(
+            TOKEN_VALIDATION_FAILED,
+            {"reason": "workspace_path_escape_forbidden"},
+        )
+    return path
 
 
 def loop_brief_paths(root: Path, iteration: dict[str, Any]) -> tuple[Path | None, Path | None]:
@@ -157,20 +188,11 @@ def result_paths_from_collection(root: Path, collection: dict[str, Any]) -> list
     return paths
 
 
-def terminal_recommendation_text(result: dict[str, Any]) -> str:
+def terminal_recommendation_value(result: dict[str, Any]) -> str:
     rec = result.get("revision_or_kill_recommendation")
-    pieces: list[str] = []
-    if isinstance(rec, dict):
-        for key in ("recommendation", "reason", "decision", "summary"):
-            if isinstance(rec.get(key), str):
-                pieces.append(rec[key])
-    if isinstance(result.get("candidate_revision_laws"), list):
-        for law in result["candidate_revision_laws"]:
-            if isinstance(law, dict):
-                for key in ("revision_type", "law_statement", "expression_change_direction"):
-                    if isinstance(law.get(key), str):
-                        pieces.append(law[key])
-    return " ".join(pieces).lower()
+    if not isinstance(rec, dict) or not isinstance(rec.get("recommendation"), str):
+        return ""
+    return str(rec["recommendation"]).strip().lower()
 
 
 def prior_revision_review_present(result: dict[str, Any]) -> bool:
@@ -201,10 +223,10 @@ def load_valid_terminal_results(root: Path, collection: dict[str, Any]) -> tuple
         if reasons:
             invalid.append({"result_path": str(path), "block_reasons": reasons})
             continue
-        text = terminal_recommendation_text(payload)
-        is_terminal = any(term in text for term in TERMINAL_RECOMMENDATION_TERMS)
+        recommendation = terminal_recommendation_value(payload)
+        is_terminal = recommendation in TERMINAL_RECOMMENDATION_VALUES
         if not is_terminal:
-            non_terminal.append({"result_path": str(path), "task_id": payload.get("task_id"), "recommendation_text": text[:240]})
+            non_terminal.append({"result_path": str(path), "task_id": payload.get("task_id"), "recommendation": recommendation})
             continue
         results.append({"path": str(path), "payload": payload, "prior_review_present": prior_revision_review_present(payload)})
     if invalid:
@@ -632,6 +654,7 @@ def main() -> int:
     cdir = council_dir(root, rid)
     summary_path = cdir / f"revision_council_summary__{rid}.json"
     collection_path = cdir / f"agentic_result_collection__{rid}.json"
+    dispatch_path = cdir / f"dispatch_manifest__{rid}.json"
     iter_path = iteration_path(root, rid)
     out_handoff = handoff_path(root, rid)
     artifact_path = terminal_rejection_path(root, rid)
@@ -639,6 +662,11 @@ def main() -> int:
         block(TOKEN_SUMMARY_MISSING, {"report_id": rid, "summary_path": str(summary_path)})
     if not collection_path.exists():
         block(TOKEN_COLLECTION_MISSING, {"report_id": rid, "collection_path": str(collection_path)})
+    if not dispatch_path.exists():
+        block(
+            TOKEN_COLLECTION_INVALID,
+            {"report_id": rid, "reason": "dispatch_manifest_missing"},
+        )
     if not iter_path.exists():
         block(TOKEN_ITERATION_MISSING, {"report_id": rid, "iteration_path": str(iter_path)})
     if out_handoff.exists():
@@ -650,6 +678,54 @@ def main() -> int:
     summary = load_json(summary_path)
     collection = load_json(collection_path)
     collection_reasons = validate_collection(rid, collection)
+    dispatch = load_json(dispatch_path)
+    required_tasks = [
+        task
+        for task in dispatch.get("agent_tasks") or []
+        if isinstance(task, dict) and task.get("required") is True
+    ]
+    required_ids = [str(task.get("task_id") or "") for task in required_tasks]
+    valid_results = collection.get("valid_results")
+    valid_ids = [
+        str(row.get("task_id") or "")
+        for row in valid_results or []
+        if isinstance(row, dict)
+    ]
+    if (
+        dispatch.get("dispatch_manifest_version")
+        != "factorforge_agentic_council_dispatch_manifest_v1"
+        or dispatch.get("report_id") != rid
+        or not required_ids
+        or any(not task_id for task_id in required_ids)
+        or len(set(required_ids)) != len(required_ids)
+        or not isinstance(valid_results, list)
+        or set(valid_ids) != set(required_ids)
+        or len(valid_ids) != len(required_ids)
+        or collection.get("required_result_count") != len(required_ids)
+        or collection.get("present_result_count") != len(required_ids)
+        or collection.get("valid_result_count") != len(required_ids)
+    ):
+        collection_reasons.append(
+            "BLOCK_AGENTIC_COUNCIL_COLLECTION_DISPATCH_SET_MISMATCH"
+        )
+    required_paths = {
+        str(task.get("task_id")): resolve_under_root(
+            root,
+            task.get("expected_result_path"),
+        )
+        for task in required_tasks
+    }
+    for row in valid_results or []:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "")
+        if required_paths.get(task_id) != resolve_under_root(
+            root,
+            row.get("result_path"),
+        ):
+            collection_reasons.append(
+                "BLOCK_AGENTIC_COUNCIL_COLLECTION_DISPATCH_PATH_MISMATCH"
+            )
     if collection_reasons:
         block(TOKEN_COLLECTION_INVALID, {"collection_path": str(collection_path), "block_reasons": collection_reasons})
     results, non_terminal = load_valid_terminal_results(root, collection)
@@ -679,6 +755,31 @@ def main() -> int:
                 "required_next_action": "derive_distinct_math_mechanism",
             },
         )
+    proof_path = factor_proof_certificate_path(root, rid)
+    if not proof_path.is_file() or proof_path.is_symlink():
+        block(
+            TOKEN_FACTOR_PROOF_NOT_REJECTED,
+            {"report_id": rid, "factor_proof_path": str(proof_path)},
+        )
+    factor_proof = load_json(proof_path)
+    factor_proof_report = validate_factor_proof_certificate(
+        factor_proof,
+        workspace_root=root,
+        expected_report_id=rid,
+    )
+    if (
+        factor_proof_report.get("verdict") != "REJECT"
+        or factor_proof_report.get("block_reasons")
+    ):
+        block(
+            TOKEN_FACTOR_PROOF_NOT_REJECTED,
+            {
+                "report_id": rid,
+                "factor_proof_path": str(proof_path),
+                "factor_proof_verdict": factor_proof_report.get("verdict"),
+                "block_reasons": factor_proof_report.get("block_reasons") or [],
+            },
+        )
     brief_json_path, brief_md_path = loop_brief_paths(root, iteration)
     rollback = {
         "iteration": read_text_if_exists(iter_path),
@@ -697,8 +798,23 @@ def main() -> int:
         "summary_sha256": sha256_file(summary_path),
         "collection_path": str(collection_path),
         "collection_sha256": sha256_file(collection_path),
+        "dispatch_manifest_path": str(dispatch_path),
+        "dispatch_manifest_sha256": sha256_file(dispatch_path),
+        "factor_proof_path": str(proof_path),
+        "factor_proof_sha256": sha256_file(proof_path),
+        "factor_proof_verdict": "REJECT",
+        "iteration_decision": "reject",
         "selected_agent_result_ids": selected_ids(results),
         "agent_result_paths": [item["path"] for item in results],
+        "agent_result_bindings": [
+            {
+                "task_id": item["payload"].get("task_id"),
+                "result_path": item["path"],
+                "result_sha256": sha256_file(Path(item["path"])),
+                "recommendation": terminal_recommendation_value(item["payload"]),
+            }
+            for item in results
+        ],
         "terminal_recommendations": [
             {
                 "task_id": item["payload"].get("task_id"),

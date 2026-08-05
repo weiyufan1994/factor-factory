@@ -50,6 +50,14 @@ ROUTE_STATUSES = {
 }
 OBLIGATION_STATUSES = {"open", "blocked", "failed", "passed", "not_applicable"}
 TERMINAL_DECISIONS = {"promote_official", "reject", "exhausted", "blocked"}
+TERMINAL_RECOMMENDATION_VALUES = {
+    "reject",
+    "kill",
+    "stop",
+    "terminal_reject",
+    "no_revision",
+    "no_derived_revision",
+}
 REQUIRED_ROUTE_FAMILIES = {
     "economic_game",
     "latent_state_measurement",
@@ -1219,6 +1227,307 @@ def validate_root_synthesis(
     return reasons
 
 
+def validate_terminal_council_rejection(
+    rejection: dict[str, Any],
+    *,
+    root: Path,
+    report_id: str,
+    council_summary_path: Path,
+    iteration: dict[str, Any] | None,
+    factor_proof_report: dict[str, Any] | None,
+) -> list[str]:
+    reasons: list[str] = []
+    if rejection.get("terminal_rejection_version") != (
+        "factorforge_terminal_council_rejection_v1"
+    ):
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_VERSION_INVALID")
+    if rejection.get("report_id") != report_id:
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_IDENTITY_MISMATCH")
+
+    bindings = (
+        ("summary_path", "summary_sha256", council_summary_path),
+        (
+            "collection_path",
+            "collection_sha256",
+            council_summary_path.parent
+            / f"agentic_result_collection__{report_id}.json",
+        ),
+        (
+            "factor_proof_path",
+            "factor_proof_sha256",
+            factor_proof_certificate_path(root, report_id),
+        ),
+        (
+            "dispatch_manifest_path",
+            "dispatch_manifest_sha256",
+            council_summary_path.parent / f"dispatch_manifest__{report_id}.json",
+        ),
+    )
+    for path_field, hash_field, expected_path in bindings:
+        path = resolve_workspace_evidence_path(root, rejection.get(path_field))
+        if path is None or not path.is_file() or path.is_symlink():
+            reasons.append(
+                f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_BINDING_MISSING:{path_field}"
+            )
+            continue
+        if expected_path is not None and path.resolve(strict=False) != expected_path.resolve(
+            strict=False
+        ):
+            reasons.append(
+                f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_BINDING_PATH_MISMATCH:{path_field}"
+            )
+        if rejection.get(hash_field) != sha256_file(path):
+            reasons.append(
+                f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_BINDING_HASH_MISMATCH:{path_field}"
+            )
+
+    selected = rejection.get("selected_agent_result_ids")
+    recommendations = rejection.get("terminal_recommendations")
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or len(set(str(value) for value in selected)) != len(selected)
+    ):
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULTS_MISSING")
+    if not isinstance(recommendations, list) or len(recommendations) != len(selected or []):
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULTS_MISMATCH")
+    elif isinstance(selected, list):
+        recommendation_ids = {
+            str(row.get("task_id"))
+            for row in recommendations
+            if isinstance(row, dict) and nonempty_str(row.get("task_id"))
+        }
+        terminal_recommendations = [
+            row
+            for row in recommendations
+            if isinstance(row, dict)
+            and str(row.get("recommendation") or "").strip().lower()
+            in TERMINAL_RECOMMENDATION_VALUES
+        ]
+        if (
+            recommendation_ids != {str(value) for value in selected}
+            or len(terminal_recommendations) != len(recommendations)
+        ):
+            reasons.append(
+                "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RECOMMENDATIONS_INVALID"
+            )
+    result_bindings = rejection.get("agent_result_bindings")
+    if (
+        not isinstance(result_bindings, list)
+        or not result_bindings
+        or len(result_bindings) != len(selected or [])
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_BINDINGS_MISSING"
+        )
+    else:
+        canonical_collection_path = (
+            council_summary_path.parent
+            / f"agentic_result_collection__{report_id}.json"
+        )
+        try:
+            collection = load_json(canonical_collection_path)
+        except Exception:
+            collection = {}
+            reasons.append(
+                "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_COLLECTION_INVALID"
+            )
+        valid_results = collection.get("valid_results")
+        dispatch_path = (
+            council_summary_path.parent / f"dispatch_manifest__{report_id}.json"
+        )
+        try:
+            dispatch = load_json(dispatch_path)
+        except Exception:
+            dispatch = {}
+            reasons.append(
+                "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_DISPATCH_INVALID"
+            )
+        required_tasks = [
+            task
+            for task in dispatch.get("agent_tasks") or []
+            if isinstance(task, dict) and task.get("required") is True
+        ]
+        required_ids = [str(task.get("task_id") or "") for task in required_tasks]
+        valid_ids = [
+            str(row.get("task_id") or "")
+            for row in valid_results or []
+            if isinstance(row, dict)
+        ]
+        if (
+            collection.get("collection_version")
+            != "factorforge_agentic_council_result_collection_v1"
+            or collection.get("report_id") != report_id
+            or collection.get("status") != "complete"
+            or collection.get("ready_for_finalize") is not True
+            or not isinstance(valid_results, list)
+            or collection.get("valid_result_count") != len(valid_results or [])
+            or collection.get("required_result_count") != len(required_tasks)
+            or collection.get("present_result_count") != len(required_tasks)
+            or collection.get("valid_result_count") != len(required_tasks)
+            or collection.get("invalid_result_count") != 0
+            or collection.get("missing_result_count") != 0
+            or dispatch.get("dispatch_manifest_version")
+            != "factorforge_agentic_council_dispatch_manifest_v1"
+            or dispatch.get("report_id") != report_id
+            or not required_ids
+            or any(not task_id for task_id in required_ids)
+            or len(set(required_ids)) != len(required_ids)
+            or len(valid_ids) != len(required_ids)
+            or set(valid_ids) != set(required_ids)
+        ):
+            reasons.append(
+                "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_COLLECTION_INVALID"
+            )
+            valid_results = []
+        collection_paths: dict[str, Path] = {}
+        required_paths = {
+            str(task.get("task_id")): resolve_workspace_evidence_path(
+                root,
+                task.get("expected_result_path"),
+            )
+            for task in required_tasks
+        }
+        for row in valid_results:
+            if not isinstance(row, dict) or row.get("status") != "final":
+                continue
+            task_id = str(row.get("task_id") or "")
+            result_path = resolve_workspace_evidence_path(
+                root,
+                row.get("result_path"),
+            )
+            if (
+                task_id
+                and result_path is not None
+                and required_paths.get(task_id) == result_path
+            ):
+                collection_paths[task_id] = result_path
+
+        recommendation_map = {
+            str(row.get("task_id")): str(row.get("recommendation") or "")
+            .strip()
+            .lower()
+            for row in recommendations or []
+            if isinstance(row, dict) and nonempty_str(row.get("task_id"))
+        }
+        bound_ids: set[str] = set()
+        bound_paths: set[Path] = set()
+        validator_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills"
+            / "factor-forge-step6"
+            / "scripts"
+            / "validate_agentic_council_result.py"
+        )
+        for idx, binding in enumerate(result_bindings):
+            if not isinstance(binding, dict):
+                reasons.append(
+                    f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_BINDING_INVALID:{idx}"
+                )
+                continue
+            task_id = str(binding.get("task_id") or "")
+            recommendation = str(binding.get("recommendation") or "").strip().lower()
+            result_path = resolve_workspace_evidence_path(
+                root,
+                binding.get("result_path"),
+            )
+            if (
+                not task_id
+                or task_id in bound_ids
+                or recommendation not in TERMINAL_RECOMMENDATION_VALUES
+                or recommendation_map.get(task_id) != recommendation
+                or result_path is None
+                or not result_path.is_file()
+                or result_path.is_symlink()
+                or collection_paths.get(task_id) != result_path
+            ):
+                reasons.append(
+                    f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_BINDING_INVALID:{idx}"
+                )
+                continue
+            bound_ids.add(task_id)
+            bound_paths.add(result_path)
+            if binding.get("result_sha256") != sha256_file(result_path):
+                reasons.append(
+                    f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_HASH_MISMATCH:{idx}"
+                )
+                continue
+            try:
+                result_payload = load_json(result_path)
+            except Exception:
+                reasons.append(
+                    f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_INVALID:{idx}"
+                )
+                continue
+            payload_recommendation = str(
+                ((result_payload.get("revision_or_kill_recommendation") or {}).get(
+                    "recommendation"
+                ))
+                or ""
+            ).strip().lower()
+            if (
+                result_payload.get("report_id") != report_id
+                or result_payload.get("task_id") != task_id
+                or payload_recommendation != recommendation
+            ):
+                reasons.append(
+                    f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_IDENTITY_MISMATCH:{idx}"
+                )
+                continue
+            validator_env = os.environ.copy()
+            validator_env["FACTORFORGE_ROOT"] = str(root)
+            validator = subprocess.run(
+                [
+                    sys.executable,
+                    str(validator_path),
+                    "--report-id",
+                    report_id,
+                    "--result-path",
+                    str(result_path),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                env=validator_env,
+                text=True,
+                capture_output=True,
+            )
+            if validator.returncode != 0:
+                reasons.append(
+                    f"BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_VALIDATION_FAILED:{idx}"
+                )
+        declared_paths = {
+            path
+            for raw_path in rejection.get("agent_result_paths") or []
+            if (path := resolve_workspace_evidence_path(root, raw_path)) is not None
+        }
+        if (
+            bound_ids != {str(value) for value in selected or []}
+            or bound_paths != declared_paths
+            or bound_ids != set(collection_paths)
+        ):
+            reasons.append(
+                "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_RESULT_SET_MISMATCH"
+            )
+    proof_report = factor_proof_report or {}
+    if (
+        rejection.get("factor_proof_verdict") != "REJECT"
+        or proof_report.get("verdict") != "REJECT"
+        or proof_report.get("block_reasons")
+    ):
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_PROOF_NOT_REJECTED")
+    iteration_decision = (
+        ((iteration or {}).get("research_judgment") or {}).get("decision")
+        if isinstance((iteration or {}).get("research_judgment"), dict)
+        else None
+    )
+    if rejection.get("iteration_decision") != "reject" or iteration_decision != "reject":
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_ITERATION_MISMATCH")
+    if rejection.get("canonical_write_permission") is not False:
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_CANONICAL_WRITE")
+    if rejection.get("execution_allowed_by_default") is not False:
+        reasons.append("BLOCK_FACTORFORGE_TERMINAL_COUNCIL_REJECTION_EXECUTION_ALLOWED")
+    return reasons
+
+
 def research_protocol_paths(root: Path, report_id: str) -> dict[str, Path]:
     base = root / "objects" / "research_protocol"
     return {
@@ -1243,6 +1552,14 @@ def research_protocol_paths(root: Path, report_id: str) -> dict[str, Path]:
             / "revision_council"
             / report_id
             / f"main_agent_council_synthesis_approval__{report_id}.json"
+        ),
+        "terminal_rejection": (
+            root
+            / "objects"
+            / "research_iteration_master"
+            / "revision_council"
+            / report_id
+            / f"terminal_council_rejection__{report_id}.json"
         ),
         "council_summary": (
             root
@@ -1280,13 +1597,11 @@ def validate_protocol_bundle(
     if stage in {"pre_promotion", "final"}:
         required.append("factor_proof")
     if stage == "final":
-        required.extend(
-            [
-                "root_synthesis",
-                "root_synthesis_approval",
-                "council_summary",
-            ]
-        )
+        required.append("council_summary")
+        if paths["terminal_rejection"].is_file():
+            required.append("terminal_rejection")
+        else:
+            required.extend(["root_synthesis", "root_synthesis_approval"])
     for key in required:
         path = paths[key]
         if not path.exists():
@@ -1383,26 +1698,35 @@ def validate_protocol_bundle(
                 synthesis_path=paths["root_synthesis"],
             )
         )
+    iteration: dict[str, Any] | None = iteration_payload
+    if iteration is None and stage in {"pre_promotion", "final"}:
+        path = iteration_path
+        if path is None:
+            path = (
+                root
+                / "objects"
+                / "research_iteration_master"
+                / f"research_iteration_master__{report_id}.json"
+            )
+        if path.exists():
+            try:
+                iteration = load_json(path)
+            except Exception as exc:
+                reasons.append(f"BLOCK_FACTORFORGE_RESEARCH_ITERATION_INVALID:{exc}")
+        else:
+            reasons.append("BLOCK_FACTORFORGE_RESEARCH_ITERATION_MISSING")
+    if "terminal_rejection" in artifacts:
+        reasons.extend(
+            validate_terminal_council_rejection(
+                artifacts["terminal_rejection"],
+                root=root,
+                report_id=report_id,
+                council_summary_path=paths["council_summary"],
+                iteration=iteration,
+                factor_proof_report=factor_proof_report,
+            )
+        )
     if stage in {"pre_promotion", "final"}:
-        iteration = iteration_payload
-        if iteration is None:
-            path = iteration_path
-            if path is None:
-                path = (
-                    root
-                    / "objects"
-                    / "research_iteration_master"
-                    / f"research_iteration_master__{report_id}.json"
-                )
-            if not path.exists():
-                reasons.append("BLOCK_FACTORFORGE_RESEARCH_ITERATION_MISSING")
-            else:
-                try:
-                    iteration = load_json(path)
-                except Exception as exc:
-                    reasons.append(
-                        f"BLOCK_FACTORFORGE_RESEARCH_ITERATION_INVALID:{exc}"
-                    )
         if isinstance(iteration, dict):
             reasons.extend(
                 validate_terminal_semantics(

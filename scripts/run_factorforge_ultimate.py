@@ -35,6 +35,7 @@ from factor_factory.console.web_research_plan import (
     resolve_workspace_approved_catalog,
     validate_materialized_web_research,
 )
+from factor_factory.council_terminal import classify_terminal_rejection_result
 
 
 STEP_ORDER = ['2', '3', '3b', '4', '5', '6']
@@ -972,6 +973,20 @@ def main() -> int:
     if '4' in steps:
         commands.append(('run_step4', [py, 'skills/factor-forge-step4/scripts/run_step4.py', '--manifest', str(manifest_path)]))
         commands.append(('validate_step4', [py, 'skills/factor-forge-step4/scripts/validate_step4.py', '--report-id', args.report_id]))
+        if web_materialization is not None:
+            commands.append(
+                (
+                    'finalize_web_factor_proof',
+                    [
+                        py,
+                        'scripts/finalize_factorforge_web_factor_proof.py',
+                        '--workspace-root',
+                        str(ctx.active_root),
+                        '--report-id',
+                        args.report_id,
+                    ],
+                )
+            )
 
     if '5' in steps:
         commands.append(('run_step5', [py, 'skills/factor-forge-step5/scripts/run_step5.py', '--manifest', str(manifest_path)]))
@@ -1450,6 +1465,123 @@ def main() -> int:
                         )
                     )
                     proof['revision_council']['attached'] = proof['revision_council'].get('attached') is True
+                    if web_materialization is not None and agentic_dispatch_finalizing:
+                        terminal_command = [
+                            py,
+                            'skills/factor-forge-step6/scripts/close_terminal_council_rejection.py',
+                            '--report-id',
+                            args.report_id,
+                            '--factorforge-root',
+                            str(council_root),
+                            '--loop-index',
+                            '1',
+                            '--max-loops',
+                            str(args.max_council_loops),
+                        ]
+                        terminal_result = run_command(
+                            'close_terminal_council_rejection',
+                            terminal_command,
+                            cwd=ctx.repo_root,
+                            env=env,
+                            dry_run=False,
+                        )
+                        proof['revision_council']['commands'].append(
+                            asdict(terminal_result)
+                        )
+                        terminal_output = (
+                            f'{terminal_result.stdout_tail}\n'
+                            f'{terminal_result.stderr_tail}'
+                        )
+                        terminal_state = classify_terminal_rejection_result(
+                            returncode=int(terminal_result.returncode or 0),
+                            output=terminal_output,
+                            branch_falsification_exists=(
+                                council_dir
+                                / f'branch_falsification__{args.report_id}.json'
+                            ).is_file(),
+                        )
+                        if terminal_state == 'closed':
+                            final_protocol_result = run_command(
+                                'validate_research_protocol_final',
+                                [
+                                    py,
+                                    'scripts/validate_factorforge_research_protocol.py',
+                                    '--workspace-root',
+                                    str(council_root),
+                                    '--report-id',
+                                    args.report_id,
+                                    '--stage',
+                                    'final',
+                                ],
+                                cwd=ctx.repo_root,
+                                env=env,
+                                dry_run=False,
+                            )
+                            proof['revision_council']['commands'].append(
+                                asdict(final_protocol_result)
+                            )
+                            if final_protocol_result.returncode != 0:
+                                proof['status'] = 'FAIL'
+                                proof['revision_council']['status'] = 'failed'
+                                proof['revision_council']['formal_council_status'] = 'blocked'
+                                proof['failure'] = {
+                                    'command': 'validate_research_protocol_final',
+                                    'returncode': final_protocol_result.returncode,
+                                }
+                                proof['finished_at_utc'] = utc_now()
+                                write_json_atomic(proof_path, proof)
+                                print('[FAIL] validate_research_protocol_final')
+                                print(f'[PROOF] {proof_path}')
+                                return int(final_protocol_result.returncode or 1)
+                            proof['revision_council']['status'] = 'terminal_rejected'
+                            proof['revision_council']['formal_council_status'] = 'rejected'
+                            proof['revision_council']['terminal_protocol_validated'] = True
+                            proof['revision_council']['terminal_decision'] = 'REJECT'
+                        elif terminal_state == 'awaiting_next_derivation':
+                            proof['status'] = 'PAUSED'
+                            proof['formal_proof_eligible'] = False
+                            proof['proof_semantics'] = 'awaiting_next_derivation'
+                            proof['final_outcome'] = 'awaiting_next_derivation'
+                            proof['failure'] = None
+                            proof['revision_council']['status'] = 'awaiting_next_derivation'
+                            proof['revision_council']['formal_council_status'] = 'paused'
+                            proof['finished_at_utc'] = utc_now()
+                            write_json_atomic(proof_path, proof)
+                            print('AWAITING_NEXT_DERIVATION')
+                            print(f'[PROOF] {proof_path}')
+                            return 0
+                        elif terminal_state == 'awaiting_main_agent_council_synthesis':
+                            proof['status'] = 'PAUSED'
+                            proof['formal_proof_eligible'] = False
+                            proof['proof_semantics'] = (
+                                'awaiting_main_agent_council_synthesis'
+                            )
+                            proof['final_outcome'] = (
+                                'awaiting_main_agent_council_synthesis'
+                            )
+                            proof['failure'] = None
+                            proof['revision_council']['status'] = (
+                                'awaiting_main_agent_council_synthesis'
+                            )
+                            proof['revision_council']['formal_council_status'] = 'paused'
+                            proof['finished_at_utc'] = utc_now()
+                            write_json_atomic(proof_path, proof)
+                            print('AWAITING_MAIN_AGENT_COUNCIL_SYNTHESIS')
+                            print(f'[PROOF] {proof_path}')
+                            return 0
+                        else:
+                            proof['status'] = 'FAIL'
+                            proof['revision_council']['status'] = 'failed'
+                            proof['revision_council']['formal_council_status'] = 'blocked'
+                            proof['failure'] = {
+                                'command': 'close_terminal_council_rejection',
+                                'returncode': terminal_result.returncode,
+                            }
+                            proof['finished_at_utc'] = utc_now()
+                            write_json_atomic(proof_path, proof)
+                            print('[FAIL] close_terminal_council_rejection')
+                            print(f'[PROOF] {proof_path}')
+                            return int(terminal_result.returncode or 1)
                 write_json_atomic(proof_path, proof)
     elif args.council_mode != 'off':
         proof['revision_council'] = {
@@ -1482,20 +1614,41 @@ def main() -> int:
         proof['formal_proof_eligible'] = False
         proof['proof_semantics'] = 'execution_plan_only'
     else:
-        proof['status'] = 'PASS'
+        web_council_terminal = (
+            web_materialization is None
+            or (
+                proof.get('revision_council', {}).get(
+                    'terminal_protocol_validated'
+                )
+                is True
+            )
+        )
+        proof['status'] = 'PASS' if web_council_terminal else 'PAUSED'
         proof['formal_proof_eligible'] = bool(
-            commands_passed and not legacy_protocol_smoke
+            commands_passed
+            and not legacy_protocol_smoke
+            and web_council_terminal
         )
         proof['proof_semantics'] = (
             'contract_smoke_only'
             if legacy_protocol_smoke
-            else 'formal_execution_proof'
+            else (
+                'formal_execution_proof'
+                if web_council_terminal
+                else 'awaiting_main_agent_council_synthesis'
+            )
         )
+        if not web_council_terminal:
+            proof['final_outcome'] = 'awaiting_main_agent_council_synthesis'
     proof['finished_at_utc'] = utc_now()
     proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
     proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
     write_json_atomic(proof_path, proof)
-    result_label = 'DRY_RUN' if args.dry_run else 'PASS'
+    result_label = (
+        'DRY_RUN'
+        if args.dry_run
+        else ('PASS' if proof['status'] == 'PASS' else 'PAUSED')
+    )
     print(
         f'[{result_label}] factor-forge-ultimate wrapper completed '
         f'for {args.report_id}'

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +235,48 @@ def _resolve_native_benchmark() -> str | pd.Series:
     return pd.Series(dtype='float64')
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).replace('_', '').strip())
+    except ValueError:
+        return default
+
+
+def _native_resource_guard(*, merged_rows: int, factor_rows: int, daily_rows: int) -> dict[str, Any]:
+    mode = (os.getenv('FACTORFORGE_QLIB_NATIVE_MODE') or 'auto').strip().lower()
+    limits = {
+        'merged': _env_int('FACTORFORGE_QLIB_NATIVE_MAX_MERGED_ROWS', 5_000_000),
+        'factor': _env_int('FACTORFORGE_QLIB_NATIVE_MAX_FACTOR_ROWS', 5_000_000),
+        'daily': _env_int('FACTORFORGE_QLIB_NATIVE_MAX_DAILY_ROWS', 5_000_000),
+    }
+    counts = {'merged': int(merged_rows), 'factor': int(factor_rows), 'daily': int(daily_rows)}
+    guard = {
+        'version': 'factorforge_qlib_native_resource_guard_v1',
+        'mode': mode,
+        'merged_rows': counts['merged'],
+        'factor_rows': counts['factor'],
+        'daily_rows': counts['daily'],
+        'max_merged_rows': limits['merged'],
+        'max_factor_rows': limits['factor'],
+        'max_daily_rows': limits['daily'],
+        'native_backtest_skipped': False,
+        'reason': None,
+    }
+    if mode in {'0', 'off', 'skip', 'disabled', 'diagnostics_only', 'sample_stub'}:
+        guard['native_backtest_skipped'] = True
+        guard['reason'] = 'native_mode_disabled'
+        return guard
+    for name in ('merged', 'factor', 'daily'):
+        if limits[name] > 0 and counts[name] > limits[name]:
+            guard['native_backtest_skipped'] = True
+            guard['reason'] = f'{name}_rows_exceeds_limit'
+            break
+    return guard
+
+
 def _build_quantile_nav(
     merged: pd.DataFrame,
     signal_col: str,
@@ -278,24 +321,36 @@ def _write_group_nav_plot(nav_df: pd.DataFrame, path: Path, title: str) -> None:
 
 
 def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
+    started_total = time.perf_counter()
+    performance_profile: dict[str, Any] = {
+        'version': 'factorforge_qlib_backtest_performance_profile_v1',
+        'phase_seconds': {},
+    }
+
+    def finish(payload: dict[str, Any]) -> dict[str, Any]:
+        performance_profile['phase_seconds']['total'] = round(time.perf_counter() - started_total, 6)
+        payload['performance_profile'] = performance_profile
+        return payload
+
     cfg_path = FF / 'objects' / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
     run_dir = FF / 'runs' / report_id
     factor_path = run_dir / f'factor_values__{report_id}.parquet'
 
     if not cfg_path.exists():
-        return {
+        return finish({
             'backend': 'qlib_backtest',
             'mode': 'sample_stub',
             'report_id': report_id,
             'status': 'failed',
+            'qlib_native_status': 'failed',
             'failure_reason': 'missing required qlib inputs',
             'missing_paths': [str(cfg_path)],
             'extensible_metrics': True,
-        }
+        })
 
     cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
     if cfg.get('status') == 'not_applicable' or cfg.get('qlib_native_status') == 'not_applicable':
-        return {
+        return finish({
             'backend': 'qlib_backtest',
             'mode': 'sample_stub',
             'report_id': report_id,
@@ -304,18 +359,19 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'skip_reason': cfg.get('reason') or 'qlib adapter config marked not_applicable',
             'qlib_adapter_config_path': str(cfg_path),
             'extensible_metrics': True,
-        }
+        })
 
     if not factor_path.exists():
-        return {
+        return finish({
             'backend': 'qlib_backtest',
             'mode': 'sample_stub',
             'report_id': report_id,
             'status': 'failed',
+            'qlib_native_status': 'failed',
             'failure_reason': 'missing required qlib inputs',
             'missing_paths': [str(factor_path)],
             'extensible_metrics': True,
-        }
+        })
 
     web_tradeable_timing = _uses_tradeable_web_timing(report_id)
     factor_df, signal_col, factor_id = load_factor_values_with_signal(report_id)
@@ -324,8 +380,6 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     factor_df['trade_date'] = factor_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
     daily_df['trade_date'] = daily_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
 
-    qlib_signal = to_qlib_signal_frame(factor_df, signal_col=signal_col)
-    qlib_daily_features = daily_to_qlib_features(daily_df, value_columns=['close'], rename_fields={'close': '$close'})
     factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
     daily_df = build_forward_return_frame(
         daily_df,
@@ -353,6 +407,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     spread = (top - bottom).dropna()
     quantile_returns, quantile_nav, quantile_counts = _build_quantile_nav(merged, signal_col=signal_col, group_count=10)
     eval_dir = FF / 'evaluations' / report_id / 'qlib_backtest'
+    eval_dir.mkdir(parents=True, exist_ok=True)
     quantile_nav_plot = eval_dir / 'quantile_nav_10groups.png'
     quantile_returns_csv = eval_dir / 'quantile_returns_10groups.csv'
     quantile_nav_csv = eval_dir / 'quantile_nav_10groups.csv'
@@ -387,7 +442,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'sample_window': cfg.get('sample_window', {}),
             'factor_rows': int(len(factor_df)),
             'daily_rows': int(len(daily_df)),
-            'qlib_daily_feature_rows': int(len(qlib_daily_features)),
+            'qlib_daily_feature_rows': None,
             'merged_rows': int(len(merged)),
             'ticker_count': int(factor_df['ts_code'].nunique()),
             'date_count': int(factor_df['trade_date'].nunique()),
@@ -416,29 +471,64 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         'readiness': {
             'adapter_config_ok': True,
             'local_snapshot_ok': True,
-            'qlib_signal_table_ready': True,
-            'qlib_daily_feature_frame_ready': True,
-            'qlib_signal_index_names': list(qlib_signal.index.names),
-            'qlib_daily_feature_index_names': list(qlib_daily_features.index.names),
+            'qlib_signal_table_ready': False,
+            'qlib_daily_feature_frame_ready': False,
+            'qlib_signal_index_names': None,
+            'qlib_daily_feature_index_names': None,
             'instrument_normalization': 'shared factor_factory.data_access.normalize_qlib_instrument()',
         },
         'notes': [
-            'The adapter emits qlib-friendly signal and daily feature frames with MultiIndex level names [datetime, instrument].',
             'Quantile grouped NAV curves are computed from the same daily signal table for visual inspection.',
-            'Quantile grouped constituent counts are emitted alongside returns/NAV for sanity-checking cross-sectional bucket sizes.'
+            'Quantile grouped constituent counts are emitted alongside returns/NAV for sanity-checking cross-sectional bucket sizes.',
+            'Native qlib frames are built only after the resource guard allows native execution.',
         ],
         'extensible_metrics': True,
     }
 
-    try:
-        qlib, backtest, SimulatorExecutor, TopkDropoutStrategy, qlib_repo_root = _import_native_qlib()
-    except Exception as exc:
-        return {
+    guard_started = time.perf_counter()
+    resource_guard = _native_resource_guard(
+        merged_rows=len(merged),
+        factor_rows=len(factor_df),
+        daily_rows=len(daily_df),
+    )
+    performance_profile['phase_seconds']['native_resource_guard'] = round(
+        time.perf_counter() - guard_started,
+        6,
+    )
+    if resource_guard.get('native_backtest_skipped'):
+        return finish({
             **base_payload,
             'mode': 'sample_stub',
             'status': 'partial',
+            'qlib_native_status': 'partial_payload',
+            'engine': 'qlib_backtest_adapter_signal_diagnostics_only',
+            'failure_reason': (
+                'native qlib backtest skipped by resource guard: '
+                f'{resource_guard.get("reason")}'
+            ),
+            'resource_guard': resource_guard,
+            'readiness': {
+                **base_payload['readiness'],
+                'qlib_import_ok': None,
+                'full_native_backtest_wired': False,
+            },
+            'notes': base_payload['notes'] + [
+                'Native qlib portfolio backtest was skipped before import/backtest '
+                'to protect the production resource envelope.',
+            ],
+        })
+
+    try:
+        qlib, backtest, SimulatorExecutor, TopkDropoutStrategy, qlib_repo_root = _import_native_qlib()
+    except Exception as exc:
+        return finish({
+            **base_payload,
+            'mode': 'sample_stub',
+            'status': 'partial',
+            'qlib_native_status': 'partial_payload',
             'engine': 'qlib_backtest_adapter_signal_diagnostics_only',
             'failure_reason': f'native qlib backtest unavailable: {type(exc).__name__}: {exc}',
+            'resource_guard': resource_guard,
             'readiness': {
                 **base_payload['readiness'],
                 'qlib_import_ok': False,
@@ -447,17 +537,38 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'notes': base_payload['notes'] + [
                 'Native qlib portfolio backtest is unavailable in the current environment, so only grouped signal diagnostics were emitted.',
             ],
-        }
+        })
 
     provider_uri = _resolve_provider_uri(report_id)
     provider_style = _provider_instrument_style(provider_uri)
     benchmark = _resolve_native_benchmark()
     try:
+        qlib_signal_native = to_qlib_signal_frame(
+            factor_df,
+            signal_col=signal_col,
+            instrument_style=provider_style,
+        )
+        qlib_daily_features = daily_to_qlib_features(
+            daily_df,
+            value_columns=['close'],
+            rename_fields={'close': '$close'},
+        )
+        base_payload['input_summary']['qlib_daily_feature_rows'] = int(
+            len(qlib_daily_features)
+        )
+        base_payload['readiness'] = {
+            **base_payload['readiness'],
+            'qlib_signal_table_ready': True,
+            'qlib_daily_feature_frame_ready': True,
+            'qlib_signal_index_names': list(qlib_signal_native.index.names),
+            'qlib_daily_feature_index_names': list(qlib_daily_features.index.names),
+        }
         qlib.init(provider_uri=provider_uri, region='cn')
-        qlib_signal_native = to_qlib_signal_frame(factor_df, signal_col=signal_col, instrument_style=provider_style)
         strategy = TopkDropoutStrategy(signal=qlib_signal_native, topk=50, n_drop=5)
         executor = SimulatorExecutor(time_per_step='day', generate_portfolio_metrics=True)
-        trading_calendar = sorted(qlib_signal.index.get_level_values('datetime').unique())
+        trading_calendar = sorted(
+            qlib_signal_native.index.get_level_values('datetime').unique()
+        )
         start = trading_calendar[0]
         # qlib's simulator reads the next trading step while settling the final bar.
         # Avoid using the last available provider date as the backtest end.
@@ -472,12 +583,14 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             exchange_kwargs={'freq': 'day', 'limit_threshold': 0.095, 'deal_price': 'close'}
         )
     except Exception as exc:
-        return {
+        return finish({
             **base_payload,
             'mode': 'sample_stub',
             'status': 'partial',
+            'qlib_native_status': 'partial_payload',
             'engine': 'qlib_backtest_adapter_signal_diagnostics_only',
             'failure_reason': f'native qlib runtime unavailable: {type(exc).__name__}: {exc}',
+            'resource_guard': resource_guard,
             'readiness': {
                 **base_payload['readiness'],
                 'qlib_import_ok': True,
@@ -490,7 +603,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'notes': base_payload['notes'] + [
                 'Native qlib imports succeeded, but runtime backtest still failed. Grouped diagnostics remain available for debugging.',
             ],
-        }
+        })
     freq_key = list(report.keys())[0]
     metrics_df = report[freq_key][0].copy()
     port_plot = eval_dir / 'portfolio_value_timeseries.png'
@@ -500,12 +613,14 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     _write_line_plot(metrics_df, ['return', 'bench'], bench_plot, f'{report_id} strategy vs benchmark return')
     _write_line_plot(metrics_df, ['total_turnover'], turnover_plot, f'{report_id} turnover')
 
-    return {
+    return finish({
         **base_payload,
         'status': 'success',
         'mode': 'native_minimal',
+        'qlib_native_status': 'native_minimal_success',
         'engine': 'qlib_backtest_adapter_native_minimal',
         'qlib_version': getattr(qlib, '__version__', 'unknown'),
+        'resource_guard': resource_guard,
         'readiness': {
             **base_payload['readiness'],
             'qlib_import_ok': True,
@@ -533,7 +648,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
             'qlib dependency + adapter config + local snapshot are verified.',
             'Native minimal qlib backtest path has been executed with TopkDropoutStrategy + SimulatorExecutor + backtest(...).',
         ],
-    }
+    })
 
 
 def main() -> None:

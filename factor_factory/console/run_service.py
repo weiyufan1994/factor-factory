@@ -1041,6 +1041,19 @@ class ResearchRunService:
             if execution_status == "FAILED":
                 error_code = BLOCK_FORMAL_EVIDENCE_MISSING
                 error_message = "研究代理返回后未形成可核验的正式终态或暂停态。"
+            elif (
+                execution_status == "REVIEW_REQUIRED"
+                and summary.current_stage
+                in {
+                    "awaiting_main_agent_council_synthesis",
+                    "awaiting_next_derivation",
+                }
+            ):
+                error_code = EXPLICIT_HUMAN_DECISION_REQUIRED
+                error_message = (
+                    "Council 已完成证据审议，但下一步需要显式数学推导或主代理综合，"
+                    "普通续跑不能代替该决定。"
+                )
             updated = self.store.update_job(
                 job.job_id,
                 execution_status=execution_status,
@@ -4851,6 +4864,8 @@ def _stage_records(summary: UltimateRunSummary) -> list[dict[str, str]]:
 
 
 def _result_summary(summary: UltimateRunSummary) -> str:
+    if summary.execution_status == "PAUSED":
+        return "研究处于可恢复暂停状态，尚未形成正式因子结论。"
     if summary.factor_verdict == "ACCEPT":
         return "研究协议与正式证明链通过，因子达到当前合同的接受条件。"
     if summary.factor_verdict == "REJECT":
@@ -4859,8 +4874,6 @@ def _result_summary(summary: UltimateRunSummary) -> str:
         return "当前证据建议修订；需在现有 workspace 上显式继续。"
     if summary.factor_verdict == "BLOCK":
         return "研究被数据、实现或证明合同阻断，不能把现有结果当作因子结论。"
-    if summary.execution_status == "PAUSED":
-        return "研究处于可恢复暂停状态，尚未形成正式因子结论。"
     return "尚未形成可核验的正式因子结论。"
 
 

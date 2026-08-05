@@ -306,10 +306,10 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(tmp_path):
     )
     daily_df = pd.DataFrame(
         [
-            {"ts_code": "000001.SZ", "trade_date": "20260102", "close": 100.0, "pct_chg": 0.0},
-            {"ts_code": "000001.SZ", "trade_date": "20260105", "close": 110.0, "pct_chg": 2.0},
-            {"ts_code": "000001.SZ", "trade_date": "20260106", "close": 121.0, "pct_chg": 3.0},
-            {"ts_code": "000001.SZ", "trade_date": "20260107", "close": 108.9, "pct_chg": 4.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260102", "close": 100.0, "pct_chg": 0.0, "total_mv": 10.0, "turnover_rate": 1.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260105", "close": 110.0, "pct_chg": 2.0, "total_mv": 11.0, "turnover_rate": 1.1},
+            {"ts_code": "000001.SZ", "trade_date": "20260106", "close": 121.0, "pct_chg": 3.0, "total_mv": 12.0, "turnover_rate": 1.2},
+            {"ts_code": "000001.SZ", "trade_date": "20260107", "close": 108.9, "pct_chg": 4.0, "total_mv": 13.0, "turnover_rate": 1.3},
         ]
     )
     factor_path = tmp_path / "factor.parquet"
@@ -327,6 +327,7 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(tmp_path):
             "holding_period_sessions": 1,
             "return_window": "close_t_plus_1_to_close_t_plus_2",
         },
+        "proof_control_columns": ["total_mv", "turnover_rate"],
     }
 
     context = run_step4.build_shared_evaluation_context(
@@ -349,5 +350,12 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(tmp_path):
     first = float(merged.loc[merged["trade_date"] == "20260102", "future_return_1d"].iloc[0])
     assert first == pytest.approx(121.0 / 110.0 - 1.0)
     assert first != pytest.approx(0.02)
+    first_row = merged.loc[merged["trade_date"] == "20260102"].iloc[0]
+    assert str(first_row["label_start_date"]) == "20260105"
+    assert str(first_row["label_end_date"]) == "20260106"
+    assert float(first_row["label_start_price"]) == pytest.approx(110.0)
+    assert float(first_row["label_end_price"]) == pytest.approx(121.0)
+    assert float(first_row["total_mv"]) == pytest.approx(10.0)
+    assert float(first_row["turnover_rate"]) == pytest.approx(1.0)
     assert context["version"] == "factorforge_shared_evaluation_context_v2"
     assert context["label_policy"] == contract["label_policy"]

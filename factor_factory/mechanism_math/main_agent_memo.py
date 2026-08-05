@@ -1108,6 +1108,16 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
     economic = memo.get("economic_hypothesis") if isinstance(memo.get("economic_hypothesis"), dict) else {}
     components = memo.get("formula_component_map") if isinstance(memo.get("formula_component_map"), list) else []
+    formula_state_estimator = (
+        memo.get("formula_state_estimator")
+        if isinstance(memo.get("formula_state_estimator"), dict)
+        else {}
+    )
+    operator_claim_consistency = (
+        memo.get("operator_claim_consistency")
+        if isinstance(memo.get("operator_claim_consistency"), dict)
+        else {}
+    )
     raw_model_family = str(math.get("selected_model_family") or math.get("model_family") or "other")
     model_family = normalize_derivation_model_family(raw_model_family) or raw_model_family
     payer = str(economic.get("payer_or_counterparty") or qa.get("payer_answer") or "")
@@ -1178,6 +1188,12 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
         "process_or_distribution": str(math.get("process_or_distribution") or qa.get("math_model_answer") or ""),
         "target_functional": str(math.get("target_functional") or payoff or "E[r_i,t+1 | F_t, formula_state_i,t]"),
         "formula_as_estimator": str(math.get("formula_as_estimator") or qa.get("estimator_mapping_answer") or ""),
+        "formula_state_estimator": formula_state_estimator,
+        "operator_consistency_discussion": {
+            "formula_state_answer": str(qa.get("formula_state_answer") or ""),
+            "estimator_mapping_answer": str(qa.get("estimator_mapping_answer") or ""),
+            "operator_claim_consistency": operator_claim_consistency,
+        },
         "expected_metric_signature": str(qa.get("metric_signature_answer") or math.get("expected_metric_signature") or ""),
         "observed_metric_comparison": str(qa.get("metric_signature_answer") or ""),
         "metric_feedback_to_model": str(qa.get("falsification_answer") or ""),

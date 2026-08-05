@@ -239,6 +239,74 @@ def test_observable_bound_transient_model_from_v10_production_memo_passes() -> N
     assert failures == []
 
 
+def test_v11_chinese_transient_memo_retains_operator_and_state_binding() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = (
+        "transient_impact"
+    )
+    derivation["selected_model_family"] = "transient_impact"
+    derivation["process_or_distribution"] = (
+        "g_{i,t}=open_{i,t}/pre_close_{i,t}-1=s_{i,t}+u_{i,t}; "
+        "u_{i,t+1}=rho*u_{i,t}+eta_{i,t+1}, |rho|<1; "
+        "return_{i,t+2}=-(1-rho)*u_{i,t}+epsilon_{i,t+2}; "
+        "u_{i,t} is the temporary opening-auction impact state"
+    )
+    derivation["latent_state"] = (
+        "临时开盘订单流冲击 u_{i,t} 按 AR(1) 衰减；s_{i,t} 是持久信息冲击。"
+    )
+    derivation["formula_as_estimator"] = (
+        "formula_state_{i,t}=-g_{i,t}*h_{i,t}*v_{i,t}，估计 -u_{i,t}；"
+        "v 是非负强度缩放，不独立决定方向。"
+    )
+    derivation["formula_state_estimator"] = {
+        "latent_state": "temporary opening-auction impact u",
+        "observable_mapping": "formula_state=-g*h*v，估计 -u*v。",
+        "component_links": ["formula_root"],
+    }
+    derivation["operator_consistency_discussion"] = {
+        "formula_state_answer": (
+            "z=(open-pre_close)*(close-open)；z<0 时 h=1，z>0 时 h=0，"
+            "z=0 时 h=0.5；零点是不连续边界，会造成 bucket、rank 与 turnover 不稳定。"
+        ),
+        "estimator_mapping_answer": "公式 F=-g*h*v 直接估计临时冲击 -u。",
+        "operator_claim_consistency": {
+            "sign_threshold_discussion_present": True,
+            "explicit_dependence_justification": (
+                "因子与后续收益的依赖由 return=-(1-rho)*u+epsilon 与公式 F=-g*h*v（估计 -u）给出。"
+            ),
+        },
+    }
+    derivation["profit_payer_derivation"]["math_model_link"] = (
+        "临时开盘冲击 u 与持久信息 s 分离，并按稳定 AR(1) 衰减。"
+    )
+
+    assert validate_formula_specific_derivation(derivation, _spec(), {}) == []
+
+    spec = {
+        "canonical_spec": {
+            "formula_text": (
+                "-(open / pre_close - 1.0) * "
+                "(1.0 - sign((open - pre_close) * (close - open))) / 2.0 * "
+                "(vol / mean(vol, 5))"
+            ),
+            "required_inputs": ["open", "close", "pre_close", "vol"],
+            "operators": ["divide", "mean", "minus", "multiply", "negate", "sign"],
+        }
+    }
+    analysis = {
+        "formula_specific_derivation": derivation,
+        "main_agent_mechanism_memo_takeover": {
+            "enabled": True,
+            "validation_scope": "main_agent_formula_specific_derivation",
+        },
+    }
+    assert validate_mechanism_formula_consistency(
+        spec,
+        analysis,
+        derivation,
+    )["failures"] == []
+
+
 def test_observable_binding_cannot_replace_required_transient_structure() -> None:
     malformed_models = (
         (

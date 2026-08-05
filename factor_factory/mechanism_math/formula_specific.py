@@ -1771,6 +1771,8 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
             ),
             formula_context=_text_blob(
                 derivation.get("formula_as_estimator"),
+                derivation.get("formula_state_estimator"),
+                derivation.get("operator_consistency_discussion"),
                 payer.get("formula_state_link"),
             ),
         )

@@ -18,6 +18,10 @@ from factor_factory.console.models import (
     PILOT_FORWARD_HORIZON,
     PILOT_TRANSACTION_COST_BPS,
 )
+from factor_factory.console.web_factor_proof import (
+    RISK_PROOF_CONTROL_COLUMNS,
+    validate_web_factor_proof_preregistration,
+)
 from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.formula.parser import parse_formula
 from factor_factory.formula.qlib_codegen import to_qlib_expression
@@ -1625,6 +1629,14 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         workspace / "step2" / "agent_factor.py"
     ).is_symlink():
         reasons.append("step2.agent_factor_custom_code_forbidden")
+    proof_preregistration: dict[str, Any] = {}
+    try:
+        proof_preregistration = validate_web_factor_proof_preregistration(
+            workspace,
+            plan,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        reasons.append(f"factor_proof_preregistration:{exc}")
     if reasons:
         raise WebResearchPlanError(BLOCK_PLAN_IMPLEMENTATION_INVALID, reasons)
     return {
@@ -1633,6 +1645,9 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         "catalog_sha256": approved_catalog_hash,
         "bootstrap_sha256": sha256_file(bootstrap_path),
         "factor_spec_sha256": sha256_file(spec_path),
+        "factor_proof_preregistration_sha256": str(
+            proof_preregistration.get("preregistration_sha256") or ""
+        ),
     }
 
 
@@ -1640,6 +1655,11 @@ def build_web_evaluation_contract(plan: dict[str, Any]) -> dict[str, Any]:
     research = plan["research_object"]
     data_plan = plan["data_plan"]
     evidence = plan["evidence_policy"]
+    proof_control_columns = (
+        list(RISK_PROOF_CONTROL_COLUMNS)
+        if plan["economic_mechanism"]["claim_class"] == "risk_premium"
+        else []
+    )
     return {
         "version": "factorforge_web_evaluation_contract_v2",
         "rebalance_frequency": research["rebalance_frequency"],
@@ -1660,6 +1680,7 @@ def build_web_evaluation_contract(plan: dict[str, Any]) -> dict[str, Any]:
         "transaction_cost_bps": evidence["transaction_cost_bps"],
         "cost_model_id": evidence["cost_model_id"],
         "cost_formula": "one_way_turnover * 0.003",
+        "proof_control_columns": proof_control_columns,
     }
 
 

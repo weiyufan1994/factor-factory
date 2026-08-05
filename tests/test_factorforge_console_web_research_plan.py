@@ -620,6 +620,7 @@ def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_pa
         "transaction_cost_bps": 30.0,
         "cost_model_id": "factorforge_step4_turnover_30bps_v1",
         "cost_formula": "one_way_turnover * 0.003",
+        "proof_control_columns": [],
     }
     conjecture = json.loads(
         (workspace / "objects" / "research_protocol" / "research_conjecture__WEB_REPORT.json").read_text(

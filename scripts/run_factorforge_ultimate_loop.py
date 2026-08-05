@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.runtime_context import load_json, resolve_factorforge_context, utc_now
+from factor_factory.council_terminal import classify_terminal_rejection_result
 from factor_factory.ultimate_loop.proof import (
     append_note,
     load_json_if_exists,
@@ -358,6 +359,39 @@ def terminal_rejection_command(report_id: str, factorforge_root: Path, loop_inde
     ]
 
 
+def final_protocol_validation_command(
+    report_id: str,
+    factorforge_root: Path,
+) -> list[str]:
+    return [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "validate_factorforge_research_protocol.py"),
+        "--workspace-root",
+        str(factorforge_root),
+        "--report-id",
+        report_id,
+        "--stage",
+        "final",
+    ]
+
+
+def terminal_protocol_validated_from_wrapper(
+    wrapper_proof: dict[str, Any] | None,
+) -> bool:
+    proof = wrapper_proof if isinstance(wrapper_proof, dict) else {}
+    council = (
+        proof.get("revision_council")
+        if isinstance(proof.get("revision_council"), dict)
+        else {}
+    )
+    return bool(
+        proof.get("status") == "PASS"
+        and council.get("terminal_protocol_validated") is True
+        and council.get("terminal_decision") == "REJECT"
+        and council.get("formal_council_status") == "rejected"
+    )
+
+
 def materialization_report_path(factorforge_root: Path, parent_report_id: str, child_report_id: str) -> Path:
     digest = hashlib.sha256(f"{parent_report_id}\0{child_report_id}".encode("utf-8")).hexdigest()[:16]
     short_parent = parent_report_id[:40].rstrip("_")
@@ -394,11 +428,6 @@ def next_derivation_questionnaire_path(factorforge_root: Path, report_id: str) -
         / report_id
         / f"next_derivation_questionnaire__{report_id}.json"
     )
-
-
-def terminal_reject_blocked_as_branch_falsification(command_result: dict[str, Any], factorforge_root: Path, report_id: str) -> bool:
-    text = f"{command_result.get('stdout_tail') or ''}\n{command_result.get('stderr_tail') or ''}"
-    return "BLOCK_PREMATURE_TERMINAL_REJECT_BEFORE_MAX_LOOPS" in text and branch_falsification_path(factorforge_root, report_id).exists()
 
 
 def synthesis_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
@@ -792,13 +821,21 @@ def main() -> int:
                     args.allow_legacy_research_protocol_smoke
                 ),
             )
+        wrapper_proof_path = (
+            ctx.runtime_context_root
+            / f"ultimate_run_report__{current_report_id}.json"
+        )
+        wrapper_proof = load_json_if_exists(wrapper_proof_path)
         iteration = {
             "loop_index": loop_index,
             "report_id": current_report_id,
             "parent_report_id": current_parent_report_id,
             "start_step": current_start_step,
             "wrapper_command": command_result,
-            "wrapper_proof_path": str(ctx.runtime_context_root / f"ultimate_run_report__{current_report_id}.json"),
+            "wrapper_proof_path": str(wrapper_proof_path),
+            "terminal_protocol_validated": (
+                terminal_protocol_validated_from_wrapper(wrapper_proof)
+            ),
             **state,
             "forbidden_side_effects": forbidden_changes,
         }
@@ -1027,8 +1064,17 @@ def main() -> int:
             terminal_result = run_command(terminal_cmd, env=env, dry_run=args.dry_run)
             iteration["terminal_reject_bridge_command"] = terminal_result
             iteration["terminal_reject_bridge_rc"] = terminal_result.get("rc")
-            if terminal_result.get("rc") != 0:
-                if terminal_reject_blocked_as_branch_falsification(terminal_result, run_root, current_report_id):
+            terminal_text = f"{terminal_result.get('stdout_tail') or ''}\n{terminal_result.get('stderr_tail') or ''}"
+            terminal_state = classify_terminal_rejection_result(
+                returncode=int(terminal_result.get("rc") or 0),
+                output=terminal_text,
+                branch_falsification_exists=branch_falsification_path(
+                    run_root,
+                    current_report_id,
+                ).is_file(),
+            )
+            if terminal_state != "closed":
+                if terminal_state == "awaiting_next_derivation":
                     branch_path = branch_falsification_path(run_root, current_report_id)
                     questionnaire_path = next_derivation_questionnaire_path(run_root, current_report_id)
                     iteration["branch_falsification_path"] = str(branch_path)
@@ -1054,8 +1100,7 @@ def main() -> int:
                     write_aggregate_brief(brief_path, proof, run_root)
                     print("awaiting_next_derivation")
                     return 0
-                terminal_text = f"{terminal_result.get('stdout_tail') or ''}\n{terminal_result.get('stderr_tail') or ''}"
-                if "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_NOT_UNANIMOUS" in terminal_text:
+                if terminal_state == "awaiting_main_agent_council_synthesis":
                     iteration["outcome"] = "awaiting_main_agent_council_synthesis"
                     iteration["stop_reason"] = "completed_council_requires_main_agent_synthesis"
                     iteration["proof_status"] = "PAUSED"
@@ -1084,6 +1129,29 @@ def main() -> int:
                 write_aggregate_brief(brief_path, proof, run_root)
                 print("BLOCK_FACTORFORGE_LOOP_TERMINAL_COUNCIL_REJECTION_FAILED")
                 return 1
+            final_protocol_result = run_command(
+                final_protocol_validation_command(
+                    current_report_id,
+                    run_root,
+                ),
+                env=env,
+                dry_run=args.dry_run,
+            )
+            iteration["final_protocol_validation_command"] = (
+                final_protocol_result
+            )
+            if final_protocol_result.get("rc") != 0:
+                proof["status"] = "FAIL"
+                proof["final_outcome"] = "blocked"
+                proof["stop_reason"] = (
+                    "BLOCK_FACTORFORGE_LOOP_FINAL_PROTOCOL_VALIDATION_FAILED"
+                )
+                proof["updated_at_utc"] = utc_now()
+                write_json_atomic(proof_path, proof)
+                write_aggregate_brief(brief_path, proof, run_root)
+                print("BLOCK_FACTORFORGE_LOOP_FINAL_PROTOCOL_VALIDATION_FAILED")
+                return 1
+            iteration["terminal_protocol_validated"] = True
             state = classify_loop_state(
                 run_root,
                 current_report_id,
@@ -1110,10 +1178,54 @@ def main() -> int:
 
         if not state.get("can_continue"):
             proof["status"] = state.get("proof_status")
+            terminal_rejection_closed = (
+                run_root
+                / "objects"
+                / "research_iteration_master"
+                / "revision_council"
+                / current_report_id
+                / f"terminal_council_rejection__{current_report_id}.json"
+            ).is_file()
+            if (
+                terminal_rejection_closed
+                and iteration.get("terminal_protocol_validated") is True
+                and "final_protocol_validation_command" not in iteration
+            ):
+                raw_final_protocol_result = run_command(
+                    final_protocol_validation_command(
+                        current_report_id,
+                        run_root,
+                    ),
+                    env=env,
+                    dry_run=args.dry_run,
+                )
+                iteration["raw_terminal_protocol_revalidation_command"] = (
+                    raw_final_protocol_result
+                )
+                if raw_final_protocol_result.get("rc") != 0:
+                    proof["status"] = "FAIL"
+                    proof["formal_proof_eligible"] = False
+                    proof["final_outcome"] = "blocked"
+                    proof["stop_reason"] = (
+                        "BLOCK_FACTORFORGE_LOOP_FINAL_PROTOCOL_VALIDATION_FAILED"
+                    )
+                    proof["updated_at_utc"] = utc_now()
+                    write_json_atomic(proof_path, proof)
+                    write_aggregate_brief(brief_path, proof, run_root)
+                    print("BLOCK_FACTORFORGE_LOOP_FINAL_PROTOCOL_VALIDATION_FAILED")
+                    return 1
             proof["formal_proof_eligible"] = bool(
                 proof["status"] == "PASS"
                 and not args.dry_run
                 and not args.allow_legacy_research_protocol_smoke
+                and (
+                    not terminal_rejection_closed
+                    or iteration.get("terminal_protocol_validated") is True
+                )
+            )
+            proof["terminal_protocol_validated"] = bool(
+                terminal_rejection_closed
+                and iteration.get("terminal_protocol_validated") is True
             )
             proof["final_outcome"] = state.get("outcome")
             proof["stop_reason"] = state.get("stop_reason")

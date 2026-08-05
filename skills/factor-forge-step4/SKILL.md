@@ -57,6 +57,15 @@ materialize a same-window full-versus-ablated panel with legal forward return
 for `scripts/build_factorforge_component_obligation_report.py`; an ablation
 summary written in prose is diagnostic only.
 
+For a web-created research task, the materializer must write the immutable
+search-trial ledger, metric spec and threshold registration before Step4 starts.
+Step4 must carry the plan-bound OOS signal dates, label start/end dates,
+label start/end prices, and required risk controls into the workspace-local
+proof panel. After Step4, run
+`scripts/finalize_factorforge_web_factor_proof.py`; it must replay the frozen
+panel and write both the certificate and bound verifier. Missing or changed
+dates, controls, plan hash, panel hash or release-order evidence must BLOCK.
+
 Metric-verifier v2 formal portfolio evidence is limited to a disjoint one-day
 return path. Step4 must declare horizon days, label start/end, execution time,
 holding period and return-path mode, and materialize signal date, label

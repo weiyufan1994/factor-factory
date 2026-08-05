@@ -79,7 +79,10 @@ raw file SHA, normalized snapshot SHA, registry SHA, anchor commit/blob, and
 snapshot id, then recompute
 `label_end_price/label_start_price-1`. If execution is `t+1`, the label must
 start at `t+1`; renaming a multi-day return column or supplying an unregistered
-sparse calendar does not satisfy the gate. Report or directory names containing
+sparse calendar does not satisfy the gate. A security suspended on either
+registered label date has no valid price path for that signal row; do not shift
+to the security's next observed bar, and exclude the incomplete row from formal
+evidence. Report or directory names containing
 `SMOKE` never grant a different verification scope.
 A rolling five-day forward label may be used for IC,
 Fama-MacBeth or bucket diagnostics, but Step4 must not feed it into daily

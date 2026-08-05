@@ -3102,6 +3102,160 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
         )
 
 
+def test_host_formal_executor_preserves_trusted_ultimate_failure_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    catalog = tmp_path / "catalog.json"
+    _write_json(catalog, {"datasets": []})
+    service.config = replace(service.config, data_catalogs=(catalog,))
+    job = replace(service.submit(_request("Formal nonzero")), base_commit="deadbeef")
+    worktree = service.config.source_repo
+    workspace = worktree / "factor_research" / job.factor_id / job.research_id
+    (workspace / "identity").mkdir(parents=True)
+    _write_json(workspace / "identity" / "web_research_plan.json", {"version": "test"})
+
+    def fake_run(argv, **_kwargs):
+        if argv[1] == "scripts/run_factorforge_ultimate.py":
+            _write_json(
+                workspace
+                / "objects"
+                / "runtime_context"
+                / f"ultimate_run_report__{job.report_id}.json",
+                {
+                    "contract_version": "factorforge_ultimate_wrapper_v1",
+                    "report_id": job.report_id,
+                    "factor_id": job.factor_id,
+                    "research_id": job.research_id,
+                    "status": "FAIL",
+                    "finished_at_utc": "2026-08-02T01:00:00Z",
+                    "failure": {
+                        "command": "finalize_web_factor_proof",
+                        "returncode": 1,
+                    },
+                },
+            )
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "BLOCK_FACTORFORGE_WEB_FACTOR_PROOF_FINALIZATION_FAILED: "
+                    "calendar mismatch"
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="PASS\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    receipt = _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE(
+        service,
+        job,
+        worktree=worktree,
+        workspace=workspace,
+        resume=False,
+        denied_values=(),
+        host_data_env={
+            "AWS_ACCESS_KEY_ID": "HOSTACCESSKEYFORTEST",
+            "AWS_SECRET_ACCESS_KEY": "host-secret-for-test",
+            "AWS_SESSION_TOKEN": "host-session-token-for-test",
+            "AWS_CREDENTIAL_EXPIRATION": "2026-08-02T01:00:00+00:00",
+        },
+    )
+
+    assert receipt["ultimate_returncode"] == 1
+    receipts = sorted(
+        (service.config.state_root / "jobs" / job.job_id / "formal-execution").glob(
+            "receipt_*.json"
+        )
+    )
+    assert len(receipts) == 1
+    payload = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert [item["returncode"] for item in payload["commands"]] == [0, 1]
+    assert payload["ultimate_proof_sha256"]
+
+
+def test_host_formal_failure_checkpoint_rejects_untrusted_wrapper_state(
+    tmp_path,
+):
+    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    job = service.submit(_request("Untrusted formal checkpoint"))
+    workspace = service.config.source_repo / "factor_research" / job.factor_id / job.research_id
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    _write_json(
+        proof_path,
+        {
+            "contract_version": "factorforge_ultimate_wrapper_v1",
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "status": "RUNNING",
+            "finished_at_utc": "2026-08-02T01:00:00Z",
+            "failure": {"command": "run_step4", "returncode": 1},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="wrapper failure checkpoint is invalid"):
+        service._validate_formal_failure_checkpoint(
+            job,
+            workspace=workspace,
+            returncode=1,
+            receipt_id=f"jobs/{job.job_id}/formal-execution/receipt.json",
+        )
+
+
+def test_formal_failure_checkpoint_is_attested_and_resumable(
+    tmp_path,
+    monkeypatch,
+):
+    _source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+
+    def fail_formal_checkpoint(current_job, *, workspace, **_kwargs):
+        _write_json(
+            workspace
+            / "objects"
+            / "runtime_context"
+            / f"ultimate_run_report__{current_job.report_id}.json",
+            {
+                "contract_version": "factorforge_ultimate_wrapper_v1",
+                "report_id": current_job.report_id,
+                "factor_id": current_job.factor_id,
+                "research_id": current_job.research_id,
+                "status": "FAIL",
+                "finished_at_utc": "2026-08-02T01:00:00Z",
+                "failure": {"command": "run_step4", "returncode": 1},
+            },
+        )
+        return {
+            "receipt_id": f"jobs/{current_job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "receipt-hash",
+            "ultimate_argv_sha256": "ultimate-argv-hash",
+            "ultimate_returncode": 1,
+        }
+
+    monkeypatch.setattr(service, "_execute_host_formal_pipeline", fail_formal_checkpoint)
+    job = service.submit(_request("Resumable formal checkpoint"))
+    service.run_once()
+    blocked = store.get_job(job.job_id)
+
+    assert blocked.execution_status in {"BLOCKED", "FAILED"}
+    assert blocked.error_code != "BLOCK_FACTORFORGE_CONSOLE_INTERNAL_ERROR"
+    assert blocked.result["host_attestation_id"] == "attestations/unit-test.json"
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+
+    service.request_resume(job.job_id)
+    assert store.get_job(job.job_id).execution_status == "QUEUED"
+
+
 def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
     tmp_path,
 ):

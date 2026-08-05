@@ -146,6 +146,7 @@ def build_forward_return_frame(
     entry_offset: int = 0,
     exit_offset: int | None = None,
     include_label_path: bool = False,
+    calendar_dates: Iterable[object] | None = None,
 ) -> pd.DataFrame:
     if horizon <= 0:
         raise ValueError('horizon must be positive')
@@ -157,7 +158,13 @@ def build_forward_return_frame(
 
     enriched = add_datetime_column(daily_df, date_col=date_col)
     enriched = enriched.sort_values([instrument_col, 'datetime'])
-    if entry_offset == 0 and resolved_exit_offset == horizon and return_col and return_col in enriched.columns:
+    if (
+        calendar_dates is None
+        and entry_offset == 0
+        and resolved_exit_offset == horizon
+        and return_col
+        and return_col in enriched.columns
+    ):
         next_ret = pd.to_numeric(enriched[return_col], errors='coerce').groupby(enriched[instrument_col], sort=False).shift(-1) / 100.0
         if horizon == 1:
             enriched[f'future_return_{horizon}d'] = next_ret
@@ -166,15 +173,53 @@ def build_forward_return_frame(
     grouped_price = enriched.groupby(instrument_col, sort=False)[price_col]
     entry_price = grouped_price.shift(-entry_offset) if entry_offset else enriched[price_col]
     exit_price = grouped_price.shift(-resolved_exit_offset)
-    enriched[f'future_return_{horizon}d'] = exit_price / entry_price - 1
-    if include_label_path:
+    label_start_date: pd.Series
+    label_end_date: pd.Series
+    if calendar_dates is not None:
+        if enriched.duplicated([instrument_col, 'datetime']).any():
+            raise ValueError('calendar-aligned returns require unique instrument/date rows')
+        calendar = normalize_trade_date_series(
+            pd.Series(list(calendar_dates), dtype='object')
+        )
+        if calendar.empty or calendar.isna().any():
+            raise ValueError('calendar_dates must contain valid dates')
+        calendar_values = calendar.tolist()
+        if calendar_values != sorted(set(calendar_values)):
+            raise ValueError('calendar_dates must be sorted and unique')
+
+        def expected_date(offset: int) -> pd.Series:
+            mapping = {
+                calendar_values[index]: calendar_values[index + offset]
+                for index in range(len(calendar_values) - offset)
+            }
+            return enriched['datetime'].map(mapping)
+
+        expected_entry = expected_date(entry_offset)
+        expected_exit = expected_date(resolved_exit_offset)
+        grouped_datetime = enriched.groupby(instrument_col, sort=False)['datetime']
+        observed_entry = (
+            grouped_datetime.shift(-entry_offset)
+            if entry_offset
+            else enriched['datetime']
+        )
+        observed_exit = grouped_datetime.shift(-resolved_exit_offset)
+        entry_price = entry_price.where(observed_entry == expected_entry)
+        exit_price = exit_price.where(observed_exit == expected_exit)
+        label_start_date = expected_entry.dt.strftime('%Y%m%d')
+        label_end_date = expected_exit.dt.strftime('%Y%m%d')
+    else:
         grouped_date = enriched.groupby(instrument_col, sort=False)[date_col]
-        enriched['label_start_date'] = (
+        label_start_date = (
             grouped_date.shift(-entry_offset)
             if entry_offset
             else enriched[date_col]
         )
-        enriched['label_end_date'] = grouped_date.shift(-resolved_exit_offset)
+        label_end_date = grouped_date.shift(-resolved_exit_offset)
+
+    enriched[f'future_return_{horizon}d'] = exit_price / entry_price - 1
+    if include_label_path:
+        enriched['label_start_date'] = label_start_date
+        enriched['label_end_date'] = label_end_date
         enriched['label_start_price'] = entry_price
         enriched['label_end_price'] = exit_price
     return enriched

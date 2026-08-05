@@ -296,8 +296,23 @@ def test_web_evaluation_contract_must_match_step4_semantics():
         run_step4.validate_web_evaluation_contract(fsm)
 
 
-def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(tmp_path):
+def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
+    tmp_path,
+    monkeypatch,
+):
     run_step4 = _load_run_step4()
+    monkeypatch.setattr(
+        run_step4,
+        "validate_trusted_calendar_snapshot",
+        lambda: {
+            "dates": [
+                "2026-01-02",
+                "2026-01-05",
+                "2026-01-06",
+                "2026-01-07",
+            ]
+        },
+    )
     factor_df = pd.DataFrame(
         [
             {"ts_code": "000001.SZ", "trade_date": "20260102", "signal": 1.0},
@@ -359,3 +374,72 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(tmp_path):
     assert float(first_row["turnover_rate"]) == pytest.approx(1.0)
     assert context["version"] == "factorforge_shared_evaluation_context_v2"
     assert context["label_policy"] == contract["label_policy"]
+
+
+def test_web_shared_evaluation_excludes_suspended_security_label_path(
+    tmp_path,
+    monkeypatch,
+):
+    run_step4 = _load_run_step4()
+    calendar = ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"]
+    monkeypatch.setattr(
+        run_step4,
+        "validate_trusted_calendar_snapshot",
+        lambda: {"dates": calendar},
+    )
+    factor_df = pd.DataFrame(
+        [
+            {"ts_code": code, "trade_date": "20260102", "signal": signal}
+            for code, signal in (("000001.SZ", 1.0), ("000002.SZ", 2.0))
+        ]
+    )
+    daily_rows = [
+        {"ts_code": "000001.SZ", "trade_date": date, "close": close}
+        for date, close in zip(calendar, [100.0, 101.0, 102.0, 103.0])
+    ]
+    daily_rows.extend(
+        [
+            {"ts_code": "000002.SZ", "trade_date": "20260102", "close": 200.0},
+            {"ts_code": "000002.SZ", "trade_date": "20260106", "close": 202.0},
+            {"ts_code": "000002.SZ", "trade_date": "20260107", "close": 203.0},
+        ]
+    )
+    daily_df = pd.DataFrame(daily_rows)
+    factor_path = tmp_path / "factor.parquet"
+    daily_path = tmp_path / "daily.parquet"
+    factor_df.to_parquet(factor_path, index=False)
+    daily_df.to_parquet(daily_path, index=False)
+    label_policy = {
+        "horizon": "one_trading_day_after_execution",
+        "return_type": "simple",
+        "entry_price_field": "close",
+        "exit_price_field": "close",
+        "execution_lag_sessions": 1,
+        "holding_period_sessions": 1,
+        "return_window": "close_t_plus_1_to_close_t_plus_2",
+    }
+
+    context = run_step4.build_shared_evaluation_context(
+        report_id="SUSPENSION",
+        factor_id="F",
+        implementation_mode_decision={"implementation_mode": "operator"},
+        base_identity={"spec_hash": "spec", "code_hash": "code"},
+        run_dir=tmp_path / "run",
+        factor_df=factor_df,
+        daily_df=daily_df,
+        signal_col="signal",
+        factor_parquet_path=factor_path,
+        daily_input_path=daily_path,
+        target_window={"start": "20260102", "end": "20260107"},
+        effective_target_window={"start": "20260102", "end": "20260107"},
+        evaluation_contract={
+            "version": "factorforge_web_evaluation_contract_v2",
+            "label_policy": label_policy,
+            "proof_control_columns": [],
+        },
+    )
+
+    merged = pd.read_parquet(context["paths"]["merged_signal_return_parquet"])
+    assert merged["code"].tolist() == ["000001.SZ"]
+    assert merged.iloc[0]["label_start_date"] == "20260105"
+    assert merged.iloc[0]["label_end_date"] == "20260106"

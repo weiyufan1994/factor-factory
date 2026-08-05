@@ -423,6 +423,47 @@ def test_reader_extracts_contracts_and_metrics_without_recomputation(
     assert all(not Path(value).is_absolute() for value in summary.artifact_ids.values())
 
 
+def test_string_research_contracts_are_projected_as_notebook_narratives(
+    tmp_path: Path,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "contract_version": "factorforge_ultimate_wrapper_v1",
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_STRING_CONTRACT",
+            "research_id": RESEARCH_ID,
+            "status": "FAIL",
+            "failure": {"command": "run_step4", "returncode": 1},
+        },
+    )
+    _write_json(
+        workspace
+        / "objects"
+        / "factor_spec_master"
+        / f"factor_spec_master__{REPORT_ID}.json",
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_STRING_CONTRACT",
+            "research_id": RESEARCH_ID,
+            "economic_hypothesis": "Overnight urgency is paid by impatient buyers.",
+            "mathematical_mechanism": "E[r_(t+2)|F_t] = beta * gap_t",
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace, report_id=REPORT_ID)
+
+    assert summary.research_notebook["stages"][0]["content"] == {
+        "narrative": "Overnight urgency is paid by impatient buyers."
+    }
+    assert summary.math_notebook["derivation_steps"][1]["statement"] == {
+        "narrative": "E[r_(t+2)|F_t] = beta * gap_t"
+    }
+
+
 def test_internal_evidence_with_host_paths_is_read_but_public_text_is_redacted(
     tmp_path: Path,
 ) -> None:

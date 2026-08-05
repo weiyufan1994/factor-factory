@@ -94,6 +94,7 @@ OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
+from factor_factory.console.web_factor_proof import validate_trusted_calendar_snapshot
 from factor_factory.data_access.minute_derived import (
     DEFAULT_MINUTE_CUTOFF_TIME,
     FLOW_STATE_REQUIRED_COLUMNS,
@@ -1429,6 +1430,11 @@ def build_shared_evaluation_context(
         entry_offset=1 if web_tradeable_timing else 0,
         exit_offset=2 if web_tradeable_timing else None,
         include_label_path=web_tradeable_timing,
+        calendar_dates=(
+            validate_trusted_calendar_snapshot()['dates']
+            if web_tradeable_timing
+            else None
+        ),
     )
     forward_columns = ['datetime', 'code', 'future_return_1d']
     if web_tradeable_timing:

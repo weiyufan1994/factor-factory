@@ -2066,7 +2066,59 @@ class ResearchRunService:
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Ultimate timed out; "
                 f"receipt={receipt['receipt_id']}"
             )
+        if ultimate["returncode"] != 0:
+            self._validate_formal_failure_checkpoint(
+                job,
+                workspace=workspace,
+                returncode=int(ultimate["returncode"]),
+                receipt_id=str(receipt["receipt_id"]),
+            )
         return receipt
+
+    @staticmethod
+    def _validate_formal_failure_checkpoint(
+        job: ResearchJob,
+        *,
+        workspace: Path,
+        returncode: int,
+        receipt_id: str,
+    ) -> None:
+        proof_relative = (
+            "objects/runtime_context/"
+            f"ultimate_run_report__{job.report_id}.json"
+        )
+        try:
+            proof = _read_regular_workspace_json(workspace, proof_relative)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Ultimate returncode="
+                f"{returncode} lacks a safe wrapper proof; receipt={receipt_id}"
+            ) from exc
+        failure = proof.get("failure") if isinstance(proof, dict) else None
+        expected_identity = {
+            "report_id": job.report_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+        }
+        if (
+            not isinstance(proof, dict)
+            or proof.get("contract_version") != "factorforge_ultimate_wrapper_v1"
+            or any(proof.get(key) != value for key, value in expected_identity.items())
+            or str(proof.get("status") or "").upper()
+            not in {"FAIL", "BLOCK_DATA_REQUEST_PENDING"}
+            or not isinstance(proof.get("finished_at_utc"), str)
+            or not proof["finished_at_utc"].strip()
+            or not isinstance(failure, dict)
+            or not str(failure.get("command") or "").strip()
+            or isinstance(failure.get("returncode"), bool)
+            or not isinstance(failure.get("returncode"), int)
+            or failure.get("returncode") != returncode
+        ):
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Ultimate returncode="
+                f"{returncode} wrapper failure checkpoint is invalid; "
+                f"receipt={receipt_id}"
+            )
 
     def _write_formal_execution_receipt(
         self,
@@ -4418,7 +4470,7 @@ def _read_regular_workspace_json(workspace: Path, relative: str) -> dict[str, An
     path = _read_regular_workspace_file(workspace, relative)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: resume input is invalid JSON: {relative}"
         ) from exc

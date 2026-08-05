@@ -1413,16 +1413,22 @@ def _research_notebooks(
     source_label = (
         "CURRENT MAIN AGENT" if main_agent_memo else "EARLY DETERMINISTIC CONTRACT"
     )
-    economic = (
+    economic_value = (
         _public_copy(main_agent_memo.get("economic_hypothesis"))
         if main_agent_memo
         else _public_copy(economic_game)
     ) or {}
-    math = (
+    math_value = (
         _public_copy(main_agent_memo.get("math_hypothesis"))
         if main_agent_memo
         else _public_copy(math_mechanism)
     ) or {}
+    economic = (
+        economic_value
+        if isinstance(economic_value, dict)
+        else {"narrative": economic_value}
+    )
+    math = math_value if isinstance(math_value, dict) else {"narrative": math_value}
     components = _public_copy(main_agent_memo.get("formula_component_map")) or []
     evidence = _public_copy(main_agent_memo.get("evidence_comparison")) or {}
     qa = _public_copy(main_agent_memo.get("mechanism_qa")) or {}
@@ -1493,6 +1499,12 @@ def _research_notebooks(
         "payer": economic.get("payer_or_counterparty") or economic.get("payer"),
     }
     definitions = {key: value for key, value in definitions.items() if value not in (None, "")}
+    model_statement = selection or {
+        "why_this_model": math.get("why_this_model"),
+        "why_not_generic_template": math.get("why_not_generic_template"),
+    }
+    if not any(value not in (None, "", {}, []) for value in model_statement.values()):
+        model_statement = math
     derivation_steps = [
         {
             "step": 1,
@@ -1502,10 +1514,7 @@ def _research_notebooks(
         {
             "step": 2,
             "title": "State to mathematical model",
-            "statement": selection or {
-                "why_this_model": math.get("why_this_model"),
-                "why_not_generic_template": math.get("why_not_generic_template"),
-            },
+            "statement": model_statement,
         },
         {
             "step": 3,

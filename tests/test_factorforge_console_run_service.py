@@ -126,6 +126,15 @@ def _make_source_repo(tmp_path: Path) -> Path:
         PROJECT_ROOT / "scripts" / "init_factor_research_workspace.py",
         source / "scripts" / "init_factor_research_workspace.py",
     )
+    shutil.copy2(PROJECT_ROOT / ".gitignore", source / ".gitignore")
+    for script_name in (
+        "materialize_factorforge_web_research.py",
+        "run_factorforge_ultimate.py",
+    ):
+        shutil.copy2(
+            PROJECT_ROOT / "scripts" / script_name,
+            source / "scripts" / script_name,
+        )
     (source / "README.md").write_text("fixture\n", encoding="utf-8")
     _git(source, "init")
     _git(source, "config", "user.name", "Factor Forge Test")
@@ -2666,14 +2675,17 @@ def test_private_receipt_snapshot_rejects_destination_parent_swap(
     assert not (backup / "receipt.snapshot.json").exists()
 
 
-def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
+def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeypatch):
+    import factor_factory.console.run_service as module
     from factor_factory.console.agent_adapter import AgentRunResult
+    from factor_factory.console.run_service import ResearchRunService
     from factor_factory.console.ultimate_reader import (
         UltimateRunSummary,
         read_ultimate_workspace,
     )
+    from factor_factory.console.worktree_allocator import FactorWorktreeAllocator
 
-    _source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+    source, store, service = _service(tmp_path, _TerminalRejectAdapter())
     job = service.submit(_request("Host attestation"))
     allocation = service.allocator.allocate(
         factor_id=job.factor_id,
@@ -2886,13 +2898,25 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
     assert current_proof_sha256 != prior_proof_sha256
 
     service._begin_private_execution(job, resume=True)
+    resumed_materialize_argv = list(materialize_argv)
+    resumed_materialize_argv[1] = str(
+        service.config.source_repo
+        / "scripts"
+        / "materialize_factorforge_web_research.py"
+    )
     resumed_ultimate_argv = list(ultimate_argv)
+    resumed_ultimate_argv[1] = str(
+        service.config.source_repo / "scripts" / "run_factorforge_ultimate.py"
+    )
     resumed_ultimate_argv[resumed_ultimate_argv.index("3")] = "6"
     resumed_commands = [
         {
             "name": "materialize_web_research",
-            "argv": materialize_argv,
-            "argv_sha256": stable_json_hash(materialize_argv),
+            "argv": resumed_materialize_argv,
+            "argv_sha256": stable_json_hash(resumed_materialize_argv),
+            "engine_script_sha256": _file_sha256(
+                Path(resumed_materialize_argv[1])
+            ),
             "returncode": 0,
             "host_observed_process": True,
             "cwd": str(allocation.worktree_path.resolve()),
@@ -2901,6 +2925,7 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
             "name": "run_factorforge_ultimate",
             "argv": resumed_ultimate_argv,
             "argv_sha256": stable_json_hash(resumed_ultimate_argv),
+            "engine_script_sha256": _file_sha256(Path(resumed_ultimate_argv[1])),
             "returncode": 0,
             "host_observed_process": True,
             "cwd": str(allocation.worktree_path.resolve()),
@@ -2993,6 +3018,84 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path):
         attestation_id=resumed_relative,
     )
 
+    catalog = tmp_path / "resume-catalog.json"
+    _write_json(catalog, {"datasets": []})
+    (source / "README.md").write_text("upgraded engine\n", encoding="utf-8")
+    _git(source, "add", "README.md")
+    _git(source, "commit", "-m", "upgrade formal engine")
+    upgraded_engine_commit = _git(source, "rev-parse", "HEAD")
+    assert upgraded_engine_commit != job.base_commit
+    upgraded_config = replace(service.config, data_catalogs=(catalog,))
+    upgraded_allocator = FactorWorktreeAllocator(
+        source_repo=source,
+        configured_root=upgraded_config.worktree_root,
+        run_state_root=upgraded_config.state_root / "allocations",
+        base_ref="HEAD",
+    )
+    upgraded_service = ResearchRunService(
+        config=upgraded_config,
+        store=store,
+        allocator=upgraded_allocator,
+        agent_adapter=_TerminalRejectAdapter(),
+    )
+    persisted_allocation = upgraded_allocator.validate_allocation(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        persisted_worktree_path=job.worktree_path,
+        persisted_workspace_path=job.workspace_path,
+        persisted_base_commit=job.base_commit,
+    )
+    assert persisted_allocation.worktree_path == allocation.worktree_path
+    assert persisted_allocation.workspace_path == allocation.workspace_path
+    upgraded_trust = _ORIGINAL_VALIDATE_TRUSTED_RESUME_CONTEXT(
+        upgraded_service,
+        job,
+        worktree=persisted_allocation.worktree_path,
+        workspace=persisted_allocation.workspace_path,
+    )
+    assert upgraded_trust["attestation_id"] == resumed_relative
+    assert upgraded_trust["start_step"] == "6"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return SimpleNamespace(returncode=0, stdout="PASS\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    cross_version_receipt = _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE(
+        upgraded_service,
+        job,
+        worktree=persisted_allocation.worktree_path,
+        workspace=persisted_allocation.workspace_path,
+        resume=True,
+        resume_trust=upgraded_trust,
+        denied_values=(),
+        host_data_env={},
+    )
+    assert len(calls) == 2
+    assert calls[0][1]["cwd"] == allocation.worktree_path
+    assert calls[1][1]["cwd"] == allocation.worktree_path
+    resumed_argv = calls[1][0]
+    assert resumed_argv[1] == str(source / "scripts" / "run_factorforge_ultimate.py")
+    assert resumed_argv[resumed_argv.index("--start-step") + 1] == "6"
+    assert resumed_argv[resumed_argv.index("--factorforge-root") + 1] == str(
+        allocation.worktree_path
+    )
+    assert resumed_argv[resumed_argv.index("--factor-workspace") + 1] == str(
+        workspace
+    )
+    cross_version_payload = json.loads(
+        (
+            upgraded_service.config.state_root
+            / cross_version_receipt["receipt_id"]
+        ).read_text(encoding="utf-8")
+    )
+    assert cross_version_payload["resume"] is True
+    assert cross_version_payload["resume_parent"]["attestation_id"] == resumed_relative
+    assert cross_version_payload["base_commit"] == job.base_commit
+    assert cross_version_payload["engine_commit"] == upgraded_engine_commit
+
     original_step4 = step4_evidence.read_bytes()
     _write_json(step4_evidence, {"report_id": job.report_id, "status": "FORGED"})
     with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
@@ -3024,7 +3127,7 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
 ):
     import factor_factory.console.run_service as module
 
-    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
     catalog = tmp_path / "catalog.json"
     _write_json(catalog, {"datasets": []})
     service.config = replace(service.config, data_catalogs=(catalog,))
@@ -3038,7 +3141,7 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
 
     def fake_run(argv, **kwargs):
         calls.append((list(argv), kwargs))
-        if argv[1] == "scripts/run_factorforge_ultimate.py":
+        if Path(argv[1]).name == "run_factorforge_ultimate.py":
             _write_json(
                 workspace
                 / "objects"
@@ -3068,8 +3171,10 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
     )
 
     assert len(calls) == 2
-    assert calls[0][0][1] == "scripts/materialize_factorforge_web_research.py"
-    assert calls[1][0][1] == "scripts/run_factorforge_ultimate.py"
+    assert calls[0][0][1] == str(
+        source / "scripts" / "materialize_factorforge_web_research.py"
+    )
+    assert calls[1][0][1] == str(source / "scripts" / "run_factorforge_ultimate.py")
     assert calls[1][0][calls[1][0].index("--start-step") + 1] == "3"
     assert calls[0][1]["env"]["AWS_ACCESS_KEY_ID"] == "HOSTACCESSKEYFORTEST"
     assert calls[0][1]["env"]["AWS_SESSION_TOKEN"] == "host-session-token-for-test"
@@ -3081,6 +3186,9 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
     receipt_path = service.config.state_root / receipt["receipt_id"]
     payload = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert payload["version"] == "factorforge_console_host_formal_execution_v2"
+    assert payload["engine_commit"] == service._expected_base_commit
+    assert payload["engine_root"] == str(source)
+    assert all(command["engine_script_sha256"] for command in payload["commands"])
     assert payload["resume"] is False
     assert payload["resume_parent"] is None
     assert receipt_path.is_relative_to(service.config.state_root)
@@ -3102,6 +3210,93 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
         )
 
 
+def test_formal_engine_checkout_blocks_untracked_python_override(tmp_path):
+    from factor_factory.console.run_service import _validate_formal_engine_checkout
+
+    source = _make_source_repo(tmp_path)
+    expected_commit = _git(source, "rev-parse", "HEAD")
+    override = source / "factor_factory" / "untracked_override.py"
+    override.write_text("OVERRIDE = True\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="formal engine commit changed"):
+        _validate_formal_engine_checkout(source, expected_commit)
+
+
+def test_host_formal_execution_uses_deployed_engine_with_pinned_research_worktree(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.run_service import ResearchRunService
+    from factor_factory.console.worktree_allocator import FactorWorktreeAllocator
+
+    source, store, original_service = _service(tmp_path, _TerminalRejectAdapter())
+    catalog = tmp_path / "catalog.json"
+    _write_json(catalog, {"datasets": []})
+    old_commit = _git(source, "rev-parse", "HEAD")
+    research_worktree = tmp_path / "pinned-research-worktree"
+    _git(source, "worktree", "add", "--detach", str(research_worktree), old_commit)
+
+    (source / "README.md").write_text("upgraded engine\n", encoding="utf-8")
+    _git(source, "add", "README.md")
+    _git(source, "commit", "-m", "upgrade engine")
+    engine_commit = _git(source, "rev-parse", "HEAD")
+    assert engine_commit != old_commit
+
+    config = replace(original_service.config, data_catalogs=(catalog,))
+    allocator = FactorWorktreeAllocator(
+        source_repo=source,
+        configured_root=config.worktree_root,
+        run_state_root=config.state_root / "allocations",
+        base_ref="HEAD",
+    )
+    service = ResearchRunService(
+        config=config,
+        store=store,
+        allocator=allocator,
+        agent_adapter=_TerminalRejectAdapter(),
+    )
+    job = replace(service.submit(_request("Cross-version formal resume")), base_commit=old_commit)
+    workspace = research_worktree / "factor_research" / job.factor_id / job.research_id
+    (workspace / "identity").mkdir(parents=True)
+    _write_json(workspace / "identity" / "web_research_plan.json", {"version": "test"})
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if Path(argv[1]).name == "run_factorforge_ultimate.py":
+            _write_json(
+                workspace
+                / "objects"
+                / "runtime_context"
+                / f"ultimate_run_report__{job.report_id}.json",
+                {"report_id": job.report_id, "status": "PAUSED"},
+            )
+        return SimpleNamespace(returncode=0, stdout="PASS\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    receipt = _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE(
+        service,
+        job,
+        worktree=research_worktree,
+        workspace=workspace,
+        resume=False,
+        denied_values=(),
+        host_data_env={},
+    )
+
+    assert calls[0][0][1] == str(
+        source / "scripts" / "materialize_factorforge_web_research.py"
+    )
+    assert calls[1][0][1] == str(source / "scripts" / "run_factorforge_ultimate.py")
+    assert not Path(calls[1][0][1]).is_relative_to(research_worktree)
+    payload = json.loads(
+        (service.config.state_root / receipt["receipt_id"]).read_text(encoding="utf-8")
+    )
+    assert payload["base_commit"] == old_commit
+    assert payload["engine_commit"] == engine_commit
+
+
 def test_host_formal_executor_preserves_trusted_ultimate_failure_checkpoint(
     tmp_path,
     monkeypatch,
@@ -3119,7 +3314,7 @@ def test_host_formal_executor_preserves_trusted_ultimate_failure_checkpoint(
     _write_json(workspace / "identity" / "web_research_plan.json", {"version": "test"})
 
     def fake_run(argv, **_kwargs):
-        if argv[1] == "scripts/run_factorforge_ultimate.py":
+        if Path(argv[1]).name == "run_factorforge_ultimate.py":
             _write_json(
                 workspace
                 / "objects"

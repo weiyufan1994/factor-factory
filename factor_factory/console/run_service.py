@@ -68,6 +68,9 @@ from factor_factory.mechanism_math.main_agent_memo import (
 from factor_factory.mechanism_math.formula_specific import BASELINE_MODEL_FAMILIES
 
 
+_SYSTEM_SUBPROCESS_RUN = subprocess.run
+
+
 BLOCK_ISOLATION_AUDIT_FAILED = "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED"
 BLOCK_EVIDENCE_IDENTITY_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_IDENTITY_MISMATCH"
 BLOCK_FORMAL_EVIDENCE_MISSING = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_EVIDENCE_MISSING"
@@ -79,6 +82,10 @@ BLOCK_HOST_FORMAL_EXECUTION_FAILED = "BLOCK_FACTORFORGE_CONSOLE_HOST_FORMAL_EXEC
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
 EXPLICIT_HUMAN_DECISION_REQUIRED = "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
+FORMAL_ENGINE_SCRIPTS = {
+    "materialize_web_research": Path("scripts/materialize_factorforge_web_research.py"),
+    "run_factorforge_ultimate": Path("scripts/run_factorforge_ultimate.py"),
+}
 PRIVATE_LIFECYCLE_VERSION = "factorforge_console_private_job_lifecycle_v1"
 PRIVATE_LIFECYCLE_RUNNING = "RUNNING"
 PRIVATE_LIFECYCLE_RESUMABLE = "RESUMABLE"
@@ -280,6 +287,136 @@ def _configure_host_formal_python_environment(
     env["PYTHONPATH"] = os.pathsep.join(python_paths)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["FACTORFORGE_REPO_ROOT"] = str(worktree_root)
+
+
+def _formal_engine_script(source_repo: Path, relative: Path) -> Path:
+    try:
+        source_root = source_repo.expanduser().resolve(strict=True)
+        candidate = source_root / relative
+        if candidate.is_symlink():
+            raise RuntimeError("formal engine script uses a symlink")
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(source_root)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal engine script is unsafe"
+        ) from exc
+    if not resolved.is_file():
+        raise RuntimeError(
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal engine script is missing"
+        )
+    return resolved
+
+
+def _git_blob_sha256(source_repo: Path, commit: str, relative: Path) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40,64}", str(commit or "").lower()):
+        raise RuntimeError("formal engine commit is invalid")
+    try:
+        proc = _SYSTEM_SUBPROCESS_RUN(
+            [
+                "git",
+                "-C",
+                str(source_repo),
+                "show",
+                f"{commit}:{relative.as_posix()}",
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            "formal engine commit does not contain the required script"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError("formal engine commit does not contain the required script")
+    return hashlib.sha256(proc.stdout).hexdigest()
+
+
+def _validate_formal_engine_checkout(source_repo: Path, expected_commit: str) -> str:
+    try:
+        source_root = source_repo.expanduser().resolve(strict=True)
+        head_proc = _SYSTEM_SUBPROCESS_RUN(
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        status_proc = _SYSTEM_SUBPROCESS_RUN(
+            [
+                "git",
+                "-C",
+                str(source_root),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal engine checkout is invalid"
+        ) from exc
+    if head_proc.returncode != 0 or status_proc.returncode != 0:
+        raise RuntimeError(
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal engine checkout is invalid"
+        )
+    head = head_proc.stdout.strip().lower()
+    tracked_status = status_proc.stdout.strip()
+    if head != str(expected_commit or "").lower() or tracked_status:
+        raise RuntimeError(
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal engine commit changed"
+        )
+    return head
+
+
+def _formal_receipt_engine_paths_valid(
+    *,
+    receipt: dict[str, Any],
+    source_repo: Path,
+    materialize: dict[str, Any],
+    materialize_argv: list[Any],
+    ultimate: dict[str, Any],
+    ultimate_argv: list[Any],
+) -> bool:
+    engine_commit = str(receipt.get("engine_commit") or "").lower()
+    engine_root = str(receipt.get("engine_root") or "")
+    if not engine_commit and not engine_root:
+        return bool(
+            materialize_argv[1]
+            == FORMAL_ENGINE_SCRIPTS["materialize_web_research"].as_posix()
+            and ultimate_argv[1]
+            == FORMAL_ENGINE_SCRIPTS["run_factorforge_ultimate"].as_posix()
+        )
+    try:
+        source_root = source_repo.expanduser().resolve(strict=True)
+        expected_materialize = source_root / FORMAL_ENGINE_SCRIPTS[
+            "materialize_web_research"
+        ]
+        expected_ultimate = source_root / FORMAL_ENGINE_SCRIPTS[
+            "run_factorforge_ultimate"
+        ]
+        return bool(
+            engine_root == str(source_root)
+            and re.fullmatch(r"[0-9a-f]{40,64}", engine_commit)
+            and str(materialize_argv[1]) == str(expected_materialize)
+            and str(ultimate_argv[1]) == str(expected_ultimate)
+            and materialize.get("engine_script_sha256")
+            == _git_blob_sha256(
+                source_root,
+                engine_commit,
+                FORMAL_ENGINE_SCRIPTS["materialize_web_research"],
+            )
+            and ultimate.get("engine_script_sha256")
+            == _git_blob_sha256(
+                source_root,
+                engine_commit,
+                FORMAL_ENGINE_SCRIPTS["run_factorforge_ultimate"],
+            )
+        )
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        return False
 
 
 def _require_resume_request_allowed(job: ResearchJob) -> None:
@@ -1671,14 +1808,25 @@ class ResearchRunService:
         ultimate_argv = ultimate.get("argv")
         if not isinstance(materialize_argv, list) or not isinstance(ultimate_argv, list):
             raise invalid("formal execution receipt argv is invalid")
+        engine_paths_valid = bool(
+            len(materialize_argv) >= 2
+            and len(ultimate_argv) >= 2
+            and _formal_receipt_engine_paths_valid(
+                receipt=receipt,
+                source_repo=self.config.source_repo,
+                materialize=materialize,
+                materialize_argv=materialize_argv,
+                ultimate=ultimate,
+                ultimate_argv=ultimate_argv,
+            )
+        )
         if (
             materialize.get("name") != "materialize_web_research"
             or materialize.get("returncode") != 0
             or materialize.get("host_observed_process") is not True
             or materialize.get("cwd") != str(worktree_root)
             or len(materialize_argv) < 2
-            or str(materialize_argv[1])
-            != "scripts/materialize_factorforge_web_research.py"
+            or not engine_paths_valid
             or _argv_value(materialize_argv, "--workspace-root") != str(workspace_root)
             or _argv_value(materialize_argv, "--plan") != str(plan_path)
             or stable_json_hash(materialize_argv)
@@ -1690,7 +1838,6 @@ class ResearchRunService:
             or ultimate.get("host_observed_process") is not True
             or ultimate.get("cwd") != str(worktree_root)
             or len(ultimate_argv) < 2
-            or str(ultimate_argv[1]) != "scripts/run_factorforge_ultimate.py"
             or _argv_value(ultimate_argv, "--report-id") != job.report_id
             or _argv_value(ultimate_argv, "--factor-id") != job.factor_id
             or _argv_value(ultimate_argv, "--research-id") != job.research_id
@@ -1885,6 +2032,25 @@ class ResearchRunService:
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: approved data catalog is missing"
             )
         catalog = self.config.data_catalogs[0].expanduser().resolve(strict=True)
+        engine_commit = _validate_formal_engine_checkout(
+            self.config.source_repo,
+            self._expected_base_commit,
+        )
+        engine_root = self.config.source_repo.resolve(strict=True)
+        engine_scripts = {
+            name: _formal_engine_script(engine_root, relative)
+            for name, relative in FORMAL_ENGINE_SCRIPTS.items()
+        }
+        for name, script_path in engine_scripts.items():
+            if _sha256(script_path) != _git_blob_sha256(
+                engine_root,
+                engine_commit,
+                FORMAL_ENGINE_SCRIPTS[name],
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal engine script "
+                    "does not match the pinned commit"
+                )
         env = os.environ.copy()
         for key in list(env):
             upper = key.upper()
@@ -1978,6 +2144,7 @@ class ResearchRunService:
                 "name": name,
                 "argv": argv,
                 "argv_sha256": stable_json_hash(argv),
+                "engine_script_sha256": _sha256(Path(argv[1])),
                 "cwd": str(worktree),
                 "host_observed_process": True,
                 "readonly_data_lease_injected": bool(lease_env),
@@ -1999,7 +2166,7 @@ class ResearchRunService:
 
         materialize_argv = [
             sys.executable,
-            "scripts/materialize_factorforge_web_research.py",
+            str(engine_scripts["materialize_web_research"]),
             "--workspace-root",
             str(workspace),
             "--plan",
@@ -2030,7 +2197,7 @@ class ResearchRunService:
         start_step = str(resume_trust["start_step"]) if resume_trust is not None else "3"
         ultimate_argv = [
             sys.executable,
-            "scripts/run_factorforge_ultimate.py",
+            str(engine_scripts["run_factorforge_ultimate"]),
             "--report-id",
             job.report_id,
             "--start-step",
@@ -2170,6 +2337,11 @@ class ResearchRunService:
             / "runtime_context"
             / f"ultimate_run_report__{job.report_id}.json"
         )
+        engine_commit = _validate_formal_engine_checkout(
+            self.config.source_repo,
+            self._expected_base_commit,
+        )
+        engine_root = self.config.source_repo.resolve(strict=True)
         payload = {
             "version": "factorforge_console_host_formal_execution_v2",
             "job_id": job.job_id,
@@ -2177,6 +2349,8 @@ class ResearchRunService:
             "research_id": job.research_id,
             "report_id": job.report_id,
             "base_commit": job.base_commit,
+            "engine_commit": engine_commit,
+            "engine_root": str(engine_root),
             "resume": resume,
             "resume_parent": (
                 {
@@ -2637,6 +2811,20 @@ class ResearchRunService:
             and isinstance(ultimate_receipt.get("argv"), list)
             else []
         )
+        engine_paths_valid = bool(
+            len(materialize_argv) >= 2
+            and len(ultimate_argv) >= 2
+            and isinstance(materialize_receipt, dict)
+            and isinstance(ultimate_receipt, dict)
+            and _formal_receipt_engine_paths_valid(
+                receipt=formal_receipt,
+                source_repo=self.config.source_repo,
+                materialize=materialize_receipt,
+                materialize_argv=materialize_argv,
+                ultimate=ultimate_receipt,
+                ultimate_argv=ultimate_argv,
+            )
+        )
         if (
             not isinstance(materialize_receipt, dict)
             or materialize_receipt.get("name") != "materialize_web_research"
@@ -2644,8 +2832,7 @@ class ResearchRunService:
             or materialize_receipt.get("host_observed_process") is not True
             or materialize_receipt.get("cwd") != str(job.worktree_path)
             or len(materialize_argv) < 2
-            or materialize_argv[1]
-            != "scripts/materialize_factorforge_web_research.py"
+            or not engine_paths_valid
             or _argv_value(materialize_argv, "--workspace-root")
             != str(workspace_root)
             or _argv_value(materialize_argv, "--plan")
@@ -2657,7 +2844,6 @@ class ResearchRunService:
             or ultimate_receipt.get("host_observed_process") is not True
             or ultimate_receipt.get("cwd") != str(job.worktree_path)
             or len(ultimate_argv) < 2
-            or ultimate_argv[1] != "scripts/run_factorforge_ultimate.py"
             or _argv_value(ultimate_argv, "--report-id") != job.report_id
             or _argv_value(ultimate_argv, "--factor-id") != job.factor_id
             or _argv_value(ultimate_argv, "--research-id") != job.research_id

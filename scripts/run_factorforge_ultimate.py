@@ -29,6 +29,13 @@ from factor_factory.research_workspace import (
     write_workspace_manifest,
 )
 from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
+from factor_factory.console.web_research_plan import (
+    WebResearchPlanError,
+    required_web_resume_start_step,
+    resolve_workspace_approved_catalog,
+    validate_materialized_web_research,
+)
+from factor_factory.council_terminal import classify_terminal_rejection_result
 from factor_factory.state_reuse import (
     BLOCK_STATE_DEPENDENCY_UNDECLARED,
     StateReuseBlock,

@@ -58,7 +58,7 @@ from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset
 from factor_factory.formula.field_aliases import aliases_for
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.state_reuse import (
-    STATE_DEPENDENCY_CONTRACT_VERSION,
+    build_state_dependency_contract_from_data_prep,
     resolve_state_dependencies,
     write_resolution_outputs,
 )
@@ -1072,41 +1072,10 @@ def state_reuse_paths_from_manifest(manifest: dict | None) -> dict:
 
 
 def build_state_dependency_contract_from_step3(data_prep_master: dict) -> dict:
-    requirements = []
-    for item in data_prep_master.get('minute_derived_state_requirements') or []:
-        if not isinstance(item, dict) or not item.get('dataset_id'):
-            continue
-        requirements.append({
-            'dataset_id': item.get('dataset_id'),
-            'schema_version': item.get('schema_version'),
-            'window': {
-                'start': item.get('start_date'),
-                'end': item.get('end_date'),
-            },
-            'required_fields': list(item.get('required_fields') or []),
-            'parameters': {
-                'cutoff_time': item.get('cutoff_time'),
-                'source_minute_dataset_id': item.get('source_minute_dataset_id'),
-                'source_data_version': item.get('source_data_version'),
-            },
-            'qa_required': True,
-            'lookahead_policy_required': True,
-            'no_future_intraday_minutes': True,
-            'fallback_policy': item.get('fallback_policy') or 'block_or_explicit_backfill',
-        })
-    return {
-        'contract_version': STATE_DEPENDENCY_CONTRACT_VERSION,
-        'producer': 'step3a',
-        'report_id': data_prep_master.get('report_id'),
-        'factor_id': data_prep_master.get('factor_id'),
-        'required_datasets': requirements,
-        'no_state_required': not bool(requirements),
-        'no_state_reason': 'daily_or_catalog_data_only_no_derived_state_dependency' if not requirements else None,
-        'allowed_missing_behavior': 'block',
-        'raw_minute_full_window_allowed': False,
-        'bounded_smoke_allowed': True,
-        'data_request_on_missing': True,
-    }
+    return build_state_dependency_contract_from_data_prep(
+        data_prep_master,
+        producer='step3a',
+    )
 
 
 def load_step3_state_catalog(data_prep_master: dict) -> tuple[dict, dict]:

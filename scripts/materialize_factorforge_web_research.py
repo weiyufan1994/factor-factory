@@ -23,6 +23,7 @@ from factor_factory.console.web_research_plan import (
     build_step1_payloads,
     resolve_workspace_approved_catalog,
     sha256_file,
+    stable_json_hash,
     validate_materialized_web_research,
     validate_plan,
     write_json_atomic,
@@ -116,6 +117,8 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
     _, formula_ir = validate_plan(plan, workspace=workspace)
     catalog_sha256 = _catalog_snapshot_hash(workspace)
     knowledge_summary = _read_json(workspace / "identity" / "factor_knowledge_summary.json")
+    request = _read_json(workspace / "identity" / "web_research_request.json")
+    authoring_contract_path = workspace / "identity" / "web_research_authoring_contract.json"
     payloads = build_step1_payloads(
         plan,
         formula_ir=formula_ir,
@@ -173,6 +176,9 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
         "research_id": plan["identity"]["research_id"],
         "agent_authored_plan_sha256": sha256_file(plan_path),
         "agent_authored_formula_hash": formula_ir["formula_hash"],
+        "host_authoring_contract_sha256": sha256_file(authoring_contract_path),
+        "host_request_sha256": stable_json_hash(request),
+        "host_knowledge_summary_sha256": stable_json_hash(knowledge_summary),
         "approved_catalog_sha256": catalog_sha256,
         "trusted_codegen_only": True,
         "semantic_projection_only": True,

@@ -43,6 +43,21 @@ def _load_ultimate_loop():
     return module
 
 
+def _load_child_materializer():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "skills/factor-forge-step6/scripts/materialize_step6_child_revision.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "materialize_step6_child_revision_under_test",
+        path,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_terminal_rejection_result_classification_is_shared_and_fail_closed() -> None:
     assert classify_terminal_rejection_result(
         returncode=0,
@@ -120,6 +135,37 @@ def test_loop_inherits_only_fully_validated_raw_terminal_rejection() -> None:
     invalid = json.loads(json.dumps(valid))
     invalid["revision_council"]["formal_council_status"] = "paused"
     assert loop.terminal_protocol_validated_from_wrapper(invalid) is False
+
+
+def test_child_materializer_writes_child_scoped_noop_state_resolution(
+    tmp_path: Path,
+) -> None:
+    materializer = _load_child_materializer()
+    root = tmp_path / "workspace"
+    root.mkdir()
+    child = "CHILD_DAILY_ONLY"
+    result = materializer.materialize_child_state_reuse(
+        root,
+        child,
+        {
+            "report_id": child,
+            "factor_id": "DAILY_FACTOR",
+            "minute_derived_state_requirements": [],
+        },
+    )
+
+    contract_path = Path(result["state_dependency_contract_path"])
+    resolution_path = Path(result["state_resolution_path"])
+    assert contract_path.parent == root / "objects/data_prep_master" / child
+    assert resolution_path.parent == contract_path.parent
+    assert result["no_state_required"] is True
+    assert result["blocked"] is False
+    assert json.loads(resolution_path.read_text(encoding="utf-8"))[
+        "state_dependencies_required"
+    ] is False
+    planned = materializer.planned_target_paths(root, "PARENT", child, {})
+    assert planned["state_dependency_contract"] == contract_path
+    assert planned["state_resolution"] == resolution_path
 
 
 def test_loop_classifier_accepts_auditable_council_wait_state_before_formal_pass(

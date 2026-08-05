@@ -646,6 +646,18 @@ Council results that it or its delegated subagents actually researched from the
 task packets. If valid Council results cannot be produced, BLOCK with a precise
 reason instead of asking the user to drive the next command.
 
+A unanimous Council terminal rejection closes a web research task only through
+the terminal-rejection protocol. The close artifact must bind a validated
+factor-proof certificate whose derived verdict is `REJECT`, the dispatch
+manifest, Council summary and collection, every selected raw result, and the
+iteration decision. Final replay must verify hashes, dispatch identities,
+required-result counts and the exact terminal recommendation enum; prose and
+substring matches are not decisions. If a distinct registered route is still
+available, the wrapper must pause as `awaiting_next_derivation` and emit the
+bounded questionnaire. Non-unanimous Council output must pause as
+`awaiting_main_agent_council_synthesis`. Neither pause state is a terminal
+factor verdict or formal proof.
+
 Runtime dispatch is policy, not provider binding. `--runtime-dispatch
 codex|openclaw|manual_file|unknown` records the runtime in taskbook, dispatch
 manifest, task packets, manual manifest, and assignment markdown. If omitted,

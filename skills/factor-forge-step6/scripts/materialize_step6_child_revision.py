@@ -18,6 +18,11 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.runtime_context import resolve_factorforge_context
 from factor_factory.formula.parser import parse_formula
 from factor_factory.artifact_identity import stable_hash
+from factor_factory.state_reuse import (
+    build_state_dependency_contract_from_data_prep,
+    resolve_state_dependencies,
+    write_resolution_outputs,
+)
 
 MATERIALIZATION_VERSION = "factorforge_step6_child_revision_materialization_v1"
 EXECUTABLE_REVISION_SPEC_VERSION = "factorforge_executable_revision_spec_v1"
@@ -87,6 +92,109 @@ def child_daily_meta_path(root: Path, child: str) -> Path:
     return root / "runs" / child / "step3a_local_inputs" / f"daily_input_meta__{child}.json"
 
 
+def child_state_reuse_paths(root: Path, child: str) -> dict[str, Path]:
+    base = root / "objects" / "data_prep_master" / child
+    return {
+        "state_dependency_contract": base
+        / f"state_dependency_contract__{child}.json",
+        "state_resolution": base / f"state_resolution__{child}.json",
+        "data_request_dir": base / "data_requests",
+    }
+
+
+def load_child_state_catalog(data_prep: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    candidates: list[Path] = []
+    for env_name in (
+        "FACTORFORGE_STATE_CATALOG",
+        "FACTORFORGE_DATA_API_CATALOG",
+        "FACTORFORGE_DATA_CATALOG",
+    ):
+        raw = os.getenv(env_name)
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    step4_contract = (
+        data_prep.get("step4_data_contract")
+        if isinstance(data_prep.get("step4_data_contract"), dict)
+        else {}
+    )
+    for key in ("state_catalog_path", "catalog_path"):
+        if step4_contract.get(key):
+            candidates.append(Path(str(step4_contract[key])).expanduser())
+    checked: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        checked.append(key)
+        if path.is_file() and not path.is_symlink():
+            return load_json(path), {
+                "type": "data_api_catalog",
+                "path_or_uri": str(path),
+                "checked": checked,
+            }
+    return {}, {"type": "data_api_catalog_missing", "checked": checked}
+
+
+def materialize_child_state_reuse(
+    root: Path,
+    child: str,
+    data_prep: dict[str, Any],
+) -> dict[str, Any]:
+    paths = child_state_reuse_paths(root, child)
+    contract = build_state_dependency_contract_from_data_prep(
+        data_prep,
+        producer="ultimate_loop_child_materializer",
+    )
+    catalog, catalog_source = load_child_state_catalog(data_prep)
+    if contract.get("no_state_required") is True:
+        catalog = {}
+        catalog_source = {
+            "type": "child_materializer_noop_no_state_required",
+            "reason": (
+                "Child revision inherits daily/catalog inputs and declares no "
+                "derived-state dependency."
+            ),
+        }
+    resolution = resolve_state_dependencies(
+        contract=contract,
+        catalog=catalog,
+        report_id=child,
+        factor_id=str(data_prep.get("factor_id") or child),
+        research_id=(
+            str(data_prep.get("research_id"))
+            if data_prep.get("research_id")
+            else None
+        ),
+        dependency_contract_path=str(paths["state_dependency_contract"]),
+        catalog_source=catalog_source,
+    )
+    write_json(
+        paths["state_dependency_contract"],
+        {"state_dependency_contract": contract},
+    )
+    write_resolution_outputs(
+        resolution=resolution,
+        state_resolution_path=paths["state_resolution"],
+        data_request_dir=paths["data_request_dir"],
+    )
+    return {
+        "state_dependency_contract_path": str(
+            paths["state_dependency_contract"]
+        ),
+        "state_resolution_path": str(paths["state_resolution"]),
+        "data_request_dir": str(paths["data_request_dir"]),
+        "state_dependencies_required": (
+            resolution.get("state_dependencies_required") is not False
+        ),
+        "no_state_required": resolution.get("no_state_required") is True,
+        "blocked": resolution.get("blocked") is True,
+        "blocker_token": resolution.get("blocker_token"),
+        "data_request_ids": list(resolution.get("data_request_ids") or []),
+    }
+
+
 def resolved_path(root: Path, raw: Any) -> Path | None:
     if not raw:
         return None
@@ -142,6 +250,11 @@ def planned_target_paths(root: Path, parent: str, child: str, parent_data_prep: 
         "executable_revision_spec": object_path(root, "executable_revision_spec", child),
         "materialization_report": materialization_report_path(root, parent, child),
     }
+    state_paths = child_state_reuse_paths(root, child)
+    targets["state_dependency_contract"] = state_paths[
+        "state_dependency_contract"
+    ]
+    targets["state_resolution"] = state_paths["state_resolution"]
     for suffix, source in resolved_daily_sources(root, parent_data_prep).items():
         if source.exists():
             targets[f"child_daily_input_{suffix}"] = child_daily_input_path(root, child, suffix)
@@ -828,6 +941,22 @@ def main() -> int:
                         daily_io["csv_path"] = None
                     daily_io["csv_sample_path"] = None
                 local_inputs["input_mode"] = local_inputs.get("input_mode") or "daily_only"
+            state_reuse_contract = materialize_child_state_reuse(
+                root,
+                child,
+                payload,
+            )
+            payload["state_reuse_contract"] = state_reuse_contract
+            materialized["state_dependency_contract"] = (
+                state_reuse_contract["state_dependency_contract_path"]
+            )
+            materialized["state_resolution"] = state_reuse_contract[
+                "state_resolution_path"
+            ]
+            if Path(state_reuse_contract["data_request_dir"]).exists():
+                materialized["state_data_request_dir"] = state_reuse_contract[
+                    "data_request_dir"
+                ]
         payload = apply_executable_revision_contract(
             payload,
             executable_revision_spec,

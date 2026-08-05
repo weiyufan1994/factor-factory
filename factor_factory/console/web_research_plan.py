@@ -26,7 +26,15 @@ from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.formula.parser import parse_formula
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import SUPPORTED_OPERATORS, canonical_operator_name
-from factor_factory.knowledge_context import retrieve_factor_knowledge_context
+from factor_factory.knowledge_context import (
+    DEFAULT_EDGE_INDEX,
+    DEFAULT_NODE_INDEX,
+    retrieve_factor_knowledge_context,
+)
+from factor_factory.knowledge_reference import (
+    stable_hash as stable_text_hash,
+    tokens as knowledge_query_tokens,
+)
 from factor_factory.research_conjecture import (
     PROTOCOL_VERSION,
     validate_approach_registry,
@@ -98,6 +106,36 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def web_knowledge_query_text(request: Mapping[str, Any]) -> str:
+    return " ".join(
+        str(request.get(field) or "")
+        for field in ("title", "hypothesis", "factor_id")
+    ).strip()
+
+
+def _knowledge_index_metadata(
+    *,
+    role: str,
+    path: str | Path,
+    available: bool,
+) -> dict[str, Any]:
+    index_path = Path(path).expanduser()
+    regular_file = index_path.is_file() and not index_path.is_symlink()
+    digest = None
+    if regular_file:
+        try:
+            digest = sha256_file(index_path)
+        except OSError:
+            regular_file = False
+    return {
+        "role": role,
+        "path": str(index_path),
+        "available": bool(available),
+        "regular_file": regular_file,
+        "sha256": digest,
+    }
 
 
 def _safe_write_destination(path: Path, *, root: Path | None) -> Path:
@@ -262,6 +300,7 @@ def build_authoring_contract(
     request: dict[str, Any],
     *,
     catalog_summary: dict[str, Any],
+    knowledge_summary: dict[str, Any],
 ) -> dict[str, Any]:
     supported_operators = [
         {
@@ -274,6 +313,11 @@ def build_authoring_contract(
     return {
         "version": AUTHORING_CONTRACT_VERSION,
         "immutable_host_authored": True,
+        "host_input_binding": {
+            "request_sha256": stable_json_hash(request),
+            "knowledge_summary_sha256": stable_json_hash(knowledge_summary),
+            "catalog_summary_sha256": stable_json_hash(catalog_summary),
+        },
         "daily_field_contract": {
             "dataset": "clean_daily_bar",
             "allowed_columns": _clean_daily_columns(catalog_summary),
@@ -822,16 +866,36 @@ def resolve_workspace_approved_catalog(
 
 
 def summarize_factor_knowledge(request: dict[str, Any]) -> dict[str, Any]:
-    query = " ".join(
-        str(request.get(field) or "")
-        for field in ("title", "hypothesis", "factor_id")
-    ).strip()
+    query = web_knowledge_query_text(request)
+    query_terms = sorted(knowledge_query_tokens(query))[:40]
     try:
         context = retrieve_factor_knowledge_context(text=query, top_k=5)
     except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        indexes = [
+            _knowledge_index_metadata(
+                role="node",
+                path=DEFAULT_NODE_INDEX,
+                available=DEFAULT_NODE_INDEX.exists(),
+            ),
+            _knowledge_index_metadata(
+                role="edge",
+                path=DEFAULT_EDGE_INDEX,
+                available=DEFAULT_EDGE_INDEX.exists(),
+            ),
+        ]
         return {
             "version": "factorforge_web_knowledge_summary_v1",
             "schema_version": "factor_knowledge_context_v1",
+            "retrieval_provenance": {
+                "query": {"text": query, "top_k": 5},
+                "query_hash": stable_text_hash(query),
+                "query_terms": query_terms,
+                "index_paths_checked": [item["path"] for item in indexes],
+                "indexes_available": [
+                    item["path"] for item in indexes if item["available"]
+                ],
+                "indexes": indexes,
+            },
             "node_count": 0,
             "edge_count": 0,
             "nodes": [],
@@ -868,9 +932,31 @@ def summarize_factor_knowledge(request: dict[str, Any]) -> dict[str, Any]:
         if isinstance(edge, dict)
         and (str(edge.get("source")) in selected_ids or str(edge.get("target")) in selected_ids)
     ]
+    indexes = [
+        _knowledge_index_metadata(
+            role="node",
+            path=str(context.get("node_index_path") or DEFAULT_NODE_INDEX),
+            available=context.get("node_index_available") is True,
+        ),
+        _knowledge_index_metadata(
+            role="edge",
+            path=str(context.get("edge_index_path") or DEFAULT_EDGE_INDEX),
+            available=context.get("edge_index_available") is True,
+        ),
+    ]
     return {
         "version": "factorforge_web_knowledge_summary_v1",
         "schema_version": "factor_knowledge_context_v1",
+        "retrieval_provenance": {
+            "query": context.get("query") or {"text": query, "top_k": 5},
+            "query_hash": stable_text_hash(query),
+            "query_terms": query_terms,
+            "index_paths_checked": [item["path"] for item in indexes],
+            "indexes_available": [
+                item["path"] for item in indexes if item["available"]
+            ],
+            "indexes": indexes,
+        },
         "node_count": len(nodes),
         "edge_count": len(edges),
         "nodes": nodes,
@@ -983,6 +1069,7 @@ def write_web_research_packet(
     authoring_contract = build_authoring_contract(
         request,
         catalog_summary=catalog_summary,
+        knowledge_summary=knowledge_summary,
     )
     authoring_contract_path = identity / "web_research_authoring_contract.json"
     if authoring_contract_path.exists() or authoring_contract_path.is_symlink():
@@ -1183,6 +1270,36 @@ def validate_plan(
     knowledge_summary = json.loads(knowledge_path.read_text(encoding="utf-8"))
     if not isinstance(knowledge_summary, dict):
         raise WebResearchPlanError(BLOCK_PLAN_IDENTITY_INVALID, ["factor knowledge summary invalid"])
+    retrieval_provenance = (
+        knowledge_summary.get("retrieval_provenance")
+        if isinstance(knowledge_summary.get("retrieval_provenance"), dict)
+        else {}
+    )
+    expected_knowledge_query = web_knowledge_query_text(request)
+    expected_query_terms = sorted(knowledge_query_tokens(expected_knowledge_query))[:40]
+    retrieval_query = (
+        retrieval_provenance.get("query")
+        if isinstance(retrieval_provenance.get("query"), dict)
+        else {}
+    )
+    if str(retrieval_query.get("text") or "") != expected_knowledge_query:
+        reasons.append("knowledge_summary.retrieval_query_text")
+    if str(retrieval_provenance.get("query_hash") or "") != stable_text_hash(
+        expected_knowledge_query
+    ):
+        reasons.append("knowledge_summary.retrieval_query_hash")
+    if retrieval_provenance.get("query_terms") != expected_query_terms:
+        reasons.append("knowledge_summary.retrieval_query_terms")
+    index_paths_checked = retrieval_provenance.get("index_paths_checked")
+    indexes = retrieval_provenance.get("indexes")
+    if not _string_list(index_paths_checked, minimum=2):
+        reasons.append("knowledge_summary.index_paths_checked")
+    if not isinstance(indexes, list) or {
+        str(item.get("role") or "")
+        for item in indexes
+        if isinstance(item, dict)
+    } != {"node", "edge"}:
+        reasons.append("knowledge_summary.indexes")
     knowledge_use = plan.get("knowledge_use") if isinstance(plan.get("knowledge_use"), dict) else {}
     if str(knowledge_use.get("summary_sha256") or "") != stable_json_hash(knowledge_summary):
         reasons.append("knowledge_use.summary_sha256")
@@ -1253,6 +1370,7 @@ def validate_plan(
     expected_authoring_contract = build_authoring_contract(
         request,
         catalog_summary=catalog_summary,
+        knowledge_summary=knowledge_summary,
     )
     if (
         not isinstance(authoring_contract, dict)
@@ -1526,11 +1644,15 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
 
     plan_path, plan = read_regular("identity/web_research_plan.json")
     _, formula_ir = validate_plan(plan, workspace=workspace)
+    _request_path, request = read_regular("identity/web_research_request.json")
     _knowledge_path, knowledge_summary = read_regular(
         "identity/factor_knowledge_summary.json"
     )
     _catalog_summary_path, catalog_summary = read_regular(
         "identity/data_catalog_summary.json"
+    )
+    authoring_contract_path, authoring_contract = read_regular(
+        "identity/web_research_authoring_contract.json"
     )
     bootstrap_path, bootstrap = read_regular(
         "identity/web_research_bootstrap_result.json"
@@ -1574,6 +1696,27 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         reasons.append("bootstrap.agent_authored_plan_sha256")
     if str(bootstrap.get("agent_authored_formula_hash") or "") != formula_hash:
         reasons.append("bootstrap.agent_authored_formula_hash")
+    if str(bootstrap.get("host_authoring_contract_sha256") or "") != sha256_file(
+        authoring_contract_path
+    ):
+        reasons.append("bootstrap.host_authoring_contract_sha256")
+    if str(bootstrap.get("host_request_sha256") or "") != stable_json_hash(request):
+        reasons.append("bootstrap.host_request_sha256")
+    if str(bootstrap.get("host_knowledge_summary_sha256") or "") != stable_json_hash(
+        knowledge_summary
+    ):
+        reasons.append("bootstrap.host_knowledge_summary_sha256")
+    binding = (
+        authoring_contract.get("host_input_binding")
+        if isinstance(authoring_contract.get("host_input_binding"), dict)
+        else {}
+    )
+    if str(binding.get("request_sha256") or "") != stable_json_hash(request):
+        reasons.append("authoring_contract.host_input_binding.request_sha256")
+    if str(binding.get("knowledge_summary_sha256") or "") != stable_json_hash(
+        knowledge_summary
+    ):
+        reasons.append("authoring_contract.host_input_binding.knowledge_summary_sha256")
     approved_catalog_hash = str(bootstrap.get("approved_catalog_sha256") or "")
     if approved_catalog_hash not in expected_catalog_hashes:
         reasons.append("bootstrap.approved_catalog_sha256")
@@ -1701,6 +1844,7 @@ def build_step1_payloads(
     preferred = next(item for item in plan["hypotheses"] if item["kind"] == "preferred")
     evaluation_contract = build_web_evaluation_contract(plan)
     required_inputs = list(dict.fromkeys([*data_plan["daily_fields"], *data_plan["minute_fields"]]))
+    retrieval_provenance = knowledge_summary["retrieval_provenance"]
     economic_hypothesis = {
         "macro_return_source": economic["return_source_family"],
         "second_layer": {
@@ -1736,10 +1880,31 @@ def build_step1_payloads(
             "edge_count": knowledge_summary.get("edge_count") or 0,
             "nodes": knowledge_summary.get("nodes") or [],
             "related_edges": knowledge_summary.get("related_edges") or [],
-            "query": {"source": "operator_authored_web_knowledge_summary"},
+            "query": retrieval_provenance["query"],
         },
         "knowledge_reference_contract": {
+            "contract_version": "factorforge_knowledge_reference_contract_v1",
             "schema_version": "factorforge_knowledge_reference_contract_v1",
+            "producer": "factorforge_web_research_plan_projection",
+            "retrieval_required": False,
+            "retrieval_status": (
+                "retrieved"
+                if knowledge_use["cited_node_ids"]
+                else "cold_start"
+            ),
+            "query_hash": retrieval_provenance["query_hash"],
+            "query_terms": retrieval_provenance["query_terms"],
+            "index_paths_checked": retrieval_provenance["index_paths_checked"],
+            "indexes_available": retrieval_provenance["indexes_available"],
+            "index_metadata": retrieval_provenance["indexes"],
+            "hit_count": len(knowledge_use["cited_node_ids"]),
+            "retrieved_case_ids": knowledge_use["cited_node_ids"],
+            "similar_case_lessons_imported": knowledge_use["applied_lessons"],
+            "fallback_reason": (
+                "knowledge_retrieval_cold_start_no_similar_case"
+                if knowledge_use["cold_start"]
+                else None
+            ),
             "source": "factor_knowledge_graph" if knowledge_summary.get("node_count") else "cold_start",
             "context_schema_version": knowledge_summary.get("schema_version") or "factor_knowledge_context_v1",
             "node_count": knowledge_summary.get("node_count") or 0,

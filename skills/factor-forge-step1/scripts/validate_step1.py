@@ -10,6 +10,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
+
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'

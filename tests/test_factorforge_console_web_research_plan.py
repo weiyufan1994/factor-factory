@@ -20,6 +20,7 @@ from factor_factory.console.web_research_plan import (
     write_text_atomic,
     write_web_research_packet,
 )
+from factor_factory.knowledge_reference import stable_hash, tokens
 from factor_factory.research_workspace import build_workspace_manifest, write_workspace_manifest
 
 
@@ -300,6 +301,17 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
     }
     assert contract["version"] == "factorforge_web_research_authoring_contract_v1"
     assert contract["immutable_host_authored"] is True
+    assert contract["host_input_binding"]["request_sha256"] == stable_json_hash(
+        _request()
+    )
+    knowledge_summary = json.loads(
+        (workspace / "identity" / "factor_knowledge_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert contract["host_input_binding"]["knowledge_summary_sha256"] == (
+        stable_json_hash(knowledge_summary)
+    )
     assert "open" in contract["daily_field_contract"]["allowed_columns"]
     assert "multiply" in operator_names
     assert "mul" not in operator_names
@@ -600,6 +612,28 @@ def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_pa
     assert attested["formula_hash"] == result["agent_authored_formula_hash"]
     assert spec["knowledge_reference_contract"]["summary_sha256"]
     assert spec["knowledge_reference_contract"]["cited_node_ids"] == plan["knowledge_use"]["cited_node_ids"]
+    knowledge_summary = json.loads(
+        (workspace / "identity" / "factor_knowledge_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    query = " ".join(
+        str(_request().get(field) or "")
+        for field in ("title", "hypothesis", "factor_id")
+    ).strip()
+    knowledge_contract = spec["knowledge_reference_contract"]
+    assert knowledge_contract["query_hash"] == stable_hash(query)
+    assert knowledge_contract["query_terms"] == sorted(tokens(query))[:40]
+    assert knowledge_contract["index_paths_checked"] == knowledge_summary[
+        "retrieval_provenance"
+    ]["index_paths_checked"]
+    assert "identity/factor_knowledge_summary.json" not in knowledge_contract[
+        "index_paths_checked"
+    ]
+    assert {item["role"] for item in knowledge_contract["index_metadata"]} == {
+        "node",
+        "edge",
+    }
     assert spec["evaluation_contract"] == {
         "version": "factorforge_web_evaluation_contract_v2",
         "rebalance_frequency": "daily",
@@ -650,6 +684,84 @@ def test_plan_identity_mismatch_blocks_before_materialization(tmp_path):
         assert "identity.job_id" in exc.reasons
     else:
         raise AssertionError("plan identity mismatch must block")
+
+
+def test_coordinated_request_and_knowledge_query_tamper_blocks(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    request_path = workspace / "identity" / "web_research_request.json"
+    summary_path = workspace / "identity" / "factor_knowledge_summary.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    request["title"] = "Tampered opening pressure"
+    request["hypothesis"] = "Tampered coordinated hypothesis."
+    query = " ".join(
+        str(request.get(field) or "")
+        for field in ("title", "hypothesis", "factor_id")
+    ).strip()
+    summary["retrieval_provenance"]["query"]["text"] = query
+    summary["retrieval_provenance"]["query_hash"] = stable_hash(query)
+    summary["retrieval_provenance"]["query_terms"] = sorted(tokens(query))[:40]
+    plan["research_object"]["title"] = request["title"]
+    plan["research_object"]["hypothesis"] = request["hypothesis"]
+    plan["knowledge_use"]["summary_sha256"] = stable_json_hash(summary)
+    request_path.write_text(
+        json.dumps(request, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebResearchPlanError) as blocked:
+        validate_plan(plan, workspace=workspace)
+    assert blocked.value.token == "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_IDENTITY_INVALID"
+    assert "web research authoring contract does not match host inputs" in blocked.value.reasons
+
+
+def test_coordinated_knowledge_index_provenance_tamper_blocks(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    summary_path = workspace / "identity" / "factor_knowledge_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    fake_paths = ["/tmp/fake_nodes.jsonl", "/tmp/fake_edges.jsonl"]
+    provenance = summary["retrieval_provenance"]
+    provenance["index_paths_checked"] = fake_paths
+    provenance["indexes_available"] = fake_paths
+    for item, fake_path in zip(provenance["indexes"], fake_paths, strict=True):
+        item.update(
+            {
+                "path": fake_path,
+                "available": True,
+                "regular_file": True,
+                "sha256": "0" * 64,
+            }
+        )
+    plan["knowledge_use"]["summary_sha256"] = stable_json_hash(summary)
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebResearchPlanError) as blocked:
+        validate_plan(plan, workspace=workspace)
+    assert blocked.value.token == "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_IDENTITY_INVALID"
+    assert "web research authoring contract does not match host inputs" in blocked.value.reasons
 
 
 @pytest.mark.parametrize(

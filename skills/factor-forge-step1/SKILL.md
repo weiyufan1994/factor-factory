@@ -45,8 +45,16 @@ Step1 outputs must include:
 - `research_discipline.economic_hypothesis`
 - `research_discipline.math_hypothesis_candidates`
 - `research_discipline.similar_case_lessons_imported`
+- `research_discipline.knowledge_reference_contract`
 - `research_discipline.what_must_be_true`
 - `research_discipline.what_would_break_it`
+
+Step1 must treat prior factor knowledge as an auditable contract. It may cold
+start when no retrieval index or similar case exists, but it must still write
+`knowledge_reference_contract.contract_version=factorforge_knowledge_reference_contract_v1`
+with checked index paths, query hash, hit count, retrieved case ids, and the
+fallback reason. A bare `similar_case_lessons_imported` string without this
+provenance is not sufficient for formal Step1 acceptance.
 
 The deterministic standardizer/validator is a developer-debug fallback after an existing Step1 route. Formal agent-led research should let the Step1 route emit canonical artifacts, then continue from Step2 via `scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 2 --end-step 6`.
 

@@ -41,6 +41,18 @@ Step4 execution requires the derived datamart or an explicit backfill. The
 default current research window is in-sample through `2025-07-11`; data after
 that date is OOS holdout and must not be used for repeated revision fitting.
 
+Step3A is also the state dependency resolver. Executable laws and child specs
+that rely on reusable state must include
+`state_dependency_contract.contract_version=factorforge_state_dependency_contract_v1`.
+Step3 must resolve those dependencies catalog-first, write
+`state_resolution__<report_id>.json`, and write `data_request_v1` when the
+state datamart is missing or not production-ready. Missing state is an awaiting
+Data API request, not permission for Step4 to scan raw minute data.
+If the factor is daily-only or otherwise has no derived state dependency,
+Step3A must still write an explicit no-op state dependency contract and
+`state_resolution__<report_id>.json` with `no_state_required=true`; Step4 must
+accept that no-op resolution instead of treating the factor as undeclared.
+
 ## Research Discipline
 
 Step 3 must protect the thesis during implementation:

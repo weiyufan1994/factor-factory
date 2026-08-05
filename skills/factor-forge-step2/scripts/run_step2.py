@@ -54,7 +54,7 @@ from factor_factory.artifact_identity import (
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
 from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
-from factor_factory.knowledge_context import retrieve_factor_knowledge_context
+from factor_factory.knowledge_reference import build_legacy_knowledge_reference_contract
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 
 
@@ -623,37 +623,19 @@ def build_step2_research_contract(
     math_hypothesis_candidates = discipline.get('math_hypothesis_candidates') or []
     formula_understanding = discipline.get('formula_understanding') or aim.get('formula_understanding') or {}
     economic_to_math_modelling = discipline.get('economic_to_math_modelling') or aim.get('economic_to_math_modelling') or {}
-    factor_knowledge_context = (
-        discipline.get('factor_knowledge_context')
-        or (aim.get('learning_and_innovation') or {}).get('factor_knowledge_context')
-        or retrieve_step2_factor_knowledge_context(primary, aim, thesis)
-    )
-    graph_lessons = summarize_factor_knowledge_context(factor_knowledge_context)
-    prior_lessons = (
-        (aim.get('research_discipline') or {}).get('similar_case_lessons_imported')
+    similar_case_lessons = (
+        discipline.get('similar_case_lessons_imported')
         or (aim.get('learning_and_innovation') or {}).get('similar_case_lessons_imported')
-        or []
+        or ['No similar prior case was imported from Step1; treat this as a cold-start prior and write back lessons after Step6.']
     )
-    similar_case_lessons = list(dict.fromkeys([
-        *[str(item) for item in prior_lessons if str(item).strip()],
-        *graph_lessons,
-    ]))
-    if not similar_case_lessons:
-        similar_case_lessons = ['No similar prior case was imported from Step1/graph; treat this as a cold-start prior and write back lessons after Step6.']
-    knowledge_reference_contract = {
-        'schema_version': 'factorforge_knowledge_reference_contract_v1',
-        'source': 'factor_knowledge_graph' if (factor_knowledge_context.get('node_count') or 0) > 0 else 'cold_start_or_unavailable',
-        'context_schema_version': factor_knowledge_context.get('schema_version'),
-        'node_count': factor_knowledge_context.get('node_count') or 0,
-        'edge_count': factor_knowledge_context.get('edge_count') or 0,
-        'retrieval_error': factor_knowledge_context.get('retrieval_error'),
-        'not_same_factor_unless_identity_matches': True,
-        **(
-            discipline.get('knowledge_reference_contract')
-            if isinstance(discipline.get('knowledge_reference_contract'), dict)
-            else {}
-        ),
-    }
+    knowledge_reference_contract = (
+        discipline.get('knowledge_reference_contract')
+        or (aim.get('learning_and_innovation') or {}).get('knowledge_reference_contract')
+        or build_legacy_knowledge_reference_contract(
+            similar_case_lessons=similar_case_lessons,
+            producer='step2_legacy_step1_artifact_adapter',
+        )
+    )
     return {
         'target_statistic': infer_target_statistic(primary, aim),
         'economic_mechanism': infer_economic_mechanism(primary, aim, thesis),
@@ -670,7 +652,6 @@ def build_step2_research_contract(
             or infer_step1_random_object_fallback(primary, aim)
         ),
         'similar_case_lessons_imported': similar_case_lessons,
-        'factor_knowledge_context': factor_knowledge_context,
         'knowledge_reference_contract': knowledge_reference_contract,
         'producer': 'step2_research_contract',
     }
@@ -1145,7 +1126,6 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         },
         'learning_and_innovation': {
             'similar_case_lessons_imported': research_contract['similar_case_lessons_imported'],
-            'factor_knowledge_context_imported': research_contract.get('factor_knowledge_context') or {},
             'knowledge_reference_contract': research_contract.get('knowledge_reference_contract') or {},
             'innovative_idea_seeds': research_contract['innovative_idea_seeds'],
             'reuse_instruction_for_future_agents': research_contract['reuse_instruction_for_future_agents'],

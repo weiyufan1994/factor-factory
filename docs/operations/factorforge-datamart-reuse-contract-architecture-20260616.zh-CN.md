@@ -158,6 +158,19 @@ Step6 / Council 不能只输出新公式，还必须说明该 revision 对数据
 - `bounded_smoke_allowed`：允许小样本公式 smoke，但 smoke 不能作为 production proof。
 - `data_request_on_missing`：缺失时由 Step3 写 `data_request_v1`。
 
+Data API catalog resolver 必须兼容真实生产 fragment，而不是只兼容
+synthetic smoke。至少支持：
+
+- fields 来自 `fields`、`schema` 或 `columns`；
+- schema version 来自顶层 `schema_version` 或 `metadata.schema_version`；
+- QA path 来自 `qa_path`、`qa_summary_path` 或 `metadata.qa_summary_path`；
+- lookahead/no-future policy 来自结构化 `lookahead_policy`，或
+  `no_future_intraday_minutes=true/"true"`；
+- materialized root 来自 `materialized_root`、`root`、`source_uri` 或 `uri`。
+
+如果 production QA verdict 不在 catalog 内，resolver 应通过 QA summary
+path 读取 verdict；读不到时不能默认为 ACCEPT。
+
 ## 5. Step3 State Resolution 合同
 
 Step3 输出路径应落在 factor workspace 内，例如：
@@ -198,12 +211,29 @@ factor_research/<factor_id>/<research_id>/objects/data_prep_master/<report_id>/
       "materialized_root": "s3://..."
     }
   ],
+  "state_dependencies_required": true,
+  "no_state_required": false,
   "missing_state_variables": [],
   "data_request_ids": [],
   "blocked": false,
   "blocker_token": null
 }
 ```
+
+不依赖 derived state 的普通日频因子也必须写显式 no-op resolution：
+
+```json
+{
+  "contract_version": "factorforge_state_resolution_v1",
+  "reuse_hits": [],
+  "state_dependencies_required": false,
+  "no_state_required": true,
+  "blocked": false
+}
+```
+
+这表示 Step4 可以继续使用普通 Data API / daily contract，不表示跳过
+state reuse guard。
 
 缺失时必须写 `data_request_v1`：
 
@@ -368,7 +398,47 @@ BLOCK_FACTORFORGE_STATE_REUSE_PROVENANCE_MISSING
 - 每轮研究 closeout 记录 state reuse / missing state / data request；
 - 不把 alpha score 推给 Data API P0 schema。
 
-## 11. 验收 Smoke
+## 11. Knowledge Reference 合同
+
+Step1 / Step2 / Step6 参考因子知识库必须从“软约定”升级为可审计合同。
+
+`knowledge_reference_contract` schema：
+
+```json
+{
+  "contract_version": "factorforge_knowledge_reference_contract_v1",
+  "producer": "step1_research_discipline",
+  "retrieval_required": false,
+  "retrieval_status": "retrieved|cold_start",
+  "query_hash": "...",
+  "query_terms": ["..."],
+  "index_paths_checked": [".../knowledge/retrieval/factorforge_retrieval_index.jsonl"],
+  "indexes_available": ["..."],
+  "hit_count": 1,
+  "retrieved_case_ids": ["knowledge_record__..."],
+  "similar_case_lessons_imported": ["..."],
+  "fallback_reason": null
+}
+```
+
+规则：
+
+1. Step1 必须写 `knowledge_reference_contract`，并保持
+   `similar_case_lessons_imported` 来自该合同。
+2. Step2 必须原样保留该合同到 `research_contract` 和
+   `learning_and_innovation`，不能只保留一段 lesson 文本。
+3. Step6 / Council 每次 revision 必须写 retrieval context；没有命中时必须
+   记录 cold-start knowledge gap。
+4. formal validator 不要求知识库一定有命中，但必须要求 provenance 完整。
+
+新增 blocker：
+
+- `BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_PROVENANCE_MISSING`
+- `BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_INDEX_MISSING`
+- `BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_REQUIRED`
+- `BLOCK_FACTORFORGE_REVISION_KNOWLEDGE_CONTEXT_MISSING`
+
+## 12. 验收 Smoke
 
 必须新增 smoke，不启动真实 worker，不跑 full-window production：
 
@@ -397,7 +467,23 @@ BLOCK_FACTORFORGE_STATE_REUSE_PROVENANCE_MISSING
    - fake catalog dataset 存在但 schema 或 coverage 不满足；
    - BLOCK 对应 schema / coverage token。
 
-## 12. 与 Data API 的接口边界
+6. `real_data_api_catalog_fragment_smoke`
+   - 使用真实 Data API catalog fragment；
+   - resolver 能读取 `columns`、`metadata.schema_version`、
+     `metadata.no_future_intraday_minutes` 和 `uri`；
+   - 不应误报 schema mismatch。
+
+7. `step3_noop_state_contract_smoke`
+   - 无 derived state dependency 的日频因子写 no-op
+     `state_dependency_contract` / `state_resolution`；
+   - Step4 provenance 接受 `no_state_required=true`。
+
+8. `knowledge_reference_contract_smoke`
+   - 检索命中时写 hit provenance；
+   - cold-start 时写 fallback reason；
+   - required retrieval 且 zero-hit 时 BLOCK。
+
+## 13. 与 Data API 的接口边界
 
 Factor Forge 只消费 Data API 给出的 catalog closeout，不生产正式 datamart。Data API 最少要提供：
 

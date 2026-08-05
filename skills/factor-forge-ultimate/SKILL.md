@@ -45,7 +45,34 @@ when `dry_run=false`, the exact command contract executed with every command at
 `PASS`, and Step6 actually ran the research-protocol verifier. Contract smokes
 remain explicitly `contract_smoke_only` and are not promotion evidence.
 
-## Research Protocol
+## State Datamart Reuse Contract
+
+Formal Step4 production must be state-dependency-aware. A factor law or child
+spec that depends on reusable intraday/daily state must declare
+`state_dependency_contract.contract_version=factorforge_state_dependency_contract_v1`.
+Before Step4, Ultimate must either consume an existing
+`state_resolution__<report_id>.json` or resolve the dependency contract against
+the Data API catalog with `scripts/validate_factorforge_state_dependency.py`.
+
+If the required datamart is missing, not QA ACCEPT, schema-mismatched,
+coverage-insufficient, or lacks a lookahead/no-future-minutes policy, Ultimate
+must BLOCK or return an awaiting-data outcome with `data_request_v1`; it must
+not let Step4 fall back to a full-window raw minute scan. Bounded smoke can use
+small fixtures, but it is not production evidence. Raw full-window minute
+production is Data API work, not a Factor Forge Step4 fallback.
+
+## Knowledge Reference Contract
+
+Formal runs must preserve prior-knowledge provenance from Step1 through Step6.
+Step1 writes `knowledge_reference_contract.contract_version=factorforge_knowledge_reference_contract_v1`
+alongside `similar_case_lessons_imported`; Step2 preserves it in
+`research_contract` and `learning_and_innovation`; Step6/Council writes
+retrieval context for each revision. Cold-start is allowed only when explicitly
+recorded with checked index paths, query hash, hit count, and fallback reason.
+Missing provenance blocks formal acceptance even if a human-readable lesson
+string is present.
+
+## Memory Pressure and Batch Execution Protocol
 
 Every non-smoke run uses
 `factorforge_research_conjecture_protocol_v1`. Read:
@@ -77,9 +104,19 @@ FORMULATE -> DIVERSIFY -> ATTACK|DERIVE -> TEST
 -> SYNTHESIZE -> REDIRECT|VERIFY -> ACCEPT|REJECT|BLOCK
 ```
 
-Each run must preserve preferred, null and alternative hypotheses; at least
-three mechanism-distinct routes; null/alias and boundary/regime/payer attacks;
-explicit test budgets; sealed OOS; and evidence-hash lineage.
+### Step1
+- ingest source report / idea
+- identify canonical source and factor intent
+- produce `alpha_idea_master`
+- standardize and validate Step1 research fields: `step1_random_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`
+- `economic_hypothesis` must first classify the broad source as `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`, then state the second-layer mechanism and the likely counterparty paying the return
+- `math_hypothesis_candidates` must map the economic mechanism to report-specific mathematical tools. Do not use fixed mappings like "price-volume means microstructure"; use DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, dimensional/scaling analysis, or other tools only when they explain the report-specific counterparty and asset-price logic
+- every formal research pass must include a flexible math-forced insight step:
+  choose the mathematical object and tools from the economic hypothesis, state
+  what the tools reveal, what information they preserve or discard, how the
+  insight maps to an observable estimator, and what evidence would falsify it.
+  This is a menu of justified tools, not a fixed checklist.
+- researcher records the author's thesis and what must be true for the idea to work
 
 ## Staged Workflow
 
@@ -217,81 +254,453 @@ python3 scripts/build_factorforge_component_obligation_report.py \
   --spec <component_obligation_spec.json>
 ```
 
-This verifier must close both `measurement_validity` and
-`component_ablation`. Economic-game, payer and stochastic claims without a
-dedicated trusted verifier remain open; Council prose cannot convert them to
-passed.
+The sync tool must verify the latest manifest sha256 before applying a bundle. Protected records such as official library, factor cases, handoffs, and validation evidence must not be overwritten by default.
 
-### 4. Council and Synthesis
+Full SOP: `docs/operations/factorforge-knowledge-sync-sop.zh-CN.md`.
 
-Council routes come from the approach registry, not fixed ceremonial roles.
-Early critic routes must be blind to the favored thesis. Dispatch must bind:
 
-- report/task/route/role identity;
-- route fingerprint and blind-context hash;
-- expected agent identity;
-- task-packet and result SHA256.
+## Mandatory Single Entry Wrapper
 
-The root agent compares assumptions and evidence. No majority vote, average
-opinion or automatic synthesis is allowed. It must address every route,
-dissent, exact gaps, source result hashes, the selected law hash and open proof
-obligations.
+For Step3-6 execution, agents must use the single wrapper. Do not manually compose Step3B/Step4/Step5/Step6 commands unless explicitly debugging the wrapper itself.
 
-Final semantic validation independently opens the selected Council result
-files, runs the formal result validator against their dispatch/task packets,
-recomputes their hashes, and confirms that the selected law is present in the
-bound source result. A syntactically valid but invented result hash is not
-sufficient. Local Council mocks prove only the contract and must report
-`contract_mock_completed`, never agentic completion.
+Default command:
 
-Only an explicit main-agent approval source may activate a revision. Approval
-runs Step6 validation and the final research protocol verifier; failure rolls
-back active handoff writes.
+```bash
+python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 3 --end-step 6
+```
 
-A unanimous Council `reject` closes a web research task only through the
-terminal-rejection protocol. The close artifact must bind a validated formal
-factor-proof certificate whose derived verdict is `REJECT`, the dispatch
-manifest, Council summary and collection, every selected raw result, and the
-iteration decision. Final replay must verify hashes, dispatch identities,
-required-result counts and the exact terminal recommendation enum; prose and
-substring matches are not decisions. If a distinct registered route is still
-available, the wrapper must pause as `awaiting_next_derivation` and emit the
-bounded questionnaire. Non-unanimous Council output must pause as
-`awaiting_main_agent_council_synthesis`. Neither pause state is a terminal
-factor verdict or formal proof.
+Common restart command after Step1/2 are already complete:
 
-### 5. Decision and Loop
+```bash
+python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 3b --end-step 6
+```
 
-- `promote_official`: requires accepted factor proof, component validation,
-  after-cost long-side evidence and no unresolved blocker. Step6 runs the
-  `pre_promotion` semantic gate before any official write, including a
-  no-revision promotion path.
-- `iterate`: one mechanism-linked revision, frozen parent identity, explicit
-  expected metric signature, falsifiers, kill criteria and new trial budget.
-- `reject`: preserve the failed law, evidence, anti-pattern and conditions for a
-  genuinely new branch.
-- `blocked`: name the exact missing data, identity, proof or authorization.
+The wrapper is responsible for:
+- creating the runtime manifest,
+- invoking each step with explicit manifest paths,
+- running validators immediately after each step,
+- stopping on the first failed validator or failed step,
+- writing `objects/runtime_context/ultimate_run_report__<report_id>.json` as the proof report.
 
-Do not turn portfolio construction, short-leg adoption, decile trading or
-shared-data mutation into a factor-expression repair.
+The proof report is not worker authorization. If a validator fails, the proof
+report may record the failure, but `runtime_context__<report_id>.json` must
+remain absent and no agent should launch worker Step3B/Step4 from that run.
 
-## Completion Standard
+A run is not considered complete unless the wrapper proof report exists and has `status: PASS`. Ad-hoc metric tables, hand-written handoffs, or post-hoc Step4/5/6 objects are not valid substitutes for wrapper proof.
 
-Report separately:
+Legacy handoff or one-off Step3/4/5 drivers, including sample or factor-specific scripts, must hard block before writing canonical `objects/`, `runs/`, `generated_code/`, `evaluations/`, or `archive/` artifacts. They must not add environment bypasses or swallow `SystemExit` to present a successful formal run.
 
-- formal wrapper status;
-- research protocol verdict;
-- factor proof verdict;
-- Council/root-synthesis status;
-- production evidence boundary;
-- modified workspace/repository state.
+Single-step or partial-step execution is allowed only when the user explicitly asks for it, and it must still use the wrapper. Examples:
 
-A passing smoke, completed artifact set or Council file is not production
-research proof.
+```bash
+python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 4 --end-step 4
+python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 5 --end-step 6
+```
 
-## On-Demand Reference
+Do not run a step-level script directly for normal user requests, even for a single step. Direct calls to `skills/factor-forge-step*/scripts/*.py` are reserved for debugging the wrapper or repairing a failing step after the wrapper proof identifies the failure.
 
-Read `references/legacy-operations-reference.md` only for historical artifact
-schemas, old command variants, compatibility behavior or detailed operational
-troubleshooting. Search it by the relevant script or blocker token instead of
-loading it wholesale.
+## Long-Only Research Mandate
+
+The current Factor Forge adoption rule is long-only:
+
+- no short selling;
+- no direct buying/selling deciles;
+- no promotion based on long-short spread;
+- no revision by changing portfolio expression, rebalance mechanics, or decile trading.
+
+Step4 may still output decile tables, NAV curves, and long-short diagnostics, but they are diagnostics only. Step5 and Step6 must judge adoption by whether high factor values produce risk-adjusted long-side returns and whether the factor expression has a defensible monotonic economic relationship.
+
+If the long side does not work, the next revision must modify the Step3B factor expression/code itself, or the factor must be rejected.
+
+Long-side admission uses the factor-as-business lens:
+
+- return/risk premium is `revenue`;
+- trading COGS defaults to `turnover * 0.3%` when no better cost estimate exists;
+- volatility is operating instability / risk-capital pressure, not direct COGS;
+- stochastic-process volatility drag is `-0.5 * sigma^2`;
+- max drawdown is capital expenditure / capital impairment;
+- recovery time is depreciation or payback period;
+- risk budget depends on Sharpe, max drawdown, recovery time, capacity, and confidence in repeatability.
+
+Default promotion objective is `long_side_risk_adjusted_alpha`:
+
+- candidate threshold: long-side Sharpe >= `0.50`;
+- official threshold: long-side Sharpe >= `0.80`;
+- drawdown soft limit: max drawdown no worse than `-35%`;
+- recovery soft limit: <= `252` trading days.
+
+Raw positive long-side return is necessary but not sufficient. A high-revenue factor with excessive volatility drag, drawdown, or recovery time should be iterated or rejected.
+
+## Runtime Manifest And Step I/O
+
+The top-level skill/agent owns path discovery. Individual step scripts should not independently search for artifacts when a runtime manifest is available.
+
+Before running Step3/4/5/6, build or refresh the manifest:
+
+```bash
+python3 scripts/build_factorforge_runtime_context.py --report-id <report_id> --write
+```
+
+For normal execution, do not call individual Step3/4/5/6 scripts directly. Call the single wrapper instead:
+
+```bash
+python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 3 --end-step 6
+```
+
+Individual manifest-driven step commands are reserved for wrapper debugging only.
+
+Principles:
+- Step3 has the fixed data entrance: shared clean layer plus report-level `step3a_local_inputs`.
+- Step4 consumes Step3 outputs from the manifest and owns evaluation metrics / backend payloads.
+- Step5 consumes Step4 outputs from the manifest and owns case closure / archive.
+- Step6 consumes Step5 outputs from the manifest and owns reflection / revision / library writeback.
+- Script-local path guessing is only a backward-compatible fallback. It must not override manifest paths.
+
+## Step6 Review Logic
+
+When Step6 is active, always use the research-brain logic:
+1. identify return source
+2. identify objective constraints
+3. interpret metrics
+4. check math discipline
+5. extract transferable learning and idea seeds
+6. separate macro revision, micro revision, portfolio revision, and stop/kill decisions
+7. choose a search mode: genetic formula mutation, Bayesian parameter search, RL-policy advisory, or multi-agent parallel exploration
+8. decide promote / iterate / reject
+
+Do not use `DD-view-edge-trade` inside Factor Forge Step6. That framework belongs to individual-stock diligence, not factor-mining loop control.
+
+Return source should be one of:
+- `risk_premium`
+- `information_advantage`
+- `constraint_driven_arbitrage`
+- `mixed`
+
+If the user asks for a serious review, PM-style judgment, detailed analysis, or researcher-agent behavior, run the Step6 researcher path first:
+
+```bash
+python3 skills/factor-forge-step6-researcher/scripts/build_researcher_packet.py --report-id <report_id>
+# researcher agent writes factorforge/objects/research_iteration_master/researcher_memo__<report_id>.json
+python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 6 --end-step 6
+```
+
+For normal factor research, also keep the full-workflow researcher journal:
+
+```bash
+python3 skills/factor-forge-researcher/scripts/build_researcher_dossier.py --report-id <report_id>
+# researcher agent updates factorforge/objects/research_journal/research_journal__<report_id>.json
+```
+
+## Math Discipline And Learning
+
+Use `docs/operations/factorforge-math-research-discipline.zh-CN.md` as the execution version of the math map.
+
+Math discipline is mandatory, but tool choice is flexible. Agents must not
+decorate reports with generic SDE/physics language or force every candidate
+through the same checklist. They must instead justify the selected mathematical
+object from the economic hypothesis, use the smallest tool set that forces a
+testable insight, and record information preserved, removed, aliased, or made
+untradeable by the transformation.
+
+Every serious Step6 output must include:
+- `math_discipline_review`
+- `learning_and_innovation`
+- `experience_chain`
+- `revision_taxonomy`
+- `program_search_policy`
+- `diversity_position`
+
+The purpose is to make the researcher agents better over time. A case is not complete unless it teaches future Bernard/Humphrey/Codex at least one of:
+- a transferable pattern,
+- an anti-pattern,
+- a similar-case retrieval cue,
+- an innovative idea seed,
+- or a clear reason why no learning can safely be extracted.
+
+## Human Approval Rule
+
+If Step6 decides `iterate`:
+- first generate `revision_proposal__{report_id}.json`
+- include candidate branches for exploit and explore when the evidence supports parallel exploration
+- stop for human review
+- only after explicit approval may the loop continue into Step3B modification
+
+## What Good Usage Looks Like
+
+Examples:
+- "Use factor-forge-ultimate to run this new report from Step1 to Step6."
+- "Use factor-forge-ultimate on this canonical formula starting from Step3; if Step6 wants revision, stop and show me the proposal first."
+- "Use factor-forge-ultimate to rerun Step4-6 for this factor and tell me whether it should be promoted."
+
+## Required Pairing
+
+When using this skill, also consult the relevant sub-skills:
+- `skills/factor-forge-step1/SKILL.md`
+- `skills/factor-forge-step2/SKILL.md`
+- `skills/factor-forge-step3/SKILL.md`
+- `skills/factor-forge-step4/SKILL.md`
+- `skills/factor-forge-step5/SKILL.md`
+- `skills/factor-forge-step6/SKILL.md`
+- `skills/factor-forge-researcher/SKILL.md`
+- `skills/factor-forge-step6-researcher/SKILL.md`
+- `skills/factor-forge-research-brain/SKILL.md`
+
+## References
+
+- `references/playbook.md`
+- `references/research-framework.md`
+- `references/step6-contract.md`
+- `docs/operations/factorforge-math-research-discipline.zh-CN.md`
+## Implementation and Factor Isolation Discipline
+
+- Every formal factor artifact must carry `artifact_identity`.
+- Every formal run must carry `manifest_identity`.
+- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
+- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
+- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
+- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
+- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
+
+## Correctness Over Completion
+
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
+
+## Operator / Qlib Engine
+
+Formal operator mode flows through `formula_text -> formula_ir -> operator registry -> pandas reference evaluator -> qlib bridge -> generated pandas implementation -> parity validation`. Qlib support is explicit: unsupported operators must be recorded as unsupported, not silently emulated. The pandas reference evaluator is the parity ground truth, and any parser, field-alias, code-hash, or parity failure must BLOCK before Step4.
+
+## Hybrid Execution Engine
+
+Formal hybrid mode is a controlled composition of a verified operator subgraph and a verified custom block. It requires `factorforge_hybrid_contract_v1`, boundary schema, protected operator outputs, `formula_hash`, `custom_block_hash`, and `hybrid_hash`. Unsafe custom code, boundary violations, missing schemas, or hash mismatch must BLOCK before Step4 and before factor values are written.
+
+Family plugins require explicit Step2 declaration: `factor_family`, `family_plugin`, `family_plugin_allowed=true`, and a `factorforge_family_plugin_decision_v1` record with structured non-free-text evidence. `factor_id`, keywords, formula prose, and thesis text are not allowed to trigger plugins.
+
+## Provenance Strengthening
+
+- No provenance, no archive. No evidence identity, no promotion. Ultimate proof must preserve the identity chain from Step3B mode decision through Step4 evidence, Step5 case closure, and Step6 writeback.
+- Step6 official promotion requires verified Step5 evidence quality, strict identity match, long-only risk-adjusted evidence, and no unresolved correctness risk.
+- Similar case knowledge is not same-factor evidence unless artifact identity matches.
+- Iterate creates a child branch with parent lineage; it must never overwrite `main` or silently reuse another run.
+
+## Agentic Revision Council
+
+Step6 is the investment-committee layer of Factor Forge. When Step1-5 evidence
+leaves a non-obvious revision problem, the main agent using this skill should
+form a Revision Council instead of inventing a single private proposal.
+
+The main agent owns Step1-5 and remains accountable for the final judgment. The
+council is a research method inside Step6:
+
+1. build a read-only council packet from Step1-5 evidence, mechanism math,
+   metrics, charts, prior knowledge, human supplemental mechanism context,
+   and the current loop brief;
+2. define exploration directions and their dependency graph;
+3. explore independent directions in parallel when the runtime supports
+   subagents, and explore dependent directions sequentially;
+4. require every main-agent or subagent proposal to write an explicit public
+   `derivation_record`;
+5. validate proposals, reject unsafe or under-derived proposals, and merge only
+   advisory outputs;
+6. let the main agent summarize accepted and rejected derivations before any
+   Step3B revision brief is considered.
+
+The council is role-based, not name-based. Any main agent using
+`factor-forge-ultimate` may run the roles itself or delegate them to available
+subagents. Typical roles are `symbolic_law_discovery`, `evidence_auditor`,
+`economic_mechanism`, `formula_engineer`, `cost_turnover`,
+`regime_robustness`, and `knowledge_retrieval_critic`.
+
+`symbolic_law_discovery` is not a fixed checklist. It treats the factor formula,
+data fields, evidence, and knowledge base as a mathematical research object. It
+may choose dimensional analysis, scaling laws, stochastic processes, stochastic
+calculus, jump processes, stopping-time reasoning, Fourier/spectral analysis,
+robust statistics, tail-distribution analysis, projection geometry, functional
+analysis, dynamical systems, information theory, market microstructure theory,
+or other justified tools. It must also be allowed to reject tools as unjustified
+when the formula/evidence does not support them.
+
+Every council proposal must include a visible `derivation_record` suitable for
+knowledge-base writeback. This is a public research artifact, not hidden
+chain-of-thought. It must record the research question, assumptions,
+mathematical objects, selected and rejected tools with reasons, derivation
+steps, formulas or symbolic relations, derived implications, revision
+hypotheses, expected metric changes, falsification tests, kill criteria,
+confidence limits, and an overclaim guard. A proposal without an explicit
+research derivation is invalid.
+
+No derivation record, no council proposal. No valid council proposal, no branch
+template. No accepted derivation, no Step3B revision brief.
+
+After Council merge, the wrapper or main agent must generate the public
+derivation appendix before attach/finalization:
+
+```bash
+python3 skills/factor-forge-step6/scripts/build_council_derivation_appendix.py --report-id <report_id>
+```
+
+The appendix is the readable consolidation layer for selected Council results.
+It must include assumptions, mathematical objects, selected tools, formula
+claims, derivation steps, limiting cases, falsification tests, kill criteria,
+and candidate revision laws. It is advisory-only evidence and must not authorize
+or perform canonical writes.
+
+Council output must remain advisory and isolated under
+`objects/research_iteration_master/revision_council/{report_id}/`. Council
+agents and subagents must not write canonical Step3B handoffs, generated code,
+official library records, clean data, canonical factor expressions, runs,
+evaluations, or archives. Returning to Step3B still requires main-agent
+selection, validator approval, human approval, and the ultimate wrapper path.
+
+The deterministic local council is only a scaffold/smoke/fallback path. Formal
+research should prefer agentic council reasoning when the environment supports
+it. If a proposal was produced by a deterministic scaffold, mark it as
+`producer=deterministic_scaffold`, `research_depth=low`, and do not present it
+as a deep mathematical research conclusion.
+
+### Ultimate Wrapper Council Mode
+
+`scripts/run_factorforge_ultimate.py` supports explicit Council integration with
+`--council-mode off|auto|scaffold|agentic`. The default is `auto`: every formal
+Step6 pass should expose the case to Council logic when revision is needed and
+evidence/case comparison is not blocked. Use `off` only for isolated debugging
+or legacy reproducibility checks. `scaffold` runs the deterministic Council chain
+after successful Step6 core, attaches the Council summary back to the Step6
+iteration, and reruns `validate_step6.py`. `auto` must not silently treat that
+deterministic scaffold as formal agentic research. With the default
+`--auto-council-policy dispatch_manifest`, auto builds packet/taskbook/dispatch
+manifest artifacts and returns `awaiting_agent_results` when Step6 indicates
+revision is needed and evidence/case comparison is not blocked. That wrapper
+return is a machine checkpoint, not a user handoff. A main agent using this
+skill must immediately continue the Council workflow by producing valid agent
+result artifacts, collecting them, finalizing Council, and resuming the loop
+unless the user explicitly asks to pause. Use
+`--auto-council-policy scaffold` only for explicit smoke/fallback runs, and use
+`--auto-council-policy block_without_agentic` when formal runs should hard-block
+instead of awaiting agent results. `agentic` requires
+`--agentic-council-executor`. With `none`, the
+wrapper must block with `BLOCK_REVISION_COUNCIL_AGENTIC_EXECUTOR_REQUIRED`. With
+`real_agent`, it must block with `BLOCK_REVISION_COUNCIL_REAL_AGENT_NOT_IMPLEMENTED`.
+With `local_mock`, it runs the Phase K.1 contract path: agentic taskbook, mock
+agent results, result validation, merge, attach, and `validate_step6.py`. The
+mock executor validates artifact contracts only; it is not real subagent
+research. With `dispatch_manifest`, the wrapper builds packet/taskbook/dispatch
+manifest artifacts and returns `awaiting_agent_results`; with
+`--agentic-dispatch-adapter manual_file`, it also writes manual assignment
+markdown and result dropbox templates without merging or attaching.
+
+Step6 core must first write a main-agent mechanism questionnaire:
+`objects/research_iteration_master/main_agent_mechanism_questionnaire__<report_id>.json`
+and `.md`. The runtime main agent currently using this skill must answer it as
+`objects/research_iteration_master/main_agent_mechanism_memo__<report_id>.json`
+and `.md` before Council work starts. This is a free-form mechanism answer, not
+a multiple-choice classifier: it must connect formula state, economic
+hypothesis, baseline mathematical model, model mutation, payer, payoff,
+estimator mapping, metric signature, and falsification. If this memo is missing,
+the wrapper must pause as `awaiting_main_agent_mechanism_memo` and must not
+expose a final Step3B handoff or run Council. If the memo is invalid, the wrapper
+must block. Council packet/taskbook artifacts must reference the accepted memo
+and require subagents to critique its formula component map, payer derivation,
+evidence contradictions, and revision-or-kill implications.
+
+### Autonomous Council Continuation
+
+`awaiting_main_agent_mechanism_memo` and `awaiting_agent_results` are internal
+checkpoint states. They are not reasons to stop and ask the user for another
+command during normal production research.
+Any loop pause at `awaiting_main_agent_mechanism_memo`,
+`awaiting_agent_results`, `awaiting_main_agent_council_synthesis`, or
+`awaiting_next_derivation` must write
+`objects/research_iteration_master/paused_research_note__<report_id>.json` and
+`.md` with the pause reason, evidence paths, known backend/metric status,
+lessons, and exact next questions. A paused run without this durable note is
+not production-complete.
+
+When the wrapper or loop returns `awaiting_main_agent_mechanism_memo`, the
+current runtime main agent must read the questionnaire, write the free-form
+main-agent mechanism memo JSON/MD, validate it, and resume the official loop.
+
+When the wrapper or loop returns `awaiting_agent_results`, the current runtime
+main agent must:
+
+1. read the dispatch manifest and all task packets;
+2. dispatch independent Council roles to available subagents when possible;
+3. if subagents are unavailable, perform the Council roles sequentially itself
+   as real research work, not as a deterministic scaffold;
+4. write one `status=final`, `producer=real_agent` result JSON per required
+   task to the exact `expected_result_path`;
+5. include public derivation records, `economic_hypothesis_review`,
+   `math_mechanism_derivation`, `model_to_formula_translation`,
+   formula-specific critique, payer derivation critique, falsification tests,
+   kill criteria, expected metric signatures, and any required
+   `prior_revision_outcome_review` / `repeated_revision_guard`;
+6. run `collect_agentic_council_results.py`,
+   `validate_agentic_council_collection.py`, and
+   `finalize_agentic_council_dispatch.py`;
+7. resume `scripts/run_factorforge_ultimate_loop.py` until a terminal outcome
+   is reached: `promote_official`, `reject`, `exhausted`,
+   `max_loops_reached`, or a true BLOCK/failure requiring human judgment.
+
+The main agent must not fabricate Council output by using `local_mock`, copying
+old scaffold proposals, or writing generic result templates. It may only write
+Council results that it or its delegated subagents actually researched from the
+task packets. If valid Council results cannot be produced, BLOCK with a precise
+reason instead of asking the user to drive the next command.
+
+Runtime dispatch is policy, not provider binding. `--runtime-dispatch
+codex|openclaw|manual_file|unknown` records the runtime in taskbook, dispatch
+manifest, task packets, manual manifest, and assignment markdown. If omitted,
+manual-file dispatch records `manual_file`; otherwise the default is `unknown`.
+Subagents inherit the current main model/provider by default. `--subagent-provider`
+and `--subagent-model` may be recorded only as explicit user-requested
+overrides; Factor Forge must not require or auto-select a provider.
+
+Wrapper Council mode must remain advisory-only. It must not execute search
+workers, write `handoff_to_step3b`, promote official records, modify
+`generated_code/{report_id}`, or mutate `data/clean`. The wrapper records
+before/after side-effect snapshots and must block with
+`BLOCK_REVISION_COUNCIL_WRAPPER_FORBIDDEN_SIDE_EFFECT` if the Council chain
+changes forbidden artifacts.
+
+### Default Loop Objective
+
+The default research objective is to run the formal Factor Forge path through
+Step6, let Council decide promote/reject/revise, and continue through guarded
+child-report revision loops until one of these stop conditions is reached:
+`promote_official`, validated no-derived-revision proof blocks further work,
+evidence/case comparison blocks further work, or 10 Council revision loops have
+been reached.
+At the 10-loop cap, if the factor is still not promotable but Council believes
+substantial upside remains, stop and report the state to the user instead of
+silently continuing.
+
+### Ultimate Loop Orchestrator
+
+`scripts/run_factorforge_ultimate_loop.py` is the thin Phase M orchestrator above
+the existing official wrapper. It must call `scripts/run_factorforge_ultimate.py`
+for every formal pass and must not call Step1-6 scripts directly.
+
+The loop runner writes:
+
+- `objects/runtime_context/ultimate_loop_report__{root_report_id}.json`
+- `objects/runtime_context/ultimate_loop_brief__{root_report_id}.md`
+
+It stops on promotion, true factor rejection, blocked evidence/prewrite state,
+Council script checkpoint `awaiting_agent_results`, `awaiting_next_derivation`,
+wrapper failure, missing approved child revision, forbidden side effects, or the
+10-loop cap. It may continue to a child report only when a validated
+`handoff_to_step3b__{report_id}.json` explicitly authorizes
+`approved_for_step3b_handoff`; child report ids must be derived from the parent
+as `{parent}__LOOPNN__{revision_id}`. A failed child branch before max loops is
+`revision_branch_only` falsification, not factor-level rejection, unless Council
+provides validated terminal authority. The orchestrator itself must not write
+Step3B handoffs, official records, generated code, clean data, or search-worker
+outputs.
+
+At the skill level, `awaiting_agent_results` must be handled by autonomous
+Council continuation above. The agent should not present it as the final answer
+to the user unless it is technically unable to create valid Council results in
+the current runtime.
+
+## Mechanism Math Contract v2
+
+Factor Forge treats a factor as a falsifiable market-process model first and a formula second. Step1/2/6 artifacts should preserve the chain: market behavior -> economic hypothesis -> primary mechanism model -> stochastic price-process projection -> formula observable estimator -> expected metric signature -> falsification or revision logic. The primary model is selected from the economic hypothesis and is not automatically a stochastic process, but every formal factor must state how the signal changes the conditional distribution of next-horizon return under F_t. Formula explanations that merely restate the formula, or decorative generic SDE/physics language without state variables, observable proxies, and falsification, must BLOCK. Council revisions must declare which model layer they revise: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract.

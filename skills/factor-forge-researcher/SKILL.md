@@ -19,6 +19,7 @@ Do not use a lightweight batch path unless the user explicitly requests a mechan
 
 For normal research, every factor must have:
 - source understanding from the report/paper/idea,
+- an explicit economic hypothesis and a flexible math-forced insight pass,
 - implementation review after Step3,
 - evidence review after Step4,
 - case reflection after Step5,
@@ -27,68 +28,33 @@ For normal research, every factor must have:
 - learning writeback that extracts transferable patterns, anti-patterns, and innovative idea seeds,
 - and, if needed, a revision brief that sends the loop back to Step3B.
 
-## Research Quality Standard
+## Flexible Math-Forced Research
 
-Researcher-led means hypothesis validation, not document completion. For every
-serious factor, the researcher must keep a `research_quality_gate` in the
-journal or Step6 memo with:
+Researcher judgment must actively use mathematics to understand the factor, but
+this is not a rigid checklist. Start from the economic hypothesis, then select
+one or more mathematical objects and tools that actually fit the suspected
+market process. Valid choices include stochastic processes, state-space or
+Bayesian models, covariance identities, projection or residualization,
+occupation measures, stopping/hitting problems, Taylor or local decompositions,
+spectral views, distributional transforms, microstructure/inventory models, or
+other justified tools.
 
-- `mechanism_claim_level`: one of `none`, `narrative_only`, `math_framed`,
-  `metric_consistent`, `component_validated`, `stochastic_validated`, or
-  `payer_validated`;
-- `economic_payer_hypothesis`: who is expected to pay or receive the return,
-  plus the evidence or missing proxy;
-- `math_object_contract`: state variable or random object, target statistic,
-  information set, and formula-to-state mapping;
-- `evidence_tier_map`: classify each artifact as promotion-gate, robustness,
-  diagnostic, window-contract, or exploratory evidence;
-- `component_validation`: ablation, joint-state bucket, regime/liquidity split,
-  or parent-vs-revision information delta, or a clear reason it is missing;
-- `falsification_design`: the experiment or observation that would kill the
-  mechanism;
-- `overclaim_guard`: what the current evidence does not allow the agent to
-  claim.
+The durable research record must explain:
 
-The researcher must create or refresh this gate before expensive Step3/Step4
-work for every non-smoke idea, including report-led ideas, formula-only ideas,
-oral ideas, Miner candidates, and Council revision proposals. The gate is not a
-style section; it determines the allowed next action:
+- which mathematical object was selected and why it fits the economic
+  hypothesis,
+- what insight the chosen tool forced that was not obvious from the formula
+  prose alone,
+- what information the transformation preserves, removes, aliases, or makes
+  untradeable,
+- how the insight maps to an observable estimator or next formula/law version,
+- what long-side, residual-IC, universe/regime, or IS/OOS result would falsify
+  the mechanism.
 
-```text
-narrative_only or math_framed -> return to Miner, rewrite the idea, or stop
-metric_candidate -> cheap screen only
-metric_consistent -> formal Ultimate can proceed, but no promotion claim
-component_validated -> formal revision/promotion discussion can start
-stochastic_validated or payer_validated -> strong mechanism claim can be made
-```
-
-The label `component_validated` requires replayable full-versus-ablated evidence
-from `factorforge_component_obligation_verifier_v1`, not only a chart or memo.
-The current v1 kernel has no trusted payer or stochastic verifier; those higher
-labels therefore remain unavailable until a dedicated executable verifier is
-implemented and registered.
-
-A complete gate must include `economic_mechanism_contract`,
-`mathematical_object_contract`, `alias_elimination_matrix`,
-`falsification_plan`, `claim_level_assessment`, and `reviewer_attack_memo`.
-If any of payer/receiver hypothesis, random object or state variable,
-information set, alias tests, or kill criteria are missing, mark
-`research_quality_blocked` and do not launch formal Step3/Step4.
-
-If the researcher invokes stochastic-process language, it must mark
-`stochastic_process_status=framing_only` unless state space, conditional return
-distribution, transition/persistence, barrier/tail risk, and
-revision-information delta are actually tested.
-
-If the researcher claims Dirac-style induction or a reusable symbolic law, it
-must write `dirac_induction_memo__<report_id>.json/md` under the active
-workspace with atomic state, invariant, estimator law, deleted-information
-audit, limiting cases, falsification design, reuse boundary, and overclaim
-guard. Without that memo, the claim remains a hypothesis.
-
-Never call a case research-complete only because Step6 PASS, Council artifacts,
-or a loop brief exists. Those prove process state; the quality gate proves
-research depth.
+Do not mechanically apply every tool. A simple decomposition is preferred when
+it explains the payer and expected return signature. Added interactions,
+nonlinear gates, parameters, or data dependencies must pay the complexity cost
+defined below.
 
 ## Research Loop
 
@@ -224,6 +190,10 @@ Write/update the journal with:
 Review:
 - whether data inputs match the source idea,
 - whether Step3B implementation matches the canonical formula,
+- whether the factor law declared reusable state dependencies,
+- whether Step3 resolved state datamarts through the Data API catalog,
+- whether missing states were converted into `data_request_v1` instead of a
+  Step4 raw-minute fallback,
 - whether any approximation changed the economic meaning,
 - whether data windows and cleaning choices are justified.
 

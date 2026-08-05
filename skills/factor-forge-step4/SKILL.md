@@ -100,6 +100,15 @@ local input snapshots are absent. Step4 may materialize its own run-scoped input
 cache from that contract, but it must not discover raw S3/local paths or build
 clean data layers itself.
 
+Formal Step4 is a datamart consumer, not a raw-minute backfill owner. When
+`FACTORFORGE_REQUIRE_STATE_REUSE_CONTRACT=1` or Ultimate passes
+`FACTORFORGE_STATE_RESOLUTION`, Step4 must load
+`state_resolution__<report_id>.json`, write
+`state_datamart_reuse.contract_version=factorforge_state_datamart_reuse_v1` into
+run metadata, and reject production inputs that point at raw full-window minute
+roots. Bounded smoke fixtures are allowed only when explicitly marked as smoke
+and must not be promoted as full-window proof.
+
 ## Outputs
 
 - `factorforge/objects/factor_run_master/factor_run_master__{report_id}.json`

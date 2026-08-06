@@ -660,6 +660,13 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
     assert "Research Notebook" in html
     assert ">Math<" in html
     assert "回测中心" in html
+    assert html.index('href="#conversation"') < html.index('href="#backtest"')
+    assert html.index('href="#backtest"') < html.index('href="#math"')
+    assert html.index('href="#math"') < html.index('href="#notebook"')
+    assert html.index('<section id="conversation"') < html.index('<section id="backtest"')
+    assert html.index('<section id="backtest"') < html.index('<section id="math"')
+    assert html.index('<section id="math"') < html.index('<section id="notebook"')
+    assert html.index('<section id="notebook"') > html.index("研究产物")
     assert "分月收益矩阵" in html
     assert "Decile 诊断" in html
     assert "回撤与换手" in html

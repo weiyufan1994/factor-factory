@@ -104,14 +104,14 @@ def render_job(job: ResearchJob, messages: list[ResearchMessage], csrf_token: st
         _identity_band(job),
         _workspace_nav(),
         _conversation_section(job, messages, result, csrf_token),
+        _backtest_center_section(job, result),
         _stage_timeline(job, result),
         _decision_panel(job, result, csrf_token),
-        _research_notebook_section(result),
         _math_notebook_section(result),
-        _backtest_center_section(job, result),
         _data_implementation_section(result),
         _council_section(result),
         _artifact_section(job, result),
+        _research_notebook_section(result),
         '</main>',
         _poll_script(job.job_id, job.updated_at_utc) if job.execution_status in ACTIVE_STATUSES else "",
     ]
@@ -195,9 +195,9 @@ def _workspace_nav() -> str:
     return """
     <nav class="workspace-nav" aria-label="研究工作区">
       <a href="#conversation">Chatbox</a>
-      <a href="#notebook">Research Notebook</a>
-      <a href="#math">Math</a>
       <a href="#backtest">回测中心</a>
+      <a href="#math">Math</a>
+      <a href="#notebook">Research Notebook</a>
     </nav>
     """
 

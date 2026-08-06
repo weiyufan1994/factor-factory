@@ -3803,6 +3803,12 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
         if isinstance(metadata, dict)
         else None
     )
+    raw_final_text_present = (
+        isinstance(metadata, dict) and "finalAssistantRawText" in metadata
+    )
+    optional_raw_final_text = (
+        metadata["finalAssistantRawText"] if raw_final_text_present else None
+    )
     replay_invalid = metadata.get("replayInvalid") if isinstance(metadata, dict) else None
     liveness_state = (
         metadata.get("livenessState") if isinstance(metadata, dict) else None
@@ -3837,10 +3843,18 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
             optional_final_text is not None
             and not isinstance(optional_final_text, str)
         )
+        or (
+            raw_final_text_present
+            and not isinstance(optional_raw_final_text, str)
+        )
         or (replay_invalid is not None and not isinstance(replay_invalid, bool))
         or not isinstance(liveness_state, str)
         or not (
             payload_texts
+            or (
+                isinstance(optional_raw_final_text, str)
+                and optional_raw_final_text.strip()
+            )
             or (
                 isinstance(optional_final_text, str)
                 and optional_final_text.strip()
@@ -3858,7 +3872,10 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
     # OpenClaw sets replayInvalid after tools with potential side effects. It
     # controls retry safety; it does not invalidate an otherwise successful run.
     final_text = (
-        optional_final_text.strip()
+        optional_raw_final_text.strip()
+        if isinstance(optional_raw_final_text, str)
+        and optional_raw_final_text.strip()
+        else optional_final_text.strip()
         if isinstance(optional_final_text, str) and optional_final_text.strip()
         else (payload_texts[-1] if payload_texts else "")
     )
@@ -3897,7 +3914,16 @@ def _validate_openclaw_terminal_status(stdout: str, stderr: str) -> str:
         "No response generated",
         "Request failed:",
     )
-    if final_text.strip().startswith(terminal_error_prefixes):
+    terminal_texts = tuple(
+        text.strip()
+        for text in (
+            optional_raw_final_text,
+            optional_final_text,
+            *payload_texts,
+        )
+        if isinstance(text, str) and text.strip()
+    )
+    if any(text.startswith(terminal_error_prefixes) for text in terminal_texts):
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_FAILED}: OpenClaw reported a terminal model error"
         )

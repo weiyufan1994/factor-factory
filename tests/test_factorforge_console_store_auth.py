@@ -1797,6 +1797,7 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.container_agent_adapter import (
         ContainerizedOpenClawResearchAgentAdapter,
+        _validate_openclaw_terminal_status,
     )
 
     source = tmp_path / "source"
@@ -2077,6 +2078,38 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
             "ledger": "phase ledger",
         }
     )
+    authentic_raw_text = (
+        "All authorized inputs were reviewed; the exact delivery follows.\n\n"
+        + valid_delivery
+    )
+    authentic_transport = json.dumps(
+        {
+            "payloads": [{"text": "Visible research summary."}],
+            "meta": {
+                "agentMeta": {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                },
+                "finalAssistantVisibleText": "Visible research summary.",
+                "finalAssistantRawText": authentic_raw_text,
+                "replayInvalid": True,
+                "livenessState": "working",
+            },
+        }
+    )
+    authentic_openclaw_transport = phase_view("authentic-openclaw-transport")
+    adapter._stage_resume_terminal_delivery(
+        authentic_openclaw_transport,
+        terminal_text=_validate_openclaw_terminal_status(
+            authentic_transport,
+            "embedded run agent end: isError=false\n",
+        ),
+        resume_task=task,
+    )
+    assert (
+        authentic_openclaw_transport.root / task.required_output_relative
+    ).read_text(encoding="utf-8") == '{"a":"first"}\n'
+
     adapter._stage_resume_terminal_delivery(
         duplicated_closing_delimiter,
         terminal_text=valid_delivery + '"}',
@@ -2582,6 +2615,29 @@ def test_openclaw_terminal_status_is_structured_and_fail_closed():
         ),
         "",
     ) == "Memo authored and validator passed."
+    raw_delivery = "Raw transport delivery."
+    raw_transport = json.loads(receipt("Visible research summary."))
+    raw_transport["meta"]["finalAssistantRawText"] = raw_delivery
+    assert _validate_openclaw_terminal_status(
+        json.dumps(raw_transport),
+        "",
+    ) == raw_delivery
+    invalid_raw_type = json.loads(receipt("Visible research summary."))
+    invalid_raw_type["meta"]["finalAssistantRawText"] = {
+        "not": "a transport string"
+    }
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(json.dumps(invalid_raw_type), "")
+    null_raw_type = json.loads(receipt("Visible research summary."))
+    null_raw_type["meta"]["finalAssistantRawText"] = None
+    with pytest.raises(RuntimeError, match="terminal receipt schema"):
+        _validate_openclaw_terminal_status(json.dumps(null_raw_type), "")
+    raw_terminal_error = json.loads(receipt("Visible research summary."))
+    raw_terminal_error["meta"]["finalAssistantRawText"] = (
+        "Model request failed: upstream rejected the request."
+    )
+    with pytest.raises(RuntimeError, match="terminal model error"):
+        _validate_openclaw_terminal_status(json.dumps(raw_terminal_error), "")
     assert _validate_openclaw_terminal_status(
         receipt(
             "Memo authored and validator passed.",

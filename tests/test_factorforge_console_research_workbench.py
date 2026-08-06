@@ -108,6 +108,26 @@ def test_equation_statement_separates_math_from_prose_annotations(monkeypatch) -
     assert "x_33=1" in overflow
 
 
+def test_equation_statement_normalizes_aligned_for_pinned_converter(monkeypatch) -> None:
+    from factor_factory.console import math_render
+
+    converted_expressions = []
+
+    class RecordingConverter:
+        @staticmethod
+        def convert(expression: str) -> str:
+            converted_expressions.append(expression)
+            return '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>'
+
+    monkeypatch.setattr(math_render, "_latex_converter", RecordingConverter())
+    source = r"\begin{aligned}x&=1;\\y&=2\end{aligned}"
+    rendered = math_render.render_equation_statement(source)
+
+    assert converted_expressions == [r"\begin{split}x&=1;\\y&=2\end{split}"]
+    assert "<math" in rendered
+    assert 'aria-label="\\begin{aligned}x&amp;=1;\\\\y&amp;=2\\end{aligned}"' in rendered
+
+
 def test_monotonicity_metric_card_compacts_blocker_and_source() -> None:
     from factor_factory.console.web_ui import _metric_cell
 

@@ -96,14 +96,15 @@ _ALLOWED_ATTRIBUTES = {
 }
 
 
-def render_latex_math(expression: str) -> str:
+def render_latex_math(expression: str, *, source_label: str | None = None) -> str:
     source = str(expression or "").strip()
+    public_source = str(source_label if source_label is not None else source).strip()
     if not source:
         return ""
     if len(source) > _MAX_EXPRESSION_LENGTH or not _LATEX_SIGNAL.search(source):
-        return _fallback(source)
+        return _fallback(public_source)
     if _latex_converter is None:
-        return _fallback(source)
+        return _fallback(public_source)
     normalized = _normalize_plain_math_names(_strip_math_delimiters(source))
     try:
         converted = _latex_converter.convert(normalized)
@@ -112,9 +113,9 @@ def render_latex_math(expression: str) -> str:
         root.set("display", "block")
         mathml = ElementTree.tostring(root, encoding="unicode", method="xml")
     except Exception:  # Third-party parser exceptions must not break the research page.
-        return _fallback(source)
+        return _fallback(public_source)
     return (
-        f'<span class="rendered-math" role="math" aria-label="{escape(source, quote=True)}">'
+        f'<span class="rendered-math" role="math" aria-label="{escape(public_source, quote=True)}">'
         f"{mathml}</span>"
     )
 
@@ -127,7 +128,7 @@ def render_equation_statement(expression: str) -> str:
     if _is_structured_latex(source):
         return (
             '<div class="equation-statement"><div class="equation-line">'
-            f"{render_latex_math(source)}</div></div>"
+            f"{render_latex_math(_normalize_structured_latex(source), source_label=source)}</div></div>"
         )
     clauses = [item.strip() for item in _EQUATION_SPLIT.split(source) if item.strip()]
     rows: list[str] = []
@@ -220,6 +221,15 @@ def _is_structured_latex(value: str) -> bool:
     return bool(
         environments
         and all(rf"\end{{{environment}}}" in value for environment in environments)
+    )
+
+
+def _normalize_structured_latex(value: str) -> str:
+    return (
+        value.replace(r"\begin{aligned*}", r"\begin{split}")
+        .replace(r"\end{aligned*}", r"\end{split}")
+        .replace(r"\begin{aligned}", r"\begin{split}")
+        .replace(r"\end{aligned}", r"\end{split}")
     )
 
 

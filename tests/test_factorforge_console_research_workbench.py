@@ -674,6 +674,7 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
     assert "FORMAL EVIDENCE" not in html
     assert ".detail-heading>div { width:100%; min-width:0;" in html
     assert ".detail-heading h1,.eyebrow { overflow-wrap:anywhere; }" in html
+    assert ".content-section { max-width:100%; min-width:0; overflow-x:clip; }" in html
     assert (
         ".idea-summary { max-width:900px; white-space:pre-line; overflow-wrap:anywhere;"
         in html

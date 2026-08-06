@@ -28,6 +28,25 @@ _PLAIN_GREEK_NAMES = (
     "rho",
     "sigma",
 )
+_PLAIN_GREEK_ALIASES = {
+    "eps": r"\varepsilon",
+    "epsilon": r"\varepsilon",
+    "eta": r"\eta",
+}
+_PLAIN_FUNCTION_NAMES = {"abs", "exp", "max", "min", "rank", "sign"}
+_PLAIN_IDENTIFIER = re.compile(
+    r"(?<![A-Za-z\\])([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*)(?=(?:_\{|\b))"
+)
+_EQUATION_SPLIT = re.compile(r"[;\n]+")
+_ANNOTATION_SPLIT = re.compile(
+    r",\s*(?=(?:entry|exit)\b)|\s+(?=(?:with|where|when|because|under|so\s+that|is|means|implies|denotes|represents|captures)\b)",
+    re.IGNORECASE,
+)
+_SIMPLE_MATH_ATOM = (
+    r"(?:\\mathrm\{[^{}]+\}|\\[A-Za-z]+|[A-Za-z])"
+    r"(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?"
+)
+_SIMPLE_FRACTION = re.compile(rf"({_SIMPLE_MATH_ATOM})\s*/\s*({_SIMPLE_MATH_ATOM})")
 _ALLOWED_TAGS = {
     "math",
     "semantics",
@@ -100,6 +119,50 @@ def render_latex_math(expression: str) -> str:
     )
 
 
+def render_equation_statement(expression: str) -> str:
+    """Render semicolon-delimited model equations without treating prose as TeX."""
+    source = str(expression or "").strip()
+    if not source:
+        return ""
+    if _is_structured_latex(source):
+        return (
+            '<div class="equation-statement"><div class="equation-line">'
+            f"{render_latex_math(source)}</div></div>"
+        )
+    clauses = [item.strip() for item in _EQUATION_SPLIT.split(source) if item.strip()]
+    rows: list[str] = []
+    visible_clauses = clauses[:32]
+    for clause in visible_clauses:
+        label, body = _split_equation_label(clause)
+        math_source, annotation = _split_equation_annotation(body)
+        if _looks_like_equation(math_source):
+            label_html = (
+                f'<span class="equation-line-label">{escape(label)}</span>' if label else ""
+            )
+            annotation_html = (
+                f'<p class="equation-annotation">{escape(annotation)}</p>'
+                if annotation
+                else ""
+            )
+            rows.append(
+                '<div class="equation-line">'
+                f"{label_html}{render_latex_math(_plain_equation_to_latex(math_source))}"
+                f"{annotation_html}</div>"
+            )
+            continue
+        text = f"{label}: {body}" if label else body
+        rows.append(f'<p class="equation-annotation">{escape(text)}</p>')
+    if len(clauses) > len(visible_clauses):
+        overflow = "; ".join(clauses[len(visible_clauses) :])
+        count = len(clauses) - len(visible_clauses)
+        rows.append(
+            '<details class="equation-overflow">'
+            f"<summary>{count} additional equation clauses</summary>"
+            f"<pre>{escape(overflow)}</pre></details>"
+        )
+    return f'<div class="equation-statement">{"".join(rows)}</div>'
+
+
 def _sanitize_mathml(element: ElementTree.Element) -> None:
     local_name = _local_name(element.tag)
     if local_name not in _ALLOWED_TAGS:
@@ -141,6 +204,90 @@ def _normalize_plain_math_names(value: str) -> str:
         normalized,
     )
     return re.sub(r"\s+x\s+", r" \\times ", normalized)
+
+
+def _split_equation_label(value: str) -> tuple[str, str]:
+    if ":" not in value:
+        return "", value
+    label, body = value.split(":", 1)
+    if _looks_like_equation(body):
+        return label.strip(), body.strip()
+    return "", value
+
+
+def _is_structured_latex(value: str) -> bool:
+    environments = re.findall(r"\\begin\{([A-Za-z*]+)\}", value)
+    return bool(
+        environments
+        and all(rf"\end{{{environment}}}" in value for environment in environments)
+    )
+
+
+def _split_equation_annotation(value: str) -> tuple[str, str]:
+    parts = _ANNOTATION_SPLIT.split(value, maxsplit=1)
+    if len(parts) == 1:
+        return value.strip().rstrip("."), ""
+    math_source = parts[0].strip().rstrip(".,")
+    annotation = value[len(parts[0]) :].strip().lstrip(",").strip()
+    return math_source.rstrip("."), annotation
+
+
+def _looks_like_equation(value: str) -> bool:
+    compact = str(value or "").strip()
+    if re.match(r"^(?:if|when|where|because)\b", compact, re.IGNORECASE):
+        return False
+    return bool(
+        compact
+        and (
+            any(
+                operator in compact
+                for operator in ("=", "<", ">", "~", "≤", "≥", r"\le", r"\ge", r"\neq")
+            )
+            or compact.startswith(("E[", r"\mathbb{E}", r"\mathbb E"))
+            or ("(" in compact and any(operator in compact for operator in ("*", "/")))
+        )
+    )
+
+
+def _plain_equation_to_latex(value: str) -> str:
+    source = _strip_math_delimiters(str(value or "").strip())
+    if "\\" in source:
+        return source
+    source = (
+        source.replace("≤", r"\leq ")
+        .replace("≥", r"\geq ")
+        .replace("≠", r"\neq ")
+        .replace("∈", r"\in ")
+    )
+
+    def replace_identifier(match: re.Match[str]) -> str:
+        token = match.group(1)
+        lower = token.lower()
+        suffix = source[match.end() : match.end() + 1]
+        if lower in _PLAIN_GREEK_ALIASES:
+            return _PLAIN_GREEK_ALIASES[lower]
+        for name in _PLAIN_GREEK_NAMES:
+            if lower == name:
+                return rf"\{name}"
+            if lower.startswith(f"{name}_"):
+                return rf"\{name}_{token[len(name) + 1:]}"
+        if token == "E" and suffix == "[":
+            return r"\mathbb{E}"
+        if token == "I" and suffix == "(":
+            return r"\mathbf{1}"
+        if lower in _PLAIN_FUNCTION_NAMES and suffix == "(":
+            return rf"\operatorname{{{lower}}}"
+        if len(token) == 1 or re.fullmatch(r"[A-Za-z]_[A-Za-z0-9]+", token):
+            return token
+        escaped = token.replace("_", r"\_")
+        return rf"\mathrm{{{escaped}}}"
+
+    source = _PLAIN_IDENTIFIER.sub(replace_identifier, source)
+    source = _SIMPLE_FRACTION.sub(
+        lambda match: rf"\frac{{{match.group(1)}}}{{{match.group(2)}}}",
+        source,
+    )
+    return source.replace("*", r" \cdot ")
 
 
 def _local_name(value: str) -> str:

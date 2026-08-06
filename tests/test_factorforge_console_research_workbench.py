@@ -46,6 +46,140 @@ def test_math_renderer_fallback_escapes_unparsed_source(monkeypatch) -> None:
     assert "&lt;script&gt;" in rendered
 
 
+def test_equation_statement_separates_math_from_prose_annotations(monkeypatch) -> None:
+    from factor_factory.console import math_render
+
+    monkeypatch.setattr(math_render, "_latex_converter", None)
+    rendered = math_render.render_equation_statement(
+        "U_{i,t} iid(0,sigma_u^2) latent opening urgency; "
+        "gap=open/pre_close-1=mu*U+eps; "
+        "fade=close/open-1=-lambda*U+eta; "
+        "falsifiable implication: E[ret_{i,t+2}|S<0]<0 with magnitude increasing in |S|."
+    )
+
+    assert rendered.count('class="equation-line"') == 3
+    assert "latent opening urgency" in rendered
+    assert "falsifiable implication" in rendered
+    assert "latentopeningurgency" not in rendered
+    assert r"\mathrm{gap}" in rendered
+    assert r"\mathrm{pre\_close}" in rendered
+    assert r"\mathbb{E}" in rendered
+    assert "magnitude increasing in |S|" in rendered
+
+    factor_law = math_render.render_equation_statement(
+        "((sign(open - pre_close) + 1.0) / 2.0) * "
+        "(open / pre_close - 1.0) * (close / open - 1.0)"
+    )
+    assert 'class="equation-line"' in factor_law
+    assert r"\frac{\mathrm{open}}{\mathrm{pre\_close}}" in factor_law
+
+    annotated = math_render.render_equation_statement(
+        "S=I(open>pre_close)*gap*fade where the positive-gap branch is active"
+    )
+    assert "the positive-gap branch is active" in annotated
+    assert "thepositive-gapbranch" not in annotated
+
+    hostile = math_render.render_equation_statement("x=<script>alert(1)</script>")
+    assert "<script>" not in hostile
+    assert "&lt;" in hostile
+
+    structured = math_render.render_equation_statement(
+        r"\begin{aligned}x&=1;\\y&=2\end{aligned}"
+    )
+    assert structured.count('class="equation-line"') == 1
+    assert r"\begin{aligned}x&amp;=1;\\y&amp;=2\end{aligned}" in structured
+
+    piecewise = math_render.render_equation_statement(r"f(x)=x,x>0; -x,x\leq0")
+    assert piecewise.count('class="equation-line"') == 2
+    assert "-x,x\\leq0" in piecewise
+
+    prose_suffix = math_render.render_equation_statement(
+        "theta>0 is reversal; alpha=signal when market is open"
+    )
+    assert "is reversal" in prose_suffix
+    assert "when market is open" in prose_suffix
+    assert "isreversal" not in prose_suffix
+    assert "whenmarketisopen" not in prose_suffix
+
+    overflow = math_render.render_equation_statement(
+        ";".join(f"x_{index}=1" for index in range(34))
+    )
+    assert "2 additional equation clauses" in overflow
+    assert "x_33=1" in overflow
+
+
+def test_monotonicity_metric_card_compacts_blocker_and_source() -> None:
+    from factor_factory.console.web_ui import _metric_cell
+
+    html = _metric_cell(
+        "Quantile monotonicity",
+        {
+            "bucket_count": 10,
+            "diagnostic_block_reason": (
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_BUCKET_TIES_UNRESOLVED:2022-09-01"
+            ),
+            "period_count": 689,
+            "required_for_acceptance": False,
+            "status": "UNAVAILABLE",
+        },
+        {
+            "evidence_class": "EVIDENCE CONFLICT",
+            "artifact_id": (
+                "objects/factor_proof_certificate/"
+                "factor_proof_certificate__WEB_VERY_LONG_REPORT_NAME.json"
+            ),
+        },
+        metric_key="monotonicity",
+    )
+
+    assert ">Diagnostic unavailable</strong>" in html
+    assert "10 buckets · 689 periods · bucket ties unresolved (2022-09-01)" in html
+    assert ">BLOCK_FACTORFORGE" not in html.split("<strong>", 1)[1].split("</strong>", 1)[0]
+    assert (
+        "<code>BLOCK_FACTORFORGE_METRIC_VERIFIER_BUCKET_TIES_UNRESOLVED:2022-09-01</code>"
+        in html
+    )
+    assert "Diagnostic limitation" in html
+    assert "EVIDENCE CONFLICT · factor proof certificate" in html
+    assert (
+        "<code>objects/factor_proof_certificate/"
+        "factor_proof_certificate__WEB_VERY_LONG_REPORT_NAME.json</code>" in html
+    )
+
+    scored = _metric_cell(
+        "Quantile monotonicity",
+        {"monotonicity_score": 0.75, "required_for_acceptance": True},
+        metric_key="monotonicity",
+    )
+    assert ">0.7500</strong>" in scored
+
+    blocked = _metric_cell(
+        "Quantile monotonicity",
+        {
+            "score": 0.91,
+            "status": "BLOCKED",
+            "required_for_acceptance": True,
+            "diagnostic_block_reason": "BLOCK_FACTORFORGE_METRIC_VERIFIER_TEST",
+        },
+        metric_key="monotonicity",
+    )
+    assert ">Blocked</strong>" in blocked
+    assert "reported score 0.9100" in blocked
+    assert "Formal blocker" in blocked
+
+    unknown_role = _metric_cell(
+        "Quantile monotonicity",
+        {
+            "status": "UNAVAILABLE",
+            "diagnostic_block_reason": "BLOCK_FACTORFORGE_METRIC_VERIFIER_TEST",
+        },
+        metric_key="monotonicity",
+    )
+    assert ">Role unknown</strong>" in unknown_role
+    assert "Acceptance role unknown" in unknown_role
+    assert "Diagnostic limitation" not in unknown_role
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

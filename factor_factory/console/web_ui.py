@@ -5,7 +5,7 @@ import secrets
 from html import escape
 from typing import Any
 
-from factor_factory.console.math_render import render_latex_math
+from factor_factory.console.math_render import render_equation_statement
 from factor_factory.console.models import PILOT_MODEL, ResearchJob, ResearchMessage
 
 
@@ -313,7 +313,7 @@ def _math_notebook_section(result: dict[str, Any]) -> str:
             f"""
             <figure class="equation-block">
               <figcaption>{escape(str(equation.get('title') or 'Equation'))}</figcaption>
-              <div class="equation-expression">{render_latex_math(str(equation.get('expression') or ''))}</div>
+              <div class="equation-expression">{render_equation_statement(str(equation.get('expression') or ''))}</div>
               <span class="equation-number">({index})</span>
             </figure>
             """
@@ -796,15 +796,83 @@ def _metric_cell(
     evidence = evidence or {}
     evidence_class = str(evidence.get("evidence_class") or "FORMAL UNVERIFIED")
     source = str(evidence.get("artifact_id") or "")
-    source_label = source.rsplit("/", 1)[-1] if source else "source pending"
+    source_label = _compact_metric_source(source)
     primary, detail = _metric_value_parts(metric_key, value)
     detail_html = f'<em>{escape(detail)}</em>' if detail else ""
-    return f'<div class="metric-cell"><span>{escape(label)}</span><strong>{escape(primary)}</strong>{detail_html}<small>{escape(evidence_class)} · {escape(source_label)}</small></div>'
+    diagnostic = (
+        str(value.get("diagnostic_block_reason") or "") if isinstance(value, dict) else ""
+    )
+    required_for_acceptance = (
+        value.get("required_for_acceptance") if isinstance(value, dict) else None
+    )
+    diagnostic_label = (
+        "Formal blocker"
+        if isinstance(value, dict)
+        and (
+            required_for_acceptance is True
+            or str(value.get("status") or "").upper() in {"BLOCKED", "INVALID"}
+        )
+        else (
+            "Diagnostic limitation"
+            if required_for_acceptance is False
+            else "Acceptance role unknown"
+        )
+    )
+    diagnostic_html = (
+        f'<details class="metric-diagnostic"><summary>{diagnostic_label}</summary>'
+        f'<code>{escape(diagnostic)}</code></details>'
+        if diagnostic
+        else ""
+    )
+    source_exact = source if source else "source pending"
+    source_html = (
+        '<details class="metric-source"><summary>'
+        f"{escape(evidence_class)} · {escape(source_label)}</summary>"
+        f"<code>{escape(source_exact)}</code></details>"
+    )
+    return f'<div class="metric-cell"><span>{escape(label)}</span><strong>{escape(primary)}</strong>{detail_html}{diagnostic_html}{source_html}</div>'
 
 
 def _metric_value_parts(metric_key: str, value: Any) -> tuple[str, str]:
     if not isinstance(value, dict):
         return _format_value(value), ""
+
+    if metric_key == "monotonicity":
+        score = value.get("monotonicity_score", value.get("score"))
+        status = str(value.get("status") or "").upper()
+        required_for_acceptance = value.get("required_for_acceptance")
+        acceptance_blocked = status in {"BLOCKED", "INVALID"} or (
+            required_for_acceptance is True
+            and bool(value.get("diagnostic_block_reason"))
+        )
+        if acceptance_blocked:
+            primary = "Blocked"
+        elif status == "UNAVAILABLE":
+            if required_for_acceptance is True:
+                primary = "Unavailable"
+            elif required_for_acceptance is False:
+                primary = "Diagnostic unavailable"
+            else:
+                primary = "Role unknown"
+        elif isinstance(score, (int, float)) and not isinstance(score, bool):
+            primary = _format_value(score)
+        else:
+            diagnostic = str(value.get("monotonicity_diagnostic") or "").lower()
+            if "not_above" in diagnostic or "non_monot" in diagnostic:
+                primary = "Non-monotone"
+            else:
+                primary = status.replace("_", " ").title() if status else "Not reported"
+        details = []
+        if value.get("bucket_count") not in (None, ""):
+            details.append(f"{_format_value(value.get('bucket_count'))} buckets")
+        if value.get("period_count") not in (None, ""):
+            details.append(f"{_format_value(value.get('period_count'))} periods")
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and acceptance_blocked:
+            details.append(f"reported score {_format_value(score)}")
+        reason = _compact_diagnostic_reason(value.get("diagnostic_block_reason"))
+        if reason:
+            details.append(reason)
+        return primary, " · ".join(details[:3])
 
     primary_fields = {
         "rank_ic": "mean",
@@ -843,6 +911,33 @@ def _metric_value_parts(metric_key: str, value: Any) -> tuple[str, str]:
         if name != field
     ]
     return primary, " · ".join(details[:3])
+
+
+def _compact_metric_source(source: str) -> str:
+    name = str(source or "").rsplit("/", 1)[-1]
+    lowered = name.lower()
+    aliases = (
+        ("factor_proof_certificate", "factor proof certificate"),
+        ("factor_evaluation", "factor evaluation"),
+        ("backtest_master", "backtest master"),
+        ("metric_verifier", "metric verifier"),
+    )
+    for marker, label in aliases:
+        if marker in lowered:
+            return label
+    if not name:
+        return "source pending"
+    return name if len(name) <= 34 else f"{name[:31]}..."
+
+
+def _compact_diagnostic_reason(value: Any) -> str:
+    reason = str(value or "").strip()
+    if not reason:
+        return ""
+    token, _, suffix = reason.partition(":")
+    token = token.removeprefix("BLOCK_FACTORFORGE_METRIC_VERIFIER_")
+    summary = token.replace("_", " ").lower()
+    return f"{summary} ({suffix})" if suffix else summary
 
 
 def _metric_label(key: str) -> str:
@@ -1051,7 +1146,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .breadcrumbs { display:flex; gap:8px; color:var(--muted); margin-bottom:22px; }.breadcrumbs a { color:var(--blue); }.detail-heading { align-items:flex-start; }.detail-heading>div { max-width:900px; }.idea-summary { max-width:900px; white-space:pre-line; color:#3d4a50; font-size:15px; }.identity-band { margin-top:22px; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; }.identity-band div { padding:13px 15px; border-right:1px solid var(--line); display:grid; gap:2px; }.identity-band div:last-child{border-right:0}.identity-band span { color:var(--muted); font-size:12px; }.identity-band strong { overflow-wrap:anywhere; }
 .stage-list { list-style:none; margin:12px 0 0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:6px; overflow:hidden; }.stage { min-height:70px; padding:13px; display:flex; gap:10px; align-items:flex-start; background:#fff; border-right:1px solid var(--line); }.stage:last-child{border-right:0}.stage-dot { width:9px; height:9px; border-radius:50%; margin-top:6px; background:#aab3b6; flex:none; }.stage>div { display:grid; }.stage span:last-child { color:var(--muted); font-size:12px; }.stage-done .stage-dot,.stage-pass .stage-dot{background:var(--green)}.stage-active .stage-dot{background:var(--blue)}.stage-blocked .stage-dot{background:var(--red)}
 .decision-panel { margin-top:26px; padding:18px; border:1px solid var(--line); border-left:4px solid var(--blue); background:#fff; border-radius:5px; }.decision-panel.verdict-accept{border-left-color:var(--green)}.decision-panel.verdict-reject,.decision-panel.verdict-block{border-left-color:var(--red)}.decision-head { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }.decision-head div { display:grid; }.decision-head span { color:var(--muted); font-size:12px; }.decision-head strong { font-size:16px; }.decision-list { margin-top:12px; }.decision-list ul { margin:6px 0 0; padding-left:20px; }
-.metric-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.metric-cell { min-height:96px; display:grid; align-content:center; gap:4px; padding:12px 14px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.metric-cell span { color:var(--muted); font-size:12px; }.metric-cell strong { font-size:20px; overflow-wrap:anywhere; }.metric-cell em { color:var(--muted); font-size:11px; font-style:normal; overflow-wrap:anywhere; }
+.metric-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.metric-cell { min-width:0; min-height:112px; display:grid; align-content:center; gap:5px; padding:12px 14px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.metric-cell span { color:var(--muted); font-size:12px; }.metric-cell strong { min-width:0; font-size:20px; overflow-wrap:anywhere; word-break:normal; }.metric-cell em { color:var(--muted); font-size:11px; line-height:1.45; font-style:normal; overflow-wrap:anywhere; }.metric-diagnostic,.metric-source { min-width:0; font-size:10px; color:var(--red); }.metric-source { color:var(--muted); }.metric-diagnostic summary,.metric-source summary { cursor:pointer; overflow-wrap:anywhere; }.metric-diagnostic code,.metric-source code { display:block; max-height:84px; margin-top:4px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }.metric-diagnostic code { color:var(--red); }.metric-source code { color:var(--muted); }
 .definition-list { margin:0; border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.definition-list>div { display:grid; grid-template-columns:180px minmax(0,1fr); border-top:1px solid var(--line); }.definition-list>div:first-child{border-top:0}.definition-list dt { padding:12px 14px; background:#eef1f0; font-weight:700; }.definition-list dd { margin:0; padding:12px 14px; white-space:pre-line; overflow-wrap:anywhere; }
 .chart-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }.chart-grid figure { margin:0; border:1px solid var(--line); border-radius:6px; background:#fff; overflow:hidden; }.chart-grid img { display:block; width:100%; aspect-ratio:16/9; object-fit:contain; background:#fff; }.chart-grid figcaption { padding:9px 11px; border-top:1px solid var(--line); color:var(--muted); }
 .council-synthesis { padding:14px; margin:0 0 12px; background:var(--blue-soft); border-left:4px solid var(--blue); }.council-routes { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.council-routes li { border:1px solid var(--line); background:#fff; border-radius:5px; padding:12px; }.council-routes li>span { float:right; color:var(--muted); }.council-routes p { margin:8px 0 0; }
@@ -1063,7 +1158,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .notebook-section,.math-section,.backtest-section { scroll-margin-top:112px; }.evidence-badge { display:inline-flex; align-items:center; min-height:27px; padding:3px 8px; border:1px solid var(--line); font-size:11px; font-weight:800; white-space:nowrap; }.badge-agent { color:var(--blue); background:var(--blue-soft); }.badge-formal { color:var(--green); background:var(--green-soft); }.badge-conflict { color:var(--red); background:var(--red-soft); }
 .notebook-flow { border-top:1px solid var(--line); }.notebook-step { display:grid; grid-template-columns:56px minmax(0,1fr); gap:18px; padding:20px 0; border-bottom:1px solid var(--line); }.notebook-index { color:var(--blue); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:18px; font-weight:800; }.notebook-step h3 { margin:0 0 10px; font-size:16px; }.structured-record { margin:0; border:1px solid var(--line); background:#fff; }.structured-record>div { display:grid; grid-template-columns:minmax(140px,220px) minmax(0,1fr); border-top:1px solid var(--line); }.structured-record>div:first-child { border-top:0; }.structured-record dt { padding:8px 10px; background:#eef1f0; font-size:12px; font-weight:700; overflow-wrap:anywhere; }.structured-record dd { margin:0; padding:8px 10px; min-width:0; }.structured-record p { margin:0; white-space:pre-line; }.structured-list { margin:0; padding-left:20px; }.structured-list>li { margin:5px 0; }
 .math-section { font-family:Georgia,"Times New Roman","Songti SC",serif; }.math-section .section-heading,.math-section .section-note,.math-section .evidence-badge { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }.math-chapter { margin-top:22px; }.math-chapter>h3 { margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid var(--ink); font-size:16px; }.math-definitions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0; border:1px solid var(--line); background:#fff; }.math-definitions>div { padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.math-definitions dt { font-variant:small-caps; color:var(--muted); }.math-definitions dd { margin:4px 0 0; overflow-wrap:anywhere; }.equation-block { position:relative; margin:0; min-height:88px; display:grid; align-content:center; padding:18px 64px 18px 22px; border-bottom:1px solid var(--line); background:#fff; }.equation-block:first-of-type { border-top:1px solid var(--line); }.equation-block figcaption { color:var(--muted); font-size:12px; }.equation-expression { margin-top:8px; font-family:"STIX Two Math","Cambria Math",Georgia,serif; font-size:17px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; }.equation-number { position:absolute; right:20px; top:50%; transform:translateY(-50%); }.derivation-list { list-style:none; margin:0; padding:0; }.derivation-list>li { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; padding:14px 0; border-bottom:1px solid var(--line); }.derivation-list>li>span { width:28px; height:28px; display:grid; place-items:center; border:1px solid var(--ink); border-radius:50%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }.derivation-list strong { display:block; margin-bottom:7px; }
-.rendered-math { display:block; overflow-x:auto; overflow-y:hidden; padding:3px 0; }.rendered-math math { min-width:max-content; font-size:1.05em; }.equation-source { font-family:"STIX Two Math","Cambria Math",Georgia,serif; }
+.equation-statement { display:grid; gap:8px; }.equation-line { min-width:0; }.equation-line-label { display:block; margin-bottom:3px; color:var(--muted); font-size:12px; font-variant:small-caps; }.equation-annotation { margin:3px 0 0; color:#46545a; font-size:14px; line-height:1.5; }.equation-overflow { color:var(--muted); font-size:12px; }.equation-overflow summary { cursor:pointer; }.equation-overflow pre { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }.rendered-math { display:block; max-width:100%; overflow-x:auto; overflow-y:hidden; padding:3px 0; }.rendered-math math { min-width:max-content; font-size:1.05em; }.equation-source { display:block; white-space:pre-wrap; font-family:"STIX Two Math","Cambria Math",Georgia,serif; }
 .backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.table-scroll table { width:100%; border-collapse:collapse; }.table-scroll th,.table-scroll td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }.table-scroll th:first-child,.table-scroll td:first-child { text-align:left; }.table-scroll thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.annual-table { min-width:480px; }.module-table table { min-width:520px; }.module-table th:first-child { width:70%; }.module-state { display:inline-block; min-width:118px; padding:2px 6px; border:1px solid var(--line); text-align:center; font-size:10px; font-weight:800; }.module-available { color:var(--green); background:var(--green-soft); }.module-not_produced { color:var(--muted); background:#eef1f0; }.module-invalid_evidence,.module-evidence_conflict { color:var(--red); background:var(--red-soft); }.return-matrix table { min-width:1080px; }.return-matrix td { font-variant-numeric:tabular-nums; }.return-positive { color:var(--green); background:#f1f8f4; }.return-negative { color:var(--red); background:#fff3f1; }.quantile-table table { min-width:800px; }.risk-turnover-stack { display:grid; gap:12px; }.risk-table table { min-width:900px; }.turnover-table table { min-width:620px; }.provenance-table table { min-width:900px; }.provenance-table th:first-child { width:190px; }.provenance-table td:nth-child(2) { max-width:600px; white-space:normal; overflow-wrap:anywhere; text-align:left; }.provenance-table a { color:var(--blue); }.evidence-conflict-panel { margin-top:18px; padding:14px; border-left:4px solid var(--red); background:var(--red-soft); color:var(--red); }.evidence-conflict-panel ul { margin:8px 0 0; padding-left:20px; }.evidence-conflict-panel li { margin:5px 0; }.evidence-conflict-panel li span { margin-left:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
 .login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }

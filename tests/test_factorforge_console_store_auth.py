@@ -1916,6 +1916,33 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
     assert canonical_memo["execution_allowed_by_default"] is False
     assert canonical_memo["producer"] == "current_main_agent"
 
+    anchored_component = phase_view("anchored-component")
+    anchored_component_patch = _resume_research_patch()
+    anchored_component_patch["formula_component_map"][0][
+        "component_id"
+    ] = "formula_root"
+    adapter._stage_resume_terminal_delivery(
+        anchored_component,
+        terminal_text=json.dumps(
+            {
+                "status": "MEMO_DRAFT_COMPLETE",
+                "memo": anchored_component_patch,
+                "ledger": "phase ledger",
+            }
+        ),
+        resume_task=task,
+        rehydrate_immutable_fields=True,
+    )
+    anchored_memo = json.loads(
+        (anchored_component.root / task.required_output_relative).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        anchored_memo["formula_component_map"][0]["component_id"]
+        == "formula_root"
+    )
+
     machine_owned_override = phase_view("machine-owned-override")
     machine_override_patch = _resume_research_patch()
     machine_override_patch["source_refs"] = {"wrong": "model-owned-copy"}

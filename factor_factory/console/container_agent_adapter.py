@@ -4000,6 +4000,42 @@ def _read_stable_workspace_file_bytes(
         )
 
 
+def _validated_resume_component_patch(
+    canonical_component: Any,
+    patch_component: Any,
+) -> dict[str, str]:
+    if not isinstance(canonical_component, dict):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+        )
+    component_id = canonical_component.get("component_id")
+    if not isinstance(component_id, str) or not component_id.strip():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
+        )
+    research_fields = set(RESUME_MEMO_AGENT_COMPONENT_FIELDS)
+    allowed_fields = research_fields | {"component_id"}
+    patch_fields = set(patch_component) if isinstance(patch_component, dict) else set()
+    if (
+        not isinstance(patch_component, dict)
+        or patch_fields not in (research_fields, allowed_fields)
+        or (
+            "component_id" in patch_component
+            and patch_component["component_id"] != component_id
+        )
+        or any(
+            not isinstance(patch_component.get(field), str)
+            or not patch_component[field].strip()
+            for field in research_fields
+        )
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_FAILED}: resume terminal research patch "
+            "is invalid:component field"
+        )
+    return {field: patch_component[field] for field in research_fields}
+
+
 def _validate_resume_research_patch(
     answer_form: dict[str, Any],
     memo: dict[str, Any],
@@ -4096,25 +4132,9 @@ def _validate_resume_research_patch(
         canonical_components,
         patch_components,
     ):
-        component_id = (
-            canonical_component.get("component_id")
-            if isinstance(canonical_component, dict)
-            else None
-        )
-        if not isinstance(component_id, str) or not component_id.strip():
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: canonical resume answer form is incomplete"
-            )
+        _validated_resume_component_patch(canonical_component, patch_component)
+        component_id = canonical_component.get("component_id")
         component_ids.append(component_id)
-        if (
-            not isinstance(patch_component, dict)
-            or set(patch_component) != set(RESUME_MEMO_AGENT_COMPONENT_FIELDS)
-            or any(
-                not isinstance(value, str) or not value.strip()
-                for value in patch_component.values()
-            )
-        ):
-            raise invalid_patch("component field")
 
     state_estimator = exact_object("formula_state_estimator")
     component_links = state_estimator.get("component_links")
@@ -4234,14 +4254,12 @@ def _rehydrate_resume_memo_immutable_fields(
             canonical_components,
             patch_components,
         ):
-            if (
-                not isinstance(canonical_component, dict)
-                or not isinstance(patch_component, dict)
-                or set(patch_component) != set(RESUME_MEMO_AGENT_COMPONENT_FIELDS)
-            ):
-                raise invalid_patch("component field")
+            research_patch = _validated_resume_component_patch(
+                canonical_component,
+                patch_component,
+            )
             merged_component = deepcopy(canonical_component)
-            merged_component.update(deepcopy(patch_component))
+            merged_component.update(deepcopy(research_patch))
             merged_components.append(merged_component)
         rehydrated["formula_component_map"] = merged_components
 

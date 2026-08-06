@@ -977,7 +977,10 @@ subject to formal validation."""
    `evidence_comparison`, and `operator_claim_consistency`.
    In `formula_component_map`, include only `observable_estimator`,
    `economic_state`, `mathematical_object`, `expected_role`, and `metric_link`
-   for each canonical component, in canonical order. In `evidence_comparison`,
+   for each canonical component, in canonical order. You may additionally copy
+   that component's exact canonical `component_id` as a transport anchor; the
+   Host rejects any mismatch and never takes identity from the patch. In
+   `evidence_comparison`,
    include only `mechanism_supported`, `contradictions`,
    `revision_implications`, and `kill_criteria_triggered`:
    `mechanism_supported` must be one non-empty string, while the other three
@@ -992,7 +995,8 @@ subject to formal validation."""
    formula/operator-presence flags. Every listed patch field is required; do
    not omit an empty list or a false boolean. Never include machine-owned fields
    such as identity, timestamps, source refs, formula syntax, observed metrics,
-   component identities/operators, permission flags, or contract version.
+   component identities/operators, permission flags, or contract version,
+   except for the optional exact `component_id` transport anchor above.
    Set `formula_state_estimator.component_links` to a non-empty, unique JSON
    list of canonical `component_id` strings from the answer form; never use
    objects, subexpressions, operators, or invented component IDs there.

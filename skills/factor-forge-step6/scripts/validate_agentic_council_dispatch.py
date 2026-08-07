@@ -23,6 +23,7 @@ RUNTIME_VALUES = {"codex", "openclaw", "manual_file", "unknown"}
 REQUIRED_OUTPUTS = {
     "economic_hypothesis_review",
     "math_mechanism_derivation",
+    "measurement_program_binding",
     "model_to_formula_translation",
     "public_derivation_record",
     "candidate_revision_laws",
@@ -200,6 +201,15 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_WRITE_SCOPE_OUTSIDE_SCOPE")
     if manifest_task.get("expected_result_path") != packet.get("expected_result_path"):
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_EXPECTED_RESULT_MISMATCH:{idx}")
+    binding = packet.get("measurement_program_binding")
+    if not isinstance(binding, dict) or not binding:
+        reasons.append(
+            f"BLOCK_AGENTIC_COUNCIL_DISPATCH_MEASUREMENT_BINDING_MISSING:{idx}"
+        )
+    elif manifest_task.get("measurement_program_binding") != binding:
+        reasons.append(
+            f"BLOCK_AGENTIC_COUNCIL_DISPATCH_MEASUREMENT_BINDING_MISMATCH:{idx}"
+        )
     required_outputs = set(packet.get("required_outputs") or [])
     if not REQUIRED_OUTPUTS.issubset(required_outputs):
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_REQUIRED_OUTPUTS_MISSING")
@@ -264,6 +274,10 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
     if contract.get("identity_binding_required") is not True:
         reasons.append(
             f"BLOCK_AGENTIC_COUNCIL_DISPATCH_RESULT_IDENTITY_BINDING_MISSING:{idx}"
+        )
+    if contract.get("measurement_program_binding_required") is not True:
+        reasons.append(
+            f"BLOCK_AGENTIC_COUNCIL_DISPATCH_MEASUREMENT_BINDING_CONTRACT_MISSING:{idx}"
         )
     return reasons
 

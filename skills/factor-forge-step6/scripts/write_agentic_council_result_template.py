@@ -69,6 +69,10 @@ def main() -> int:
             "route_fingerprint": packet.get("route_fingerprint"),
             "blind_context_hash": packet.get("blind_context_hash"),
         },
+        "measurement_program_binding": packet.get(
+            "measurement_program_binding"
+        )
+        or {},
         "research_depth": "medium",
         "proposal_generation_mode": "agentic",
         "canonical_write_permission": False,
@@ -112,12 +116,28 @@ def main() -> int:
             "derived_from_visible_facts_only": None,
         },
         "economic_hypothesis_review": {},
-        "math_mechanism_derivation": {},
+        "math_mechanism_derivation": {
+            "baseline_model": (
+                packet.get("measurement_program_binding") or {}
+            ).get("mechanism_equation_or_functional"),
+            "mathematical_objects": [
+                (
+                    packet.get("measurement_program_binding") or {}
+                ).get("mathematical_object")
+            ],
+        },
         "model_to_formula_translation": {},
         "public_derivation_record": {
             "research_question": packet.get("research_question") or "",
             "assumptions": [],
-            "mathematical_objects": [],
+            "mathematical_objects": [
+                {
+                    "name": (
+                        packet.get("measurement_program_binding") or {}
+                    ).get("mathematical_object"),
+                    "role": "current_frozen_model",
+                }
+            ],
             "selected_tools": [],
             "formula_claims": [],
             "derivation_steps_summary": [],

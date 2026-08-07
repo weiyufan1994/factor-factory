@@ -9,11 +9,15 @@ import numpy as np
 import pandas as pd
 
 from .evaluator import evaluate_formula_frame
+from .semantics import max_formula_ir_lookback
 
 
 def make_operator_fixture(formula_ir: dict[str, Any] | None = None) -> pd.DataFrame:
     rows = []
-    for day_idx, trade_date in enumerate(['20260101', '20260102', '20260103', '20260104', '20260105', '20260106']):
+    lookback = max_formula_ir_lookback(formula_ir)
+    periods = max(6, lookback + 2) if formula_ir else 6
+    trade_dates = [value.strftime('%Y%m%d') for value in pd.bdate_range('2026-01-01', periods=periods)]
+    for day_idx, trade_date in enumerate(trade_dates):
         for code_idx, code in enumerate(['000001.SZ', '000002.SZ', '000003.SZ', '000004.SZ']):
             base = 10.0 + code_idx * 2.0 + day_idx * 0.3
             rows.append({
@@ -81,7 +85,8 @@ def _with_standard_formula_fixture_fields(formula_ir: dict[str, Any], fixture: p
         return_col = 'return' if 'return' in working.columns else 'pct_chg' if 'pct_chg' in working.columns else None
         if return_col is None:
             raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: fixture missing returns/pct_chg source')
-        working['returns'] = pd.to_numeric(working[return_col], errors='coerce')
+        values = pd.to_numeric(working[return_col], errors='coerce')
+        working['returns'] = values / 100.0 if return_col == 'pct_chg' else values
     if 'return' in required and 'return' not in working.columns and 'returns' in working.columns:
         working['return'] = working['returns']
 

@@ -13,6 +13,35 @@ DEFAULT_GRAPH_ROOT = REPO_ROOT / "knowledge" / "因子工厂" / "graph"
 DEFAULT_NODE_INDEX = DEFAULT_GRAPH_ROOT / "factor_knowledge_nodes.jsonl"
 DEFAULT_EDGE_INDEX = DEFAULT_GRAPH_ROOT / "factor_knowledge_edges.jsonl"
 DEFAULT_TAXONOMY = REPO_ROOT / "knowledge" / "因子工厂" / "taxonomy" / "factor_taxonomy_v1.json"
+BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE = "BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_UNAVAILABLE"
+
+FORMULA_QUERY_EXPANSIONS = {
+    "normalize": {"cross_sectional", "standardization", "zscore", "截面标准化"},
+    "cs_zscore": {"cross_sectional", "standardization", "zscore", "截面标准化"},
+    "s_log_lp": {"signed_log", "robust_transform", "tail_compression"},
+    "s_log_1p": {"signed_log", "robust_transform", "tail_compression"},
+    "signed_log1p": {"signed_log", "robust_transform", "tail_compression"},
+    "ts_kurtosis": {"kurtosis", "distribution_moment", "tail", "crash_regime"},
+    "rolling_excess_kurtosis": {"kurtosis", "distribution_moment", "tail", "crash_regime"},
+    "rolling_pearson_kurtosis": {"kurtosis", "distribution_moment", "tail", "crash_regime"},
+    "ts_max_skew": {"skewness", "distribution_moment", "volume_spike", "regime"},
+    "ts_min_skew": {"skewness", "distribution_moment", "volume_baseline", "regime"},
+    "rolling_topk_skew": {"skewness", "distribution_moment", "volume_spike", "regime"},
+    "rolling_bottomk_skew": {"skewness", "distribution_moment", "volume_baseline", "regime"},
+    "rolling_max_inner_skew": {"skewness", "distribution_moment", "volume_spike", "regime"},
+    "rolling_min_inner_skew": {"skewness", "distribution_moment", "volume_baseline", "regime"},
+    "ts_max_sum": {"momentum", "path_functional", "trend", "maximum_subwindow"},
+    "rolling_max_subwindow_sum": {"momentum", "path_functional", "trend", "maximum_subwindow"},
+    "rolling_topk_sum": {"momentum", "order_statistic", "extreme_values"},
+    "volume": {"price_volume", "liquidity", "attention"},
+    "close": {"price", "daily_ohlcv"},
+    "returns": {"return", "price_process"},
+    "change_pct": {"returns", "return", "price_process"},
+}
+
+
+class KnowledgeRetrievalError(RuntimeError):
+    pass
 
 
 def utc_now() -> str:
@@ -67,11 +96,28 @@ def resolve_tags(raw_tags: list[str] | None, taxonomy_path: Path | str = DEFAULT
 
 
 def tokenize(text: str) -> set[str]:
-    return set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}|[\u4e00-\u9fff]+", text.lower()))
+    raw = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}|[\u4e00-\u9fff]+", text.lower()))
+    expanded = set(raw)
+    for token in raw:
+        if "_" in token:
+            expanded.update(part for part in token.split("_") if len(part) >= 3)
+    return expanded
+
+
+def semantic_query_terms(text: str) -> set[str]:
+    terms: set[str] = set()
+    lowered = str(text or "").lower()
+    lexical = tokenize(lowered)
+    for name, additions in FORMULA_QUERY_EXPANSIONS.items():
+        if name in lexical or re.search(rf"\b{re.escape(name)}\b", lowered):
+            terms.update(additions)
+    return terms
 
 
 def score_text(query: str, row: dict[str, Any]) -> tuple[float, list[str]]:
-    q = tokenize(query)
+    lexical_query = tokenize(query)
+    semantic_query = semantic_query_terms(query)
+    q = lexical_query | semantic_query
     if not q:
         return 0.0, []
     haystack = " ".join(
@@ -83,8 +129,10 @@ def score_text(query: str, row: dict[str, Any]) -> tuple[float, list[str]]:
             " ".join(row.get("tags") or []),
         ]
     )
-    overlap = sorted(q & tokenize(haystack))
-    return float(len(overlap)), overlap
+    haystack_terms = tokenize(haystack)
+    overlap = sorted(q & haystack_terms)
+    semantic_overlap = semantic_query & haystack_terms
+    return float(len(overlap) + 0.5 * len(semantic_overlap)), overlap
 
 
 def ensure_graph_index(node_index_path: Path, edge_index_path: Path) -> None:
@@ -137,12 +185,29 @@ def retrieve_factor_knowledge_context(
     node_index_path = Path(node_index).expanduser()
     edge_index_path = Path(edge_index).expanduser()
     ensure_graph_index(node_index_path, edge_index_path)
+    for role, path in (("node", node_index_path), ("edge", edge_index_path)):
+        if not path.is_file() or path.is_symlink():
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: {role} index missing or unsafe: {path}"
+            )
     required_tags, alias_resolution = resolve_tags(tags or [], taxonomy)
     required_status = set(status or [])
     required_node_types = set(node_type or [])
     scored_rows: list[tuple[float, list[str], dict[str, Any]]] = []
 
-    for row in load_jsonl(node_index_path):
+    indexed_nodes = load_jsonl(node_index_path)
+    for row in indexed_nodes:
+        source_node_path = row.get("source_node_path")
+        if not source_node_path:
+            continue
+        resolved_node_path = resolve_graph_node_path(source_node_path)
+        if not resolved_node_path.is_file() or resolved_node_path.is_symlink():
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: stale node index row "
+                f"id={row.get('id')} path={resolved_node_path}"
+            )
+
+    for row in indexed_nodes:
         row_tags = set(row.get("tags") or [])
         row_status = set(row.get("research_status") or [])
         if required_tags and not required_tags <= row_tags:
@@ -160,7 +225,11 @@ def retrieve_factor_knowledge_context(
     full_nodes: list[dict[str, Any]] = []
     for _score, overlap, row in scored_rows[:top_k]:
         source_node_path = row.get("source_node_path")
-        full_node = load_json(resolve_graph_node_path(source_node_path)) if source_node_path else row
+        if source_node_path:
+            resolved_node_path = resolve_graph_node_path(source_node_path)
+            full_node = load_json(resolved_node_path)
+        else:
+            full_node = row
         full_nodes.append(compact_node(full_node, row, overlap))
 
     selected_ids = {node["id"] for node in full_nodes}
@@ -183,6 +252,7 @@ def retrieve_factor_knowledge_context(
         "created_at_utc": utc_now(),
         "query": {
             "text": text,
+            "semantic_expansion_terms": sorted(semantic_query_terms(text)),
             "tags": tags or [],
             "resolved_tags": sorted(required_tags),
             "alias_resolution": alias_resolution,

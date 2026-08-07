@@ -231,7 +231,10 @@ def branch_from_proposal(proposal: dict[str, Any]) -> dict[str, Any] | None:
         "search_mode": search_mode,
         "research_question": proposal.get("market_phenomenon") or "Evaluate council proposal.",
         "hypothesis": (proposal.get("candidate_revision_laws") or [{}])[0].get("law_statement") if proposal.get("candidate_revision_laws") else proposal.get("risk_notes"),
-        "mechanism_target": (proposal.get("symbolic_model") or {}).get("state_or_object"),
+        "mechanism_target": (
+            (proposal.get("symbolic_model") or {}).get("mathematical_object")
+            or (proposal.get("symbolic_model") or {}).get("state_or_object")
+        ),
         "revision_hypothesis_id": proposal.get("proposal_id"),
         "success_criteria": ["Verified evidence improves under the declared expression-level hypothesis.", "No forbidden repair path is used."],
         "falsification_tests": (proposal.get("candidate_revision_laws") or [{}])[0].get("falsification_tests") if proposal.get("candidate_revision_laws") else ["Reject if evidence remains contradictory."],
@@ -275,10 +278,9 @@ def proposal_like_from_agent_result(result: dict[str, Any]) -> dict[str, Any]:
         "target_failure_signature": "cost_too_high" if role == "microstructure_cost_analyst" else "mechanism_unclear",
         "selected_math_tools": [item.get("tool") for item in public.get("selected_tools") or [] if isinstance(item, dict) and item.get("tool")],
         "market_phenomenon": public.get("research_question") or claim.get("claim") or "Agentic council result.",
-        "symbolic_model": {
-            "state_or_object": ((public.get("mathematical_objects") or [{}])[0] or {}).get("name") if isinstance(public.get("mathematical_objects"), list) else "agentic_state",
-            "target_functional": claim.get("formula_or_relation") or "E[next long-side evidence | agentic state]",
-        },
+        "symbolic_model": dict(
+            result.get("measurement_program_binding") or {}
+        ),
         "candidate_revision_laws": [
             {
                 "law_statement": law.get("law_statement"),
@@ -489,7 +491,12 @@ def main() -> None:
             blocked_proposals.append({"agent_role": role, "block_reasons": ["missing_proposal"], "path": str(path)})
             continue
         proposal = load_json(path)
-        reasons = validate_revision_council_proposal(proposal)
+        reasons = validate_revision_council_proposal(
+            proposal,
+            measurement_program=packet.get(
+                "mechanism_conditioned_measurement_program"
+            ),
+        )
         if proposal.get("proposal_status") == "blocked":
             reasons = list(dict.fromkeys(reasons + (proposal.get("block_reasons") or [])))
         if reasons:

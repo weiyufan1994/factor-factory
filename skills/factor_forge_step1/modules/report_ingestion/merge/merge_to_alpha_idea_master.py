@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List
 
 from ..intake.structured_intake_contract import StructuredIntake
@@ -114,6 +115,44 @@ def _derive_step1_market_process_fields(chief_decision: Dict[str, Any]) -> Dict[
     }
 
 
+def _resolve_measurement_program(
+    primary_intake: StructuredIntake,
+    challenger_intake: StructuredIntake,
+    chief_decision: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    chief = chief_decision.get('mechanism_conditioned_measurement_program')
+    chief = chief if isinstance(chief, dict) and chief else {}
+    primary = primary_intake.mechanism_conditioned_measurement_program
+    primary = primary if isinstance(primary, dict) and primary else {}
+    challenger = challenger_intake.mechanism_conditioned_measurement_program
+    challenger = challenger if isinstance(challenger, dict) and challenger else {}
+
+    if chief:
+        return deepcopy(chief), {
+            'resolution': 'chief_authored_resolution',
+            'primary_agrees': not primary or primary == chief,
+            'challenger_agrees': not challenger or challenger == chief,
+        }
+    if primary and challenger and primary != challenger:
+        return {}, {
+            'resolution': 'unresolved_primary_challenger_conflict',
+            'primary_agrees': False,
+            'challenger_agrees': False,
+        }
+    selected = primary or challenger
+    return deepcopy(selected), {
+        'resolution': (
+            'dual_route_exact_match'
+            if primary and challenger
+            else 'single_route_preserved_for_legacy_migration'
+            if selected
+            else 'missing'
+        ),
+        'primary_agrees': bool(primary and selected == primary),
+        'challenger_agrees': bool(challenger and selected == challenger),
+    }
+
+
 def merge_to_alpha_idea_master(
     primary_intake: StructuredIntake,
     challenger_intake: StructuredIntake,
@@ -124,6 +163,11 @@ def merge_to_alpha_idea_master(
     """Build the canonical alpha_idea_master object from all inputs."""
     ff = chief_decision.get('final_factor', {})
     mechanism_fields = _derive_step1_market_process_fields(chief_decision)
+    measurement_program, measurement_program_provenance = _resolve_measurement_program(
+        primary_intake,
+        challenger_intake,
+        chief_decision,
+    )
 
     alpha_idea_master = {
         'report_id': primary_intake.report_id,
@@ -171,6 +215,7 @@ def merge_to_alpha_idea_master(
             or primary_intake.formula_as_observable_estimator
             or challenger_intake.formula_as_observable_estimator
         ),
+        'measurement_program_provenance': measurement_program_provenance,
         'market_process_thesis_provenance': mechanism_fields['provenance'],
         'rejected_subfactors': ff.get('rejected_subfactor_details', []),
         'logic_provenance_summary': chief_decision.get('logic_provenance_summary', {}),
@@ -187,6 +232,30 @@ def merge_to_alpha_idea_master(
             'challenger_thesis_route': 'challenger',
         }
     }
+    if measurement_program:
+        alpha_idea_master['mechanism_conditioned_measurement_program'] = deepcopy(
+            measurement_program
+        )
+        route = (measurement_program.get('implementation') or {}).get('route')
+        if route:
+            alpha_idea_master['implementation_mode'] = route
+        alpha_idea_master['research_discipline'] = {
+            'mechanism_conditioned_measurement_program': deepcopy(
+                measurement_program
+            ),
+            'market_outcome_projection': deepcopy(
+                measurement_program.get('market_outcome_projection') or {}
+            ),
+        }
+    elif measurement_program_provenance['resolution'].startswith('unresolved'):
+        alpha_idea_master['unresolved_ambiguities'] = list(
+            dict.fromkeys(
+                [
+                    *alpha_idea_master['unresolved_ambiguities'],
+                    'measurement_program_primary_challenger_conflict_requires_chief_resolution',
+                ]
+            )
+        )
     return attach_step1_research_discipline(
         alpha_idea_master,
         None,

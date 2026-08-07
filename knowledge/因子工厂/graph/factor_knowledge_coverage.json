@@ -1,6 +1,6 @@
 {
-  "created_at_utc": "2026-06-23T02:31:36.719784Z",
-  "graph_node_count": 13,
+  "created_at_utc": "2026-08-07T22:57:44.839245Z",
+  "graph_node_count": 12,
   "graph_nodes": [
     {
       "id": "node::alpha007_regime_kurt_skew_20260422",
@@ -247,22 +247,18 @@
       "title": "Cross-sectional close-volume residual volatility diagnostic"
     },
     {
-      "id": "node::lcr_retained_chip_scale_repair_microcap_failure_20260620",
-      "node_type": "anti_pattern",
+      "id": "node::method_mechanism_conditioned_measurement_search_20260807",
+      "node_type": "methodology",
       "research_status": [
-        "standalone_rejected",
-        "feature_candidate",
-        "validated"
+        "validated",
+        "mechanism_candidate"
       ],
-      "source_node_path": "knowledge/因子工厂/graph/nodes/LCR_RETAINED_CHIP_SCALE_REPAIR_MICROCAP_FAILURE_20260620.json",
+      "source_node_path": "knowledge/因子工厂/graph/nodes/METHOD_MECHANISM_CONDITIONED_MEASUREMENT_SEARCH_20260807.json",
       "source_paths": [
-        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/docs/lcr-v2-and-microcap-index-enhancement-closeout-20260620.zh-CN.md",
-        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/docs/lcr-factorforge-completion-audit-20260620.zh-CN.md",
-        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/knowledge/canonical/lcr_retained_chip_v2_microcap_closeout_20260620.json",
-        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/objects/is_universe_period_grid/lcr_is_universe_period_grid__huaxi_20250529_lcr_retained_chip_ratio.json",
-        "/Users/humphrey/projects/factor-factory/factor_research/huaxi_20250529_lcr_retained_chip_ratio/research_20260618/objects/microcap_incremental/lcr_microcap_incremental_oos__huaxi_20250529_lcr_retained_chip_ratio.json"
+        "docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md",
+        "skills/factor-forge-research-brain/SKILL.md"
       ],
-      "title": "LCR scale repair and microcap positive-enhancement failure"
+      "title": "Mechanism-conditioned measurement and implementation search"
     },
     {
       "id": "node::moneyflow_feature_candidates_v15_v18_v19_20260617",
@@ -280,32 +276,6 @@
         "factor_research/moneyflow_v21_hysteresis_feature_policy/moneyflow_v21_hysteresis_feature_policy_20260617/knowledge/canonical/moneyflow-v21-full-is-result-20260617.json"
       ],
       "title": "Moneyflow repaired absorption and first-passage feature candidates"
-    },
-    {
-      "id": "node::raw_price_residual_stability_state_20260618",
-      "node_type": "mechanism",
-      "research_status": [
-        "mechanism_candidate",
-        "feature_candidate",
-        "needs_oos"
-      ],
-      "source_node_path": "knowledge/因子工厂/graph/nodes/RAW_PRICE_RESIDUAL_STABILITY_STATE_20260618.json",
-      "source_paths": [
-        "knowledge/因子工厂/知识库/RAW_PRICE_RESIDUAL_STABILITY_STATE_SEED_20260618.md",
-        "/Users/humphrey/projects/factorforge/factor_research/neg_cs_resid_vol20/formal_ultimate_20260618/knowledge/canonical/raw_price_residual_stability_state_seed__20260618.json",
-        "/Users/humphrey/projects/factorforge/factor_research/neg_cs_resid_vol20/formal_ultimate_20260618/objects/diagnostics/raw_residual_structure_alpha/diagnostic_raw_formula_neutralization__ORIG_RESIDUAL_VOLUME_DECOUPLED_STABILITY_FORMAL_20160101_V1.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/research_iteration_master__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_knowledge_base/knowledge_record__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/main_agent_mechanism_memo__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/diagnostics/structure_tradability_20260618/structure_tradability_diagnostic.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/diagnostics/state_decomposition_20260618/raw_price_residual_state_decomposition.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/diagnostics/child_state_tradability_20260618/raw_price_residual_child_state_tradability.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/child_formal_evidence/RAW_PRICE_RESIDUAL_MIXED_STATE_SELECTOR_CHILD_20160101_V1/raw_mixed_state_selector_child_formal_evidence.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/controlled_judge/RAW_PRICE_RESIDUAL_MIXED_STATE_SELECTOR_CHILD_20160101_V1/controlled_holdings_tradability_judge.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/terminal_research_brief__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json",
-        "/Users/humphrey/projects/factorforge/factor_research/raw_price_resid_stability/formal_ultimate_20260618/objects/research_iteration_master/completion_audit__RAW_PRICE_RESIDUAL_STABILITY_STATE_FORMAL_20160101_V1.json"
-      ],
-      "title": "Raw price residual stability state candidate"
     },
     {
       "id": "node::value_occupation_v18_lebesgue_closeout_20260615",
@@ -367,11 +337,11 @@
       ]
     },
     "ordinary_factor_library": {
-      "coverage_ratio": 0.2945,
+      "coverage_ratio": 0.2927,
       "covered_count": 48,
       "high_priority_missing_count": 0,
       "path": "knowledge/因子工厂/普通因子库",
-      "record_count": 163,
+      "record_count": 164,
       "records": [
         {
           "covered_by_graph": false,
@@ -1132,6 +1102,11 @@
           "covered_by_graph": false,
           "high_priority": false,
           "path": "knowledge/因子工厂/普通因子库/AUTO_HANDOFF_001.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/普通因子库/CFR_UPTREND_BREAK_HAZARD_V1_20260713.md"
         },
         {
           "covered_by_graph": false,
@@ -1960,12 +1935,17 @@
       ]
     },
     "research_knowledge_base": {
-      "coverage_ratio": 0.3248,
-      "covered_count": 51,
+      "coverage_ratio": 0.3125,
+      "covered_count": 50,
       "high_priority_missing_count": 0,
       "path": "knowledge/因子工厂/知识库",
-      "record_count": 157,
+      "record_count": 160,
       "records": [
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/ALPHA001_LEGACY_PROMOTION_WITHDRAWAL_20260715.md"
+        },
         {
           "covered_by_graph": false,
           "high_priority": false,
@@ -2722,6 +2702,16 @@
           "path": "knowledge/因子工厂/知识库/A股量价因子市场结构先验.md"
         },
         {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/CANDIDATE_PROMOTION_READINESS_AUDIT_20260715.md"
+        },
+        {
+          "covered_by_graph": false,
+          "high_priority": false,
+          "path": "knowledge/因子工厂/知识库/CROWDING_ADVERSE_SELECTION_FLOW_FAMILY_20260713.md"
+        },
+        {
           "covered_by_graph": true,
           "high_priority": true,
           "path": "knowledge/因子工厂/知识库/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
@@ -2742,7 +2732,7 @@
           "path": "knowledge/因子工厂/知识库/MONEYFLOW_RESEARCH_LESSONS_V1_V21_20260617.md"
         },
         {
-          "covered_by_graph": true,
+          "covered_by_graph": false,
           "high_priority": false,
           "path": "knowledge/因子工厂/知识库/RAW_PRICE_RESIDUAL_STABILITY_STATE_SEED_20260618.md"
         },
@@ -2763,11 +2753,11 @@
   "node_status_counts": {
     "anti_pattern": 2,
     "candidate": 5,
-    "feature_candidate": 10,
+    "feature_candidate": 8,
     "mechanism_candidate": 2,
     "needs_full_is": 1,
-    "needs_oos": 5,
-    "standalone_rejected": 3,
+    "needs_oos": 4,
+    "standalone_rejected": 2,
     "validated": 4
   },
   "schema_version": "factor_knowledge_graph_coverage_v1"

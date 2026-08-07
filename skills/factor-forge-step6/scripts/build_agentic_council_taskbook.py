@@ -21,6 +21,7 @@ from factor_factory.research_conjecture import (
     research_protocol_paths,
     validate_protocol_bundle,
 )
+from factor_factory.measurement_program import build_measurement_program_binding
 
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
@@ -74,6 +75,12 @@ def agent_task(
 ) -> dict[str, Any]:
     route_id = str(route.get("route_id") or role)
     favored_visible = route.get("favored_thesis_visible") is True
+    measurement_program = visible_context.get(
+        "mechanism_conditioned_measurement_program"
+    )
+    measurement_program_binding = build_measurement_program_binding(
+        measurement_program
+    )
     return {
         "agent_role": role,
         "task_id": f"route_{safe_token(route_id)}",
@@ -100,6 +107,7 @@ def agent_task(
             ),
         },
         "visible_context": visible_context,
+        "measurement_program_binding": measurement_program_binding,
         "research_question": question
         + (
             " Work independently from formula facts and executed evidence; the favored thesis is intentionally withheld."
@@ -124,6 +132,7 @@ def agent_task(
             "independence_attestation",
             "economic_hypothesis_review",
             "math_mechanism_derivation",
+            "measurement_program_binding",
             "model_to_formula_translation",
             "public_derivation_record",
             "candidate_revision_laws",
@@ -138,7 +147,7 @@ def agent_task(
             "profit_payer_derivation",
             "model_mutation_proposal",
             "critique_of_formula_specific_derivation",
-            "proposed_alternative_latent_state_mapping",
+            "proposed_alternative_mathematical_object_mapping",
             "expected_metric_signature",
             "falsification_tests",
             "kill_criteria",
@@ -172,14 +181,14 @@ def default_routes(failure_signature: str | None) -> list[dict[str, Any]]:
             "favored_thesis_visible": False,
         },
         {
-            "route_id": "latent_state_measurement",
-            "route_family": "latent_state_measurement",
+            "route_id": "mechanism_object_measurement",
+            "route_family": "mechanism_object_measurement",
             "status": "open",
-            "research_question": "What latent state is identifiable from the exact formula, and what observation equation separates state from measurement noise?",
-            "core_hypothesis": "The expression is an estimator of a state rather than a raw-field restatement.",
-            "distinct_from_other_routes": "Starts from identifiability, state space, and measurement error.",
+            "research_question": "What mechanism-specific mathematical object is identifiable from the exact formula, and what observation equation separates it from measurement noise?",
+            "core_hypothesis": "The expression estimates a selected mathematical object rather than restating raw fields.",
+            "distinct_from_other_routes": "Starts from the selected mechanism, identifiability, observation mapping, and measurement error.",
             "proof_obligation_ids": ["measurement_validity", "component_ablation"],
-            "exact_gap": "latent-state identifiability and formula-component mapping",
+            "exact_gap": "mathematical-object identifiability and formula-component mapping",
             "favored_thesis_visible": False,
         },
         {
@@ -232,7 +241,7 @@ def default_routes(failure_signature: str | None) -> list[dict[str, Any]]:
         (
             "empirical_identification",
             "Which pre-registered test best distinguishes the competing mechanisms under fixed IS and sealed OOS?",
-            ["conditional_distribution", "regime"],
+            ["mechanism_discrimination", "regime"],
         ),
     )
     routes.append(
@@ -257,9 +266,13 @@ def route_role_and_tools(route_family: str) -> tuple[str, list[str]]:
             "economic_mechanism_agent",
             ["microstructure_reasoning", "causal_identification", "institutional_analysis"],
         ),
+        "mechanism_object_measurement": (
+            "mechanism_measurement_modeler",
+            ["open_math_tool_search", "observation_equation", "statistical_inference"],
+        ),
         "latent_state_measurement": (
-            "stochastic_process_modeler",
-            ["stochastic_process_modeling", "signal_extraction", "statistical_inference"],
+            "mechanism_measurement_modeler",
+            ["open_math_tool_search", "observation_equation", "statistical_inference"],
         ),
         "null_alias_counterexample": (
             "statistical_falsification_agent",
@@ -267,7 +280,7 @@ def route_role_and_tools(route_family: str) -> tuple[str, list[str]]:
         ),
         "symbolic_law": (
             "symbolic_law_discovery",
-            ["dimensional_analysis", "linear_algebra", "functional_analysis"],
+            ["open_math_tool_search", "limiting_case_analysis", "counterexample_search"],
         ),
         "microstructure_cost": (
             "microstructure_cost_analyst",
@@ -413,7 +426,12 @@ def main() -> None:
         "decision": (iteration.get("research_judgment") or {}).get("decision"),
         "mechanism_fit": mechanism.get("mechanism_fit") if isinstance(mechanism, dict) else None,
         "primary_failure_signature": failure_signature,
-        "mechanism_math_contract": packet.get("mechanism_math_contract") or {},
+        "mechanism_conditioned_measurement_program": packet.get("mechanism_conditioned_measurement_program") or {},
+        "legacy_mechanism_math_contract": (
+            packet.get("legacy_mechanism_math_contract")
+            or packet.get("mechanism_math_contract")
+            or {}
+        ),
         "formula_specific_derivation": packet.get("formula_specific_derivation") or {},
         "mechanism_formula_consistency": packet.get("mechanism_formula_consistency") or {},
         "prior_revision_memory": packet.get("prior_revision_memory") or {},

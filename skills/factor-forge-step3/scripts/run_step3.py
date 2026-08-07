@@ -56,7 +56,16 @@ from factor_factory.data_access import (
 )
 from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
 from factor_factory.formula.field_aliases import aliases_for
+from factor_factory.formula.semantics import (
+    max_formula_ir_lookback as shared_max_formula_ir_lookback,
+    operator_lookback as shared_operator_lookback,
+    requires_cross_sectional_sample as shared_requires_cross_sectional_sample,
+)
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.measurement_program import (
+    BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    validate_measurement_program,
+)
 from factor_factory.state_reuse import (
     build_state_dependency_contract_from_data_prep,
     resolve_state_dependencies,
@@ -796,7 +805,58 @@ def declared_implementation_mode(fsm: dict, *, price_volume_minute: bool) -> str
     )
     if raw in {'operator', 'direct_code', 'hybrid'}:
         return str(raw)
-    return 'hybrid' if price_volume_minute else 'direct_code'
+    raise SystemExit(
+        f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: formal implementation mode missing or invalid'
+    )
+
+
+def validated_measurement_program_for_step3(
+    fsm: dict,
+    handoff: dict,
+    *,
+    implementation_mode: str,
+) -> dict:
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    master_program = fsm.get('mechanism_conditioned_measurement_program')
+    canonical_program = canonical.get('mechanism_conditioned_measurement_program')
+    handoff_program = handoff.get('mechanism_conditioned_measurement_program') if isinstance(handoff, dict) else None
+    knowledge_node_ids = {
+        str(item)
+        for container in (
+            fsm.get('knowledge_reference_contract'),
+            (fsm.get('learning_and_innovation') or {}).get('knowledge_reference_contract')
+            if isinstance(fsm.get('learning_and_innovation'), dict)
+            else None,
+            (fsm.get('research_contract') or {}).get('knowledge_reference_contract')
+            if isinstance(fsm.get('research_contract'), dict)
+            else None,
+        )
+        if isinstance(container, dict)
+        for item in container.get('cited_node_ids') or []
+        if str(item).strip()
+    }
+    reasons = validate_measurement_program(
+        master_program,
+        available_knowledge_node_ids=knowledge_node_ids,
+        require_web_executable=False,
+    )
+    if not isinstance(canonical_program, dict) or canonical_program != master_program:
+        reasons.append('measurement_program.master_canonical_mismatch')
+    if not isinstance(handoff_program, dict) or handoff_program != master_program:
+        reasons.append('measurement_program.master_handoff_mismatch')
+    route = (
+        (master_program.get('implementation') or {}).get('route')
+        if isinstance(master_program, dict)
+        and isinstance(master_program.get('implementation'), dict)
+        else None
+    )
+    if route != implementation_mode:
+        reasons.append('measurement_program.implementation.route_implementation_mode_mismatch')
+    if reasons:
+        raise SystemExit(
+            f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: ' + ';'.join(reasons)
+        )
+    return master_program
 
 
 def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) -> dict:
@@ -1183,55 +1243,8 @@ def moneyflow_required_fields(fsm: dict) -> list[str]:
     return fields
 
 
-def _formula_ir_constants(node) -> list[float]:
-    if not isinstance(node, dict):
-        return []
-    if node.get('type') == 'constant':
-        try:
-            return [float(node.get('value'))]
-        except (TypeError, ValueError):
-            return []
-    constants: list[float] = []
-    for child in node.get('args') or []:
-        constants.extend(_formula_ir_constants(child))
-    return constants
-
-
-def _operator_lookback(operator: str, constants: list[float]) -> int | None:
-    operator = str(operator or '').strip().lower()
-    if operator in {
-        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
-        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
-    } and constants:
-        last = constants[-1]
-        if isinstance(last, float) and not last.is_integer():
-            return None
-        value = int(last)
-        return value if value > 0 else None
-    return None
-
-
 def max_formula_ir_lookback(formula_ir: dict | None) -> int:
-    if not isinstance(formula_ir, dict):
-        return 0
-    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
-    lookbacks: list[int] = []
-
-    def visit(node) -> None:
-        if not isinstance(node, dict):
-            return
-        if node.get('type') == 'operator':
-            lookback = _operator_lookback(
-                str(node.get('operator') or ''),
-                _formula_ir_constants(node),
-            )
-            if lookback is not None:
-                lookbacks.append(lookback)
-        for child in node.get('args') or []:
-            visit(child)
-
-    visit(root)
-    return max(lookbacks) if lookbacks else 0
+    return shared_max_formula_ir_lookback(formula_ir)
 
 
 def _formula_ir_fields(node) -> list[str]:
@@ -1264,7 +1277,7 @@ def formula_ir_has_operator(formula_ir: dict | None, operator_names: set[str]) -
 
 
 def requires_cross_sectional_sample(formula_ir: dict | None) -> bool:
-    return formula_ir_has_operator(formula_ir, {'rank', 'scale', 'cs_regression', 'regression'})
+    return shared_requires_cross_sectional_sample(formula_ir)
 
 
 def _field_unit(field: str) -> str:
@@ -1342,7 +1355,7 @@ def formula_operator_contract_specs(formula_ir: dict | None) -> dict[str, dict]:
             'output_unit': _operator_output_unit(operator, child_units),
             'leakage_policy': 'no future data',
         }
-        lookback = _operator_lookback(operator, _formula_ir_constants(node))
+        lookback = shared_operator_lookback(node)
         if lookback is not None:
             spec['lookback_window'] = lookback
         if operator == 'rank':
@@ -2352,6 +2365,15 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
     need_moneyflow = bool(moneyflow_fields)
     retained_chip_state = direct_code_uses_retained_chip_state(fsm)
     price_volume_minute = is_price_volume_minute_formula(canonical)
+    implementation_mode = declared_implementation_mode(
+        fsm,
+        price_volume_minute=price_volume_minute,
+    )
+    measurement_program = validated_measurement_program_for_step3(
+        fsm,
+        handoff_to_step3,
+        implementation_mode=implementation_mode,
+    )
     direct_code_minute = (not retained_chip_state) and direct_code_requires_minute_inputs(fsm)
     required = list(dict.fromkeys([
         *(canonical.get('required_inputs', []) or []),
@@ -2748,7 +2770,6 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'
     }
 
-    implementation_mode = declared_implementation_mode(fsm, price_volume_minute=price_volume_minute)
     direct_code_contract = (
         build_direct_code_contract_for_step3a(fsm, qlib_adapter_config)
         if implementation_mode == 'direct_code' else {}
@@ -2760,10 +2781,13 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'preferred_execution_mode': implementation_mode,
         'implementation_mode': implementation_mode,
         'candidate_paths': ['operator', 'hybrid', 'direct_code'],
+        'route_selection_basis': 'mechanism_conditioned_measurement_program',
+        'silent_route_fallback_forbidden': True,
+        'mechanism_conditioned_measurement_program': measurement_program,
         'current_decision': 'defer_to_step3b',
         'notes': [
             'Step 3A 已完成 Data API contract；Step3B 只做小样本证明，Step4 负责全量正式执行',
-            '正式实现顺序为 operator -> hybrid -> direct_code；无法保证正确时必须 BLOCK'
+            '实现路线由数学对象与 measurement program 决定；不得静默切换路线，无法保证正确时必须 BLOCK'
         ]
     }
     if implementation_mode == 'direct_code':

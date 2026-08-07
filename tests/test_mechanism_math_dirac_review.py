@@ -657,6 +657,22 @@ def test_council_unclassified_unexpected_implication_blocks():
     assert "BLOCK_COUNCIL_UNCLASSIFIED_UNEXPECTED_IMPLICATION" in reasons
 
 
+def test_council_dcf_tool_does_not_require_dimensional_review() -> None:
+    proposal = _minimal_council_proposal()
+    proposal["selected_math_tools"] = ["discounted_cash_flow"]
+    proposal.pop("dimensional_scaling_review")
+    proposal["symbolic_model"] = {
+        "mathematical_object": "present value of forecast free cash flows",
+        "mechanism_equation_or_functional": "V_t=sum_k FCF_t+k/(1+WACC)^k",
+        "target_functional": "V_t=sum_k FCF_t+k/(1+WACC)^k",
+    }
+
+    reasons = validate_revision_council_proposal(proposal)
+
+    assert "revision_council_dimensional_scaling_review_missing" not in reasons
+    assert not any("stochastic" in reason for reason in reasons)
+
+
 def test_council_anomaly_requires_branch_law():
     proposal = _minimal_council_proposal()
     proposal["formula_implied_information_review"] = {

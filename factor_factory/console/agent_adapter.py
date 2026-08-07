@@ -76,7 +76,7 @@ RESUME_MEMO_AGENT_DIRECT_FIELDS = (
     "math_hypothesis",
     "math_model_selection",
     "payer",
-    "formula_state_estimator",
+    "mathematical_object_mapping",
     "expected_metric_signature",
     "falsification_tests",
     "council_questions",
@@ -104,6 +104,18 @@ RESUME_MEMO_AGENT_OPERATOR_FIELDS = (
 )
 RESUME_MEMO_AGENT_PATCH_FIELDS = (
     *RESUME_MEMO_AGENT_DIRECT_FIELDS,
+    "formula_component_map",
+    "evidence_comparison",
+    "operator_claim_consistency",
+)
+RESUME_MEMO_LEGACY_AGENT_DIRECT_FIELDS = tuple(
+    "formula_state_estimator"
+    if field == "mathematical_object_mapping"
+    else field
+    for field in RESUME_MEMO_AGENT_DIRECT_FIELDS
+)
+RESUME_MEMO_LEGACY_AGENT_PATCH_FIELDS = (
+    *RESUME_MEMO_LEGACY_AGENT_DIRECT_FIELDS,
     "formula_component_map",
     "evidence_comparison",
     "operator_claim_consistency",
@@ -874,6 +886,11 @@ def _build_resume_prompt_fact_lock(
     ):
         raise _resume_prompt_error("resume fact lock is invalid")
     fact_lock = {
+        "memo_schema": (
+            "mechanism_conditioned"
+            if "mathematical_object_mapping" in answer_form
+            else "legacy_state_process"
+        ),
         "formula": formula,
         "formula_component_identity": [
             {
@@ -938,6 +955,24 @@ def _build_agent_resume_prompt(
     )
     model_families = ", ".join(task.allowed_model_families)
     fact_lock = _build_resume_prompt_fact_lock(workspace, task)
+    uses_mechanism_conditioned_schema = (
+        fact_lock.get("memo_schema") == "mechanism_conditioned"
+    )
+    object_mapping_field = (
+        "mathematical_object_mapping"
+        if uses_mechanism_conditioned_schema
+        else "formula_state_estimator"
+    )
+    object_qa_field = (
+        "mathematical_object_answer"
+        if uses_mechanism_conditioned_schema
+        else "formula_state_answer"
+    )
+    observation_qa_field = (
+        "observation_mapping_answer"
+        if uses_mechanism_conditioned_schema
+        else "estimator_mapping_answer"
+    )
     fact_lock_json = json.dumps(
         fact_lock,
         ensure_ascii=False,
@@ -956,6 +991,23 @@ def _build_agent_resume_prompt(
         ensure_ascii=True,
         separators=(",", ":"),
     )
+    if uses_mechanism_conditioned_schema:
+        math_contract_rules = f"""5. Complete the mechanism-conditioned mathematical contract with these exact structural rules:
+   - `math_hypothesis.mathematical_object` must name the object selected from the economic hypothesis. It may be a DCF or residual-income functional, accounting identity, stochastic/path object, spectral component, causal estimand, optimization object, or another justified construction. Do not invent a stochastic state when the hypothesis does not require one.
+   - `math_hypothesis.mechanism_equation_or_functional` must contain an explicit model equation, identity, functional, structural equation, or optimization problem. A prose restatement of formula operators is not a model.
+   - `math_hypothesis.target_functional` must state the mechanism's actual estimand. For a valuation hypothesis this may be intrinsic value or `V_t/P_t-1`; it is not required to be a conditional-return distribution.
+   - `math_hypothesis.market_outcome_projection` must separately map that estimand to this Pilot's executable payoff and legal timing: `E[close_{{i,t+2}}/close_{{i,t+1}}-1 | F_t, measured_object_{{i,t}}]`, entry t+1 close and exit t+2 close, with the predicted sign stated explicitly. Never put future fields in the conditioning information set.
+   - Put the formula or code observation equation in `math_hypothesis.observation_mapping` and `{object_mapping_field}.observation_mapping`; bind `{object_mapping_field}.mathematical_object` to the same selected object.
+   - Fill both `math_hypothesis.expected_metric_signature` and the top-level `expected_metric_signature` as identical JSON objects. Preserve and fill every scaffolded key: `rank_ic`, `long_side`, `cost_adjusted`, `monotonicity`, and `turnover`. Each value must compare the model's expected sign or shape with the immutable observed metrics, including any contradiction; do not substitute differently named threshold keys.
+   - Fill the top-level `falsification_tests` as a JSON list with at least two formula-specific, empirically decidable tests. Every list item must be one non-empty plain JSON string."""
+    else:
+        math_contract_rules = """5. Complete the legacy-compatible mathematical contract with these exact structural rules:
+   - `math_hypothesis.process_or_distribution` must contain an explicit model equation using `=` and explain the formula-specific mathematical object. For valuation, accounting, causal, spectral, functional, graph, or optimization mechanisms, write the relevant identity, functional, structural equation, or optimization problem rather than inventing a stochastic process.
+   - `math_hypothesis.target_functional` must use this Pilot's executable payoff and legal information-set form: `E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry t+1 close, exit t+2 close`.
+     The conditioning side may contain only legal current-time information; never put
+     an assignment, formula expression, operator, future field, or prose inside the expectation brackets.
+   - Put the formula-to-state equality in `formula_as_estimator` and `formula_state_estimator.observable_mapping`.
+   - Fill both expected-metric-signature objects identically and provide at least two top-level falsification-test strings."""
     if execution_mode == "container":
         rehydration_notice = """After delivery, the Host starts from the hash-bound
 answer form and overlays only the allowlisted research fields in your patch.
@@ -972,7 +1024,7 @@ subject to formal validation."""
    The `memo` patch may contain only these top-level fields:
    `producer`, `agent_authorship`, `mechanism_qa`, `economic_hypothesis`,
    `math_hypothesis`, `math_model_selection`, `payer`,
-   `formula_state_estimator`, `expected_metric_signature`,
+	   `{object_mapping_field}`, `expected_metric_signature`,
    `falsification_tests`, `council_questions`, `formula_component_map`,
    `evidence_comparison`, and `operator_claim_consistency`.
    In `formula_component_map`, include only `observable_estimator`,
@@ -997,7 +1049,7 @@ subject to formal validation."""
    such as identity, timestamps, source refs, formula syntax, observed metrics,
    component identities/operators, permission flags, or contract version,
    except for the optional exact `component_id` transport anchor above.
-   Set `formula_state_estimator.component_links` to a non-empty, unique JSON
+	   Set `{object_mapping_field}.component_links` to a non-empty, unique JSON
    list of canonical `component_id` strings from the answer form; never use
    objects, subexpressions, operators, or invented component IDs there.
    JSON-escape every quote, backslash, and line break inside string values.
@@ -1129,7 +1181,8 @@ formula tokens, or paraphrasing the rejected answer is another failure.
    `current_main_agent`; set authoring mode to `current_agent_freeform`, role to
    `main_agent`, and `answered_without_deterministic_template` to `true`.
 4. Answer all eight `mechanism_qa` questions with formula-specific reasoning.
-   Derive the random object, legal information set, stochastic or structural
+   Derive the mechanism-specific mathematical object, legal information set,
+   selected valuation, accounting, structural, stochastic, functional or other
    model, target functional, observable estimator, payoff sign and horizon,
    concrete payer, necessary market structure, component ablations, observed
    metric reconciliation, costs, monotonicity, turnover, kill criteria, and at
@@ -1140,42 +1193,22 @@ formula tokens, or paraphrasing the rejected answer is another failure.
    participation gate", or "liquidity or turnover shock". Keep each answer
    between 100 and 260 characters. {budget_instruction} Concision must not omit
    contradictory observed metrics from the reasoning.
-   For both `mechanism_qa.formula_state_answer` and
-   `mechanism_qa.estimator_mapping_answer`, each answer independently must
+   For both `mechanism_qa.{object_qa_field}` and
+   `mechanism_qa.{observation_qa_field}`, each answer independently must
    literally include at least one exact accepted token from this Host-derived
    JSON list: `{formula_specific_tokens_json}`. The Host lowercases each answer
    and applies a literal substring match. Aliases such as `G`, `R`, or `J` do
    not count unless the same answer also contains an exact listed token;
    satisfying one answer does not satisfy the other.
-5. Complete the mathematical contract with these exact structural rules:
-   - `math_hypothesis.process_or_distribution` must contain an explicit model
-     equation using `=` and explain the formula-specific state, process, or
-     distribution. A prose restatement of operators is not a model.
-   - `math_hypothesis.target_functional` must use this Pilot's exact executable
-     payoff and legal information-set form:
-     `E[close_{{i,t+2}}/close_{{i,t+1}}-1 | F_t, formula_state_{{i,t}}], entry
-     t+1 close, exit t+2 close`. The conditioning side may contain only `F_t`
-     and the simple current-time state symbol `formula_state_{{i,t}}`; never put
-     an assignment, formula expression, operator, future field, or prose inside
-     the expectation brackets. Put the formula-to-state equality in
-     `formula_as_estimator` and `formula_state_estimator.observable_mapping`.
-   - Fill both `math_hypothesis.expected_metric_signature` and the top-level
-     `expected_metric_signature` as identical JSON objects. Preserve and fill
-     every scaffolded key: `rank_ic`, `long_side`, `cost_adjusted`,
-     `monotonicity`, and `turnover`. Each value must compare the model's
-     expected sign or shape with the immutable observed metrics, including any
-     contradiction; do not substitute differently named threshold keys.
-   - Fill the top-level `falsification_tests` as a JSON list with at least two
-     formula-specific, empirically decidable tests. Every list item must be one
-     non-empty plain JSON string; objects, dictionaries, arrays, or structured
-     test records are invalid. A discussion inside `mechanism_qa`,
-     `math_hypothesis`, or another nested field does not satisfy this required
-     top-level field.
-6. Select both model-family fields from: {model_families}. Update the
+{math_contract_rules}
+6. Select both coarse model-family routing fields from: {model_families}.
+   These coarse labels do not constrain the open mathematical-tool selection;
+   use `other` when no label faithfully represents the actual model, and write
+   the actual mathematical object and equation in the mechanism fields. Update the
    operator-consistency discussion flags only after the memo actually contains
    the corresponding discussion. For every `formula_component_map` item,
    `observable_estimator` must explain how that exact formula subexpression
-   estimates its stated economic or latent state; it must not describe IC,
+       estimates its stated economic or mathematical object; it must not describe IC,
    regressions, quantile tests, costs, or the whole-factor backtest. RankIC and
    PearsonIC are evaluation statistics, not correlation/covariance operators
    in the factor formula. If the immutable operator list contains none of

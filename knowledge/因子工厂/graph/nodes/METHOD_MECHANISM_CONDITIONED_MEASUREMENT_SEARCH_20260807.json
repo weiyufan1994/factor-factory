@@ -1,0 +1,98 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::method_mechanism_conditioned_measurement_search_20260807",
+  "node_type": "methodology",
+  "title": "Mechanism-conditioned measurement and implementation search",
+  "summary": "Factor research must freeze the economic estimand and compare mechanism-appropriate mathematical models before selecting data transforms, operators, direct code, or hybrid implementation. The tool space is open: DCF, accounting identities, stochastic processes, functional analysis, signal processing, information theory, causal models, optimization, graphs, or a new mathematical object may compete. Knowledge supplies inspiration, precedents, and counterexamples but cannot override current-model identification, legal information timing, or falsification.",
+  "factor_ids": [],
+  "report_ids": [
+    "METHOD_MECHANISM_CONDITIONED_MEASUREMENT_SEARCH_20260807"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "multi_factor"
+    ],
+    "worldquant_style": [
+      "ts_operator",
+      "cs_operator"
+    ],
+    "cn_quant_practice": [
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "alpha_combination_feature"
+    ],
+    "economic_mechanism": [
+      "information_advantage",
+      "limits_to_arbitrage"
+    ],
+    "math_mechanism": [
+      "discounted_cash_flow",
+      "residual_income",
+      "stochastic_process",
+      "state_space",
+      "functional_analysis",
+      "signal_processing",
+      "information_theory",
+      "optimal_transport",
+      "causal_structural_model",
+      "graph_interaction",
+      "optimization_control",
+      "spectral_view",
+      "path_functional"
+    ],
+    "data_source": [
+      "data_api_datamart"
+    ],
+    "tradability": [
+      "model_feature_only"
+    ],
+    "research_status": [
+      "validated",
+      "mechanism_candidate"
+    ],
+    "failure_mode": [
+      "wrong_math_object",
+      "overfit_gate"
+    ]
+  },
+  "mechanism": {
+    "authority_chain": "economic hypothesis -> open mathematical tool search -> competing model selection -> mechanism-specific derivation -> market-outcome and observation mapping -> measurement program -> data/operator/code implementation -> empirical falsification",
+    "knowledge_boundary": "Prior factor cases, data and operator cards may propose candidate mathematical objects, reusable transformations, counterexamples and failure conditions, but may not select the model by historical performance, redefine the estimand, or reverse contradictory evidence.",
+    "applicability_boundary": "Stochastic-process projection and dimensional analysis are optional tools or audits, not universal core mechanisms. A fundamental factor may select DCF or residual-income logic; a microstructure factor may select a point process; a path-shape factor may select functional or signal methods. An audit is recorded only when selected; unselected audits do not require decorative not-applicable derivations.",
+    "implementation_routes": "Operator, direct code and hybrid routes are coequal when they implement the same approved estimand and observation equation.",
+    "failure_localization": "A failed implementation may be repaired without changing the estimand; a failed mechanism or identification assumption requires a separately identified model branch."
+  },
+  "evidence": {
+    "classification": "validated_research_method_contract",
+    "contract_version": "factorforge_mechanism_conditioned_measurement_program_v1",
+    "boundary": "This node is a research-control method, not evidence that any factor earns a return."
+  },
+  "source_paths": [
+    "docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md",
+    "skills/factor-forge-research-brain/SKILL.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::open_mechanism_tool_selection",
+      "note": "The economic object decides whether DCF, accounting identities, stochastic, functional, spectral, information, causal, graph, control, or a new mathematical object is appropriate."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "anti_pattern::operator_first_story",
+      "note": "An available operator cannot authorize an economic story or change the selected estimand."
+    },
+    {
+      "edge_type": "inspires",
+      "target": "method::positive_negative_mechanism_retrieval",
+      "note": "Retrieve both reusable model precedents and failure constraints after preserving the math authority boundary."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this method when a research idea, formula, report, or code fragment must be converted into a mathematically identified measurement program.",
+    "Use knowledge before and during model selection to broaden candidate mathematical objects, recover reusable data treatments, and expose counterexamples; freeze auditable provenance and never let historical IC select the model.",
+    "Record the selected mechanism, rejected alternatives, observation map, legal information time, expected metric signatures, and falsifiers for every formula or code component. Apply unit or stochastic audits only when the selected mechanism makes them relevant."
+  ]
+}

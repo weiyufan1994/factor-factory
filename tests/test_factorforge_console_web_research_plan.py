@@ -28,6 +28,7 @@ from factor_factory.console.web_research_plan import (
     stable_json_hash,
     validate_materialized_web_research,
     validate_plan,
+    web_knowledge_query_text,
     write_text_atomic,
     write_web_research_packet,
 )
@@ -88,6 +89,28 @@ def _request() -> dict:
         "included_character_count": len(message["content"]),
         "messages": [message],
     }
+    snapshot = {**unsigned, "sha256": stable_json_hash(unsigned)}
+    request["conversation_snapshot"] = snapshot
+    request["conversation_snapshot_sha256"] = snapshot["sha256"]
+    return request
+
+
+def _dcf_request() -> dict:
+    request = _request()
+    request["title"] = "Legal-time discounted cash-flow valuation gap"
+    request["hypothesis"] = (
+        "Published cash-flow forecasts imply intrinsic value that converges toward "
+        "market price after conservative discount-rate and terminal-growth controls."
+    )
+    unsigned = dict(request["conversation_snapshot"])
+    unsigned.pop("sha256", None)
+    unsigned["messages"] = [
+        {
+            **unsigned["messages"][0],
+            "content": request["hypothesis"],
+        }
+    ]
+    unsigned["included_character_count"] = len(request["hypothesis"])
     snapshot = {**unsigned, "sha256": stable_json_hash(unsigned)}
     request["conversation_snapshot"] = snapshot
     request["conversation_snapshot_sha256"] = snapshot["sha256"]
@@ -207,7 +230,16 @@ def _write_catalog(tmp_path: Path) -> Path:
                 "datasets": [
                     {
                         "dataset_id": "clean_daily_bar",
-                        "columns": ["ts_code", "trade_date", "open", "pre_close"],
+                        "columns": [
+                            "ts_code",
+                            "trade_date",
+                            "open",
+                            "pre_close",
+                            "close",
+                            "forecast_fcf",
+                            "wacc",
+                            "terminal_growth",
+                        ],
                         "metadata": {"schema_version": "daily_bar_v1", "qa_verdict": "ACCEPT"},
                         "uri": "s3://approved-read-only/clean_daily_bar",
                     },
@@ -310,20 +342,20 @@ def _fill_plan(workspace: Path) -> dict:
         {
             "model_family": "latent temporary price impact with overnight information arrival",
             "math_tools": ["conditional_expectation", "state_space_model", "component_ablation"],
-            "random_object": "cross-sectional opening gap and subsequent legal-time forward return panel",
-            "latent_state": "unabsorbed opening demand pressure net of permanent information",
-            "state_space": "real-valued signed pressure with zero as the absorbed state",
-            "process_or_distribution_hypothesis": "conditional forward-return drift decreases with positive transitory opening pressure",
+            "mathematical_object": "unabsorbed opening demand pressure net of permanent information",
+            "mechanism_equation_or_functional": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
             "observation_equation": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
             "factor_estimator": "negative opening gap computed from t open and t-1 close",
             "target_functional": "E[r_i,t+1 | F_open,t, temporary_pressure_i,t]",
-            "return_equation": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+            "market_outcome_equation": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+            "traded_quantity": "next-horizon after-cost equity return distribution",
             "information_set": "previous close and completed day-t market data available by close; position is formed at close t",
             "why_suitable": "the decomposition separates permanent overnight news from temporary opening demand pressure",
             "why_alternatives_are_less_suitable": ["unconditional reversal has no opening-specific state or participant deadline"],
             "alternative_models": ["unconditional reversal", "systematic overnight risk premium"],
             "component_map": [
                 {
+                    "implementation_component_id": "opening_gap_repair_score",
                     "formula_component": "open / pre_close - 1",
                     "model_term": "permanent_news plus temporary_pressure observation",
                     "preserved_information": "signed opening price displacement",
@@ -336,11 +368,201 @@ def _fill_plan(workspace: Path) -> dict:
                 "infinite opening liquidity implies zero temporary impact",
                 "cost above expected repair implies non-positive net payoff",
             ],
-            "affected_price_process_terms": ["conditional drift", "opening observation equation"],
-            "expected_return_distribution_change": "lower opening pressure shifts the next-period long-side return distribution upward after costs",
             "expected_metric_signatures": [
                 {"metric": "long_side_return", "direction": "positive after cost"},
                 {"metric": "rank_ic", "direction": "positive for the negated gap estimator"},
+            ],
+        }
+    )
+    plan["measurement_program"]["knowledge_role"]["conflict_resolution"] = (
+        "Contradictory knowledge creates a discriminating test; it cannot change the estimand."
+    )
+    plan["measurement_program"]["math_tool_selection"].update(
+        {
+            "candidate_tool_families": [
+                "state-space stochastic processes",
+                "signal decomposition",
+                "information-theoretic dependence",
+            ],
+            "selected_tool_families": [
+                "state-space stochastic processes",
+                "signal decomposition",
+            ],
+            "selection_rationale": "latent-state separation and component filtering match the economic hypothesis; the list remains open to a new mathematical object",
+            "rejected_tool_families": [
+                {
+                    "tool_family": "information-theoretic dependence",
+                    "reason": "dependence alone does not identify temporary versus permanent opening pressure",
+                }
+            ],
+        }
+    )
+    plan["measurement_program"]["model_selection"].update(
+        {
+            "selection_target": "unabsorbed opening pressure net of permanent information",
+            "candidate_models": [
+                {
+                    "candidate_id": "preferred_mechanism",
+                    "candidate_role": "primary",
+                    "model_family": "latent temporary price impact with overnight information arrival",
+                    "mathematical_object": "unabsorbed opening demand pressure net of permanent information",
+                    "mechanism_equation_or_functional": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t; temporary_pressure_i,t+1 = rho * temporary_pressure_i,t + eta_i,t+1 with abs(rho) < 1",
+                    "target_functional": "E[r_i,t+1 | F_open,t, temporary_pressure_i,t]",
+                    "market_outcome_projection": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+                    "observation_mapping": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
+                    "economic_implication": "temporary opening impact predicts subsequent repair",
+                    "identifiability_condition": "temporary impact is separable from permanent news and ordinary reversal",
+                    "decisive_test": "residual opening-gap payoff survives news, reversal and liquidity controls",
+                    "selected": True,
+                },
+                {
+                    "candidate_id": "alternative_mechanism",
+                    "candidate_role": "mechanism_alternative",
+                    "model_family": "permanent overnight information diffusion",
+                    "mathematical_object": "fundamental news innovation",
+                    "mechanism_equation_or_functional": "fundamental_value_i,t = fundamental_value_i,t-1 + permanent_news_i,t and gap_i,t measures that permanent innovation",
+                    "target_functional": "continuation payoff conditional on permanent overnight news",
+                    "market_outcome_projection": "r_i,t+1 = beta_news * permanent_news_i,t - cost_i,t + eta_i,t+1",
+                    "observation_mapping": "map legally observed news and opening displacement into a permanent-news estimator",
+                    "economic_implication": "opening gap predicts continuation rather than repair",
+                    "identifiability_condition": "news controls explain the gap and continuation",
+                    "decisive_test": "signed forward return reverses under information-day controls",
+                    "selected": False,
+                },
+                {
+                    "candidate_id": "null_alias",
+                    "candidate_role": "null_alias",
+                    "model_family": "ordinary reversal and liquidity alias model",
+                    "mathematical_object": "observable short-horizon reversal and liquidity controls",
+                    "mechanism_equation_or_functional": "gap_i,t = gamma * reversal_i,t + delta * liquidity_i,t + residual_i,t with E[payoff_i,t+1 given residual_i,t] = 0",
+                    "target_functional": "incremental payoff after reversal and liquidity aliases",
+                    "market_outcome_projection": "E[r_i,t+1 | residual_i,t] = 0 after costs",
+                    "observation_mapping": "project the opening displacement on legal-time reversal and liquidity controls",
+                    "economic_implication": "the opening-specific state adds no information after alias controls",
+                    "identifiability_condition": "alias controls span the same conditional-return variation",
+                    "decisive_test": "the residual opening-pressure component has zero incremental payoff",
+                    "selected": False,
+                },
+            ],
+            "selection_argument": "the payer and finite absorption horizon imply a transient state model",
+            "rejected_model_reason": "permanent information predicts continuation and a different conditional signature",
+        }
+    )
+    plan["measurement_program"]["market_outcome_projection"].update(
+        {
+            "projection_kind": "conditional distribution induced by a latent-state observation model",
+            "source_math_object": "unabsorbed opening demand pressure net of permanent information",
+            "traded_quantity": "next-horizon after-cost equity return distribution",
+            "affected_payoff_or_distribution_terms": ["conditional drift", "conditional left-tail probability"],
+            "projection_equation_or_map": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+            "link_to_observation_equation": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
+            "falsifier": "the conditional return distribution is unchanged after temporary-pressure conditioning",
+        }
+    )
+    plan["measurement_program"]["applicable_audits"].update(
+        {
+            "selection_rule": "select only audits justified by the chosen mechanism",
+            "selected": [
+                {
+                    "audit_family": "dimensional_analysis",
+                    "rationale": "the opening displacement divides two price quantities",
+                    "audit_record": "(currency/share)/(currency/share)-1 is dimensionless and invariant to common rescaling",
+                    "falsifier": "the signal changes under a pure common price-unit conversion",
+                }
+            ],
+            "rejected": [],
+        }
+    )
+    plan["measurement_program"]["observation_and_estimation"].update(
+        {
+            "estimand": "E[r_i,t+1 | F_open,t, temporary_pressure_i,t]",
+            "observation_map": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
+            "estimator": "negative opening gap computed from t open and t-1 close",
+            "identification_assumptions": [
+                "price fields share an adjustment basis and legal timestamp",
+                "news, reversal and liquidity controls separate permanent and temporary components",
+            ],
+            "bias_variance_and_noise": "raw gap is biased by permanent news and noisy when opening liquidity is low",
+            "legal_information_time": "open and pre_close are known before the close-t signal is frozen",
+            "data_construction_is_hypothesis_conditioned": True,
+        }
+    )
+    plan["measurement_program"]["public_derivation_record"].update(
+        {
+            "definitions": [
+                "g_i,t = open_i,t / pre_close_i,t - 1 is the legal opening displacement",
+                "u_i,t is temporary opening demand pressure net of permanent news",
+            ],
+            "assumptions": [
+                "open and pre_close use the same adjustment basis",
+                "news, reversal and liquidity controls can discriminate temporary pressure",
+            ],
+            "key_derivation_steps": [
+                "decompose g_i,t into permanent news plus temporary pressure plus noise",
+                "temporary pressure decays after constrained buyers complete urgent demand",
+                "therefore the negated legal-time gap estimates the sign of repair drift",
+            ],
+            "identification_gaps": [
+                "permanent news is not directly observed and requires discriminating controls"
+            ],
+            "approximations": [
+                "the pilot uses a linear observation map over the registered horizon"
+            ],
+            "overclaim_guard": "this derivation identifies a falsifiable candidate, not proof of positive return",
+        }
+    )
+    plan["measurement_program"]["implementation"].update(
+        {
+            "route": "operator",
+            "web_execution_status": "trusted_formula_ir_execution",
+            "why_this_route": "the approved ratio and sign estimator is exactly expressible in trusted Formula IR",
+            "components": [
+                {
+                    "component_id": "opening_gap_repair_score",
+                    "binding_role": "full_formula",
+                    "economic_claim": "larger positive temporary opening pressure should earn lower forward return",
+                    "math_term_or_functional": "negative observation of the transient pressure state",
+                    "mechanism_role": "measure the signed displacement that should decay when urgent demand ends",
+                    "observable_or_input": "open and pre_close",
+                    "input_fields": ["open", "pre_close"],
+                    "transformation_or_estimator": "negative relative opening gap",
+                    "implementation_binding": "negate(minus(divide(open, pre_close), 1.0))",
+                    "input_measurement_semantics": "currency per share accounting inputs",
+                    "output_measurement_semantics": "dimensionless score",
+                    "information_time": "available by close t before portfolio formation",
+                    "preserved_information": "signed relative opening displacement",
+                    "discarded_information": "absolute price level and any unobserved permanent-news decomposition",
+                    "expected_metric_signature": "positive rank IC for the negated estimator and positive after-cost long side",
+                    "ablation_test": "remove the negation and require the RankIC sign to reverse",
+                    "falsifier": "residual payoff is non-positive after controls and costs",
+                    "knowledge_node_ids": plan["knowledge_use"]["cited_node_ids"],
+                }
+            ],
+        }
+    )
+    plan["measurement_program"]["deterministic_validation_plan"].update(
+        {
+            "schema_and_measurement_checks": [
+                "open and pre_close are positive currency-per-share fields on the same adjustment basis"
+            ],
+            "future_mutation_invariance": "mutating rows after t must not change signal values at or before t",
+            "limiting_case_oracles": [
+                "open equals pre_close implies a zero raw gap estimator"
+            ],
+            "ablation_and_alias_tests": [
+                "compare raw gap against news-, reversal- and liquidity-controlled residual gap"
+            ],
+            "implementation_parity": "Formula IR reference and optimized engines must agree within tolerance",
+        }
+    )
+    plan["measurement_program"]["search_policy"].update(
+        {
+            "invariant_estimand": "temporary opening pressure repair drift",
+            "allowed_model_or_estimator_variations": [
+                "news-residualized gap and liquidity-conditioned observation models"
+            ],
+            "stop_rules": [
+                "stop when all identified estimators fail OOS, alias and after-cost signatures"
             ],
         }
     )
@@ -388,9 +610,9 @@ def _fill_plan(workspace: Path) -> dict:
             "identifies payer, receiver and persistence boundary",
             "payer identity and transfer equation lack executed evidence",
         ),
-        "latent_state_measurement": (
+        "mechanism_object_measurement": (
             "Does the opening gap measure temporary pressure rather than permanent news?",
-            "residual opening gap is a valid pressure-state estimator",
+            "residual opening gap is a valid mechanism-object estimator",
             "tests observation validity and component ablation",
             "measurement and component evidence have not been executed",
         ),
@@ -518,6 +740,325 @@ def test_authoring_preflight_passes_valid_plan_and_reports_formula_contract(tmp_
     assert result["formal_research_started"] is False
     assert result["required_fields"] == ["open", "pre_close"]
     assert result["operator_set"] == ["divide", "minus", "negate"]
+
+
+def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
+    tmp_path,
+):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    request = _dcf_request()
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=request,
+        catalogs=[catalog],
+    )
+    plan = _fill_plan(workspace)
+    plan["research_object"].update(
+        {
+            "title": request["title"],
+            "hypothesis": request["hypothesis"],
+            "formula_or_law": (
+                "forecast_fcf / (wacc - terminal_growth) / close - 1.0"
+            ),
+            "expected_direction": "positive",
+        }
+    )
+    plan["data_plan"].update(
+        {
+            "daily_fields": [
+                "forecast_fcf",
+                "wacc",
+                "terminal_growth",
+                "close",
+            ],
+            "availability_lags": [
+                "forecast_fcf, wacc and terminal_growth use the latest legally published values; close is known at signal freeze"
+            ],
+            "missing_data_policy": "drop observations with missing inputs or wacc less than or equal to terminal_growth",
+            "data_gap_conditions": [
+                "BLOCK if publication timestamps, forecast vintage or accounting basis cannot be verified"
+            ],
+        }
+    )
+    plan["implementation"]["operators"] = ["divide()", "minus()"]
+    plan["economic_mechanism"].update(
+        {
+            "return_source_family": "information_advantage",
+            "claim_class": "information_rent",
+            "market_phenomenon": "market price may adjust gradually to legally published cash-flow information",
+            "mechanism_claim": "investors who value cash-flow timing and discount rates more consistently receive convergence payoff from stale valuation anchors",
+            "subtype": "legal_time_intrinsic_value_convergence",
+            "participants": ["valuation-aware patient investors", "investors using stale valuation anchors"],
+            "payer_candidates": ["investors using stale valuation anchors"],
+            "why_they_pay": "forecast processing costs and anchoring delay incorporation of cash-flow and discount-rate changes",
+            "participant_constraints": [
+                {
+                    "actor": "investors using stale valuation anchors",
+                    "constraint": "update intrinsic-value estimates slowly after legal disclosures",
+                    "why_persistent": "cash-flow forecast reconciliation and discount-rate estimation are costly",
+                    "observable_proxy": "legal-time DCF value gap",
+                    "falsifier": "the DCF gap has no incremental payoff after value, quality and risk controls",
+                }
+            ],
+            "action_to_price_path": "delayed valuation updating leaves price below conservative intrinsic value until information is absorbed",
+            "profit_transfer_equation": "receiver_pnl = valuation_gap_convergence - transaction_cost - model_error_loss",
+            "persistence_boundary": "the edge ends when price incorporates the cash-flow revision or the forecast is invalidated",
+            "capacity_boundary": "capacity is bounded by names with reliable forecasts and sufficient tradable liquidity",
+            "failure_condition": "the legal-time DCF gap has no positive controlled after-cost long-side payoff",
+            "what_must_be_true": [
+                "forecast cash flows and discount rates are observable without lookahead",
+                "the valuation gap predicts convergence beyond known value and quality aliases",
+            ],
+            "what_would_break_it": [
+                "terminal-value assumptions dominate the signal",
+                "value, quality or distress controls fully absorb the payoff",
+            ],
+            "alternative_return_source_tests": [
+                {
+                    "alternative_source": "risk_premium",
+                    "why_not_primary": "the hypothesis concerns delayed information processing rather than compensation for systematic risk",
+                    "discriminating_test": "control value, quality, leverage, beta and distress before testing residual convergence",
+                    "expected_signature_if_alternative_true": "payoff is explained by stable systematic risk exposure rather than forecast revision timing",
+                }
+            ],
+        }
+    )
+    math = plan["mathematical_mechanism"]
+    assert {
+        "random_object",
+        "latent_state",
+        "state_space",
+        "process_or_distribution_hypothesis",
+        "affected_price_process_terms",
+        "expected_return_distribution_change",
+    }.isdisjoint(math)
+    math.update(
+        {
+            "model_family": "discounted cash-flow valuation",
+            "math_tools": [
+                "discounted_cash_flow",
+                "residual_income",
+                "accounting_identity",
+            ],
+            "mathematical_object": "present value of legal-time forecast free cash flows",
+            "mechanism_equation_or_functional": "V_t=FCF_next,t/(WACC_t-g_t); gap_t=V_t/P_t-1",
+            "observation_equation": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
+            "factor_estimator": "forecast_fcf/(wacc-terminal_growth)/close-1",
+            "target_functional": "after-cost convergence payoff conditional on the legal-time DCF gap",
+            "market_outcome_equation": "V_t=FCF_next,t/(WACC_t-g_t); alpha_t=V_t/P_t-1",
+            "traded_quantity": "after-cost valuation-gap convergence return",
+            "why_suitable": "cash-flow timing and discount rates define intrinsic value directly",
+            "why_alternatives_are_less_suitable": [
+                "a generic stochastic price process does not identify intrinsic value"
+            ],
+            "alternative_models": [
+                "residual-income valuation",
+                "null accounting and style alias model",
+            ],
+            "component_map": [
+                {
+                    "implementation_component_id": "dcf_value_gap",
+                    "formula_component": "forecast_fcf/(wacc-terminal_growth)/close-1",
+                    "model_term": "zero-growth-adjusted perpetuity value relative to market price",
+                    "preserved_information": "cash-flow level, discount-rate spread and market-price normalization",
+                    "deleted_or_aliased_information": "multi-stage forecast shape and capital-structure detail",
+                    "ablation_test": "remove each FCF, discount-spread and price-normalization component and require the predicted signature to weaken",
+                }
+            ],
+            "limiting_cases": [
+                "zero valuation gap implies zero predicted convergence payoff",
+                "higher discount rate lowers intrinsic value holding cash flows fixed",
+                "non-positive terminal spread removes terminal-value growth",
+            ],
+        }
+    )
+    program = plan["measurement_program"]
+    program["math_tool_selection"].update(
+        {
+            "candidate_tool_families": [
+                "discounted cash-flow valuation",
+                "residual-income valuation",
+                "null accounting alias model",
+            ],
+            "selected_tool_families": ["discounted cash-flow valuation"],
+            "selection_rationale": "cash-flow timing and discount rates define the selected intrinsic-value object",
+            "rejected_tool_families": [
+                {
+                    "tool_family": "generic stochastic price process",
+                    "reason": "not needed for the core intrinsic-value derivation",
+                }
+            ],
+        }
+    )
+    models = program["model_selection"]["candidate_models"]
+    models[0].update(
+        {
+            "model_family": "discounted cash-flow valuation",
+            "mathematical_object": "present value of legal-time forecast free cash flows",
+            "mechanism_equation_or_functional": "V_t=FCF_next,t/(WACC_t-g_t)",
+        }
+    )
+    models[1].update(
+        {
+            "model_family": "residual-income valuation",
+            "mathematical_object": "book value plus discounted abnormal earnings",
+            "mechanism_equation_or_functional": "V_t=B_t+sum_k RI_t+k/(1+r_t)^k",
+            "target_functional": "residual-income intrinsic-value-to-price gap",
+            "market_outcome_projection": "positive residual-income gaps predict controlled convergence payoff",
+            "observation_mapping": "map legal-time book value, earnings forecasts and discount rates into residual income value",
+        }
+    )
+    models[2].update(
+        {
+            "model_family": "null accounting and style alias model",
+            "mathematical_object": "known accounting, size and value aliases",
+            "mechanism_equation_or_functional": "dcf_gap_t=gamma*known_aliases_t+residual_t",
+            "target_functional": "incremental payoff after known accounting and style aliases",
+            "market_outcome_projection": "the null predicts zero residual after-cost convergence payoff",
+            "observation_mapping": "project the legal-time DCF gap on accounting and style controls",
+        }
+    )
+    program["applicable_audits"] = {
+        "selection_rule": "select only audits justified by the chosen mechanism",
+        "selected": [],
+        "rejected": [],
+    }
+    program["market_outcome_projection"].update(
+        {
+            "projection_kind": "intrinsic value to market-price gap and convergence payoff",
+            "source_math_object": "present value of legal-time forecast free cash flows",
+            "traded_quantity": "after-cost valuation-gap convergence return",
+            "affected_payoff_or_distribution_terms": [
+                "intrinsic value",
+                "valuation gap",
+                "convergence payoff",
+            ],
+            "projection_equation_or_map": "V_t=FCF_next,t/(WACC_t-g_t); alpha_t=V_t/P_t-1",
+            "link_to_observation_equation": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
+            "falsifier": "the valuation gap has no controlled after-cost convergence payoff",
+        }
+    )
+    program["observation_and_estimation"].update(
+        {
+            "estimand": "after-cost convergence payoff conditional on the legal-time DCF gap",
+            "observation_map": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
+            "estimator": "forecast_fcf/(wacc-terminal_growth)/close-1",
+            "identification_assumptions": [
+                "all fundamental inputs use legal publication timestamps and a consistent accounting basis",
+                "wacc exceeds terminal growth and alias controls separate valuation from distress and quality",
+            ],
+            "bias_variance_and_noise": "forecast and discount-rate error can dominate the gap, especially when the discount spread is small",
+            "legal_information_time": "all inputs are frozen from legally available records by the close-t signal time",
+        }
+    )
+    models[0].update(
+        {
+            "target_functional": program["observation_and_estimation"][
+                "estimand"
+            ],
+            "market_outcome_projection": program["market_outcome_projection"][
+                "projection_equation_or_map"
+            ],
+            "observation_mapping": program["observation_and_estimation"][
+                "observation_map"
+            ],
+        }
+    )
+    program["public_derivation_record"].update(
+        {
+            "definitions": [
+                "V_t=FCF_next,t/(WACC_t-g_t) is the legal-time conservative perpetuity approximation",
+                "gap_t=V_t/P_t-1 is the traded intrinsic-value gap",
+            ],
+            "assumptions": [
+                "WACC_t is greater than terminal growth g_t",
+                "forecast and price inputs are on compatible per-share and publication-time bases",
+            ],
+            "key_derivation_steps": [
+                "discount the forecast cash-flow stream using the selected valuation identity",
+                "normalize intrinsic value by contemporaneous market price to obtain a comparable gap",
+                "map a positive residual gap to a falsifiable after-cost convergence payoff",
+            ],
+            "identification_gaps": [
+                "forecast error and omitted multi-stage growth can alias the inferred valuation gap"
+            ],
+            "approximations": [
+                "the Web pilot uses a one-stage perpetuity approximation rather than a full forecast term structure"
+            ],
+            "overclaim_guard": "the identity defines a valuation estimator, not proof that market price will converge",
+        }
+    )
+    program["implementation"].update(
+        {
+            "why_this_route": "the legal-time one-stage DCF gap is exactly expressible in trusted Formula IR",
+            "components": [
+                {
+                    "component_id": "dcf_value_gap",
+                    "binding_role": "full_formula",
+                    "economic_claim": "a larger conservative intrinsic-value gap predicts stronger convergence payoff",
+                    "math_term_or_functional": "FCF_next/(WACC-g)/P-1",
+                    "mechanism_role": "estimate intrinsic value relative to market price",
+                    "observable_or_input": "forecast_fcf, wacc, terminal_growth and close",
+                    "input_fields": [
+                        "forecast_fcf",
+                        "wacc",
+                        "terminal_growth",
+                        "close",
+                    ],
+                    "transformation_or_estimator": "one-stage DCF value divided by close minus one",
+                    "implementation_binding": "minus(divide(divide(forecast_fcf, minus(wacc, terminal_growth)), close), 1.0)",
+                    "input_measurement_semantics": "legal-time per-share FCF, decimal rates and currency-per-share close",
+                    "output_measurement_semantics": "dimensionless intrinsic-value gap",
+                    "information_time": "legally available by the close-t signal freeze",
+                    "preserved_information": "cash-flow level, discount spread and relative valuation",
+                    "discarded_information": "multi-stage forecast shape and capital-structure detail",
+                    "expected_metric_signature": "positive controlled RankIC and after-cost long-side return for positive gaps",
+                    "ablation_test": "remove FCF, discount spread or price normalization separately",
+                    "falsifier": "the residual gap has no positive after-cost convergence payoff",
+                    "knowledge_node_ids": plan["knowledge_use"]["cited_node_ids"],
+                }
+            ],
+        }
+    )
+    program["deterministic_validation_plan"].update(
+        {
+            "schema_and_measurement_checks": [
+                "forecast_fcf and close share a per-share basis; wacc and terminal_growth are decimals with wacc greater than growth"
+            ],
+            "limiting_case_oracles": [
+                "forecast_fcf equal to zero implies intrinsic value equal to zero"
+            ],
+            "ablation_and_alias_tests": [
+                "control book-to-market, quality, leverage and distress before attributing residual payoff to valuation updating"
+            ],
+        }
+    )
+    program["search_policy"]["invariant_estimand"] = (
+        "after-cost convergence payoff conditional on the legal-time DCF gap"
+    )
+    hypotheses = {item["kind"]: item for item in plan["hypotheses"]}
+    hypotheses["preferred"].update(
+        {
+            "claim": "a positive legal-time DCF gap predicts after-cost price convergence",
+            "expected_signature": "positive controlled RankIC and positive after-cost long-side return",
+        }
+    )
+    hypotheses["null"].update(
+        {
+            "claim": "the DCF gap is only a value, quality or distress alias",
+            "expected_signature": "residual payoff vanishes after alias controls",
+        }
+    )
+    hypotheses["alternative"].update(
+        {
+            "claim": "the apparent payoff is compensation for systematic value risk",
+            "expected_signature": "payoff follows stable risk exposure rather than forecast-update timing",
+        }
+    )
+
+    validate_plan(plan, workspace=workspace)
 
 
 def test_v2_authoring_contract_excludes_append_only_conversation_context(tmp_path):
@@ -865,10 +1406,7 @@ def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_pa
             encoding="utf-8"
         )
     )
-    query = " ".join(
-        str(_request().get(field) or "")
-        for field in ("title", "hypothesis", "factor_id")
-    ).strip()
+    query = web_knowledge_query_text(_request())
     knowledge_contract = spec["knowledge_reference_contract"]
     assert knowledge_contract["query_hash"] == stable_hash(query)
     assert knowledge_contract["query_terms"] == sorted(tokens(query))[:40]

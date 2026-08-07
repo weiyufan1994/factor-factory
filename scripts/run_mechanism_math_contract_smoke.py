@@ -544,7 +544,7 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
     validate_env["FACTORFORGE_ROOT"] = str(root)
 
     commands = {
-        "backfill": [sys.executable, "scripts/backfill_mechanism_math_contract.py", "--report-id", rid, "--factorforge-root", str(root)],
+        "backfill": [sys.executable, "scripts/backfill_mechanism_math_contract.py", "--report-id", rid, "--factorforge-root", str(root), "--confirm-legacy-artifact"],
         "run_step5": [sys.executable, "skills/factor-forge-step5/scripts/run_step5.py", "--report-id", rid],
         "validate_step5": [sys.executable, "skills/factor-forge-step5/scripts/validate_step5.py", "--report-id", rid],
         "run_step6": [sys.executable, "skills/factor-forge-step6/scripts/run_step6.py", "--report-id", rid],
@@ -579,8 +579,15 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
         "run_id": fixture["run_id"] == identity.get("run_id"),
         "branch_id": fixture["branch_id"] == identity.get("branch_id"),
         "canonical_has_no_backfilled_contract": "mechanism_math_contract" not in (spec_after.get("canonical_spec") or {}),
+        "canonical_has_no_backfilled_measurement_program": "mechanism_conditioned_measurement_program" not in (spec_after.get("canonical_spec") or {}),
     }
     contract = spec_after.get("mechanism_math_contract") or {}
+    measurement_program = spec_after.get("mechanism_conditioned_measurement_program") or {}
+    selected_models = [
+        item
+        for item in ((measurement_program.get("model_selection") or {}).get("candidate_models") or [])
+        if isinstance(item, dict) and item.get("selected") is True
+    ]
     case_path = root / "objects" / "factor_case_master" / f"factor_case_master__{rid}.json"
     iteration_path = root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json"
     questionnaire_path = root / "objects" / "research_iteration_master" / f"main_agent_mechanism_questionnaire__{rid}.json"
@@ -590,6 +597,9 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
         and awaiting_main_agent_memo
         and all(preserved.values())
         and bool(contract)
+        and len(selected_models) == 1
+        and selected_models[0].get("model_family") == contract.get("model_family")
+        and measurement_program.get("math_tool_selection", {}).get("search_space_policy") == "open_and_mechanism_conditioned"
         and case_path.exists()
         and questionnaire.get("report_id") == rid
         and questionnaire.get("execution_allowed_by_default") is False
@@ -597,12 +607,18 @@ def legacy_backfill_step5_step6_case(root: Path) -> dict[str, Any]:
     return case_result(
         "legacy_step2_missing_mechanism_math_backfill_reaches_main_agent_gate",
         ok,
-        "legacy factor_spec missing mechanism_math_contract -> backfill top-level only -> Step5 PASS -> Step6 writes questionnaire and awaits a current-agent memo",
+        "legacy factor_spec -> migration-only mechanism and measurement contracts -> Step5 PASS -> Step6 requires a current-agent memo",
         {
             "commands": results,
             "lineage_preserved": preserved,
             "contract_status": contract.get("math_model_status"),
             "model_family": contract.get("model_family"),
+            "measurement_program_selected_model_family": (
+                selected_models[0].get("model_family") if selected_models else None
+            ),
+            "measurement_program_search_policy": (
+                measurement_program.get("math_tool_selection", {}).get("search_space_policy")
+            ),
             "factor_case_exists": case_path.exists(),
             "research_iteration_exists": iteration_path.exists(),
             "awaiting_main_agent_memo": awaiting_main_agent_memo,
@@ -616,11 +632,81 @@ def run_backfill_only(root: Path, rid: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["FACTORFORGE_ROOT"] = str(root)
     return subprocess.run(
-        [sys.executable, "scripts/backfill_mechanism_math_contract.py", "--report-id", rid, "--factorforge-root", str(root)],
+        [sys.executable, "scripts/backfill_mechanism_math_contract.py", "--report-id", rid, "--factorforge-root", str(root), "--confirm-legacy-artifact"],
         cwd=str(REPO_ROOT),
         env=env,
         text=True,
         capture_output=True,
+    )
+
+
+def legacy_backfill_requires_explicit_confirmation_case(root: Path) -> dict[str, Any]:
+    rid = "MECH_MATH_BACKFILL_CONFIRMATION_REQUIRED"
+    fixture = build_legacy_step5_fixture(root, rid)
+    spec_path = Path(fixture["factor_spec_path"])
+    before = spec_path.read_text(encoding="utf-8")
+    env = dict(os.environ)
+    env["FACTORFORGE_ROOT"] = str(root)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "scripts/backfill_mechanism_math_contract.py",
+            "--report-id",
+            rid,
+            "--factorforge-root",
+            str(root),
+        ],
+        cwd=str(REPO_ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    token = "BLOCK_MECHANISM_MATH_BACKFILL_LEGACY_CONFIRMATION_REQUIRED"
+    unchanged = spec_path.read_text(encoding="utf-8") == before
+    return case_result(
+        "legacy_backfill_requires_explicit_confirmation",
+        proc.returncode == 1
+        and token in (proc.stdout + proc.stderr)
+        and unchanged,
+        token,
+        {
+            "rc": proc.returncode,
+            "token_present": token in (proc.stdout + proc.stderr),
+            "factor_spec_unchanged": unchanged,
+        },
+        str(spec_path),
+    )
+
+
+def current_measurement_program_cannot_be_legacy_backfilled_case(root: Path) -> dict[str, Any]:
+    rid = "MECH_MATH_BACKFILL_CURRENT_PROGRAM"
+    fixture = build_legacy_step5_fixture(root, rid)
+    initial = run_backfill_only(root, rid)
+    spec_path = Path(fixture["factor_spec_path"])
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    program_present = bool(spec.get("mechanism_conditioned_measurement_program"))
+    spec.pop("mechanism_math_contract", None)
+    write_json(spec_path, spec)
+    before = spec_path.read_text(encoding="utf-8")
+    proc = run_backfill_only(root, rid)
+    token = "BLOCK_MECHANISM_MATH_BACKFILL_CURRENT_PROGRAM_PRESENT"
+    unchanged = spec_path.read_text(encoding="utf-8") == before
+    return case_result(
+        "current_measurement_program_cannot_be_legacy_backfilled",
+        initial.returncode == 0
+        and program_present
+        and proc.returncode == 1
+        and token in (proc.stdout + proc.stderr)
+        and unchanged,
+        token,
+        {
+            "initial_backfill_rc": initial.returncode,
+            "program_present": program_present,
+            "current_artifact_probe_rc": proc.returncode,
+            "token_present": token in (proc.stdout + proc.stderr),
+            "factor_spec_unchanged": unchanged,
+        },
+        str(spec_path),
     )
 
 
@@ -936,6 +1022,8 @@ def main() -> None:
     cases.append(legacy_backfill_existing_invalid_top_level_block_case(root))
     cases.append(legacy_backfill_invalid_handoff_block_case(root))
     cases.append(legacy_backfill_conflicting_handoff_block_case(root))
+    cases.append(legacy_backfill_requires_explicit_confirmation_case(root))
+    cases.append(current_measurement_program_cannot_be_legacy_backfilled_case(root))
     cases.append(legacy_backfill_step5_step6_case(root))
 
     after = file_snapshot()

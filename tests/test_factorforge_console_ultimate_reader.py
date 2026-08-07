@@ -464,6 +464,208 @@ def test_string_research_contracts_are_projected_as_notebook_narratives(
     }
 
 
+def test_measurement_program_is_projected_into_public_math_notebook(
+    tmp_path: Path,
+) -> None:
+    from factor_factory.console.ultimate_reader import read_ultimate_workspace
+
+    workspace = tmp_path / "workspace"
+    _write_json(
+        _wrapper_path(workspace),
+        {
+            "contract_version": "factorforge_ultimate_wrapper_v1",
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_MEASUREMENT",
+            "research_id": RESEARCH_ID,
+            "status": "RUNNING",
+        },
+    )
+    measurement = {
+        "model_selection": {
+            "selection_target": "temporary pressure",
+            "private_chain_of_thought": "MODEL_SELECTION_SECRET_MARKER",
+            "candidate_models": [
+                {"candidate_id": "m1", "model_family": "transient", "selected": True},
+                {"candidate_id": "m2", "model_family": "permanent", "selected": False},
+            ],
+        },
+        "applicable_audits": {
+            "selection_rule": "select only mechanism-relevant audits",
+            "selected": [],
+            "rejected": [],
+        },
+        "observation_and_estimation": {
+            "observation_map": "gap = permanent + temporary + noise",
+            "estimator": "negative gap",
+        },
+        "implementation": {
+            "components": [
+                {
+                    "component_id": "gap",
+                    "math_term_or_functional": "-u_t",
+                    "implementation_binding": "negate(gap)",
+                    "scratchpad": "COMPONENT_SECRET_MARKER",
+                }
+            ]
+        },
+        "public_derivation_record": {
+            "definitions": ["u_t is temporary pressure"],
+            "key_derivation_steps": ["temporary impact decays"],
+            "private_chain_of_thought": "must never leave the reader",
+            "scratchpad": {"hidden": "must never leave the reader"},
+        },
+        "deterministic_validation_plan": {
+            "future_mutation_invariance": "required"
+        },
+        "knowledge_role": {"authority": "advisory_prior_and_counterexample_only"},
+    }
+    _write_json(
+        workspace
+        / "objects"
+        / "factor_spec_master"
+        / f"factor_spec_master__{REPORT_ID}.json",
+        {
+            "report_id": REPORT_ID,
+            "factor_id": "FACTOR_MEASUREMENT",
+            "research_id": RESEARCH_ID,
+            "mechanism_conditioned_measurement_program": measurement,
+        },
+    )
+
+    summary = read_ultimate_workspace(workspace, report_id=REPORT_ID)
+
+    assert summary.math_notebook["model_selection"]["selection_target"] == (
+        "temporary pressure"
+    )
+    assert summary.math_notebook["applicable_audits"]["selected"] == []
+    assert summary.math_notebook["observation_and_estimation"]["estimator"] == (
+        "negative gap"
+    )
+    assert summary.math_notebook["measurement_components"][0]["component_id"] == (
+        "gap"
+    )
+    assert summary.math_notebook["public_derivation_record"][
+        "key_derivation_steps"
+    ] == ["temporary impact decays"]
+    assert "private_chain_of_thought" not in summary.math_notebook[
+        "public_derivation_record"
+    ]
+    assert "scratchpad" not in summary.math_notebook["public_derivation_record"]
+    public_payload = json.dumps(summary.to_dict(), ensure_ascii=False)
+    assert "MODEL_SELECTION_SECRET_MARKER" not in public_payload
+    assert "COMPONENT_SECRET_MARKER" not in public_payload
+
+
+def test_current_main_agent_memo_rejects_unknown_public_schema_fields() -> None:
+    from factor_factory.console.ultimate_reader import (
+        _current_main_agent_memo,
+        _public_evidence_copy,
+    )
+    from factor_factory.mechanism_math.main_agent_memo import (
+        memo_public_schema_failures,
+    )
+
+    base = {
+        "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+        "report_id": REPORT_ID,
+        "factor_id": "FACTOR_MEMO_ALLOWLIST",
+        "research_id": RESEARCH_ID,
+        "producer": "current_main_agent",
+        "agent_authorship": {
+            "authoring_mode": "current_agent_freeform",
+            "agent_role": "main_agent",
+            "answered_without_deterministic_template": True,
+        },
+        "economic_hypothesis": {
+            "return_source_class": "information_advantage",
+            "payer_or_counterparty": "slow updater",
+            "why_they_pay": "legal-time belief updates arrive with delay",
+            "necessary_market_structure": "heterogeneous update speed",
+        },
+    }
+    assert _current_main_agent_memo(
+        base,
+        report_id=REPORT_ID,
+        factor_id="FACTOR_MEMO_ALLOWLIST",
+        research_id=RESEARCH_ID,
+    ) == base
+
+    unknown_top = json.loads(json.dumps(base))
+    unknown_top["internal_analysis"] = "TOP_LEVEL_PRIVATE_REASONING_MARKER"
+    assert memo_public_schema_failures(unknown_top)
+    assert not _current_main_agent_memo(
+        unknown_top,
+        report_id=REPORT_ID,
+        factor_id="FACTOR_MEMO_ALLOWLIST",
+        research_id=RESEARCH_ID,
+    )
+
+    unknown_nested = json.loads(json.dumps(base))
+    unknown_nested["economic_hypothesis"]["thought_process"] = (
+        "NESTED_PRIVATE_REASONING_MARKER"
+    )
+    assert memo_public_schema_failures(unknown_nested)
+    assert not _current_main_agent_memo(
+        unknown_nested,
+        report_id=REPORT_ID,
+        factor_id="FACTOR_MEMO_ALLOWLIST",
+        research_id=RESEARCH_ID,
+    )
+
+    unknown_metric = json.loads(json.dumps(base))
+    unknown_metric["evidence_comparison"] = {
+        "observed_metrics": {
+            "rank_ic_mean": 0.01,
+            "deliberation_notes": "NESTED_PRIVATE_REASONING_MARKER",
+        }
+    }
+    failures = memo_public_schema_failures(unknown_metric)
+    assert any("observed_metrics.deliberation_notes" in item for item in failures)
+    assert not _current_main_agent_memo(
+        unknown_metric,
+        report_id=REPORT_ID,
+        factor_id="FACTOR_MEMO_ALLOWLIST",
+        research_id=RESEARCH_ID,
+    )
+
+    unknown_formula_feature = json.loads(json.dumps(base))
+    unknown_formula_feature["formula_understanding"] = {
+        "formula_understanding_version": "factorforge_formula_understanding_v1",
+        "formula_features": {
+            "fields": ["close"],
+            "operators": ["rank"],
+            "deliberation_notes": "NESTED_PRIVATE_REASONING_MARKER",
+        },
+        "component_interpretations": [],
+        "interaction_structure": "formula_defined_state",
+        "mathematical_object_candidates": ["rank state"],
+    }
+    failures = memo_public_schema_failures(unknown_formula_feature)
+    assert any(
+        "formula_understanding.formula_features.deliberation_notes" in item
+        for item in failures
+    )
+    assert not _current_main_agent_memo(
+        unknown_formula_feature,
+        report_id=REPORT_ID,
+        factor_id="FACTOR_MEMO_ALLOWLIST",
+        research_id=RESEARCH_ID,
+    )
+
+    assert _public_evidence_copy(
+        {
+            "observed_metrics": {
+                "rank_ic_mean": 0.01,
+                "cost_adjusted_annual_return": 0.05,
+            },
+            "mechanism_supported": "partial",
+        }
+    )["observed_metrics"] == {
+        "cost_adjusted_annual_return": 0.05,
+        "rank_ic_mean": 0.01,
+    }
+
+
 def test_internal_evidence_with_host_paths_is_read_but_public_text_is_redacted(
     tmp_path: Path,
 ) -> None:

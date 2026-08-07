@@ -34,7 +34,7 @@ Required shape:
     "monetization_gap": "string|null"
   },
   "math_discipline_review": {
-    "step1_random_object": "string",
+    "mathematical_object": "string",
     "target_statistic": "string",
     "information_set_legality": "string",
     "spec_stability": "string",

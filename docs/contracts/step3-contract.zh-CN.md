@@ -68,7 +68,7 @@ implementation invariants，让 Step4/5/6 评价的是被实现的研究假设�
 Step3B 必须把 `implementation_mode_decision` 写入 `implementation_plan_master`、generated-code metadata、`handoff_to_step4`、样本运行 metadata（如生成），以及 ultimate proof summary。决策记录必须使用 `factorforge_implementation_mode_decision_v1`，明确 selected mode 或 `blocked`，记录 operator/hybrid/direct_code 的尝试结果或 not-applicable 原因，并保留最终 correctness reason。如果 selected mode 是 `blocked`，Step3B 不得写样本输出或正式 factor values。
 
 ## 正确性优先于完成度
-Step3B 必须按 `operator -> hybrid -> direct_code` 尝试；如果无法证明正确性，就 BLOCK。UBL/CPV/shadow/candle/Williams 逻辑只能作为显式 family plugin 或 fixture。unsupported operator parity、缺失 `formula_ir`、不安全 direct code、或模糊 proxy 改写都必须 BLOCK，不能降级为 warning。
+Step3B 必须执行 measurement program 已冻结的 `operator`、`hybrid` 或 `direct_code` 路线；路线由数学对象和数值方法决定，不能按固定偏好选择，也不能因某一路线失败而静默改走另一条路线。如果无法证明正确性，就 BLOCK。UBL/CPV/shadow/candle/Williams 逻辑只能作为显式 family plugin 或 fixture。unsupported operator parity、缺失 `formula_ir`、不安全 direct code、或模糊 proxy 改写都必须 BLOCK，不能降级为 warning。
 
 ## Operator / Qlib engine
 Operator mode 是 Formula IR 执行路径，不只是一个标签。Step3B 必须消费 `formula_ir`，验证 `parse_status=success`，确认所有算子在 registry 中，按 Step3A schema 解析字段 alias，生成 pandas `compute_factor`，并用 pandas reference evaluator 做 parity validation。生成 metadata 必须包含 `implementation_source=formula_ir_pandas_codegen`、`formula_hash`、`operator_set`、`required_fields`、`resolved_fields`、`code_hash` 和 qlib bridge status。

@@ -5,6 +5,13 @@ description: Ultimate top-level skill for the full Factor Forge research system.
 
 # Factor Forge Ultimate Legacy Operations Reference
 
+> Compatibility boundary: this file documents historical schemas and operating
+> modes. It is not the current math authority. For new research use
+> `mechanism_conditioned_measurement_program_v1`. Historical random-object,
+> stochastic-benchmark, unit/dimension, or claim-stage fields are validated only
+> when an upstream artifact already contains them; never synthesize them as
+> universal requirements.
+
 ## What This Skill Is
 
 This is the **top-level orchestration skill** for the entire Factor Forge system.
@@ -908,7 +915,7 @@ When using this skill, also consult the relevant sub-skills:
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must execute the implementation route frozen by the measurement program and must not silently change routes after a failure. Unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
 
 ## Operator / Qlib Engine
 
@@ -1148,4 +1155,11 @@ the current runtime.
 
 ## Mechanism Math Contract v2
 
-Factor Forge treats a factor as a falsifiable market-process model first and a formula second. Step1/2/6 artifacts should preserve the chain: market behavior -> economic hypothesis -> primary mechanism model -> stochastic price-process projection -> formula observable estimator -> expected metric signature -> falsification or revision logic. The primary model is selected from the economic hypothesis and is not automatically a stochastic process, but every formal factor must state how the signal changes the conditional distribution of next-horizon return under F_t. Formula explanations that merely restate the formula, or decorative generic SDE/physics language without state variables, observable proxies, and falsification, must BLOCK. Council revisions must declare which model layer they revise: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract.
+Factor Forge treats a factor as a falsifiable market model first and a formula
+second. Step1/2/6 artifacts preserve the chain: market behavior -> economic
+hypothesis -> open tool search -> primary mechanism model -> market-outcome
+projection -> observable estimator -> expected metric signature ->
+falsification or revision logic. The primary model is selected from the
+economic hypothesis; neither stochastic processes nor dimensional analysis is
+universal. Formula explanations that merely restate the formula, or decorative
+math without model objects, observable proxies and falsification, must BLOCK.

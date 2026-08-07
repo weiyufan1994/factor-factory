@@ -27,6 +27,7 @@ from factor_factory.mechanism_math.main_agent_memo import (
     build_main_agent_mechanism_memo,
     render_main_agent_mechanism_memo_markdown,
 )
+from factor_factory.measurement_program import measurement_program_template
 
 
 def utc_now() -> str:
@@ -75,6 +76,115 @@ def canonical_pollution(before: set[str]) -> dict[str, Any]:
         'polluted': bool(added),
         'new_files': added,
     }
+
+
+def valid_measurement_program(
+    *,
+    formula_text: str,
+    required_inputs: list[str],
+    kind: str,
+) -> dict[str, Any]:
+    placeholder = 'STEP6_INTELLIGENCE_SMOKE_REPLACE'
+    program = measurement_program_template(
+        placeholder=placeholder,
+        implementation_route='operator',
+    )
+
+    def fill(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        if value == placeholder:
+            return 'mechanism-specific Step6 intelligence smoke statement'
+        return value
+
+    program = fill(program)
+    if kind == 'open_close_intraday_position':
+        family = 'intraday price-location model'
+        mathematical_object = 'legal-time open-to-close price-location statistic'
+        tools = ['ratio and cross-sectional ordering']
+        mechanism_equation = 'location_i,t=(close_i,t-open_i,t)/open_i,t; payoff_i,t+1=g(location_i,t, controls_i,t)+epsilon_i,t+1'
+    elif 'volume' in required_inputs:
+        family = 'price-volume pressure-state model'
+        mathematical_object = 'legal-time ranked joint price-volume composite state'
+        tools = ['joint-state construction and cross-sectional ordering']
+        mechanism_equation = 'pressure_i,t=h(price_i,t, volume_i,t); payoff_i,t+1=g(pressure_i,t, controls_i,t)+epsilon_i,t+1'
+    else:
+        family = 'open structural signal model'
+        mathematical_object = 'legal-time custom observable and its cross-sectional ordering'
+        tools = ['cross-sectional statistics']
+        mechanism_equation = 'observable_i,t=h(legal_inputs_i,t); payoff_i,t+1=g(observable_i,t, controls_i,t)+epsilon_i,t+1'
+    program['math_tool_selection'].update({
+        'candidate_tool_families': [tools[0], 'mechanism-distinct structural alternative', 'measurement-alias null'],
+        'selected_tool_families': tools,
+        'selection_rationale': 'the fixture economic mechanism and observable fields select the mathematical family',
+        'rejected_tool_families': [
+            {
+                'tool_family': 'unrelated universal stochastic template',
+                'reason': 'no mathematical family is selected without mechanism support',
+            }
+        ],
+    })
+    candidates = program['model_selection']['candidate_models']
+    candidates[0].update({
+        'model_family': family,
+        'mathematical_object': mathematical_object,
+        'mechanism_equation_or_functional': mechanism_equation,
+        'economic_implication': 'the selected observable state changes next-horizon after-cost long-side payoff',
+        'identifiability_condition': 'the payoff survives controls, legal-time checks, and component ablation',
+        'decisive_test': 'reject when controlled OOS long-side payoff is absent',
+    })
+    program['market_outcome_projection']['source_math_object'] = (
+        mathematical_object
+    )
+    candidates[1].update({
+        'model_family': 'mechanism-distinct permanent-state alternative',
+        'mechanism_equation_or_functional': (
+            'permanent_state_i,t=permanent_update(legal_inputs_i,<=t)'
+        ),
+        'target_functional': 'permanent-information continuation payoff',
+        'market_outcome_projection': (
+            'permanent state predicts continuation rather than transient correction'
+        ),
+        'observation_mapping': (
+            'map legal-time innovations into a permanent-state estimator'
+        ),
+    })
+    candidates[2].update({
+        'model_family': 'measurement-alias null model',
+        'mechanism_equation_or_functional': (
+            'score_i,t=known_aliases_i,t+measurement_noise_i,t'
+        ),
+        'target_functional': 'incremental payoff after known aliases',
+        'market_outcome_projection': (
+            'the null predicts zero incremental after-cost payoff'
+        ),
+        'observation_mapping': (
+            'project the legal-time score on known aliases and retain the residual'
+        ),
+    })
+    program['observation_and_estimation'].update({
+        'estimand': 'next-horizon after-cost conditional long-side payoff',
+        'observation_map': formula_text,
+        'estimator': formula_text,
+    })
+    candidates[0].update({
+        'target_functional': program['observation_and_estimation']['estimand'],
+        'market_outcome_projection': program['market_outcome_projection'][
+            'projection_equation_or_map'
+        ],
+        'observation_mapping': program['observation_and_estimation'][
+            'observation_map'
+        ],
+    })
+    component = program['implementation']['components'][0]
+    component.update({
+        'binding_role': 'full_formula',
+        'input_fields': required_inputs,
+        'implementation_binding': formula_text,
+    })
+    return program
 
 
 def forbidden_writeback_paths(root: Path, report_id: str) -> dict[str, Path]:
@@ -457,6 +567,15 @@ def write_fixture(root: Path, report_id: str, *, kind: str, factor_id: str | Non
             'preprocessing': ['delay(1) information lag documented'],
         },
     }
+    measurement_program = valid_measurement_program(
+        formula_text=formula_text,
+        required_inputs=required_inputs,
+        kind=kind,
+    )
+    factor_spec['mechanism_conditioned_measurement_program'] = measurement_program
+    factor_spec['canonical_spec']['mechanism_conditioned_measurement_program'] = measurement_program
+    case['mechanism_conditioned_measurement_program'] = measurement_program
+    handoff['mechanism_conditioned_measurement_program'] = measurement_program
     idea = {
         'report_id': report_id,
         'factor_id': factor_id,
@@ -486,6 +605,11 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
     formula = str(canonical.get('formula_text') or '')
     fields = ', '.join(str(item) for item in (canonical.get('required_inputs') or []))
     operators = ', '.join(str(item) for item in (canonical.get('operators') or []))
+    measurement_program = (
+        spec.get('mechanism_conditioned_measurement_program')
+        or canonical.get('mechanism_conditioned_measurement_program')
+        or {}
+    )
     memo = build_main_agent_mechanism_memo(
         report_id=report_id,
         factor_spec=spec,
@@ -494,14 +618,31 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
         step6_iteration={},
     )
     formula_terms = f"the formula uses fields {fields} and operators {operators}"
-    fields_l = fields.lower()
-    operators_l = operators.lower()
-    if 'volume' in fields_l and ('correlation' in operators_l or 'close' in fields_l or 'high' in fields_l):
-        selected_model_family = 'transient_impact'
-        process_text = 'r_{i,t+1}=mu(state_{i,t})+rho*impact_{i,t}+epsilon_{i,t+1} is a transient impact and liquidity-pressure process with imbalance decay, inventory transfer, or participation-driven state migration depending on the formula-defined state and evidence'
+    selected_model = next(
+        (
+            item
+            for item in ((measurement_program.get('model_selection') or {}).get('candidate_models') or [])
+            if isinstance(item, dict) and item.get('selected') is True
+        ),
+        {},
+    )
+    selected_model_family = str(
+        selected_model.get('model_family') or 'open structural signal model'
+    )
+    mathematical_object = str(
+        selected_model.get('mathematical_object')
+        or 'legal-time custom observable and its cross-sectional ordering'
+    )
+    if 'volume' in fields.lower():
+        mechanism_equation = (
+            'payoff_{i,t+1}=g(price_volume_state_{i,t}, controls_{i,t})+epsilon_{i,t+1}; '
+            'the pressure state may decay, reverse, or persist and those alternatives are discriminated by the fixed tests'
+        )
     else:
-        selected_model_family = 'stochastic_process'
-        process_text = 'r_{i,t+1}=mu(state_{i,t})+sigma(state_{i,t})*epsilon_{i,t+1} is a conditional stochastic return process with drift, reversal, impact decay, or state migration depending on the formula-defined state and evidence'
+        mechanism_equation = (
+            'payoff_{i,t+1}=g(observable_{i,t}, controls_{i,t})+epsilon_{i,t+1}; '
+            'g and its sign are selected by the stated mechanism and rejected when the fixed tests fail'
+        )
     memo['producer'] = 'current_main_agent'
     memo['agent_authorship'] = {
         'authoring_mode': 'current_agent_freeform',
@@ -510,17 +651,17 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
         'answered_without_deterministic_template': True,
     }
     memo['mechanism_qa'] = {
-        'formula_state_answer': (
-            f"The current main agent reads {formula_terms}. The formula state is the observable security-day state "
-            "defined by those actual inputs, not a reused factor-family label; this answer ties the state to the formula components."
+        'mathematical_object_answer': (
+            f"The current main agent reads {formula_terms}. The selected mathematical object is {mathematical_object}, "
+            "chosen by the economic mechanism rather than by a universal stochastic template."
         ),
         'economic_hypothesis_answer': (
             "The economic hypothesis is that the formula-defined state can be monetized only if a counterparty faces delayed belief revision, "
             "liquidity demand, risk-transfer pressure, or constrained rebalancing that creates a next-horizon conditional return."
         ),
         'math_model_answer': (
-            "The baseline model is a conditional stochastic return process indexed by the formula state; the mutation for this formula is to "
-            "let the observed component map define the latent state variable, payoff direction, and horizon instead of applying a generic template."
+            f"The selected model family is {selected_model_family}. Its equation or functional is mechanism-specific, and stochastic-process, "
+            "valuation, accounting, spectral, causal, optimization, or other tools are used only when justified by the hypothesis."
         ),
         'payer_answer': (
             "The likely payer is the constrained or delayed counterparty on the other side of the formula-defined state: delayed updaters, "
@@ -530,9 +671,9 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
             "The payoff argument is E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry t+1 close, exit t+2 close; the sign must be determined by the stated state direction and must survive "
             "long-side, cost-adjusted evidence rather than relying on short-leg diagnostics."
         ),
-        'estimator_mapping_answer': (
-            f"Estimator mapping follows {formula_terms}: each listed field/operator contributes an observable component to the latent state; rank terms "
-            "test cross-sectional ordering, arithmetic terms define state direction or scale, and the mapping remains within F_t."
+        'observation_mapping_answer': (
+            f"Observation mapping follows {formula_terms}: each listed field/operator contributes an observable component to {mathematical_object}; "
+            "rank terms test cross-sectional ordering, arithmetic terms define direction or scale, and the mapping remains within F_t."
         ),
         'metric_signature_answer': (
             "The expected metric signature is aligned rank IC, positive high-score long-side return, positive cost-adjusted return, monotonic top groups, "
@@ -558,24 +699,42 @@ def write_current_agent_memo_fixture(root: Path, report_id: str, runtime: str = 
     }
     memo['math_hypothesis'] = {
         'selected_model_family': selected_model_family,
-        'why_this_model': 'the open-ended memo treats the formula output as a state variable in a conditional return process, with payoff sign and horizon tested by evidence',
-        'why_not_generic_template': 'the model is accepted only because the current agent supplied freeform answers tying formula components to payer behavior, payoff, estimator mapping, and falsification',
-        'random_object': 'security-day forward return conditional on legal information set F_t and formula-defined state',
-        'latent_state': 'formula-defined conditional return state from the actual fields and operators',
-        'process_or_distribution': process_text,
+        'why_this_model': 'the primary model is selected by the measurement program from the economic hypothesis, competing models, and decisive tests',
+        'why_not_generic_template': 'the model is accepted only because the current program ties a mechanism-specific mathematical object to the formula components and falsification plan',
+        'mathematical_object': mathematical_object,
+        'mechanism_equation_or_functional': mechanism_equation,
         'target_functional': 'E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry t+1 close, exit t+2 close',
-        'formula_as_estimator': memo['mechanism_qa']['estimator_mapping_answer'],
+        'market_outcome_projection': 'Higher measured object predicts the declared signed t+1-close to t+2-close return after costs; reject when the sign or horizon fails.',
+        'observation_mapping': memo['mechanism_qa']['observation_mapping_answer'],
         'expected_metric_signature': dict(metric_signature),
     }
     memo['math_model_selection'] = {
         'model_family': selected_model_family,
-        'baseline_model': process_text,
+        'mechanism_equation_or_functional': mechanism_equation,
         'model_mutation': (
-            'bind the conditional process to the exact formula component map '
+            'bind the selected mechanism to the exact formula component map '
             'and immutable evidence signature'
         ),
     }
+    memo['payer'] = {
+        'payer_or_counterparty': memo['economic_hypothesis']['payer_or_counterparty'],
+        'why_they_pay': memo['economic_hypothesis']['why_they_pay'],
+        'necessary_market_structure': memo['economic_hypothesis']['necessary_market_structure'],
+    }
+    memo['mathematical_object_mapping'] = {
+        'mathematical_object': mathematical_object,
+        'observation_mapping': memo['math_hypothesis']['observation_mapping'],
+        'component_links': [
+            str(item.get('component_id'))
+            for item in memo.get('formula_component_map') or []
+            if isinstance(item, dict) and item.get('component_id')
+        ],
+    }
     memo['expected_metric_signature'] = dict(metric_signature)
+    memo['falsification_tests'] = [
+        'long-side cost-adjusted return remains negative',
+        'top quantile ordering contradicts the declared payoff direction',
+    ]
     memo_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.json'
     memo_md_path = objects / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.md'
     write_json(memo_path, memo)
@@ -595,7 +754,7 @@ def run_case(root: Path, case_name: str, kind: str, expected: str, token: str, f
             memo['economic_hypothesis']['why_they_pay'] = (
                 'Traders exchange against the score when the observed formula is high.'
             )
-            memo['math_hypothesis']['process_or_distribution'] = (
+            memo['math_hypothesis']['mechanism_equation_or_functional'] = (
                 'score_{i,t}=max(open divided by pre_close minus one, zero) '
                 'multiplied by max(one minus close divided by open, zero); '
                 'r_{i,t+1}=score_{i,t}+u_{i,t+1}.'
@@ -1968,11 +2127,6 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
     mechanism_math_summary['economic_mechanism_family'] = 'transient_impact'
     mechanism_math_summary['math_tool_family'] = 'stochastic_process'
     mechanism_math_summary['model_equation_family'] = 'conditional_diffusion_with_flow_impact'
-    mechanism_math_contract = mechanism.setdefault('mechanism_math_contract', {})
-    mechanism_math_contract['model_family'] = 'price_volume_microstructure'
-    mechanism_math_contract['economic_mechanism_family'] = 'transient_impact'
-    mechanism_math_contract['math_tool_family'] = 'stochastic_process'
-    mechanism_math_contract['model_equation_family'] = 'conditional_diffusion_with_flow_impact'
     mechanism.setdefault('formula_specific_derivation', {})['selected_model_family'] = 'stochastic_process'
     taxonomy_brief.setdefault('economic_interpretation', {})['factor_family'] = 'price_volume_correlation'
     taxonomy_brief['economic_interpretation']['return_source'] = 'behavioral_microstructure'
@@ -1981,15 +2135,24 @@ def run_loop_research_brief_mutation_smoke(root: Path, source_report_id: str) ->
     taxonomy_brief.setdefault('formula_specific_derivation', {})['selected_model_family'] = 'stochastic_process'
     write_json(iteration_path, taxonomy_iteration)
     write_json(json_path, taxonomy_brief)
+    original_summary = original_brief.get('mechanism_math_summary') or {}
+    original_derivation = original_brief.get('formula_specific_derivation') or {}
+    original_selected_family = str(
+        original_derivation.get('selected_model_family')
+        or (original_derivation.get('economic_to_math_model_selection') or {}).get('baseline_model_family')
+        or 'not_specified'
+    )
     taxonomy_md = original_md
     for old, new in {
-        '- Economic mechanism family: price_volume_microstructure':
+        f"- Model family: {original_summary.get('model_family')}":
+            '- Model family: price_volume_microstructure',
+        f"- Economic mechanism family: {original_summary.get('economic_mechanism_family') or 'not_specified'}":
             '- Economic mechanism family: transient_impact',
-        '- Math tool family: price_volume_microstructure':
+        f"- Math tool family: {original_summary.get('math_tool_family') or 'not_specified'}":
             '- Math tool family: stochastic_process',
-        '- Model equation family: under_specified':
+        f"- Model equation family: {original_summary.get('model_equation_family') or 'not_specified'}":
             '- Model equation family: conditional_diffusion_with_flow_impact',
-        '- Selected model family: transient_impact':
+        f'- Selected model family: {original_selected_family}':
             '- Selected model family: stochastic_process',
     }.items():
         taxonomy_md = taxonomy_md.replace(old, new)
@@ -2102,7 +2265,7 @@ def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
     good_consistency = validate_mechanism_formula_consistency(spec, good_mechanism, good_derivation)
     good_derivation_failures = validate_formula_specific_derivation(good_derivation, spec, good_mechanism)
     restated = dict(good_derivation)
-    restated['process_or_distribution'] = 'rank sum returns delay close sign formula'
+    restated['mechanism_equation_or_functional'] = 'rank sum returns delay close sign formula'
     restated_failures = validate_formula_specific_derivation(restated, spec, good_mechanism)
     generic_payer = dict(good_derivation)
     generic_payer['profit_payer_derivation'] = {
@@ -2215,7 +2378,7 @@ def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
             'selected_model_family': good_derivation.get('selected_model_family'),
             'profit_payer_derivation': good_derivation.get('profit_payer_derivation'),
         },
-        'process_or_distribution_not_formula_restatement': {
+        'mechanism_equation_not_formula_restatement': {
             'ok': 'BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING' in restated_codes,
             'failures': restated_failures,
         },
@@ -2226,7 +2389,7 @@ def run_formula_specific_mechanism_smoke() -> dict[str, Any]:
         'alpha033_open_close_formula_specific_valid_pass': {
             'ok': (
                 not alpha033_failures
-                and alpha033_derivation.get('selected_model_family') == 'stochastic_process'
+                and alpha033_derivation.get('selected_model_family') == 'transient_impact'
                 and 'open/close' in alpha033_text
                 and 'investors' not in alpha033_text
                 and 'volume participation gate' not in alpha033_text

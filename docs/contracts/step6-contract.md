@@ -7,17 +7,22 @@
 Step 6 is the **research-loop controller** layer.
 It is not another execution backend. It consumes Step 4/5 evidence, decides whether a factor should be promoted, iterated, or rejected, writes that decision into reusable libraries, and if needed sends the workflow back to Step 3B for another implementation round.
 
-## Mechanism Math Contract
-Step6 preserves `mechanism_math_contract` under `research_memo.mechanism_analysis`, uses it to make revision hypotheses target specific mathematical objects, and includes `mechanism_math_summary` in each loop research brief. `math_model_status=invalid` blocks official promotion. `under_specified` requires an explicit reason and next human research question. The math layer is explanatory only and cannot bypass evidence audit, case comparison, search policy, loop authorization, provenance, or promotion gates.
+## Mechanism-conditioned measurement program
+Step6 preserves the exact `mechanism_conditioned_measurement_program` under
+`research_memo.mechanism_analysis`, uses its selected mathematical object,
+estimand, observation map and falsifiers to target revisions, and writes a
+generic `mechanism_math_summary` into each loop research brief. A stochastic
+process, latent state, conditional distribution, dimensional audit, valuation
+identity, or any other mathematical family is required only when selected by
+the economic mechanism. Legacy `mechanism_math_contract` and
+`mechanism_math_contract_v2` objects are optional compatibility evidence and
+are never synthesized by Step6 or Council.
 
-For `math_model_status=specified`, the mechanism math contract must include a
-testable `process_hypothesis`, `latent_state`, `observable_estimator`,
-`conditional_distribution_hypothesis`, `relationship_shape`,
-`metric_signature_match`, and `mechanism_falsification_tests`. Price-volume
-covariance/correlation/rank-dependence formulas must be classified as
-`price_volume_microstructure` unless the formula itself contains explicit
-projection, residualization, or neutralization operators. Revision Council
-packets must ingest human supplemental mechanism context from
+`math_model_status=invalid` blocks official promotion. `under_specified`
+requires an explicit reason and next human research question. The math layer
+cannot bypass evidence audit, case comparison, search policy, loop
+authorization, provenance, or promotion gates. Revision Council packets must
+ingest human supplemental mechanism context from
 `objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
 and matching `knowledge/因子工厂/知识库/*MECHANISM*` notes, then propagate that
 context into agentic taskbooks.
@@ -551,7 +556,9 @@ not hidden model chain-of-thought. It must include:
 
 - `research_question`
 - assumptions with status, necessity, and falsification path
-- mathematical objects with meaning, unit or dimension, and information set
+- mathematical objects with meaning, measurement semantics, and information
+  set; record units or dimensions only when the selected object makes them
+  meaningful, otherwise mark that audit not applicable
 - selected tools with reasons, scope, and limitations
 - rejected tools when relevant
 - ordered derivation steps with formulas or symbolic relations when claimed

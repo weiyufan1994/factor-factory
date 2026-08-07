@@ -60,7 +60,7 @@
     "economic_hypothesis": "<who pays, who receives, and why the mispricing can exist>",
     "payer": "<profit payer, forced buyer/seller, uninformed trader, benchmark pressure, etc.>",
     "receiver": "<smart absorber, liquidity provider, risk bearer, informed capital, etc.>",
-    "random_object": "<price path, return process, occupation measure, hidden state, covariance residual, etc.>",
+    "mathematical_object": "<cash-flow functional, accounting identity, price path, return process, occupation measure, hidden state, covariance residual, etc.>",
     "target_statistic": "<expected return, first-passage payoff, residual IC, long-side return, etc.>",
     "key_equation_latex": "$$\\n<main equation>\\n$$",
     "dirac_style_forced_insight": "<what the math object forced that formula prose did not reveal>",

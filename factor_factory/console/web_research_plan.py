@@ -6,7 +6,6 @@ import json
 import os
 import re
 import stat
-import subprocess
 import uuid
 from collections.abc import Mapping
 from copy import deepcopy
@@ -34,9 +33,17 @@ from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.formula.parser import parse_formula
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import SUPPORTED_OPERATORS, canonical_operator_name
+from factor_factory.formula.source_dialects import (
+    BLOCK_SOURCE_SEMANTICS_UNRESOLVED,
+    resolve_source_formula,
+    valid_source_formula_contract,
+    uses_source_dialect,
+)
 from factor_factory.knowledge_context import (
+    BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE,
     DEFAULT_EDGE_INDEX,
     DEFAULT_NODE_INDEX,
+    KnowledgeRetrievalError,
     retrieve_factor_knowledge_context,
 )
 from factor_factory.knowledge_reference import (
@@ -48,6 +55,11 @@ from factor_factory.research_conjecture import (
     validate_approach_registry,
     validate_research_conjecture,
     validate_research_state,
+)
+from factor_factory.measurement_program import (
+    MEASUREMENT_PROGRAM_VERSION,
+    measurement_program_template,
+    validate_measurement_program,
 )
 from factor_factory.research_workspace import (
     load_workspace_manifest,
@@ -88,6 +100,11 @@ CLAIM_CLASSES = {
 }
 ROUTE_FAMILIES = {
     "economic_game",
+    "mechanism_object_measurement",
+    "null_alias_counterexample",
+}
+LEGACY_ROUTE_FAMILIES = {
+    "economic_game",
     "latent_state_measurement",
     "null_alias_counterexample",
 }
@@ -96,7 +113,15 @@ WEB_AUTHORING_DATASETS = frozenset({"clean_daily_bar"})
 WEB_FORMULA_OPERATORS = frozenset(
     name
     for name, metadata in SUPPORTED_OPERATORS.items()
-    if metadata.get("supports_pandas") and metadata.get("supports_qlib")
+    if metadata.get("supports_pandas")
+    and metadata.get("lookahead_safe")
+    and (
+        metadata.get("supports_qlib")
+        or (
+            metadata.get("web_safe")
+            and metadata.get("semantic_contract_version")
+        )
+    )
 )
 
 
@@ -125,11 +150,172 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def web_knowledge_query_text(request: Mapping[str, Any]) -> str:
+def _conversation_messages(
+    request: Mapping[str, Any],
+    *,
+    maximum_sequence_no: int | None = None,
+    messages: Iterable[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if messages is None:
+        snapshot = request.get("conversation_snapshot")
+        raw_messages = snapshot.get("messages") if isinstance(snapshot, dict) else []
+    else:
+        raw_messages = list(messages)
+    messages = [item for item in raw_messages or [] if isinstance(item, dict)]
+    if maximum_sequence_no is not None:
+        messages = [
+            item
+            for item in messages
+            if int(item.get("sequence_no") or 0) <= maximum_sequence_no
+        ]
+    return sorted(messages, key=lambda item: int(item.get("sequence_no") or 0))
+
+
+def _is_source_contract_message(message: Mapping[str, Any]) -> bool:
+    content_kind = message.get("content_kind")
+    is_internal = content_kind == "formula_contract"
+    is_legacy_internal = content_kind == "decision" and str(
+        message.get("idempotency_key") or ""
+    ).startswith("initial:")
+    if not (is_internal or is_legacy_internal):
+        return False
+    try:
+        payload = json.loads(str(message.get("content") or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return valid_source_formula_contract(payload)
+
+
+def request_input_modalities(
+    request: Mapping[str, Any],
+    *,
+    maximum_sequence_no: int | None = None,
+    messages: Iterable[Mapping[str, Any]] | None = None,
+) -> list[str]:
+    modalities = [
+        str(message.get("content_kind") or "")
+        for message in _conversation_messages(
+            request,
+            maximum_sequence_no=maximum_sequence_no,
+            messages=messages,
+        )
+        if message.get("role") == "user"
+        and message.get("content_kind") in {"hypothesis", "report", "formula", "code"}
+    ]
+    return list(dict.fromkeys(modalities))
+
+
+def web_knowledge_query_text(
+    request: Mapping[str, Any],
+    *,
+    maximum_sequence_no: int | None = None,
+    messages: Iterable[Mapping[str, Any]] | None = None,
+) -> str:
+    message_text = [
+        str(message.get("content") or "")
+        for message in _conversation_messages(
+            request,
+            maximum_sequence_no=maximum_sequence_no,
+            messages=messages,
+        )
+        if message.get("role") == "user"
+        and not _is_source_contract_message(message)
+    ]
     return " ".join(
-        str(request.get(field) or "")
-        for field in ("title", "hypothesis", "factor_id")
+        [
+            str(request.get("title") or ""),
+            str(request.get("factor_id") or ""),
+            *message_text,
+        ]
     ).strip()
+
+
+def source_formula_seed(
+    request: Mapping[str, Any],
+    *,
+    maximum_sequence_no: int | None = None,
+    messages: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    conversation_messages = _conversation_messages(
+        request,
+        maximum_sequence_no=maximum_sequence_no,
+        messages=messages,
+    )
+    formulas = [
+        message
+        for message in conversation_messages
+        if message.get("role") == "user"
+        and message.get("content_kind") == "formula"
+        and str(message.get("content") or "").strip()
+    ]
+    if not formulas:
+        return {}
+    formula_message = formulas[-1]
+    raw_formula = str(formula_message.get("content") or "").strip()
+    contracts: list[dict[str, Any]] = []
+    for message in conversation_messages:
+        if not _is_source_contract_message(message):
+            continue
+        payload = json.loads(str(message.get("content") or ""))
+        if str(payload.get("raw_formula") or "").strip() == raw_formula:
+            contracts.append(payload)
+
+    if uses_source_dialect(raw_formula):
+        if not contracts:
+            raise WebResearchPlanError(
+                BLOCK_PLAN_INVALID,
+                [BLOCK_SOURCE_SEMANTICS_UNRESOLVED],
+            )
+        supplied = contracts[-1]
+        recomputed = resolve_source_formula(
+            raw_formula,
+            supplied.get("semantic_choices")
+            if isinstance(supplied.get("semantic_choices"), dict)
+            else None,
+        )
+        if stable_json_hash(supplied) != stable_json_hash(recomputed):
+            raise WebResearchPlanError(
+                BLOCK_PLAN_INVALID,
+                ["source_formula_contract_identity_mismatch"],
+            )
+        source_contract: dict[str, Any] | None = recomputed
+    else:
+        source_contract = None
+        recomputed = resolve_source_formula(raw_formula, None)
+    return {
+        "raw_formula": raw_formula,
+        "canonical_formula": recomputed["canonical_formula"],
+        "source_contract": source_contract,
+        "message_sequence_no": int(formula_message.get("sequence_no") or 0),
+    }
+
+
+def build_submitted_input_contract(
+    request: Mapping[str, Any],
+    formula_seed: Mapping[str, Any] | None = None,
+    *,
+    maximum_sequence_no: int | None = None,
+    messages: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    seed = dict(formula_seed or {})
+    canonical_formula = str(seed.get("canonical_formula") or "")
+    return {
+        "contract_version": "factorforge_web_submitted_inputs_v1",
+        "modalities": request_input_modalities(
+            request,
+            maximum_sequence_no=maximum_sequence_no,
+            messages=messages,
+        ),
+        "formula_message_sequence_no": seed.get("message_sequence_no"),
+        "raw_formula_sha256": (
+            stable_text_hash(str(seed.get("raw_formula") or "")) if seed else None
+        ),
+        "canonical_formula_sha256": (
+            stable_text_hash(canonical_formula) if canonical_formula else None
+        ),
+        "source_formula_contract": seed.get("source_contract"),
+        "host_authored_immutable": True,
+    }
 
 
 def _knowledge_index_metadata(
@@ -280,17 +466,19 @@ def _recommended_evidence_window(request: dict[str, Any]) -> dict[str, str]:
 
 def _operator_signature(name: str, metadata: dict[str, Any]) -> str:
     arity = int(metadata.get("arity") or 0)
-    requires_window = bool(metadata.get("requires_window"))
-    if arity == 1:
-        arguments = "x"
-    elif arity == 2 and requires_window:
-        arguments = "x, positive_integer_window"
-    elif arity == 2:
-        arguments = "x, y"
-    elif arity == 3 and requires_window:
-        arguments = "x, y, positive_integer_window"
-    else:
-        arguments = ", ".join(f"arg_{index + 1}" for index in range(arity))
+    literal_positions = set(metadata.get("literal_integer_args") or [])
+    if metadata.get("requires_window") and not literal_positions:
+        literal_positions = {arity - 1}
+    arguments = ", ".join(
+        (
+            f"integer_arg_{index + 1}"
+            if index in literal_positions
+            else "x"
+            if index == 0
+            else f"value_arg_{index + 1}"
+        )
+        for index in range(arity)
+    )
     return f"{name}({arguments})"
 
 
@@ -523,9 +711,21 @@ def build_authoring_contract(
             "name": name,
             "arity": int(SUPPORTED_OPERATORS[name]["arity"]),
             "signature": _operator_signature(name, SUPPORTED_OPERATORS[name]),
+            "execution_engine": (
+                "pandas_and_qlib"
+                if SUPPORTED_OPERATORS[name].get("supports_qlib")
+                else "trusted_pandas_formula_ir"
+            ),
+            "semantic_contract_version": SUPPORTED_OPERATORS[name].get(
+                "semantic_contract_version"
+            ),
+            "semantic_definition": SUPPORTED_OPERATORS[name].get(
+                "semantic_definition"
+            ),
         }
         for name in sorted(WEB_FORMULA_OPERATORS)
     ]
+    formula_seed = source_formula_seed(request)
     return {
         "version": AUTHORING_CONTRACT_VERSION,
         "immutable_host_authored": True,
@@ -562,6 +762,20 @@ def build_authoring_contract(
                 "- (unary)": "negate",
             },
             "supported_operators": supported_operators,
+            "submitted_formula": (
+                {
+                    "raw_formula": formula_seed["raw_formula"],
+                    "canonical_formula": formula_seed["canonical_formula"],
+                    "source_contract_sha256": (
+                        stable_json_hash(formula_seed["source_contract"])
+                        if formula_seed.get("source_contract")
+                        else None
+                    ),
+                    "immutable_for_initial_branch": True,
+                }
+                if formula_seed
+                else None
+            ),
             "operator_declaration_rule": (
                 "implementation.operators must exactly equal the canonical operator names "
                 "produced by the formula, without aliases such as mul, sub, or div"
@@ -587,6 +801,19 @@ def build_authoring_contract(
                 "return_source_family value different from the selected primary family"
             ),
         },
+        "mechanism_conditioned_measurement_contract": {
+            "version": MEASUREMENT_PROGRAM_VERSION,
+            "authority_rule": (
+                "Economic hypothesis and selected mathematical mechanism define the estimand. "
+                "Knowledge, data availability, operators and code may inform or implement the "
+                "measurement program but may not redefine the estimand."
+            ),
+            "implementation_routes": ["operator", "direct_code", "hybrid"],
+            "web_execution_boundary": (
+                "Web v1 executes only trusted Formula IR operators. Direct-code and hybrid "
+                "routes may be modelled but require a separate trusted isolated code harness."
+            ),
+        },
         "evidence_window_contract": {
             "submitted_sample_start": str(request.get("sample_start") or ""),
             "submitted_sample_end": str(request.get("sample_end") or ""),
@@ -607,14 +834,31 @@ def build_plan_template(
     *,
     knowledge_summary: dict[str, Any],
     authoring_contract: dict[str, Any],
+    formula_seed: dict[str, Any] | None = None,
+    formula_ir: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    formula_seed = formula_seed or {}
+    formula_ir = formula_ir or {}
     identity = {
         key: str(request.get(key) or "")
         for key in ("job_id", "factor_id", "research_id", "report_id")
     }
+    seeded_formula = str(formula_seed.get("canonical_formula") or "")
+    seeded_fields = list(
+        dict.fromkeys(
+            str(field)
+            for field in (formula_ir.get("resolved_fields") or {}).values()
+            if str(field) not in WEB_NON_FORMULA_DAILY_FIELDS
+        )
+    )
+    seeded_operators = [
+        str(item) for item in (formula_ir.get("operator_set") or [])
+    ]
+    submitted_input_contract = build_submitted_input_contract(request, formula_seed)
     return {
         "version": PLAN_VERSION,
         "identity": identity,
+        "submitted_input_contract": submitted_input_contract,
         "authoring_contract": {
             "version": AUTHORING_CONTRACT_VERSION,
             "sha256": stable_json_hash(authoring_contract),
@@ -624,7 +868,7 @@ def build_plan_template(
             "hypothesis": str(request.get("hypothesis") or ""),
             "source_type": "natural_language_hypothesis",
             "factor_name": identity["factor_id"],
-            "formula_or_law": _placeholder(),
+            "formula_or_law": seeded_formula or _placeholder(),
             "expected_direction": _placeholder(),
             "rebalance_frequency": "daily",
         },
@@ -635,7 +879,7 @@ def build_plan_template(
             "cold_start": not bool(knowledge_summary.get("node_count")),
         },
         "data_plan": {
-            "daily_fields": [_placeholder()],
+            "daily_fields": seeded_fields or [_placeholder()],
             "minute_fields": [],
             "state_datamarts": [],
             "availability_lags": [_placeholder()],
@@ -645,7 +889,7 @@ def build_plan_template(
         "implementation": {
             "mode": "operator",
             "entrypoint": "formula_ir",
-            "operators": [_placeholder()],
+            "operators": seeded_operators or [_placeholder()],
         },
         "economic_mechanism": {
             "return_source_family": _placeholder(),
@@ -684,20 +928,20 @@ def build_plan_template(
         "mathematical_mechanism": {
             "model_family": _placeholder(),
             "math_tools": [_placeholder()],
-            "random_object": _placeholder(),
-            "latent_state": _placeholder(),
-            "state_space": _placeholder(),
-            "process_or_distribution_hypothesis": _placeholder(),
+            "mathematical_object": _placeholder(),
+            "mechanism_equation_or_functional": _placeholder(),
             "observation_equation": _placeholder(),
             "factor_estimator": _placeholder(),
             "target_functional": _placeholder(),
-            "return_equation": _placeholder(),
+            "market_outcome_equation": _placeholder(),
+            "traded_quantity": _placeholder(),
             "information_set": _placeholder(),
             "why_suitable": _placeholder(),
             "why_alternatives_are_less_suitable": [_placeholder()],
             "alternative_models": [_placeholder()],
             "component_map": [
                 {
+                    "implementation_component_id": _placeholder(),
                     "formula_component": _placeholder(),
                     "model_term": _placeholder(),
                     "preserved_information": _placeholder(),
@@ -706,13 +950,15 @@ def build_plan_template(
                 }
             ],
             "limiting_cases": [_placeholder(), _placeholder(), _placeholder()],
-            "affected_price_process_terms": [_placeholder()],
-            "expected_return_distribution_change": _placeholder(),
             "expected_metric_signatures": [
                 {"metric": "long_side_return", "direction": _placeholder()},
                 {"metric": "rank_ic", "direction": _placeholder()},
             ],
         },
+        "measurement_program": measurement_program_template(
+            placeholder=PLACEHOLDER,
+            implementation_route="operator",
+        ),
         "hypotheses": [
             {
                 "hypothesis_id": "preferred_mechanism",
@@ -785,7 +1031,7 @@ def build_plan_template(
             },
             {
                 "route_id": "route_measurement",
-                "route_family": "latent_state_measurement",
+                "route_family": "mechanism_object_measurement",
                 "agent_identity": "independent_measurement_route",
                 "favored_thesis_visible": False,
                 "research_question": _placeholder(),
@@ -858,12 +1104,31 @@ infer that they are missing or request them from the network.
 
 Replace every `{PLACEHOLDER}` in `identity/web_research_plan.json` with your own
 factor-specific reasoning. Keep preferred, null, and alternative hypotheses
-distinct. State the payer, persistent constraint, mathematical random object,
-legal information set, observation equation, estimator, return law, limiting
-cases, component ablations, IS/OOS split, costs, capacity and kill criteria.
+distinct. State the economic incidence and any applicable counterparty,
+persistent mechanism, mathematical object, legal information set, observation
+equation, estimator, market-outcome map, limiting cases, component ablations,
+IS/OOS split, costs, capacity and kill criteria.
+The authority order is economic hypothesis -> selected mathematical mechanism
+-> measurement program -> data/operator/code implementation -> empirical
+falsification. Compare a preferred model, a mechanism-distinct alternative and a
+null/alias model, then select exactly one. Record measurement semantics; derive
+units, scaling laws, stochastic diagnostics or invariances only when the selected
+mechanism makes them applicable. Map every formula/code component to the economic
+claim, mathematical term, observation, information time, expected metric signature
+and falsifier. Do not choose a mechanism because an operator exists and do not
+change the estimand because a convenient field exists. Knowledge nodes are
+advisory priors, counterexamples and tool candidates only; they never override
+the mathematical contract or contradictory evidence.
 Use only node IDs present in the knowledge summary. Apply their failure lessons
 without treating a similar case as the same factor; when no node matched, keep
 `cold_start=true` and record an explicit cold-start lesson.
+
+When `submitted_input_contract.canonical_formula_sha256` is present, the Host has
+already frozen and disambiguated the submitted formula. Do not rewrite that
+initial branch. A later Council mutation must be a separately identified branch.
+Direct-code and hybrid measurement programs are valid Factor Forge research
+routes, but this Web v1 packet executes only trusted Formula IR. Never claim that
+unreviewed code was executed.
 
 If `identity/web_research_bootstrap_result.json` already has `verdict=PASS`, do
 not regenerate or overwrite the plan, Step1/2/protocol inputs, or formal
@@ -1083,42 +1348,23 @@ def resolve_workspace_approved_catalog(
 
 
 def summarize_factor_knowledge(request: dict[str, Any]) -> dict[str, Any]:
-    query = web_knowledge_query_text(request)
+    messages = _conversation_messages(request)
+    frozen_at_message_sequence_no = max(
+        (int(item.get("sequence_no") or 0) for item in messages),
+        default=0,
+    )
+    query = web_knowledge_query_text(
+        request,
+        maximum_sequence_no=frozen_at_message_sequence_no,
+    )
     query_terms = sorted(knowledge_query_tokens(query))[:40]
     try:
         context = retrieve_factor_knowledge_context(text=query, top_k=5)
-    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-        indexes = [
-            _knowledge_index_metadata(
-                role="node",
-                path=DEFAULT_NODE_INDEX,
-                available=DEFAULT_NODE_INDEX.exists(),
-            ),
-            _knowledge_index_metadata(
-                role="edge",
-                path=DEFAULT_EDGE_INDEX,
-                available=DEFAULT_EDGE_INDEX.exists(),
-            ),
-        ]
-        return {
-            "version": "factorforge_web_knowledge_summary_v1",
-            "schema_version": "factor_knowledge_context_v1",
-            "retrieval_provenance": {
-                "query": {"text": query, "top_k": 5},
-                "query_hash": stable_text_hash(query),
-                "query_terms": query_terms,
-                "index_paths_checked": [item["path"] for item in indexes],
-                "indexes_available": [
-                    item["path"] for item in indexes if item["available"]
-                ],
-                "indexes": indexes,
-            },
-            "node_count": 0,
-            "edge_count": 0,
-            "nodes": [],
-            "related_edges": [],
-            "cold_start_reason": f"knowledge retrieval unavailable: {type(exc).__name__}",
-        }
+    except (OSError, UnicodeError, ValueError, RuntimeError, KnowledgeRetrievalError) as exc:
+        raise WebResearchPlanError(
+            BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE,
+            [f"{type(exc).__name__}: {exc}"],
+        ) from exc
     nodes = []
     for node in context.get("nodes") or []:
         if not isinstance(node, dict):
@@ -1168,6 +1414,7 @@ def summarize_factor_knowledge(request: dict[str, Any]) -> dict[str, Any]:
             "query": context.get("query") or {"text": query, "top_k": 5},
             "query_hash": stable_text_hash(query),
             "query_terms": query_terms,
+            "frozen_at_message_sequence_no": frozen_at_message_sequence_no,
             "index_paths_checked": [item["path"] for item in indexes],
             "indexes_available": [
                 item["path"] for item in indexes if item["available"]
@@ -1312,6 +1559,24 @@ def write_web_research_packet(
             catalog_summary,
             root=workspace,
         )
+    formula_seed = source_formula_seed(request)
+    seeded_formula_ir: dict[str, Any] = {}
+    if formula_seed:
+        seeded_formula_ir = parse_formula(
+            str(formula_seed["canonical_formula"]),
+            available_columns=_clean_daily_columns(catalog_summary),
+            source_dialect_contract=formula_seed.get("source_contract"),
+        )
+        if seeded_formula_ir.get("parse_status") != "success":
+            raise WebResearchPlanError(
+                BLOCK_PLAN_INVALID,
+                [
+                    f"submitted_formula:{item}"
+                    for item in seeded_formula_ir.get("parse_errors") or [
+                        "parse failed"
+                    ]
+                ],
+            )
     authoring_contract = build_authoring_contract(
         request,
         catalog_summary=catalog_summary,
@@ -1354,6 +1619,8 @@ def write_web_research_packet(
                 request,
                 knowledge_summary=knowledge_summary,
                 authoring_contract=authoring_contract,
+                formula_seed=formula_seed,
+                formula_ir=seeded_formula_ir,
             ),
             root=workspace,
         )
@@ -1485,6 +1752,22 @@ def validate_plan(
     request = json.loads(request_path.read_text(encoding="utf-8"))
     if not isinstance(request, dict):
         raise WebResearchPlanError(BLOCK_PLAN_IDENTITY_INVALID, ["web research request invalid"])
+    conversation_messages = _conversation_messages(request)
+    if CONVERSATION_LEDGER_REFERENCE_FIELD in request:
+        try:
+            validated_ledger = validate_request_conversation_ledger(
+                workspace,
+                request,
+                expected_job_id=str(request.get("job_id") or ""),
+            )
+        except RuntimeError as exc:
+            if str(exc).startswith(BLOCK_CONVERSATION_LEDGER_INVALID):
+                raise WebResearchPlanError(
+                    BLOCK_PLAN_IDENTITY_INVALID,
+                    [str(exc)],
+                ) from exc
+            raise
+        conversation_messages = list(validated_ledger["current"]["entries"])
     expected_identity = {
         "job_id": str(request.get("job_id") or ""),
         "factor_id": str(manifest.get("factor_id") or ""),
@@ -1516,7 +1799,6 @@ def validate_plan(
         reasons.append("research_object.factor_name_identity_mismatch")
     if research.get("rebalance_frequency") != "daily":
         reasons.append("research_object.rebalance_frequency_unsupported")
-
     knowledge_path = workspace / "identity" / "factor_knowledge_summary.json"
     if not knowledge_path.is_file():
         raise WebResearchPlanError(BLOCK_PLAN_IDENTITY_INVALID, ["factor knowledge summary missing"])
@@ -1528,7 +1810,39 @@ def validate_plan(
         if isinstance(knowledge_summary.get("retrieval_provenance"), dict)
         else {}
     )
-    expected_knowledge_query = web_knowledge_query_text(request)
+    frozen_at_message_sequence_no = retrieval_provenance.get(
+        "frozen_at_message_sequence_no"
+    )
+    if frozen_at_message_sequence_no is not None and (
+        not isinstance(frozen_at_message_sequence_no, int)
+        or frozen_at_message_sequence_no < 0
+    ):
+        reasons.append("knowledge_summary.frozen_at_message_sequence_no")
+        frozen_at_message_sequence_no = None
+    expected_formula_seed = source_formula_seed(
+        request,
+        maximum_sequence_no=frozen_at_message_sequence_no,
+        messages=conversation_messages,
+    )
+    expected_submitted_inputs = build_submitted_input_contract(
+        request,
+        expected_formula_seed,
+        maximum_sequence_no=frozen_at_message_sequence_no,
+        messages=conversation_messages,
+    )
+    if stable_json_hash(plan.get("submitted_input_contract")) != stable_json_hash(
+        expected_submitted_inputs
+    ):
+        reasons.append("submitted_input_contract")
+    if expected_formula_seed and str(research.get("formula_or_law") or "") != str(
+        expected_formula_seed.get("canonical_formula") or ""
+    ):
+        reasons.append("research_object.submitted_formula_changed")
+    expected_knowledge_query = web_knowledge_query_text(
+        request,
+        maximum_sequence_no=frozen_at_message_sequence_no,
+        messages=conversation_messages,
+    )
     expected_query_terms = sorted(knowledge_query_tokens(expected_knowledge_query))[:40]
     retrieval_query = (
         retrieval_provenance.get("query")
@@ -1695,6 +2009,7 @@ def validate_plan(
     formula_ir = parse_formula(
         str(research.get("formula_or_law") or ""),
         available_columns=[str(item) for item in daily_fields],
+        source_dialect_contract=expected_formula_seed.get("source_contract"),
     )
     if formula_ir.get("parse_status") != "success":
         reasons.extend(
@@ -1719,7 +2034,8 @@ def validate_plan(
                 + ",".join(unsupported_web_operators)
             )
         required_formula_fields = set(
-            str(item) for item in (formula_ir.get("required_fields") or [])
+            str(item)
+            for item in (formula_ir.get("resolved_fields") or {}).values()
         )
         if required_formula_fields != set(str(item) for item in daily_fields):
             reasons.append("implementation.formula_fields_data_plan_mismatch")
@@ -1772,17 +2088,15 @@ def validate_plan(
     math = plan.get("mathematical_mechanism") if isinstance(plan.get("mathematical_mechanism"), dict) else {}
     for field in (
         "model_family",
-        "random_object",
-        "latent_state",
-        "state_space",
-        "process_or_distribution_hypothesis",
+        "mathematical_object",
+        "mechanism_equation_or_functional",
         "observation_equation",
         "factor_estimator",
         "target_functional",
-        "return_equation",
+        "market_outcome_equation",
+        "traded_quantity",
         "information_set",
         "why_suitable",
-        "expected_return_distribution_change",
     ):
         _require_string(reasons, math, field, "mathematical_mechanism")
     for field, minimum in (
@@ -1790,7 +2104,6 @@ def validate_plan(
         ("why_alternatives_are_less_suitable", 1),
         ("alternative_models", 1),
         ("limiting_cases", 3),
-        ("affected_price_process_terms", 1),
     ):
         _require_string_list(reasons, math, field, "mathematical_mechanism", minimum=minimum)
     component_map = _dict_list(math.get("component_map"))
@@ -1798,6 +2111,7 @@ def validate_plan(
         reasons.append("mathematical_mechanism.component_map")
     for index, item in enumerate(component_map):
         for field in (
+            "implementation_component_id",
             "formula_component",
             "model_term",
             "preserved_information",
@@ -1812,6 +2126,150 @@ def validate_plan(
         for field in ("metric", "direction"):
             _require_string(reasons, item, field, f"mathematical_mechanism.expected_metric_signatures[{index}]")
 
+    measurement_program = plan.get("measurement_program")
+    reasons.extend(
+        validate_measurement_program(
+            measurement_program,
+            placeholder=PLACEHOLDER,
+            available_knowledge_node_ids=available_node_ids,
+            require_web_executable=True,
+        )
+    )
+    if isinstance(measurement_program, dict):
+        measurement_implementation = measurement_program.get("implementation")
+        if isinstance(measurement_implementation, dict):
+            if measurement_implementation.get("route") != implementation.get("mode"):
+                reasons.append(
+                    "measurement_program.implementation.route_implementation_mismatch"
+                )
+            implementation_components = [
+                item
+                for item in measurement_implementation.get("components") or []
+                if isinstance(item, dict)
+            ]
+            implementation_component_ids = {
+                str(item.get("component_id") or "")
+                for item in implementation_components
+                if str(item.get("component_id") or "")
+            }
+            mapped_component_ids = {
+                str(item.get("implementation_component_id") or "")
+                for item in component_map
+                if str(item.get("implementation_component_id") or "")
+            }
+            if mapped_component_ids != implementation_component_ids:
+                reasons.append(
+                    "mathematical_mechanism.component_map_implementation_mismatch"
+                )
+            full_formula_components = [
+                item
+                for item in implementation_components
+                if item.get("binding_role") == "full_formula"
+            ]
+            if len(full_formula_components) != 1:
+                reasons.append(
+                    "measurement_program.implementation.exactly_one_full_formula_binding"
+                )
+            elif formula_ir.get("parse_status") == "success":
+                full_component = full_formula_components[0]
+                binding_ir = parse_formula(
+                    str(full_component.get("implementation_binding") or ""),
+                    available_columns=[str(item) for item in daily_fields],
+                    source_dialect_contract=expected_formula_seed.get(
+                        "source_contract"
+                    ),
+                )
+                if binding_ir.get("parse_status") != "success":
+                    reasons.append(
+                        "measurement_program.implementation.full_formula_binding_invalid"
+                    )
+                else:
+                    if (
+                        binding_ir.get("root") != formula_ir.get("root")
+                        or binding_ir.get("resolved_fields")
+                        != formula_ir.get("resolved_fields")
+                    ):
+                        reasons.append(
+                            "measurement_program.implementation.full_formula_binding_mismatch"
+                        )
+                    declared_input_fields = {
+                        str(item)
+                        for item in full_component.get("input_fields") or []
+                    }
+                    formula_input_fields = {
+                        str(item)
+                        for item in (formula_ir.get("resolved_fields") or {}).values()
+                    }
+                    if declared_input_fields != formula_input_fields:
+                        reasons.append(
+                            "measurement_program.implementation.full_formula_input_fields_mismatch"
+                        )
+        model_selection = measurement_program.get("model_selection")
+        if isinstance(model_selection, dict):
+            selected_models = [
+                item
+                for item in model_selection.get("candidate_models") or []
+                if isinstance(item, dict) and item.get("selected") is True
+            ]
+            if len(selected_models) == 1 and str(
+                selected_models[0].get("model_family") or ""
+            ) != str(math.get("model_family") or ""):
+                reasons.append(
+                    "measurement_program.model_selection.selected_model_math_mismatch"
+                )
+            if len(selected_models) == 1 and str(
+                selected_models[0].get("mathematical_object") or ""
+            ) != str(math.get("mathematical_object") or ""):
+                reasons.append(
+                    "measurement_program.model_selection.selected_object_math_mismatch"
+                )
+        market_projection = measurement_program.get("market_outcome_projection")
+        if isinstance(market_projection, dict):
+            if str(market_projection.get("projection_equation_or_map") or "") != str(
+                math.get("market_outcome_equation") or ""
+            ):
+                reasons.append(
+                    "measurement_program.market_outcome_projection.equation_mismatch"
+                )
+            if str(
+                market_projection.get("link_to_observation_equation") or ""
+            ) != str(math.get("observation_equation") or ""):
+                reasons.append(
+                    "measurement_program.market_outcome_projection.observation_equation_mismatch"
+                )
+            if str(market_projection.get("traded_quantity") or "") != str(
+                math.get("traded_quantity") or ""
+            ):
+                reasons.append(
+                    "measurement_program.market_outcome_projection.traded_quantity_mismatch"
+                )
+            if str(market_projection.get("source_math_object") or "") != str(
+                math.get("mathematical_object") or ""
+            ):
+                reasons.append(
+                    "measurement_program.market_outcome_projection.source_object_mismatch"
+                )
+        observation_program = measurement_program.get("observation_and_estimation")
+        if isinstance(observation_program, dict):
+            if str(observation_program.get("observation_map") or "") != str(
+                math.get("observation_equation") or ""
+            ):
+                reasons.append(
+                    "measurement_program.observation_and_estimation.observation_map_mismatch"
+                )
+            if str(observation_program.get("estimator") or "") != str(
+                math.get("factor_estimator") or ""
+            ):
+                reasons.append(
+                    "measurement_program.observation_and_estimation.estimator_mismatch"
+                )
+            if str(observation_program.get("estimand") or "") != str(
+                math.get("target_functional") or ""
+            ):
+                reasons.append(
+                    "measurement_program.observation_and_estimation.estimand_mismatch"
+                )
+
     hypotheses = _dict_list(plan.get("hypotheses"), minimum=3)
     if {item.get("kind") for item in hypotheses} != {"preferred", "null", "alternative"}:
         reasons.append("hypotheses.kinds")
@@ -1820,6 +2278,39 @@ def validate_plan(
             _require_string(reasons, item, field, f"hypotheses[{index}]")
         _require_string_list(reasons, item, "falsification_tests", f"hypotheses[{index}]", minimum=2)
         _require_string_list(reasons, item, "kill_criteria", f"hypotheses[{index}]")
+    hypothesis_ids = {
+        str(item.get("hypothesis_id") or ""): str(item.get("kind") or "")
+        for item in hypotheses
+    }
+    expected_model_roles = {
+        "preferred_mechanism": "primary",
+        "alternative_mechanism": "mechanism_alternative",
+        "null_alias": "null_alias",
+    }
+    if hypothesis_ids != {
+        "preferred_mechanism": "preferred",
+        "alternative_mechanism": "alternative",
+        "null_alias": "null",
+    }:
+        reasons.append("hypotheses.identity_contract")
+    if isinstance(measurement_program, dict):
+        selection = measurement_program.get("model_selection")
+        candidates = (
+            selection.get("candidate_models")
+            if isinstance(selection, dict)
+            else []
+        )
+        actual_model_roles = {
+            str(item.get("candidate_id") or ""): str(
+                item.get("candidate_role") or ""
+            )
+            for item in candidates or []
+            if isinstance(item, dict)
+        }
+        if actual_model_roles != expected_model_roles:
+            reasons.append(
+                "measurement_program.model_selection.hypothesis_binding_mismatch"
+            )
 
     evidence = plan.get("evidence_policy") if isinstance(plan.get("evidence_policy"), dict) else {}
     _validate_date_window(evidence, reasons)
@@ -1880,7 +2371,8 @@ def validate_plan(
             reasons.append(f"evidence_policy.{field}")
 
     routes = _dict_list(plan.get("routes"), minimum=3)
-    if {route.get("route_family") for route in routes} != ROUTE_FAMILIES:
+    route_families = frozenset(route.get("route_family") for route in routes)
+    if route_families not in {frozenset(ROUTE_FAMILIES), frozenset(LEGACY_ROUTE_FAMILIES)}:
         reasons.append("routes.route_families")
     if sum(route.get("favored_thesis_visible") is False for route in routes) < 2:
         reasons.append("routes.blind_independence")
@@ -2186,6 +2678,7 @@ def build_step1_payloads(
     knowledge_use = plan["knowledge_use"]
     economic = plan["economic_mechanism"]
     math = plan["mathematical_mechanism"]
+    measurement_program = plan["measurement_program"]
     evidence = plan["evidence_policy"]
     preferred = next(item for item in plan["hypotheses"] if item["kind"] == "preferred")
     evaluation_contract = build_web_evaluation_contract(plan)
@@ -2206,8 +2699,8 @@ def build_step1_payloads(
         "linked_economic_hypothesis": economic["mechanism_claim"],
         "model_family": math["model_family"],
         "math_tools": math["math_tools"],
-        "state_or_object": math["latent_state"],
-        "process_or_distribution_hypothesis": math["process_or_distribution_hypothesis"],
+        "mathematical_object": math["mathematical_object"],
+        "mechanism_equation_or_functional": math["mechanism_equation_or_functional"],
         "observable_estimator": math["factor_estimator"],
         "target_functional": math["target_functional"],
         "why_suitable": math["why_suitable"],
@@ -2215,7 +2708,7 @@ def build_step1_payloads(
     }
     discipline = {
         "source_type": "natural_language_hypothesis",
-        "step1_random_object": math["random_object"],
+        "step1_mathematical_object": math["mathematical_object"],
         "target_statistic_hint": math["target_functional"],
         "information_set_hint": math["information_set"],
         "initial_return_source_hypothesis": economic["mechanism_claim"],
@@ -2277,31 +2770,34 @@ def build_step1_payloads(
         },
         "primary_mechanism_model_candidates": [
             {
-                "candidate_id": preferred["hypothesis_id"],
-                "rank": 1,
-                "selected_model_family": math["model_family"],
-                "why_this_model_fits": math["why_suitable"],
-                "why_alternatives_are_less_suitable": math["why_alternatives_are_less_suitable"],
-                "state_variables": [math["latent_state"]],
+                "candidate_id": item["candidate_id"],
+                "candidate_role": item["candidate_role"],
+                "rank": index,
+                "selected_model_family": item["model_family"],
+                "why_this_model_fits": item["economic_implication"],
+                "why_alternatives_are_less_suitable": [
+                    item["decisive_test"]
+                ],
+                "state_variables": [item["mathematical_object"]],
                 "observable_proxies": [math["factor_estimator"]],
                 "target_functional": math["target_functional"],
-                "preferred": True,
+                "preferred": item.get("selected") is True,
             }
+            for index, item in enumerate(
+                measurement_program["model_selection"]["candidate_models"],
+                start=1,
+            )
         ],
-        "stochastic_price_process_projection": {
-            "projection_required": True,
-            "price_process_form": math["return_equation"],
-            "affected_price_process_terms": math["affected_price_process_terms"],
-            "conditional_distribution_claim": math["target_functional"],
-            "formula_should_estimate": math["factor_estimator"],
-            "expected_return_distribution_change": math["expected_return_distribution_change"],
-        },
+        "market_outcome_projection": measurement_program[
+            "market_outcome_projection"
+        ],
         "economic_to_math_modelling": {
             "economic_hypothesis": economic_hypothesis,
             "selected_baseline_model": math_candidate,
             "expected_metric_signature": math["expected_metric_signatures"],
             "metric_feedback_rules": preferred["kill_criteria"],
         },
+        "mechanism_conditioned_measurement_program": measurement_program,
     }
     aim = {
         "contract_version": "factorforge.step1.alpha_idea_master.v2",
@@ -2335,6 +2831,7 @@ def build_step1_payloads(
         "knowledge_reference_contract": discipline["knowledge_reference_contract"],
         "economic_hypothesis": economic_hypothesis,
         "math_hypothesis_candidates": [math_candidate],
+        "mechanism_conditioned_measurement_program": measurement_program,
         "final_factor": {
             "name": identity["factor_id"],
             "direction": research["expected_direction"],
@@ -2342,10 +2839,14 @@ def build_step1_payloads(
             "economic_logic": economic["mechanism_claim"],
         },
         "math_discipline_review": {
-            "step1_random_object": math["random_object"],
+            "mathematical_object": math["mathematical_object"],
             "target_statistic": math["target_functional"],
             "information_set_legality": math["information_set"],
             "expected_failure_modes": economic["what_would_break_it"],
+            "applicable_audits": measurement_program["applicable_audits"],
+            "observation_and_estimation": measurement_program[
+                "observation_and_estimation"
+            ],
         },
     }
     primary = {
@@ -2370,6 +2871,7 @@ def build_step1_payloads(
         "evaluation_contract": evaluation_contract,
         "economic_logic": economic["mechanism_claim"],
         "target_prediction": math["target_functional"],
+        "mechanism_conditioned_measurement_program": measurement_program,
     }
     challenger = {
         **primary,
@@ -2461,11 +2963,14 @@ def build_protocol_payloads(
         },
         "math_mechanism": {
             "model_family": math["model_family"],
-            "latent_state": math["latent_state"],
-            "state_space": math["state_space"],
+            "mathematical_object": math["mathematical_object"],
+            "mechanism_equation_or_functional": math[
+                "mechanism_equation_or_functional"
+            ],
             "observation_equation": math["observation_equation"],
             "factor_estimator": math["factor_estimator"],
-            "return_equation": math["return_equation"],
+            "market_outcome_equation": math["market_outcome_equation"],
+            "traded_quantity": math["traded_quantity"],
             "information_set": math["information_set"],
             "alternative_models": math["alternative_models"],
             "component_map": math["component_map"],

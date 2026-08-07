@@ -14,13 +14,14 @@ Runs the complete Step 1 pipeline on a single research report PDF:
 3. **Report map + thesis** — both routes produce structured thesis objects
 4. **Diff** — intake_diff and thesis_diff compare primary vs challenger
 5. **Chief merge** — authoritative adjudication producing canonical alpha_idea_master
-6. **Research discipline standardization** — attach random object, target statistic hint, information-set hint, return-source hypothesis, and similar-case lessons
+6. **Research discipline standardization** — attach the selected mathematical object, target statistic hint, information-set hint, return-source hypothesis, and similar-case lessons
 7. **Writeback** — all objects written to workspace; handoff file ready for Step 2
 
 ## Research Discipline
 
 Step 1 must not stop at report summary. It must identify:
-- the random object the paper/report is trying to predict,
+- the mathematical object the paper/report is trying to value, estimate,
+  identify, optimize, filter, compare, or otherwise measure,
 - the target statistic: expected return, rank, volatility, tail, regime, or other object,
 - the tradable information set and possible leakage risks,
 - a two-layer economic hypothesis:
@@ -35,10 +36,20 @@ Step 1 must not stop at report summary. It must identify:
 - the initial return-source hypothesis: `risk_premium`, `information_advantage`, `constraint_driven_arbitrage`, or `mixed` for backward compatibility,
 - what must be true and what would break the thesis.
 
+Step1 owns the pre-implementation half of the math-first authority chain:
+economic hypothesis -> open mathematical-tool search -> competing model
+families and selection -> primary math mechanism -> market-outcome projection
+-> applicable audits -> candidate observation equation. It must not choose a
+model because an operator or field is convenient. At least one
+mechanism-distinct alternative and one null/alias model must be recorded with
+discriminating predictions. DCF/residual-income/accounting models are valid for
+fundamental hypotheses; stochastic, spectral, functional, causal, optimization
+and other tools are selected only when the hypothesis warrants them.
+
 These fields are later consumed by Step6; weak Step1 understanding makes later iteration look clever but shallow.
 
 Step1 outputs must include:
-- `research_discipline.step1_random_object`
+- `research_discipline.step1_mathematical_object`
 - `research_discipline.target_statistic_hint`
 - `research_discipline.information_set_hint`
 - `research_discipline.initial_return_source_hypothesis`
@@ -82,6 +93,11 @@ Graph context is not same-factor evidence unless identity/hash lineage proves
 it. Use it to import reusable mechanisms, anti-patterns, and failed paths:
 wrong mathematical object, size/liquidity exposure, after-cost failure, data
 coverage block, or overfit gate.
+
+Knowledge, history and current data are advisory priors, counterexamples and
+tool candidates only. They may expand the model-family set but cannot select the
+primary mechanism, override the estimand, or justify a convenient proxy without
+an explicit observation-error contract.
 
 ## Prerequisites
 
@@ -200,7 +216,12 @@ All objects are written under `/home/ubuntu/.openclaw/workspace/factorforge/obje
 | Alpha idea master | `alpha_idea_master/alpha_idea_master__${report_id}.json` |
 | Handoff | `handoff/handoff__${report_id}.json` |
 
-`alpha_idea_master` must carry Step1 research discipline fields either directly or under `research_discipline`, plus compatible `math_discipline_review.step1_random_object` and `learning_and_innovation.similar_case_lessons_imported` for downstream consumers.
+`alpha_idea_master` must carry Step1 research discipline fields either directly
+or under `research_discipline`, plus
+`math_discipline_review.mathematical_object` and
+`learning_and_innovation.similar_case_lessons_imported` for downstream
+consumers. Existing artifacts may still expose `step1_random_object`; treat it
+as a read-only legacy alias, not a new-run requirement.
 
 ## Report ID Convention
 
@@ -218,7 +239,13 @@ See `references/architecture.md` for the full module map and data flow diagram.
 
 Core prompts are in `references/prompts.md`.
 Before generating alpha_idea_master, use the Dirac-Style Step1 Mechanism Extraction Prompt in references/prompts.md.
-When a report suggests a market structure relation, first identify the research equation or quasi-equation, then derive one or more observable detector candidates. A detector candidate is not an approved factor. It must state source_equation_id, observable_inputs, measurement_equation, expected_metric_signature, expected_cost_risk_profile, stochastic_benchmark_terms, falsification_tests, and branch_action=review_only or human_approval_required.
+When a report suggests a market structure relation, first identify the research
+equation or quasi-equation, then derive one or more observable detector
+candidates. A detector candidate is not an approved factor. It must state
+`source_equation_id`, `observable_inputs`, `measurement_equation`,
+`market_outcome_projection_terms`, `expected_metric_signature`,
+`expected_cost_risk_profile`, `falsification_tests`, and
+`branch_action=review_only|human_approval_required`.
 No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
 
 ## Data Schemas
@@ -234,11 +261,36 @@ Structured object schemas are in `references/schema.md`.
 - If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
 - Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
 
-## Mechanism Math Contract v2
+## Mechanism-Conditioned Math Authority
 
-Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
+Read `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md`
+before formalizing a new idea. Read
+`docs/contracts/mechanism_math_contract_v2.zh-CN.md` only when migrating or
+validating an existing v2 artifact. Step1 must produce an auditable public
+derivation seed:
+definitions, assumptions, candidate model families, each candidate's
+`mathematical_object`, independent `mechanism_equation_or_functional`,
+`target_functional`, `market_outcome_projection`, and `observation_mapping`, selection rationale,
+market-outcome projection, applicable specialized audits, observation equation,
+discriminating predictions and open identification gaps. This public artifact
+does not expose or claim to expose private chain-of-thought.
 
-Step1 should add market_process_thesis, primary_mechanism_model_candidates, and stochastic_price_process_projection under research_discipline. These are early research hypotheses and may be under-specified, but they must not be empty or generic. Step1 may list multiple candidate primary models and should mark the preferred/ranked candidate plus why alternatives are less suitable.
+Factor Forge uses a Dirac-style research discipline: a factor must be tied to a
+classified research equation, a primary mathematical model selected from the
+economic hypothesis, a mechanism-specific map to a tradeable value/payoff/price
+or return quantity, formula-implied information, expected metric signature,
+anomaly classification, and falsification tests. A stochastic benchmark is used
+only for a stochastic claim; a fundamental factor may instead derive the map
+from cash flows, discount rates, terminal value and value-price convergence.
+
+Step1 should add `market_process_thesis`,
+`primary_mechanism_model_candidates`, `market_outcome_projection`, and the exact
+`mechanism_conditioned_measurement_program` under `research_discipline`. These
+are early public research contracts and must not be empty or generic. Step1 may
+list multiple candidate primary models and must mark the preferred candidate,
+a mechanism-distinct alternative, and a null/alias model. The core mechanism
+equation or functional is not the market-outcome projection: first model the
+economic object, then separately map it to a tradeable value/payoff/price/return.
 
 Canonical formula intake is not exempt from this contract. If Step1 is built
 from a formula-only source such as Alpha101/canonical formula intake,
@@ -246,7 +298,8 @@ from a formula-only source such as Alpha101/canonical formula intake,
 economic hypothesis and math hypothesis candidates into
 `research_discipline.market_process_thesis`,
 `research_discipline.primary_mechanism_model_candidates`, and
-`research_discipline.stochastic_price_process_projection`. Missing these fields
+`research_discipline.market_outcome_projection`. Missing these fields or the
+exact measurement program
 is a Step1 BLOCK, not a reason to continue to Step3 or worker execution.
 
 Step1 economic hypothesis is a candidate model contract, not a formula
@@ -257,10 +310,11 @@ lenses include risk premium, delayed information diffusion, liquidity/price
 pressure, institutional constraints, time option, behavioral/organizational
 bias, market microstructure, fundamental repricing, statistical artifact, and
 report-specific mixed/other mechanisms. Do not default every factor to a
-stochastic process; select the primary mathematical model from the economic
-hypothesis and use stochastic processes, Ito calculus, linear algebra,
-optimization, information theory, or causal tests as benchmark tools for
-projection, diagnostics, derivation, or falsification when justified.
+stochastic process or a dimensional-analysis exercise. Select the primary
+mathematical model from the economic hypothesis and use DCF, residual income,
+accounting identities, stochastic processes, Ito calculus, linear algebra,
+optimization, information theory, causal tests, spectral or functional methods,
+or a newly composed object only when justified.
 
 `market_process_thesis` must include `alternative_return_source_tests`, with
 at least one non-primary source and fields `why_not_primary`,
@@ -268,8 +322,9 @@ at least one non-primary source and fields `why_not_primary`,
 This is the hard boundary between a real economic hypothesis and a narrative
 label such as "not risk premium".
 
-The preferred mechanism model must explain what latent/model state the formula
-is trying to recover. It is not enough to restate inputs such as `close`,
+The preferred mechanism model must explain what mathematical object, state,
+value, constraint, functional, relation, or parameter the formula is trying to
+recover. It is not enough to restate inputs such as `close`,
 `volume`, or the factor expression. Step2 will turn this into
 `formula_implied_information` and block if the result is just raw-field or
 formula-call restatement.
@@ -281,8 +336,8 @@ mathematical object is still missing. Include:
 
 - `economic_mechanism_contract`: payer/receiver hypothesis, persistence
   reason, expected sign, and observable proxy;
-- `mathematical_object_contract`: random object or state variable, target
-  statistic, information set, horizon, and formula-to-state mapping;
+- `mathematical_object_contract`: selected mathematical object, target
+  functional/statistic, information set, horizon, and formula-to-object mapping;
 - `alias_elimination_matrix`: plausible lookalike explanations and the test
   that would separate each one from the preferred mechanism;
 - `falsification_plan`: at least one kill criterion and one component or
@@ -292,7 +347,7 @@ mathematical object is still missing. Include:
 - `reviewer_attack_memo`: the strongest skeptical interpretation of the idea.
 
 If the source is oral, formula-only, or a mined candidate rather than a report,
-Step1 is still responsible for this seed. Missing payer, random object,
+Step1 is still responsible for this seed. Missing payer, mathematical object,
 information set, alias tests, or falsification design should set
 `research_quality_blocked` or `allowed_next_step=miner_only`, not a formal
 Step3 handoff.
@@ -307,8 +362,8 @@ summary. Freeze:
 - preferred, null and at least one alternative hypothesis;
 - economic-game participants, binding constraints, observable proxies and
   falsifiers;
-- latent state, observation equation, estimator, return equation and legal
-  information set;
+- mathematical object, mechanism equation or functional, market-outcome
+  projection, observation/estimation map and legal information set;
 - terminal success, reject and block conditions;
 - IS/OOS windows, sealed-OOS policy, purge/embargo, trial budget,
   multiplicity, cost, impact and capacity policies;

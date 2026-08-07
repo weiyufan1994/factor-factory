@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -39,10 +40,42 @@ def nested(data: dict[str, Any], *keys: str) -> dict[str, Any]:
     return cur if isinstance(cur, dict) else {}
 
 
+def stable_payload_hash(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def base_proposal(packet: dict[str, Any], role: str) -> dict[str, Any]:
     revision = nested(packet, "research_memo", "revision_strategy")
     mechanism = nested(packet, "research_memo", "mechanism_analysis")
     failure = revision.get("primary_failure_signature") or "none"
+    measurement_program = packet.get("mechanism_conditioned_measurement_program")
+    measurement_program = measurement_program if isinstance(measurement_program, dict) else {}
+    model_selection = measurement_program.get("model_selection")
+    model_selection = model_selection if isinstance(model_selection, dict) else {}
+    selected_model = next(
+        (
+            item
+            for item in model_selection.get("candidate_models") or []
+            if isinstance(item, dict) and item.get("selected") is True
+        ),
+        {},
+    )
+    projection = measurement_program.get("market_outcome_projection")
+    projection = projection if isinstance(projection, dict) else {}
+    observation = measurement_program.get("observation_and_estimation")
+    observation = observation if isinstance(observation, dict) else {}
+    legacy_math = (
+        packet.get("legacy_mechanism_math_contract")
+        or packet.get("mechanism_math_contract")
+    )
+    legacy_math = legacy_math if isinstance(legacy_math, dict) else {}
     return {
         "contract_version": COUNCIL_PROPOSAL_VERSION,
         "report_id": packet.get("report_id"),
@@ -58,10 +91,43 @@ def base_proposal(packet: dict[str, Any], role: str) -> dict[str, Any]:
         "selected_math_tools": [],
         "market_phenomenon": "Assess the factor expression as a research hypothesis using verified Step4/5/6 evidence.",
         "symbolic_model": {
-            "state_or_object": (packet.get("mechanism_math_contract") or {}).get("state_or_object") or mechanism.get("factor_family") or "unknown state",
-            "state_process": "",
-            "latent_state": "",
-            "target_functional": (packet.get("mechanism_math_contract") or {}).get("target_functional") or "E[next return | current information set]",
+            "measurement_program_contract_version": measurement_program.get(
+                "contract_version"
+            ),
+            "measurement_program_hash": (
+                stable_payload_hash(measurement_program)
+                if measurement_program
+                else None
+            ),
+            "selected_model_candidate_id": selected_model.get("candidate_id"),
+            "selected_model_family": selected_model.get("model_family"),
+            "mathematical_object": (
+                selected_model.get("mathematical_object")
+                or legacy_math.get("state_or_object")
+                or mechanism.get("factor_family")
+                or "mechanism-specific mathematical object under review"
+            ),
+            "mechanism_equation_or_functional": (
+                selected_model.get("mechanism_equation_or_functional")
+                or legacy_math.get("process_hypothesis")
+                or "mechanism-specific equation or functional remains under review"
+            ),
+            "target_functional": (
+                selected_model.get("target_functional")
+                or observation.get("estimand")
+                or legacy_math.get("target_functional")
+                or "next-period tradeable payoff under the legal information set"
+            ),
+            "market_outcome_projection": (
+                selected_model.get("market_outcome_projection")
+                or projection.get("projection_equation_or_map")
+                or "market-outcome projection remains under review"
+            ),
+            "observation_mapping": (
+                selected_model.get("observation_mapping")
+                or observation.get("observation_map")
+                or "observation mapping remains under review"
+            ),
         },
         "structural_findings": [],
         "candidate_revision_laws": [],
@@ -115,22 +181,26 @@ def build_derivation_record(packet: dict[str, Any], proposal: dict[str, Any]) ->
     laws = proposal.get("candidate_revision_laws") or []
     first_law = laws[0] if laws and isinstance(laws[0], dict) else {}
     formula_statement = (
-        "Map the observed formula structure to an advisory state-estimator hypothesis."
+        "Map the observed formula structure to an advisory mechanism-measurement hypothesis."
         if formula
-        else "Map the available signal structure to an advisory state-estimator hypothesis."
+        else "Map the available signal structure to an advisory mechanism-measurement hypothesis."
     )
     formula_text = formula if formula else ""
     mathematical_objects = [
         {
             "name": "factor_value",
             "meaning": "Current factor signal produced by Step3B evidence lineage.",
-            "unit_or_dimension": "dimensionless_or_unknown",
+            "measurement_semantics": "factor score in its declared implementation scale",
             "information_set": "available at factor timestamp",
         },
         {
-            "name": str(symbolic_model.get("state_or_object") or "candidate_state"),
-            "meaning": "Candidate economic or mathematical state represented by the factor expression.",
-            "unit_or_dimension": "latent_or_dimensionless",
+            "name": str(
+                symbolic_model.get("mathematical_object")
+                or symbolic_model.get("state_or_object")
+                or "candidate_mathematical_object"
+            ),
+            "meaning": "Candidate economic or mathematical object represented by the factor expression.",
+            "measurement_semantics": "mechanism-specific object; units recorded only when meaningful",
             "information_set": "current and historical observations only",
         },
     ]
@@ -138,21 +208,21 @@ def build_derivation_record(packet: dict[str, Any], proposal: dict[str, Any]) ->
         mathematical_objects.append({
             "name": "rank(high)",
             "meaning": "Cross-sectional high-price position after rank transform.",
-            "unit_or_dimension": "dimensionless_rank",
+            "measurement_semantics": "dimensionless cross-sectional rank",
             "information_set": "current and historical high prices",
         })
     if "rank(volume)" in formula.lower() or "rank(vol)" in formula.lower():
         mathematical_objects.append({
             "name": "rank(volume)",
             "meaning": "Cross-sectional volume position after rank transform.",
-            "unit_or_dimension": "dimensionless_rank",
+            "measurement_semantics": "dimensionless cross-sectional rank",
             "information_set": "current and historical volume observations",
         })
     if "correlation" in formula.lower() or "corr" in formula.lower():
         mathematical_objects.append({
             "name": "rolling_rank_dependence",
             "meaning": "Rolling dependence estimator between transformed price and activity variables.",
-            "unit_or_dimension": "dimensionless_dependence",
+            "measurement_semantics": "dimensionless rolling dependence estimate",
             "information_set": "rolling historical window ending at factor timestamp",
         })
     expected_metric_change = first_law.get("expected_metric_change") if isinstance(first_law.get("expected_metric_change"), list) else [
@@ -250,30 +320,38 @@ def symbolic_law(packet: dict[str, Any]) -> dict[str, Any]:
     metrics = packet.get("metrics") or {}
     is_price_volume = any(x in formula for x in ["volume", "vol", "amount", "turnover"]) and any(x in formula for x in ["high", "low", "close", "open"])
     p["selected_math_tools"] = [
-        "dimensional_analysis",
-        "scaling_law_analysis",
-        "stochastic_process_modeling",
-        "natural_time_clock_analysis",
-    ] if is_price_volume else ["dimensional_analysis", "limiting_case_analysis", "robust_statistics"]
-    p["market_phenomenon"] = "Price-volume coupling may estimate pressure, attention, or liquidity-shock state rather than stable drift."
-    p["symbolic_model"].update({
-        "state_or_object": "latent price-volume pressure state" if is_price_volume else p["symbolic_model"]["state_or_object"],
-        "state_process": "short-horizon stochastic pressure process with transient shock and possible persistence components",
-        "latent_state": "pressure persistence minus liquidity noise",
-    })
-    p["dimensional_scaling_review"] = {
-        "raw_field_units": {"high": "price", "close": "price", "volume": "shares", "amount": "money"},
-        "formula_output_dimension": "dimensionless" if any(x in formula for x in ["rank", "corr", "correlation", "zscore"]) else "unknown",
-        "dimension_erasing_transforms": [x for x in ["rank", "correlation", "zscore"] if x in formula],
-        "scale_invariance_claims": ["Rank/correlation transforms erase raw units but do not prove cross-sectional economic comparability."],
-        "natural_time_scale": "volume_time" if is_price_volume else "trading_time",
-        "dimension_risks": ["Raw volume should be normalized by float shares, ADV, or traded value before claiming cross-sectional comparability."],
-        "limiting_cases": ["If volume goes to zero, price-volume dependence is ill-conditioned.", "If turnover is very high, transient shock estimates may fail after costs."],
-    }
-    p["structural_findings"] = [
-        "Dimension-erasing transforms can hide unit pollution while preserving unstable ranking behavior.",
-        "Short windows on price-volume coupling can estimate transient liquidity shocks rather than persistent expected-return state.",
+        "mechanism_conditioned_math_search",
+        "limiting_case_analysis",
+        "counterexample_search",
     ]
+    p["market_phenomenon"] = "Price-volume coupling may estimate pressure, attention, or liquidity-shock state rather than stable drift."
+    if is_price_volume and p["symbolic_model"]["mathematical_object"] == "mechanism-specific mathematical object under review":
+        p["symbolic_model"]["mathematical_object"] = (
+            "price-volume observable relation requiring economic-model selection"
+        )
+    p["applicable_audits"] = {
+        "selection_rule": "select only audits justified by the proposed mechanism",
+        "selected": [
+            {
+                "audit_family": "limiting_case_analysis",
+                "rationale": "the proposed estimator law must survive boundary behavior",
+                "audit_record": "scaffold only; formal Council must replace this with a mechanism-specific check",
+                "falsifier": "a declared boundary case reverses or destroys the proposed estimator law",
+            }
+        ],
+        "rejected": [],
+    }
+    p["structural_findings"] = (
+        [
+            "Rank or normalization can hide scale pollution while preserving unstable ranking behavior.",
+            "Short windows on price-volume coupling can estimate transient liquidity shocks rather than persistent expected-return state.",
+        ]
+        if is_price_volume
+        else [
+            "The selected mathematical tool must be justified by the economic hypothesis rather than by formula syntax.",
+            "Limiting cases and null aliases must distinguish the proposed estimator law from decorative mathematics.",
+        ]
+    )
     if metrics.get("cost_adjusted_annual_return") is not None and float(metrics.get("cost_adjusted_annual_return") or 0) < 0:
         p["structural_findings"].append("Cost-adjusted evidence suggests a natural-time or liquidity-pressure horizon mismatch.")
     p["candidate_revision_laws"] = [
@@ -341,7 +419,12 @@ def main() -> None:
     for role in sorted(COUNCIL_AGENT_ROLES):
         proposal = role_proposal(packet, role)
         proposal["derivation_record"] = build_derivation_record(packet, proposal)
-        reasons = validate_revision_council_proposal(proposal)
+        reasons = validate_revision_council_proposal(
+            proposal,
+            measurement_program=packet.get(
+                "mechanism_conditioned_measurement_program"
+            ),
+        )
         if reasons:
             proposal["proposal_status"] = "blocked"
             proposal["block_reasons"] = reasons

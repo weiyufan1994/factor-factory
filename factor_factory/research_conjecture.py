@@ -60,8 +60,11 @@ TERMINAL_RECOMMENDATION_VALUES = {
 }
 REQUIRED_ROUTE_FAMILIES = {
     "economic_game",
-    "latent_state_measurement",
     "null_alias_counterexample",
+}
+MEASUREMENT_ROUTE_FAMILIES = {
+    "mechanism_object_measurement",
+    "latent_state_measurement",  # legacy compatibility
 }
 RESEARCH_PHASES = {
     "FORMULATE",
@@ -360,9 +363,20 @@ def validate_research_conjecture(payload: dict[str, Any]) -> list[str]:
         "participant_constraints",
         "BLOCK_FACTORFORGE_ECONOMIC_GAME_UNDERSPECIFIED",
     )
+    if not nonempty_str(
+        game.get("action_to_market_outcome") or game.get("action_to_price_path")
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_ECONOMIC_GAME_UNDERSPECIFIED:action_to_market_outcome"
+        )
+    if not nonempty_str(
+        game.get("payoff_or_profit_transfer_equation")
+        or game.get("profit_transfer_equation")
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_ECONOMIC_GAME_UNDERSPECIFIED:payoff_or_profit_transfer_equation"
+        )
     for field in (
-        "action_to_price_path",
-        "profit_transfer_equation",
         "persistence_boundary",
         "capacity_boundary",
         "failure_condition",
@@ -394,11 +408,8 @@ def validate_research_conjecture(payload: dict[str, Any]) -> list[str]:
         math = {}
     for field in (
         "model_family",
-        "latent_state",
-        "state_space",
         "observation_equation",
         "factor_estimator",
-        "return_equation",
         "information_set",
     ):
         _require_str(
@@ -407,6 +418,25 @@ def validate_research_conjecture(payload: dict[str, Any]) -> list[str]:
             field,
             "BLOCK_FACTORFORGE_MATH_MECHANISM_UNDERSPECIFIED",
         )
+    if not nonempty_str(
+        math.get("mathematical_object") or math.get("latent_state")
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_MATH_MECHANISM_UNDERSPECIFIED:mathematical_object"
+        )
+    if not nonempty_str(
+        math.get("mechanism_equation_or_functional")
+        or math.get("core_equation_or_functional")
+        or math.get("process_or_distribution")
+        or math.get("return_equation")
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_MATH_MECHANISM_UNDERSPECIFIED:mechanism_equation_or_functional"
+        )
+    if not nonempty_str(
+        math.get("market_outcome_equation") or math.get("return_equation")
+    ):
+        reasons.append("BLOCK_FACTORFORGE_MARKET_OUTCOME_PROJECTION_UNDERSPECIFIED")
     _require_list(
         reasons,
         math,
@@ -636,6 +666,8 @@ def validate_approach_registry(
             )
     if stage == "pre_council":
         missing = REQUIRED_ROUTE_FAMILIES - route_families
+        if not (route_families & MEASUREMENT_ROUTE_FAMILIES):
+            missing.add("mechanism_object_measurement")
         if missing:
             reasons.append(
                 "BLOCK_FACTORFORGE_APPROACH_REGISTRY_CORE_FAMILIES_MISSING:"

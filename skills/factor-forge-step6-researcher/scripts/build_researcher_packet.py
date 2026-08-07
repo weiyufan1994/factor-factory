@@ -275,7 +275,7 @@ def build_researcher_memo(
             },
         },
         'math_discipline_review': {
-            'step1_random_object': 'Cross-sectional A-share daily stock-date observations with fields high and volume, transformed into a date-wise ranked operator signal.',
+            'mathematical_object': 'Cross-sectional A-share daily stock-date observations with fields high and volume, transformed into a date-wise ranked operator signal.',
             'target_statistic': 'Future long-side daily return and risk-adjusted long-side performance after cost, drawdown, and recovery constraints.',
             'information_set_legality': 'The formula uses contemporaneous high and volume plus rolling historical windows; no future label or target field is used.',
             'spec_stability': 'Canonical operator expression is stable and hash-identified; implementation used formula IR, not legacy sample fallback.',

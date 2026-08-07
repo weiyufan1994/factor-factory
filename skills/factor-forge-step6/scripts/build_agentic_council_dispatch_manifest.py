@@ -118,6 +118,10 @@ def main() -> None:
             "runtime_dispatch_policy": runtime_dispatch_policy,
             "research_question": task.get("research_question"),
             "shared_context": task.get("visible_context") or {},
+            "measurement_program_binding": task.get(
+                "measurement_program_binding"
+            )
+            or {},
             "required_outputs": task.get("required_outputs") or [],
             "allowed_tools": task.get("allowed_tools") or [],
             "forbidden_changes": task.get("forbidden_changes") or [],
@@ -128,6 +132,7 @@ def main() -> None:
                 "proposal_generation_mode_allowed": ["agentic"],
                 "research_depth_allowed": ["medium", "high"],
                 "identity_binding_required": True,
+                "measurement_program_binding_required": True,
             },
         }
         write_json(task_packet_path, packet)
@@ -142,6 +147,10 @@ def main() -> None:
                 "route_fingerprint": task.get("route_fingerprint"),
                 "blind_context_hash": task.get("blind_context_hash"),
                 "expected_agent_identifier": task.get("expected_agent_identifier"),
+                "measurement_program_binding": task.get(
+                    "measurement_program_binding"
+                )
+                or {},
                 "task_packet_sha256": task_packet_sha256,
                 "blind_phase": (
                     (task.get("blind_context_policy") or {}).get("blind_phase")

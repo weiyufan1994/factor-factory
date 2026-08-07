@@ -38,6 +38,7 @@ from factor_factory.formula.pandas_codegen import generate_pandas_formula_code, 
 from factor_factory.formula.parser import parse_formula, resolve_formula_fields_for_schema
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import operator_meta
+from factor_factory.formula.semantics import max_formula_ir_lookback as shared_max_formula_ir_lookback
 from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.formula.kernels import default_kernel_profile, resolve_formula_kernel_engine
 from factor_factory.formula.operators import default_ts_rank_engine_profile, resolve_ts_rank_engine as resolve_formula_ts_rank_engine
@@ -165,52 +166,8 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
-def _formula_ir_constants(node) -> list[float]:
-    if not isinstance(node, dict):
-        return []
-    if node.get('type') == 'constant':
-        try:
-            return [float(node.get('value'))]
-        except (TypeError, ValueError):
-            return []
-    constants: list[float] = []
-    for child in node.get('args') or []:
-        constants.extend(_formula_ir_constants(child))
-    return constants
-
-
-def _operator_lookback(operator: str, constants: list[float]) -> int | None:
-    operator = str(operator or '').strip().lower()
-    if operator in {
-        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
-        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
-    } and constants:
-        last = constants[-1]
-        if isinstance(last, float) and not last.is_integer():
-            return None
-        value = int(last)
-        return value if value > 0 else None
-    return None
-
-
 def max_formula_ir_lookback(formula_ir: dict | None) -> int:
-    if not isinstance(formula_ir, dict):
-        return 0
-    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
-    lookbacks: list[int] = []
-
-    def visit(node) -> None:
-        if not isinstance(node, dict):
-            return
-        if node.get('type') == 'operator':
-            lookback = _operator_lookback(str(node.get('operator') or ''), _formula_ir_constants(node))
-            if lookback is not None:
-                lookbacks.append(lookback)
-        for child in node.get('args') or []:
-            visit(child)
-
-    visit(root)
-    return max(lookbacks) if lookbacks else 0
+    return shared_max_formula_ir_lookback(formula_ir)
 
 
 def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str, formula_ir: dict | None = None) -> tuple[pd.DataFrame, dict]:
@@ -880,7 +837,12 @@ def build_step2_research_context(report_id: str, spec: dict, step2_handoff: dict
         'target_statistic': target_statistic or 'missing_target_statistic_from_step2',
         'economic_mechanism': economic_mechanism or 'missing_economic_mechanism_from_step2',
         'expected_failure_modes': expected_failure_modes or ['missing_expected_failure_modes_from_step2'],
-        'step1_random_object': spec_math.get('step1_random_object') or handoff_math.get('step1_random_object'),
+        'mathematical_object': (
+            spec_math.get('mathematical_object')
+            or handoff_math.get('mathematical_object')
+            or spec_math.get('step1_random_object')
+            or handoff_math.get('step1_random_object')
+        ),
         'information_set_legality': spec_math.get('information_set_legality') or handoff_math.get('information_set_legality'),
         'similar_case_lessons_imported': (
             _as_list(spec_learning.get('similar_case_lessons_imported'))
@@ -1886,6 +1848,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         **operator_metadata(resolved_ir),
         'implementation_mode': 'operator',
         'implementation_source': 'formula_ir_pandas_codegen',
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'qlib_expression': qlib_expression,
     }
     python_stub = generate_pandas_formula_code(report_id=report_id, factor_id=factor_id, formula_ir=resolved_ir)
@@ -1897,6 +1860,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'implementation_status': 'ready',
         'formula_ir': resolved_ir,
         'formula_hash': resolved_ir.get('formula_hash'),
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'operator_set': resolved_ir.get('operator_set') or [],
         'required_fields': resolved_ir.get('required_fields') or [],
         'resolved_fields': resolved_ir.get('resolved_fields') or {},
@@ -1917,6 +1881,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'implementation_mode': 'operator',
         'implementation_source': 'formula_ir_pandas_codegen',
         'formula_ir': resolved_ir,
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'operator_schema': operator_schema,
         'qlib_expression': qlib_expression,
         'metadata': metadata,
@@ -1927,6 +1892,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'implementation_mode': 'operator',
         'implementation_source': 'formula_ir_pandas_codegen',
         'formula_ir': resolved_ir,
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'operator_schema': operator_schema,
         'hybrid_status': 'not_applicable_operator_only',
         'boundary': {
@@ -2766,6 +2732,7 @@ def main():
         'qlib_expression_draft_ref': str(qlib_path.relative_to(FF)),
         'hybrid_execution_scaffold_ref': str(hybrid_path.relative_to(FF)),
         'execution_mode': implementation_plan['implementation_mode'],
+        'resolved_binding_hash': implementation_plan.get('resolved_binding_hash'),
         'local_input_paths': prep.get('local_input_paths', {}),
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,

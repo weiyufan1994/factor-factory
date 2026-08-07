@@ -1,5 +1,11 @@
 # Factor Forge Ultimate 问题反馈：Alpha018-022 机制数学推导与 Agentic Council 闭环缺口
 
+> **历史反馈，已被当前合同取代。** 新研究以
+> `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md` 为准：
+> 数学工具由经济假设和竞争模型选择；随机过程、条件分布、量纲分析、DCF
+> 或其他工具都只在所选机制需要时使用。本文中要求普遍写随机过程的句子不得
+> 作为 current-path validator 或 agent prompt 的依据。
+
 Date: 2026-05-18
 
 Audience: Factor Forge Architect
@@ -480,4 +486,3 @@ Step6 mechanism/math artifacts were schema-valid but not research-valid enough.
 Council ran only deterministic scaffold, not true agentic Council.
 The run did not satisfy the desired full Factor Forge Ultimate agentic multi-loop research contract.
 ```
-

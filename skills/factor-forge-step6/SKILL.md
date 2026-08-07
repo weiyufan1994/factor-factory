@@ -38,7 +38,7 @@ Step6 must state:
 5. Step 6 must preserve failed lessons, not only successful ones.
 6. Step 6 should prefer structured retrieval before proposing modifications and should surface similar historical cases in the proposal.
 7. Step 6 must emit a concrete `research_memo`: formula understanding, return-source hypothesis, metric interpretation, evidence quality, failure/risk analysis, decision rationale, and next research tests.
-8. `research_memo` must include `math_discipline_review`: random object, target statistic, information-set legality, spec stability, signal-vs-portfolio gap, revision operator, generalization argument, overfit risk, and kill criteria.
+8. `research_memo` must include `math_discipline_review`: selected mathematical object, target statistic or functional, information-set legality, spec stability, signal-vs-portfolio gap, revision operator, generalization argument, overfit risk, and kill criteria.
 9. `research_memo` must include `learning_and_innovation`: transferable patterns, anti-patterns, similar-case lessons, innovative idea seeds, and reuse instructions for future agents.
 10. `research_memo` must include `experience_chain`, `revision_taxonomy`, `program_search_policy`, and `diversity_position`.
 11. Do not use or emit `dd_view_edge_trade`; that belongs to individual-stock diligence, not Factor Forge.
@@ -57,12 +57,23 @@ Step6 must state:
 24. Current mandate is long-only. Step6 must not use short selling, long-short spread, or direct decile trading as an adoption basis.
 25. Decile/quantile outputs are diagnostics only: use them to inspect monotonicity and top-group long-side behavior, never as a proposed trading instrument.
 
+Step6 interprets evidence against the frozen math-first chain, not the reverse.
+Before Council or revision, read
+`docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md` as the
+current authority. Read `docs/contracts/mechanism_math_contract_v2.zh-CN.md`
+only when validating an artifact that already carries that legacy contract;
+never synthesize it for new research.
+Metrics may falsify or localize a model, but they may not retroactively redefine
+the economic hypothesis, estimand, units or observation equation.
+
 Every revision must carry a knowledge-reference trail. Step6/Council retrieval
 context must record the retrieval index path, availability, query terms, and
 similar cases; if no case is found, the memo must state a cold-start knowledge
 gap rather than silently proceeding. Child revision materialization must inherit
 this context from Step6 artifacts or block with
 `BLOCK_FACTORFORGE_REVISION_KNOWLEDGE_CONTEXT_MISSING`.
+Retrieved cases are advisory priors, counterexamples and tool candidates only;
+they cannot outrank the current mathematical contract or count as proof.
 26. Revision must modify the factor expression and Step3B implementation itself. Do not “fix” a weak factor by changing portfolio expression, short-leg exposure, rebalance mechanics, or decile trading.
 27. Official promotion requires risk-adjusted positive long-side evidence. If a factor is strictly monotonic but the high-score long side does not make money with acceptable Sharpe/drawdown/recovery, Step6 must choose `iterate` or `reject`, not `promote_official`.
 28. Preferred revision direction is economic linearity: make higher factor values correspond more directly and monotonically to the economic state expected to earn risk-adjusted long-side returns.
@@ -84,18 +95,21 @@ Step4 to scan full-window raw minute data. If a revision only changes holding,
 rebalance, or portfolio policy, it should set
 `factor_value_recompute_required=false` and reuse existing factor values.
 31. Every successful formal Step6 loop must write `loop_research_brief__<report_id>__iter<n>.md/json` and link it from `research_iteration_master.loop_research_brief`. The brief must answer economic interpretation, metrics/chart evidence, metric analysis, knowledge comparison, next research direction, and final loop conclusion. Missing brief, missing core metrics, missing required chart keys, or long-short chart evidence not labeled `diagnostic_only` is a validation block.
-32. Step6 must carry the `mechanism_math_contract` into `mechanism_analysis`,
-revision hypotheses, and the loop research brief. The math contract is an
-explanatory and revision-discipline layer only: it must not replace Step4/5
-evidence, bypass provenance gates, justify promotion on its own, or authorize
-canonical Step3B changes without the existing loop authorization.
-33. For `math_model_status=specified`, the contract must state a testable
-process hypothesis, latent state, observable estimator, conditional
-distribution hypothesis, relationship shape, metric-signature match, and
-mechanism falsification tests. Price-volume covariance/correlation/rank-
-dependence formulas must be treated as `price_volume_microstructure` unless
-the formula itself contains explicit projection/residualization/neutralization
-operators.
+32. Step6 must carry the exact
+`mechanism_conditioned_measurement_program` into `mechanism_analysis`, revision
+hypotheses, and the loop research brief. The program is an explanatory and
+revision-discipline layer only: it must not replace Step4/5 evidence, bypass
+provenance gates, justify promotion on its own, or authorize canonical Step3B
+changes without the existing loop authorization. A legacy
+`mechanism_math_contract_v2` is preserved and validated only when it already
+exists upstream.
+33. For a specified current program, the research record must state a testable
+economic hypothesis, competing mathematical models, the selected mechanism,
+market-outcome projection, observable estimator, expected metric signature,
+and falsification tests. Latent states, conditional distributions, stochastic
+transitions, dimensional audits, or valuation identities are required only
+when the selected mechanism uses them. Formula classification is a diagnostic
+prior, not a rule that fixes the mathematical model.
 34. If human mechanism context exists under
 `objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
 or `knowledge/因子工厂/知识库/*MECHANISM*`, the Revision Council packet must
@@ -108,12 +122,17 @@ formula fields or operators is invalid; for example, a formula with no volume
 input must not claim price-volume dependence unless a structured justification
 is present and validated.
 35a. Step6 analysis and Revision Council must keep the same research rigor as
-Step1/Step2: economic_hypothesis selects the primary mathematical model, and
-benchmark mathematical tools such as stochastic processes, Ito calculus, linear
-algebra, optimization, information theory, and causal/placebo tests are used for
-projection, diagnostic, derivation, or falsification. Do not default every
-failed factor to a stochastic-process story or a generic payer narrative.
-Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
+Step1/Step2: `economic_hypothesis` selects the primary mathematical model after
+an open tool search. DCF/residual income, accounting identities, stochastic
+processes, Ito calculus, linear algebra, optimization, information theory,
+spectral/functional methods, causal/placebo tests, or other tools are used only
+when justified. Do not default every failed factor to a stochastic-process
+story, a dimensional-analysis exercise, or a generic payer narrative.
+Factor Forge uses a Dirac-style research discipline: the classified research
+equation must map the selected mathematical object to a tradeable value, payoff,
+price gap or return quantity, then to an observable estimator, expected metric
+signature and falsification tests. A stochastic benchmark is required only when
+the selected claim is stochastic.
 Council proposals must state which economic hypothesis, primary mathematical
 model, observable estimator, benchmark test, and falsification signature they
 are revising.
@@ -123,7 +142,13 @@ volatility drag, max drawdown, recovery days, and drawdown geometry when
 available. Revision Council proposals must include
 `research_equation_revision` and target the failed equation component.
 Before writing Step6 final recommendations, use the Dirac-Style Step6 Council Prompt in references/prompts.md. When asked for new ideas, use the Equation-To-Factor Discovery Prompt.
-When a report suggests a market structure relation, first identify the research equation or quasi-equation, then derive one or more observable detector candidates. A detector candidate is not an approved factor. It must state source_equation_id, observable_inputs, measurement_equation, expected_metric_signature, expected_cost_risk_profile, stochastic_benchmark_terms, falsification_tests, and branch_action=review_only or human_approval_required.
+When a report suggests a market structure relation, first identify the research
+equation or quasi-equation, then derive one or more observable detector
+candidates. A detector candidate is not an approved factor. It must state
+`source_equation_id`, `observable_inputs`, `measurement_equation`,
+`market_outcome_projection_terms`, `expected_metric_signature`,
+`expected_cost_risk_profile`, `falsification_tests`, and
+`branch_action=review_only|human_approval_required`.
 No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
 36. Before any Revision Council packet or agentic dispatch is built, Step6 must
 write a current-agent mechanism questionnaire:
@@ -139,6 +164,19 @@ template. If the memo is missing, Step6 must pause with
 handoff exposure. If the memo is present but generic, canonical-write-enabled,
 execution-enabled, formula-detached, or operator-contradictory,
 `validate_step6.py` must block it.
+New memos use `mathematical_object_answer`, `observation_mapping_answer`,
+`math_hypothesis.mathematical_object`,
+`math_hypothesis.mechanism_equation_or_functional`,
+`math_hypothesis.target_functional`,
+`math_hypothesis.market_outcome_projection`,
+`math_hypothesis.observation_mapping`, and the top-level
+`mathematical_object_mapping`. The target functional is the mechanism's
+estimand, not universally a conditional return. The separate market-outcome
+projection binds that estimand to the frozen tradeable payoff. Old
+`formula_state_answer`, `estimator_mapping_answer`, `random_object`,
+`latent_state`, `process_or_distribution`, `formula_as_estimator`, and
+`formula_state_estimator` fields are read only as compatibility aliases for
+existing artifacts; never synthesize them for a new memo.
 37. Advisory Council revision law is not executable by itself. After Council
 finalization and before any child Step3B materialization, the current main agent
 must write an orchestration synthesis:
@@ -258,7 +296,8 @@ component-ablation obligations from
 `factorforge_component_obligation_verifier_v1`. Stochastic and payer claims
 require their own trusted executable verifiers; until such a verifier exists,
 retain the evidence as falsifiable research and do not label the obligation
-`passed`.
+`passed`. This is not a mandatory linear path through
+`stochastic_validated`: non-stochastic mechanisms never need that qualifier.
 
 ## Factor Proof Policy
 
@@ -400,6 +439,19 @@ An `iterate` decision may propose one bounded mechanism-linked revision:
 - allocate a fresh trial budget;
 - keep OOS sealed;
 - require human approval before code mutation.
+
+The revision must first identify the failed layer:
+`economic_hypothesis`, `primary_math_mechanism`, `market_outcome_projection`,
+`applicable_audits`, `observation_equation`, `measurement_program`,
+`implementation`, or `empirical_regime`. It must preserve unaffected
+invariants and publish the revised definitions, equations, measurement
+semantics, component
+bindings, expected signatures and falsifiers. Changing the estimand creates a
+new hypothesis branch; it is not an implementation repair.
+
+Council's `public_derivation_record` is an auditable derivation summary for
+reproduction and challenge. It must not request, expose or claim to expose
+private chain-of-thought.
 
 Forbidden repairs:
 

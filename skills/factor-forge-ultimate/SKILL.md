@@ -72,6 +72,40 @@ recorded with checked index paths, query hash, hit count, and fallback reason.
 Missing provenance blocks formal acceptance even if a human-readable lesson
 string is present.
 
+## Math-First Authority Contract
+
+Before Step3, Ultimate must verify the complete authority chain:
+
+```text
+economic hypothesis -> open mathematical-tool search
+-> competing model families / selection -> primary math mechanism
+-> market-outcome projection -> applicable audits
+-> observation equation -> measurement program
+-> operator | direct code | hybrid -> empirical falsification
+```
+
+Read and apply
+`docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md` as the
+current authority. Read `docs/contracts/mechanism_math_contract_v2.zh-CN.md`
+only to validate or migrate an artifact that already contains the legacy v2
+contract; never generate that legacy contract for a new run.
+
+Knowledge/history/data may supply advisory priors, counterexamples and tool
+candidates, but cannot override the math contract. The search space is open:
+fundamental factors may select DCF, residual-income or accounting-identity
+models; path-dependent or microstructure factors may select stochastic,
+spectral, information-theoretic, functional, causal, optimization or newly
+composed objects when justified. No family is a universal default. Specialized
+audits such as dimensional analysis or stochastic-process diagnostics are used
+only when the selected mechanism makes them relevant. Operators are optional;
+direct code and hybrid are valid when each component is bound to a mathematical
+term, measurement semantics, legal information set, expected metric signature
+and falsifier.
+Ultimate must BLOCK reverse-engineered economic stories, data-convenience
+estimand drift, decorative math and missing public derivation records. Public
+records contain reproducible definitions and decisive derivation steps, not
+private chain-of-thought.
+
 ## Memory Pressure and Batch Execution Protocol
 
 Every non-smoke run uses
@@ -108,9 +142,13 @@ FORMULATE -> DIVERSIFY -> ATTACK|DERIVE -> TEST
 - ingest source report / idea
 - identify canonical source and factor intent
 - produce `alpha_idea_master`
-- standardize and validate Step1 research fields: `step1_random_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`
+- standardize and validate Step1 research fields: `step1_mathematical_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`; the old `step1_random_object` name is read only as a legacy alias
 - `economic_hypothesis` must first classify the broad source as `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`, then state the second-layer mechanism and the likely counterparty paying the return
 - `math_hypothesis_candidates` must map the economic mechanism to report-specific mathematical tools. Do not use fixed mappings like "price-volume means microstructure"; use DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, dimensional/scaling analysis, or other tools only when they explain the report-specific counterparty and asset-price logic
+- every candidate model must state its own `mathematical_object`,
+  `mechanism_equation_or_functional`, `target_functional`,
+  `market_outcome_projection`, and `observation_mapping`; keep the core
+  mechanism distinct from its market-outcome projection into the executable payoff
 - every formal research pass must include a flexible math-forced insight step:
   choose the mathematical object and tools from the economic hypothesis, state
   what the tools reveal, what information they preserve or discard, how the
@@ -125,13 +163,15 @@ FORMULATE -> DIVERSIFY -> ATTACK|DERIVE -> TEST
 Run Step1-2, then stop and inspect their artifacts. The main agent must:
 
 - state who pays/receives, the persistent constraint and observable falsifier;
-- define latent state, observation equation, estimator, return law and
-  information set;
+- define the selected mathematical object, mechanism equation or functional,
+  market-outcome projection, observation/estimation map and information set;
 - map every formula component to model term, preserved/deleted information and
   an ablation;
 - freeze `claim_class`, IS/OOS windows, purge/embargo, trial budget,
   multiplicity policy, cost/impact/capacity policy and terminal criteria;
 - register at least three routes, including a null/alias route.
+- freeze the mechanism-conditioned measurement program and verify that route
+  choice follows mathematical/numerical need rather than operator availability.
 
 Materialize only agent-authored inputs with:
 
@@ -317,7 +357,9 @@ Long-side admission uses the factor-as-business lens:
 - return/risk premium is `revenue`;
 - trading COGS defaults to `turnover * 0.3%` when no better cost estimate exists;
 - volatility is operating instability / risk-capital pressure, not direct COGS;
-- stochastic-process volatility drag is `-0.5 * sigma^2`;
+- under a log-growth model, variance drag may be diagnosed with
+  `-0.5 * sigma^2`; this portfolio diagnostic does not make a stochastic
+  process the factor's core mechanism;
 - max drawdown is capital expenditure / capital impairment;
 - recovery time is depreciation or payback period;
 - risk budget depends on Sharpe, max drawdown, recovery time, capacity, and confidence in repeatability.
@@ -463,7 +505,7 @@ When using this skill, also consult the relevant sub-skills:
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must execute the implementation route frozen by the measurement program; it must not prefer an operator when the selected mathematical object requires trusted hybrid or direct code, and it must not change routes after a failure. Unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
 
 ## Operator / Qlib Engine
 
@@ -512,12 +554,13 @@ subagents. Typical roles are `symbolic_law_discovery`, `evidence_auditor`,
 
 `symbolic_law_discovery` is not a fixed checklist. It treats the factor formula,
 data fields, evidence, and knowledge base as a mathematical research object. It
-may choose dimensional analysis, scaling laws, stochastic processes, stochastic
-calculus, jump processes, stopping-time reasoning, Fourier/spectral analysis,
-robust statistics, tail-distribution analysis, projection geometry, functional
-analysis, dynamical systems, information theory, market microstructure theory,
-or other justified tools. It must also be allowed to reject tools as unjustified
-when the formula/evidence does not support them.
+may choose DCF or residual-income valuation, accounting identities, dimensional
+or scaling analysis, stochastic processes, jump or stopping-time reasoning,
+Fourier/spectral analysis, robust statistics, projection geometry, functional
+analysis, causal models, dynamical systems, information theory, optimization,
+market microstructure theory, a composition of these, or another justified
+tool. It must reject tools that do not fit the economic hypothesis; neither
+stochastic processes nor dimensional analysis is mandatory.
 
 Every council proposal must include a visible `derivation_record` suitable for
 knowledge-base writeback. This is a public research artifact, not hidden
@@ -715,4 +758,8 @@ the current runtime.
 
 ## Mechanism Math Contract v2
 
-Factor Forge treats a factor as a falsifiable market-process model first and a formula second. Step1/2/6 artifacts should preserve the chain: market behavior -> economic hypothesis -> primary mechanism model -> stochastic price-process projection -> formula observable estimator -> expected metric signature -> falsification or revision logic. The primary model is selected from the economic hypothesis and is not automatically a stochastic process, but every formal factor must state how the signal changes the conditional distribution of next-horizon return under F_t. Formula explanations that merely restate the formula, or decorative generic SDE/physics language without state variables, observable proxies, and falsification, must BLOCK. Council revisions must declare which model layer they revise: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract.
+Factor Forge treats a factor as a falsifiable market-process model first and an
+implementation second. The authoritative chain and stage obligations are in the
+two contracts referenced under `Math-First Authority Contract`; do not duplicate
+or weaken them here. Council revisions must name the exact failed/revised layer,
+preserved invariants and new discriminating evidence before any child execution.

@@ -53,7 +53,9 @@ PILOT_MODEL = "deepseek-v4-flash"
 RESEARCH_JOB_VERSION = "factorforge_console_research_job_v1"
 RESEARCH_MESSAGE_VERSION = "factorforge_console_research_message_v1"
 VALID_MESSAGE_ROLES = {"user"}
-VALID_MESSAGE_CONTENT_KINDS = {"hypothesis", "report", "formula", "code", "decision"}
+USER_MESSAGE_CONTENT_KINDS = {"hypothesis", "report", "formula", "code", "decision"}
+INTERNAL_MESSAGE_CONTENT_KINDS = {"formula_contract"}
+VALID_MESSAGE_CONTENT_KINDS = USER_MESSAGE_CONTENT_KINDS | INTERNAL_MESSAGE_CONTENT_KINDS
 _MESSAGE_SECRET_PATTERN = re.compile(
     r"(?is)(?:"
     r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|"
@@ -147,7 +149,7 @@ class ResearchRequest:
             raise ValueError("title is too long")
         if len(self.hypothesis) > 20_000:
             raise ValueError("hypothesis is too long")
-        if self.input_kind not in VALID_MESSAGE_CONTENT_KINDS - {"decision"}:
+        if self.input_kind not in {"hypothesis", "report", "formula", "code"}:
             raise ValueError(f"invalid research input_kind: {self.input_kind!r}")
         if self.model and self.model != PILOT_MODEL:
             raise ValueError(f"web Pilot supports only the {PILOT_MODEL} model")

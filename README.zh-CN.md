@@ -313,7 +313,7 @@ Step6 的 `research_memo` 应至少包括：
 
 Step6 必须执行数学纪律检查：
 
-- `step1_random_object`：研究对象是什么；
+- `mathematical_object`：研究的是何种对象、价值、状态、泛函、关系或参数；
 - `target_statistic`：因子到底预测什么统计量；
 - `information_set_legality`：是否使用未来信息；
 - `spec_stability`：公式是否稳定；

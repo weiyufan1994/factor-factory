@@ -33,7 +33,7 @@ sample/debug runner 只能作为 archived 或 isolated debug helper。正式 Ste
 ## 研究纪律字段
 
 Step 1 必须保留研报原始 thesis，同时补齐后续审查需要的结构：
-- `research_discipline.step1_random_object`
+- `research_discipline.step1_mathematical_object`
 - `research_discipline.target_statistic_hint`
 - `research_discipline.information_set_hint`
 - `research_discipline.initial_return_source_hypothesis`
@@ -41,7 +41,9 @@ Step 1 必须保留研报原始 thesis，同时补齐后续审查需要的结构
 - `research_discipline.what_would_break_it`
 - `research_discipline.similar_case_lessons_imported`
 
-为兼容 Step2/5/6，`math_discipline_review.step1_random_object` 与 `learning_and_innovation.similar_case_lessons_imported` 也应存在。
+为当前 Step2/5/6 提供 `math_discipline_review.mathematical_object` 与
+`learning_and_innovation.similar_case_lessons_imported`。旧 artifact 的
+`step1_random_object` 只作为兼容别名读取，不应在新研究中强制生成。
 
 ## producer 闸门
 正式 Step2 只能消费批准 producer 的 Step1 输出。任何包含 `manual`、`debug`、`fake`、`posthoc`、`unknown`、`adhoc`、`ad_hoc` 的 producer 字符串，一律不得进入正式 Step3。

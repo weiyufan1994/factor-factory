@@ -227,7 +227,12 @@ class ResearchJobStore:
                 (digest,),
             )
 
-    def create_job(self, request: ResearchRequest) -> ResearchJob:
+    def create_job(
+        self,
+        request: ResearchRequest,
+        *,
+        initial_messages: list[tuple[str, str]] | None = None,
+    ) -> ResearchJob:
         now = utc_now()
         suffix = uuid.uuid4().hex[:10]
         factor_id = _factor_identity(request)
@@ -243,19 +248,32 @@ class ResearchJobStore:
             created_at_utc=now,
             updated_at_utc=now,
         )
+        messages = list(initial_messages or [(request.input_kind, request.hypothesis)])
+        if not messages or len(messages) > 8:
+            raise ValueError("initial research messages must contain between 1 and 8 items")
+        normalized_messages = [
+            (str(content_kind).strip(), str(content).strip())
+            for content_kind, content in messages
+            if str(content).strip()
+        ]
+        if len(normalized_messages) != len(messages):
+            raise ValueError("initial research messages must not be empty")
+        if (request.input_kind, request.hypothesis.strip()) not in normalized_messages:
+            raise ValueError("initial research messages must include the canonical request input")
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._insert_job(connection, job)
-            self._insert_message(
-                connection,
-                job_id=job.job_id,
-                role="user",
-                content_kind=request.input_kind,
-                content=request.hypothesis,
-                model=request.model,
-                idempotency_key=f"initial:{job.job_id}",
-                created_at_utc=now,
-            )
+            for index, (content_kind, content) in enumerate(normalized_messages, start=1):
+                self._insert_message(
+                    connection,
+                    job_id=job.job_id,
+                    role="user",
+                    content_kind=content_kind,
+                    content=content,
+                    model=request.model,
+                    idempotency_key=f"initial:{job.job_id}:{index}",
+                    created_at_utc=now,
+                )
             self._insert_event(connection, job.job_id, "JOB_CREATED", "研究任务已进入队列", {})
             connection.execute("COMMIT")
         return job
@@ -420,6 +438,8 @@ class ResearchJobStore:
     ) -> ResearchMessage:
         if not idempotency_key or len(idempotency_key) > 160:
             raise ValueError("message idempotency key is invalid")
+        if idempotency_key.lower().startswith(("initial:", "internal:", "system:")):
+            raise ValueError("message idempotency key uses a reserved namespace")
         if self.get_job(job_id) is None:
             raise KeyError(job_id)
         with self._lock, self._connect() as connection:

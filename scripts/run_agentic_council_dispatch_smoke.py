@@ -256,6 +256,13 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
     task_packet = load_json(root / task["task_packet_path"])
     task_id = task["task_id"]
     role = task["agent_role"]
+    measurement_binding = (
+        task_packet.get("measurement_program_binding")
+        or task.get("measurement_program_binding")
+        or {}
+    )
+    frozen_model = measurement_binding.get("mechanism_equation_or_functional")
+    frozen_object = measurement_binding.get("mathematical_object")
     proof_obligation_ids = [
         str(item)
         for item in task_packet.get("proof_obligation_ids") or []
@@ -273,6 +280,7 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "measurement_program_binding": measurement_binding,
         "approach_route": {
             "route_id": task.get("route_id"),
             "route_family": task.get("route_family"),
@@ -318,9 +326,9 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
             "selected_tool": "statistical_inference",
             "selected_tool_rationale": "The smoke result maps packet evidence into a falsifiable estimator-state claim.",
             "rejected_tools": [{"tool": "expression_wrapper_repair", "reason": "The Council task is expression-level research only."}],
-            "baseline_model": "E[next evidence | estimator state]",
+            "baseline_model": frozen_model,
             "model_mutation": "challenge persistence, scale, and falsification requirements before any formula approval",
-            "mathematical_objects": ["agentic_state", "next_evidence"],
+            "mathematical_objects": [frozen_object, "next_evidence"],
             "derivation_steps": ["Read packet evidence.", "Map it to a public estimator-state claim."],
             "derived_state_variables": ["agentic_state"],
             "observable_estimators": ["factor score", "net long-side evidence"],
@@ -336,7 +344,7 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], include_i
         "public_derivation_record": {
             "research_question": task_packet.get("research_question"),
             "assumptions": [{"assumption": "Step6 packet evidence is the input.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Invalidate if packet provenance is blocked."}],
-            "mathematical_objects": [{"name": "agentic_state", "meaning": "Agent-specific estimator state.", "unit_or_dimension": "dimensionless", "information_set": "factor timestamp evidence only"}],
+            "mathematical_objects": [{"name": frozen_object, "meaning": "The mathematical object frozen by the measurement program.", "unit_or_dimension": "mechanism-dependent", "information_set": "factor timestamp evidence only"}],
             "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links public claims to metric signatures.", "what_it_can_answer": "Whether a hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical code changes."}],
             "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | agentic_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for dispatch smoke."}],
             "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a testable estimator-state claim.", "depends_on": []}],
@@ -691,6 +699,56 @@ def case_finalize_all_real_agent_results(root: Path) -> dict[str, Any]:
     )
 
 
+def case_attach_blocks_agent_result_tampered_after_merge(root: Path) -> dict[str, Any]:
+    rid = REPORT_ALPHA013_LIKE
+    summary_path = council_dir(root, rid) / f"revision_council_summary__{rid}.json"
+    summary = load_json(summary_path)
+    valid_results = summary.get("valid_agent_results") or []
+    if not valid_results:
+        return result(
+            "attach_blocks_agent_result_tampered_after_merge",
+            False,
+            "valid agent result required",
+            {"summary_path": str(summary_path)},
+        )
+    result_path = Path(str(valid_results[0].get("path") or ""))
+    if not result_path.is_absolute():
+        result_path = root / result_path
+    iteration_path = root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json"
+    before_iteration = sha256_file(iteration_path)
+    payload = load_json(result_path)
+    payload.setdefault("math_mechanism_derivation", {})["baseline_model"] = (
+        "dP_t=mu_t*dt+sigma_t*dW_t"
+    )
+    write_json(result_path, payload)
+    attach = run_cmd(
+        root,
+        [
+            sys.executable,
+            "skills/factor-forge-step6/scripts/attach_revision_council_to_step6.py",
+            "--report-id",
+            rid,
+        ],
+    )
+    after_iteration = sha256_file(iteration_path)
+    token = "BLOCK_REVISION_COUNCIL_AGENT_RESULT_HASH_MISMATCH"
+    ok = (
+        attach["rc"] == 1
+        and token in (attach["stdout_tail"] + attach["stderr_tail"])
+        and before_iteration == after_iteration
+    )
+    return result(
+        "attach_blocks_agent_result_tampered_after_merge",
+        ok,
+        token,
+        {
+            "attach": attach,
+            "result_path": str(result_path),
+            "iteration_unchanged": before_iteration == after_iteration,
+        },
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fresh", action="store_true")
@@ -792,6 +850,7 @@ def main() -> int:
         cases.append(case_fake_real_agent_terminal_factor_scope_missing_authority(root))
         cases.append(case_finalize_missing_result(root))
         cases.append(case_finalize_all_real_agent_results(root))
+        cases.append(case_attach_blocks_agent_result_tampered_after_merge(root))
         cases.append(case_prior_revision_memory_dispatch_contract(root))
     after = file_snapshot()
     polluted = pollution_matches(after - before)

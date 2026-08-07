@@ -5,8 +5,8 @@
 ## 当前判断
 Step 2 是 canonical spec 闸门。它消费批准的 Step 1 intake 产出的 `alpha_idea_master`，并产出 `factor_spec_master`、`handoff_to_step3` 与 Step3B 所需研究上下文。
 
-## 机制数学合约
-`factor_spec_master` 携带 `mechanism_math_contract`，版本为 `factorforge_mechanism_math_contract_v1`。这是 operator、direct_code、hybrid 共用的增量研究层。`specified` 合约必须包含模型家族、数学工具箱、经济机制、状态/对象、可观测输入、estimator 映射、target functional、单调性声明、信息集、预期指标签名、revision operators、falsification tests 与 kill criteria。如果机制不能负责任地数学化，Step2 写 `math_model_status=under_specified`，并给出 `under_specified_reason` 与 `next_human_research_question`。
+## 当前机制条件化测量程序
+`factor_spec_master` 与 `handoff_to_step3` 携带完全一致的 `factorforge_mechanism_conditioned_measurement_program_v1`。Step2 为 operator、direct-code 和 hybrid 路线冻结竞争数学模型、由经济机制选择的数学对象、estimand、observation map、implementation binding、适用审计、证伪测试与搜索不变量。任何数学工具家族都不是通用必填项。旧 `mechanism_math_contract` 与 `mechanism_math_contract_v2` 仅在上游历史 artifact 已经携带时保留并校验；新研究不得自动生成它们。
 
 ## 当前提交的可复现性输入
 - `fixtures/step2/alpha_idea_master__sample.json`
@@ -67,7 +67,8 @@ Step 2 是 canonical spec 的第一道闸门。`factor_spec_master` 必须包含
 - `thesis.alpha_thesis`
 - `thesis.target_prediction`
 - `thesis.economic_mechanism`
-- `math_discipline_review.step1_random_object`
+- `math_discipline_review.mathematical_object`（旧 artifact 可读取
+  `step1_random_object`）
 - `math_discipline_review.target_statistic`
 - `math_discipline_review.information_set_legality`
 - `math_discipline_review.expected_failure_modes`

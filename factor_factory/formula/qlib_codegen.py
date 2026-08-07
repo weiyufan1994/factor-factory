@@ -6,7 +6,11 @@ from .registry import operator_meta
 def _emit(node: dict) -> str:
     typ = node.get('type')
     if typ == 'field':
-        return f'${node["resolved_field"]}'
+        resolved = str(node["resolved_field"])
+        semantic = str(node.get("name") or "").strip().lower()
+        if semantic in {"return", "returns", "ret"} and resolved.lower() == "pct_chg":
+            return f'(${resolved} / 100.0)'
+        return f'${resolved}'
     if typ == 'constant':
         return str(node['value'])
     if typ != 'operator':
@@ -37,6 +41,19 @@ def to_qlib_expression(formula_ir: dict) -> dict:
             'unsupported_operators': [],
             'fallback_allowed': False,
             'reason': f'formula parse failed: {formula_ir.get("parse_errors")}',
+        }
+    unsupported = sorted(
+        name
+        for name in set(formula_ir.get('operator_set') or [])
+        if not operator_meta(name).get('supports_qlib')
+    )
+    if unsupported:
+        return {
+            'status': 'unsupported',
+            'qlib_supported': False,
+            'unsupported_operators': unsupported,
+            'fallback_allowed': False,
+            'reason': 'BLOCK_UNSUPPORTED_QLIB_OPERATOR: ' + ','.join(unsupported),
         }
     try:
         return {

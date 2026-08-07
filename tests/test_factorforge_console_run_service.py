@@ -1396,6 +1396,23 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert answer_form["mechanism_qa"] == {
         field: "" for field in contract["required_qa_fields"]
     }
+    assert "mathematical_object_answer" in contract["required_qa_fields"]
+    assert "observation_mapping_answer" in contract["required_qa_fields"]
+    assert "formula_state_answer" not in contract["required_qa_fields"]
+    assert "mathematical_object_mapping" in answer_form
+    assert "formula_state_estimator" not in answer_form
+    assert {
+        "mathematical_object",
+        "mechanism_equation_or_functional",
+        "target_functional",
+        "market_outcome_projection",
+        "observation_mapping",
+    }.issubset(answer_form["math_hypothesis"])
+    assert not {
+        "random_object",
+        "latent_state",
+        "process_or_distribution",
+    }.intersection(answer_form["math_hypothesis"])
     expected_signature_keys = {
         "rank_ic",
         "long_side",
@@ -1450,14 +1467,17 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "the patch at 16,000 bytes and the memo at 24,000 bytes" in prompt
     assert "knowledge, or any file. Do not run" in prompt
     assert (
-        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, formula_state_{i,t}], entry"
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, measured_object_{i,t}]"
         in prompt
     )
+    assert "math_hypothesis.target_functional` must state the mechanism's actual estimand" in prompt
+    assert "For a valuation hypothesis this may be intrinsic value" in prompt
+    assert "Do not invent a stochastic state" in prompt
+    assert "math_hypothesis.process_or_distribution" not in prompt
+    assert "mathematical_object_mapping.component_links" in prompt
     assert "identical JSON objects" in prompt
     assert "top-level `falsification_tests` as a JSON list with at least two" in prompt
-    assert "Every list item must be one\n     non-empty plain JSON string" in prompt
-    assert "objects, dictionaries, arrays, or structured\n     test records are invalid" in prompt
-    assert "does not satisfy this required\n     top-level field" in prompt
+    assert "Every list item must be one non-empty plain JSON string" in prompt
     assert "any Step script or\n   validator" in prompt
     assert "exact validator above" not in prompt
     assert "RankIC and\n   PearsonIC are evaluation statistics" in prompt
@@ -1896,7 +1916,11 @@ def test_main_agent_memo_metric_signature_filled_and_identical_passes_signature_
     )
 
 
-def _model_family_failures(selected: str, selection: str) -> list[str]:
+def _model_family_failures(
+    selected: str,
+    selection: str,
+    factor_spec: dict | None = None,
+) -> list[str]:
     from factor_factory.mechanism_math.main_agent_memo import (
         validate_main_agent_mechanism_memo,
     )
@@ -1921,7 +1945,8 @@ def _model_family_failures(selected: str, selection: str) -> list[str]:
                 "model_mutation": "formula-specific observation equation",
             },
             "expected_metric_signature": dict(signature),
-        }
+        },
+        factor_spec,
     )
 
 
@@ -1938,6 +1963,50 @@ def test_main_agent_memo_model_family_aliases_normalize_before_comparison():
     )
     assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID" not in failures
     assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" not in failures
+
+
+def test_current_program_accepts_open_mechanism_family_without_stochastic_coercion():
+    from factor_factory.measurement_program import measurement_program_template
+
+    placeholder = "OPEN_FAMILY_TEST"
+    program = measurement_program_template(
+        placeholder=placeholder,
+        implementation_route="direct_code",
+    )
+
+    def fill(value):
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        return "auditable custom mechanism statement" if value == placeholder else value
+
+    program = fill(program)
+    candidates = program["model_selection"]["candidate_models"]
+    candidates[0]["model_family"] = "pathwise optimal-transport imbalance geometry"
+    candidates[1]["model_family"] = "spectral phase-coupling alternative"
+    candidates[2]["model_family"] = "observable alias null"
+    factor_spec = {
+        "mechanism_conditioned_measurement_program": program,
+        "canonical_spec": {
+            "mechanism_conditioned_measurement_program": program,
+        },
+    }
+
+    failures = _model_family_failures(
+        "pathwise optimal-transport imbalance geometry",
+        "pathwise optimal-transport imbalance geometry",
+        factor_spec,
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID" not in failures
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" not in failures
+
+    mismatched = _model_family_failures(
+        "stochastic_process",
+        "stochastic_process",
+        factor_spec,
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in mismatched
 
 
 def test_failed_mechanism_resume_restores_exact_parent_evidence_tree(tmp_path):

@@ -878,7 +878,12 @@ class ResearchQueueService:
             )
         )
 
-    def submit(self, request: ResearchRequest) -> ResearchJob:
+    def submit(
+        self,
+        request: ResearchRequest,
+        *,
+        initial_messages: list[tuple[str, str]] | None = None,
+    ) -> ResearchJob:
         validate_pilot_evaluation_request(request)
         if request.source_url:
             raise ValueError(
@@ -888,7 +893,7 @@ class ResearchQueueService:
             require_catalogs_healthy(self.config)
         if not self.healthcheck():
             raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_RUNNER_UNAVAILABLE")
-        return self.store.create_job(request)
+        return self.store.create_job(request, initial_messages=initial_messages)
 
     def request_resume(self, job_id: str) -> ResearchJob:
         job = self.store.get_job(job_id)
@@ -971,14 +976,19 @@ class ResearchRunService:
             and catalogs_healthy(self.config)
         )
 
-    def submit(self, request: ResearchRequest) -> ResearchJob:
+    def submit(
+        self,
+        request: ResearchRequest,
+        *,
+        initial_messages: list[tuple[str, str]] | None = None,
+    ) -> ResearchJob:
         validate_pilot_evaluation_request(request)
         if request.source_url:
             raise ValueError(
                 "source URL ingestion is disabled until the read-only fetch broker is available"
             )
         require_catalogs_healthy(self.config)
-        job = self.store.create_job(request)
+        job = self.store.create_job(request, initial_messages=initial_messages)
         self._wake.set()
         return job
 
@@ -3937,16 +3947,16 @@ class ResearchRunService:
                 "selected_model_family": "",
                 "why_this_model": "",
                 "why_not_generic_template": "",
-                "random_object": "",
-                "latent_state": "",
-                "process_or_distribution": "",
+                "mathematical_object": "",
+                "mechanism_equation_or_functional": "",
                 "target_functional": "",
-                "formula_as_estimator": "",
+                "market_outcome_projection": "",
+                "observation_mapping": "",
                 "expected_metric_signature": dict(metric_signature_form),
             },
             "math_model_selection": {
                 "model_family": "",
-                "baseline_model": "",
+                "mechanism_equation_or_functional": "",
                 "model_mutation": "",
             },
             "payer": {
@@ -3954,9 +3964,9 @@ class ResearchRunService:
                 "why_they_pay": "",
                 "necessary_market_structure": "",
             },
-            "formula_state_estimator": {
-                "latent_state": "",
-                "observable_mapping": "",
+            "mathematical_object_mapping": {
+                "mathematical_object": "",
+                "observation_mapping": "",
                 "component_links": [],
             },
             "expected_metric_signature": dict(metric_signature_form),

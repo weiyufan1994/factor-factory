@@ -24,7 +24,8 @@ For normal research, every factor must have:
 - evidence review after Step4,
 - case reflection after Step5,
 - Step6 judgment with knowledge writeback,
-- math discipline review that identifies the random object, target statistic, information-set legality, and overfit controls,
+- math discipline review that identifies the selected mathematical object,
+  target statistic or functional, information-set legality, and overfit controls,
 - learning writeback that extracts transferable patterns, anti-patterns, and innovative idea seeds,
 - and, if needed, a revision brief that sends the loop back to Step3B.
 
@@ -179,7 +180,7 @@ Write/update the journal with:
 - author's stated factor idea,
 - formula or signal family,
 - expected economic mechanism,
-- random object and target statistic,
+- selected mathematical object and target statistic or functional,
 - information set and leakage risks,
 - assumptions that must be tested,
 - likely failure modes,
@@ -208,9 +209,10 @@ Review:
 - profit payer and economic logic: who pays, why the behavior repeats, and what
   would falsify the payer hypothesis,
 - portfolio metrics: account/NAV, turnover, benchmark relation, drawdown if available,
-- stochastic risk attribution: whether volatility and maximum drawdown come
-  from continuous sigma exposure, jump/tail events, regime transitions,
-  liquidity crunch, crowding, or implementation noise,
+- risk attribution appropriate to the selected mechanism: for stochastic or
+  path-dependent claims this may distinguish continuous sigma exposure,
+  jump/tail events and regime transitions; for other mechanisms use their own
+  valuation, accounting, liquidity, concentration or implementation risk map,
 - charts and artifacts,
 - whether predictive evidence translates into tradable evidence.
 

@@ -32,6 +32,10 @@ MODEL_KEYWORDS = {
     "bayesian",
     "signal extraction",
     "cash flow",
+    "fcf",
+    "wacc",
+    "intrinsic value",
+    "residual income",
     "discount",
     "valuation",
     "cointegration",
@@ -234,7 +238,7 @@ def build_formula_understanding(spec_like: dict[str, Any]) -> dict[str, Any]:
         "formula_features": features,
         "component_interpretations": components,
         "interaction_structure": interaction,
-        "latent_state_candidates": list(dict.fromkeys(latent)),
+        "mathematical_object_candidates": list(dict.fromkeys(latent)),
     }
 
 
@@ -1431,6 +1435,68 @@ def _select_baseline_model(economic_text: str, features: dict[str, Any]) -> str:
     return "other"
 
 
+def _normalize_baseline_model_family(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "discounted cash-flow valuation": "valuation_identity",
+        "discounted_cash_flow": "valuation_identity",
+        "dcf": "valuation_identity",
+        "residual-income valuation": "valuation_identity",
+        "residual_income": "valuation_identity",
+        "accounting identity": "valuation_identity",
+        "structural causal model": "other",
+        "linear factor projection": "projection_residualization",
+        "price_volume_microstructure": "transient_impact",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in BASELINE_MODEL_FAMILIES else None
+
+
+def _selected_model_from_measurement_program(
+    spec_like: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    canonical = _canonical(spec_like or {})
+    candidates = [
+        mechanism_analysis.get("mechanism_conditioned_measurement_program"),
+        spec_like.get("mechanism_conditioned_measurement_program"),
+        canonical.get("mechanism_conditioned_measurement_program"),
+    ]
+    for program in candidates:
+        if not isinstance(program, dict):
+            continue
+        selection = program.get("model_selection")
+        if not isinstance(selection, dict):
+            continue
+        models = selection.get("candidate_models")
+        if not isinstance(models, list):
+            continue
+        selected = [
+            item
+            for item in models
+            if isinstance(item, dict) and item.get("selected") is True
+        ]
+        if len(selected) != 1:
+            continue
+        return program, selected[0]
+    return None
+
+
+def _selected_baseline_from_measurement_program(
+    spec_like: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+) -> str | None:
+    selected = _selected_model_from_measurement_program(
+        spec_like,
+        mechanism_analysis,
+    )
+    if selected is None:
+        return None
+    _, model = selected
+    raw = str(model.get("model_family") or "").strip()
+    return _normalize_baseline_model_family(raw) or raw or None
+
+
 def _economic_hypothesis_summary(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any], economic: str) -> str:
     return (
         f"return_source={mechanism_analysis.get('return_source') or 'unknown'}; "
@@ -1454,7 +1520,7 @@ def _profit_payer_for_baseline(
     mechanism_analysis: dict[str, Any],
 ) -> dict[str, Any]:
     hypothesis_source = _economic_hypothesis_summary({}, mechanism_analysis, economic)
-    formula_state_link = _component_summary(components) or "primary formula transform estimates the declared latent state"
+    formula_state_link = _component_summary(components) or "primary formula transform estimates the selected mathematical object"
     if baseline == "valuation_identity":
         return {
             "payer_or_counterparty": "valuation-error counterparties absorbing earnings-growth or discount-rate repricing",
@@ -1536,6 +1602,14 @@ def build_formula_specific_derivation(
     understanding = build_formula_understanding(spec_like)
     interaction_structure = str(understanding.get("interaction_structure") or "")
     economic = _economic_text(spec_like, mechanism_analysis)
+    selected_baseline = _selected_baseline_from_measurement_program(
+        spec_like,
+        mechanism_analysis,
+    )
+    selected_program_model = _selected_model_from_measurement_program(
+        spec_like,
+        mechanism_analysis,
+    )
     if interaction_structure == "slow_state_x_short_horizon_threshold":
         economic = (
             "Formula-specific hypothesis: a slow winner or long-window trend state interacts with a "
@@ -1543,7 +1617,6 @@ def build_formula_specific_derivation(
             "Delayed updaters, trend extrapolators, or liquidity-demand accounts may pay when the "
             "short-state boundary misprices the next-horizon payoff conditional on the slow state."
         )
-        baseline = "stochastic_process"
     elif interaction_structure == "open_close_intraday_position":
         economic = (
             "Formula-specific hypothesis: an open/close relative-position transform estimates overnight-to-intraday "
@@ -1551,9 +1624,7 @@ def build_formula_specific_derivation(
             "liquidity demanders, or close-location chasers may pay when the next-horizon return corrects that "
             "short-horizon price-location state."
         )
-        baseline = "stochastic_process"
-    else:
-        baseline = _select_baseline_model(economic, features)
+    baseline = selected_baseline or _select_baseline_model(economic, features)
     components: list[dict[str, Any]] = []
     if features["has_250_window"]:
         components.append({
@@ -1587,8 +1658,8 @@ def build_formula_specific_derivation(
         components.append({
             "component": "primary_formula_transform",
             "formula_feature": features.get("formula_text") or "formula_ir",
-            "state_interpretation": "observable estimator for the declared latent state",
-            "mechanism_requirement": "connect this transform to the payer behavior and expected return horizon",
+            "state_interpretation": "observable estimator for the selected mathematical object",
+            "mechanism_requirement": "connect this transform to the selected object, payer behavior, and expected return horizon",
         })
 
     metric_feedback = "Observed metrics must be compared with the expected signature; contradiction should trigger model challenge, formula mutation, or kill criteria."
@@ -1599,6 +1670,18 @@ def build_formula_specific_derivation(
         )
 
     payer_derivation = _profit_payer_for_baseline(baseline, components, economic, mechanism_analysis)
+    selected_program = selected_program_model[0] if selected_program_model else {}
+    selected_model = selected_program_model[1] if selected_program_model else {}
+    selected_observation = (
+        selected_program.get("observation_and_estimation")
+        if isinstance(selected_program.get("observation_and_estimation"), dict)
+        else {}
+    )
+    selected_projection = (
+        selected_program.get("market_outcome_projection")
+        if isinstance(selected_program.get("market_outcome_projection"), dict)
+        else {}
+    )
     return {
         "version": DERIVATION_VERSION,
         "economic_to_math_model_selection": {
@@ -1607,34 +1690,50 @@ def build_formula_specific_derivation(
                 "Selected from the economic hypothesis and formula structure, not from a fixed factor-family template: "
                 f"{economic[:400] or 'economic hypothesis under-specified'}"
             ),
-            "why_not_generic_template": "The model must explain payer behavior, state dynamics, estimator mapping, and metric signature for this specific formula.",
+            "why_not_generic_template": "The model must explain payer behavior, the selected mathematical object, its mechanism equation or functional, the observation mapping, and the metric signature for this specific formula.",
             "model_mutations_for_this_formula": [
                 item["mechanism_requirement"] for item in components
             ],
         },
         "profit_payer_derivation": payer_derivation,
         "formula_components": components,
-        "latent_state_mapping": [
+        "mathematical_object_mapping": [
             {
                 "observable_component": item["component"],
-                "latent_state_claim": item["state_interpretation"],
-                "estimator_mapping": item["mechanism_requirement"],
+                "mathematical_object_claim": item["state_interpretation"],
+                "observation_mapping": item["mechanism_requirement"],
             }
             for item in components
         ],
         "selected_model_family": baseline,
         "why_this_model_not_generic_template": "It is tied to economic payer behavior, formula components, horizon, sign convention, and metric falsification.",
-        "random_object": "panel of observable factor inputs and next-period returns under the legal information set F_t",
-        "latent_state": "formula-specific latent state implied by the economic hypothesis",
-        "process_or_distribution": _process_for_baseline(baseline, features),
-        "target_functional": "E[r_{t+1:t+h} | F_t, estimated_state_t]",
-        "formula_as_estimator": "the formula maps observable inputs into the declared latent state; each transform must have a payer/horizon interpretation",
+        "mathematical_object": str(
+            selected_model.get("mathematical_object")
+            or _mathematical_object_for_baseline(baseline, features)
+        ),
+        "mechanism_equation_or_functional": str(
+            selected_model.get("mechanism_equation_or_functional")
+            or _mechanism_for_baseline(baseline, features)
+        ),
+        "target_functional": str(
+            selected_observation.get("estimand")
+            or _target_functional_for_baseline(baseline)
+        ),
+        "market_outcome_projection": str(
+            selected_projection.get("projection_equation_or_map")
+            or _market_outcome_projection_for_baseline(baseline)
+        ),
+        "observation_mapping": str(
+            selected_observation.get("observation_map")
+            or selected_observation.get("estimator")
+            or "the formula maps legal-time observables into the selected mathematical object; each transform must have a payer, model-term, and horizon interpretation"
+        ),
         "expected_metric_signature": "rank IC, long-side return, cost-adjusted return, monotonicity, and turnover must match the declared sign and horizon",
         "observed_metric_comparison": metric_feedback,
         "metric_feedback_to_model": "Unsupported metrics must revise the baseline model, mutate the estimator/sign/horizon, or activate kill criteria.",
         "falsification_tests": [
             "Block promotion if long-side cost-adjusted evidence contradicts the expected payoff direction.",
-            "Block or mutate if formula component behavior does not match the declared latent state horizon.",
+            "Block or mutate if formula component behavior does not match the selected mathematical object's declared horizon.",
         ],
         "kill_criteria": [
             "Kill if no identifiable payer or constraint remains after evidence review.",
@@ -1644,9 +1743,39 @@ def build_formula_specific_derivation(
     }
 
 
-def _process_for_baseline(baseline: str, features: dict[str, Any]) -> str:
+def _mathematical_object_for_baseline(
+    baseline: str,
+    features: dict[str, Any],
+) -> str:
     if baseline == "valuation_identity":
-        return "cash-flow, earnings-growth, or residual-income valuation process with discount-rate or revision shocks"
+        return "discounted forecast cash-flow or residual-income functional and its intrinsic-value-to-price gap"
+    if baseline == "state_space":
+        return "latent information object together with its legal-time observation map"
+    if baseline == "transient_impact":
+        return "signed temporary order-flow or inventory-pressure component"
+    if baseline == "cointegration":
+        return "cointegrating residual and equilibrium-deviation functional"
+    if baseline == "copula_rank_dependence":
+        return "conditional rank-dependence functional or copula section"
+    if baseline == "jump_threshold":
+        return "threshold-crossing event, stopping time, and boundary direction"
+    if baseline == "projection_residualization":
+        return "orthogonal projection residual after declared nuisance exposure removal"
+    if baseline == "fourier_wavelet":
+        return "localized spectral coefficient or multiscale signal component"
+    if baseline == "dimensional_scaling":
+        return "scale-invariant ratio or scaling-law residual"
+    if baseline == "stochastic_process":
+        return "mechanism-specific return, event, occupation, or path functional under the legal information set"
+    return "researcher-selected mathematical object justified by the economic hypothesis"
+
+
+def _mechanism_for_baseline(baseline: str, features: dict[str, Any]) -> str:
+    if baseline == "valuation_identity":
+        return (
+            "V_t=sum_{k=1}^T FCF_{t+k}/(1+WACC_t)^k "
+            "+ TV_t/(1+WACC_t)^T; valuation_gap_t=V_t/P_t-1"
+        )
     if baseline == "state_space":
         return "latent information state with delayed Bayesian updating or signal extraction under F_t"
     if baseline == "transient_impact":
@@ -1665,7 +1794,37 @@ def _process_for_baseline(baseline: str, features: dict[str, Any]) -> str:
         if features.get("has_250_window") and features.get("has_short_delay_or_delta"):
             return "price return process combining a slow winner/trend state with a short-horizon reversal or dislocation state"
         return "stochastic return process with drift, reversal, volatility, or jump components estimated from legal history"
-    return "explicit conditional distribution must be supplied by the researcher; formula restatement is insufficient"
+    if baseline == "cointegration":
+        return "z_t=y_t-beta*x_t with stationary equilibrium error z_t; the estimator measures economically justified displacement from the equilibrium relation"
+    if baseline == "projection_residualization":
+        return "f_res=(I-P_X)f, where X contains only declared nuisance exposures and the residual preserves the economic estimand"
+    if baseline == "fourier_wavelet":
+        return "the selected localized basis decomposes the observable path into economically interpretable scale-frequency components before reconstruction of the target feature"
+    if baseline == "dimensional_scaling":
+        return "the selected scale-free functional is invariant to the justified unit transformation and changes only with the economic quantity of interest"
+    return "an explicit model equation or functional must be supplied by the researcher; formula restatement is insufficient"
+
+
+def _target_functional_for_baseline(baseline: str) -> str:
+    if baseline == "valuation_identity":
+        return "valuation_gap_t=intrinsic_value_t/market_price_t-1"
+    if baseline == "cointegration":
+        return "equilibrium_deviation_t=y_t-beta*x_t"
+    if baseline == "projection_residualization":
+        return "orthogonal_residual_t=(I-P_X)f_t"
+    if baseline == "fourier_wavelet":
+        return "mechanism_selected_scale_frequency_component_t"
+    if baseline == "dimensional_scaling":
+        return "mechanism_selected_scale_invariant_functional_t"
+    return "E[r_{t+1:t+h} | F_t, measured_mathematical_object_t]"
+
+
+def _market_outcome_projection_for_baseline(baseline: str) -> str:
+    if baseline == "valuation_identity":
+        return "E[r_{t+1:t+h}|F_t] is increasing in valuation_gap_t when the declared convergence mechanism holds after costs"
+    if baseline == "cointegration":
+        return "E[r_{t+1:t+h}|F_t] follows the declared sign of equilibrium-error correction after costs"
+    return "E[r_{t+1:t+h}|F_t] follows the declared sign and horizon of the selected mathematical object after costs"
 
 
 def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, Any], mechanism_analysis: dict[str, Any] | None = None) -> list[dict[str, str]]:
@@ -1676,20 +1835,68 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "formula_specific_derivation version invalid"})
     selection = derivation.get("economic_to_math_model_selection") if isinstance(derivation.get("economic_to_math_model_selection"), dict) else {}
     baseline = selection.get("baseline_model_family") or derivation.get("selected_model_family")
-    if baseline not in BASELINE_MODEL_FAMILIES:
+    selected_program_model = _selected_model_from_measurement_program(
+        spec_like or {},
+        mechanism_analysis or {},
+    )
+    selected_program_family = str(
+        (selected_program_model[1] if selected_program_model else {}).get(
+            "model_family"
+        )
+        or ""
+    ).strip()
+    open_family_matches_program = (
+        bool(selected_program_family)
+        and str(baseline or "").strip().casefold()
+        in {
+            selected_program_family.casefold(),
+            str(
+                _normalize_baseline_model_family(selected_program_family) or ""
+            ).casefold(),
+        }
+    )
+    if baseline not in BASELINE_MODEL_FAMILIES and not open_family_matches_program:
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": f"baseline_model_family invalid: {baseline}"})
-    for path, value in [
+    mathematical_object = (
+        derivation.get("mathematical_object")
+        or derivation.get("latent_state")
+        or derivation.get("random_object")
+    )
+    mechanism_equation = (
+        derivation.get("mechanism_equation_or_functional")
+        or derivation.get("process_or_distribution")
+    )
+    observation_mapping = (
+        derivation.get("observation_mapping")
+        or derivation.get("formula_as_estimator")
+    )
+    current_generic_contract = (
+        "mechanism_equation_or_functional" in derivation
+        or "mathematical_object" in derivation
+        or "observation_mapping" in derivation
+    )
+    required_text_fields = [
         ("economic_to_math_model_selection.why_selected_from_economic_hypothesis", selection.get("why_selected_from_economic_hypothesis")),
         ("economic_to_math_model_selection.why_not_generic_template", selection.get("why_not_generic_template")),
         ("profit_payer_derivation.payer_or_counterparty", (derivation.get("profit_payer_derivation") or {}).get("payer_or_counterparty") if isinstance(derivation.get("profit_payer_derivation"), dict) else None),
         ("profit_payer_derivation.why_they_pay", (derivation.get("profit_payer_derivation") or {}).get("why_they_pay") if isinstance(derivation.get("profit_payer_derivation"), dict) else None),
-        ("process_or_distribution", derivation.get("process_or_distribution")),
-        ("formula_as_estimator", derivation.get("formula_as_estimator")),
+        ("mechanism_equation_or_functional", mechanism_equation),
+        ("observation_mapping", observation_mapping),
         ("metric_feedback_to_model", derivation.get("metric_feedback_to_model")),
         ("revision_implication", derivation.get("revision_implication")),
-    ]:
+    ]
+    if current_generic_contract:
+        required_text_fields.append(("mathematical_object", mathematical_object))
+    for path, value in required_text_fields:
         if not isinstance(value, str) or not value.strip():
             failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": f"{path} missing"})
+    if current_generic_contract and not str(
+        derivation.get("market_outcome_projection") or ""
+    ).strip():
+        failures.append({
+            "code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING",
+            "message": "market_outcome_projection missing",
+        })
     if not isinstance(derivation.get("formula_components"), list) or not derivation.get("formula_components"):
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "formula_components missing"})
     if not isinstance(derivation.get("falsification_tests"), list) or len(derivation.get("falsification_tests") or []) < 2:
@@ -1748,43 +1955,68 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
             "code": "BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC",
             "message": f"profit payer derivation is generic or incomplete: {sorted(set(generic_hits))}",
         })
-    process_text = str(derivation.get("process_or_distribution") or "")
-    process = process_text.lower()
+    mechanism_text = str(mechanism_equation or "")
+    mechanism = mechanism_text.lower()
     features = formula_features(spec_like or {}, mechanism_analysis or {})
     formula_tokens = {token for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", str(features.get("formula_text") or "").lower()) if len(token) > 2}
-    model_hits = [token for token in MODEL_KEYWORDS if token in process]
-    formula_hits = [token for token in formula_tokens if token in process]
-    compact_stochastic_model = _has_explicit_stochastic_model(process)
+    model_hits = [token for token in MODEL_KEYWORDS if token in mechanism]
+    formula_hits = [token for token in formula_tokens if token in mechanism]
+    compact_stochastic_model = _has_explicit_stochastic_model(mechanism)
     if baseline == "stochastic_process":
         missing_model_assumption = not (
-            compact_stochastic_model or _has_stochastic_process_prose(process)
+            compact_stochastic_model or _has_stochastic_process_prose(mechanism)
         )
     elif baseline == "transient_impact":
         missing_model_assumption = not _has_explicit_transient_impact_model(
-            process_text,
+            mechanism_text,
             formula_tokens,
             semantic_context=_text_blob(
-                derivation.get("latent_state"),
-                derivation.get("formula_as_estimator"),
+                mathematical_object,
+                observation_mapping,
                 derivation.get("profit_payer_derivation"),
                 derivation.get("economic_to_math_model_selection"),
             ),
             formula_context=_text_blob(
-                derivation.get("formula_as_estimator"),
-                derivation.get("formula_state_estimator"),
+                observation_mapping,
+                derivation.get("mathematical_object_mapping")
+                or derivation.get("formula_state_estimator"),
                 derivation.get("operator_consistency_discussion"),
                 payer.get("formula_state_link"),
             ),
         )
     elif baseline == "jump_threshold":
-        missing_model_assumption = not _has_explicit_jump_threshold_model(process)
+        missing_model_assumption = not _has_explicit_jump_threshold_model(mechanism)
+    elif baseline == "valuation_identity":
+        has_value_term = any(
+            term in mechanism
+            for term in [
+                "fcf",
+                "cash flow",
+                "residual income",
+                "book value",
+                "intrinsic_value",
+                "intrinsic value",
+            ]
+        )
+        has_discount_term = any(
+            term in mechanism
+            for term in ["wacc", "discount", "cost of equity", "1+", "1 +"]
+        )
+        missing_model_assumption = not (
+            "=" in mechanism and has_value_term and has_discount_term
+        )
     else:
         missing_model_assumption = not model_hits
     if missing_model_assumption and (
         formula_hits
-        or baseline in {"jump_threshold", "stochastic_process", "transient_impact"}
+        or baseline in {
+            "jump_threshold",
+            "stochastic_process",
+            "transient_impact",
+            "valuation_identity",
+        }
     ):
-        failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "process_or_distribution merely restates formula tokens without model assumption"})
+        failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "mechanism_equation_or_functional merely restates formula tokens without a model assumption"})
     return failures
 
 

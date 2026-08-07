@@ -310,19 +310,19 @@ def valid_conjecture() -> dict[str, Any]:
                     "falsifier": "The proxy does not condition future return or decay.",
                 }
             ],
-            "action_to_price_path": "Forced demand moves price before patient capital fully absorbs it.",
-            "profit_transfer_equation": "strategy_pnl = temporary_price_repair - execution_cost",
+            "action_to_market_outcome": "Forced demand moves price before patient capital fully absorbs it.",
+            "payoff_or_profit_transfer_equation": "strategy_pnl = temporary_price_repair - execution_cost",
             "persistence_boundary": "Ends when forced inventory is absorbed or the mandate expires.",
             "capacity_boundary": "Capacity is bounded by available opposite-side liquidity.",
             "failure_condition": "No observable constraint proxy or no positive receiver payoff.",
         },
         "math_mechanism": {
             "model_family": "latent flow pressure with temporary impact",
-            "latent_state": "X_t = unabsorbed constrained inventory pressure",
-            "state_space": "real-valued signed pressure with absorbing neutral state",
+            "mathematical_object": "X_t = unabsorbed constrained inventory pressure",
+            "mechanism_equation_or_functional": "impact_t = beta * X_t - absorption_t",
             "observation_equation": "Y_t = h(X_t, liquidity_t) + epsilon_t",
             "factor_estimator": "f_t = phi(Y_<=t)",
-            "return_equation": "r_{t+1} = beta X_t - cost_t + eta_{t+1}",
+            "market_outcome_equation": "r_{t+1} = beta X_t - cost_t + eta_{t+1}",
             "information_set": "F_t only; earliest execution t+1",
             "alternative_models": ["unconditional reversal", "liquidity risk premium"],
             "component_map": [
@@ -379,7 +379,7 @@ def valid_approaches() -> dict[str, Any]:
         ("route_economic", "economic_game", False, ["economic_game", "payer"], "1"),
         (
             "route_measurement",
-            "latent_state_measurement",
+            "mechanism_object_measurement",
             False,
             ["measurement_validity", "component_ablation"],
             "2",
@@ -1074,7 +1074,7 @@ def main() -> int:
         and {task.get("route_family") for task in tasks}
         == {
             "economic_game",
-            "latent_state_measurement",
+            "mechanism_object_measurement",
             "null_alias_counterexample",
         }
         and len(blind_tasks) >= 2,

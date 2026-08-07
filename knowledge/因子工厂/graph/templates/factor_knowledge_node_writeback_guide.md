@@ -68,7 +68,7 @@ python3 scripts/run_factor_knowledge_graph_smoke.py
 python3 scripts/run_factor_knowledge_network_readiness.py
 ```
 
-`validate_factor_knowledge_node.py` 是单节点快速验收入口。它会检查 schema、taxonomy 标签合法性、payer/receiver、random object、公式/方程、Dirac-style insight、证据窗口、核心指标、失败边界、source_paths 和 relation edges。新增节点先跑这个，再 rebuild 全图。
+`validate_factor_knowledge_node.py` 是单节点快速验收入口。它会检查 schema、taxonomy 标签合法性、payer/receiver、与机制匹配的 mathematical object、公式/方程、Dirac-style insight、证据窗口、核心指标、失败边界、source_paths 和 relation edges。旧节点的 `random_object` 只作兼容别名。新增节点先跑这个，再 rebuild 全图。
 
 Graph 节点不等于正式入库。`feature_candidate`、`standalone_rejected`、`anti_pattern`、`data_blocked` 都是合法且重要的知识状态。
 

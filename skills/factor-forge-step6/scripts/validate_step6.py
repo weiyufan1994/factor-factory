@@ -25,6 +25,7 @@ from factor_factory.mechanism_math.formula_specific import (
 )
 from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
+from factor_factory.measurement_program import validate_measurement_program
 from factor_factory.revision_council.guards import FORBIDDEN_TEXT_TOKEN, FORBIDDEN_PATTERNS
 from factor_factory.revision_council.validator import validate_revision_council_proposal
 from factor_factory.research_conjecture import (
@@ -166,13 +167,13 @@ CORE_LOOP_BRIEF_METRICS = {
 }
 SPECIFIED_MECHANISM_MATH_SUMMARY_FIELDS = {
     'model_family',
+    'mathematical_object',
     'state_or_object',
     'factor_as_estimator',
     'target_functional',
-    'process_hypothesis',
-    'latent_state',
-    'observable_estimator',
-    'conditional_distribution_hypothesis',
+    'observation_map',
+    'identification_assumptions',
+    'market_outcome_projection',
     'relationship_shape',
     'expected_metric_signature',
     'metric_signature_match',
@@ -193,6 +194,7 @@ VALID_FINAL_REVISION_SOURCES = {'revision_council', 'deterministic_fallback', 'n
 VALID_MODEL_LAYER_TARGETS = {
     'economic_hypothesis',
     'primary_mechanism_model',
+    'market_outcome_projection',
     'stochastic_projection',
     'observable_estimator',
     'implementation_contract',
@@ -201,7 +203,7 @@ VALID_MODEL_LAYER_TARGETS = {
 REQUIRED_MODEL_LINKAGE_KEYS = {
     'economic_hypothesis',
     'primary_mechanism_model',
-    'stochastic_projection',
+    'market_outcome_projection',
     'observable_estimator',
 }
 IMPLEMENTATION_MODEL_LINKAGE_KEYS = {
@@ -222,9 +224,14 @@ VALID_RESEARCH_EQUATION_SUPPORT = {'supported', 'challenged', 'under_specified'}
 VALID_FAILED_EQUATION_COMPONENTS = {
     'none',
     'assumptions',
+    'math_tool_selection',
+    'primary_math_mechanism',
+    'mathematical_object',
     'latent_state',
     'observable_estimator',
     'price_process_projection',
+    'market_outcome_projection',
+    'applicable_audit',
     'implementation_contract',
     'trading_cost',
     'drawdown_geometry',
@@ -846,6 +853,13 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
     checks.append(check('revision_council_no_execution_by_default', ref.get('execution_allowed_by_default') is False, 'revision_council_ref.execution_allowed_by_default must be false'))
     checks.append(check('revision_council_human_approval_required', ref.get('human_approval_required') is True, 'revision council attachment must require human approval'))
 
+    packet: dict = {}
+    if packet_path.exists():
+        try:
+            packet = load_json(packet_path)
+        except Exception as exc:
+            checks.append(check('revision_council_packet_loadable', False, f'failed to load revision council packet: {exc}'))
+
     summary: dict = {}
     if summary_path.exists():
         try:
@@ -894,7 +908,12 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
                     expected_report_id=report_id,
                 )
                 if is_agentic_result
-                else validate_revision_council_proposal(proposal)
+                else validate_revision_council_proposal(
+                    proposal,
+                    measurement_program=packet.get(
+                        'mechanism_conditioned_measurement_program'
+                    ),
+                )
             )
             checks.append(check(
                 f'final_revision_strategy_selected_proposal_{idx}_valid',
@@ -1171,28 +1190,50 @@ if __name__ == '__main__':
         checks.append(check('mechanism_classification_uncertainty_enum', mechanism_analysis.get('classification_uncertainty') in VALID_CLASSIFICATION_UNCERTAINTY, f"invalid classification_uncertainty: {mechanism_analysis.get('classification_uncertainty')}"))
         mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or {}
         mechanism_math_contract_v2 = mechanism_analysis.get('mechanism_math_contract_v2') or {}
-        mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        measurement_program = mechanism_analysis.get('mechanism_conditioned_measurement_program') or {}
+        mechanism_math_failures = (
+            validate_mechanism_math_contract(mechanism_math_contract)
+            if isinstance(mechanism_math_contract, dict) and mechanism_math_contract
+            else []
+        )
         mechanism_math_v2_failures = validate_mechanism_math_contract_v2(mechanism_math_contract_v2) if isinstance(mechanism_math_contract_v2, dict) and mechanism_math_contract_v2 else []
+        declared_node_ids = {
+            str(node_id)
+            for component in ((measurement_program.get('implementation') or {}).get('components') or [])
+            if isinstance(component, dict)
+            for node_id in (component.get('knowledge_node_ids') or [])
+            if str(node_id).strip()
+        } if isinstance(measurement_program, dict) else set()
+        measurement_program_failures = validate_measurement_program(
+            measurement_program,
+            available_knowledge_node_ids=declared_node_ids,
+            require_web_executable=False,
+        ) if isinstance(measurement_program, dict) and measurement_program else []
         checks.append(check(
-            'mechanism_math_contract_present',
-            isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract),
-            'mechanism_analysis.mechanism_math_contract missing',
-        ))
-        checks.append(check(
-            'mechanism_math_contract_valid',
+            'legacy_mechanism_math_contract_valid_if_present',
             not mechanism_math_failures,
             f'mechanism_analysis.mechanism_math_contract invalid: {mechanism_math_failures}',
+        ))
+        checks.append(check(
+            'mechanism_conditioned_measurement_program_present',
+            isinstance(measurement_program, dict) and bool(measurement_program),
+            'mechanism_analysis.mechanism_conditioned_measurement_program missing',
         ))
         checks.append(check(
             'mechanism_math_contract_v2_valid_if_present',
             not mechanism_math_v2_failures,
             f'mechanism_analysis.mechanism_math_contract_v2 invalid: {mechanism_math_v2_failures}',
         ))
+        checks.append(check(
+            'mechanism_conditioned_measurement_program_valid',
+            not measurement_program_failures,
+            f'mechanism_analysis.mechanism_conditioned_measurement_program invalid: {measurement_program_failures}',
+        ))
         model_linkage_failures = validate_step6_model_linkage(mechanism_analysis, revision_strategy)
         checks.append(check(
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL',
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL' not in model_linkage_failures,
-            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract',
+            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, market_outcome_projection, observable_estimator, or implementation_contract',
         ))
         checks.append(check(
             'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS',
@@ -1210,6 +1251,24 @@ if __name__ == '__main__':
         ))
         factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
         factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}
+        canonical_spec = factor_spec.get('canonical_spec') if isinstance(factor_spec.get('canonical_spec'), dict) else {}
+        upstream_programs = [
+            factor_spec.get('mechanism_conditioned_measurement_program'),
+            canonical_spec.get('mechanism_conditioned_measurement_program'),
+        ]
+        upstream_programs = [
+            item for item in upstream_programs if isinstance(item, dict) and item
+        ]
+        checks.append(check(
+            'mechanism_conditioned_measurement_program_preserved_from_step2',
+            not upstream_programs
+            or (
+                isinstance(measurement_program, dict)
+                and bool(measurement_program)
+                and all(item == measurement_program for item in upstream_programs)
+            ),
+            'mechanism_analysis must preserve the exact Step2 measurement program when present',
+        ))
         formula_specific_derivation = mechanism_analysis.get('formula_specific_derivation') or {}
         formula_derivation_failures = validate_formula_specific_derivation(
             formula_specific_derivation,
@@ -1241,8 +1300,9 @@ if __name__ == '__main__':
             ))
         checks.append(check(
             'invalid_mechanism_math_cannot_promote',
-            decision != 'promote_official' or mechanism_math_contract.get('math_model_status') != 'invalid',
-            'official promotion is forbidden when mechanism_math_contract.math_model_status=invalid',
+            decision != 'promote_official'
+            or (mechanism_analysis.get('mechanism_math_summary') or {}).get('math_model_status') != 'invalid',
+            'official promotion is forbidden when the current mechanism math summary is invalid',
         ))
         checks.append(check(
             'unknown_or_contradicted_mechanism_cannot_promote',
@@ -1479,7 +1539,14 @@ if __name__ == '__main__':
         thresholds = (factor_business or {}).get('thresholds') if isinstance(factor_business, dict) else {}
         checks.append(check('long_side_sharpe_thresholds_present', isinstance(thresholds, dict) and 'candidate_min_sharpe' in thresholds and 'official_min_sharpe' in thresholds, 'Step6 must record long-side Sharpe thresholds'))
         checks.append(check('research_memo_math_discipline_present', isinstance(math_discipline, dict) and bool(math_discipline), 'math_discipline_review missing from research_memo'))
-        checks.append(check('math_random_object_present', nonempty_str(math_discipline.get('step1_random_object')), 'math discipline step1_random_object missing'))
+        checks.append(check(
+            'math_mathematical_object_present',
+            nonempty_str(
+                math_discipline.get('mathematical_object')
+                or math_discipline.get('step1_random_object')
+            ),
+            'math discipline mathematical_object missing',
+        ))
         checks.append(check('math_target_statistic_present', nonempty_str(math_discipline.get('target_statistic')), 'math discipline target_statistic missing'))
         checks.append(check('math_information_legality_present', nonempty_str(math_discipline.get('information_set_legality')), 'math discipline information_set_legality missing'))
         checks.append(check('math_spec_stability_present', isinstance(math_discipline.get('spec_stability'), dict) and bool(math_discipline.get('spec_stability')), 'math discipline spec_stability missing'))

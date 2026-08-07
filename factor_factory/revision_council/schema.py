@@ -13,7 +13,12 @@ COUNCIL_AGENT_ROLES = {
     "knowledge_retrieval_critic",
 }
 
+# Discoverability examples only. Council validation intentionally accepts
+# mechanism-specific tools outside this set.
 SYMBOLIC_MATH_TOOLS = {
+    "discounted_cash_flow",
+    "residual_income",
+    "accounting_identity",
     "dimensional_analysis",
     "scaling_law_analysis",
     "invariance_analysis",
@@ -31,6 +36,15 @@ SYMBOLIC_MATH_TOOLS = {
     "dynamical_systems",
     "stopping_time_reasoning",
     "information_theoretic_reasoning",
+    "causal_structural_model",
+    "optimization_and_control",
+    "graph_interaction_model",
+    "optimal_transport",
+}
+
+DIMENSIONAL_AUDIT_TOOLS = {
+    "dimensional_analysis",
+    "scaling_law_analysis",
 }
 
 REVISION_TYPES = {

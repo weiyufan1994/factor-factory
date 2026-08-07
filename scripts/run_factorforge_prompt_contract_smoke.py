@@ -18,7 +18,8 @@ REQUIRED_TERMS = {
         "assumptions",
         "validity_scope",
         "primary_mathematical_model",
-        "t0_t1_stochastic_benchmark",
+        "market_outcome_projection",
+        "applicable_audits",
         "observable_detector_contract",
         "formula_implied_information",
         "expected_metric_signature",
@@ -31,15 +32,18 @@ REQUIRED_TERMS = {
         "participant_constraint_loop",
         "equation_quality",
         "do not select stochastic process as the primary model by default",
+        "stochastic benchmark only when the selected claim is stochastic",
     ],
     "step2": [
+        "mechanism_conditioned_measurement_program",
         "formula is an observable estimator",
         "measurement_equation",
-        "null_state_behavior",
+        "null_or_alias_behavior",
         "direct_code must implement the estimator only after the mechanism contract is coherent",
         "raw-field restatement is invalid",
     ],
     "step6": [
+        "mechanism_conditioned_measurement_program",
         "research_equation_reviewer",
         "metric_links",
         "turnover cost is COGS",
@@ -47,6 +51,7 @@ REQUIRED_TERMS = {
         "drawdown_recovery_area",
         "Dirac-style anomaly review",
         "equation-to-factor discovery queue",
+        "do not add stochastic-process or dimensional-analysis fields unless",
     ],
 }
 

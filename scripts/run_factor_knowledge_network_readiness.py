@@ -183,13 +183,17 @@ def check_graph() -> dict[str, Any]:
 
 
 def check_scoped_node_validator() -> dict[str, Any]:
-    node_path = NODES_DIR / "CPV_OCC_LOC_STABILITY_V3_20260616.json"
+    node_path = (
+        NODES_DIR
+        / "METHOD_MECHANISM_CONDITIONED_MEASUREMENT_SEARCH_20260807.json"
+    )
     assert_true(node_path.exists(), f"missing scoped validator fixture node: {node_path}")
     proc = run([sys.executable, "scripts/validate_factor_knowledge_node.py", str(node_path)])
     payload = json.loads(proc.stdout)
     assert_true(payload.get("verdict") == "ACCEPT", "scoped node validator did not ACCEPT")
     assert_true(
-        payload.get("node_id") == "node::cpv_occ_loc_stability_v3_20260616",
+        payload.get("node_id")
+        == "node::method_mechanism_conditioned_measurement_search_20260807",
         f"scoped node validator checked unexpected node: {payload.get('node_id')}",
     )
     return {
@@ -302,8 +306,12 @@ def validate_source_path(node_id: str, source_path: str) -> str:
         candidate = REPO_ROOT / repo_rel
     else:
         candidate = REPO_ROOT / source_path
-    assert_true(candidate.exists(), f"{node_id}: source_path does not exist: {source_path}")
-    return "repo_local"
+    if candidate.exists():
+        return "repo_local"
+    normalized = Path(source_path).as_posix()
+    if normalized.startswith("factor_research/"):
+        return "workspace_provenance_unavailable"
+    raise SystemExit(f"{node_id}: source_path does not exist: {source_path}")
 
 
 def check_node_quality() -> dict[str, Any]:
@@ -350,13 +358,27 @@ def check_node_quality() -> dict[str, Any]:
         relations = node.get("relations") or []
         relation_edge_types = {relation.get("edge_type") for relation in relations if isinstance(relation, dict)}
 
-        assert_true(bool(mechanism.get("payer") or mechanism.get("economic_hypothesis")), f"{node_id}: missing payer/economic hypothesis")
-        assert_true(bool(mechanism.get("receiver") or node.get("node_type") in {"methodology", "data_state"}), f"{node_id}: missing receiver")
-        assert_true(bool(mechanism.get("random_object")), f"{node_id}: missing random_object")
-        assert_true(has_any_key(mechanism, equation_keys), f"{node_id}: missing equation/formula/law reference")
-        assert_true(has_any_key(mechanism, insight_keys), f"{node_id}: missing Dirac/math-forced insight or transform note")
-        assert_true(has_any_key(evidence, evidence_window_keys), f"{node_id}: missing evidence window")
-        assert_true(bool(evidence.get("key_metrics")), f"{node_id}: missing key_metrics")
+        node_type = str(node.get("node_type") or "")
+        if node_type == "methodology":
+            for field in (
+                "authority_chain",
+                "knowledge_boundary",
+                "applicability_boundary",
+                "failure_localization",
+            ):
+                assert_true(bool(mechanism.get(field)), f"{node_id}: missing methodology.{field}")
+            assert_true(bool(evidence.get("contract_version")), f"{node_id}: missing methodology contract_version")
+        else:
+            assert_true(bool(mechanism.get("payer") or mechanism.get("economic_hypothesis")), f"{node_id}: missing payer/economic hypothesis")
+            assert_true(bool(mechanism.get("receiver") or node_type == "data_state"), f"{node_id}: missing receiver")
+            assert_true(
+                bool(mechanism.get("mathematical_object") or mechanism.get("random_object")),
+                f"{node_id}: missing mathematical_object",
+            )
+            assert_true(has_any_key(mechanism, equation_keys), f"{node_id}: missing equation/formula/law reference")
+            assert_true(has_any_key(mechanism, insight_keys), f"{node_id}: missing Dirac/math-forced insight or transform note")
+            assert_true(has_any_key(evidence, evidence_window_keys), f"{node_id}: missing evidence window")
+            assert_true(bool(evidence.get("key_metrics")), f"{node_id}: missing key_metrics")
         assert_true(has_any_key(evidence, evidence_boundary_keys), f"{node_id}: missing falsification/boundary/verdict")
         source_paths = node.get("source_paths") or []
         assert_true(bool(source_paths), f"{node_id}: missing source_paths")

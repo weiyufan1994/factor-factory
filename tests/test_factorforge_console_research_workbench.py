@@ -624,6 +624,91 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
         math_notebook={
             "evidence_class": "AGENT CLAIM",
             "definitions": {"random_object": "R"},
+                "model_selection": {
+                "selection_target": "temporary opening pressure",
+                "candidate_models": [
+                    {
+                        "candidate_id": "temporary_impact",
+                        "model_family": "transient impact",
+                        "mathematical_object": "u_t",
+                        "economic_implication": "impact repairs",
+                        "identifiability_condition": "separable from news",
+                        "decisive_test": "news-controlled repair",
+                        "selected": True,
+                    },
+                    {
+                        "candidate_id": "permanent_news",
+                        "model_family": "permanent information",
+                        "mathematical_object": "s_t",
+                        "economic_implication": "gap continues",
+                        "identifiability_condition": "news explains gap",
+                        "decisive_test": "continuation on news days",
+                        "selected": False,
+                    },
+                ],
+                    "selection_argument": "finite payer deadline favors transient impact",
+                },
+                "math_tool_selection": {
+                    "candidate_tool_families": ["state-space model", "signal decomposition"],
+                    "selected_tool_families": ["state-space model"],
+                    "selection_rationale": "the economic hypothesis requires a latent transient state",
+                    "rejected_tool_families": [
+                        {"tool_family": "DCF", "reason": "the hypothesis is not an intrinsic-value claim"}
+                    ],
+                },
+                "market_outcome_projection": {
+                    "projection_kind": "latent state to conditional return",
+                    "source_math_object": "temporary pressure state u_t",
+                    "traded_quantity": "after-cost forward return",
+                    "projection_equation_or_map": "r_t+1=-beta*u_t+eta_t+1",
+                    "link_to_observation_equation": "gap_t=s_t+u_t+epsilon_t",
+                    "affected_payoff_or_distribution_terms": ["conditional drift"],
+                    "falsifier": "no repair after alias controls",
+                },
+                "applicable_audits": {
+                    "selection_rule": "select only mechanism-relevant audits",
+                    "selected": [
+                    {
+                        "audit_family": "dimensional_analysis",
+                        "rationale": "two price quantities are divided",
+                        "audit_record": "common currency/share units cancel",
+                        "falsifier": "signal changes under a common price-unit rescaling",
+                    }
+                    ],
+                    "rejected": [],
+                },
+            "observation_and_estimation": {
+                "estimand": "E[r_{t+1}|u_t]",
+                "observation_map": "gap_t = s_t + u_t + epsilon_t",
+                "estimator": "-(open/pre_close-1)",
+                "identification_assumptions": ["common adjustment basis", "news controls"],
+                "legal_information_time": "known at close t",
+            },
+            "measurement_components": [
+                {
+                    "component_id": "opening_gap",
+                    "math_term_or_functional": "-u_t",
+                    "observable_or_input": "open, pre_close",
+                    "transformation_or_estimator": "negative relative gap",
+                    "implementation_binding": "negate(minus(divide(open, pre_close), 1))",
+                    "input_measurement_semantics": "currency/share accounting inputs",
+                    "output_measurement_semantics": "dimensionless cross-sectional score",
+                    "information_time": "close t",
+                    "expected_metric_signature": "positive RankIC",
+                    "falsifier": "no controlled repair",
+                }
+            ],
+            "public_derivation_record": {
+                "definitions": ["u_t is temporary pressure"],
+                "assumptions": ["u_t decays", "s_t persists"],
+                "key_derivation_steps": ["gap=s+u", "u decays", "negative gap estimates repair"],
+                "identification_gaps": ["s_t is latent"],
+                "approximations": ["linear local map"],
+                "overclaim_guard": "candidate mechanism, not return proof",
+            },
+            "deterministic_validation_plan": {
+                "future_mutation_invariance": "future changes cannot alter past signal"
+            },
             "equations": [{"title": "Payoff", "expression": r"\mathbb E[R|F]"}],
             "derivation_steps": [],
         },
@@ -676,6 +761,16 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
     assert "任务记录" not in html
     assert "Test &lt;b&gt;escaped&lt;/b&gt; research input." in html
     assert "\\mathbb E[R|F]" in html
+    assert "Model Selection" in html
+    assert "Open Math Toolkit Selection" in html
+    assert "Market Outcome Projection" in html
+    assert "Applicable Audits" in html
+    assert "dimensional_analysis" in html
+    assert "Observation And Estimation" in html
+    assert "Measurement Program" in html
+    assert "Public Derivation Record" in html
+    assert "candidate mechanism, not return proof" in html
+    assert "私有思维链" in html
     assert "页面不会用汇总指标补画这些结果" in html
     assert "EVIDENCE CONFLICT" in html
     assert "FORMAL EVIDENCE" not in html

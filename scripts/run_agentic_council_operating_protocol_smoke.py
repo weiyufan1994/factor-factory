@@ -130,6 +130,13 @@ def manifest_tasks(root: Path, rid: str) -> list[dict[str, Any]]:
 def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bool = True) -> dict[str, Any]:
     packet = load_json(root / task["task_packet_path"])
     task_id = task["task_id"]
+    measurement_binding = (
+        packet.get("measurement_program_binding")
+        or task.get("measurement_program_binding")
+        or {}
+    )
+    frozen_model = measurement_binding.get("mechanism_equation_or_functional")
+    frozen_object = measurement_binding.get("mathematical_object")
     proof_obligation_ids = [
         str(item)
         for item in packet.get("proof_obligation_ids") or []
@@ -148,6 +155,7 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "measurement_program_binding": measurement_binding,
         "approach_route": {
             "route_id": task.get("route_id"),
             "route_family": task.get("route_family"),
@@ -193,9 +201,9 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
             "selected_tool": "statistical_inference",
             "selected_tool_rationale": "It links public estimator claims to metric signatures without approving writeback.",
             "rejected_tools": [{"tool": "expression_wrapper_repair", "reason": "The task is expression-level research only."}],
-            "baseline_model": "E[next evidence | estimator state]",
+            "baseline_model": frozen_model,
             "model_mutation": "challenge persistence and falsification requirements at expression level",
-            "mathematical_objects": ["agent_state", "next_evidence"],
+            "mathematical_objects": [frozen_object, "next_evidence"],
             "derivation_steps": ["Read packet evidence.", "Map evidence to a public estimator-state claim."],
             "derived_state_variables": ["agent_state"],
             "observable_estimators": ["factor score", "net long-side evidence"],
@@ -211,7 +219,7 @@ def fake_real_agent_result(root: Path, rid: str, task: dict[str, Any], valid: bo
         "public_derivation_record": {
             "research_question": packet.get("research_question"),
             "assumptions": [{"assumption": "Step6 packet evidence is fixed.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Block if packet provenance is invalid."}],
-            "mathematical_objects": [{"name": "agent_state", "meaning": "Agent-specific estimator state.", "unit_or_dimension": "dimensionless", "information_set": "factor timestamp evidence only"}],
+            "mathematical_objects": [{"name": frozen_object, "meaning": "The mathematical object frozen by the measurement program.", "unit_or_dimension": "mechanism-dependent", "information_set": "factor timestamp evidence only"}],
             "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links claims to metric signatures.", "what_it_can_answer": "Whether the hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical writes."}],
             "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | agent_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for operating protocol smoke."}],
             "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a public estimator-state claim.", "depends_on": []}],

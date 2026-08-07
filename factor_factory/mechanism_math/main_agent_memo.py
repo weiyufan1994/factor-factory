@@ -14,15 +14,19 @@ PRODUCER = "step6_main_agent"
 MAX_TARGET_HORIZON = 4096
 MAX_MECHANISM_MEMO_REVISIONS = 3
 REQUIRED_QA_FIELDS = [
-    "formula_state_answer",
+    "mathematical_object_answer",
     "economic_hypothesis_answer",
     "math_model_answer",
     "payer_answer",
     "payoff_answer",
-    "estimator_mapping_answer",
+    "observation_mapping_answer",
     "metric_signature_answer",
     "falsification_answer",
 ]
+LEGACY_QA_FIELD_ALIASES = {
+    "mathematical_object_answer": "formula_state_answer",
+    "observation_mapping_answer": "estimator_mapping_answer",
+}
 REQUIRED_METRIC_SIGNATURE_FIELDS = {
     "rank_ic",
     "long_side",
@@ -30,8 +34,202 @@ REQUIRED_METRIC_SIGNATURE_FIELDS = {
     "monotonicity",
     "turnover",
 }
+PUBLIC_MEMO_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "contract_version",
+        "resume_attempt_id",
+        "report_id",
+        "factor_id",
+        "research_id",
+        "created_at_utc",
+        "updated_at_utc",
+        "revision_number",
+        "producer",
+        "agent_authorship",
+        "source_refs",
+        "formula",
+        "formula_understanding",
+        "formula_component_map",
+        "mechanism_qa",
+        "economic_hypothesis",
+        "math_hypothesis",
+        "math_model_selection",
+        "payer",
+        "mathematical_object_mapping",
+        "formula_state_estimator",
+        "expected_metric_signature",
+        "falsification_tests",
+        "evidence_comparison",
+        "operator_claim_consistency",
+        "council_questions",
+        "canonical_write_permission",
+        "execution_allowed_by_default",
+    }
+)
+PUBLIC_MEMO_AUTHORSHIP_FIELDS = frozenset(
+    {
+        "authoring_mode",
+        "agent_role",
+        "runtime",
+        "answered_without_deterministic_template",
+        "note",
+    }
+)
+PUBLIC_MEMO_QA_FIELDS = frozenset(
+    {
+        *REQUIRED_QA_FIELDS,
+        *LEGACY_QA_FIELD_ALIASES.values(),
+    }
+)
+PUBLIC_MEMO_ECONOMIC_FIELDS = frozenset(
+    {
+        "return_source_class",
+        "payer_or_counterparty",
+        "why_they_pay",
+        "necessary_market_structure",
+    }
+)
+PUBLIC_MEMO_MATH_FIELDS = frozenset(
+    {
+        "selected_model_family",
+        "model_family",
+        "why_this_model",
+        "why_not_generic_template",
+        "mathematical_object",
+        "random_object",
+        "latent_state",
+        "mechanism_equation_or_functional",
+        "process_or_distribution",
+        "target_functional",
+        "market_outcome_projection",
+        "observation_mapping",
+        "formula_as_estimator",
+        "expected_metric_signature",
+    }
+)
+PUBLIC_MEMO_MODEL_SELECTION_FIELDS = frozenset(
+    {
+        "model_family",
+        "baseline_model",
+        "mechanism_equation_or_functional",
+        "model_mutation",
+    }
+)
+PUBLIC_MEMO_PAYER_FIELDS = frozenset(
+    {"payer_or_counterparty", "why_they_pay", "necessary_market_structure"}
+)
+PUBLIC_MEMO_OBJECT_MAPPING_FIELDS = frozenset(
+    {
+        "mathematical_object",
+        "observation_mapping",
+        "component_links",
+        "latent_state",
+        "observable_mapping",
+    }
+)
+PUBLIC_MEMO_COMPONENT_FIELDS = frozenset(
+    {
+        "component_id",
+        "formula_subexpression",
+        "operators",
+        "observable_estimator",
+        "economic_state",
+        "mathematical_object",
+        "expected_role",
+        "metric_link",
+    }
+)
+PUBLIC_MEMO_FORMULA_UNDERSTANDING_FIELDS = frozenset(
+    {
+        "formula_understanding_version",
+        "formula_features",
+        "component_interpretations",
+        "interaction_structure",
+        "mathematical_object_candidates",
+    }
+)
+PUBLIC_MEMO_FORMULA_FEATURE_FIELDS = frozenset(
+    {
+        "formula_text",
+        "fields",
+        "mechanism_observable_inputs",
+        "mechanism_inputs_not_in_formula",
+        "formula_missing_mechanism_inputs",
+        "operators",
+        "constants",
+        "has_volume",
+        "has_high_low",
+        "has_sign_or_threshold",
+        "has_long_window",
+        "has_250_window",
+        "has_short_delay_or_delta",
+        "has_raw_additive",
+        "has_open_close_position",
+    }
+)
+PUBLIC_MEMO_FORMULA_COMPONENT_INTERPRETATION_FIELDS = frozenset(
+    {"component", "formula_feature", "economic_state", "modelling_role"}
+)
+PUBLIC_MEMO_EVIDENCE_FIELDS = frozenset(
+    {
+        "observed_metrics",
+        "mechanism_supported",
+        "contradictions",
+        "revision_implications",
+        "kill_criteria_triggered",
+    }
+)
+PUBLIC_MEMO_SOURCE_REF_FIELDS = frozenset(
+    {
+        "factor_spec_master",
+        "factor_case_master",
+        "evaluation_summary",
+        "research_iteration",
+        "mechanism_math_contract",
+        "candidate_research_iteration",
+    }
+)
+PUBLIC_MEMO_OBSERVED_METRIC_FIELDS = frozenset(
+    {
+        "rank_ic_mean",
+        "long_side_annual_return",
+        "cost_adjusted_annual_return",
+        "long_side_max_drawdown",
+        "long_side_turnover_mean_daily",
+        "turnover_mean",
+        "daily_turnover",
+        "group_top_decile_mean_return",
+        "group_bottom_decile_mean_return",
+        "group_g9_mean_return",
+        "group_g10_mean_return",
+        "g9_mean_return",
+        "g10_mean_return",
+        *{f"group_{index}_mean_return" for index in range(1, 11)},
+        *{f"g{index}" for index in range(1, 11)},
+    }
+)
+PUBLIC_MEMO_OPERATOR_CONSISTENCY_FIELDS = frozenset(
+    {
+        "claims_correlation_or_covariance",
+        "formula_has_correlation_or_covariance_operator",
+        "claims_dependence_without_operator_justification",
+        "explicit_dependence_justification",
+        "has_sign_or_threshold",
+        "sign_threshold_discussion_present",
+        "has_volume_ratio",
+        "volume_ratio_participation_discussion_present",
+        "has_additive_rank_raw_ratio",
+        "additive_scale_commensurability_discussion_present",
+    }
+)
 
 MODEL_FAMILY_ALIASES = {
+    "discounted cash-flow valuation": "valuation_identity",
+    "discounted_cash_flow": "valuation_identity",
+    "dcf": "valuation_identity",
+    "residual-income valuation": "valuation_identity",
+    "residual_income": "valuation_identity",
+    "accounting identity": "valuation_identity",
     "price_volume_microstructure": "transient_impact",
     "price_volume_correlation": "copula_rank_dependence",
     "ranked_price_volume_state_process": "transient_impact",
@@ -97,6 +295,25 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, tuple):
         return list(value)
     return [value]
+
+
+def _qa_answer(qa: dict[str, Any], field: str) -> Any:
+    value = qa.get(field)
+    if value not in (None, ""):
+        return value
+    legacy_field = LEGACY_QA_FIELD_ALIASES.get(field)
+    return qa.get(legacy_field) if legacy_field else value
+
+
+def _math_value(math: dict[str, Any], current: str, *legacy: str) -> Any:
+    value = math.get(current)
+    if value not in (None, ""):
+        return value
+    for field in legacy:
+        value = math.get(field)
+        if value not in (None, ""):
+            return value
+    return value
 
 
 def formula_specific_qa_terms(
@@ -401,6 +618,343 @@ def _first_top_level_expectation_body(value: str) -> str | None:
     return None
 
 
+def _unexpected_fields(
+    payload: Any,
+    allowed: frozenset[str],
+    path: str,
+) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    return [
+        f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_UNEXPECTED_FIELD:{path}.{key}"
+        for key in sorted(set(payload) - set(allowed))
+    ]
+
+
+def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
+    """Reject fields that are neither formal contract data nor public research."""
+    if not isinstance(memo, dict):
+        return ["BLOCK_MAIN_AGENT_MECHANISM_MEMO_NOT_OBJECT"]
+    failures = _unexpected_fields(
+        memo,
+        PUBLIC_MEMO_TOP_LEVEL_FIELDS,
+        "memo",
+    )
+    section_rules = (
+        ("agent_authorship", PUBLIC_MEMO_AUTHORSHIP_FIELDS),
+        ("mechanism_qa", PUBLIC_MEMO_QA_FIELDS),
+        ("economic_hypothesis", PUBLIC_MEMO_ECONOMIC_FIELDS),
+        ("math_hypothesis", PUBLIC_MEMO_MATH_FIELDS),
+        ("math_model_selection", PUBLIC_MEMO_MODEL_SELECTION_FIELDS),
+        ("payer", PUBLIC_MEMO_PAYER_FIELDS),
+        ("mathematical_object_mapping", PUBLIC_MEMO_OBJECT_MAPPING_FIELDS),
+        ("formula_state_estimator", PUBLIC_MEMO_OBJECT_MAPPING_FIELDS),
+        ("expected_metric_signature", frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS)),
+        ("evidence_comparison", PUBLIC_MEMO_EVIDENCE_FIELDS),
+        (
+            "operator_claim_consistency",
+            PUBLIC_MEMO_OPERATOR_CONSISTENCY_FIELDS,
+        ),
+    )
+    for field, allowed in section_rules:
+        failures.extend(_unexpected_fields(memo.get(field), allowed, field))
+
+    formula_understanding = memo.get("formula_understanding")
+    failures.extend(
+        _unexpected_fields(
+            formula_understanding,
+            PUBLIC_MEMO_FORMULA_UNDERSTANDING_FIELDS,
+            "formula_understanding",
+        )
+    )
+    if isinstance(formula_understanding, dict):
+        formula_features = formula_understanding.get("formula_features")
+        failures.extend(
+            _unexpected_fields(
+                formula_features,
+                PUBLIC_MEMO_FORMULA_FEATURE_FIELDS,
+                "formula_understanding.formula_features",
+            )
+        )
+        if isinstance(formula_features, dict):
+            string_lists = {
+                "fields",
+                "mechanism_observable_inputs",
+                "mechanism_inputs_not_in_formula",
+                "formula_missing_mechanism_inputs",
+                "operators",
+            }
+            boolean_fields = {
+                "has_volume",
+                "has_high_low",
+                "has_sign_or_threshold",
+                "has_long_window",
+                "has_250_window",
+                "has_short_delay_or_delta",
+                "has_raw_additive",
+                "has_open_close_position",
+            }
+            if "formula_text" in formula_features and not isinstance(
+                formula_features.get("formula_text"), str
+            ):
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    "formula_understanding.formula_features.formula_text"
+                )
+            for key in string_lists & set(formula_features):
+                value = formula_features.get(key)
+                if not isinstance(value, list) or any(
+                    not isinstance(item, str) for item in value
+                ):
+                    failures.append(
+                        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                        f"formula_understanding.formula_features.{key}"
+                    )
+            constants = formula_features.get("constants")
+            if constants is not None and (
+                not isinstance(constants, list)
+                or any(
+                    isinstance(item, bool) or not isinstance(item, (int, float))
+                    for item in constants
+                )
+            ):
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    "formula_understanding.formula_features.constants"
+                )
+            for key in boolean_fields & set(formula_features):
+                if not isinstance(formula_features.get(key), bool):
+                    failures.append(
+                        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                        f"formula_understanding.formula_features.{key}"
+                    )
+
+        components = formula_understanding.get("component_interpretations")
+        if components is not None:
+            if not isinstance(components, list):
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    "formula_understanding.component_interpretations"
+                )
+            else:
+                for index, item in enumerate(components):
+                    path = f"formula_understanding.component_interpretations[{index}]"
+                    failures.extend(
+                        _unexpected_fields(
+                            item,
+                            PUBLIC_MEMO_FORMULA_COMPONENT_INTERPRETATION_FIELDS,
+                            path,
+                        )
+                    )
+                    if not isinstance(item, dict) or any(
+                        not isinstance(item.get(key), str)
+                        for key in item
+                        if key in PUBLIC_MEMO_FORMULA_COMPONENT_INTERPRETATION_FIELDS
+                    ):
+                        failures.append(
+                            f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:{path}"
+                        )
+        for key in (
+            "formula_understanding_version",
+            "interaction_structure",
+        ):
+            if key in formula_understanding and not isinstance(
+                formula_understanding.get(key), str
+            ):
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    f"formula_understanding.{key}"
+                )
+        candidates = formula_understanding.get("mathematical_object_candidates")
+        if candidates is not None and (
+            not isinstance(candidates, list)
+            or any(not isinstance(item, str) for item in candidates)
+        ):
+            failures.append(
+                "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                "formula_understanding.mathematical_object_candidates"
+            )
+
+    failures.extend(
+        _unexpected_fields(
+            memo.get("source_refs"),
+            PUBLIC_MEMO_SOURCE_REF_FIELDS,
+            "source_refs",
+        )
+    )
+
+    def require_string_fields(payload: Any, fields: frozenset[str], path: str) -> None:
+        if not isinstance(payload, dict):
+            return
+        for key in fields & set(payload):
+            if not isinstance(payload.get(key), str):
+                failures.append(
+                    f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:{path}.{key}"
+                )
+
+    require_string_fields(memo.get("source_refs"), PUBLIC_MEMO_SOURCE_REF_FIELDS, "source_refs")
+    require_string_fields(memo.get("mechanism_qa"), PUBLIC_MEMO_QA_FIELDS, "mechanism_qa")
+    require_string_fields(
+        memo.get("economic_hypothesis"),
+        PUBLIC_MEMO_ECONOMIC_FIELDS,
+        "economic_hypothesis",
+    )
+    require_string_fields(
+        memo.get("math_hypothesis"),
+        PUBLIC_MEMO_MATH_FIELDS - {"expected_metric_signature"},
+        "math_hypothesis",
+    )
+    require_string_fields(
+        memo.get("math_model_selection"),
+        PUBLIC_MEMO_MODEL_SELECTION_FIELDS,
+        "math_model_selection",
+    )
+    require_string_fields(memo.get("payer"), PUBLIC_MEMO_PAYER_FIELDS, "payer")
+    require_string_fields(
+        memo.get("expected_metric_signature"),
+        frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS),
+        "expected_metric_signature",
+    )
+    authorship = memo.get("agent_authorship")
+    if isinstance(authorship, dict):
+        for key in ("authoring_mode", "agent_role", "runtime", "note"):
+            if key in authorship and not isinstance(authorship.get(key), str):
+                failures.append(
+                    f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:agent_authorship.{key}"
+                )
+        if "answered_without_deterministic_template" in authorship and not isinstance(
+            authorship.get("answered_without_deterministic_template"), bool
+        ):
+            failures.append(
+                "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                "agent_authorship.answered_without_deterministic_template"
+            )
+
+    for mapping_field in ("mathematical_object_mapping", "formula_state_estimator"):
+        mapping = memo.get(mapping_field)
+        if not isinstance(mapping, dict):
+            continue
+        require_string_fields(
+            mapping,
+            PUBLIC_MEMO_OBJECT_MAPPING_FIELDS - {"component_links"},
+            mapping_field,
+        )
+        links = mapping.get("component_links")
+        if links is not None and (
+            not isinstance(links, list)
+            or any(not isinstance(item, str) for item in links)
+        ):
+            failures.append(
+                f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:{mapping_field}.component_links"
+            )
+
+    for field in ("falsification_tests", "council_questions"):
+        value = memo.get(field)
+        if value is not None and (
+            not isinstance(value, list)
+            or any(not isinstance(item, str) for item in value)
+        ):
+            failures.append(
+                f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:{field}"
+            )
+
+    refs = memo.get("evidence_comparison")
+    if isinstance(refs, dict):
+        observed = refs.get("observed_metrics")
+        failures.extend(
+            _unexpected_fields(
+                observed,
+                PUBLIC_MEMO_OBSERVED_METRIC_FIELDS,
+                "evidence_comparison.observed_metrics",
+            )
+        )
+        if isinstance(observed, dict):
+            for key, value in observed.items():
+                if value is not None and (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                ):
+                    failures.append(
+                        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                        f"evidence_comparison.observed_metrics.{key}"
+                    )
+        if "mechanism_supported" in refs and not isinstance(
+            refs.get("mechanism_supported"), str
+        ):
+            failures.append(
+                "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                "evidence_comparison.mechanism_supported"
+            )
+        for key in (
+            "contradictions",
+            "revision_implications",
+            "kill_criteria_triggered",
+        ):
+            value = refs.get(key)
+            if value is not None and (
+                not isinstance(value, list)
+                or any(not isinstance(item, str) for item in value)
+            ):
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    f"evidence_comparison.{key}"
+                )
+
+    math = memo.get("math_hypothesis")
+    if isinstance(math, dict):
+        failures.extend(
+            _unexpected_fields(
+                math.get("expected_metric_signature"),
+                frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS),
+                "math_hypothesis.expected_metric_signature",
+            )
+        )
+    components = memo.get("formula_component_map")
+    if isinstance(components, list):
+        for index, component in enumerate(components):
+            failures.extend(
+                _unexpected_fields(
+                    component,
+                    PUBLIC_MEMO_COMPONENT_FIELDS,
+                    f"formula_component_map[{index}]",
+                )
+            )
+            if not isinstance(component, dict):
+                continue
+            require_string_fields(
+                component,
+                PUBLIC_MEMO_COMPONENT_FIELDS - {"operators"},
+                f"formula_component_map[{index}]",
+            )
+            operators = component.get("operators")
+            if operators is not None and (
+                not isinstance(operators, list)
+                or any(not isinstance(item, str) for item in operators)
+            ):
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    f"formula_component_map[{index}].operators"
+                )
+
+    consistency = memo.get("operator_claim_consistency")
+    if isinstance(consistency, dict):
+        for key in PUBLIC_MEMO_OPERATOR_CONSISTENCY_FIELDS:
+            if key not in consistency:
+                continue
+            value = consistency.get(key)
+            valid_type = (
+                value is None or isinstance(value, str)
+                if key == "explicit_dependence_justification"
+                else isinstance(value, bool)
+            )
+            if not valid_type:
+                failures.append(
+                    "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                    f"operator_claim_consistency.{key}"
+                )
+    return list(dict.fromkeys(failures))
+
+
 def _strip_balanced_outer_parentheses(value: str) -> str:
     stripped = value
     while stripped.startswith("(") and stripped.endswith(")"):
@@ -603,9 +1157,6 @@ def _observed_metrics(factor_case: dict[str, Any], evaluation_summary: dict[str,
             for key, value in candidate.items():
                 if key in wanted or key.startswith("group_") or key.lower() in {"g9", "g10"}:
                     metrics[key] = value
-    quantile_nav = evaluation_summary.get("quantile_nav") or factor_case.get("quantile_nav")
-    if isinstance(quantile_nav, dict):
-        metrics["quantile_nav"] = quantile_nav
     return metrics
 
 
@@ -698,8 +1249,8 @@ def _generic_component_map(factor_spec: dict[str, Any], understanding: dict[str,
             "formula_subexpression": "formula additive combination of ranked state terms and scale terms",
             "operators": ["rank", "plus"],
             "observable_estimator": "additive score combining rank-normalized state with raw or scaled observable terms",
-            "economic_state": "combined latent score with scale commensurability risk",
-            "mathematical_object": "additive latent-state proxy",
+            "economic_state": "combined score with scale commensurability risk",
+            "mathematical_object": "additive measurement functional",
             "expected_role": "test whether the combined high-score state predicts next-period long-side payoff",
             "metric_link": "G10 should outperform if high-score state is monetizable; adjacent-group inversions challenge monotonicity",
         })
@@ -713,7 +1264,7 @@ def _generic_component_map(factor_spec: dict[str, Any], understanding: dict[str,
             "formula_subexpression": str(item.get("formula_feature") or _formula_text(factor_spec) or "formula component"),
             "operators": _as_list(item.get("operators")) or _as_list(item.get("formula_operator")),
             "observable_estimator": str(item.get("formula_feature") or "formula-defined observable estimator"),
-            "economic_state": str(item.get("economic_state") or "formula-defined latent state"),
+            "economic_state": str(item.get("economic_state") or "formula-defined economic quantity"),
             "mathematical_object": str(item.get("modelling_role") or "formula-specific state estimator"),
             "expected_role": str(item.get("modelling_role") or "estimate the state linked to next-period return"),
             "metric_link": "rank IC, long-side return, cost-adjusted return, monotonicity, and turnover must match this component's claimed role",
@@ -725,10 +1276,10 @@ def _generic_component_map(factor_spec: dict[str, Any], understanding: dict[str,
         "formula_subexpression": _formula_text(factor_spec) or "formula",
         "operators": sorted(_operator_set(factor_spec, understanding)),
         "observable_estimator": "formula-defined observable estimator",
-        "economic_state": "formula-defined latent return state",
-        "mathematical_object": "conditional state variable",
-        "expected_role": "estimate a state whose next-period payoff must be verified by Step4/5 metrics",
-        "metric_link": "rank IC, long-side return, cost-adjusted return, monotonicity, and turnover must support the claimed state",
+        "economic_state": "formula-defined economic quantity",
+        "mathematical_object": "researcher-selected mathematical object",
+        "expected_role": "estimate an object whose market-outcome projection must be verified by Step4/5 metrics",
+        "metric_link": "rank IC, long-side return, cost-adjusted return, monotonicity, and turnover must support the claimed market-outcome projection",
     }]
 
 
@@ -788,12 +1339,12 @@ def build_main_agent_mechanism_questionnaire(
         "metric_facts": observed,
         "required_open_questions": [
             {
-                "field": "formula_state_answer",
-                "question": "What market state does this exact formula estimate, using its actual fields/operators rather than a factor-family label?",
+                "field": "mathematical_object_answer",
+                "question": "What mathematical object or economic quantity should represent this exact hypothesis? It may be a valuation functional, accounting identity, stochastic/path object, spectral component, causal estimand, optimization object, or a newly composed object; justify the choice from the hypothesis rather than from operator availability.",
             },
             {
                 "field": "economic_hypothesis_answer",
-                "question": "What economic hypothesis makes that state monetizable: risk premium, information advantage, market-structure harvesting, or mixed, and why?",
+                "question": "What economic hypothesis makes that mathematical object or measured quantity monetizable: risk premium, information advantage, market-structure harvesting, or mixed, and why?",
             },
             {
                 "field": "math_model_answer",
@@ -805,11 +1356,11 @@ def build_main_agent_mechanism_questionnaire(
             },
             {
                 "field": "payoff_answer",
-                "question": "What is the payoff sign, horizon, and expected-return argument conditional on the formula state?",
+                "question": "How does the selected mathematical object project into a tradeable payoff, with sign, horizon, and explicit market-outcome map?",
             },
             {
-                "field": "estimator_mapping_answer",
-                "question": "How does each formula component estimate the latent state in the model?",
+                "field": "observation_mapping_answer",
+                "question": "How does each formula or code component observe or estimate the selected mathematical object, and what information does each transformation preserve or discard?",
             },
             {
                 "field": "metric_signature_answer",
@@ -843,14 +1394,14 @@ def _default_math_hypothesis(
             "selected_model_family": contract.get("model_family") or mechanism.get("factor_family") or "transient_impact_or_threshold_process",
             "why_this_model": mechanism.get("mechanism_hypothesis") or "formula combines short-horizon signed price state with relative participation intensity",
             "why_not_generic_template": "model follows formula-derived signed-price and volume-ratio components rather than a generic price-volume template",
-            "random_object": contract.get("random_object") or "security-day forward return conditional on formula state and information set F_t",
-            "latent_state": contract.get("state_or_object") or "transient pressure / participation state",
-            "process_or_distribution": (
+            "mathematical_object": contract.get("mathematical_object") or contract.get("state_or_object") or "transient pressure and participation object",
+            "mechanism_equation_or_functional": (
                 "P_i,t = F_i,t + I_i,t + epsilon_i,t, with I_i,t governed by a short-horizon "
                 "signed price threshold state and scaled by relative volume participation."
             ),
             "target_functional": "E[r_i,t+1 | F_t, signed_price_state_i,t, participation_ratio_i,t, additive_score_i,t]",
-            "formula_as_estimator": (
+            "market_outcome_projection": "E[r_i,t+1|F_t] follows the declared sign of temporary impact decay after costs.",
+            "observation_mapping": (
                 "signed price-change terms estimate a discrete short-horizon price-pressure state; "
                 "short-window versus longer-window volume aggregation terms estimate relative "
                 "participation intensity; the additive score tests whether the combined state is "
@@ -869,14 +1420,14 @@ def _default_math_hypothesis(
             "selected_model_family": contract.get("model_family") or mechanism.get("factor_family") or "stochastic_process",
             "why_this_model": "formula maps open/close relative price location into a cross-sectional short-horizon state",
             "why_not_generic_template": "model follows formula-derived open/close price-location state rather than a generic liquidity or turnover template",
-            "random_object": contract.get("random_object") or "security-day forward return conditional on open/close state and information set F_t",
-            "latent_state": contract.get("state_or_object") or "overnight-to-intraday pressure or close-location reversal state",
-            "process_or_distribution": (
+            "mathematical_object": contract.get("mathematical_object") or contract.get("state_or_object") or "overnight-to-intraday pressure or close-location reversal object",
+            "mechanism_equation_or_functional": (
                 "P_i,t evolves through an opening price, intraday digestion path, and close price; "
                 "the open/close location state may drift, reverse, or decay over the next horizon."
             ),
             "target_functional": "E[r_i,t+1 | F_t, open_close_position_state_i,t]",
-            "formula_as_estimator": (
+            "market_outcome_projection": "E[r_i,t+1|F_t] follows the declared continuation or reversal sign of the open-close location object after costs.",
+            "observation_mapping": (
                 "open/close relative price-location terms estimate an overnight-to-intraday pressure "
                 "or close-location reversal state; the rank transform tests whether that state orders "
                 "next-horizon returns cross-sectionally."
@@ -893,17 +1444,100 @@ def _default_math_hypothesis(
         "selected_model_family": contract.get("model_family") or mechanism.get("factor_family") or "other",
         "why_this_model": mechanism.get("mechanism_hypothesis") or "selected from Step6 mechanism analysis and formula understanding",
         "why_not_generic_template": "memo is tied to formula components, observed metrics, and falsification tests",
-        "random_object": contract.get("random_object") or "security-day forward return conditional on formula state and information set F_t",
-        "latent_state": contract.get("state_or_object") or "formula-specific latent state",
-        "process_or_distribution": contract.get("process_hypothesis") or contract.get("process_or_distribution") or "future returns follow a conditional distribution indexed by the formula-defined state",
+        "mathematical_object": contract.get("mathematical_object") or contract.get("state_or_object") or "researcher-selected mathematical object",
+        "mechanism_equation_or_functional": contract.get("mechanism_equation_or_functional") or contract.get("process_hypothesis") or contract.get("process_or_distribution") or "researcher must supply a mechanism-specific equation or functional",
         "target_functional": contract.get("target_functional") or "E[r_i,t+1 | F_t, formula_state_i,t]",
-        "formula_as_estimator": contract.get("factor_as_estimator") or "formula maps observable inputs into the declared latent state",
+        "market_outcome_projection": contract.get("market_outcome_projection") or "researcher must map the selected object to a signed, timed market payoff",
+        "observation_mapping": contract.get("observation_mapping") or contract.get("factor_as_estimator") or "formula or code maps legal-time observables into the selected mathematical object",
         "expected_metric_signature": {
             "rank_ic": "sign and persistence should match the declared return source",
             "long_side": "high-score long side must be positive if the state is monetizable",
             "cost_adjusted": "cost-adjusted long side must survive turnover and impact",
             "monotonicity": "group ordering should match the claimed state direction",
             "turnover": "turnover must be consistent with the stated horizon",
+        },
+    }
+
+
+def _selected_measurement_program_model(program: Any) -> dict[str, Any] | None:
+    if not isinstance(program, dict):
+        return None
+    selection = program.get("model_selection")
+    if not isinstance(selection, dict):
+        return None
+    selected = [
+        item
+        for item in selection.get("candidate_models") or []
+        if isinstance(item, dict) and item.get("selected") is True
+    ]
+    if len(selected) != 1:
+        return None
+    return selected[0]
+
+
+def _measurement_program_from_factor_spec(
+    factor_spec: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    factor_spec = factor_spec if isinstance(factor_spec, dict) else {}
+    canonical = (
+        factor_spec.get("canonical_spec")
+        if isinstance(factor_spec.get("canonical_spec"), dict)
+        else {}
+    )
+    for candidate in (
+        factor_spec.get("mechanism_conditioned_measurement_program"),
+        canonical.get("mechanism_conditioned_measurement_program"),
+    ):
+        if isinstance(candidate, dict):
+            return candidate
+    return None
+
+
+def _math_hypothesis_from_measurement_program(
+    program: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(program, dict):
+        return None
+    selection = program.get("model_selection")
+    observation = program.get("observation_and_estimation")
+    projection = program.get("market_outcome_projection")
+    if not all(isinstance(item, dict) for item in (selection, observation, projection)):
+        return None
+    model = _selected_measurement_program_model(program)
+    if not isinstance(model, dict):
+        return None
+    model_family = str(model.get("model_family") or "").strip()
+    mathematical_object = str(model.get("mathematical_object") or "").strip()
+    mechanism_equation = str(
+        model.get("mechanism_equation_or_functional") or ""
+    ).strip()
+    market_projection = str(
+        model.get("market_outcome_projection") or ""
+    ).strip()
+    if (
+        not model_family
+        or not mathematical_object
+        or not mechanism_equation
+        or not market_projection
+    ):
+        return None
+    return {
+        "selected_model_family": model_family,
+        "why_this_model": str(selection.get("selection_argument") or ""),
+        "why_not_generic_template": str(
+            selection.get("rejected_model_reason") or model.get("decisive_test") or ""
+        ),
+        "mathematical_object": mathematical_object,
+        "mechanism_equation_or_functional": mechanism_equation,
+        "target_functional": str(model.get("target_functional") or ""),
+        "market_outcome_projection": market_projection,
+        "observation_mapping": str(model.get("observation_mapping") or ""),
+        "expected_metric_signature": {
+            "rank_ic": "direction must match the selected market-outcome projection",
+            "long_side": "selected long-side direction must have positive gross payoff",
+            "cost_adjusted": "the declared payoff must survive transaction and volatility costs",
+            "monotonicity": "required only when the frozen claim class makes ordering a proof obligation",
+            "turnover": "turnover must match the selected horizon and implementation route",
         },
     }
 
@@ -937,7 +1571,7 @@ def _structured_top_level_fields(economic: dict[str, Any], math: dict[str, Any],
         {
             "component_id": str(item.get("component_id") or ""),
             "observable_estimator": str(item.get("observable_estimator") or ""),
-            "latent_state_claim": str(item.get("economic_state") or ""),
+            "mathematical_object_claim": str(item.get("mathematical_object") or item.get("economic_state") or ""),
         }
         for item in components
         if isinstance(item, dict) and (item.get("component_id") or item.get("observable_estimator") or item.get("economic_state"))
@@ -961,7 +1595,14 @@ def _structured_top_level_fields(economic: dict[str, Any], math: dict[str, Any],
     return {
         "math_model_selection": {
             "model_family": str(math.get("selected_model_family") or math.get("model_family") or ""),
-            "baseline_model": str(math.get("process_or_distribution") or ""),
+            "mechanism_equation_or_functional": str(
+                _math_value(
+                    math,
+                    "mechanism_equation_or_functional",
+                    "process_or_distribution",
+                )
+                or ""
+            ),
             "model_mutation": str(math.get("why_this_model") or math.get("why_not_generic_template") or qa.get("math_model_answer") or ""),
         },
         "payer": {
@@ -969,9 +1610,17 @@ def _structured_top_level_fields(economic: dict[str, Any], math: dict[str, Any],
             "why_they_pay": str(economic.get("why_they_pay") or ""),
             "necessary_market_structure": str(economic.get("necessary_market_structure") or ""),
         },
-        "formula_state_estimator": {
-            "latent_state": str(math.get("latent_state") or qa.get("formula_state_answer") or ""),
-            "observable_mapping": str(math.get("formula_as_estimator") or qa.get("estimator_mapping_answer") or ""),
+        "mathematical_object_mapping": {
+            "mathematical_object": str(
+                _math_value(math, "mathematical_object", "latent_state", "random_object")
+                or _qa_answer(qa, "mathematical_object_answer")
+                or ""
+            ),
+            "observation_mapping": str(
+                _math_value(math, "observation_mapping", "formula_as_estimator")
+                or _qa_answer(qa, "observation_mapping_answer")
+                or ""
+            ),
             "component_links": component_links,
         },
         "expected_metric_signature": signature,
@@ -1001,7 +1650,25 @@ def build_main_agent_mechanism_memo(
     evidence = _evidence_comparison(observed)
     mechanism = (((step6_iteration.get("research_judgment") or {}).get("research_memo") or {}).get("mechanism_analysis") or {})
     contract = mechanism.get("mechanism_math_contract") or factor_spec.get("mechanism_math_contract") or {}
-    math_hypothesis = _default_math_hypothesis(profile=profile, mechanism=mechanism, contract=contract)
+    measurement_program = (
+        mechanism.get("mechanism_conditioned_measurement_program")
+        or factor_spec.get("mechanism_conditioned_measurement_program")
+        or (
+            factor_spec.get("canonical_spec", {}).get(
+                "mechanism_conditioned_measurement_program"
+            )
+            if isinstance(factor_spec.get("canonical_spec"), dict)
+            else None
+        )
+    )
+    math_hypothesis = (
+        _math_hypothesis_from_measurement_program(measurement_program)
+        or _default_math_hypothesis(
+            profile=profile,
+            mechanism=mechanism,
+            contract=contract,
+        )
+    )
     economic = _default_economic_hypothesis(profile=profile, mechanism=mechanism)
     has_volume_ratio_expr = profile.get("has_volume_ratio") is True
     selected_model_family = str(math_hypothesis.get("selected_model_family") or "").lower()
@@ -1090,14 +1757,19 @@ def _require_open_answer(
     formula_terms: set[str],
     generic_terms: list[str],
 ) -> None:
-    value = qa.get(field)
+    value = _qa_answer(qa, field)
     text = str(value or "").strip().lower()
     if len(text) < 80:
         failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_INCOMPLETE:{field}")
         return
     if any(term in text for term in generic_terms):
         failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_GENERIC:{field}")
-    if field in {"formula_state_answer", "estimator_mapping_answer"}:
+    if field in {
+        "mathematical_object_answer",
+        "observation_mapping_answer",
+        "formula_state_answer",
+        "estimator_mapping_answer",
+    }:
         if formula_terms and not any(term in text for term in formula_terms):
             failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_NOT_FORMULA_SPECIFIC:{field}")
 
@@ -1108,10 +1780,14 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
     economic = memo.get("economic_hypothesis") if isinstance(memo.get("economic_hypothesis"), dict) else {}
     components = memo.get("formula_component_map") if isinstance(memo.get("formula_component_map"), list) else []
-    formula_state_estimator = (
-        memo.get("formula_state_estimator")
-        if isinstance(memo.get("formula_state_estimator"), dict)
-        else {}
+    mathematical_object_mapping = (
+        memo.get("mathematical_object_mapping")
+        if isinstance(memo.get("mathematical_object_mapping"), dict)
+        else (
+            memo.get("formula_state_estimator")
+            if isinstance(memo.get("formula_state_estimator"), dict)
+            else {}
+        )
     )
     operator_claim_consistency = (
         memo.get("operator_claim_consistency")
@@ -1149,7 +1825,7 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
             "why_selected_from_economic_hypothesis": str(qa.get("math_model_answer") or math.get("why_this_model") or ""),
             "why_not_generic_template": str(math.get("why_not_generic_template") or "The current main agent answered open mechanism questions for this formula before Council."),
             "model_mutations_for_this_formula": [
-                str(qa.get("estimator_mapping_answer") or ""),
+                str(_qa_answer(qa, "observation_mapping_answer") or ""),
                 str(qa.get("payoff_answer") or ""),
             ],
         },
@@ -1160,7 +1836,7 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
             "expected_payoff_expression_or_argument": str(qa.get("payoff_answer") or payoff),
             "economic_hypothesis_source": str(qa.get("economic_hypothesis_answer") or ""),
             "math_model_link": str(qa.get("math_model_answer") or ""),
-            "formula_state_link": str(qa.get("estimator_mapping_answer") or formula_state_link),
+            "formula_state_link": str(_qa_answer(qa, "observation_mapping_answer") or formula_state_link),
         },
         "formula_components": [
             {
@@ -1172,26 +1848,46 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
             for idx, item in enumerate(components)
             if isinstance(item, dict)
         ],
-        "latent_state_mapping": [
+        "mathematical_object_mapping": [
             {
                 "observable_component": str(item.get("component_id") or f"component_{idx + 1}"),
-                "latent_state_claim": str(item.get("economic_state") or ""),
-                "estimator_mapping": str(item.get("observable_estimator") or ""),
+                "mathematical_object_claim": str(item.get("mathematical_object") or item.get("economic_state") or ""),
+                "observation_mapping": str(item.get("observable_estimator") or ""),
             }
             for idx, item in enumerate(components)
             if isinstance(item, dict)
         ],
         "selected_model_family": model_family,
         "why_this_model_not_generic_template": str(math.get("why_not_generic_template") or qa.get("math_model_answer") or ""),
-        "random_object": str(math.get("random_object") or "security-day forward return conditional on legal information set F_t"),
-        "latent_state": str(math.get("latent_state") or qa.get("formula_state_answer") or ""),
-        "process_or_distribution": str(math.get("process_or_distribution") or qa.get("math_model_answer") or ""),
+        "mathematical_object": str(
+            _math_value(math, "mathematical_object", "latent_state", "random_object")
+            or _qa_answer(qa, "mathematical_object_answer")
+            or ""
+        ),
+        "mechanism_equation_or_functional": str(
+            _math_value(
+                math,
+                "mechanism_equation_or_functional",
+                "process_or_distribution",
+            )
+            or qa.get("math_model_answer")
+            or ""
+        ),
         "target_functional": str(math.get("target_functional") or payoff or "E[r_i,t+1 | F_t, formula_state_i,t]"),
-        "formula_as_estimator": str(math.get("formula_as_estimator") or qa.get("estimator_mapping_answer") or ""),
-        "formula_state_estimator": formula_state_estimator,
+        "market_outcome_projection": str(
+            math.get("market_outcome_projection")
+            or qa.get("payoff_answer")
+            or ""
+        ),
+        "observation_mapping": str(
+            _math_value(math, "observation_mapping", "formula_as_estimator")
+            or _qa_answer(qa, "observation_mapping_answer")
+            or ""
+        ),
+        "mathematical_object_mapping_summary": mathematical_object_mapping,
         "operator_consistency_discussion": {
-            "formula_state_answer": str(qa.get("formula_state_answer") or ""),
-            "estimator_mapping_answer": str(qa.get("estimator_mapping_answer") or ""),
+            "mathematical_object_answer": str(_qa_answer(qa, "mathematical_object_answer") or ""),
+            "observation_mapping_answer": str(_qa_answer(qa, "observation_mapping_answer") or ""),
             "operator_claim_consistency": operator_claim_consistency,
         },
         "expected_metric_signature": str(qa.get("metric_signature_answer") or math.get("expected_metric_signature") or ""),
@@ -1349,6 +2045,7 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     failures: list[str] = []
     if not isinstance(memo, dict) or not memo:
         return ["BLOCK_MAIN_AGENT_MECHANISM_MEMO_MISSING"]
+    failures.extend(memo_public_schema_failures(memo))
     if memo.get("contract_version") != CONTRACT_VERSION:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_CONTRACT_VERSION")
     if memo.get("canonical_write_permission") is True:
@@ -1412,9 +2109,8 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_DETERMINISTIC_TEMPLATE")
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
     top_level_contract = {
-        "math_model_selection": ("model_family", "baseline_model", "model_mutation"),
+        "math_model_selection": ("model_family", "model_mutation"),
         "payer": ("payer_or_counterparty", "why_they_pay", "necessary_market_structure"),
-        "formula_state_estimator": ("latent_state", "observable_mapping"),
     }
     for field, required_keys in top_level_contract.items():
         payload = memo.get(field)
@@ -1424,6 +2120,53 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         for key in required_keys:
             if not str(payload.get(key) or "").strip():
                 failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:{field}.{key}")
+    selection_payload = (
+        memo.get("math_model_selection")
+        if isinstance(memo.get("math_model_selection"), dict)
+        else {}
+    )
+    if not str(
+        selection_payload.get("mechanism_equation_or_functional")
+        or selection_payload.get("baseline_model")
+        or ""
+    ).strip():
+        failures.append(
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:"
+            "math_model_selection.mechanism_equation_or_functional"
+        )
+    object_mapping = (
+        memo.get("mathematical_object_mapping")
+        if isinstance(memo.get("mathematical_object_mapping"), dict)
+        else (
+            memo.get("formula_state_estimator")
+            if isinstance(memo.get("formula_state_estimator"), dict)
+            else {}
+        )
+    )
+    if not object_mapping:
+        failures.append(
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:"
+            "mathematical_object_mapping"
+        )
+    else:
+        if not str(
+            object_mapping.get("mathematical_object")
+            or object_mapping.get("latent_state")
+            or ""
+        ).strip():
+            failures.append(
+                "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:"
+                "mathematical_object_mapping.mathematical_object"
+            )
+        if not str(
+            object_mapping.get("observation_mapping")
+            or object_mapping.get("observable_mapping")
+            or ""
+        ).strip():
+            failures.append(
+                "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:"
+                "mathematical_object_mapping.observation_mapping"
+            )
     top_signature = memo.get("expected_metric_signature")
     math_signature = math.get("expected_metric_signature")
     signatures_are_complete = all(
@@ -1442,42 +2185,168 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:expected_metric_signature")
     if not _nonempty_str_list(memo.get("falsification_tests"), min_count=2):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:falsification_tests")
-    selected_model_family = normalize_derivation_model_family(
-        math.get("selected_model_family") or math.get("model_family")
-    )
+    raw_selected_model_family = str(
+        math.get("selected_model_family") or math.get("model_family") or ""
+    ).strip()
     selection = (
         memo.get("math_model_selection")
         if isinstance(memo.get("math_model_selection"), dict)
         else {}
     )
-    selection_model_family = normalize_derivation_model_family(
-        selection.get("model_family")
-    )
-    if selected_model_family is None or selection_model_family is None:
-        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID")
-    elif selected_model_family != selection_model_family:
-        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH")
-    process = str(math.get("process_or_distribution") or "").lower()
-    if not process or not any(term in process for term in ["=", "process", "distribution", "decay", "state", "follows", "conditional"]):
+    raw_selection_model_family = str(selection.get("model_family") or "").strip()
+    measurement_program = _measurement_program_from_factor_spec(factor_spec)
+    selected_program_model = _selected_measurement_program_model(measurement_program)
+    program_model_family = str(
+        (selected_program_model or {}).get("model_family") or ""
+    ).strip()
+    if program_model_family:
+        expected_normalized = normalize_derivation_model_family(
+            program_model_family
+        )
+
+        def matches_program_family(value: str) -> bool:
+            normalized = normalize_derivation_model_family(value)
+            if expected_normalized and normalized:
+                return normalized == expected_normalized
+            return value.casefold() == program_model_family.casefold()
+
+        if not raw_selected_model_family or not raw_selection_model_family:
+            failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID")
+        elif (
+            not matches_program_family(raw_selected_model_family)
+            or not matches_program_family(raw_selection_model_family)
+        ):
+            failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH")
+        selected_model_family = (
+            expected_normalized
+            or program_model_family
+        )
+    else:
+        selected_model_family = normalize_derivation_model_family(
+            raw_selected_model_family
+        )
+        selection_model_family = normalize_derivation_model_family(
+            raw_selection_model_family
+        )
+        if selected_model_family is None or selection_model_family is None:
+            failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID")
+        elif selected_model_family != selection_model_family:
+            failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH")
+    mechanism_equation = str(
+        _math_value(
+            math,
+            "mechanism_equation_or_functional",
+            "process_or_distribution",
+        )
+        or ""
+    ).lower()
+    if not mechanism_equation or not any(
+        term in mechanism_equation
+        for term in [
+            "=",
+            "functional",
+            "optimization",
+            "projection",
+            "valuation",
+            "identity",
+            "process",
+            "distribution",
+            "decay",
+            "conditional",
+        ]
+    ):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_GENERIC")
     formula_tokens = {"rank", "delta", "sign", "sum", "divide", "plus", "minus", "multiply", "close", "volume"}
-    if process and set(re.findall(r"[a-z_]+", process)) <= formula_tokens:
+    if mechanism_equation and set(re.findall(r"[a-z_]+", mechanism_equation)) <= formula_tokens:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_GENERIC")
     target = str(math.get("target_functional") or "").lower()
-    if (
-        not target
-        or not (
-            _has_explicit_named_return_payoff(
-                target,
-                allowed_information_names=trusted_information_fields,
-            )
-            or _has_explicit_forward_price_payoff(
-                target,
-                allowed_information_names=trusted_information_fields,
-            )
+    target_is_tradeable = (
+        _has_explicit_named_return_payoff(
+            target,
+            allowed_information_names=trusted_information_fields,
         )
+        or _has_explicit_forward_price_payoff(
+            target,
+            allowed_information_names=trusted_information_fields,
+        )
+    )
+    uses_current_math_schema = any(
+        field in math
+        for field in (
+            "mathematical_object",
+            "mechanism_equation_or_functional",
+            "market_outcome_projection",
+            "observation_mapping",
+        )
+    )
+    generic_targets = {
+        "target",
+        "alpha",
+        "factor",
+        "expected return",
+        "mechanism-specific target",
+        "under_specified",
+    }
+    mechanism_specific_target = (
+        uses_current_math_schema
+        and len(target) >= 24
+        and target not in generic_targets
+        and any(character in target for character in ["=", "_", "[", "("])
+    )
+    valuation_target = (
+        selected_model_family == "valuation_identity"
+        and any(
+            term in target
+            for term in [
+                "valuation_gap",
+                "intrinsic_value",
+                "intrinsic value",
+                "fcf",
+                "residual_income",
+                "residual income",
+            ]
+        )
+        and any(term in target for term in ["/", "=", "sum", "present value"])
+    )
+    if not target or not (
+        target_is_tradeable or valuation_target or mechanism_specific_target
     ):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TARGET_FUNCTIONAL_INVALID")
+    projection = str(
+        math.get("market_outcome_projection")
+        or (target if target_is_tradeable else "")
+        or ""
+    ).lower()
+    projection_is_tradeable = (
+        _has_explicit_named_return_payoff(
+            projection,
+            allowed_information_names=trusted_information_fields,
+        )
+        or _has_explicit_forward_price_payoff(
+            projection,
+            allowed_information_names=trusted_information_fields,
+        )
+        or (
+            any(term in projection for term in ["return", "payoff", "alpha", "r_"])
+            and any(term in projection for term in ["t+1", "t+2", "t+h", "next horizon", "forward"])
+            and any(
+                term in projection
+                for term in [
+                    "positive",
+                    "negative",
+                    "increasing",
+                    "decreasing",
+                    "monotone",
+                    "sign",
+                    "convergence",
+                    "reversal",
+                    "continuation",
+                ]
+            )
+        )
+    )
+    if not projection_is_tradeable:
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID")
     evidence = memo.get("evidence_comparison") if isinstance(memo.get("evidence_comparison"), dict) else {}
     observed = evidence.get("observed_metrics") if isinstance(evidence, dict) else {}
     if not isinstance(observed, dict) or not observed:

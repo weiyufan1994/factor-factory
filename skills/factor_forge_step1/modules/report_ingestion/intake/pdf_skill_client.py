@@ -39,6 +39,9 @@ class PdfSkillClient:
             alternative_return_source_tests=payload.get("alternative_return_source_tests", []),
             primary_mathematical_model=payload.get("primary_mathematical_model", {}),
             formula_as_observable_estimator=payload.get("formula_as_observable_estimator", {}),
+            mechanism_conditioned_measurement_program=payload.get(
+                "mechanism_conditioned_measurement_program", {}
+            ),
             evidence_clues=payload.get("evidence_clues", []),
             ambiguities=payload.get("ambiguities", []),
             raw_response=response_text,

@@ -1,5 +1,11 @@
 # Factor Forge Dirac Math Contract Closeout Implementation Plan
 
+> **Historical, superseded plan.** The current normative contract is
+> `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md`.
+> Its math search is open and mechanism-conditioned: neither a stochastic
+> benchmark nor dimensional analysis is universally required. Do not use the
+> requirements below to generate or validate new research artifacts.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Upgrade Factor Forge mechanism research so every Step1/2/6 factor judgment is anchored to a classified research equation, a formula-implied latent state, a T+0/T+1 stochastic benchmark projection, model-linked metrics, and drawdown-geometry financial diagnostics.

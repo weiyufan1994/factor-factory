@@ -17,6 +17,7 @@ if str(FF) not in sys.path:
 
 from skills.factor_forge_step1.modules.report_ingestion.research_discipline import attach_step1_research_discipline  # type: ignore
 from factor_factory.knowledge_context import retrieve_factor_knowledge_context
+from factor_factory.knowledge_reference import build_knowledge_reference_contract
 
 OBJ = FF / 'objects'
 
@@ -44,7 +45,11 @@ def build_step1_factor_knowledge_query(aim: dict) -> str:
         json.dumps(discipline.get('economic_hypothesis') or {}, ensure_ascii=False),
         json.dumps(discipline.get('math_hypothesis_candidates') or [], ensure_ascii=False),
         str(discipline.get('initial_return_source_hypothesis') or ''),
-        str(discipline.get('step1_random_object') or ''),
+        str(
+            discipline.get('step1_mathematical_object')
+            or discipline.get('step1_random_object')
+            or ''
+        ),
     ]
     return ' '.join(part for part in parts if part and part != '{}')
 
@@ -77,15 +82,6 @@ def attach_factor_knowledge_context(aim: dict) -> dict:
             'retrieval_error': str(exc),
             'query': {'text': query_text, 'top_k': 5},
         }
-    knowledge_reference_contract = {
-        'schema_version': 'factorforge_knowledge_reference_contract_v1',
-        'source': 'factor_knowledge_graph' if (context.get('node_count') or 0) > 0 else 'cold_start_or_unavailable',
-        'context_schema_version': context.get('schema_version'),
-        'node_count': context.get('node_count') or 0,
-        'edge_count': context.get('edge_count') or 0,
-        'retrieval_error': context.get('retrieval_error'),
-        'not_same_factor_unless_identity_matches': True,
-    }
     enriched = dict(aim)
     discipline = dict(enriched.get('research_discipline') or {})
     learning = dict(enriched.get('learning_and_innovation') or {})
@@ -97,6 +93,39 @@ def attach_factor_knowledge_context(aim: dict) -> dict:
     ]))
     if not merged_lessons:
         merged_lessons = ['No similar prior case was imported from Step1/graph; treat this as a cold-start prior and write back lessons after Step6.']
+    node_ids = [
+        str(item.get('id'))
+        for item in context.get('nodes') or []
+        if isinstance(item, dict) and item.get('id')
+    ]
+    graph_paths = [
+        REPO_ROOT / 'knowledge' / '因子工厂' / 'graph' / 'factor_knowledge_nodes.jsonl',
+        REPO_ROOT / 'knowledge' / '因子工厂' / 'graph' / 'factor_knowledge_edges.jsonl',
+    ]
+    knowledge_reference_contract = build_knowledge_reference_contract(
+        repo_root=REPO_ROOT,
+        knowledge_root=REPO_ROOT / 'knowledge' / '因子工厂',
+        query_text=query_text,
+        producer='step1_factor_knowledge_graph_retrieval',
+        retrieval_required=False,
+    )
+    knowledge_reference_contract.update({
+        'source': 'factor_knowledge_graph' if node_ids else 'cold_start_or_unavailable',
+        'context_schema_version': context.get('schema_version'),
+        'index_paths_checked': [str(path) for path in graph_paths],
+        'indexes_available': [str(path) for path in graph_paths if path.is_file()],
+        'retrieval_status': 'retrieved' if node_ids else 'cold_start',
+        'hit_count': len(node_ids),
+        'retrieved_case_ids': node_ids,
+        'cited_node_ids': node_ids,
+        'similar_case_lessons_imported': merged_lessons,
+        'fallback_reason': None if node_ids else (
+            context.get('retrieval_error')
+            or 'knowledge_graph_cold_start_no_similar_case'
+        ),
+        'retrieval_error': context.get('retrieval_error'),
+        'not_same_factor_unless_identity_matches': True,
+    })
     discipline['similar_case_lessons_imported'] = merged_lessons
     discipline['factor_knowledge_context'] = context
     discipline['knowledge_reference_contract'] = knowledge_reference_contract

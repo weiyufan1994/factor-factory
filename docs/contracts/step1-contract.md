@@ -32,7 +32,7 @@ A successful Step 1 sample run should materialize artifacts equivalent in class 
 
 ## Research discipline fields
 Step 1 must preserve the original report thesis while adding enough structure for downstream review:
-- `research_discipline.step1_random_object`
+- `research_discipline.step1_mathematical_object`
 - `research_discipline.target_statistic_hint`
 - `research_discipline.information_set_hint`
 - `research_discipline.initial_return_source_hypothesis`
@@ -40,7 +40,9 @@ Step 1 must preserve the original report thesis while adding enough structure fo
 - `research_discipline.what_would_break_it`
 - `research_discipline.similar_case_lessons_imported`
 
-The compatibility aliases `math_discipline_review.step1_random_object` and `learning_and_innovation.similar_case_lessons_imported` should be present for Step2/5/6 consumption.
+Current artifacts expose `math_discipline_review.mathematical_object` and
+`learning_and_innovation.similar_case_lessons_imported` for Step2/5/6. Read
+`step1_random_object` only as a legacy alias; do not require it in new research.
 
 ## Producer gate
 Formal Step2 may only consume Step1 output from approved producers. `manual`, `debug`, `fake`, `posthoc`, `unknown`, `adhoc`, or `ad_hoc` producer strings are never allowed into formal Step3.

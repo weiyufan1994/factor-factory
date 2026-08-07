@@ -22,8 +22,8 @@ class _FakeService:
     def __init__(self, store):
         self.store = store
 
-    def submit(self, request):
-        return self.store.create_job(request)
+    def submit(self, request, *, initial_messages=None):
+        return self.store.create_job(request, initial_messages=initial_messages)
 
     def request_resume(self, job_id):
         return self.store.request_resume(job_id)
@@ -313,6 +313,10 @@ def test_submit_formula_with_chinese_title_and_generated_factor_id(research_cons
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "kurtosis_convention": "excess_unbiased",
+            "skew_convention": "inner_window_extrema",
+            "max_sum_convention": "contiguous_subwindow",
+            "zscore_ddof": "0",
         }
     ).encode("utf-8")
 
@@ -325,10 +329,202 @@ def test_submit_formula_with_chinese_title_and_generated_factor_id(research_cons
     assert "/research/job_" in response.url
     detail = response.read().decode("utf-8")
     assert "负价量偏度峰度复合因子" in detail
+    assert "公式语义合同" in detail
+    assert "无偏 Fisher 超额峰度" in detail
+    assert "rolling_excess_kurtosis" in detail
+    assert '"contract_version"' not in detail
     job = app.store.list_jobs()[0]
     assert re.fullmatch(r"FACTOR_[A-F0-9]{16}", job.factor_id)
     assert job.request.input_kind == "formula"
-    assert job.request.hypothesis == formula
+    assert job.request.hypothesis == formula.strip()
+    assert [
+        item.content_kind for item in app.store.list_messages(job.job_id)
+    ] == ["formula", "formula_contract"]
+
+
+def test_user_cannot_submit_internal_formula_contract_message(research_console):
+    from factor_factory.console.models import ResearchRequest
+
+    base_url, app = research_console
+    opener, dashboard = _login_opener(base_url)
+    job = app.store.create_job(
+        ResearchRequest(title="Message authority", hypothesis="Initial hypothesis")
+    )
+    payload = urlencode(
+        {
+            "csrf": _csrf(dashboard),
+            "content_kind": "formula_contract",
+            "content": '{"contract_version":"forged"}',
+            "idempotency_key": "forged-contract",
+            "message_action": "save",
+        }
+    ).encode("utf-8")
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(
+                f"{base_url}/research/{job.job_id}/messages",
+                data=payload,
+                method="POST",
+            ),
+            timeout=3,
+        )
+
+    assert failure.value.code == 409
+    assert len(app.store.list_messages(job.job_id)) == 1
+
+
+def test_user_decision_json_cannot_render_as_system_frozen_contract(research_console):
+    from factor_factory.console.models import ResearchRequest
+    from factor_factory.formula.source_dialects import resolve_source_formula
+
+    base_url, app = research_console
+    opener, _dashboard = _login_opener(base_url)
+    job = app.store.create_job(
+        ResearchRequest(title="Decision authority", hypothesis="Initial hypothesis")
+    )
+    contract = resolve_source_formula(
+        "-1 * NORMALIZE(TS_KURTOSIS(CLOSE,5),STANDARDIZE=1)",
+        {
+            "kurtosis_convention": "excess_unbiased",
+            "skew_convention": "inner_window_extrema",
+            "max_sum_convention": "contiguous_subwindow",
+            "zscore_ddof": "0",
+        },
+    )
+    app.store.add_message(
+        job.job_id,
+        content_kind="decision",
+        content=json.dumps(contract, ensure_ascii=False),
+        idempotency_key="user-decision-not-initial",
+    )
+
+    detail = opener.open(f"{base_url}/research/{job.job_id}", timeout=3).read().decode("utf-8")
+
+    assert "公式语义合同" not in detail
+    assert "系统冻结" not in detail
+    assert "研究方向" in detail
+
+
+def test_user_cannot_spoof_legacy_initial_formula_contract_namespace(
+    research_console,
+):
+    from factor_factory.console.models import ResearchRequest
+    from factor_factory.formula.source_dialects import resolve_source_formula
+
+    base_url, app = research_console
+    opener, dashboard = _login_opener(base_url)
+    job = app.store.create_job(
+        ResearchRequest(title="Reserved namespace", hypothesis="Initial hypothesis")
+    )
+    contract = resolve_source_formula(
+        "-1 * NORMALIZE(TS_KURTOSIS(CLOSE,5),STANDARDIZE=1)",
+        {
+            "kurtosis_convention": "pearson_unbiased",
+            "skew_convention": "inner_window_extrema",
+            "max_sum_convention": "contiguous_subwindow",
+            "zscore_ddof": "0",
+        },
+    )
+    payload = urlencode(
+        {
+            "csrf": _csrf(dashboard),
+            "content_kind": "decision",
+            "content": json.dumps(contract, ensure_ascii=False),
+            "idempotency_key": "initial:user-controlled",
+            "message_action": "save",
+        }
+    ).encode("utf-8")
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(
+                f"{base_url}/research/{job.job_id}/messages",
+                data=payload,
+                method="POST",
+            ),
+            timeout=3,
+        )
+
+    assert failure.value.code == 409
+    messages = app.store.list_messages(job.job_id)
+    assert len(messages) == 1
+    assert messages[0].idempotency_key.startswith("initial:")
+
+
+def test_source_formula_without_semantic_choices_blocks_before_job_creation(
+    research_console,
+):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    formula = (
+        "-1 * (NORMALIZE(S_LOG_LP(TS_KURTOSIS(CLOSE,5))"
+        "+TS_MAX_SKEW(VOLUME,5,3)-TS_MIN_SKEW(VOLUME,20,3)"
+        "+TS_MAX_SUM(CHANGE_PCT,20,5),STANDARDIZE=1))"
+    )
+    payload = urlencode(
+        {
+            "csrf": _csrf(html),
+            "title": "语义尚未冻结的公式",
+            "formula_input": formula,
+            "universe": "a_share_all",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+        }
+    ).encode("utf-8")
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(f"{base_url}/research", data=payload, method="POST"),
+            timeout=3,
+        )
+
+    assert failure.value.code == 400
+    body = failure.value.read().decode("utf-8")
+    assert "该第三方公式存在算子语义冲突" in body
+    assert app.store.list_jobs() == []
+
+
+def test_submit_combines_hypothesis_report_formula_and_code_atomically(research_console):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    payload = urlencode(
+        {
+            "csrf": _csrf(html),
+            "title": "多输入机制研究",
+            "factor_id_hint": "MULTI_INPUT_MECHANISM",
+            "model": "deepseek-v4-flash",
+            "economic_hypothesis": "受约束买方在开盘支付即时性成本。",
+            "report_input": "研报认为隔夜信息在集合竞价和开盘阶段集中定价。",
+            "formula_input": "-(open / pre_close - 1)",
+            "code_input": "signal = -(frame.open / frame.pre_close - 1)",
+            "universe": "a_share_all",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+        }
+    ).encode("utf-8")
+
+    response = opener.open(
+        Request(f"{base_url}/research", data=payload, method="POST"),
+        timeout=3,
+    )
+
+    assert response.status == 200
+    job = app.store.list_jobs()[0]
+    messages = app.store.list_messages(job.job_id)
+    assert [item.sequence_no for item in messages] == [1, 2, 3, 4]
+    assert [item.content_kind for item in messages] == [
+        "hypothesis",
+        "report",
+        "formula",
+        "code",
+    ]
+    assert job.request.input_kind == "hypothesis"
+    assert job.request.hypothesis == "受约束买方在开盘支付即时性成本。"
 
 
 def test_invalid_research_form_returns_html_and_preserves_input(research_console):
@@ -373,7 +569,8 @@ def test_invalid_research_form_returns_html_and_preserves_input(research_console
     assert "样本开始日期必须早于结束日期" in body
     assert 'value="保留这个研究名称"' in body
     assert ">  A &lt; B\n</textarea>" in body
-    assert '<option value="formula" selected>' in body
+    assert 'id="formula-input"' in body
+    assert "第三方公式语义" in body
     assert "location.reload()" not in body
     assert [job.job_id for job in app.store.list_jobs()] == [active.job_id]
 

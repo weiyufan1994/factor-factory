@@ -66,7 +66,7 @@ Direct `skills/factor-forge-step6/scripts/run_step6.py` or `validate_step6.py` c
    Turnover/cost can block promotion, but it must not erase pre-cost
    information or payer evidence.
 8. Compare against prior cases and factor library knowledge when available.
-9. Apply the math discipline check: random object, target statistic, information-set legality, spec stability, signal-vs-portfolio gap, revision operator, overfit risk, and kill criteria.
+9. Apply the math discipline check: selected mathematical object, target statistic or functional, information-set legality, spec stability, signal-vs-portfolio gap, revision operator, overfit risk, and kill criteria.
 10. Extract learning: transferable patterns, anti-patterns, similar-case lessons, and innovative idea seeds.
 11. Decide `promote_official`, `iterate`, `reject`, or `needs_human_review`.
 12. If iterating, produce a concrete Step3B revision brief and explain why it strengthens the return source.

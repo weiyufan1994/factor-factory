@@ -13,16 +13,19 @@ Step 6 是 **研究闭环控制层**。
 
 它的职责是把单次因子实验，沉淀成可累积的因子库与知识库，并在需要时把流程送回 Step 3B 继续改公式。
 
-## 机制数学合约
-Step6 在 `research_memo.mechanism_analysis` 下保留 `mechanism_math_contract`，用它约束 revision hypothesis 指向具体数学对象，并在每份 loop research brief 中写入 `mechanism_math_summary`。`math_model_status=invalid` 不允许 official promotion；`under_specified` 必须写明原因和下一步人工研究问题。数学层只用于解释和 revision discipline，不能绕过 evidence audit、case comparison、search policy、loop authorization、provenance 或 promotion gate。
+## 机制条件化测量程序
+Step6 在 `research_memo.mechanism_analysis` 下保留完全一致的
+`mechanism_conditioned_measurement_program`，用其中被选择的数学对象、
+estimand、observation map 与 falsifier 约束 revision，并在每份 loop
+research brief 中写入通用 `mechanism_math_summary`。随机过程、潜状态、
+条件分布、量纲审计、估值恒等式或其他数学工具，仅在经济机制选择它时才是
+必需项。旧 `mechanism_math_contract` 与 `mechanism_math_contract_v2` 只是
+可选兼容证据，Step6 与 Council 不得自动生成。
 
-当 `math_model_status=specified` 时，机制数学合同必须写明可检验的
-`process_hypothesis`、`latent_state`、`observable_estimator`、
-`conditional_distribution_hypothesis`、`relationship_shape`、
-`metric_signature_match` 和 `mechanism_falsification_tests`。价量
-covariance/correlation/rank-dependence 公式必须归入
-`price_volume_microstructure`，除非公式本身显式包含 projection、
-residualization 或 neutralization 操作。Revision Council packet 必须读取
+`math_model_status=invalid` 不允许 official promotion；`under_specified`
+必须写明原因和下一步人工研究问题。数学层不能绕过 evidence audit、case
+comparison、search policy、loop authorization、provenance 或 promotion
+gate。Revision Council packet 必须读取
 `objects/research_iteration_master/revision_council/<report_id>/supplemental_context/`
 以及匹配的 `knowledge/因子工厂/知识库/*MECHANISM*` 机制补充材料，并继续传递到
 agentic taskbook。
@@ -202,7 +205,7 @@ Step 6 必须把每条因子尝试归入以下状态之一：
       },
       "math_discipline_review": {
         "math_axis": ["string"],
-        "step1_random_object": "string",
+        "mathematical_object": "string",
         "target_statistic": "string",
         "information_set_legality": "string",
         "spec_stability": {},
@@ -352,7 +355,7 @@ Step 6 必须把每条因子尝试归入以下状态之一：
 21. `overfit_risk=unknown|not assessed` 不得进入 `promote_official`。
 18. 正常因子研究不得使用纯脚本式 Step6。`validate_step6.py` 必须要求外部研究员上下文：至少存在全流程 `research_journal` 或 Step6 专项 `researcher_memo`，并被 Step6 保存在 `research_memo` 里。
 19. 全流程研究员必须从 Step1/Step2 开始记录作者思路，而不是等回测结束才解释结果。Step6 的判断必须能回溯到原始 thesis、Step2 canonical spec、Step3 implementation、Step4 evidence 和历史知识。
-20. Step 6 必须写出 `math_discipline_review`，把因子映射到随机对象、目标统计量、信息集合法性、spec 稳定性、signal-vs-portfolio gap、revision operator、泛化理由、overfit 风险和 kill criteria。
+20. Step 6 必须写出 `math_discipline_review`，把因子映射到由经济假设选择的数学对象、目标统计量或泛函、信息集合法性、spec 稳定性、signal-vs-portfolio gap、revision operator、泛化理由、overfit 风险和 kill criteria。随机对象只在所选机制是随机机制时要求。
 21. Step 6 必须写出 `learning_and_innovation`，从当前 case 中抽象 transferable pattern、anti-pattern、similar-case lesson、innovative idea seed 和 future-agent reuse instruction。
 22. 知识库写回不得只是状态总结；它必须让未来的 Bernard、Humphrey 或 Codex 更会挖因子。
 23. Step 6 不得写入 `dd_view_edge_trade`；DD-view-edge-trade 属于个股基本面投研框架，不属于因子工厂的 Step6 合约。
@@ -704,7 +707,9 @@ Council proposal 必须保持 advisory-only，任何后续执行都需要人工�
 
 - `research_question`
 - assumptions，并说明状态、必要性和证伪路径
-- mathematical objects，并说明含义、单位或量纲、information set
+- mathematical objects，并说明含义、measurement semantics 与 information
+  set；只有所选对象确实具有有意义的单位或量纲时才记录，否则将该专项审计标为
+  不适用
 - selected tools，并说明选择原因、适用范围和局限
 - rejected tools，如果相关
 - 有序 derivation steps；如果声称公式推导，必须写出公式或 symbolic relation

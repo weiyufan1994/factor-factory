@@ -5,8 +5,8 @@
 ## Current judgment
 Step 2 is the canonical spec gate. It consumes `alpha_idea_master` from the approved Step 1 intake layer and emits `factor_spec_master`, `handoff_to_step3`, and research context for Step3B.
 
-## Mechanism math contract
-`factor_spec_master` carries `mechanism_math_contract` with version `factorforge_mechanism_math_contract_v1`. It is generated for operator, direct_code, and hybrid modes as an incremental research layer. `specified` contracts must include model family, math toolkits, economic mechanism, state/object, observable inputs, estimator mapping, target functional, monotonicity claim, information set, expected metric signature, revision operators, falsification tests, and kill criteria. If the mechanism is not responsibly formalizable, Step2 records `math_model_status=under_specified` with `under_specified_reason` and `next_human_research_question`.
+## Current mechanism-conditioned measurement program
+`factor_spec_master` and `handoff_to_step3` carry the exact `factorforge_mechanism_conditioned_measurement_program_v1`. Step2 freezes competing mathematical models, the mechanism-selected mathematical object, estimand, observation map, implementation binding, applicable audits, falsification tests, and search invariants for operator, direct-code, and hybrid routes. No mathematical family is universally mandatory. Legacy `mechanism_math_contract` and `mechanism_math_contract_v2` objects are preserved and validated only when already present upstream; Step2 never synthesizes them for a new run.
 
 ## Current committed reproducibility inputs
 - `fixtures/step2/alpha_idea_master__sample.json`
@@ -66,7 +66,8 @@ Step 2 is the first canonical-spec gate. `factor_spec_master` must include:
 - `thesis.alpha_thesis`
 - `thesis.target_prediction`
 - `thesis.economic_mechanism`
-- `math_discipline_review.step1_random_object`
+- `math_discipline_review.mathematical_object` (`step1_random_object` is a
+  legacy read alias only)
 - `math_discipline_review.target_statistic`
 - `math_discipline_review.information_set_legality`
 - `math_discipline_review.expected_failure_modes`

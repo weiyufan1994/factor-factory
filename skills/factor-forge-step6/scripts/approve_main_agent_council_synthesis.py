@@ -67,6 +67,7 @@ VALID_REVISION_MATH_OBJECTS = {
 VALID_REVISION_MODEL_LAYERS = {
     "economic_hypothesis",
     "primary_mechanism_model",
+    "market_outcome_projection",
     "stochastic_projection",
     "observable_estimator",
     "implementation_contract",

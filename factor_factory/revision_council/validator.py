@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from factor_factory.measurement_program import (
+    build_measurement_program_binding,
+    measurement_program_binding_failures,
+)
+
 from .guards import FORBIDDEN_TEXT_TOKEN, scan_forbidden_text
 from .schema import (
     CONFIDENCE_VALUES,
@@ -16,7 +21,7 @@ from .schema import (
     RESEARCH_DEPTH_VALUES,
     RETURN_SOURCE_VALUES,
     REVISION_TYPES,
-    SYMBOLIC_MATH_TOOLS,
+    DIMENSIONAL_AUDIT_TOOLS,
 )
 
 
@@ -55,15 +60,21 @@ def _normalized_words(value: Any) -> str:
 VALID_REVISION_MODEL_LAYERS = {
     "economic_hypothesis",
     "primary_mechanism_model",
+    "market_outcome_projection",
     "stochastic_projection",
     "observable_estimator",
     "implementation_contract",
 }
 VALID_RESEARCH_EQUATION_REVISION_TARGETS = {
     "assumptions",
+    "math_tool_selection",
+    "primary_math_mechanism",
+    "mathematical_object",
     "latent_state",
     "observable_estimator",
     "price_process_projection",
+    "market_outcome_projection",
+    "applicable_audit",
     "implementation_contract",
     "trading_cost",
     "drawdown_geometry",
@@ -78,9 +89,14 @@ GENERIC_RESEARCH_EQUATION_REVISION_TEXT = {
 }
 REVISION_TARGET_EVIDENCE_TERMS = {
     "assumptions": {"assumption", "assumptions", "validity", "scope", "regime"},
+    "math_tool_selection": {"tool", "model", "selection", "alternative"},
+    "primary_math_mechanism": {"mechanism", "equation", "functional", "model"},
+    "mathematical_object": {"mathematical", "object", "value", "functional", "state"},
     "latent_state": {"latent", "state"},
     "observable_estimator": {"observable", "estimator", "measurement", "equation", "detector", "rank_ic"},
     "price_process_projection": {"drift", "diffusion", "jump", "friction", "regime_transition", "projection"},
+    "market_outcome_projection": {"value", "payoff", "return", "price", "projection"},
+    "applicable_audit": {"audit", "assumption", "falsifier", "diagnostic"},
     "implementation_contract": {"implementation", "contract", "direct_code", "operator", "hybrid"},
     "trading_cost": {"turnover", "cost", "cogs", "slippage", "fee"},
     "drawdown_geometry": {"drawdown", "recovery", "area", "pain"},
@@ -99,12 +115,11 @@ DIRAC_REPORT_REQUIRED_SECTIONS = {
     "formula_implied_information",
     "metric_anomaly_review",
     "model_linked_metric_signature",
-    "stochastic_projection_consistency_check",
+    "market_outcome_projection_consistency_check",
     "volatility_drag_review",
     "drawdown_recovery_area_review",
     "component_level_revision_axes",
     "direction_losing_transform_review",
-    "dimensional_or_unit_consistency_review",
 }
 DIRAC_ANOMALY_CLASSES = {
     "bug",
@@ -117,6 +132,31 @@ DIRAC_ANOMALY_CLASSES = {
     "kill_signal",
     "under_specified",
 }
+
+
+def _validate_measurement_program_binding(
+    proposal: dict[str, Any],
+    measurement_program: dict[str, Any] | None,
+) -> list[str]:
+    if not isinstance(measurement_program, dict) or not measurement_program:
+        return ["BLOCK_COUNCIL_MEASUREMENT_PROGRAM_CONTEXT_MISSING"]
+    expected = build_measurement_program_binding(measurement_program)
+    if not expected:
+        return ["BLOCK_COUNCIL_MEASUREMENT_PROGRAM_SELECTED_MODEL_INVALID"]
+    symbolic = proposal.get("symbolic_model")
+    if not isinstance(symbolic, dict):
+        return ["revision_council_symbolic_model_missing"]
+    failures = measurement_program_binding_failures(
+        symbolic,
+        measurement_program,
+        prefix="BLOCK_COUNCIL_MEASUREMENT_PROGRAM_BINDING_MISMATCH",
+    )
+    return [
+        "BLOCK_COUNCIL_CORE_MECHANISM_EQUALS_MARKET_PROJECTION"
+        if reason.endswith(":core_mechanism_equals_market_projection")
+        else reason
+        for reason in failures
+    ]
 
 
 def validate_dirac_research_report_contract(report: dict[str, Any]) -> list[str]:
@@ -134,7 +174,6 @@ def validate_dirac_research_report_contract(report: dict[str, Any]) -> list[str]
             required = [
                 "formula_component",
                 "observable",
-                "implied_latent_state",
                 "payer_or_constraint",
                 "expected_sign",
                 "falsification_metric",
@@ -142,8 +181,15 @@ def validate_dirac_research_report_contract(report: dict[str, Any]) -> list[str]
             if any(not _has_nonempty_text(item, key) for key in required):
                 reasons.append(f"BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING:{idx}")
                 continue
-            latent = _normalized_words(item.get("implied_latent_state"))
-            if latent in {"close", "volume", "vwap", "returns", "formula", "raw field", "raw fields"}:
+            implied_object = (
+                item.get("implied_mathematical_object")
+                or item.get("implied_latent_state")
+            )
+            if not _nonempty_str(implied_object):
+                reasons.append(f"BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING:{idx}")
+                continue
+            normalized_object = _normalized_words(implied_object)
+            if normalized_object in {"close", "volume", "vwap", "returns", "formula", "raw field", "raw fields"}:
                 reasons.append(f"BLOCK_DIRAC_FORMULA_RAW_RESTATEMENT:{idx}")
     anomaly = report.get("metric_anomaly_review")
     if not isinstance(anomaly, dict):
@@ -165,7 +211,7 @@ def validate_dirac_research_report_contract(report: dict[str, Any]) -> list[str]
             reasons.append("BLOCK_DIRAC_POSITIVE_IC_NEGATIVE_LONG_WITHOUT_ANOMALY")
     for section, token in [
         ("model_linked_metric_signature", "BLOCK_DIRAC_MODEL_LINKED_METRICS_MISSING"),
-        ("stochastic_projection_consistency_check", "BLOCK_DIRAC_STOCHASTIC_PROJECTION_CHECK_MISSING"),
+        ("market_outcome_projection_consistency_check", "BLOCK_DIRAC_MARKET_OUTCOME_PROJECTION_CHECK_MISSING"),
         ("volatility_drag_review", "BLOCK_DIRAC_VOLATILITY_DRAG_REVIEW_MISSING"),
         ("drawdown_recovery_area_review", "BLOCK_DIRAC_DRAWDOWN_RECOVERY_AREA_REVIEW_MISSING"),
     ]:
@@ -182,12 +228,15 @@ def validate_component_council_packet(packet: dict[str, Any], *, formula_text: s
         "component_revision_axes",
         "component_ablation_plan",
         "direction_losing_transform_review",
-        "dimensional_consistency_review",
-        "latent_state_independence_review",
-        "stochastic_projection_falsification",
+        "market_outcome_projection_falsification",
         "branch_kill_criteria",
     ]
     missing = [key for key in required if key not in packet]
+    if (
+        "component_independence_review" not in packet
+        and "latent_state_independence_review" not in packet
+    ):
+        missing.append("component_independence_review")
     if missing:
         reasons.append("BLOCK_COUNCIL_COMPONENT_PACKET_MISSING:" + ",".join(missing))
     text = str(formula_text or "").lower()
@@ -254,7 +303,10 @@ def _validate_derivation_record(proposal: dict[str, Any]) -> list[str]:
             if (
                 not _has_nonempty_text(item, "name")
                 or not _has_nonempty_text(item, "meaning")
-                or not _has_nonempty_text(item, "unit_or_dimension")
+                or not (
+                    _has_nonempty_text(item, "measurement_semantics")
+                    or _has_nonempty_text(item, "unit_or_dimension")
+                )
                 or not _has_nonempty_text(item, "information_set")
             ):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_DERIVATION_OBJECT_INVALID:{idx}")
@@ -270,8 +322,6 @@ def _validate_derivation_record(proposal: dict[str, Any]) -> list[str]:
                 or not _has_nonempty_text(item, "what_it_can_answer")
                 or not _has_nonempty_text(item, "what_it_cannot_answer")
             ):
-                reasons.append(f"BLOCK_REVISION_COUNCIL_DERIVATION_TOOL_INVALID:{idx}")
-            elif role == "symbolic_law_discovery" and item.get("tool") not in SYMBOLIC_MATH_TOOLS:
                 reasons.append(f"BLOCK_REVISION_COUNCIL_DERIVATION_TOOL_INVALID:{idx}")
         if role == "symbolic_law_discovery":
             derivation_tool_names = {item.get("tool") for item in selected_tools if isinstance(item, dict)}
@@ -409,7 +459,11 @@ def _validate_research_equation_revision(proposal: dict[str, Any]) -> list[str]:
     return []
 
 
-def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
+def validate_revision_council_proposal(
+    proposal: dict[str, Any],
+    *,
+    measurement_program: dict[str, Any] | None = None,
+) -> list[str]:
     """Return block reasons. Empty means valid."""
     reasons: list[str] = []
     if not isinstance(proposal, dict):
@@ -457,6 +511,9 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     reasons.extend(_validate_derivation_record(proposal))
     reasons.extend(_validate_formula_implied_information_review(proposal))
     reasons.extend(_validate_research_equation_revision(proposal))
+    reasons.extend(
+        _validate_measurement_program_binding(proposal, measurement_program)
+    )
 
     guards = proposal.get("forbidden_changes_ack") or []
     missing_guards = [item for item in REQUIRED_GUARDS if item not in guards]
@@ -470,9 +527,29 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     if not isinstance(symbolic_model, dict):
         reasons.append("revision_council_symbolic_model_missing")
     else:
-        for key in ["state_or_object", "target_functional"]:
-            if not _nonempty_str(symbolic_model.get(key)):
-                reasons.append(f"revision_council_symbolic_model_{key}_missing")
+        if not _nonempty_str(
+            symbolic_model.get("mathematical_object")
+            or symbolic_model.get("state_or_object")
+        ):
+            reasons.append("revision_council_symbolic_model_mathematical_object_missing")
+        if not _nonempty_str(
+            symbolic_model.get("mechanism_equation_or_functional")
+            or symbolic_model.get("state_process")
+            or symbolic_model.get("target_functional")
+        ):
+            reasons.append(
+                "revision_council_symbolic_model_mechanism_equation_or_functional_missing"
+            )
+        if not _nonempty_str(symbolic_model.get("target_functional")):
+            reasons.append("revision_council_symbolic_model_target_functional_missing")
+        if not _nonempty_str(symbolic_model.get("market_outcome_projection")):
+            reasons.append(
+                "revision_council_symbolic_model_market_outcome_projection_missing"
+            )
+        if not _nonempty_str(symbolic_model.get("observation_mapping")):
+            reasons.append(
+                "revision_council_symbolic_model_observation_mapping_missing"
+            )
 
     laws = proposal.get("candidate_revision_laws") or []
     if proposal.get("revision_type") == "expression_revision":
@@ -493,13 +570,11 @@ def validate_revision_council_proposal(proposal: dict[str, Any]) -> list[str]:
     if role == "symbolic_law_discovery":
         if not _nonempty_list(tools):
             reasons.append("revision_council_symbolic_math_tools_missing")
-        unknown_tools = [str(item) for item in tools if item not in SYMBOLIC_MATH_TOOLS]
-        if unknown_tools:
-            reasons.append("revision_council_symbolic_math_tools_unknown:" + ",".join(unknown_tools))
         review = proposal.get("dimensional_scaling_review")
-        if not isinstance(review, dict) or not review:
+        dimensional_audit_selected = bool(set(str(item) for item in tools) & DIMENSIONAL_AUDIT_TOOLS)
+        if dimensional_audit_selected and (not isinstance(review, dict) or not review):
             reasons.append("revision_council_dimensional_scaling_review_missing")
-        else:
+        elif dimensional_audit_selected:
             for key in [
                 "raw_field_units",
                 "formula_output_dimension",

@@ -5,6 +5,13 @@ description: Step 6 of the Factor Forge pipeline — research reflection, librar
 
 # Factor Forge Step6 Legacy Operations Reference
 
+> Compatibility boundary: this file documents historical schemas and operating
+> modes. It is not the current math authority. For new research use
+> `mechanism_conditioned_measurement_program_v1`. Historical random-object,
+> stochastic-benchmark, unit/dimension, or claim-stage fields are validated only
+> when an upstream artifact already contains them; never synthesize them as
+> universal requirements.
+
 ## What This Skill Does
 
 Step 6 is the **research reflection + loop controller** layer.
@@ -149,12 +156,12 @@ formula fields or operators is invalid; for example, a formula with no volume
 input must not claim price-volume dependence unless a structured justification
 is present and validated.
 35a. Step6 analysis and Revision Council must keep the same research rigor as
-Step1/Step2: economic_hypothesis selects the primary mathematical model, and
-benchmark mathematical tools such as stochastic processes, Ito calculus, linear
-algebra, optimization, information theory, and causal/placebo tests are used for
-projection, diagnostic, derivation, or falsification. Do not default every
-failed factor to a stochastic-process story or a generic payer narrative.
-Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
+Step1/Step2: economic_hypothesis selects the primary mathematical model after an
+open tool search. DCF/residual income, accounting identities, stochastic
+processes, linear algebra, optimization, information theory, spectral/
+functional methods and causal/placebo tests are used only when justified. The
+selected object must map to a tradeable value, payoff, price gap or return;
+stochastic and dimensional audits are optional, mechanism-specific tools.
 Council proposals must state which economic hypothesis, primary mathematical
 model, observable estimator, benchmark test, and falsification signature they
 are revising. They must also state the complexity delta: which terms, gates,
@@ -167,7 +174,12 @@ volatility drag, max drawdown, recovery days, and drawdown geometry when
 available. Revision Council proposals must include
 `research_equation_revision` and target the failed equation component.
 Before writing Step6 final recommendations, use the Dirac-Style Step6 Council Prompt in references/prompts.md. When asked for new ideas, use the Equation-To-Factor Discovery Prompt.
-When a report suggests a market structure relation, first identify the research equation or quasi-equation, then derive one or more observable detector candidates. A detector candidate is not an approved factor. It must state source_equation_id, observable_inputs, measurement_equation, expected_metric_signature, expected_cost_risk_profile, stochastic_benchmark_terms, falsification_tests, and branch_action=review_only or human_approval_required.
+When a report suggests a market structure relation, first identify the research
+equation or quasi-equation, then derive one or more observable detector
+candidates. A detector candidate is not an approved factor. It must state
+source_equation_id, observable_inputs, measurement_equation,
+market_outcome_projection_terms, expected_metric_signature,
+expected_cost_risk_profile, falsification_tests, and branch_action.
 No equation-derived candidate may launch Step2/Step3/Step4 automatically. Candidate packets are advisory until the existing run loop or a human-approved branch request starts a formal factor run.
 36. Before any Revision Council packet or agentic dispatch is built, Step6 must
 write a current-agent mechanism questionnaire:
@@ -767,4 +779,9 @@ when the runtime supports main-agent or subagent proposal generation.
 
 ## Mechanism Math Contract v2
 
-Step6 must interpret metrics against the model layers: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, and implementation_contract. A revision proposal is incomplete unless it states which layer is being revised and how the expected metric signature would change. Council output remains advisory-only and cannot bypass evidence, provenance, human approval, or promotion gates.
+Step6 must interpret metrics against the model layers: economic_hypothesis,
+primary_mechanism_model, market_outcome_projection, observable_estimator, and
+implementation_contract. A revision proposal is incomplete unless it states
+which layer is being revised and how the expected metric signature would
+change. Council output remains advisory-only and cannot bypass evidence,
+provenance, human approval, or promotion gates.

@@ -14,7 +14,7 @@
 4. 数学家与大模型协作中的短问题拆解、快速淘汰死路、fresh-context critic 和
    人类/独立复核。
 
-金融研究没有 Lean kernel。收益是低信噪比、非平稳、受成本与容量影响的随机对象，
+金融研究没有 Lean kernel。收益证据低信噪比、非平稳，并受成本与容量影响，
 所以协议只把可以精确验证的部分形式化；经济机制必须使用分层证据，不得伪装成定理。
 
 ## 2. 不能照搬数学证明的部分
@@ -111,8 +111,8 @@ Council root synthesis 与显式批准位于当前 workspace 的
 participants
 -> participant_constraints
 -> actions
--> action_to_price_path
--> profit_transfer_equation
+-> action_to_market_outcome
+-> payoff_or_profit_transfer_equation
 -> payer_candidates
 -> persistence_boundary
 -> capacity_boundary
@@ -131,28 +131,36 @@ participants
 
 ### 4.3 Mathematical Mechanism Contract
 
-最小模型为：
+最小模型是机制条件化的，不是固定的随机状态空间：
 
 ```text
-latent state: X_t
-observation: Y_t = h(X_t, U_t) + epsilon_t
-factor estimator: f_t = phi(Y_{<=t})
-return law: r_{t+1} = g(X_t, regime_t, cost_t) + eta_{t+1}
+mathematical object: M
+mechanism equation or functional: K(M, theta)=0, V=F(M), or another justified map
+market-outcome projection: Q_{t+h}=P(M, constraints, costs)
+observation/estimation: Y=H(M, U)+epsilon; f=phi(Y in legal information set)
 ```
+
+`H` 可以是直接可观测的恒等映射；只有选中的机制确实含有潜在状态或测量误差时，
+才需要状态空间或随机观测模型。例如基本面研究可以令 `M` 为未来自由现金流、
+终值和折现率，核心泛函为 DCF，市场结果为内在价值与价格之差；不需要为了满足
+模板而发明扩散过程。
 
 必须包含：
 
 - `model_family`
-- `latent_state`
-- `state_space`
+- `mathematical_object`（旧 artifact 可读 `latent_state`）
+- `mechanism_equation_or_functional`
+- `market_outcome_equation`（旧 artifact 可读 `return_equation`）
 - `observation_equation`
 - `factor_estimator`
-- `return_equation`
 - `information_set`
 - `alternative_models`
 - `component_map`
 - 至少三个 `limiting_cases`
 - 至少两个 `expected_metric_signatures`
+
+随机过程、状态转移、条件分布、量纲或 scaling audit 仅在所选机制使其适用时
+加入；它们不是通用字段，也不是 claim level 的默认升级路线。
 
 每个公式组件必须映射到：
 
@@ -170,7 +178,7 @@ return law: r_{t+1} = g(X_t, regime_t, cost_t) + eta_{t+1}
 Council task 必须来自 `approach_registry` 的未关闭路线。允许的路线族包括但不限于：
 
 - `economic_game`
-- `latent_state_measurement`
+- `mechanism_object_measurement`（旧 artifact 的 `latent_state_measurement` 仍可读取）
 - `null_alias_counterexample`
 - `empirical_identification`
 - `microstructure_cost`

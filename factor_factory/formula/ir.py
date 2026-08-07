@@ -35,6 +35,7 @@ class FormulaIR:
     formula_text: str
     root: dict[str, Any]
     formula_hash: str
+    resolved_binding_hash: str
     required_fields: list[str]
     operator_set: list[str]
     field_aliases: dict[str, list[str]]

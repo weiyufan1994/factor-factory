@@ -213,6 +213,68 @@ def validate_dispatch_identity(
     return reasons
 
 
+def _mathematical_object_present(items: Any, expected: Any) -> bool:
+    if not nonempty_str(expected) or not isinstance(items, list):
+        return False
+    for item in items:
+        if item == expected:
+            return True
+        if isinstance(item, dict) and expected in {
+            item.get("name"),
+            item.get("mathematical_object"),
+            item.get("object"),
+        }:
+            return True
+    return False
+
+
+def validate_measurement_program_result_binding(
+    result: dict[str, Any],
+    expected_task: dict[str, Any] | None,
+) -> list[str]:
+    expected_task = expected_task or {}
+    if "measurement_program_binding" not in expected_task:
+        return []
+    expected = expected_task.get("measurement_program_binding")
+    if not isinstance(expected, dict) or not expected:
+        return ["BLOCK_COUNCIL_MEASUREMENT_PROGRAM_EXPECTED_BINDING_INVALID"]
+    actual = result.get("measurement_program_binding")
+    if not isinstance(actual, dict):
+        return ["BLOCK_COUNCIL_MEASUREMENT_PROGRAM_RESULT_BINDING_MISSING"]
+    reasons = [
+        f"BLOCK_COUNCIL_MEASUREMENT_PROGRAM_RESULT_BINDING_MISMATCH:{field}"
+        for field, expected_value in expected.items()
+        if actual.get(field) != expected_value
+    ]
+    if set(actual) != set(expected):
+        reasons.append(
+            "BLOCK_COUNCIL_MEASUREMENT_PROGRAM_RESULT_BINDING_FIELD_SET_INVALID"
+        )
+
+    math = result.get("math_mechanism_derivation")
+    math = math if isinstance(math, dict) else {}
+    if math.get("baseline_model") != expected.get(
+        "mechanism_equation_or_functional"
+    ):
+        reasons.append("BLOCK_COUNCIL_FROZEN_BASELINE_MODEL_MISMATCH")
+    if not _mathematical_object_present(
+        math.get("mathematical_objects"),
+        expected.get("mathematical_object"),
+    ):
+        reasons.append("BLOCK_COUNCIL_FROZEN_MATHEMATICAL_OBJECT_MISSING")
+
+    public = result.get("public_derivation_record")
+    public = public if isinstance(public, dict) else {}
+    if not _mathematical_object_present(
+        public.get("mathematical_objects"),
+        expected.get("mathematical_object"),
+    ):
+        reasons.append(
+            "BLOCK_COUNCIL_PUBLIC_DERIVATION_FROZEN_OBJECT_MISSING"
+        )
+    return list(dict.fromkeys(reasons))
+
+
 def validate_research_protocol_result(
     result: dict[str, Any],
     task: dict[str, Any],
@@ -415,6 +477,9 @@ def validate_agentic_result(
                 expected_task or {},
                 report_id=str(expected_report_id or result.get("report_id") or ""),
             )
+        )
+        reasons.extend(
+            validate_measurement_program_result_binding(result, expected_task)
         )
     if result.get("result_version") != RESULT_VERSION:
         reasons.append("agentic_result_version_invalid")

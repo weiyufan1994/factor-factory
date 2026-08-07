@@ -139,6 +139,10 @@ Result Contract:
 - canonical_write_permission: false
 - execution_allowed_by_default: false
 - human_approval_required: true
+- measurement_program_binding: copy exactly from the task packet
+- math_mechanism_derivation.baseline_model: copy the frozen
+  measurement_program_binding.mechanism_equation_or_functional exactly;
+  proposed alternatives belong in model_mutation/candidate_revision_laws
 
 No Hidden Chain-of-Thought Requirement:
 Do not provide hidden chain-of-thought. Provide only a public derivation record suitable for audit.
@@ -170,9 +174,30 @@ def dropbox_template(report_id: str, task: dict[str, Any], expected_result_path:
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "measurement_program_binding": task.get(
+            "measurement_program_binding"
+        )
+        or {},
+        "math_mechanism_derivation": {
+            "baseline_model": (
+                task.get("measurement_program_binding") or {}
+            ).get("mechanism_equation_or_functional"),
+            "mathematical_objects": [
+                (
+                    task.get("measurement_program_binding") or {}
+                ).get("mathematical_object")
+            ],
+        },
         "public_derivation_record": {
             "assumptions": [],
-            "mathematical_objects": [],
+            "mathematical_objects": [
+                {
+                    "name": (
+                        task.get("measurement_program_binding") or {}
+                    ).get("mathematical_object"),
+                    "role": "current_frozen_model",
+                }
+            ],
             "selected_tools": [],
             "formula_claims": [],
             "derivation_steps_summary": [],

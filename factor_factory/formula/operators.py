@@ -274,5 +274,144 @@ def cs_scale(series: pd.Series, frame: pd.DataFrame) -> pd.Series:
     return series / denom.replace(0, np.nan)
 
 
+def cs_zscore(series: pd.Series, ddof: int, frame: pd.DataFrame) -> pd.Series:
+    values = pd.to_numeric(series, errors='coerce')
+    grouped = values.groupby(frame['trade_date'], sort=False)
+    mean = grouped.transform('mean')
+    std = grouped.transform(lambda item: item.std(ddof=int(ddof)))
+    return (values - mean) / std.replace(0, np.nan)
+
+
+def signed_log1p(series: pd.Series) -> pd.Series:
+    values = pd.to_numeric(series, errors='coerce')
+    return np.sign(values) * np.log1p(np.abs(values))
+
+
+def rolling_kurtosis(
+    series: pd.Series,
+    window: int,
+    frame: pd.DataFrame,
+    *,
+    pearson: bool,
+) -> pd.Series:
+    result = series.groupby(frame['ts_code'], sort=False).transform(
+        lambda item: pd.to_numeric(item, errors='coerce').rolling(
+            int(window), min_periods=int(window)
+        ).kurt()
+    )
+    return result + 3.0 if pearson else result
+
+
+def _unbiased_sample_skew(values: np.ndarray) -> float:
+    finite = np.asarray(values, dtype='float64')
+    finite = finite[np.isfinite(finite)]
+    count = int(finite.size)
+    if count < 3:
+        return np.nan
+    centered = finite - float(finite.mean())
+    second = float(np.mean(centered ** 2))
+    if not np.isfinite(second) or second <= 0:
+        return np.nan
+    third = float(np.mean(centered ** 3))
+    raw_skew = third / (second ** 1.5)
+    return float(np.sqrt(count * (count - 1)) / (count - 2) * raw_skew)
+
+
+def _rolling_order_statistic_skew(
+    series: pd.Series,
+    window: int,
+    subset: int,
+    frame: pd.DataFrame,
+    *,
+    largest: bool,
+) -> pd.Series:
+    window = int(window)
+    subset = int(subset)
+
+    def calculate(values: np.ndarray) -> float:
+        ordered = np.sort(np.asarray(values, dtype='float64'))
+        selected = ordered[-subset:] if largest else ordered[:subset]
+        return _unbiased_sample_skew(selected)
+
+    return series.groupby(frame['ts_code'], sort=False).transform(
+        lambda item: pd.to_numeric(item, errors='coerce').rolling(
+            window, min_periods=window
+        ).apply(calculate, raw=True)
+    )
+
+
+def rolling_topk_skew(series: pd.Series, window: int, subset: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_order_statistic_skew(series, window, subset, frame, largest=True)
+
+
+def rolling_bottomk_skew(series: pd.Series, window: int, subset: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_order_statistic_skew(series, window, subset, frame, largest=False)
+
+
+def _rolling_inner_skew_extreme(
+    series: pd.Series,
+    outer_window: int,
+    inner_window: int,
+    frame: pd.DataFrame,
+    *,
+    mode: str,
+) -> pd.Series:
+    outer_window = int(outer_window)
+    inner_window = int(inner_window)
+    extreme_window = outer_window - inner_window + 1
+
+    def calculate(item: pd.Series) -> pd.Series:
+        numeric = pd.to_numeric(item, errors='coerce')
+        inner = numeric.rolling(inner_window, min_periods=inner_window).skew()
+        rolling = inner.rolling(extreme_window, min_periods=extreme_window)
+        return rolling.max() if mode == 'max' else rolling.min()
+
+    return series.groupby(frame['ts_code'], sort=False).transform(calculate)
+
+
+def rolling_max_inner_skew(series: pd.Series, outer_window: int, inner_window: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_inner_skew_extreme(series, outer_window, inner_window, frame, mode='max')
+
+
+def rolling_min_inner_skew(series: pd.Series, outer_window: int, inner_window: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_inner_skew_extreme(series, outer_window, inner_window, frame, mode='min')
+
+
+def rolling_max_subwindow_sum(
+    series: pd.Series,
+    outer_window: int,
+    inner_window: int,
+    frame: pd.DataFrame,
+) -> pd.Series:
+    outer_window = int(outer_window)
+    inner_window = int(inner_window)
+    extreme_window = outer_window - inner_window + 1
+
+    def calculate(item: pd.Series) -> pd.Series:
+        numeric = pd.to_numeric(item, errors='coerce')
+        inner_sum = numeric.rolling(inner_window, min_periods=inner_window).sum()
+        return inner_sum.rolling(extreme_window, min_periods=extreme_window).max()
+
+    return series.groupby(frame['ts_code'], sort=False).transform(calculate)
+
+
+def rolling_topk_sum(series: pd.Series, window: int, subset: int, frame: pd.DataFrame) -> pd.Series:
+    window = int(window)
+    subset = int(subset)
+
+    def calculate(values: np.ndarray) -> float:
+        numeric = np.asarray(values, dtype='float64')
+        if not np.isfinite(numeric).all():
+            return np.nan
+        partitioned = np.partition(numeric, len(numeric) - subset)
+        return float(partitioned[-subset:].sum())
+
+    return series.groupby(frame['ts_code'], sort=False).transform(
+        lambda item: pd.to_numeric(item, errors='coerce').rolling(
+            window, min_periods=window
+        ).apply(calculate, raw=True)
+    )
+
+
 def signed_power(left: pd.Series, right) -> pd.Series:
     return np.sign(left) * (np.abs(left) ** right)

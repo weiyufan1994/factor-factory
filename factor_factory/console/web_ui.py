@@ -7,6 +7,7 @@ from typing import Any
 
 from factor_factory.console.math_render import render_equation_statement
 from factor_factory.console.models import PILOT_MODEL, ResearchJob, ResearchMessage
+from factor_factory.formula.source_dialects import valid_source_formula_contract
 
 
 ACTIVE_STATUSES = {"QUEUED", "ALLOCATING", "RESEARCHING", "VERIFYING"}
@@ -159,22 +160,47 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
     submitted = values or {}
     title = escape(submitted.get("title", ""))
     factor_id_hint = escape(submitted.get("factor_id_hint", ""))
-    hypothesis = escape(submitted.get("hypothesis", ""))
     sample_start = escape(submitted.get("sample_start", "2016-01-01"))
     sample_end = escape(submitted.get("sample_end", "2025-07-11"))
-    input_kind = submitted.get("content_kind", "hypothesis")
+    legacy_kind = submitted.get("content_kind", "hypothesis")
+    legacy_content = submitted.get("hypothesis", "")
+    economic_hypothesis = escape(
+        submitted.get("economic_hypothesis", "")
+        or (legacy_content if legacy_kind == "hypothesis" else "")
+    )
+    report_input = escape(
+        submitted.get("report_input", "")
+        or (legacy_content if legacy_kind == "report" else "")
+    )
+    formula_input = escape(
+        submitted.get("formula_input", "")
+        or (legacy_content if legacy_kind == "formula" else "")
+    )
+    code_input = escape(
+        submitted.get("code_input", "")
+        or (legacy_content if legacy_kind == "code" else "")
+    )
 
-    def selected(value: str) -> str:
-        return " selected" if input_kind == value else ""
+    def semantic_selected(field: str, value: str) -> str:
+        return " selected" if submitted.get(field, "") == value else ""
 
     return f"""
     <form method="post" action="/research" class="research-form">
       <input type="hidden" name="csrf" value="{escape(csrf_token)}">
       <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" value="{title}" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
       <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" value="{factor_id_hint}" placeholder="由系统生成也可以"></div>
-      <div class="field"><label for="input-kind">输入类型</label><select id="input-kind" name="content_kind"><option value="hypothesis"{selected('hypothesis')}>经济假设</option><option value="report"{selected('report')}>研报摘录</option><option value="formula"{selected('formula')}>公式 / 算子</option><option value="code"{selected('code')}>代码</option></select></div>
       <div class="field"><label for="model">研究模型</label><select id="model" name="model"><option value="{escape(PILOT_MODEL)}">DeepSeek V4 Flash</option></select></div>
-      <div class="field span-2"><label for="hypothesis">研究输入</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="粘贴经济假设、研报内容、公式或代码。请同时说明现象、可能的付款方、信息形成时间和可证伪条件。" required>{hypothesis}</textarea></div>
+      <div class="field span-2"><label for="economic-hypothesis">经济假设</label><textarea id="economic-hypothesis" name="economic_hypothesis" rows="5" maxlength="20000" placeholder="现象、参与者、付款方、信息形成时间、持久性边界与可证伪条件">{economic_hypothesis}</textarea></div>
+      <div class="field span-2"><label for="formula-input">公式 / 算子</label><textarea id="formula-input" name="formula_input" rows="4" maxlength="20000" placeholder="可与经济假设、研报和代码同时提交">{formula_input}</textarea></div>
+      <div class="field span-2"><label for="report-input">研报摘录</label><textarea id="report-input" name="report_input" rows="4" maxlength="20000">{report_input}</textarea></div>
+      <div class="field span-2"><label for="code-input">代码 / 伪代码</label><textarea id="code-input" name="code_input" rows="5" maxlength="20000" placeholder="作为测量程序与研究对象；宿主不会直接执行未审计代码">{code_input}</textarea></div>
+      <fieldset class="semantic-resolution span-2">
+        <legend>第三方公式语义</legend>
+        <div class="field"><label for="kurtosis-convention">峰度</label><select id="kurtosis-convention" name="kurtosis_convention"><option value="">请选择</option><option value="excess_unbiased"{semantic_selected('kurtosis_convention', 'excess_unbiased')}>无偏 Fisher 超额峰度</option><option value="pearson_unbiased"{semantic_selected('kurtosis_convention', 'pearson_unbiased')}>无偏 Pearson 峰度</option></select></div>
+        <div class="field"><label for="skew-convention">MAX/MIN SKEW</label><select id="skew-convention" name="skew_convention"><option value="">请选择</option><option value="inner_window_extrema"{semantic_selected('skew_convention', 'inner_window_extrema')}>内层滚动偏度的极值</option><option value="order_statistic_subset"{semantic_selected('skew_convention', 'order_statistic_subset')}>最大/最小 k 个值的偏度</option></select></div>
+        <div class="field"><label for="max-sum-convention">MAX SUM</label><select id="max-sum-convention" name="max_sum_convention"><option value="">请选择</option><option value="contiguous_subwindow"{semantic_selected('max_sum_convention', 'contiguous_subwindow')}>连续 k 期和的最大值</option><option value="topk_values"{semantic_selected('max_sum_convention', 'topk_values')}>最大 k 个值之和</option></select></div>
+        <div class="field"><label for="zscore-ddof">截面标准差</label><select id="zscore-ddof" name="zscore_ddof"><option value="">请选择</option><option value="0"{semantic_selected('zscore_ddof', '0')}>总体标准差 ddof=0</option><option value="1"{semantic_selected('zscore_ddof', '1')}>样本标准差 ddof=1</option></select></div>
+      </fieldset>
       <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
       <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘后形成信号 → 下一交易日收盘成交 → 再下一交易日收盘退出（Pilot 固定）</div></div>
       <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="{sample_start}" required></div>
@@ -243,6 +269,10 @@ def _conversation_section(
         "decision": "研究方向",
     }
     for message in messages:
+        source_semantics = _source_semantics_contract(message)
+        if source_semantics is not None:
+            message_rows.append(_source_semantics_message(message, source_semantics))
+            continue
         content = escape(message.content)
         if message.content_kind in {"formula", "code"}:
             content_html = f'<pre class="message-code">{content}</pre>'
@@ -292,6 +322,73 @@ def _conversation_section(
     """
 
 
+def _source_semantics_contract(message: ResearchMessage) -> dict[str, Any] | None:
+    is_internal = message.content_kind == "formula_contract"
+    is_legacy_internal = message.content_kind == "decision" and str(
+        message.idempotency_key or ""
+    ).startswith("initial:")
+    if not (is_internal or is_legacy_internal):
+        return None
+    try:
+        payload = json.loads(message.content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not valid_source_formula_contract(payload):
+        return None
+    return payload
+
+
+def _source_semantics_message(
+    message: ResearchMessage,
+    contract: dict[str, Any],
+) -> str:
+    choices = contract.get("semantic_choices")
+    if not isinstance(choices, dict):
+        choices = {}
+    labels = {
+        "kurtosis_convention": {
+            "excess_unbiased": "无偏 Fisher 超额峰度",
+            "pearson_unbiased": "无偏 Pearson 峰度",
+        },
+        "skew_convention": {
+            "inner_window_extrema": "内层滚动偏度的极值",
+            "order_statistic_subset": "最大/最小 k 个值的偏度",
+        },
+        "max_sum_convention": {
+            "contiguous_subwindow": "连续 k 期和的最大值",
+            "topk_values": "最大 k 个值之和",
+        },
+        "zscore_ddof": {
+            "0": "截面总体标准差 ddof=0",
+            "1": "截面样本标准差 ddof=1",
+        },
+    }
+    choice_rows = []
+    for key, title in (
+        ("kurtosis_convention", "峰度"),
+        ("skew_convention", "偏度极值"),
+        ("max_sum_convention", "区间求和"),
+        ("zscore_ddof", "截面标准化"),
+    ):
+        value = str(choices.get(key, ""))
+        choice_rows.append(
+            f"<div><dt>{escape(title)}</dt><dd>{escape(labels[key].get(value, value or '未冻结'))}</dd></div>"
+        )
+    canonical_formula = escape(str(contract.get("canonical_formula") or ""))
+    contract_hash = escape(str(contract.get("contract_sha256") or "")[:16])
+    return f"""
+    <article class="chat-message contract-message">
+      <header><strong>公式语义合同</strong><span>系统冻结 · #{message.sequence_no}</span></header>
+      <dl class="semantic-contract-grid">{''.join(choice_rows)}</dl>
+      <p class="contract-label">Canonical Formula</p>
+      <pre class="message-code">{canonical_formula}</pre>
+      <p class="contract-fingerprint">合同指纹 {contract_hash}</p>
+    </article>
+    """
+
+
 def _research_notebook_section(result: dict[str, Any]) -> str:
     notebook = result.get("research_notebook") if isinstance(result.get("research_notebook"), dict) else {}
     if not notebook:
@@ -319,6 +416,195 @@ def _research_notebook_section(result: dict[str, Any]) -> str:
       <div class="notebook-flow">{''.join(stage_html)}</div>
     </section>
     """
+
+
+def _math_model_comparison(selection: dict[str, Any]) -> str:
+    candidates = selection.get("candidate_models")
+    if not isinstance(candidates, list) or not candidates:
+        return ""
+    cards = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        selected = candidate.get("selected") is True
+        cards.append(
+            f"""
+            <article class="model-candidate{' selected-model' if selected else ''}">
+              <header><strong>{escape(str(candidate.get('model_family') or candidate.get('candidate_id') or 'Model'))}</strong><span>{'SELECTED' if selected else escape(str(candidate.get('candidate_role') or 'ALTERNATIVE').upper())}</span></header>
+              <dl>
+                <div><dt>Mathematical object</dt><dd>{escape(_format_value(candidate.get('mathematical_object'), long=True))}</dd></div>
+                <div><dt>Economic implication</dt><dd>{escape(_format_value(candidate.get('economic_implication'), long=True))}</dd></div>
+                <div><dt>Identification</dt><dd>{escape(_format_value(candidate.get('identifiability_condition'), long=True))}</dd></div>
+                <div><dt>Decisive test</dt><dd>{escape(_format_value(candidate.get('decisive_test'), long=True))}</dd></div>
+              </dl>
+            </article>
+            """
+        )
+    if not cards:
+        return ""
+    rationale = "".join(
+        _definition_row(label, selection.get(field))
+        for label, field in (
+            ("Selection target", "selection_target"),
+            ("Selection argument", "selection_argument"),
+            ("Rejected model reason", "rejected_model_reason"),
+        )
+        if selection.get(field)
+    )
+    return f'<div class="math-chapter"><h3>Model Selection</h3><div class="model-comparison">{"".join(cards)}</div><dl class="math-selection-rationale">{rationale}</dl></div>'
+
+
+def _math_tool_selection(selection: dict[str, Any]) -> str:
+    if not selection:
+        return ""
+    selected = _string_list(selection.get("selected_tool_families"))
+    candidates = _string_list(selection.get("candidate_tool_families"))
+    rejected = [
+        f"{item.get('tool_family')}: {item.get('reason')}"
+        for item in selection.get("rejected_tool_families") or []
+        if isinstance(item, dict)
+    ]
+    rationale = _definition_row(
+        "Selection rationale", selection.get("selection_rationale")
+    )
+    return f'''<div class="math-chapter"><h3>Open Math Toolkit Selection</h3>
+      <p class="section-note">工具空间是开放的；随机过程、泛函分析、信号处理、信息论或自定义数学对象均须由经济机制决定，算子可用性不得决定模型。</p>
+      {_bullet_group("Selected tool families", selected)}
+      {_bullet_group("Candidate tool families", candidates)}
+      {_bullet_group("Rejected for this mechanism", rejected)}
+      <dl class="math-selection-rationale">{rationale}</dl>
+    </div>'''
+
+
+def _math_market_projection(projection: dict[str, Any]) -> str:
+    if not projection:
+        return ""
+    equations = "".join(
+        f'<div class="math-contract-equation"><span>{escape(label)}</span>{render_equation_statement(str(projection.get(field) or ""))}</div>'
+        for label, field in (
+            ("Source mathematical object", "source_math_object"),
+            ("Traded quantity", "traded_quantity"),
+            ("Projection equation / map", "projection_equation_or_map"),
+            ("Observation link", "link_to_observation_equation"),
+        )
+        if projection.get(field)
+    )
+    details = "".join(
+        _definition_row(label, projection.get(field))
+        for label, field in (
+            ("Projection kind", "projection_kind"),
+            ("Falsifier", "falsifier"),
+        )
+        if projection.get(field)
+    )
+    return f'''<div class="math-chapter"><h3>Market Outcome Projection</h3>
+      <p class="section-note">这是把已选数学机制映射到可交易收益或支付分布的终端桥梁，不限定核心机制必须是随机过程。</p>
+      <div class="math-contract-equations">{equations}</div>
+      {_bullet_group("Affected payoff, value or distribution terms", _string_list(projection.get("affected_payoff_or_distribution_terms")))}
+      <dl class="math-selection-rationale">{details}</dl>
+    </div>'''
+
+
+def _math_applicable_audits(audits: dict[str, Any]) -> str:
+    if not audits:
+        return ""
+    selected = (
+        audits.get("selected") if isinstance(audits.get("selected"), list) else []
+    )
+    rejected = (
+        audits.get("rejected") if isinstance(audits.get("rejected"), list) else []
+    )
+    selected_html = "".join(
+        "<article class=\"math-audit-item\">"
+        f"<h4>{escape(str(item.get('audit_family') or 'Specialized audit'))}</h4>"
+        f"<p><strong>Why selected:</strong> {escape(str(item.get('rationale') or ''))}</p>"
+        f"<p><strong>Audit record:</strong> {escape(str(item.get('audit_record') or ''))}</p>"
+        f"<p><strong>Falsifier:</strong> {escape(str(item.get('falsifier') or ''))}</p>"
+        "</article>"
+        for item in selected
+        if isinstance(item, dict)
+    )
+    rejected_html = "".join(
+        f"<li><strong>{escape(str(item.get('audit_family') or 'Audit'))}:</strong> {escape(str(item.get('reason') or ''))}</li>"
+        for item in rejected
+        if isinstance(item, dict)
+    )
+    if not selected_html and not rejected_html:
+        return '<div class="math-chapter"><h3>Applicable Audits</h3><p class="section-note">No specialized audit was selected for this mechanism. This is not a missing-proof state.</p></div>'
+    rejected_section = (
+        f"<h4>Considered but not selected</h4><ul>{rejected_html}</ul>"
+        if rejected_html
+        else ""
+    )
+    return (
+        '<div class="math-chapter"><h3>Applicable Audits</h3>'
+        f'<p class="section-note">{escape(str(audits.get("selection_rule") or "Only mechanism-relevant audits are selected."))}</p>'
+        f"{selected_html}{rejected_section}</div>"
+    )
+
+
+def _math_observation_contract(observation: dict[str, Any]) -> str:
+    if not observation:
+        return ""
+    equations = "".join(
+        f'<div class="math-contract-equation"><span>{escape(label)}</span>{render_equation_statement(str(observation.get(field) or ""))}</div>'
+        for label, field in (
+            ("Estimand", "estimand"),
+            ("Observation map", "observation_map"),
+            ("Estimator", "estimator"),
+        )
+        if observation.get(field)
+    )
+    detail = "".join(
+        _definition_row(label, observation.get(field))
+        for label, field in (
+            ("Bias, variance and noise", "bias_variance_and_noise"),
+            ("Legal information time", "legal_information_time"),
+        )
+        if observation.get(field)
+    )
+    return f'<div class="math-chapter"><h3>Observation And Estimation</h3><div class="math-contract-equations">{equations}</div>{_bullet_group("Identification assumptions", _string_list(observation.get("identification_assumptions")))}<dl class="math-selection-rationale">{detail}</dl></div>'
+
+
+def _math_measurement_program(components: list[Any]) -> str:
+    valid = [item for item in components if isinstance(item, dict)]
+    if not valid:
+        return ""
+    rows = []
+    for item in valid:
+        measurement_semantics = (
+            f"{item.get('input_measurement_semantics') or '—'} -> "
+            f"{item.get('output_measurement_semantics') or '—'}"
+        )
+        rows.append(
+            "<tr>"
+            f"<th>{escape(str(item.get('component_id') or 'component'))}</th>"
+            f"<td>{escape(_format_value(item.get('math_term_or_functional'), long=True))}</td>"
+            f"<td>{escape(_format_value(item.get('observable_or_input'), long=True))}<small>{escape(_format_value(item.get('transformation_or_estimator'), long=True))}</small></td>"
+            f"<td><code>{escape(str(item.get('implementation_binding') or ''))}</code><small>{escape(measurement_semantics)} · {escape(str(item.get('information_time') or ''))}</small></td>"
+            f"<td>{escape(_format_value(item.get('expected_metric_signature'), long=True))}<small>Falsifier: {escape(_format_value(item.get('falsifier'), long=True))}</small></td>"
+            "</tr>"
+        )
+    return '<div class="math-chapter"><h3>Measurement Program</h3><div class="table-scroll"><table class="measurement-table"><thead><tr><th>Component</th><th>Mathematical term</th><th>Observation / estimator</th><th>Implementation / measurement semantics / time</th><th>Prediction / falsifier</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div></div>"
+
+
+def _math_public_derivation(record: dict[str, Any]) -> str:
+    if not record:
+        return ""
+    steps = "".join(
+        f'<li><span>{index}</span><div>{render_equation_statement(str(statement))}</div></li>'
+        for index, statement in enumerate(record.get("key_derivation_steps") or [], start=1)
+    )
+    overclaim = str(record.get("overclaim_guard") or "")
+    return f'''<div class="math-chapter"><h3>Public Derivation Record</h3>
+      <p class="section-note">可审计的定义与关键推导，不是模型私有思维链。</p>
+      {_bullet_group('Definitions', _string_list(record.get('definitions')))}
+      {_bullet_group('Assumptions', _string_list(record.get('assumptions')))}
+      <ol class="derivation-list compact-derivation">{steps}</ol>
+      {_bullet_group('Identification gaps', _string_list(record.get('identification_gaps')))}
+      {_bullet_group('Approximations', _string_list(record.get('approximations')))}
+      {f'<div class="overclaim-guard"><strong>Overclaim guard</strong><p>{escape(overclaim)}</p></div>' if overclaim else ''}
+    </div>'''
 
 
 def _math_notebook_section(result: dict[str, Any]) -> str:
@@ -353,12 +639,28 @@ def _math_notebook_section(result: dict[str, Any]) -> str:
             f'<li><span>{escape(str(item.get("step") or ""))}</span><div><strong>{escape(str(item.get("title") or ""))}</strong>{_structured_value(item.get("statement"))}</div></li>'
         )
     falsifiers = _string_list(notebook.get("falsification_tests"))
+    model_selection = notebook.get("model_selection") if isinstance(notebook.get("model_selection"), dict) else {}
+    math_tool_selection = notebook.get("math_tool_selection") if isinstance(notebook.get("math_tool_selection"), dict) else {}
+    market_outcome_projection = notebook.get("market_outcome_projection") if isinstance(notebook.get("market_outcome_projection"), dict) else {}
+    applicable_audits = notebook.get("applicable_audits") if isinstance(notebook.get("applicable_audits"), dict) else {}
+    observation = notebook.get("observation_and_estimation") if isinstance(notebook.get("observation_and_estimation"), dict) else {}
+    components = notebook.get("measurement_components") if isinstance(notebook.get("measurement_components"), list) else []
+    public_record = notebook.get("public_derivation_record") if isinstance(notebook.get("public_derivation_record"), dict) else {}
+    validation_plan = notebook.get("deterministic_validation_plan") if isinstance(notebook.get("deterministic_validation_plan"), dict) else {}
     return f"""
     <section id="math" class="content-section math-section">
       <div class="section-heading"><div><p class="section-kicker">MODEL AND DERIVATION</p><h2>Math</h2></div><span class="evidence-badge badge-agent">{escape(str(notebook.get('evidence_class') or 'AGENT CLAIM'))}</span></div>
       <div class="math-chapter"><h3>Definitions</h3><dl class="math-definitions">{definition_html}</dl></div>
+      {_math_tool_selection(math_tool_selection)}
+      {_math_model_comparison(model_selection)}
+      {_math_market_projection(market_outcome_projection)}
+      {_math_applicable_audits(applicable_audits)}
+      {_math_observation_contract(observation)}
+      {_math_measurement_program(components)}
       <div class="math-chapter"><h3>Equations</h3>{''.join(equation_html) or '<p class="missing-proof">正式产物未提供可展示的方程。</p>'}</div>
+      {_math_public_derivation(public_record)}
       <div class="math-chapter"><h3>Derivation</h3><ol class="derivation-list">{''.join(derivation_html)}</ol></div>
+      {f'<div class="math-chapter"><h3>Deterministic Validation Plan</h3>{_structured_value(validation_plan)}</div>' if validation_plan else ''}
       {_bullet_group('Falsification tests', falsifiers)}
     </section>
     """
@@ -1168,7 +1470,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .job-table { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--surface); }.job-table-head,.job-row { display:grid; grid-template-columns:minmax(280px,2fr) minmax(150px,1fr) 120px 135px 150px; align-items:center; gap:12px; padding:11px 14px; }.job-table-head { background:#e9edec; color:var(--muted); font-size:12px; font-weight:700; }.job-row { min-height:68px; text-decoration:none; border-top:1px solid var(--line); }.job-row:hover { background:#f7faf8; }.job-main { display:grid; gap:3px; }.job-main strong { font-size:15px; }.job-main span,.job-row time,.job-stage { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .status-badge { display:inline-flex; min-height:26px; align-items:center; padding:3px 8px; border:1px solid var(--line); border-radius:999px; white-space:nowrap; font-size:12px; font-weight:700; }.status-researching,.status-verifying,.status-allocating { color:var(--blue); background:var(--blue-soft); border-color:#bad4df; }.status-completed { color:var(--green); background:var(--green-soft); border-color:#b9d8c7; }.status-blocked,.status-failed { color:var(--red); background:var(--red-soft); border-color:#e7bdb7; }.status-review_required,.status-queued { color:var(--amber); background:var(--amber-soft); border-color:#e6d09f; }
 .verdict-accept{color:var(--green)}.verdict-reject,.verdict-block{color:var(--red)}.verdict-iterate,.verdict-partial{color:var(--amber)}
-.research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label { font-weight:700; }.field input,.field textarea,.field select,.fixed-contract { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.fixed-contract { background:#f3f6f5; color:var(--muted); }.field textarea { resize:vertical; min-height:160px; }.span-2 { grid-column:span 2; }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
+.research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label { font-weight:700; }.field input,.field textarea,.field select,.fixed-contract { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.fixed-contract { background:#f3f6f5; color:var(--muted); }.field textarea { resize:vertical; min-height:160px; }.span-2 { grid-column:span 2; }.semantic-resolution { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; margin:0; padding:14px; border:1px solid var(--line); }.semantic-resolution legend { padding:0 6px; color:var(--muted); font-weight:700; }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
 .breadcrumbs { display:flex; gap:8px; color:var(--muted); margin-bottom:22px; }.breadcrumbs a { color:var(--blue); }.detail-heading { align-items:flex-start; }.detail-heading>div { width:100%; min-width:0; max-width:900px; }.idea-summary { max-width:900px; white-space:pre-line; overflow-wrap:anywhere; color:#3d4a50; font-size:15px; }.identity-band { margin-top:22px; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; }.identity-band div { padding:13px 15px; border-right:1px solid var(--line); display:grid; gap:2px; }.identity-band div:last-child{border-right:0}.identity-band span { color:var(--muted); font-size:12px; }.identity-band strong { overflow-wrap:anywhere; }
 .stage-list { list-style:none; margin:12px 0 0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:6px; overflow:hidden; }.stage { min-height:70px; padding:13px; display:flex; gap:10px; align-items:flex-start; background:#fff; border-right:1px solid var(--line); }.stage:last-child{border-right:0}.stage-dot { width:9px; height:9px; border-radius:50%; margin-top:6px; background:#aab3b6; flex:none; }.stage>div { display:grid; }.stage span:last-child { color:var(--muted); font-size:12px; }.stage-done .stage-dot,.stage-pass .stage-dot{background:var(--green)}.stage-active .stage-dot{background:var(--blue)}.stage-blocked .stage-dot{background:var(--red)}
 .decision-panel { margin-top:26px; padding:18px; border:1px solid var(--line); border-left:4px solid var(--blue); background:#fff; border-radius:5px; }.decision-panel.verdict-accept{border-left-color:var(--green)}.decision-panel.verdict-reject,.decision-panel.verdict-block{border-left-color:var(--red)}.decision-head { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }.decision-head div { display:grid; }.decision-head span { color:var(--muted); font-size:12px; }.decision-head strong { font-size:16px; }.decision-list { margin-top:12px; }.decision-list ul { margin:6px 0 0; padding-left:20px; }
@@ -1179,15 +1481,16 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .artifact-list,.event-list { list-style:none; margin:0; padding:0; border:1px solid var(--line); background:#fff; border-radius:6px; overflow:hidden; }.artifact-list li { display:flex; justify-content:space-between; gap:20px; padding:10px 12px; border-top:1px solid var(--line); }.artifact-list li:first-child,.event-list li:first-child{border-top:0}.artifact-list a { color:var(--blue); overflow-wrap:anywhere; }.artifact-list span { color:var(--muted); }.event-list li { display:grid; grid-template-columns:150px 190px minmax(0,1fr); gap:12px; padding:9px 12px; border-top:1px solid var(--line); }.event-list time { color:var(--muted); }
 .workspace-nav { margin-top:16px; display:flex; gap:4px; padding:4px; border:1px solid var(--line); background:#fff; position:sticky; top:66px; z-index:8; overflow-x:auto; }.workspace-nav a { padding:7px 11px; color:var(--muted); text-decoration:none; white-space:nowrap; border-bottom:2px solid transparent; }.workspace-nav a:hover { color:var(--ink); border-bottom-color:var(--blue); }
 .section-kicker { margin:0 0 2px; color:var(--blue); font-size:11px; font-weight:800; letter-spacing:0; }.section-note { margin:-2px 0 16px; color:var(--muted); }
-.conversation-section { scroll-margin-top:112px; }.chat-thread { display:grid; gap:10px; max-height:560px; overflow:auto; padding:14px; border:1px solid var(--line); background:#e9edec; }.chat-message { width:min(820px,92%); padding:12px 14px; border:1px solid var(--line); background:#fff; }.chat-message.user-message { justify-self:end; border-left:3px solid var(--green); }.chat-message.forge-message { justify-self:start; border-left:3px solid var(--blue); }.chat-message header { display:flex; justify-content:space-between; gap:16px; margin-bottom:6px; }.chat-message header span { color:var(--muted); font-size:11px; }.chat-message p { margin:0; white-space:pre-line; }.message-code { margin:0; padding:10px; overflow:auto; background:#f3f5f4; border:1px solid var(--line); white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+.conversation-section { scroll-margin-top:112px; }.chat-thread { display:grid; gap:10px; max-height:560px; overflow:auto; padding:14px; border:1px solid var(--line); background:#e9edec; }.chat-message { width:min(820px,92%); padding:12px 14px; border:1px solid var(--line); background:#fff; }.chat-message.user-message { justify-self:end; border-left:3px solid var(--green); }.chat-message.forge-message { justify-self:start; border-left:3px solid var(--blue); }.chat-message.contract-message { justify-self:start; border-left:3px solid var(--amber); }.chat-message header { display:flex; justify-content:space-between; gap:16px; margin-bottom:6px; }.chat-message header span { color:var(--muted); font-size:11px; }.chat-message p { margin:0; white-space:pre-line; }.message-code { margin:0; padding:10px; overflow:auto; background:#f3f5f4; border:1px solid var(--line); white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }.semantic-contract-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 16px; margin:0 0 10px; }.semantic-contract-grid div { display:grid; gap:2px; }.semantic-contract-grid dt,.contract-label { color:var(--muted); font-size:11px; text-transform:uppercase; }.semantic-contract-grid dd { margin:0; font-weight:700; }.contract-label { margin:8px 0 4px!important; }.contract-fingerprint { margin-top:6px!important; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
 .message-composer { display:grid; grid-template-columns:190px minmax(0,1fr); gap:12px; padding:14px; border:1px solid var(--line); border-top:0; background:#fff; }.message-composer .composer-input { grid-column:2; grid-row:1 / span 2; }.message-composer textarea { min-height:116px; }.composer-actions { grid-column:1 / -1; display:flex; justify-content:flex-end; align-items:center; gap:8px; border-top:1px solid var(--line); padding-top:12px; }.composer-actions span { margin-right:auto; color:var(--muted); font-size:12px; }
 .notebook-section,.math-section,.backtest-section { scroll-margin-top:112px; }.evidence-badge { display:inline-flex; align-items:center; min-height:27px; padding:3px 8px; border:1px solid var(--line); font-size:11px; font-weight:800; white-space:nowrap; }.badge-agent { color:var(--blue); background:var(--blue-soft); }.badge-formal { color:var(--green); background:var(--green-soft); }.badge-conflict { color:var(--red); background:var(--red-soft); }
 .notebook-flow { border-top:1px solid var(--line); }.notebook-step { display:grid; grid-template-columns:56px minmax(0,1fr); gap:18px; padding:20px 0; border-bottom:1px solid var(--line); }.notebook-index { color:var(--blue); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:18px; font-weight:800; }.notebook-step h3 { margin:0 0 10px; font-size:16px; }.structured-record { margin:0; border:1px solid var(--line); background:#fff; }.structured-record>div { display:grid; grid-template-columns:minmax(140px,220px) minmax(0,1fr); border-top:1px solid var(--line); }.structured-record>div:first-child { border-top:0; }.structured-record dt { padding:8px 10px; background:#eef1f0; font-size:12px; font-weight:700; overflow-wrap:anywhere; }.structured-record dd { margin:0; padding:8px 10px; min-width:0; }.structured-record p { margin:0; white-space:pre-line; }.structured-list { margin:0; padding-left:20px; }.structured-list>li { margin:5px 0; }
 .math-section { font-family:Georgia,"Times New Roman","Songti SC",serif; }.math-section .section-heading,.math-section .section-note,.math-section .evidence-badge { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }.math-chapter { margin-top:22px; }.math-chapter>h3 { margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid var(--ink); font-size:16px; }.math-definitions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0; border:1px solid var(--line); background:#fff; }.math-definitions>div { padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.math-definitions dt { font-variant:small-caps; color:var(--muted); }.math-definitions dd { margin:4px 0 0; overflow-wrap:anywhere; }.equation-block { position:relative; margin:0; min-height:88px; display:grid; align-content:center; padding:18px 64px 18px 22px; border-bottom:1px solid var(--line); background:#fff; }.equation-block:first-of-type { border-top:1px solid var(--line); }.equation-block figcaption { color:var(--muted); font-size:12px; }.equation-expression { margin-top:8px; font-family:"STIX Two Math","Cambria Math",Georgia,serif; font-size:17px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; }.equation-number { position:absolute; right:20px; top:50%; transform:translateY(-50%); }.derivation-list { list-style:none; margin:0; padding:0; }.derivation-list>li { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; padding:14px 0; border-bottom:1px solid var(--line); }.derivation-list>li>span { width:28px; height:28px; display:grid; place-items:center; border:1px solid var(--ink); border-radius:50%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }.derivation-list strong { display:block; margin-bottom:7px; }
 .equation-statement { display:grid; gap:8px; }.equation-line { min-width:0; }.equation-line-label { display:block; margin-bottom:3px; color:var(--muted); font-size:12px; font-variant:small-caps; }.equation-annotation { margin:3px 0 0; color:#46545a; font-size:14px; line-height:1.5; }.equation-overflow { color:var(--muted); font-size:12px; }.equation-overflow summary { cursor:pointer; }.equation-overflow pre { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }.rendered-math { display:block; max-width:100%; overflow-x:auto; overflow-y:hidden; padding:3px 0; }.rendered-math math { min-width:max-content; font-size:1.05em; }.equation-source { display:block; white-space:pre-wrap; font-family:"STIX Two Math","Cambria Math",Georgia,serif; }
+.model-comparison { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }.model-candidate { border:1px solid var(--line); background:#fff; }.model-candidate.selected-model { border-color:var(--green); box-shadow:inset 4px 0 0 var(--green); }.model-candidate header { display:flex; justify-content:space-between; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }.model-candidate header span { color:var(--muted); font-size:10px; font-weight:800; }.model-candidate dl,.math-selection-rationale { margin:0; }.model-candidate dl div,.math-selection-rationale div { padding:10px 14px; border-bottom:1px solid var(--line); }.model-candidate dl div:last-child,.math-selection-rationale div:last-child { border-bottom:0; }.model-candidate dt,.math-selection-rationale dt { color:var(--muted); font-size:11px; font-variant:small-caps; }.model-candidate dd,.math-selection-rationale dd { margin:4px 0 0; overflow-wrap:anywhere; }.math-selection-rationale { margin-top:10px; border:1px solid var(--line); background:#fff; }.dimension-table,.measurement-table { min-width:780px; }.dimension-table th,.dimension-table td,.measurement-table th,.measurement-table td { vertical-align:top; text-align:left; }.measurement-table tbody th { width:130px; }.measurement-table small { display:block; margin-top:6px; color:var(--muted); line-height:1.45; }.measurement-table code { white-space:pre-wrap; overflow-wrap:anywhere; }.math-contract-equations { border:1px solid var(--line); background:#fff; }.math-contract-equation { display:grid; grid-template-columns:150px minmax(0,1fr); gap:14px; align-items:start; padding:14px; border-bottom:1px solid var(--line); }.math-contract-equation:last-child { border-bottom:0; }.math-contract-equation>span { color:var(--muted); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; font-size:12px; font-weight:700; }.compact-derivation { margin-top:10px; }.overclaim-guard { margin-top:14px; padding:12px 14px; border-left:4px solid var(--amber); background:#fff8e8; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }.overclaim-guard p { margin:5px 0 0; }
 .backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.table-scroll table { width:100%; border-collapse:collapse; }.table-scroll th,.table-scroll td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }.table-scroll th:first-child,.table-scroll td:first-child { text-align:left; }.table-scroll thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.annual-table { min-width:480px; }.module-table table { min-width:520px; }.module-table th:first-child { width:70%; }.module-state { display:inline-block; min-width:118px; padding:2px 6px; border:1px solid var(--line); text-align:center; font-size:10px; font-weight:800; }.module-available { color:var(--green); background:var(--green-soft); }.module-not_produced { color:var(--muted); background:#eef1f0; }.module-invalid_evidence,.module-evidence_conflict { color:var(--red); background:var(--red-soft); }.return-matrix table { min-width:1080px; }.return-matrix td { font-variant-numeric:tabular-nums; }.return-positive { color:var(--green); background:#f1f8f4; }.return-negative { color:var(--red); background:#fff3f1; }.quantile-table table { min-width:800px; }.risk-turnover-stack { display:grid; gap:12px; }.risk-table table { min-width:900px; }.turnover-table table { min-width:620px; }.provenance-table table { min-width:900px; }.provenance-table th:first-child { width:190px; }.provenance-table td:nth-child(2) { max-width:600px; white-space:normal; overflow-wrap:anywhere; text-align:left; }.provenance-table a { color:var(--blue); }.evidence-conflict-panel { margin-top:18px; padding:14px; border-left:4px solid var(--red); background:var(--red-soft); color:var(--red); }.evidence-conflict-panel ul { margin:8px 0 0; padding-left:20px; }.evidence-conflict-panel li { margin:5px 0; }.evidence-conflict-panel li span { margin-left:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
 .login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }.dashboard-error { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-top:18px; border-radius:4px; }.dashboard-error div { display:grid; gap:2px; }.dashboard-error a { flex:none; color:var(--red); font-weight:700; }
-@media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}}
-@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}}
+@media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes,.model-comparison{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}.math-contract-equation{grid-template-columns:1fr;gap:6px}}
+@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form,.semantic-resolution{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.semantic-contract-grid{grid-template-columns:1fr}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}}
 """

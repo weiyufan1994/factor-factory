@@ -1,5 +1,12 @@
 # Factor Forge Dirac-Style Research Contract
 
+> **Legacy research contract.** 本文保留旧
+> `mechanism_math_contract_v2`、latent-state 与 T+0/T+1 stochastic benchmark
+> 设计的历史语义，只用于解释或迁移已有 artifact。新研究的唯一规范合同是
+> `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md`：数学
+> 搜索空间开放且由经济机制决定，不普遍强制随机过程、latent state、随机
+> benchmark 或量纲分析。
+
 ## 目标
 
 Factor Forge 的因子研究不应只回答“这个公式历史上有没有 IC”，而要回答：

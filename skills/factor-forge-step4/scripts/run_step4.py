@@ -105,6 +105,7 @@ MINUTE_DERIVED_FLOW_STATE_V1,
     research_window_contract as default_research_window_contract,
 )
 from factor_factory.data_api import fetch_data_api_dataset
+from factor_factory.formula.semantics import max_formula_ir_lookback as shared_max_formula_ir_lookback
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -912,52 +913,8 @@ def build_formal_signal_coverage_profile(
     }
 
 
-def _formula_ir_constants(node: Any) -> list[float]:
-    if not isinstance(node, dict):
-        return []
-    if node.get('type') == 'constant':
-        try:
-            return [float(node.get('value'))]
-        except (TypeError, ValueError):
-            return []
-    constants: list[float] = []
-    for child in node.get('args') or []:
-        constants.extend(_formula_ir_constants(child))
-    return constants
-
-
-def _operator_lookback(operator: str, constants: list[float]) -> int | None:
-    operator = str(operator or '').strip().lower()
-    if operator in {
-        'delay', 'delta', 'correlation', 'corr', 'covariance', 'sum', 'mean', 'std',
-        'ts_rank', 'min', 'max', 'argmax', 'argmin', 'decay_linear',
-    } and constants:
-        last = constants[-1]
-        if isinstance(last, float) and not last.is_integer():
-            return None
-        value = int(last)
-        return value if value > 0 else None
-    return None
-
-
 def max_formula_ir_lookback(formula_ir: dict[str, Any] | None) -> int:
-    if not isinstance(formula_ir, dict):
-        return 0
-    root = formula_ir.get('root') if isinstance(formula_ir.get('root'), dict) else {}
-    lookbacks: list[int] = []
-
-    def visit(node: Any) -> None:
-        if not isinstance(node, dict):
-            return
-        if node.get('type') == 'operator':
-            lookback = _operator_lookback(str(node.get('operator') or ''), _formula_ir_constants(node))
-            if lookback is not None:
-                lookbacks.append(lookback)
-        for child in node.get('args') or []:
-            visit(child)
-
-    visit(root)
-    return max(lookbacks) if lookbacks else 0
+    return shared_max_formula_ir_lookback(formula_ir)
 
 
 def add_formal_acceptance_envelope(

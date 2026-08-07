@@ -186,6 +186,11 @@ The output must be a substantive final
 research_depth `high`, proposal_generation_mode `agentic`, status `final`,
 canonical_write_permission=false, execution_allowed_by_default=false, and
 human_approval_required=true. Bind dispatch_identity exactly to the packet.
+Copy `measurement_program_binding` exactly from the packet. Keep
+`math_mechanism_derivation.baseline_model` equal to its frozen
+`mechanism_equation_or_functional`, and include its `mathematical_object` in
+both mathematical-object lists. Put any competing model only in explicit
+model-mutation or candidate-revision fields; never rewrite the frozen model.
 Populate every key listed in `required_outputs`; do not use placeholders.
 `public_derivation_record` must include assumptions, mathematical objects,
 selected tools, formula claims, derivation steps, at least two limiting cases,

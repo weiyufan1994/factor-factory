@@ -67,6 +67,41 @@ def test_operator_schema_gate_does_not_trust_default_fixture_for_pre_close():
         validate_step3b.assert_resolved_fields_in_operator_schema(_pre_close_formula_ir(), {})
 
 
+def test_resolved_binding_hash_is_recomputed_and_attested_across_artifacts():
+    validate_step3b = _load_validate_step3b()
+    formula_ir = _pre_close_formula_ir()
+    binding_hash = formula_ir["resolved_binding_hash"]
+    plan = {
+        "resolved_binding_hash": binding_hash,
+        "metadata": {"resolved_binding_hash": binding_hash},
+    }
+    qlib_data = {
+        "formula_ir": formula_ir,
+        "resolved_binding_hash": binding_hash,
+        "metadata": {"resolved_binding_hash": binding_hash},
+    }
+    handoff = {"resolved_binding_hash": binding_hash}
+
+    assert (
+        validate_step3b.assert_resolved_binding_hashes(
+            formula_ir,
+            plan=plan,
+            qlib_data=qlib_data,
+            handoff=handoff,
+        )
+        == binding_hash
+    )
+
+    qlib_data["metadata"]["resolved_binding_hash"] = "0" * 64
+    with pytest.raises(AssertionError, match="BLOCK_OPERATOR_BINDING_HASH_MISMATCH"):
+        validate_step3b.assert_resolved_binding_hashes(
+            formula_ir,
+            plan=plan,
+            qlib_data=qlib_data,
+            handoff=handoff,
+        )
+
+
 def test_hybrid_path_applies_same_pre_close_schema_gate(tmp_path):
     validate_step3b = _load_validate_step3b()
     spec = {

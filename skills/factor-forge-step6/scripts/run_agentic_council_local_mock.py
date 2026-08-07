@@ -35,6 +35,7 @@ def relation_for_role(role: str) -> str:
         "symbolic_law_discovery": "factor_t = estimator_kernel(observable_state_t); higher persistence should improve net long-side evidence",
         "dimensional_scaling_critic": "normalized_state_t = rank_or_scale_adjust(raw_input_t); scale pollution should fall after normalization",
         "stochastic_process_modeler": "state_{t+1} = rho * state_t + shock_{t+1}; rho must be large enough to survive costs",
+        "mechanism_measurement_modeler": "factor_t = observation_map(selected_mathematical_object_t); the map must discriminate the selected mechanism from its alternative and null",
         "microstructure_cost_analyst": "net_alpha = gross_signal - turnover * cost_rate; durable pressure should lower turnover drag",
         "statistical_falsification_agent": "accepted_revision iff out_of_sample_net_metrics improve and falsification tests do not fail",
     }
@@ -55,8 +56,12 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
     law_id = f"{role}_law_001"
     expression_direction = (
         "Challenge the estimator state, then test expression-level persistence confirmation or smoothing under human approval."
-        if role in {"symbolic_law_discovery", "stochastic_process_modeler", "microstructure_cost_analyst"}
+        if role in {"symbolic_law_discovery", "mechanism_measurement_modeler", "stochastic_process_modeler", "microstructure_cost_analyst"}
         else "Use expression-level normalization and falsification checks before approving any revision path."
+    )
+    measurement_binding = task.get("measurement_program_binding") or {}
+    frozen_object = (
+        measurement_binding.get("mathematical_object") or "factor_value"
     )
     return {
         "result_version": RESULT_VERSION,
@@ -71,6 +76,13 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "measurement_program_binding": measurement_binding,
+        "math_mechanism_derivation": {
+            "baseline_model": measurement_binding.get(
+                "mechanism_equation_or_functional"
+            ),
+            "mathematical_objects": [frozen_object],
+        },
         "approach_route": {
             "route_id": task.get("route_id"),
             "route_family": task.get("route_family"),
@@ -120,15 +132,15 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
             ],
             "mathematical_objects": [
                 {
-                    "name": "factor_value",
+                    "name": frozen_object,
                     "meaning": "The current Step3B factor signal evaluated by Step4/5.",
-                    "unit_or_dimension": "dimensionless_or_unknown",
+                    "measurement_semantics": "factor score under the selected mechanism; units only when applicable",
                     "information_set": "factor timestamp and historical observations only",
                 },
                 {
                     "name": "net_long_side_evidence",
                     "meaning": "Cost-adjusted long-side metric signature used by Step6 admission gates.",
-                    "unit_or_dimension": "annualized_return_or_ratio",
+                    "measurement_semantics": "annualized return or risk-adjusted ratio from post-evaluation evidence",
                     "information_set": "post-evaluation evidence artifact",
                 },
             ],
@@ -142,7 +154,7 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
             ],
             "formula_claims": [
                 {
-                    "claim": "The factor can be treated as an estimator of a latent state only if the implied state survives the observed cost and stability tests.",
+                    "claim": "The factor can be treated as an estimator of the selected mathematical object only if the observation map discriminates the mechanism and survives cost and stability tests.",
                     "formula_or_relation": relation_for_role(role),
                     "status": "hypothesis",
                     "derivation_summary": f"Mock {role} maps the packet failure signature {failure} and mechanism fit {mechanism_fit} into a testable relation.",

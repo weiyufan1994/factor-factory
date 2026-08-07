@@ -30,27 +30,29 @@ latent-state/regime-switching, market microstructure, valuation decomposition,
 causal identification, placebo/confounding analysis, and other explicitly
 justified tools.
 
-Use stochastic return projection, Ito calculus, linear algebra, optimization,
-information theory, and causal/placebo tests as `benchmark_math_tools`: they
-may support projection, diagnostic, derivation, or falsification, but they do
-not replace the primary model unless the Step1 hypothesis specifically selects
-them. `benchmark_math_tools` must explain what each tool rules in, rules out,
-or reveals about the model.
+Run an open mathematical-tool search. DCF/residual income, accounting
+identities, stochastic processes, Ito calculus, linear algebra, optimization,
+information theory, functional/spectral methods, causal/placebo tests, or newly
+composed objects may be selected only when the Step1 hypothesis justifies them.
+Record candidate tools, the selected tools, and rejected alternatives. Existing
+operators and data convenience must not decide the selection.
 
 The mechanism contract should state:
 - research_equation with classification, assumptions, validity_scope,
-  latent_state, observable_estimator, expected metric signature,
+  mathematical_object, observation/estimation map, expected metric signature,
   falsification tests, and kill criteria;
 - primary mathematical model and why it follows from the economic hypothesis;
 - formula observable estimator and why it is not a raw-field restatement;
-- t0_t1_stochastic_benchmark showing whether the estimator affects drift,
-  diffusion, jump, friction, regime transition, or observation equation;
-- stochastic return projection or other testable implication under `F_t`;
+- market_outcome_projection mapping the selected mathematical object to value,
+  payoff, price gap, return, or another traded quantity;
+- applicable_audits, which may be empty and activate stochastic, dimensional,
+  valuation, causal, spectral, or other checks only when justified;
 - discriminating tests against alternative return sources;
 - expected metric signatures for Step4/Step5 falsification.
 
 Prompt outputs must include `research_equation`,
-`t0_t1_stochastic_benchmark`, `formula_implied_information`,
+`mechanism_conditioned_measurement_program`, `market_outcome_projection`,
+`applicable_audits`, `formula_implied_information`,
 `formula_implied_information_review`, `metric_signature_match` by model layer,
 and drawdown geometry interpretation when Step4 metrics exist.
 
@@ -91,10 +93,13 @@ You are the Step2 factor specification builder.
 Your task is to convert Step1's alpha_idea_master into a factor_spec_master. Do not let direct_code become a shortcut around the mechanism contract.
 
 Mandatory order:
-1. Validate Step1 classified research equation. If equation_status, assumptions, validity_scope, participant_constraint_loop, expected_metric_signature, or falsification_tests are missing, mark the spec blocked.
-2. Validate primary_mathematical_model. It must be chosen from the economic hypothesis. Stochastic process is not automatically the primary model.
-3. Validate t0_t1_stochastic_benchmark. For price-predictive factors, it must explain affected_terms among drift, diffusion, jump, friction, regime_transition, observation_equation.
-4. Build observable_detector_contract. The formula is an observable estimator of a latent state, not the mechanism itself.
+1. Validate Step1 classified research equation. If equation_status, assumptions, validity_scope, participant_constraint_loop, expected_metric_signature, falsification_tests, or kill_criteria are missing, mark the spec blocked.
+2. Validate every candidate model's mathematical_object and independent mechanism_equation_or_functional, then validate primary_mathematical_model. It must be chosen from the economic hypothesis. Stochastic process is not automatically the primary model.
+3. Validate market_outcome_projection as a separate bridge. It must derive the selected model's map
+   to value, payoff, price gap or return. Stochastic terms are required only
+   when the selected model is stochastic; DCF and other mechanisms use their
+   own mathematical objects.
+4. Build observable_detector_contract, including measurement_equation and null_or_alias_behavior. The formula is an observable estimator of the selected mathematical object, not the mechanism itself.
 5. Build canonical_spec.formula_text only after the detector contract is coherent.
 6. Generate direct_code only after the formula and data requirements are unambiguous.
 7. If direct_code cannot implement the detector without unstated assumptions, set implementation_contract.code_contract.status = "blocked".
@@ -102,17 +107,18 @@ Mandatory order:
 
 Required output additions:
 {
-  "mechanism_math_contract_v2": {
+  "mechanism_conditioned_measurement_program": {
+    "contract_version": "factorforge_mechanism_conditioned_measurement_program_v1",
+    "math_tool_selection": {},
+    "model_selection": {},
     "research_equation": {},
-    "equation_quality": {},
-    "primary_mathematical_model": {},
-    "t0_t1_stochastic_benchmark": {},
-    "formula_implied_information": {},
-    "formula_implied_information_review": {},
-    "observable_detector_contract": {"measurement_equation": "", "null_state_behavior": ""},
-    "expected_metric_signature": [],
-    "falsification_tests": [],
-    "kill_criteria": []
+    "market_outcome_projection": {},
+    "applicable_audits": {"selected": [], "rejected": []},
+    "observation_and_estimation": {},
+    "public_derivation_record": {},
+    "implementation": {},
+    "deterministic_validation_plan": {},
+    "search_policy": {}
   },
   "canonical_spec": {
     "formula_text": "",

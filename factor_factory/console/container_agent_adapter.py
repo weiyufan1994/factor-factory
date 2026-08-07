@@ -32,6 +32,8 @@ from factor_factory.console.agent_adapter import (
     RESUME_MEMO_AGENT_EVIDENCE_FIELDS,
     RESUME_MEMO_AGENT_OPERATOR_FIELDS,
     RESUME_MEMO_AGENT_PATCH_FIELDS,
+    RESUME_MEMO_LEGACY_AGENT_DIRECT_FIELDS,
+    RESUME_MEMO_LEGACY_AGENT_PATCH_FIELDS,
     RESUME_MEMO_AGENT_PATCH_MAX_BYTES,
     RESUME_MEMO_MAX_BYTES,
     RESUME_PROMPT_INPUT_MAX_BYTES,
@@ -4046,7 +4048,13 @@ def _validate_resume_research_patch(
             f"is invalid:{detail}"
         )
 
-    if set(memo) != set(RESUME_MEMO_AGENT_PATCH_FIELDS):
+    uses_current_object_mapping = "mathematical_object_mapping" in answer_form
+    expected_patch_fields = (
+        RESUME_MEMO_AGENT_PATCH_FIELDS
+        if uses_current_object_mapping
+        else RESUME_MEMO_LEGACY_AGENT_PATCH_FIELDS
+    )
+    if set(memo) != set(expected_patch_fields):
         raise invalid_patch("top-level field set")
 
     def exact_object(field: str) -> dict[str, Any]:
@@ -4136,21 +4144,35 @@ def _validate_resume_research_patch(
         component_id = canonical_component.get("component_id")
         component_ids.append(component_id)
 
-    state_estimator = exact_object("formula_state_estimator")
-    component_links = state_estimator.get("component_links")
+    object_mapping_field = (
+        "mathematical_object_mapping"
+        if uses_current_object_mapping
+        else "formula_state_estimator"
+    )
+    object_mapping = exact_object(object_mapping_field)
+    component_links = object_mapping.get("component_links")
+    object_value = (
+        object_mapping.get("mathematical_object")
+        if uses_current_object_mapping
+        else object_mapping.get("latent_state")
+    )
+    observation_value = (
+        object_mapping.get("observation_mapping")
+        if uses_current_object_mapping
+        else object_mapping.get("observable_mapping")
+    )
     if (
-        any(
-            not isinstance(state_estimator.get(field), str)
-            or not str(state_estimator.get(field)).strip()
-            for field in ("latent_state", "observable_mapping")
-        )
+        not isinstance(object_value, str)
+        or not object_value.strip()
+        or not isinstance(observation_value, str)
+        or not observation_value.strip()
         or not isinstance(component_links, list)
         or not component_links
         or any(not isinstance(item, str) or not item.strip() for item in component_links)
         or len(component_links) != len(set(component_links))
         or not set(component_links).issubset(component_ids)
     ):
-        raise invalid_patch("formula_state_estimator value type")
+        raise invalid_patch(f"{object_mapping_field} value type")
 
     canonical_evidence = answer_form.get("evidence_comparison")
     evidence = memo.get("evidence_comparison")
@@ -4235,7 +4257,12 @@ def _rehydrate_resume_memo_immutable_fields(
     _validate_resume_research_patch(answer_form, memo)
 
     rehydrated = deepcopy(answer_form)
-    for field in RESUME_MEMO_AGENT_DIRECT_FIELDS:
+    direct_fields = (
+        RESUME_MEMO_AGENT_DIRECT_FIELDS
+        if "mathematical_object_mapping" in answer_form
+        else RESUME_MEMO_LEGACY_AGENT_DIRECT_FIELDS
+    )
+    for field in direct_fields:
         if field in memo:
             rehydrated[field] = deepcopy(memo[field])
 

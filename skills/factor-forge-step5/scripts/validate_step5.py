@@ -25,7 +25,11 @@ from skills.factor_forge_step5.modules.validator import (  # type: ignore
     check_no_placeholder_text,
 )
 from factor_factory.artifact_identity import assert_identity_matches_strict
-from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.mechanism_math.validator import (
+    validate_mechanism_math_contract,
+    validate_mechanism_math_contract_v2,
+)
+from factor_factory.measurement_program import validate_measurement_program
 
 OBJ = FF / 'objects'
 ARCH = FF / 'archive'
@@ -148,6 +152,7 @@ if __name__ == '__main__':
     case_path = OBJ / 'factor_case_master' / f'factor_case_master__{rid}.json'
     eval_path = OBJ / 'validation' / f'factor_evaluation__{rid}.json'
     frm_path = OBJ / 'factor_run_master' / f'factor_run_master__{rid}.json'
+    fsm_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
     arch_dir = ARCH / rid
 
     checks = []
@@ -157,18 +162,21 @@ if __name__ == '__main__':
     case_exists = check_file_exists(case_path)
     eval_exists = check_file_exists(eval_path)
     frm_exists = check_file_exists(frm_path)
+    fsm_exists = check_file_exists(fsm_path)
     archive_nonempty = check_archive_dir_nonempty(arch_dir)
 
     checks.append(check('factor_case_master_exists', case_exists['exists'], f'missing {case_path}'))
     checks.append(check('factor_evaluation_exists', eval_exists['exists'], f'missing {eval_path}'))
     checks.append(check('factor_run_master_exists', frm_exists['exists'], f'missing {frm_path}'))
+    checks.append(check('factor_spec_master_exists', fsm_exists['exists'], f'missing {fsm_path}'))
     checks.append(check('archive_dir_exists', arch_dir.exists(), f'missing {arch_dir}'))
     checks.append(check('archive_dir_nonempty', archive_nonempty['nonempty'], f'empty archive {arch_dir}'))
 
-    if case_exists['exists'] and eval_exists['exists'] and frm_exists['exists']:
+    if case_exists['exists'] and eval_exists['exists'] and frm_exists['exists'] and fsm_exists['exists']:
         case = load_json(case_path)
         ev = load_json(eval_path)
         frm = load_json(frm_path)
+        fsm = load_json(fsm_path)
         checks.extend(artifact_identity_checks('factor_case_master', case, 'factor_evaluation', ev))
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_evaluation', ev, 'factor_evaluation'))
@@ -203,16 +211,54 @@ if __name__ == '__main__':
         case_quality_gate = case.get('step4_quality_gate') or {}
         math_review = case.get('math_discipline_review') or {}
         mechanism_math_contract = case.get('mechanism_math_contract') or math_review.get('mechanism_math_contract') or {}
-        mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        mechanism_math_contract_v2 = case.get('mechanism_math_contract_v2') or {}
+        mechanism_math_failures = (
+            validate_mechanism_math_contract(mechanism_math_contract)
+            if isinstance(mechanism_math_contract, dict) and mechanism_math_contract
+            else []
+        )
+        mechanism_math_v2_failures = (
+            validate_mechanism_math_contract_v2(mechanism_math_contract_v2)
+            if isinstance(mechanism_math_contract_v2, dict) and mechanism_math_contract_v2
+            else []
+        )
+        measurement_program = case.get('mechanism_conditioned_measurement_program') or {}
+        canonical = fsm.get('canonical_spec') or {}
+        upstream_programs = [
+            item for item in [
+                fsm.get('mechanism_conditioned_measurement_program'),
+                canonical.get('mechanism_conditioned_measurement_program'),
+            ]
+            if isinstance(item, dict) and item
+        ]
+        declared_node_ids = {
+            str(node_id)
+            for component in ((measurement_program.get('implementation') or {}).get('components') or [])
+            if isinstance(component, dict)
+            for node_id in (component.get('knowledge_node_ids') or [])
+            if str(node_id).strip()
+        } if isinstance(measurement_program, dict) else set()
+        measurement_program_failures = (
+            validate_measurement_program(
+                measurement_program,
+                available_knowledge_node_ids=declared_node_ids,
+                require_web_executable=False,
+            )
+            if isinstance(measurement_program, dict) and measurement_program
+            else []
+        )
         adoption_constraints = case.get('adoption_constraints') or {}
         long_side_review = case.get('long_side_review') or math_review.get('long_side_objective') or {}
         information_set_legality = str(math_review.get('information_set_legality') or '').lower()
         overfit_risk = math_review.get('overfit_risk')
 
         checks.append(check('math_discipline_review_present', isinstance(math_review, dict) and bool(math_review), 'Step5 factor_case_master.math_discipline_review missing'))
-        checks.append(check('mechanism_math_contract_present', isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract), 'Step5 factor_case_master.mechanism_math_contract missing'))
-        checks.append(check('mechanism_math_contract_valid', not mechanism_math_failures, f'Step5 mechanism_math_contract invalid: {mechanism_math_failures}'))
-        checks.append(check('mechanism_math_contract_ref_present', isinstance(math_review.get('mechanism_math_contract_ref'), dict) and bool(math_review.get('mechanism_math_contract_ref')), 'Step5 math_discipline_review.mechanism_math_contract_ref missing'))
+        checks.append(check('mechanism_conditioned_measurement_program_present', isinstance(measurement_program, dict) and bool(measurement_program), 'Step5 factor_case_master.mechanism_conditioned_measurement_program missing'))
+        checks.append(check('mechanism_conditioned_measurement_program_valid', not measurement_program_failures, f'Step5 measurement program invalid: {measurement_program_failures}'))
+        checks.append(check('mechanism_conditioned_measurement_program_matches_step2', bool(upstream_programs) and all(item == measurement_program for item in upstream_programs), 'Step5 measurement program differs from factor_spec_master'))
+        checks.append(check('mechanism_conditioned_measurement_program_ref_present', isinstance(math_review.get('mechanism_conditioned_measurement_program_ref'), dict) and bool(math_review.get('mechanism_conditioned_measurement_program_ref')), 'Step5 math_discipline_review.mechanism_conditioned_measurement_program_ref missing'))
+        checks.append(check('legacy_mechanism_math_contract_valid_if_present', not mechanism_math_failures, f'Step5 legacy mechanism_math_contract invalid: {mechanism_math_failures}'))
+        checks.append(check('legacy_mechanism_math_contract_v2_valid_if_present', not mechanism_math_v2_failures, f'Step5 legacy mechanism_math_contract_v2 invalid: {mechanism_math_v2_failures}'))
         checks.append(check('information_set_legality_present', nonempty_str(math_review.get('information_set_legality')), 'information_set_legality missing'))
         checks.append(check('spec_stability_present', isinstance(math_review.get('spec_stability'), dict) and bool(math_review.get('spec_stability')), 'spec_stability missing'))
         checks.append(check('signal_vs_portfolio_gap_present', nonempty_str(math_review.get('signal_vs_portfolio_gap')), 'signal_vs_portfolio_gap missing'))

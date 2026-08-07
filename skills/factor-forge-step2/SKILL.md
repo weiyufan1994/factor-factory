@@ -10,15 +10,28 @@ description: Step 2 of the Factor Factory pipeline — Factor Spec Extraction an
 Step 2 converts an `alpha_idea_master` into a machine-readable `factor_spec_master` — the authoritative construction blueprint for implementing the factor in Step 3.
 Before generating factor_spec_master or direct_code, use the Dirac-Style Step2 Factor Spec Prompt in references/prompts.md.
 
-Step 2 also emits `mechanism_math_contract` as an incremental research
-discipline layer. The contract formalizes the intended mapping from economic
-mechanism to mathematical object, observable estimator, expected metric
-signature, revision operators, falsification tests, and kill criteria. If the
-mechanism cannot be responsibly formalized, Step 2 records
-`math_model_status=under_specified` with a human research question rather than
-inventing a mechanism.
+Step2 is also the hardening point for
+`mechanism_conditioned_measurement_program_v1`: it freezes the estimand,
+measurement semantics, applicable audits, observation equation and component bindings before selecting
+`operator`, `direct_code` or `hybrid`. Read the current measurement-program
+contract below; an executable-looking formula is not a substitute for this gate.
 
-For `mechanism_math_contract_v2`, Step 2 must also formalize:
+Step 2 emits and freezes the current
+`mechanism_conditioned_measurement_program`. It formalizes the mapping from the
+economic hypothesis to competing mathematical models, the selected
+mathematical object, estimand, observation map, implementation binding,
+applicable audits, falsification tests, and search invariants. The mathematical
+tool family is selected from the mechanism; stochastic processes, dimensional
+analysis, valuation identities, spectral methods, or any other family are not
+universal requirements.
+
+Legacy `mechanism_math_contract` and `mechanism_math_contract_v2` objects are
+preserved and validated only when an upstream historical artifact already
+contains them. Step2 must never synthesize either legacy contract for a new
+research run.
+
+When a legacy upstream artifact already contains `mechanism_math_contract_v2`,
+Step 2 must preserve and validate its:
 - return-source discrimination: why the primary economic hypothesis is not
   better explained by at least one non-primary source, with a concrete
   discriminating test and expected metric signature;
@@ -49,6 +62,10 @@ Graph context is similar-case prior knowledge only. It may guide mechanism
 selection, anti-pattern checks, and revision seeds, but it cannot replace
 Step1/Step2 source understanding or same-factor evidence.
 
+It may propose model families, counterexamples and implementation tools, but it
+cannot override the selected math contract, change the estimand, or turn a
+historical correlation into evidence for the current factor.
+
 ## Research Discipline
 
 Step 2 is the canonical-spec guardrail. It must verify:
@@ -57,11 +74,13 @@ Step 2 is the canonical-spec guardrail. It must verify:
 - information used at time `t` is legally available at time `t`,
 - boundary-sensitive transforms such as rank, bucket, winsorize, truncate, argmax, and argmin are called out,
 - critical ambiguities trigger `human_review_required` instead of being silently guessed.
-- the Step1 random object, similar-case lessons, and `knowledge_reference_contract` are preserved instead of lost at spec extraction time,
+- the Step1 mathematical object, similar-case lessons, and `knowledge_reference_contract` are preserved instead of lost at spec extraction time,
 - the canonical spec states the target statistic, economic mechanism, expected failure modes, innovative idea seeds, and reuse instructions for future agents.
-- the mechanism math contract does not merely repeat formula text, raw fields,
-  or code. It must state the latent/model state recovered by the estimator and
-  the conditional return-distribution term it is expected to change.
+- the selected measurement program does not merely repeat formula text, raw
+  fields, or code. It must state the mathematical object, estimand, observation
+  map, implementation binding and falsifier warranted by the economic
+  hypothesis. A latent state or conditional distribution is required only when
+  the selected model uses one.
 
 Step2 does not silently invent prior knowledge. For fresh formal artifacts, it
 preserves the Step1 `knowledge_reference_contract` into `research_contract` and
@@ -156,7 +175,7 @@ Both primary and challenger produce this schema:
     "economic_mechanism": "string"
   },
   "math_discipline_review": {
-    "step1_random_object": "string",
+    "mathematical_object": "string",
     "target_statistic": "string",
     "information_set_legality": "string",
     "expected_failure_modes": ["string"]
@@ -408,15 +427,29 @@ Hybrid mode is a bounded composition of an operator subgraph plus explicit custo
 
 Custom blocks are not free-form unsafe code: they must declare `function_name`, input/output schema, required fields, forbidden patterns, and source code. Operator outputs are protected by default; overwriting them requires an explicit boundary permission.
 
-## Mechanism Math Contract v2
+## Mechanism-Conditioned Measurement Program
 
-Factor Forge uses a Dirac-style research discipline: a factor must be tied to a classified research equation, a primary mathematical model selected from the economic hypothesis, a T+0/T+1 stochastic benchmark projection for traded price implications, formula-implied latent information, expected metric signature, anomaly classification, and falsification tests. Stochastic process is not always the primary model, but it remains a benchmark/projection tool for price-process implications.
+References:
 
-Step2 writes mechanism_math_contract_v2 at factor_spec_master, canonical_spec, and handoff_to_step3. The v2 contract maps formula components or direct-code observable estimators to model roles and stochastic price-process projection roles. Operator, direct_code, and hybrid modes all need an estimator mapping; unsupported or vague mappings should be under-specified or blocked rather than replaced with a generic model. Legacy v1 contracts remain readable for older artifacts.
+- `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md`
+- `docs/contracts/mechanism_math_contract_v2.zh-CN.md` for legacy migration only
 
-Step2 is the hardening point for the universal `research_quality_gate`. It must
-convert the Step1 seed into an auditable contract before handoff to Step3. The
-handoff is not valid unless the gate contains:
+Step2 writes `mechanism_conditioned_measurement_program` into the canonical spec and
+Step3 handoff. It hardens Step1's economic hypothesis, competing-model review,
+selected mechanism, market-outcome projection, applicable audits and
+observation equation before implementation. The legacy stochastic v2 object is
+preserved only when it already exists in a legacy upstream study; it is not
+synthesized for new factors, stochastic or otherwise.
+
+Step2 must map every measurement component to its exact mathematical term,
+measurement semantics, legal information set, observation/estimation map,
+implementation binding, preserved/deleted information, expected metric
+signature, ablation and falsifier. An operator is optional; direct code and
+hybrid are first-class when the mathematical or numerical method requires them.
+No route may be selected by convenience, and missing data must trigger an
+explicit proxy-error contract, data request or BLOCK rather than estimand drift.
+
+The Step3 handoff also requires the universal `research_quality_gate`:
 
 - `economic_mechanism_contract`;
 - `mathematical_object_contract`;
@@ -425,44 +458,12 @@ handoff is not valid unless the gate contains:
 - `claim_level_assessment`;
 - `reviewer_attack_memo`.
 
-If the factor is still only `narrative_only`, Step2 should normally write
-`allowed_next_step=miner_only` or `allowed_next_step=stop`. `math_framed` or
-`metric_candidate` may enter a bounded formal exploratory pass only after the
-pre-Council conjecture protocol passes and the trial budget is frozen.
-`metric_consistent` cannot be claimed before executed metric evidence and an
-accepted factor-proof certificate. Missing payer/receiver hypothesis, random
-object, information set, alias-discriminating tests, or kill criteria is a
-research-quality BLOCK.
-
-Step2 must not default every factor to a stochastic process. It must choose the
-primary mathematical model from the economic hypothesis, then use stochastic
-return projection, Ito calculus, linear algebra, optimization, information
-theory, causal/placebo tests, or other benchmark_math_tools only as justified
-projection, diagnostic, derivation, or falsification layers. If Step1's
-economic hypothesis is behavioral, microstructure, constrained-flow,
-information-diffusion, valuation, risk-premium, or artifact-focused, the
-selected model family must reflect that source rather than collapsing to a
-decorative generic SDE.
-
-The v2 contract must include:
-- `research_equation`: classified equation text, status, assumptions,
-  validity_scope, symmetry/constraint, latent_state, observable_estimator,
-  expected_metric_signature, falsification_tests, and kill_criteria;
-- `t0_t1_stochastic_benchmark`: benchmark_required, horizon, affected_terms,
-  conditional_distribution_claim, benchmark_implication,
-  when_primary_model_cannot_infer, and falsification_tests;
-- `market_process_thesis.alternative_return_source_tests`: at least one
-  non-primary alternative return source with `why_not_primary`,
-  `discriminating_test`, and `expected_signature_if_alternative_true`;
-- `formula_implied_information.structural_constraints`;
-- `formula_implied_information.latent_state_inferred_by_formula`;
-- `formula_implied_information.estimator_interpretation`;
-- `formula_implied_information.why_not_raw_field_restatement`;
-- `formula_implied_information.price_process_connection`.
-
-Validators must block contracts that lack these fields, use generic SDE text,
-map formula components back to themselves, or claim a latent state that is only
-`close`, `volume`, a raw field, or a formula call such as `rank(close)`.
+`narrative_only` normally routes to `miner_only` or `stop`; an exploratory pass
+requires at least `math_framed`, frozen trials and a valid pre-Council protocol.
+Missing economic incidence or an applicable counterparty account, mathematical
+object, information set, competing/null model, required measurement semantics,
+observation equation, alias test or kill criteria is a research-quality
+BLOCK. Legacy v1 remains readable only for explicit legacy artifacts.
 
 ## Research Conjecture Protocol v1
 

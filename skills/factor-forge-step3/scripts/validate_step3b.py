@@ -27,6 +27,7 @@ from factor_factory.artifact_identity import assert_identity_matches_strict, sta
 from factor_factory.factor_families.registry import validate_family_plugin_artifacts
 from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture, run_operator_parity
+from factor_factory.formula.parser import resolved_binding_hash_for_formula_ir
 from factor_factory.formula.registry import operator_meta
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
@@ -390,6 +391,38 @@ def candidate_operator_code_paths(*, manifest: dict | None, qlib_data: dict, han
     return paths
 
 
+def assert_resolved_binding_hashes(
+    formula_ir: dict,
+    *,
+    plan: dict,
+    qlib_data: dict,
+    handoff: dict,
+) -> str:
+    expected = resolved_binding_hash_for_formula_ir(formula_ir)
+    assert formula_ir.get('resolved_binding_hash'), (
+        'BLOCK_OPERATOR_BINDING_HASH_MISSING: formula_ir.resolved_binding_hash'
+    )
+    assert formula_ir.get('resolved_binding_hash') == expected, (
+        'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: formula_ir resolved binding hash '
+        f"{formula_ir.get('resolved_binding_hash')} != recomputed {expected}"
+    )
+    metadata = qlib_data.get('metadata') or {}
+    required_sources = {
+        'implementation_plan_master': plan.get('resolved_binding_hash'),
+        'implementation_plan_master.metadata': (plan.get('metadata') or {}).get('resolved_binding_hash'),
+        'qlib_expression_draft': qlib_data.get('resolved_binding_hash'),
+        'qlib_expression_draft.metadata': metadata.get('resolved_binding_hash'),
+        'handoff_to_step4': handoff.get('resolved_binding_hash'),
+    }
+    for label, declared in required_sources.items():
+        assert declared, f'BLOCK_OPERATOR_BINDING_HASH_MISSING: {label}'
+        assert declared == expected, (
+            f'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: {label}={declared} '
+            f'recomputed={expected}'
+        )
+    return expected
+
+
 def validate_operator_mode(
     spec: dict,
     plan: dict,
@@ -412,6 +445,12 @@ def validate_operator_mode(
     )
     assert identity.get('formula_hash'), 'operator mode requires formula_hash'
     assert identity.get('formula_hash') == formula_ir.get('formula_hash'), 'operator formula_hash mismatch between identity and formula_ir'
+    expected_binding_hash = assert_resolved_binding_hashes(
+        formula_ir,
+        plan=plan,
+        qlib_data=qlib_data,
+        handoff=handoff,
+    )
     operator_set = formula_ir.get('operator_set') or canonical.get('operator_set') or canonical.get('operators')
     required_fields = formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs')
     resolved_fields = formula_ir.get('resolved_fields') or canonical.get('resolved_fields')
@@ -438,6 +477,15 @@ def validate_operator_mode(
     implementation_path = next((path for path in candidates if path and path.exists() and path.suffix == '.py'), None)
     assert implementation_path is not None, f'BLOCK_OPERATOR_ARTIFACT_MISSING: checked {[str(p) for p in candidates]}'
     actual_code_hash = hashlib.sha256(implementation_path.read_bytes()).hexdigest()
+    generated_module = import_module_from_path(implementation_path)
+    embedded_ir = getattr(generated_module, 'FORMULA_IR', {})
+    embedded_metadata = getattr(generated_module, 'METADATA', {})
+    assert isinstance(embedded_ir, dict) and embedded_ir.get('resolved_binding_hash') == expected_binding_hash, (
+        'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: generated code FORMULA_IR'
+    )
+    assert isinstance(embedded_metadata, dict) and embedded_metadata.get('resolved_binding_hash') == expected_binding_hash, (
+        'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: generated code METADATA'
+    )
     declared_hashes = collect_declared_operator_code_hashes(plan, qlib_data, hybrid_data, handoff)
     assert declared_hashes, 'BLOCK_OPERATOR_HASH_MISSING: operator generated artifacts require code_hash'
     for label, declared_hash in declared_hashes:

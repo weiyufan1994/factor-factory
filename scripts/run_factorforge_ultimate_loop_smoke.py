@@ -485,8 +485,8 @@ def write_main_agent_council_synthesis_fixture(
                 "proof_obligation_updates": [],
             },
             {
-                "route_id": "latent_state_measurement",
-                "exact_gap_after_analysis": "latent-state identifiability",
+                "route_id": "mechanism_object_measurement",
+                "exact_gap_after_analysis": "mathematical-object identifiability and formula-component mapping",
                 "proof_obligation_updates": [],
             },
             {

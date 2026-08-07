@@ -98,6 +98,9 @@ Result schema summary:
 - canonical_write_permission: false
 - execution_allowed_by_default: false
 - human_approval_required: true
+- measurement_program_binding: copy exactly from the task packet
+- math_mechanism_derivation.baseline_model: exactly the frozen mechanism
+  equation; put any alternative in model_mutation/candidate_revision_laws
 - economic_hypothesis_review: preserve_broad_direction, refined_second_layer_mechanism, payer_or_counterparty_update, what_step4_metrics_changed_in_the_hypothesis
 - math_mechanism_derivation: selected_tool plus rationale, rejected_tools, baseline_model, model_mutation, mathematical_objects, derivation_steps, derived_state_variables, observable_estimators, expected_metric_signature, falsification_tests
 - model_to_formula_translation: candidate_formula or research_hold/operator_block/no_derived_revision_with_proof disposition, operator_support_status, mapping_from_model_terms_to_formula_components, information_set_legality

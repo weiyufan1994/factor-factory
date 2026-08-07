@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -13,6 +14,10 @@ from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_headline,
     build_formula_understanding,
     select_math_model_from_economic_hypothesis,
+)
+from factor_factory.measurement_program import (
+    BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    validate_measurement_program,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -103,7 +108,7 @@ def now_iso() -> str:
 
 def common_research_discipline(
     source_type: str,
-    random_object: str,
+    mathematical_object: str,
     target_statistic: str,
     return_source: str,
     information_set: str,
@@ -111,7 +116,7 @@ def common_research_discipline(
     what_would_break_it: List[str],
 ) -> Dict[str, Any]:
     return {
-        'step1_random_object': random_object,
+        'step1_mathematical_object': mathematical_object,
         'target_statistic_hint': target_statistic,
         'information_set_hint': information_set,
         'initial_return_source_hypothesis': return_source,
@@ -176,7 +181,11 @@ def build_primary_mechanism_model_candidates_from_hypotheses(math_hypotheses: Li
                 'Pure formula-expression explanations do not identify payer, state variables, or conditional return distribution changes.',
                 'Generic risk-premium framing is secondary unless Step4/Step6 evidence links metrics to a systematic risk bearer.',
             ],
-            'state_variables': [item.get('state_or_object') or 'formula-defined latent market state'],
+            'mathematical_objects': [
+                item.get('mathematical_object')
+                or item.get('state_or_object')
+                or 'formula-defined mathematical object'
+            ],
             'observable_proxies': [item.get('observable_estimator') or 'canonical formula observable estimator'],
             'target_functional': item.get('target_functional') or 'E[r_i,t+1 | formula_state_i,t]',
             'preferred': idx == 0,
@@ -184,23 +193,53 @@ def build_primary_mechanism_model_candidates_from_hypotheses(math_hypotheses: Li
     return candidates
 
 
-def build_stochastic_projection_from_hypotheses(math_hypotheses: List[Dict[str, Any]]) -> Dict[str, Any]:
-    preferred = math_hypotheses[0] if math_hypotheses else {}
-    process = preferred.get('process_or_distribution_hypothesis') or (
-        'future returns have a conditional distribution whose drift changes with the estimated canonical formula state'
-    )
-    target = preferred.get('target_functional') or 'E[r_i,t+1 | formula_state_i,t]'
-    estimator = preferred.get('observable_estimator') or 'canonical formula score'
-    return {
-        'projection_required': True,
-        'price_process_form': str(process),
-        'affected_price_process_terms': ['drift', 'observation_equation'],
-        'conditional_distribution_claim': str(target),
-        'formula_should_estimate': str(estimator),
-        'expected_return_distribution_change': (
-            'conditioning on the formula-estimated state should shift next-period cross-sectional return rank or conditional mean in the declared direction'
-        ),
+def attach_agent_authored_measurement_program(
+    bundle: Dict[str, Dict[str, Any]],
+    *,
+    measurement_program: Dict[str, Any],
+    knowledge_reference_contract: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Bind an agent-authored program without letting intake invent research."""
+    enriched = deepcopy(bundle)
+    cited_node_ids = {
+        str(item)
+        for item in knowledge_reference_contract.get('cited_node_ids') or []
+        if str(item).strip()
     }
+    reasons = validate_measurement_program(
+        measurement_program,
+        available_knowledge_node_ids=cited_node_ids,
+        require_web_executable=False,
+    )
+    implementation = measurement_program.get('implementation')
+    route = implementation.get('route') if isinstance(implementation, dict) else None
+    if route != 'operator':
+        reasons.append('measurement_program.implementation.route_canonical_formula_requires_operator')
+    if reasons:
+        raise ValueError(
+            f"{BLOCK_MEASUREMENT_PROGRAM_INVALID}: " + ';'.join(reasons)
+        )
+
+    aim = enriched['aim']
+    discipline = aim.get('research_discipline')
+    if not isinstance(discipline, dict):
+        discipline = {}
+    program = deepcopy(measurement_program)
+    knowledge = deepcopy(knowledge_reference_contract)
+    discipline['market_outcome_projection'] = deepcopy(
+        program['market_outcome_projection']
+    )
+    discipline['mechanism_conditioned_measurement_program'] = deepcopy(program)
+    discipline['knowledge_reference_contract'] = deepcopy(knowledge)
+    discipline['similar_case_lessons_imported'] = list(
+        knowledge.get('similar_case_lessons_imported') or []
+    )
+    aim['implementation_mode'] = 'operator'
+    aim['research_discipline'] = discipline
+    aim['mechanism_conditioned_measurement_program'] = deepcopy(program)
+    aim['knowledge_reference_contract'] = deepcopy(knowledge)
+    enriched['aim'] = aim
+    return enriched
 
 
 def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: List[str]) -> Dict[str, Any]:
@@ -356,8 +395,8 @@ def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: Lis
                 'rolling time-series state estimator',
                 'conditional expectation of forward return',
             ],
-            'state_or_object': state,
-            'process_or_distribution_hypothesis': process,
+            'mathematical_object': state,
+            'mechanism_equation_or_functional': process,
             'observable_estimator': observable,
             'target_functional': (
                 'E[r_i,t+1 | formula_state_i,t] and the monotone relation between formula_state_i,t '
@@ -421,7 +460,7 @@ def build_canonical_formula_step1(
     operators = infer_formula_operators(formula)
     research = common_research_discipline(
         source_type='paper_canonical_formula',
-        random_object='cross-sectional equity panel observed through price, volume, and other formula inputs',
+        mathematical_object='cross-sectional equity panel observed through price, volume, and other formula inputs',
         target_statistic='canonical formula score used to rank future cross-sectional returns',
         return_source='published formula may capture a formula-defined conditional return state that must be modelled from its own observable inputs',
         information_set='uses only contemporaneous and lagged market fields required by the formula',
@@ -442,9 +481,6 @@ def build_canonical_formula_step1(
         research.get('what_would_break_it') or [],
     )
     research['primary_mechanism_model_candidates'] = build_primary_mechanism_model_candidates_from_hypotheses(
-        research.get('math_hypothesis_candidates') or []
-    )
-    research['stochastic_price_process_projection'] = build_stochastic_projection_from_hypotheses(
         research.get('math_hypothesis_candidates') or []
     )
     formula_headline = build_formula_specific_headline(
@@ -485,7 +521,7 @@ def build_canonical_formula_step1(
             'economic_logic': formula_headline,
         },
         'math_discipline_review': {
-            'step1_random_object': research['step1_random_object'],
+            'mathematical_object': research['step1_mathematical_object'],
             'target_statistic': research['target_statistic_hint'],
             'information_set_legality': research['information_set_hint'],
             'expected_failure_modes': research['what_would_break_it'],
@@ -538,7 +574,7 @@ def build_hypothesis_step1(
     return_source = 'user-proposed information signal may forecast future returns if its economic state change precedes market repricing'
     research = common_research_discipline(
         source_type='natural_language_hypothesis',
-        random_object='security-level panel combining the named observable fields in the user hypothesis',
+        mathematical_object='security-level panel combining the named observable fields in the user hypothesis',
         target_statistic='cross-sectional score derived from the stated hypothesis and tested against future returns',
         return_source=return_source,
         information_set='must be limited to data known at each rebalance date; disclosure lag must be enforced for fundamental fields',
@@ -582,7 +618,7 @@ def build_hypothesis_step1(
             'economic_logic': hypothesis,
         },
         'math_discipline_review': {
-            'step1_random_object': research['step1_random_object'],
+            'mathematical_object': research['step1_mathematical_object'],
             'target_statistic': research['target_statistic_hint'],
             'information_set_legality': research['information_set_hint'],
             'expected_failure_modes': research['what_would_break_it'],

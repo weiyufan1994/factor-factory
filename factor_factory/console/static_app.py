@@ -24,6 +24,7 @@ from factor_factory.console.discovery import discover_miner_campaigns
 from factor_factory.console.models import (
     PILOT_UNIVERSE,
     ResearchRequest,
+    USER_MESSAGE_CONTENT_KINDS,
     validate_pilot_evaluation_request,
 )
 from factor_factory.console.model_broker import DEEPSEEK_V4_FLASH_MODEL
@@ -39,6 +40,13 @@ from factor_factory.console.summary import render_dashboard
 from factor_factory.console.web_ui import render_dashboard as render_research_dashboard
 from factor_factory.console.web_ui import render_job, render_login, render_not_found
 from factor_factory.console.web_factor_proof import trusted_calendar_healthy
+from factor_factory.formula.parser import parse_formula
+from factor_factory.formula.source_dialects import (
+    BLOCK_SOURCE_SEMANTICS_UNRESOLVED,
+    SourceFormulaDialectError,
+    resolve_source_formula,
+    uses_source_dialect,
+)
 
 
 _JOB_ID = re.compile(r"job_[a-f0-9]{10}\Z")
@@ -361,10 +369,14 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             csrf_token: str,
         ) -> None:
             try:
+                _validate_research_form_dates(fields)
+                initial_messages, primary_kind, primary_content = (
+                    _initial_research_messages(fields)
+                )
                 request = ResearchRequest(
                     title=_field(fields, "title"),
-                    hypothesis=_raw_field(fields, "hypothesis"),
-                    input_kind=_field(fields, "content_kind", "hypothesis"),
+                    hypothesis=primary_content,
+                    input_kind=primary_kind,
                     factor_id_hint=_field(fields, "factor_id_hint"),
                     universe=_field(fields, "universe", PILOT_UNIVERSE),
                     sample_start=_field(fields, "sample_start", "2016-01-01"),
@@ -375,8 +387,11 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                     source_url=_field(fields, "source_url"),
                 )
                 _validate_request_choices(request)
-                job = application.service.submit(request)
-            except (ValueError, OverflowError) as exc:
+                job = application.service.submit(
+                    request,
+                    initial_messages=initial_messages,
+                )
+            except (ValueError, OverflowError, SourceFormulaDialectError) as exc:
                 self._send_html(
                     400,
                     render_research_dashboard(
@@ -410,9 +425,12 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 self._send_html(404, render_not_found())
                 return
             try:
+                content_kind = _field(fields, "content_kind", "decision")
+                if content_kind not in USER_MESSAGE_CONTENT_KINDS:
+                    raise ValueError("invalid user message content_kind")
                 application.store.add_message(
                     job_id,
-                    content_kind=_field(fields, "content_kind", "decision"),
+                    content_kind=content_kind,
                     content=_raw_field(fields, "content"),
                     model=job.request.model or DEEPSEEK_V4_FLASH_MODEL,
                     idempotency_key=_field(fields, "idempotency_key"),
@@ -580,6 +598,79 @@ def _validate_request_choices(request: ResearchRequest) -> None:
         raise ValueError("sample_start must be before sample_end")
 
 
+def _validate_research_form_dates(fields: dict[str, list[str]]) -> None:
+    sample_start = _field(fields, "sample_start", "2016-01-01")
+    sample_end = _field(fields, "sample_end", "2025-07-11")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", sample_start):
+        raise ValueError("invalid sample_start")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", sample_end):
+        raise ValueError("invalid sample_end")
+    if sample_start >= sample_end:
+        raise ValueError("sample_start must be before sample_end")
+
+
+def _initial_research_messages(
+    fields: dict[str, list[str]],
+) -> tuple[list[tuple[str, str]], str, str]:
+    inputs = [
+        ("hypothesis", _raw_field(fields, "economic_hypothesis").strip()),
+        ("report", _raw_field(fields, "report_input").strip()),
+        ("formula", _raw_field(fields, "formula_input").strip()),
+        ("code", _raw_field(fields, "code_input").strip()),
+    ]
+    messages = [(kind, content) for kind, content in inputs if content]
+    if not messages:
+        legacy_content = _raw_field(fields, "hypothesis").strip()
+        legacy_kind = _field(fields, "content_kind", "hypothesis")
+        if legacy_content:
+            messages = [(legacy_kind, legacy_content)]
+    if not messages:
+        raise ValueError("hypothesis is required")
+
+    formula = next((content for kind, content in messages if kind == "formula"), "")
+    if formula:
+        choices = {
+            "kurtosis_convention": _field(fields, "kurtosis_convention"),
+            "skew_convention": _field(fields, "skew_convention"),
+            "max_sum_convention": _field(fields, "max_sum_convention"),
+            "zscore_ddof": _field(fields, "zscore_ddof"),
+        }
+        source_contract = resolve_source_formula(
+            formula,
+            choices if uses_source_dialect(formula) else None,
+        )
+        formula_ir = parse_formula(
+            source_contract["canonical_formula"],
+            raise_on_error=False,
+            source_dialect_contract=(
+                source_contract
+                if source_contract.get("dialect_id")
+                != "canonical_factorforge_formula_ir"
+                else None
+            ),
+        )
+        if formula_ir.get("parse_status") != "success":
+            raise ValueError(
+                "formula preflight failed: "
+                + "; ".join(str(item) for item in formula_ir.get("parse_errors") or [])
+            )
+        if source_contract.get("dialect_id") != "canonical_factorforge_formula_ir":
+            messages.append(
+                (
+                    "formula_contract",
+                    json.dumps(
+                        source_contract,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+
+    primary_kind, primary_content = messages[0]
+    return messages, primary_kind, primary_content
+
+
 def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
     names = (
         "title",
@@ -587,6 +678,14 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
         "content_kind",
         "model",
         "hypothesis",
+        "economic_hypothesis",
+        "report_input",
+        "formula_input",
+        "code_input",
+        "kurtosis_convention",
+        "skew_convention",
+        "max_sum_convention",
+        "zscore_ddof",
         "universe",
         "sample_start",
         "sample_end",
@@ -596,6 +695,10 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
 
 def _research_request_error(error: Exception) -> str:
     message = str(error)
+    if message.startswith(BLOCK_SOURCE_SEMANTICS_UNRESOLVED):
+        return "该第三方公式存在算子语义冲突。请明确选择峰度、偏度、区间求和和截面标准差口径后再提交。"
+    if message.startswith("formula preflight failed:"):
+        return "公式当前无法进入可信 Formula IR：" + message.split(":", 1)[1].strip()
     translated = {
         "title is required": "请填写研究名称。",
         "title is too long": "研究名称过长，请控制在 160 个字符以内。",

@@ -6,19 +6,19 @@
 
 它不是数学课程表，也不是让 agent 在报告里堆高等数学术语。它的用途是给 Step1-Step6 加一层研究纪律：
 
-- 每个因子必须先被定义成可验证的随机对象；
+- 每个因子必须先被定义成可验证的数学对象；只有经济假设选择随机机制时，该对象才必须是随机对象或随机过程；
 - 每个实现必须说明信息时点、变换边界和数据代理；
 - 每次评价必须区分信号质量、组合可交易性和收益来源；
 - 每次迭代必须证明自己是在提高泛化能力，而不是美化指标。
 
 ## 全局原则
 
-### 1. 先定义随机对象，再谈公式
+### 1. 先定义机制适配的数学对象，再谈公式
 
 Step1/2 必须回答：
 
-- 这个因子作用于什么随机对象？
-- 它预测均值、排序、尾部、波动、状态切换，还是 hitting probability？
+- 这个经济假设需要什么数学对象：估值泛函、会计恒等式、随机对象、路径泛函、谱系数、因果 estimand、优化对象，还是新的组合对象？
+- 它估计的是内在价值/价值差、条件均值或排序、尾部、波动、状态切换、hitting probability、频率成分，还是其他机制量？
 - 它使用的信息在交易时点是否真实可得？
 - 它的收益来源是假设为 `risk_premium`、`information_advantage`、`constraint_driven_arbitrage`，还是 `mixed`？
 
@@ -79,7 +79,7 @@ Step4/5/6 不得从 IC、Sharpe、回测净值直接跳到结论。
 
 必须形成：
 
-- `random_object`：收益、成交量、价差、财务状态、订单流、市场状态等；
+- `step1_mathematical_object`：由经济假设选择的估值、会计、随机、路径、频谱、因果、优化或其他数学对象；旧 `random_object` 只作为历史 artifact 兼容别名；
 - `target_statistic`：条件期望、条件排序、方差、偏度、峰度、状态概率、尾部风险等；
 - `information_set`：t 时点可得信息与不可得信息；
 - `return_source_hint`：初步收益来源判断；
@@ -127,7 +127,7 @@ Step5 的 lessons 不得只是“跑通/失败”。必须压缩成：
 
 Step6 必须写出 `math_discipline_review`，至少覆盖：
 
-- `step1_random_object`；
+- `mathematical_object`（历史 artifact 可读取 `step1_random_object` 兼容别名）；
 - `target_statistic`；
 - `information_set_legality`；
 - `spec_stability`；

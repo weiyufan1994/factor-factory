@@ -14,6 +14,28 @@ from factor_factory.console.backtest_evidence import (
     artifact_validation_error,
     build_backtest_evidence_bundle,
 )
+from factor_factory.measurement_program import (
+    PUBLIC_DERIVATION_FIELDS,
+    PUBLIC_MEASUREMENT_COMPONENT_FIELDS,
+    PUBLIC_MEASUREMENT_PROGRAM_FIELDS,
+    PUBLIC_MEASUREMENT_SECTION_FIELDS,
+    PUBLIC_MODEL_CANDIDATE_FIELDS,
+    PUBLIC_REJECTED_AUDIT_FIELDS,
+    PUBLIC_REJECTED_TOOL_FIELDS,
+    PUBLIC_SELECTED_AUDIT_FIELDS,
+)
+from factor_factory.mechanism_math.main_agent_memo import (
+    PUBLIC_MEMO_COMPONENT_FIELDS,
+    PUBLIC_MEMO_ECONOMIC_FIELDS,
+    PUBLIC_MEMO_EVIDENCE_FIELDS,
+    PUBLIC_MEMO_MATH_FIELDS,
+    PUBLIC_MEMO_MODEL_SELECTION_FIELDS,
+    PUBLIC_MEMO_OBJECT_MAPPING_FIELDS,
+    PUBLIC_MEMO_OBSERVED_METRIC_FIELDS,
+    PUBLIC_MEMO_QA_FIELDS,
+    REQUIRED_METRIC_SIGNATURE_FIELDS,
+    memo_public_schema_failures,
+)
 from factor_factory.research_conjecture import validate_protocol_bundle
 from factor_factory.research_proof import validate_factor_proof_certificate
 from factor_factory.ultimate_loop.state import validate_wrapper_proof_for_loop
@@ -131,6 +153,10 @@ MATH_FIELDS = (
     "math_model_status",
     "model_family",
     "math_toolkits",
+    "mathematical_object",
+    "mechanism_equation_or_functional",
+    "market_outcome_projection",
+    "observation_mapping",
     "random_object",
     "state_or_object",
     "latent_state",
@@ -269,7 +295,9 @@ _NEXT_ACTION_KEYS = {
 _DENIED_PUBLIC_KEYS = re.compile(
     r"(?i)(?:^|_)(?:"
     r"path|paths|root|uri|url|source_code|command|commands|stdout|stderr|env|"
-    r"secret|token|password|credential|api_key|access_key|access_key_id|private_key"
+    r"secret|token|password|credential|api_key|access_key|access_key_id|private_key|"
+    r"private_chain_of_thought|chain_of_thought|scratchpad|private_reasoning|"
+    r"internal_reasoning|hidden_reasoning|reasoning_trace"
     r")(?:$|_)"
 )
 _PUBLIC_INTERNAL_PATH = re.compile(
@@ -511,6 +539,16 @@ def read_ultimate_workspace(
         research_method=research_method,
         economic_game=economic_game,
         math_mechanism=math_mechanism,
+        measurement_program=(
+            _find_mapping(
+                factor_spec,
+                "mechanism_conditioned_measurement_program",
+            )
+            or _find_mapping(
+                factor_case,
+                "mechanism_conditioned_measurement_program",
+            )
+        ),
     )
     backtest_artifacts = _discover_backtest_artifacts(root, report)
     backtest_center = _backtest_center(
@@ -1376,6 +1414,8 @@ def _current_main_agent_memo(
 ) -> dict[str, Any]:
     if not payload:
         return {}
+    if memo_public_schema_failures(payload):
+        return {}
     if payload.get("contract_version") != "factorforge_main_agent_mechanism_memo_v1":
         return {}
     if str(payload.get("producer") or "") != "current_main_agent":
@@ -1406,6 +1446,7 @@ def _research_notebooks(
     research_method: dict[str, Any],
     economic_game: Any,
     math_mechanism: Any,
+    measurement_program: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     source_kind = (
         "current_main_agent_memo" if main_agent_memo else "deterministic_fallback"
@@ -1414,26 +1455,68 @@ def _research_notebooks(
         "CURRENT MAIN AGENT" if main_agent_memo else "EARLY DETERMINISTIC CONTRACT"
     )
     economic_value = (
-        _public_copy(main_agent_memo.get("economic_hypothesis"))
+        _public_allowed_dict(
+            main_agent_memo.get("economic_hypothesis"),
+            PUBLIC_MEMO_ECONOMIC_FIELDS,
+        )
         if main_agent_memo
         else _public_copy(economic_game)
     ) or {}
     math_value = (
-        _public_copy(main_agent_memo.get("math_hypothesis"))
+        _public_allowed_dict(
+            main_agent_memo.get("math_hypothesis"),
+            PUBLIC_MEMO_MATH_FIELDS,
+        )
         if main_agent_memo
         else _public_copy(math_mechanism)
     ) or {}
+    if isinstance(math_value, dict) and isinstance(
+        math_value.get("expected_metric_signature"), dict
+    ):
+        math_value["expected_metric_signature"] = _public_allowed_dict(
+            math_value.get("expected_metric_signature"),
+            frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS),
+        )
     economic = (
         economic_value
         if isinstance(economic_value, dict)
         else {"narrative": economic_value}
     )
     math = math_value if isinstance(math_value, dict) else {"narrative": math_value}
-    components = _public_copy(main_agent_memo.get("formula_component_map")) or []
-    evidence = _public_copy(main_agent_memo.get("evidence_comparison")) or {}
-    qa = _public_copy(main_agent_memo.get("mechanism_qa")) or {}
-    selection = _public_copy(main_agent_memo.get("math_model_selection")) or {}
-    estimator = _public_copy(main_agent_memo.get("formula_state_estimator")) or {}
+    measurement = (
+        _public_measurement_program_copy(measurement_program)
+        if isinstance(measurement_program, dict)
+        else {}
+    ) or {}
+    components = _public_allowed_dict_list(
+        main_agent_memo.get("formula_component_map"),
+        PUBLIC_MEMO_COMPONENT_FIELDS,
+    )
+    evidence = _public_evidence_copy(main_agent_memo.get("evidence_comparison"))
+    qa = _public_allowed_dict(
+        main_agent_memo.get("mechanism_qa"),
+        PUBLIC_MEMO_QA_FIELDS,
+    )
+    selection = (
+        _public_allowed_dict(
+            main_agent_memo.get("math_model_selection"),
+            PUBLIC_MEMO_MODEL_SELECTION_FIELDS,
+        )
+        or _public_copy(measurement.get("model_selection"))
+        or {}
+    )
+    estimator = (
+        _public_allowed_dict(
+            main_agent_memo.get("mathematical_object_mapping"),
+            PUBLIC_MEMO_OBJECT_MAPPING_FIELDS,
+        )
+        or _public_allowed_dict(
+            main_agent_memo.get("formula_state_estimator"),
+            PUBLIC_MEMO_OBJECT_MAPPING_FIELDS,
+        )
+        or _public_copy(measurement.get("observation_and_estimation"))
+        or {}
+    )
     falsifiers = _public_copy(main_agent_memo.get("falsification_tests")) or []
     council_questions = _public_copy(main_agent_memo.get("council_questions")) or []
     notebook = {
@@ -1456,7 +1539,12 @@ def _research_notebooks(
             {
                 "id": "observable_mapping",
                 "title": "Observable estimator",
-                "content": {"estimator": estimator, "components": components},
+                "content": {
+                    "estimator": estimator,
+                    "components": components
+                    or (measurement.get("implementation") or {}).get("components")
+                    or [],
+                },
             },
             {
                 "id": "evidence_update",
@@ -1477,10 +1565,25 @@ def _research_notebooks(
     equations: list[dict[str, str]] = []
     equation_candidates = (
         ("Factor law", main_agent_memo.get("formula"), "factor_law"),
-        ("Baseline process", math.get("process_or_distribution") or selection.get("baseline_model"), "process"),
+        (
+            "Mechanism equation or functional",
+            math.get("mechanism_equation_or_functional")
+            or selection.get("mechanism_equation_or_functional")
+            or math.get("process_or_distribution")
+            or selection.get("baseline_model"),
+            "mechanism",
+        ),
         ("Target functional", math.get("target_functional") or math.get("target_statistic"), "target"),
         ("Observation equation", math.get("observation_equation"), "observation"),
-        ("Observable estimator", math.get("formula_as_estimator") or estimator.get("observable_mapping"), "estimator"),
+        (
+            "Observable estimator",
+            math.get("observation_mapping")
+            or math.get("formula_as_estimator")
+            or estimator.get("observation_mapping")
+            or estimator.get("observable_mapping")
+            or estimator.get("estimator"),
+            "estimator",
+        ),
     )
     for title, expression, equation_kind in equation_candidates:
         if isinstance(expression, str) and expression.strip():
@@ -1492,6 +1595,8 @@ def _research_notebooks(
                 }
             )
     definitions = {
+        "mathematical_object": math.get("mathematical_object")
+        or estimator.get("mathematical_object"),
         "random_object": math.get("random_object"),
         "information_set": math.get("information_set"),
         "latent_state": math.get("latent_state") or estimator.get("latent_state"),
@@ -1508,12 +1613,12 @@ def _research_notebooks(
     derivation_steps = [
         {
             "step": 1,
-            "title": "Market mechanism to state",
+            "title": "Market mechanism to mathematical object",
             "statement": economic,
         },
         {
             "step": 2,
-            "title": "State to mathematical model",
+            "title": "Mathematical object to mechanism model",
             "statement": model_statement,
         },
         {
@@ -1537,6 +1642,40 @@ def _research_notebooks(
         "source_kind": source_kind,
         "source_label": source_label,
         "definitions": _public_copy(definitions) or {},
+        "model_selection": _public_copy(measurement.get("model_selection"))
+        or _public_copy(selection)
+        or {},
+        "math_tool_selection": _public_copy(
+            measurement.get("math_tool_selection")
+        )
+        or {},
+        "market_outcome_projection": _public_copy(
+            measurement.get("market_outcome_projection")
+        )
+        or {},
+        "applicable_audits": _public_copy(
+            measurement.get("applicable_audits")
+        )
+        or {},
+        "observation_and_estimation": _public_copy(
+            measurement.get("observation_and_estimation")
+        )
+        or {},
+        "measurement_components": _public_copy(
+            (measurement.get("implementation") or {}).get("components")
+            if isinstance(measurement.get("implementation"), dict)
+            else []
+        )
+        or [],
+        "deterministic_validation_plan": _public_copy(
+            measurement.get("deterministic_validation_plan")
+        )
+        or {},
+        "public_derivation_record": _public_derivation_copy(
+            measurement.get("public_derivation_record")
+        )
+        or {},
+        "knowledge_role": _public_copy(measurement.get("knowledge_role")) or {},
         "equations": equations,
         "derivation_steps": _public_copy(derivation_steps) or [],
         "assumptions": _public_copy(
@@ -1844,6 +1983,103 @@ def _public_copy(value: Any, *, depth: int = 0) -> Any:
                 output[str(key)] = copied
         return output
     return _string(value)
+
+
+def _public_derivation_copy(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key in sorted(PUBLIC_DERIVATION_FIELDS):
+        if key not in value:
+            continue
+        copied = _public_copy(value[key])
+        if copied is not None:
+            output[key] = copied
+    return output
+
+
+def _public_allowed_dict(value: Any, allowed: frozenset[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key in sorted(allowed):
+        if key not in value:
+            continue
+        copied = _public_copy(value[key])
+        if copied is not None:
+            output[key] = copied
+    return output
+
+
+def _public_allowed_dict_list(
+    value: Any, allowed: frozenset[str]
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        copied
+        for item in value[:200]
+        if (copied := _public_allowed_dict(item, allowed))
+    ]
+
+
+def _public_evidence_copy(value: Any) -> dict[str, Any]:
+    evidence = _public_allowed_dict(value, PUBLIC_MEMO_EVIDENCE_FIELDS)
+    if not evidence:
+        return {}
+    observed = value.get("observed_metrics") if isinstance(value, dict) else None
+    evidence["observed_metrics"] = {
+        key: observed[key]
+        for key in sorted(PUBLIC_MEMO_OBSERVED_METRIC_FIELDS)
+        if isinstance(observed, dict)
+        and key in observed
+        and not isinstance(observed[key], bool)
+        and isinstance(observed[key], (int, float))
+    }
+    return evidence
+
+
+def _public_measurement_program_copy(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for field in ("contract_version", "authority_order"):
+        if field in value and field in PUBLIC_MEASUREMENT_PROGRAM_FIELDS:
+            output[field] = _public_copy(value[field])
+    for section_name, allowed in PUBLIC_MEASUREMENT_SECTION_FIELDS.items():
+        section = value.get(section_name)
+        if section_name == "public_derivation_record":
+            copied_section = _public_derivation_copy(section)
+        else:
+            copied_section = _public_allowed_dict(section, allowed)
+        if not copied_section:
+            continue
+        if section_name == "math_tool_selection":
+            copied_section["rejected_tool_families"] = _public_allowed_dict_list(
+                section.get("rejected_tool_families"),
+                PUBLIC_REJECTED_TOOL_FIELDS,
+            )
+        elif section_name == "model_selection":
+            copied_section["candidate_models"] = _public_allowed_dict_list(
+                section.get("candidate_models"),
+                PUBLIC_MODEL_CANDIDATE_FIELDS,
+            )
+        elif section_name == "applicable_audits":
+            copied_section["selected"] = _public_allowed_dict_list(
+                section.get("selected"),
+                PUBLIC_SELECTED_AUDIT_FIELDS,
+            )
+            copied_section["rejected"] = _public_allowed_dict_list(
+                section.get("rejected"),
+                PUBLIC_REJECTED_AUDIT_FIELDS,
+            )
+        elif section_name == "implementation":
+            copied_section["components"] = _public_allowed_dict_list(
+                section.get("components"),
+                PUBLIC_MEASUREMENT_COMPONENT_FIELDS,
+            )
+        output[section_name] = copied_section
+    return output
 
 
 def _sanitize_public_text(value: str) -> str:

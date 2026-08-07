@@ -23,16 +23,20 @@ Use this skill when a factor already has Step4 evidence and we need to answer:
 ## Core Philosophy
 
 Always reason in this order:
-1. identify the return source,
-2. identify the objective constraints,
-3. interpret the metrics,
-4. run the math discipline check,
-5. extract transferable lessons and idea seeds,
-6. separate macro/micro/portfolio revisions from stop-or-kill decisions,
-7. choose a program-search mode when iteration is needed,
+1. freeze the economic hypothesis, estimand, payer and information set,
+2. search an open mathematical-tool space, compare mechanism-distinct models,
+   and select one from the economic hypothesis,
+3. derive the mechanism-specific mathematical object, its market-outcome map,
+   observation equation, and only the specialized audits that apply,
+4. bind a mechanism-conditioned measurement program and implementation route,
+5. interpret metrics as tests of the pre-registered mathematical claims,
+6. extract transferable lessons and idea seeds,
+7. localize any failure before choosing a bounded search/revision mode,
 8. then decide promote / iterate / reject.
 
 Do **not** start from IC/backtest metrics alone.
+Do not start from an available operator and reverse-engineer an economic story,
+or change the estimand because a convenient field is available.
 
 Every completed Step6 loop must also leave a user-facing `loop_research_brief`
 artifact in Markdown and JSON. The brief is not a chat summary: it is the
@@ -54,7 +58,6 @@ narrative_only
 math_framed
 metric_consistent
 component_validated
-stochastic_validated
 payer_validated
 ```
 
@@ -63,9 +66,12 @@ payer_validated
 aggregate IC/NAV/group evidence without that certificate remains
 `metric_candidate`. `component_validated` requires the trusted full-versus-
 ablated verifier, not a narrative ablation claim.
-`stochastic_validated` requires state, conditional return distribution,
-transition/persistence, or barrier/tail evidence. `payer_validated` requires a
-falsifiable counterparty or payer proxy.
+`payer_validated` requires a falsifiable counterparty or payer proxy.
+`stochastic_validated` remains an optional protocol qualifier only when the
+selected mechanism actually makes a stochastic-process claim; it requires
+state, conditional return distribution, transition/persistence, or
+barrier/tail evidence. It is not a stage that fundamental, valuation, causal,
+spectral, functional or other non-stochastic factors must pass.
 
 For a formal claim, `component_validated` specifically requires the replayable
 full-versus-ablated panel verifier. Joint buckets or regime splits remain useful
@@ -321,37 +327,38 @@ Step6 may borrow search methods from program-level factor mining:
 
 For a single cold-start factor, prefer controlled genetic/Bayesian/multi-branch search over automatic RL. RL becomes meaningful only after many saved trajectories.
 
+Search is subordinate to the mathematical contract. Its neighborhood must be
+defined in terms of model assumptions, state variables, estimators and preserved
+invariants before formula/operator/code mutation begins. A candidate that
+changes the estimand is a new hypothesis branch, not a parameter mutation.
+
 Do not use DD-view-edge-trade in Factor Forge. That framework is for individual-stock diligence, not the factor-mining control loop.
 
 ## Math Discipline
 
-When reviewing Step5/Step6 output, require `math_discipline_review`:
-- `step1_random_object`
-- `target_statistic`
-- `information_set_legality`
-- `spec_stability`
-- `signal_vs_portfolio_gap`
-- `revision_operator`
-- `generalization_argument`
-- `overfit_risk`
-- `kill_criteria`
+Read and apply:
 
-If these cannot be answered, do not promote the factor.
-
-Mechanism Math Contract v1 extends this discipline. Each factor should
-preferably state the economic mechanism, mathematical model family, state or
-object, observable estimator, target functional, expected metric signature,
-revision operators, falsification tests, and kill criteria. `under_specified`
-is acceptable when the mechanism is not yet clear; pretending a mechanism exists
-is not. The contract sharpens research reasoning but never replaces real
-Step4/5 evidence or promotion gates.
-
-Use repo reference:
+- `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md`
 - `docs/operations/factorforge-math-research-discipline.zh-CN.md`
+
+`docs/contracts/mechanism_math_contract_v2.zh-CN.md` is legacy compatibility
+material only. Read it when an existing artifact already carries v2; do not
+synthesize v2 for current research.
+
+Require `math_discipline_review` to bind the mathematical object, estimand,
+information set, selected/competing models, measurement semantics and any
+mechanism-applicable audits, observation equation,
+measurement program, generalization argument, overfit risk and kill criteria.
+`under_specified` is valid; invented certainty is not. The contracts discipline
+research but never replace Step4/5 evidence or promotion gates.
 
 ## Learning And Innovation
 
 The knowledge base is not an archive only. Every serious case should improve future researchers.
+
+Prior cases remain `advisory_prior`, `counterexample`, or `tool_candidate`.
+They may broaden model selection and expose failed measurements, but they cannot
+override the current derivation or serve as current-factor proof.
 
 Require Step6 to extract:
 - transferable patterns,
@@ -465,11 +472,13 @@ substantive derivation record is invalid.
 
 The symbolic-law role should treat the factor formula as a mathematical object:
 state variable, estimator mapping, target functional, invariance or scaling
-claim, limiting cases, stochastic or statistical structure, and falsification
-tests. It may use dimensional analysis, stochastic calculus, spectral analysis,
-projection, robust statistics, functional analysis, dynamical systems, stopping
-time, information theory, or other justified tools. It should select tools based
-on the factor and evidence, not apply a fixed checklist. Mathematical
+claim, limiting cases, mechanism-specific structure, and falsification tests.
+It may use DCF, residual income, accounting identities, dimensional analysis,
+stochastic calculus, spectral analysis, projection, robust statistics,
+functional analysis, causal models, dynamical systems, stopping time,
+information theory, optimization, a composition of tools, or another justified
+method. It should select tools based on the factor and evidence, not apply a
+fixed checklist. Mathematical
 plausibility is not evidence and must be checked against Step4/5/6 evidence and
 provenance gates before any future human-approved implementation work.
 
@@ -478,7 +487,3 @@ approach registry; preserve at least one blind null/alias attack; bind each
 dispatch/result to route fingerprint, blind-context hash, expected agent
 identity and packet/result hashes. Root synthesis compares incompatible
 assumptions and discriminating evidence. Majority vote cannot choose a law.
-
-## Mechanism Math Contract v2
-
-Research interpretation must start from the economic hypothesis and choose a primary mechanism model before discussing formulas. The primary model may be stochastic, microstructure, scaling, barrier, information-theoretic, spectral, dependence, regime-switching, behavioral, inventory/execution, network/contagion, or another justified family. Regardless of family, state the stochastic price-process projection: which term of the conditional return distribution changes, why, and how the formula estimates it. Do not use generic SDE text as decoration; if the model cannot name state variables, observable proxies, expected metric signature, falsification tests, and kill criteria, mark it under-specified or block promotion.

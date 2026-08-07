@@ -95,16 +95,33 @@ def validate_quality(path: Path, node: dict[str, Any]) -> dict[str, Any]:
     evidence = node.get("evidence") or {}
     relations = node.get("relations") or []
     relation_edge_types = {relation.get("edge_type") for relation in relations if isinstance(relation, dict)}
+    node_type = str(node.get("node_type") or "")
 
     missing_taxonomy = sorted(category for category in REQUIRED_TAXONOMY if not taxonomy.get(category))
     assert_true(not missing_taxonomy, f"{node_id}: missing required taxonomy values {missing_taxonomy}")
-    assert_true(bool(mechanism.get("payer") or mechanism.get("economic_hypothesis")), f"{node_id}: missing payer/economic hypothesis")
-    assert_true(bool(mechanism.get("receiver") or node.get("node_type") in {"methodology", "data_state"}), f"{node_id}: missing receiver")
-    assert_true(bool(mechanism.get("random_object")), f"{node_id}: missing random_object")
-    assert_true(has_any_key(mechanism, EQUATION_KEYS), f"{node_id}: missing equation/formula/law reference")
-    assert_true(has_any_key(mechanism, INSIGHT_KEYS), f"{node_id}: missing Dirac/math-forced insight or transform note")
-    assert_true(has_any_key(evidence, EVIDENCE_WINDOW_KEYS), f"{node_id}: missing evidence window")
-    assert_true(bool(evidence.get("key_metrics")), f"{node_id}: missing key_metrics")
+    if node_type == "methodology":
+        for field in (
+            "authority_chain",
+            "knowledge_boundary",
+            "applicability_boundary",
+            "failure_localization",
+        ):
+            assert_true(bool(mechanism.get(field)), f"{node_id}: missing methodology.{field}")
+        assert_true(
+            bool(evidence.get("contract_version")),
+            f"{node_id}: missing methodology contract_version",
+        )
+    else:
+        assert_true(bool(mechanism.get("payer") or mechanism.get("economic_hypothesis")), f"{node_id}: missing payer/economic hypothesis")
+        assert_true(bool(mechanism.get("receiver") or node_type == "data_state"), f"{node_id}: missing receiver")
+        assert_true(
+            bool(mechanism.get("mathematical_object") or mechanism.get("random_object")),
+            f"{node_id}: missing mathematical_object",
+        )
+        assert_true(has_any_key(mechanism, EQUATION_KEYS), f"{node_id}: missing equation/formula/law reference")
+        assert_true(has_any_key(mechanism, INSIGHT_KEYS), f"{node_id}: missing Dirac/math-forced insight or transform note")
+        assert_true(has_any_key(evidence, EVIDENCE_WINDOW_KEYS), f"{node_id}: missing evidence window")
+        assert_true(bool(evidence.get("key_metrics")), f"{node_id}: missing key_metrics")
     assert_true(has_any_key(evidence, EVIDENCE_BOUNDARY_KEYS), f"{node_id}: missing falsification/boundary/verdict")
     assert_true(bool(node.get("reuse_guidance")), f"{node_id}: missing reuse_guidance")
     assert_true(bool(USEFUL_RELATION_EDGES & relation_edge_types), f"{node_id}: missing useful relation edge")

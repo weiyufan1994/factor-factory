@@ -56,7 +56,13 @@ def render_login(error: str = "") -> str:
     return _page("登录 | Factor Forge", body, public=True)
 
 
-def render_dashboard(jobs: list[ResearchJob], csrf_token: str) -> str:
+def render_dashboard(
+    jobs: list[ResearchJob],
+    csrf_token: str,
+    *,
+    form_error: str = "",
+    form_values: dict[str, str] | None = None,
+) -> str:
     active = sum(job.execution_status in ACTIVE_STATUSES for job in jobs)
     waiting = sum(job.execution_status == "REVIEW_REQUIRED" for job in jobs)
     completed = sum(job.execution_status == "COMPLETED" for job in jobs)
@@ -68,6 +74,7 @@ def render_dashboard(jobs: list[ResearchJob], csrf_token: str) -> str:
         '<div><p class="eyebrow">RESEARCH OPERATIONS</p><h1>因子研究任务</h1></div>',
         '<a class="button primary" href="#new-research">发起研究</a>',
         '</section>',
+        _research_form_error(form_error),
         '<section class="status-strip" aria-label="任务状态摘要">',
         _status_stat("运行中", active, "blue"),
         _status_stat("等待复核", waiting, "amber"),
@@ -79,10 +86,12 @@ def render_dashboard(jobs: list[ResearchJob], csrf_token: str) -> str:
         '</section>',
         '<section id="new-research" class="new-research">',
         '<div class="section-heading"><h2>发起完整研究</h2><p>研究路径和数据路径由服务器分配</p></div>',
-        _research_form(csrf_token),
+        _research_form(csrf_token, form_values),
         '</section>',
         '</main>',
-        _poll_script(None, jobs[0].updated_at_utc if jobs else "") if active else "",
+        _poll_script(None, jobs[0].updated_at_utc if jobs else "")
+        if active and not form_error
+        else "",
     ]
     return _page("研究任务 | Factor Forge", "\n".join(body))
 
@@ -140,19 +149,36 @@ def _shell_header(title: str, csrf_token: str) -> str:
     """
 
 
-def _research_form(csrf_token: str) -> str:
+def _research_form_error(message: str) -> str:
+    if not message:
+        return ""
+    return f'''<div class="form-error dashboard-error" role="alert"><div><strong>提交未成功</strong><span>{escape(message)}</span></div><a href="#new-research">检查表单</a></div>'''
+
+
+def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str:
+    submitted = values or {}
+    title = escape(submitted.get("title", ""))
+    factor_id_hint = escape(submitted.get("factor_id_hint", ""))
+    hypothesis = escape(submitted.get("hypothesis", ""))
+    sample_start = escape(submitted.get("sample_start", "2016-01-01"))
+    sample_end = escape(submitted.get("sample_end", "2025-07-11"))
+    input_kind = submitted.get("content_kind", "hypothesis")
+
+    def selected(value: str) -> str:
+        return " selected" if input_kind == value else ""
+
     return f"""
     <form method="post" action="/research" class="research-form">
       <input type="hidden" name="csrf" value="{escape(csrf_token)}">
-      <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
-      <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" placeholder="由系统生成也可以"></div>
-      <div class="field"><label for="input-kind">输入类型</label><select id="input-kind" name="content_kind"><option value="hypothesis">经济假设</option><option value="report">研报摘录</option><option value="formula">公式 / 算子</option><option value="code">代码</option></select></div>
+      <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" value="{title}" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
+      <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" value="{factor_id_hint}" placeholder="由系统生成也可以"></div>
+      <div class="field"><label for="input-kind">输入类型</label><select id="input-kind" name="content_kind"><option value="hypothesis"{selected('hypothesis')}>经济假设</option><option value="report"{selected('report')}>研报摘录</option><option value="formula"{selected('formula')}>公式 / 算子</option><option value="code"{selected('code')}>代码</option></select></div>
       <div class="field"><label for="model">研究模型</label><select id="model" name="model"><option value="{escape(PILOT_MODEL)}">DeepSeek V4 Flash</option></select></div>
-      <div class="field span-2"><label for="hypothesis">研究输入</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="粘贴经济假设、研报内容、公式或代码。请同时说明现象、可能的付款方、信息形成时间和可证伪条件。" required></textarea></div>
+      <div class="field span-2"><label for="hypothesis">研究输入</label><textarea id="hypothesis" name="hypothesis" rows="8" maxlength="20000" placeholder="粘贴经济假设、研报内容、公式或代码。请同时说明现象、可能的付款方、信息形成时间和可证伪条件。" required>{hypothesis}</textarea></div>
       <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
       <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘后形成信号 → 下一交易日收盘成交 → 再下一交易日收盘退出（Pilot 固定）</div></div>
-      <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="2016-01-01" required></div>
-      <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="2025-07-11" required></div>
+      <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="{sample_start}" required></div>
+      <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="{sample_end}" required></div>
       <div class="field"><label>交易成本模型</label><input type="hidden" name="transaction_cost_bps" value="30"><div class="fixed-contract">换手 × 30 bps（Pilot 固定）</div></div>
       <div class="form-actions span-2"><p>提交后异步运行 Ultimate；每个因子分配独立 Git worktree，Data API 只读。</p><button class="button primary" type="submit">开始研究</button></div>
     </form>
@@ -1161,7 +1187,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .equation-statement { display:grid; gap:8px; }.equation-line { min-width:0; }.equation-line-label { display:block; margin-bottom:3px; color:var(--muted); font-size:12px; font-variant:small-caps; }.equation-annotation { margin:3px 0 0; color:#46545a; font-size:14px; line-height:1.5; }.equation-overflow { color:var(--muted); font-size:12px; }.equation-overflow summary { cursor:pointer; }.equation-overflow pre { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }.rendered-math { display:block; max-width:100%; overflow-x:auto; overflow-y:hidden; padding:3px 0; }.rendered-math math { min-width:max-content; font-size:1.05em; }.equation-source { display:block; white-space:pre-wrap; font-family:"STIX Two Math","Cambria Math",Georgia,serif; }
 .backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.table-scroll table { width:100%; border-collapse:collapse; }.table-scroll th,.table-scroll td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }.table-scroll th:first-child,.table-scroll td:first-child { text-align:left; }.table-scroll thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.annual-table { min-width:480px; }.module-table table { min-width:520px; }.module-table th:first-child { width:70%; }.module-state { display:inline-block; min-width:118px; padding:2px 6px; border:1px solid var(--line); text-align:center; font-size:10px; font-weight:800; }.module-available { color:var(--green); background:var(--green-soft); }.module-not_produced { color:var(--muted); background:#eef1f0; }.module-invalid_evidence,.module-evidence_conflict { color:var(--red); background:var(--red-soft); }.return-matrix table { min-width:1080px; }.return-matrix td { font-variant-numeric:tabular-nums; }.return-positive { color:var(--green); background:#f1f8f4; }.return-negative { color:var(--red); background:#fff3f1; }.quantile-table table { min-width:800px; }.risk-turnover-stack { display:grid; gap:12px; }.risk-table table { min-width:900px; }.turnover-table table { min-width:620px; }.provenance-table table { min-width:900px; }.provenance-table th:first-child { width:190px; }.provenance-table td:nth-child(2) { max-width:600px; white-space:normal; overflow-wrap:anywhere; text-align:left; }.provenance-table a { color:var(--blue); }.evidence-conflict-panel { margin-top:18px; padding:14px; border-left:4px solid var(--red); background:var(--red-soft); color:var(--red); }.evidence-conflict-panel ul { margin:8px 0 0; padding-left:20px; }.evidence-conflict-panel li { margin:5px 0; }.evidence-conflict-panel li span { margin-left:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
-.login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }
+.login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }.dashboard-error { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-top:18px; border-radius:4px; }.dashboard-error div { display:grid; gap:2px; }.dashboard-error a { flex:none; color:var(--red); font-weight:700; }
 @media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}}
-@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.research-form{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}}
+@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}}
 """

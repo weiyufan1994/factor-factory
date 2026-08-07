@@ -147,6 +147,13 @@ def _field(fields: dict[str, list[str]], name: str, default: str = "") -> str:
     return values[0].strip() or default
 
 
+def _raw_field(fields: dict[str, list[str]], name: str, default: str = "") -> str:
+    values = fields.get(name)
+    if not values:
+        return default
+    return values[0]
+
+
 def serve_console(roots: list[str | Path], host: str, port: int) -> None:
     server = build_console_server(roots, host, port)
     serve_console_server(server)
@@ -288,7 +295,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 self.end_headers()
                 return
             if path == "/research":
-                self._create_research(fields)
+                self._create_research(fields, application.auth.csrf_token(session))
                 return
             message_job_id = _research_message_job_id(path)
             if message_job_id:
@@ -348,11 +355,15 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             self.send_header("Location", "/")
             self.end_headers()
 
-        def _create_research(self, fields: dict[str, list[str]]) -> None:
+        def _create_research(
+            self,
+            fields: dict[str, list[str]],
+            csrf_token: str,
+        ) -> None:
             try:
                 request = ResearchRequest(
                     title=_field(fields, "title"),
-                    hypothesis=_field(fields, "hypothesis"),
+                    hypothesis=_raw_field(fields, "hypothesis"),
                     input_kind=_field(fields, "content_kind", "hypothesis"),
                     factor_id_hint=_field(fields, "factor_id_hint"),
                     universe=_field(fields, "universe", PILOT_UNIVERSE),
@@ -366,10 +377,26 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 _validate_request_choices(request)
                 job = application.service.submit(request)
             except (ValueError, OverflowError) as exc:
-                self._send_json(400, {"error": "invalid_research_request", "message": str(exc)})
+                self._send_html(
+                    400,
+                    render_research_dashboard(
+                        application.store.list_jobs(),
+                        csrf_token,
+                        form_error=_research_request_error(exc),
+                        form_values=_research_form_values(fields),
+                    ),
+                )
                 return
             except RuntimeError:
-                self._send_json(503, {"error": "research_runtime_unavailable"})
+                self._send_html(
+                    503,
+                    render_research_dashboard(
+                        application.store.list_jobs(),
+                        csrf_token,
+                        form_error="研究服务暂时不可用，输入内容已保留，请稍后重试。",
+                        form_values=_research_form_values(fields),
+                    ),
+                )
                 return
             self._redirect(f"/research/{job.job_id}")
 
@@ -386,7 +413,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 application.store.add_message(
                     job_id,
                     content_kind=_field(fields, "content_kind", "decision"),
-                    content=_field(fields, "content"),
+                    content=_raw_field(fields, "content"),
                     model=job.request.model or DEEPSEEK_V4_FLASH_MODEL,
                     idempotency_key=_field(fields, "idempotency_key"),
                 )
@@ -551,6 +578,34 @@ def _validate_request_choices(request: ResearchRequest) -> None:
         raise ValueError("invalid sample_end")
     if request.sample_start >= request.sample_end:
         raise ValueError("sample_start must be before sample_end")
+
+
+def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
+    names = (
+        "title",
+        "factor_id_hint",
+        "content_kind",
+        "model",
+        "hypothesis",
+        "universe",
+        "sample_start",
+        "sample_end",
+    )
+    return {name: _raw_field(fields, name) for name in names}
+
+
+def _research_request_error(error: Exception) -> str:
+    message = str(error)
+    translated = {
+        "title is required": "请填写研究名称。",
+        "title is too long": "研究名称过长，请控制在 160 个字符以内。",
+        "hypothesis is required": "请填写研究输入。",
+        "hypothesis is too long": "研究输入过长，请控制在 20,000 个字符以内。",
+        "invalid sample_start": "样本开始日期无效。",
+        "invalid sample_end": "样本结束日期无效。",
+        "sample_start must be before sample_end": "样本开始日期必须早于结束日期。",
+    }
+    return translated.get(message, "研究请求不符合当前 Pilot 合同，请检查输入后重试。")
 
 
 def _health_checks(application: ResearchConsoleApplication) -> dict[str, bool]:

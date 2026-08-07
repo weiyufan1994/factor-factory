@@ -291,6 +291,93 @@ def test_submit_research_and_api_hide_private_paths(research_console):
     assert "agent_session_key" not in api
 
 
+def test_submit_formula_with_chinese_title_and_generated_factor_id(research_console):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    formula = (
+        "  "
+        "-1 * (NORMALIZE(S_LOG_LP(TS_KURTOSIS(CLOSE,5))"
+        "+TS_MAX_SKEW(VOLUME,5,3)-TS_MIN_SKEW(VOLUME,20,3)"
+        "+TS_MAX_SUM(CHANGE_PCT,20,5),STANDARDIZE=1))\n"
+    )
+    payload = urlencode(
+        {
+            "csrf": _csrf(html),
+            "title": "负价量偏度峰度复合因子",
+            "factor_id_hint": "",
+            "content_kind": "formula",
+            "model": "deepseek-v4-flash",
+            "hypothesis": formula,
+            "universe": "a_share_all",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+        }
+    ).encode("utf-8")
+
+    response = opener.open(
+        Request(f"{base_url}/research", data=payload, method="POST"),
+        timeout=3,
+    )
+
+    assert response.status == 200
+    assert "/research/job_" in response.url
+    detail = response.read().decode("utf-8")
+    assert "负价量偏度峰度复合因子" in detail
+    job = app.store.list_jobs()[0]
+    assert re.fullmatch(r"FACTOR_[A-F0-9]{16}", job.factor_id)
+    assert job.request.input_kind == "formula"
+    assert job.request.hypothesis == formula
+
+
+def test_invalid_research_form_returns_html_and_preserves_input(research_console):
+    from factor_factory.console.models import ResearchRequest
+
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    active = app.store.create_job(
+        ResearchRequest(
+            title="Existing active task",
+            hypothesis="Keep polling disabled on the invalid form response.",
+            factor_id_hint="EXISTING_ACTIVE",
+        )
+    )
+    app.store.claim_next_job()
+    payload = urlencode(
+        {
+            "csrf": _csrf(html),
+            "title": "保留这个研究名称",
+            "factor_id_hint": "",
+            "content_kind": "formula",
+            "model": "deepseek-v4-flash",
+            "hypothesis": "  A < B\n",
+            "universe": "a_share_all",
+            "sample_start": "2025-07-11",
+            "sample_end": "2016-01-01",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+        }
+    ).encode("utf-8")
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(f"{base_url}/research", data=payload, method="POST"),
+            timeout=3,
+        )
+
+    assert failure.value.code == 400
+    assert failure.value.headers["Content-Type"] == "text/html; charset=utf-8"
+    body = failure.value.read().decode("utf-8")
+    assert "提交未成功" in body
+    assert "样本开始日期必须早于结束日期" in body
+    assert 'value="保留这个研究名称"' in body
+    assert ">  A &lt; B\n</textarea>" in body
+    assert '<option value="formula" selected>' in body
+    assert "location.reload()" not in body
+    assert [job.job_id for job in app.store.list_jobs()] == [active.job_id]
+
+
 def test_explicit_human_decision_pause_hides_generic_resume_action(
     research_console,
 ):

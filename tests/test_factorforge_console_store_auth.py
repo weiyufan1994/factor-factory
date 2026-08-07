@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path
 import sqlite3
@@ -505,6 +506,32 @@ def test_job_store_uses_external_sqlite_and_serial_claiming(tmp_path):
     assert "workspace_path" not in public
     assert "agent_session_key" not in public
     assert public["factor_verdict"] == "REJECT"
+
+
+def test_job_store_generates_stable_identity_for_unicode_title(tmp_path):
+    from factor_factory.console.models import ResearchRequest
+    from factor_factory.console.store import ResearchJobStore
+
+    store = ResearchJobStore(tmp_path / "console-state")
+    request = ResearchRequest(
+        title="负价量偏度峰度复合因子",
+        hypothesis="公式研究输入",
+    )
+
+    first = store.create_job(request)
+    second = store.create_job(request)
+
+    assert re.fullmatch(r"FACTOR_[A-F0-9]{16}", first.factor_id)
+    assert second.factor_id == first.factor_id
+
+    mixed_first = store.create_job(
+        ResearchRequest(title="价量结构5日", hypothesis="公式研究输入")
+    )
+    mixed_second = store.create_job(
+        ResearchRequest(title="波动状态5日", hypothesis="公式研究输入")
+    )
+    assert mixed_first.factor_id != mixed_second.factor_id
+    assert mixed_first.factor_id.startswith("FACTOR_5_")
 
 
 def test_job_store_keeps_sqlite_database_and_sidecars_group_writable(tmp_path):

@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 import time
+import unicodedata
 import uuid
 import hashlib
 from datetime import datetime, timezone
@@ -24,6 +25,26 @@ def utc_now() -> str:
 
 def _compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _factor_identity(request: ResearchRequest) -> str:
+    explicit = request.factor_id_hint.strip()
+    if explicit:
+        normalized = safe_identity(explicit).upper()[:64]
+        if normalized != "UNKNOWN":
+            return normalized
+        canonical = unicodedata.normalize("NFKC", explicit)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16].upper()
+        return f"FACTOR_{digest}"
+
+    canonical_title = " ".join(
+        unicodedata.normalize("NFKC", request.title).split()
+    )
+    readable = safe_identity(canonical_title).upper()
+    digest = hashlib.sha256(canonical_title.encode("utf-8")).hexdigest()[:16].upper()
+    if readable == "UNKNOWN":
+        return f"FACTOR_{digest}"
+    return f"FACTOR_{readable[:40]}_{digest}"
 
 
 class ResearchJobStore:
@@ -209,10 +230,7 @@ class ResearchJobStore:
     def create_job(self, request: ResearchRequest) -> ResearchJob:
         now = utc_now()
         suffix = uuid.uuid4().hex[:10]
-        factor_seed = request.factor_id_hint or request.title
-        factor_id = safe_identity(factor_seed).upper()[:64]
-        if factor_id == "UNKNOWN":
-            raise ValueError("factor identity is invalid")
+        factor_id = _factor_identity(request)
         research_id = f"web_{now[:10].replace('-', '')}_{suffix}"
         report_prefix = f"WEB_{factor_id}_{now[:10].replace('-', '')}"
         report_id = f"{report_prefix[:104]}_{suffix}"

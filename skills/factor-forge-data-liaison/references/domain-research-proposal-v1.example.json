@@ -1,0 +1,100 @@
+{
+  "contract_version": "factorforge_agent_result_v1",
+  "task_ref": {
+    "task_id": "<task-id-from-agent-task>",
+    "sha256": "<task-sha256>"
+  },
+  "identity": {
+    "factor_id": "EXAMPLE_FACTOR",
+    "research_id": "example_research",
+    "report_id": "example_report",
+    "job_id": "example_job"
+  },
+  "role_id": "data_liaison",
+  "status": "NEEDS_DATA",
+  "producer_mode": "real_agent",
+  "session_id": "<actual-isolated-session-id>",
+  "public_research_record": {
+    "contract_version": "factorforge_domain_research_proposal_v1",
+    "identity": {
+      "task_id": "<task-id-from-agent-task>",
+      "factor_id": "EXAMPLE_FACTOR",
+      "research_id": "example_research",
+      "report_id": "example_report",
+      "agent_role": "data_liaison"
+    },
+    "input_binding": {
+      "data_dependency_contract_sha256": "<sha256>",
+      "approved_catalog_snapshot_sha256": "<sha256>",
+      "delivery_receipt_sha256": null
+    },
+    "domain": "data_liaison",
+    "proposal_status": "awaiting_data",
+    "domain_fit": {
+      "fit": "supporting",
+      "reason": "The frozen measurement proposal requires a catalog-governed dataset resolution."
+    },
+    "catalog_resolution": {
+      "approved_catalogs": [
+        {
+          "path_or_uri": "<approved-catalog-path-or-uri>",
+          "sha256": "<sha256>"
+        }
+      ],
+      "dependency_checks": [
+        {
+          "dataset_id": "required_state_v1",
+          "dataset_identity": "missing",
+          "schema": "not_checked",
+          "required_fields": "not_checked",
+          "coverage": "not_checked",
+          "qa": "not_checked",
+          "information_policy": "not_checked",
+          "materialized_uri": "not_checked",
+          "verdict": "REQUEST"
+        }
+      ],
+      "reuse_hits": [],
+      "missing_requirements": [
+        "required_state_v1"
+      ],
+      "generated_data_requests": [
+        {
+          "request_id": "data_request__example_report__required_state_v1",
+          "path": "objects/research_organization/example_report/data_requests/data_request__example_report__required_state_v1.json",
+          "sha256": "<sha256>"
+        }
+      ]
+    },
+    "delivery_receipt_verification": {
+      "receipt_supplied": false,
+      "receipt_path_or_uri": null,
+      "receipt_sha256": null,
+      "checks": [],
+      "verdict": "NOT_APPLICABLE",
+      "failures": []
+    },
+    "knowledge_use": [
+      {
+        "knowledge_id": "<knowledge-record-id>",
+        "role": "tool_candidate",
+        "provenance": "<index/path/hash>",
+        "applicability": "Suggested a dataset name to query; it did not establish availability.",
+        "authority": "advisory_only"
+      }
+    ],
+    "permissions_boundary": {
+      "catalog_read_only": true,
+      "data_write_allowed": false,
+      "catalog_write_allowed": false,
+      "pipeline_execution_allowed": false
+    },
+    "uncertainties": [],
+    "handoff": {
+      "director_action": "wait_for_external_data_group",
+      "normal_step3_resolution_required_after_delivery": true,
+      "canonical_write_allowed": false
+    }
+  },
+  "result_sha256": "<sha256-of-envelope-excluding-result_sha256>"
+}

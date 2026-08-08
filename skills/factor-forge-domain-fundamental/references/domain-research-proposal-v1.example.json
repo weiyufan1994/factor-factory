@@ -1,0 +1,163 @@
+{
+  "contract_version": "factorforge_agent_result_v1",
+  "task_ref": {
+    "task_id": "<task-id-from-agent-task>",
+    "sha256": "<task-sha256>"
+  },
+  "identity": {
+    "factor_id": "EXAMPLE_FUNDAMENTAL_FACTOR",
+    "research_id": "example_research",
+    "report_id": "example_report",
+    "job_id": "example_job"
+  },
+  "role_id": "fundamental_researcher",
+  "status": "PASS",
+  "producer_mode": "real_agent",
+  "session_id": "<actual-isolated-session-id>",
+  "public_research_record": {
+    "contract_version": "factorforge_domain_research_proposal_v1",
+    "identity": {
+      "task_id": "<task-id-from-agent-task>",
+      "factor_id": "EXAMPLE_FUNDAMENTAL_FACTOR",
+      "research_id": "example_research",
+      "report_id": "example_report",
+      "agent_role": "fundamental_researcher"
+    },
+    "input_binding": {
+      "economic_hypothesis_sha256": "<sha256>",
+      "estimand_sha256": "<sha256>",
+      "information_set_sha256": "<sha256>",
+      "measurement_program_sha256": null
+    },
+    "domain": "fundamental",
+    "proposal_status": "ready_for_director_review",
+    "domain_fit": {
+      "fit": "primary",
+      "reason": "The example estimand is the point-in-time gap between sustainable distributable cash flow value and price."
+    },
+    "public_research_record": {
+      "economic_mechanism": "The market may underweight a persistent change in distributable cash flow after financing and reinvestment needs.",
+      "payer_or_counterparty": "Investors anchoring to reported earnings rather than distributable cash flow.",
+      "timing_chain": "Public filing at t -> point-in-time estimate at t -> portfolio formed after legal availability -> future repricing.",
+      "estimand_preserved": "Cross-sectional expected return associated with the frozen value-to-price discrepancy.",
+      "public_derivation_summary": [
+        "Define distributable cash flow under the frozen accounting and financing assumptions.",
+        "Map the forecast cash-flow sequence to value with the selected discount functional.",
+        "Normalize the value-price discrepancy without changing the estimand.",
+        "State approximation error, terminal-value sensitivity, and identification limits."
+      ]
+    },
+    "math_model_search": {
+      "selection_rule": "Choose the object that represents the frozen cash-flow mechanism and permits point-in-time observation and falsification.",
+      "candidates": [
+        {
+          "model_id": "primary_dcf",
+          "role": "primary",
+          "family": "discounted_cash_flow",
+          "mathematical_object": "V_t = sum_{k=1}^H E_t[FCF_{t+k}] / product_{j=1}^k(1+r_{t,j}) + TV_t",
+          "mechanism_fit": "Directly maps distributable cash flow to value."
+        },
+        {
+          "model_id": "alternative_residual_income",
+          "role": "mechanism_alternative",
+          "family": "residual_income",
+          "mathematical_object": "V_t = B_t + sum_{k=1}^H E_t[RI_{t+k}] / product_{j=1}^k(1+r_{t,j})",
+          "mechanism_fit": "Tests whether the conclusion survives an accounting-value representation."
+        },
+        {
+          "model_id": "null_reported_profitability",
+          "role": "null_or_alias",
+          "family": "accounting_ratio",
+          "mathematical_object": "rank(ROE_t)",
+          "mechanism_fit": "Tests whether the proposal is only a conventional profitability alias."
+        }
+      ],
+      "selected_model_id": "primary_dcf",
+      "rejected_tool_families": [
+        {
+          "family": "stochastic_process",
+          "reason": "Not required by this example's mechanism; no path-state claim is being made."
+        }
+      ]
+    },
+    "measurement_proposal": {
+      "selected_mathematical_object": "Point-in-time DCF value-to-price discrepancy",
+      "mechanism_equation_or_functional": "V_t = DCF_t(FCF path, discount path, terminal assumptions)",
+      "market_outcome_projection": "alpha_t = g((V_t - P_t) / max(abs(P_t), epsilon))",
+      "observation_equation": "Public filings and approved point-in-time market data -> FCF inputs, discount inputs, P_t",
+      "implementation_route": "hybrid",
+      "component_bindings": [
+        {
+          "component_id": "distributable_cash_flow",
+          "math_term_or_functional": "E_t[FCF_{t+k}]",
+          "observable_or_input": "point-in-time accounting fields and explicitly modeled adjustments",
+          "information_time": "after filing publication and required lag",
+          "expected_metric_signature": "Signal weakens materially when the distributable-cash-flow component is ablated.",
+          "falsifier": "The signal is unchanged after replacing distributable cash flow with reported earnings."
+        }
+      ]
+    },
+    "applicable_audits": [
+      {
+        "audit_id": "valuation_assumption_sensitivity",
+        "status": "selected",
+        "reason": "The selected object depends on discount and terminal assumptions."
+      },
+      {
+        "audit_id": "stochastic_process_diagnostics",
+        "status": "not_applicable",
+        "reason": "The frozen claim does not depend on a stochastic state or transition law."
+      }
+    ],
+    "knowledge_use": [
+      {
+        "knowledge_id": "<knowledge-record-id>",
+        "role": "counterexample",
+        "provenance": "<index/path/hash>",
+        "applicability": "Prior failure warns that stale filing dates can manufacture the value spread.",
+        "authority": "advisory_only"
+      }
+    ],
+    "data_dependencies": [
+      {
+        "dataset_id": "point_in_time_financials",
+        "required_fields": [
+          "publication_date",
+          "cash_flow_components",
+          "debt",
+          "shares"
+        ],
+        "required_coverage": {
+          "start": "YYYYMMDD",
+          "end": "YYYYMMDD"
+        },
+        "information_policy": "point_in_time_with_restatement_history",
+        "availability": "catalog_check_required"
+      }
+    ],
+    "falsification_plan": {
+      "distinguishing_tests": [
+        "Compare the selected DCF object with residual-income and profitability aliases.",
+        "Run point-in-time and restatement mutation checks.",
+        "Ablate financing and reinvestment adjustments."
+      ],
+      "failure_regimes": [
+        "terminal-value domination",
+        "unstable financing regime"
+      ],
+      "stop_conditions": [
+        "point-in-time inputs unavailable",
+        "selected model not distinguishable from null"
+      ]
+    },
+    "uncertainties": [
+      "Forecast and terminal-value identification remain empirical obligations."
+    ],
+    "handoff": {
+      "director_action": "review_and_freeze_or_reject",
+      "data_liaison_required": true,
+      "canonical_write_allowed": false
+    }
+  },
+  "result_sha256": "<sha256-of-envelope-excluding-result_sha256>"
+}

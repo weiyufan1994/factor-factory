@@ -1,0 +1,168 @@
+{
+  "contract_version": "factorforge_agent_result_v1",
+  "task_ref": {
+    "task_id": "<task-id-from-agent-task>",
+    "sha256": "<task-sha256>"
+  },
+  "identity": {
+    "factor_id": "EXAMPLE_PRICE_VOLUME_FACTOR",
+    "research_id": "example_research",
+    "report_id": "example_report",
+    "job_id": "example_job"
+  },
+  "role_id": "price_volume_researcher",
+  "status": "PASS",
+  "producer_mode": "real_agent",
+  "session_id": "<actual-isolated-session-id>",
+  "public_research_record": {
+    "contract_version": "factorforge_domain_research_proposal_v1",
+    "identity": {
+      "task_id": "<task-id-from-agent-task>",
+      "factor_id": "EXAMPLE_PRICE_VOLUME_FACTOR",
+      "research_id": "example_research",
+      "report_id": "example_report",
+      "agent_role": "price_volume_researcher"
+    },
+    "input_binding": {
+      "economic_hypothesis_sha256": "<sha256>",
+      "estimand_sha256": "<sha256>",
+      "information_set_sha256": "<sha256>",
+      "measurement_program_sha256": null
+    },
+    "domain": "price_volume",
+    "proposal_status": "ready_for_director_review",
+    "domain_fit": {
+      "fit": "primary",
+      "reason": "The example estimand concerns temporary price pressure created by asymmetric intraday liquidity demand."
+    },
+    "public_research_record": {
+      "economic_mechanism": "Concentrated liquidity demand moves price away from a short-horizon reference before liquidity providers are compensated and inventory pressure decays.",
+      "payer_or_counterparty": "Urgent liquidity demanders crossing against constrained liquidity providers.",
+      "timing_chain": "Legally observed path through cutoff t -> signal at t -> executable position after t -> future inventory-risk resolution.",
+      "estimand_preserved": "Expected future return associated with the frozen temporary-pressure state.",
+      "public_derivation_summary": [
+        "Define signed path pressure from observations legally available by the cutoff.",
+        "Separate directional pressure from scale and ordinary volatility aliases.",
+        "Map the selected path functional to the predicted inventory-resolution return.",
+        "State discretization, proxy, and regime assumptions."
+      ]
+    },
+    "math_model_search": {
+      "selection_rule": "Choose the object that distinguishes temporary liquidity pressure from persistent information and volatility aliases.",
+      "candidates": [
+        {
+          "model_id": "primary_signed_path_functional",
+          "role": "primary",
+          "family": "path_functional",
+          "mathematical_object": "J_t = integral_[open,t] w(s) dP_s / max(integral_[open,t] q_s ds, epsilon)",
+          "mechanism_fit": "Represents direction, path timing, and liquidity-scaled displacement."
+        },
+        {
+          "model_id": "alternative_information_persistence",
+          "role": "mechanism_alternative",
+          "family": "state_space_information_diffusion",
+          "mathematical_object": "latent informed state with persistent conditional drift",
+          "mechanism_fit": "Predicts continuation rather than inventory-driven reversal."
+        },
+        {
+          "model_id": "null_realized_volatility",
+          "role": "null_or_alias",
+          "family": "quadratic_variation",
+          "mathematical_object": "RV_t = sum_i r_i^2",
+          "mechanism_fit": "Tests whether the proposal is only a volatility proxy."
+        }
+      ],
+      "selected_model_id": "primary_signed_path_functional",
+      "rejected_tool_families": [
+        {
+          "family": "spectral_analysis",
+          "reason": "No periodicity or scale-separation claim is made in this example."
+        }
+      ]
+    },
+    "measurement_proposal": {
+      "selected_mathematical_object": "Liquidity-scaled signed intraday path functional",
+      "mechanism_equation_or_functional": "J_t = weighted signed displacement / observed liquidity scale",
+      "market_outcome_projection": "E[R_(t,t+h) | J_t, controls] has the pre-registered inventory-resolution sign",
+      "observation_equation": "Approved point-in-time bars or states -> signed displacement, liquidity scale, cutoff-valid controls",
+      "implementation_route": "direct_code",
+      "component_bindings": [
+        {
+          "component_id": "signed_displacement",
+          "math_term_or_functional": "integral w(s) dP_s",
+          "observable_or_input": "cutoff-valid price path",
+          "information_time": "no later than the frozen formation cutoff",
+          "preserved_information": "direction and within-window timing",
+          "discarded_information": "irrelevant quote-level detail not present in the frozen claim",
+          "expected_metric_signature": "The predicted sign is strongest when pressure is directional and liquidity-scaled.",
+          "falsifier": "The signal is fully explained by realized volatility or overnight return."
+        }
+      ]
+    },
+    "applicable_audits": [
+      {
+        "audit_id": "future_mutation_and_cutoff",
+        "status": "selected",
+        "reason": "The path must be invariant to observations after formation."
+      },
+      {
+        "audit_id": "stochastic_process_diagnostics",
+        "status": "not_applicable",
+        "reason": "The selected example uses a path functional without asserting a transition law."
+      }
+    ],
+    "knowledge_use": [
+      {
+        "knowledge_id": "<knowledge-record-id>",
+        "role": "tool_candidate",
+        "provenance": "<index/path/hash>",
+        "applicability": "Prior implementation suggests a stable path integration primitive; semantics require fresh validation.",
+        "authority": "advisory_only"
+      }
+    ],
+    "data_dependencies": [
+      {
+        "dataset_id": "clean_minute_bar",
+        "required_fields": [
+          "instrument",
+          "trade_date",
+          "minute",
+          "close",
+          "volume"
+        ],
+        "required_coverage": {
+          "start": "YYYYMMDD",
+          "end": "YYYYMMDD"
+        },
+        "information_policy": "no_future_minutes_after_cutoff",
+        "availability": "catalog_check_required",
+        "proxy_limit": "OHLCV cannot be described as signed trade or order-book truth."
+      }
+    ],
+    "falsification_plan": {
+      "distinguishing_tests": [
+        "Compare reversal and continuation signs against the mechanism alternative.",
+        "Control and ablate realized volatility, ordinary return, and liquidity scale.",
+        "Mutate all observations after the formation cutoff."
+      ],
+      "failure_regimes": [
+        "price-limit states",
+        "extreme illiquidity",
+        "information-event days"
+      ],
+      "stop_conditions": [
+        "formation timestamp ambiguous",
+        "required microstructure claim has no admissible observation"
+      ]
+    },
+    "uncertainties": [
+      "OHLCV-based pressure remains a proxy unless stronger trade or order-book data is delivered."
+    ],
+    "handoff": {
+      "director_action": "review_and_freeze_or_reject",
+      "data_liaison_required": true,
+      "canonical_write_allowed": false
+    }
+  },
+  "result_sha256": "<sha256-of-envelope-excluding-result_sha256>"
+}

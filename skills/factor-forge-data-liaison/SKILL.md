@@ -58,8 +58,9 @@ research-plan construction when all of the following are true:
   freshness and transport, and it explicitly does not imply dataset QA;
 - the entry is an `active_catalog_member` with an exact materialized URI,
   producer provenance, required fields and sufficient freshness coverage;
-- the legal information policy is explicit enough to define formation time and
-  excludes future observations; and
+- the entry carries `host_information_policy_attestation.verdict=PASS`; free
+  text or an Agent assertion cannot substitute for that deterministic Host
+  attestation of formation time and exclusion of future observations; and
 - no derived-state reuse, immediate materialization or formal execution is being
   authorized by this result.
 
@@ -69,6 +70,41 @@ lookahead and worker-read validation before any formal execution. List absent
 dataset QA/read-smoke evidence as `formal_execution_requirements`, not as a new
 data request. Never describe the base dataset as formally QA ACCEPT unless the
 bound evidence actually says so.
+
+The PASS `catalog_resolution` is a closed Host-validated contract:
+
+```json
+{
+  "contract_version": "factorforge_data_liaison_preformal_resolution_v1",
+  "resolution_scope": "pre_formal_design_only",
+  "catalog_snapshot_ref": {"path": "<task input path>", "sha256": "<task input hash>"},
+  "design_time_reuse_hits": [{
+    "dataset_id": "clean_daily_bar",
+    "dataset_class": "base_market_dataset",
+    "catalog_membership": "active_catalog_member",
+    "materialized_uri": "<exact catalog S3 URI>",
+    "required_fields": ["<non-empty subset of catalog columns>"],
+    "required_coverage": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
+    "information_policy_present": true,
+    "producer_provenance_present": true
+  }],
+  "formal_execution_requirements": [
+    "catalog_identity", "dataset_qa", "lookahead_policy", "coverage",
+    "worker_read_smoke"
+  ],
+  "formal_execution_gate": {
+    "status": "DEFERRED_TO_STEP3",
+    "formal_execution_allowed": false
+  },
+  "generated_data_requests": []
+}
+```
+
+For this PASS route, `permissions_boundary` is exactly catalog read-only true,
+with catalog write, data write, and pipeline execution all false. The Host
+rejects unknown fields, missing checks, unbound snapshots, non-S3 materialized
+URIs, fields outside the entry, insufficient coverage, missing policy/provenance,
+and any derived dataset presented as a base reuse hit.
 
 This exception does not apply to derived datamarts or reusable state. Missing
 QA, lookahead, coverage, URI, provenance or read-smoke evidence for those

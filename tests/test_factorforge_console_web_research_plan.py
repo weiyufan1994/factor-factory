@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from factor_factory.catalog_policy import (
+    CLEAN_DAILY_BAR_PIT_GUARANTEES_V1,
+    HOST_INFORMATION_POLICY_ATTESTATION_VERSION,
+    INFORMATION_POLICY_CONTRACT_VERSION,
+    project_information_policy_attestation,
+)
 from factor_factory.console.conversation_ledger import (
     CONVERSATION_LEDGER_REFERENCE_FIELD,
     plan_conversation_checkpoints,
@@ -333,7 +339,13 @@ def _write_catalog(tmp_path: Path) -> Path:
                             "wacc",
                             "terminal_growth",
                         ],
-                        "metadata": {"schema_version": "daily_bar_v1", "qa_verdict": "ACCEPT"},
+                        "metadata": {
+                            "schema_version": "daily_bar_v1",
+                            "qa_verdict": "ACCEPT",
+                            "pit_guarantees": dict(
+                                CLEAN_DAILY_BAR_PIT_GUARANTEES_V1
+                            ),
+                        },
                         "uri": "s3://approved-read-only/clean_daily_bar",
                     },
                     {
@@ -374,6 +386,13 @@ def test_catalog_summary_separates_design_admission_from_formal_dataset_qa(tmp_p
     assert entry["catalog_membership"] == "active_catalog_member"
     assert entry["materialized_uri"] == "s3://approved-read-only/clean_daily_bar"
     assert entry["formal_execution_evidence"]["qa_verdict"] == "ACCEPT"
+    assert entry["host_information_policy_attestation"] == {
+        "version": HOST_INFORMATION_POLICY_ATTESTATION_VERSION,
+        "verdict": "PASS",
+        "rule_id": "clean_daily_bar_pit_guarantees_v1",
+        "formation_time": "daily_close",
+        "future_observations_excluded": True,
+    }
 
 
 def test_catalog_summary_rejects_unbound_active_admission(tmp_path):
@@ -393,6 +412,33 @@ def test_catalog_summary_rejects_unbound_active_admission(tmp_path):
                 "dataset_count": 2,
             },
         )
+
+
+def test_structured_information_policy_attestation_is_closed() -> None:
+    policy = {
+        "contract": {
+            "version": INFORMATION_POLICY_CONTRACT_VERSION,
+            "formation_time": "filing_publication_time",
+            "future_observations_excluded": True,
+        },
+        "pit_guarantees": {},
+        "information_set_legality": "",
+        "no_future_data": None,
+        "no_future_intraday_minutes": None,
+    }
+    accepted = project_information_policy_attestation(
+        "fundamental_statement_v1",
+        policy,
+    )
+    assert accepted["verdict"] == "PASS"
+
+    contradictory = dict(policy)
+    contradictory["information_set_legality"] = "future observations are permitted"
+    rejected = project_information_policy_attestation(
+        "fundamental_statement_v1",
+        contradictory,
+    )
+    assert rejected["verdict"] == "NOT_ATTESTED"
 
 
 def _fill_plan(workspace: Path) -> dict:

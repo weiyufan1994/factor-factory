@@ -87,6 +87,7 @@ factor_factory/console/web_ui.py
 37. Host Director 的私有 Agent receipt 必须完整解析并与 adapter 返回值逐字段绑定；目录归属本身不是 real-agent provenance。
 38. Data Liaison admission 是 result 与 Host-materialized request 的同一异常原子操作；任何最终 bundle/ledger validation 异常都回滚本次新建的两类 artifact。
 39. `factorforge_agent_result_v1` 外层 envelope 及其 authority-bearing `identity` 按角色 exact-shape 校验；Council attestation、formal verdict、`artifact_refs` 与 Data Liaison canonical request refs 都禁止未声明字段，避免自由文本或伪 verdict 从相邻通道绕过 v3 controlled record。
+40. v2 catalog 上的 Data Liaison `PASS` 不是 skill 自述，而是 canonical Host gate：`factorforge_data_liaison_preformal_resolution_v1` 必须精确绑定 frozen catalog snapshot path/hash、active admission 指定的唯一 catalog hash、base dataset 的 S3 URI/字段/覆盖/provenance，以及 Host 从受控 information-policy contract 重新计算的 PIT attestation；任意非空自由文本不构成 no-future 证据。QA、lookahead、coverage 与 worker read 明确推迟到 Step3。空 catalog（包括 legacy `{}`）只兼容“不声明任何 reuse”的 no-data no-op；任何伪造 reuse 仍 BLOCK。
 
 ### 2.2 当前未实现
 
@@ -317,7 +318,7 @@ outer result envelope
 
 非领域角色使用 `factorforge_role_research_record_v1` 作为 envelope 内部 payload。
 
-基础 bundle validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。Result envelope、pre-formal v3 record、Council attestation/formal verdict、artifact ref 与 canonical data-request ref 已按 exact shape 关闭 unknown fields；普通 domain/Data Liaison plugin 的全部深层对象仍只执行合同化语义检查，并非全树 JSON Schema closure。它本身不证明 session 真实性。Phase 2 formal runtime validator 另行验证 adapter/Host signatures、provider handle uniqueness、staged-context binding、dependency ordering 和 Council independence；当前仍未实现完整 filesystem-diff/blindness proof。
+基础 bundle validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。Result envelope、pre-formal v3 record、Council attestation/formal verdict、artifact ref、canonical data-request ref 与 Data Liaison pre-formal base-reuse PASS contract 已按 exact shape 关闭 unknown fields；普通 domain plugin 的全部深层对象仍只执行合同化语义检查，并非全树 JSON Schema closure。它本身不证明 session 真实性。Phase 2 formal runtime validator 另行验证 adapter/Host signatures、provider handle uniqueness、staged-context binding、dependency ordering 和 Council independence；当前仍未实现完整 filesystem-diff/blindness proof。
 
 ## 8. `single_agent_fallback`
 

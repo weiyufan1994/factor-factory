@@ -42,6 +42,8 @@ from factor_factory.research_org.contracts import (
     write_workspace_json_once,
 )
 from factor_factory.research_org.director import (
+    DATA_LIAISON_FORMAL_EXECUTION_CHECKS,
+    DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION,
     DATA_REQUEST_CONTRACT_VERSION,
     PREFORMAL_BLOCK_DECISION,
     PREFORMAL_CLAIM_SCOPE,
@@ -235,7 +237,29 @@ claim_scope, decision, the exact task `required_review_role_ids`, the same block
 blocks only formal execution; it is never factor ACCEPT/REJECT/PROMOTE.
 """
     elif invocation.role_id == "data_liaison":
+        formal_checks = json.dumps(
+            list(DATA_LIAISON_FORMAL_EXECUTION_CHECKS),
+            ensure_ascii=False,
+        )
         role_contract_guidance = f"""
+This task is pre-formal. A Host-attested `base_market_dataset` may be used only
+for design feasibility under the role skill; this never claims formal QA. If
+you return PASS through that narrow route, `catalog_resolution` must have
+exactly `contract_version={DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION}`,
+`resolution_scope=pre_formal_design_only`, the exact catalog input artifact
+`path` and `sha256` as `catalog_snapshot_ref`, non-empty
+`design_time_reuse_hits`, `formal_execution_requirements={formal_checks}`,
+`formal_execution_gate={{"status":"DEFERRED_TO_STEP3","formal_execution_allowed":false}}`,
+and `generated_data_requests=[]`. Each reuse hit has exactly `dataset_id`,
+`dataset_class`, `catalog_membership`, `materialized_uri`, `required_fields`,
+`required_coverage` (`start` and `end`), `information_policy_present`, and
+`producer_provenance_present`. The Host validator accepts only an active,
+snapshot-bound base dataset whose deterministic Host information-policy
+attestation passes, and rejects derived datamarts/states on this route. Free
+text cannot establish PIT legality.
+For PASS, `permissions_boundary` must be exactly catalog read-only true and
+catalog/data writes plus pipeline execution false.
+
 If a dependency is missing, do not attempt to write the read-only staged
 workspace. In `catalog_resolution.generated_data_requests`, embed each request
 as exactly `request_id`, the task-authorized workspace-relative `path`, and

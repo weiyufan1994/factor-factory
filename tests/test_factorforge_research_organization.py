@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from factor_factory.catalog_policy import (
+    CLEAN_DAILY_BAR_PIT_GUARANTEES_V1,
+    INFORMATION_POLICY_CONTRACT_VERSION,
+    project_information_policy_attestation,
+)
 from factor_factory.research_org import (
     AGENT_RESULT_CONTRACT_VERSION,
     ResearchOrganizationError,
@@ -28,6 +34,8 @@ from factor_factory.research_org.contracts import (
 )
 from factor_factory.research_org.registry import validate_agent_registry_snapshot
 from factor_factory.research_org.director import (
+    DATA_LIAISON_FORMAL_EXECUTION_CHECKS,
+    DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION,
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
     PREFORMAL_CLAIM_SCOPE,
     PREFORMAL_CLEAR_DECISION,
@@ -64,6 +72,118 @@ def _workspace(tmp_path: Path) -> Path:
     (identity / "factor_knowledge_summary.json").write_text("{}\n", encoding="utf-8")
     (identity / "data_catalog_summary.json").write_text("{}\n", encoding="utf-8")
     return workspace
+
+
+def _active_catalog_summary(*, admission: bool = True) -> dict:
+    information_policy = {
+        "contract": {},
+        "pit_guarantees": dict(CLEAN_DAILY_BAR_PIT_GUARANTEES_V1),
+        "information_set_legality": "",
+        "no_future_data": None,
+        "no_future_intraday_minutes": None,
+    }
+    return {
+        "version": "factorforge_web_data_catalog_summary_v2",
+        "read_only": True,
+        "active_catalog_admission": {
+            "version": "factorforge_console_catalog_admission_v1",
+            "verdict": "PASS" if admission else "NOT_APPLICABLE",
+            "admission_scope": (
+                "active_catalog_identity_freshness_and_transport"
+                if admission
+                else "approved_snapshot_without_host_transport_attestation"
+            ),
+            "formal_dataset_qa_implied": False,
+            "catalog_sha256": "a" * 64,
+            "catalog_receipt_sha256": "b" * 64,
+        },
+        "catalogs": [
+            {
+                "catalog_name": "data_catalog.json",
+                "catalog_sha256": "a" * 64,
+                "entries": [
+                    {
+                        "name": "clean_daily_bar",
+                        "dataset_class": "base_market_dataset",
+                        "catalog_membership": "active_catalog_member",
+                        "columns": ["trade_date", "ts_code", "close", "amount"],
+                        "materialized_uri": (
+                            "s3://yufan-data-lake/factorforge/datamart/"
+                            "clean_daily_bar/v1/daily_clean.parquet"
+                        ),
+                        "freshness": {
+                            "trade_date_min": "20100104",
+                            "trade_date_max": "20260624",
+                        },
+                        "start_date": None,
+                        "end_date": None,
+                        "producer_provenance": {
+                            "source": "s3_factorforge_datamart",
+                            "source_label": "workspace_persistent",
+                            "mode": "shared_clean_daily_layer",
+                        },
+                        "information_policy": information_policy,
+                        "host_information_policy_attestation": (
+                            project_information_policy_attestation(
+                                "clean_daily_bar",
+                                information_policy,
+                            )
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _valid_v2_liaison_result(workspace: Path, task: dict) -> dict:
+    result = _result(task, session_id="v2_liaison_session")
+    catalog_ref = next(
+        item
+        for item in task["input_artifacts"]
+        if item["path"].endswith("/data_catalog_summary.json")
+    )
+    result["public_research_record"]["catalog_resolution"] = {
+        "contract_version": DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION,
+        "resolution_scope": "pre_formal_design_only",
+        "catalog_snapshot_ref": {
+            "path": catalog_ref["path"],
+            "sha256": catalog_ref["sha256"],
+        },
+        "design_time_reuse_hits": [
+            {
+                "dataset_id": "clean_daily_bar",
+                "dataset_class": "base_market_dataset",
+                "catalog_membership": "active_catalog_member",
+                "materialized_uri": (
+                    "s3://yufan-data-lake/factorforge/datamart/"
+                    "clean_daily_bar/v1/daily_clean.parquet"
+                ),
+                "required_fields": ["close", "amount"],
+                "required_coverage": {
+                    "start": "2016-01-01",
+                    "end": "2025-07-11",
+                },
+                "information_policy_present": True,
+                "producer_provenance_present": True,
+            }
+        ],
+        "formal_execution_requirements": list(
+            DATA_LIAISON_FORMAL_EXECUTION_CHECKS
+        ),
+        "formal_execution_gate": {
+            "status": "DEFERRED_TO_STEP3",
+            "formal_execution_allowed": False,
+        },
+        "generated_data_requests": [],
+    }
+    result["public_research_record"]["permissions_boundary"] = {
+        "catalog_read_only": True,
+        "catalog_write_allowed": False,
+        "data_write_allowed": False,
+        "pipeline_execution_allowed": False,
+    }
+    return with_content_hash(result, hash_field="result_sha256")
 
 
 def _request(*, hypothesis: str, title: str = "Research idea") -> dict:
@@ -1058,6 +1178,272 @@ def test_require_results_means_every_dispatched_role(tmp_path: Path) -> None:
             workspace=workspace,
             require_results=True,
         )
+
+
+def test_v2_data_liaison_base_admission_is_canonically_enforced(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    (workspace / "identity/data_catalog_summary.json").write_text(
+        json.dumps(_active_catalog_summary(), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Daily price-volume pressure",
+            hypothesis=(
+                "Constrained sellers create price-volume pressure that patient "
+                "liquidity suppliers absorb before a daily reversal."
+            ),
+        ),
+    )
+    task = _task(workspace, "data_liaison")
+    valid = _valid_v2_liaison_result(workspace, task)
+    assert validate_agent_result(valid, task=task, workspace=workspace) == []
+
+    forged_derived = copy.deepcopy(valid)
+    hit = forged_derived["public_research_record"]["catalog_resolution"][
+        "design_time_reuse_hits"
+    ][0]
+    hit["dataset_id"] = "derived_state_v1"
+    hit["dataset_class"] = "derived_state"
+    forged_derived = with_content_hash(
+        forged_derived,
+        hash_field="result_sha256",
+    )
+    derived_reasons = validate_agent_result(
+        forged_derived,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("design_time_reuse_hits[0].dataset_id" in item for item in derived_reasons)
+
+    missing_checks = copy.deepcopy(valid)
+    missing_checks["public_research_record"]["catalog_resolution"][
+        "formal_execution_requirements"
+    ] = ["catalog_identity"]
+    missing_checks = with_content_hash(
+        missing_checks,
+        hash_field="result_sha256",
+    )
+    check_reasons = validate_agent_result(
+        missing_checks,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("formal_execution_requirements" in item for item in check_reasons)
+
+    malformed_fields = copy.deepcopy(valid)
+    malformed_fields["public_research_record"]["catalog_resolution"][
+        "design_time_reuse_hits"
+    ][0]["required_fields"] = [{"field": "close"}]
+    malformed_fields = with_content_hash(
+        malformed_fields,
+        hash_field="result_sha256",
+    )
+    malformed_reasons = validate_agent_result(
+        malformed_fields,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("required_fields" in item for item in malformed_reasons)
+
+
+def test_v2_data_liaison_rejects_unattested_future_information_policy(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    summary = _active_catalog_summary()
+    entry = summary["catalogs"][0]["entries"][0]
+    entry["information_policy"] = {
+        "contract": {},
+        "pit_guarantees": {},
+        "information_set_legality": "future observations are permitted",
+        "no_future_data": False,
+        "no_future_intraday_minutes": False,
+    }
+    # A copied PASS attestation cannot survive deterministic Host recomputation.
+    (workspace / "identity/data_catalog_summary.json").write_text(
+        json.dumps(summary, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Future information probe",
+            hypothesis="A future-permitted policy must never support design reuse.",
+        ),
+    )
+    task = _task(workspace, "data_liaison")
+    result = _valid_v2_liaison_result(workspace, task)
+    reasons = validate_agent_result(result, task=task, workspace=workspace)
+
+    assert any("information_policy_present" in item for item in reasons)
+
+
+def test_v2_data_liaison_rejects_contradictory_structured_policy(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    summary = _active_catalog_summary()
+    entry = summary["catalogs"][0]["entries"][0]
+    entry["information_policy"] = {
+        "contract": {
+            "version": INFORMATION_POLICY_CONTRACT_VERSION,
+            "formation_time": "daily_close",
+            "future_observations_excluded": True,
+        },
+        "pit_guarantees": {},
+        "information_set_legality": "future observations are permitted",
+        "no_future_data": None,
+        "no_future_intraday_minutes": None,
+    }
+    entry["host_information_policy_attestation"] = (
+        project_information_policy_attestation(
+            "clean_daily_bar",
+            entry["information_policy"],
+        )
+    )
+    assert entry["host_information_policy_attestation"]["verdict"] == (
+        "NOT_ATTESTED"
+    )
+    (workspace / "identity/data_catalog_summary.json").write_text(
+        json.dumps(summary, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Contradictory structured policy",
+            hypothesis="Conflicting policy fields must fail closed.",
+        ),
+    )
+    task = _task(workspace, "data_liaison")
+    result = _valid_v2_liaison_result(workspace, task)
+    reasons = validate_agent_result(result, task=task, workspace=workspace)
+
+    assert any("information_policy_present" in item for item in reasons)
+
+
+def test_v2_data_liaison_pass_requires_active_catalog_admission(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    (workspace / "identity/data_catalog_summary.json").write_text(
+        json.dumps(_active_catalog_summary(admission=False), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Unattested daily data",
+            hypothesis=(
+                "Constrained sellers create price-volume pressure that patient "
+                "liquidity suppliers absorb before a daily reversal."
+            ),
+        ),
+    )
+    task = _task(workspace, "data_liaison")
+    result = _valid_v2_liaison_result(workspace, task)
+    reasons = validate_agent_result(result, task=task, workspace=workspace)
+
+    assert any("active_catalog_admission" in item for item in reasons)
+
+
+def test_v2_data_liaison_pass_requires_catalog_hash_binding(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    summary = _active_catalog_summary()
+    summary["active_catalog_admission"]["catalog_sha256"] = "c" * 64
+    (workspace / "identity/data_catalog_summary.json").write_text(
+        json.dumps(summary, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Misbinding probe",
+            hypothesis="A valid-looking admission must bind the selected catalog.",
+        ),
+    )
+    task = _task(workspace, "data_liaison")
+    result = _valid_v2_liaison_result(workspace, task)
+    reasons = validate_agent_result(result, task=task, workspace=workspace)
+
+    assert any("active_catalog_binding" in item for item in reasons)
+
+
+def test_v2_empty_catalog_accepts_only_legacy_no_data_liaison_pass(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    empty_summary = {
+        "version": "factorforge_web_data_catalog_summary_v2",
+        "read_only": True,
+        "active_catalog_admission": {
+            "version": "factorforge_console_catalog_admission_v1",
+            "verdict": "NOT_APPLICABLE",
+            "admission_scope": "no_catalog_configured",
+            "formal_dataset_qa_implied": False,
+        },
+        "catalogs": [],
+    }
+    (workspace / "identity/data_catalog_summary.json").write_text(
+        json.dumps(empty_summary, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="No catalog compatibility",
+            hypothesis="This probe makes no data reuse claim.",
+        ),
+    )
+    task = _task(workspace, "data_liaison")
+    no_data = _result(task, session_id="empty_catalog_no_data")
+    assert validate_agent_result(no_data, task=task, workspace=workspace) == []
+
+    forged = copy.deepcopy(no_data)
+    forged["public_research_record"]["catalog_resolution"]["reuse_hits"] = [
+        {"dataset_id": "derived_state_without_catalog_evidence"}
+    ]
+    forged = with_content_hash(forged, hash_field="result_sha256")
+    reasons = validate_agent_result(forged, task=task, workspace=workspace)
+
+    assert any("active_catalog_entries" in item for item in reasons)
+
+    legacy_workspace = _workspace(tmp_path / "legacy")
+    write_research_organization_bundle(
+        workspace=legacy_workspace,
+        request=_request(
+            title="Legacy no-data compatibility",
+            hypothesis="A legacy empty snapshot must not authorize reuse.",
+        ),
+    )
+    legacy_task = _task(legacy_workspace, "data_liaison")
+    legacy_no_data = _result(
+        legacy_task,
+        session_id="legacy_empty_catalog_no_data",
+    )
+    assert validate_agent_result(
+        legacy_no_data,
+        task=legacy_task,
+        workspace=legacy_workspace,
+    ) == []
+
+    legacy_forged = copy.deepcopy(legacy_no_data)
+    legacy_forged["public_research_record"]["catalog_resolution"][
+        "reuse_hits"
+    ] = [{"dataset_id": "derived_state_without_catalog_evidence"}]
+    legacy_forged = with_content_hash(
+        legacy_forged,
+        hash_field="result_sha256",
+    )
+    legacy_reasons = validate_agent_result(
+        legacy_forged,
+        task=legacy_task,
+        workspace=legacy_workspace,
+    )
+
+    assert any("legacy_catalog_reuse_forbidden" in item for item in legacy_reasons)
 
 
 def test_host_admission_enforces_dependencies_and_can_complete_ordered_bundle(

@@ -143,7 +143,11 @@ def require_catalogs_healthy(config: ConsoleConfig) -> None:
         raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_DATA_CATALOG_UNAVAILABLE")
 
 
-def catalog_admission_projection(config: ConsoleConfig) -> dict[str, Any]:
+def catalog_admission_projection(
+    config: ConsoleConfig,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """Return a public, hash-bound statement about the active catalog transport.
 
     This projection deliberately does not promote catalog transport health into a
@@ -165,7 +169,11 @@ def catalog_admission_projection(config: ConsoleConfig) -> dict[str, Any]:
             "admission_scope": "local_or_test_catalog_snapshot",
             "formal_dataset_qa_implied": False,
         }
-    require_catalogs_healthy(config)
+    if not _evaluate_catalogs(
+        config,
+        now=now or datetime.now(timezone.utc),
+    ):
+        raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_DATA_CATALOG_UNAVAILABLE")
     receipt_path = config.catalog_receipt
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     catalog_path = config.data_catalogs[0]

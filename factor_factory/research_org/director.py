@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from factor_factory.catalog_policy import project_information_policy_attestation
 from factor_factory.research_org.contracts import (
     AGENT_RESULT_CONTRACT_VERSION,
     AGENT_TASK_CONTRACT_VERSION,
@@ -77,6 +78,16 @@ PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION = (
     "factorforge_preformal_independent_council_verdict_v3"
 )
 DATA_REQUEST_CONTRACT_VERSION = "factorforge_data_request_v1"
+DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION = (
+    "factorforge_data_liaison_preformal_resolution_v1"
+)
+DATA_LIAISON_FORMAL_EXECUTION_CHECKS = (
+    "catalog_identity",
+    "dataset_qa",
+    "lookahead_policy",
+    "coverage",
+    "worker_read_smoke",
+)
 PREFORMAL_CLEAR_DECISION = "CLEAR_FOR_FORMAL_EXECUTION"
 PREFORMAL_BLOCK_DECISION = "BLOCK_FORMAL_EXECUTION"
 PREFORMAL_ROLE_CHECK_IDS = {
@@ -1941,6 +1952,299 @@ def cleanup_materialized_data_requests(
             path.unlink()
 
 
+def _normalized_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"[0-9]{8}", raw):
+        candidate = raw
+    elif re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
+        candidate = raw.replace("-", "")
+    else:
+        return ""
+    try:
+        datetime.strptime(candidate, "%Y%m%d")
+    except ValueError:
+        return ""
+    return candidate
+
+
+def _task_catalog_snapshot(
+    *,
+    task: Mapping[str, Any],
+    workspace: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    refs = [
+        item
+        for item in (task.get("input_artifacts") or [])
+        if isinstance(item, Mapping)
+        and str(item.get("path") or "").endswith("/data_catalog_summary.json")
+    ]
+    if len(refs) != 1:
+        return None, None, ["catalog_snapshot_ref_count"]
+    reference = dict(refs[0])
+    try:
+        relative = normalize_workspace_relative_path(
+            reference.get("path"),
+            workspace=workspace,
+            label="data_liaison.catalog_snapshot",
+        )
+        snapshot = read_workspace_json(workspace, relative)
+    except ResearchOrganizationError as exc:
+        return reference, None, [str(exc)]
+    if (
+        snapshot.get("contract_version") != INPUT_SNAPSHOT_CONTRACT_VERSION
+        or snapshot.get("snapshot_sha256") != reference.get("sha256")
+        or validate_content_hash(
+            snapshot,
+            hash_field="snapshot_sha256",
+            label="data_liaison.catalog_snapshot",
+        )
+        or not isinstance(snapshot.get("captured_payload"), dict)
+    ):
+        return reference, None, ["catalog_snapshot_binding"]
+    return reference, dict(snapshot["captured_payload"]), []
+
+
+def _catalog_entry_map(summary: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for catalog in summary.get("catalogs") or []:
+        if not isinstance(catalog, Mapping):
+            continue
+        for entry in catalog.get("entries") or []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("name"), str):
+                entries[str(entry["name"])] = dict(entry)
+    return entries
+
+
+def _host_information_policy_attested(entry: Mapping[str, Any]) -> bool:
+    policy = entry.get("information_policy")
+    if not isinstance(policy, Mapping):
+        return False
+    expected = project_information_policy_attestation(
+        str(entry.get("name") or ""),
+        policy,
+    )
+    return bool(
+        expected.get("verdict") == "PASS"
+        and entry.get("host_information_policy_attestation") == expected
+    )
+
+
+def _data_liaison_preformal_pass_reasons(
+    *,
+    record: Mapping[str, Any],
+    task: Mapping[str, Any],
+    workspace: Path,
+) -> list[str]:
+    reference, summary, reasons = _task_catalog_snapshot(
+        task=task,
+        workspace=workspace,
+    )
+    if reasons or summary is None or reference is None:
+        return reasons
+    if summary.get("version") != "factorforge_web_data_catalog_summary_v2":
+        legacy_resolution = record.get("catalog_resolution")
+        if (
+            legacy_resolution == {"reuse_hits": [], "generated_data_requests": []}
+            and record.get("permissions_boundary") == {"data_materialization": False}
+        ):
+            return []
+        return ["legacy_catalog_reuse_forbidden"]
+    all_entries = _catalog_entry_map(summary)
+    if not all_entries:
+        legacy_no_data_resolution = record.get("catalog_resolution")
+        if (
+            legacy_no_data_resolution
+            == {"reuse_hits": [], "generated_data_requests": []}
+            and record.get("permissions_boundary") == {"data_materialization": False}
+        ):
+            return []
+        return ["active_catalog_entries"]
+    admission = summary.get("active_catalog_admission")
+    if (
+        not isinstance(admission, Mapping)
+        or admission.get("version") != "factorforge_console_catalog_admission_v1"
+        or admission.get("verdict") != "PASS"
+        or admission.get("admission_scope")
+        != "active_catalog_identity_freshness_and_transport"
+        or admission.get("formal_dataset_qa_implied") is not False
+        or SHA256_RE.fullmatch(str(admission.get("catalog_sha256") or "")) is None
+        or SHA256_RE.fullmatch(
+            str(admission.get("catalog_receipt_sha256") or "")
+        )
+        is None
+    ):
+        reasons.append("active_catalog_admission")
+    catalogs = summary.get("catalogs")
+    admission_hash = (
+        str(admission.get("catalog_sha256") or "")
+        if isinstance(admission, Mapping)
+        else ""
+    )
+    bound_catalogs = [
+        dict(catalog)
+        for catalog in catalogs
+        if isinstance(catalog, Mapping)
+        and catalog.get("catalog_sha256") == admission_hash
+    ] if isinstance(catalogs, list) else []
+    if len(bound_catalogs) != 1:
+        reasons.append("active_catalog_binding")
+    entries = _catalog_entry_map({"catalogs": bound_catalogs})
+    execution_stage = task.get("execution_stage_contract")
+    if (
+        not isinstance(execution_stage, Mapping)
+        or execution_stage.get("stage") != "pre_formal_research_design"
+    ):
+        reasons.append("execution_stage_contract")
+    resolution = record.get("catalog_resolution")
+    expected_resolution_keys = {
+        "contract_version",
+        "resolution_scope",
+        "catalog_snapshot_ref",
+        "design_time_reuse_hits",
+        "formal_execution_requirements",
+        "formal_execution_gate",
+        "generated_data_requests",
+    }
+    if not isinstance(resolution, Mapping):
+        return [*reasons, "catalog_resolution"]
+    if set(resolution) != expected_resolution_keys:
+        reasons.append("catalog_resolution.shape")
+    if resolution.get("contract_version") != (
+        DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION
+    ):
+        reasons.append("catalog_resolution.contract_version")
+    if resolution.get("resolution_scope") != "pre_formal_design_only":
+        reasons.append("catalog_resolution.resolution_scope")
+    expected_snapshot_ref = {
+        "path": reference.get("path"),
+        "sha256": reference.get("sha256"),
+    }
+    if resolution.get("catalog_snapshot_ref") != expected_snapshot_ref:
+        reasons.append("catalog_resolution.catalog_snapshot_ref")
+    if resolution.get("formal_execution_requirements") != list(
+        DATA_LIAISON_FORMAL_EXECUTION_CHECKS
+    ):
+        reasons.append("catalog_resolution.formal_execution_requirements")
+    if resolution.get("formal_execution_gate") != {
+        "status": "DEFERRED_TO_STEP3",
+        "formal_execution_allowed": False,
+    }:
+        reasons.append("catalog_resolution.formal_execution_gate")
+    if resolution.get("generated_data_requests") != []:
+        reasons.append("catalog_resolution.generated_data_requests")
+    hits = resolution.get("design_time_reuse_hits")
+    if not isinstance(hits, list) or not hits:
+        reasons.append("catalog_resolution.design_time_reuse_hits")
+        return reasons
+    expected_hit_keys = {
+        "dataset_id",
+        "dataset_class",
+        "catalog_membership",
+        "materialized_uri",
+        "required_fields",
+        "required_coverage",
+        "information_policy_present",
+        "producer_provenance_present",
+    }
+    seen: set[str] = set()
+    for index, hit in enumerate(hits):
+        label = f"catalog_resolution.design_time_reuse_hits[{index}]"
+        if not isinstance(hit, Mapping) or set(hit) != expected_hit_keys:
+            reasons.append(f"{label}.shape")
+            continue
+        dataset_id = str(hit.get("dataset_id") or "")
+        entry = entries.get(dataset_id)
+        if not dataset_id or dataset_id in seen or entry is None:
+            reasons.append(f"{label}.dataset_id")
+            continue
+        seen.add(dataset_id)
+        if (
+            entry.get("dataset_class") != "base_market_dataset"
+            or hit.get("dataset_class") != entry.get("dataset_class")
+        ):
+            reasons.append(f"{label}.dataset_class")
+        if (
+            entry.get("catalog_membership") != "active_catalog_member"
+            or hit.get("catalog_membership") != entry.get("catalog_membership")
+        ):
+            reasons.append(f"{label}.catalog_membership")
+        materialized_uri = str(entry.get("materialized_uri") or "")
+        if (
+            not materialized_uri.startswith("s3://")
+            or hit.get("materialized_uri") != materialized_uri
+        ):
+            reasons.append(f"{label}.materialized_uri")
+        required_fields = hit.get("required_fields")
+        columns = entry.get("columns")
+        valid_columns = bool(
+            isinstance(columns, list)
+            and columns
+            and all(isinstance(field, str) and field for field in columns)
+        )
+        valid_required_fields = bool(
+            isinstance(required_fields, list)
+            and required_fields
+            and all(isinstance(field, str) and field for field in required_fields)
+        )
+        if valid_columns and valid_required_fields:
+            available_fields = set(columns)
+            valid_required_fields = bool(
+                len(set(required_fields)) == len(required_fields)
+                and all(field in available_fields for field in required_fields)
+            )
+        if not valid_columns or not valid_required_fields:
+            reasons.append(f"{label}.required_fields")
+        coverage = hit.get("required_coverage")
+        freshness = (
+            entry.get("freshness")
+            if isinstance(entry.get("freshness"), Mapping)
+            else {}
+        )
+        available_start = _normalized_date(
+            entry.get("start_date") or freshness.get("trade_date_min")
+        )
+        available_end = _normalized_date(
+            entry.get("end_date") or freshness.get("trade_date_max")
+        )
+        if not isinstance(coverage, Mapping) or set(coverage) != {"start", "end"}:
+            reasons.append(f"{label}.required_coverage")
+        else:
+            required_start = _normalized_date(coverage.get("start"))
+            required_end = _normalized_date(coverage.get("end"))
+            if (
+                not required_start
+                or not required_end
+                or not available_start
+                or not available_end
+                or required_start > required_end
+                or required_start < available_start
+                or required_end > available_end
+            ):
+                reasons.append(f"{label}.required_coverage")
+        information_policy_present = _host_information_policy_attested(entry)
+        if (
+            hit.get("information_policy_present") is not True
+            or not information_policy_present
+        ):
+            reasons.append(f"{label}.information_policy_present")
+        producer = entry.get("producer_provenance")
+        producer_present = bool(
+            isinstance(producer, Mapping)
+            and any(str(value or "").strip() for value in producer.values())
+        )
+        if hit.get("producer_provenance_present") is not True or not producer_present:
+            reasons.append(f"{label}.producer_provenance_present")
+    permissions = record.get("permissions_boundary")
+    if permissions != {
+        "catalog_read_only": True,
+        "catalog_write_allowed": False,
+        "data_write_allowed": False,
+        "pipeline_execution_allowed": False,
+    }:
+        reasons.append("permissions_boundary")
+    return reasons
+
+
 def validate_agent_result(
     result: Any,
     *,
@@ -2109,6 +2413,15 @@ def validate_agent_result(
         except ResearchOrganizationError as exc:
             reasons.append(str(exc))
     if task.get("role_id") == "data_liaison" and isinstance(record, dict):
+        if result.get("status") == "PASS":
+            reasons.extend(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:data_liaison_preformal:{item}"
+                for item in _data_liaison_preformal_pass_reasons(
+                    record=record,
+                    task=task,
+                    workspace=workspace,
+                )
+            )
         catalog_resolution = record.get("catalog_resolution")
         generated_requests = (
             catalog_resolution.get("generated_data_requests")

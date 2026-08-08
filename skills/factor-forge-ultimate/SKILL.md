@@ -70,8 +70,10 @@ to start a new isolated task with the added mechanism evidence.
 
 Do not confuse pre-formal design feasibility with formal data acceptance. A
 Host-validated active catalog may admit a base market dataset for plan authoring
-while explicitly deferring dataset QA/read-smoke to the normal Step3 gate. That
-does not authorize formal execution and cannot be used for derived-state reuse.
+only when its deterministic Host information-policy attestation passes, while
+explicitly deferring dataset QA/read-smoke to the normal Step3 gate. Free text
+does not establish PIT legality. That does not authorize formal execution and
+cannot be used for derived-state reuse.
 Derived datamarts and state dependencies remain `WAITING_DATA` until their QA,
 lookahead, coverage, URI, provenance and required worker-read evidence are
 actually bound.

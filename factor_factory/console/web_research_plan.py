@@ -29,6 +29,7 @@ from factor_factory.console.web_factor_proof import (
     RISK_PROOF_CONTROL_COLUMNS,
     validate_web_factor_proof_preregistration,
 )
+from factor_factory.catalog_policy import project_information_policy_attestation
 from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.formula.parser import parse_formula
 from factor_factory.formula.qlib_codegen import to_qlib_expression
@@ -1442,6 +1443,17 @@ def summarize_catalogs(
             )
             qa_verdict = entry.get("qa_verdict") or metadata.get("qa_verdict")
             evidence_refs = _catalog_evidence_refs(entry, metadata)
+            information_policy = {
+                "contract": deepcopy(metadata.get("information_policy_contract") or {}),
+                "pit_guarantees": deepcopy(metadata.get("pit_guarantees") or {}),
+                "information_set_legality": str(
+                    metadata.get("information_set_legality") or ""
+                ),
+                "no_future_data": metadata.get("no_future_data"),
+                "no_future_intraday_minutes": metadata.get(
+                    "no_future_intraday_minutes"
+                ),
+            }
             entries.append(
                 {
                     "name": name,
@@ -1470,16 +1482,13 @@ def summarize_catalogs(
                         "source_label": str(metadata.get("source_label") or ""),
                         "mode": str(metadata.get("mode") or ""),
                     },
-                    "information_policy": {
-                        "pit_guarantees": deepcopy(metadata.get("pit_guarantees") or {}),
-                        "information_set_legality": str(
-                            metadata.get("information_set_legality") or ""
-                        ),
-                        "no_future_data": metadata.get("no_future_data"),
-                        "no_future_intraday_minutes": metadata.get(
-                            "no_future_intraday_minutes"
-                        ),
-                    },
+                    "information_policy": information_policy,
+                    "host_information_policy_attestation": (
+                        project_information_policy_attestation(
+                            name,
+                            information_policy,
+                        )
+                    ),
                     "evidence_refs": evidence_refs,
                     "formal_execution_evidence": {
                         "qa_verdict": qa_verdict,

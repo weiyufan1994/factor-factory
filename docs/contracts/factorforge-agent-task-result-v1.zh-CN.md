@@ -587,6 +587,10 @@ handoff
 
 Data Liaison 不得用 result 宣称已 materialize data。数据可用性必须由 catalog/QA/delivery receipt 支撑。缺口在 Agent-private output 中以 `{request_id,path,request_payload}` 内嵌；Host 验证 `factorforge_data_request_v1`、consumer 和 report-local path 后原子落盘，并在 canonical result 中替换为 `{request_id,path,sha256}`。任何 validation、ledger 或 admission 失败都必须回滚本轮 Host-created request。
 
+当 v2 Web catalog 含可用 entry 且 Data Liaison 返回 `PASS` 时，`catalog_resolution` 必须是闭合的 `factorforge_data_liaison_preformal_resolution_v1`：精确绑定 task 冻结的 catalog snapshot path/hash，至少声明一个 `design_time_reuse_hits[]`，每个 hit 只能引用 active admission hash 所绑定 catalog 内的 `base_market_dataset`，并精确匹配 S3 URI、字段子集、覆盖、Host information-policy attestation 与 producer provenance。Attestation 只从受控 `factorforge_information_policy_v1` 或已知 producer 的精确 PIT 合同生成；validator 会重算并比对，自由文本 presence 不能通过。`formal_execution_requirements` 固定为 `catalog_identity/dataset_qa/lookahead_policy/coverage/worker_read_smoke`，`formal_execution_gate` 固定为 `DEFERRED_TO_STEP3` 且不得授权执行，`generated_data_requests=[]`。派生 datamart/state、hash 错绑、缺检查、越界覆盖或额外字段均 BLOCK。
+
+v2 catalog 为空或 snapshot 为 legacy 格式时，仅兼容旧 `{reuse_hits: [], generated_data_requests: []}` 加 `data_materialization=false` 的 no-data no-op；它不构成任何数据可用性声明。只要出现 reuse claim，该兼容口立即失效。
+
 ## 12. Role Research Record Plugin
 
 非领域 role 的 `public_research_record` 使用：
@@ -626,14 +630,15 @@ factorforge_role_research_record_v1
 11. outer envelope、authority-bearing identity、Council independence attestation/formal verdict 和 canonical data-request ref 的 exact shape，以及 fallback overclaim；
 12. domain/role identity、proposal status 到 envelope status 的映射；
 13. Data Liaison 生成的 request path/file hash；
-14. plan 禁止 fallback 时的 fallback result；
-15. collection 中 isolated/independent role 的 peer-session reuse。
+14. Data Liaison v2 pre-formal PASS 的 snapshot/catalog hash、base dataset、字段、覆盖、信息政策、provenance、deferred formal checks 与 read-only permission；
+15. plan 禁止 fallback 时的 fallback result；
+16. collection 中 isolated/independent role 的 peer-session reuse。
 
 workspace-only bundle validator 当前不证明：
 
 - Host runtime receipt 对 session ID 和 staged-context 的真实性；
 - attachment MIME/size/secret scan；
-- 普通 domain/Data Liaison plugin 全部深层对象的 unknown-field strict JSON Schema closure；
+- 普通 domain plugin 全部深层对象的 unknown-field strict JSON Schema closure；
 - filesystem diff 与 declared write-set 对比。
 
 需要 stronger proof 时，必须调用 `validate_research_organization_runtime()` 并提供 Host-private ledger/trust root。该 validator 能证明 signed session/staged-context binding，但仍不提供完整 filesystem-diff 或 attachment quarantine。

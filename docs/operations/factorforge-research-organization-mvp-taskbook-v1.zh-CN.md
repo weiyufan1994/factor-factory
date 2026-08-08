@@ -693,5 +693,7 @@ Phase 3 将 signed organization runtime 接入 production Web 主链，验收顺
 13. pre-formal Quant/Validation/Council 只接受 v3 controlled-check record；任何自由文本 claim/finding/falsifier/blocker 或额外 record 字段均 BLOCK。
 14. 描述性字段清单不得激活 domain；含关系谓词从句、经济对象和可证伪目标的完整研报机制陈述必须正常路由，关键词共现不得冒充机制。
 15. result outer envelope、authority-bearing identity、Council attestation/formal verdict、artifact refs 与 canonical data-request refs 必须 exact-shape；相邻字段不能成为 pre-formal verdict 的自由文本旁路。
+16. v2 Data Liaison pre-formal base-reuse PASS 必须通过 canonical closed-contract gate；derived state 冒充 base、catalog hash 错绑、缺 formal checks、字段/覆盖越界、legacy/空 catalog 伪造 reuse 和未获 Host 结构化 attestation 的任意 policy 文本均须 BLOCK。
+17. catalog admission projection 不得复用可能跨越 24 小时 freshness 边界的 health cache；已缓存健康后以过期时点签发必须 BLOCK。
 
 Phase 3 仍不实现：同任务 plan revision/current pointer、Data delivery automatic resume、attachment quarantine、complete-dispatch directory rename 和 production factor golden-run acceptance。它们不能被本轮代码/合同 closure 冒充。

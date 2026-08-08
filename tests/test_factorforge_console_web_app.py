@@ -7,7 +7,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from http.cookiejar import CookieJar
 from pathlib import Path
@@ -174,6 +174,20 @@ def test_catalog_admission_projection_is_hash_bound_and_does_not_claim_dataset_q
         application.config.catalog_receipt.read_bytes()
     ).hexdigest()
     assert admission["formal_dataset_qa_implied"] is False
+
+
+def test_catalog_admission_projection_bypasses_cache_for_freshness(research_console):
+    from factor_factory.console.catalog_health import (
+        catalog_admission_projection,
+        catalogs_healthy,
+    )
+
+    _base_url, application = research_console
+    assert catalogs_healthy(application.config) is True
+    stale_time = datetime.now(timezone.utc) + timedelta(hours=25)
+
+    with pytest.raises(RuntimeError, match="DATA_CATALOG_UNAVAILABLE"):
+        catalog_admission_projection(application.config, now=stale_time)
 
 
 def _login_opener(base_url: str):

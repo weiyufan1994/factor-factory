@@ -210,6 +210,8 @@ Research Director 是 Host external session，不由 specialist adapter 派发�
 
 Data Liaison 的 staged workspace 同样只读。缺口 request 以完整 payload 写入其 Host-private candidate；Host 先验证 consumer/schema/path，再原子物化到 report-local `data_requests/` 并把 candidate 改写为 path/hash ref。若 result validation、ledger commit、cancel fence 或 canonical admission 失败，本轮 Host-created request 必须删除。
 
+Data Liaison 对 Host-attested base market dataset 的 pre-formal `PASS` 也必须经过 canonical validator，而不能只依赖 skill prompt。Validator 重新读取 frozen catalog snapshot，核对 active receipt 所绑定的唯一 catalog hash，并逐项验证 dataset class、S3 URI、字段、覆盖、producer provenance、read-only permission 和固定的 Step3 deferred checks。PIT/no-future 不是任意文本 presence check：Host 只从受控 `factorforge_information_policy_v1` 或已知 producer 的精确 PIT 合同生成结构化 attestation，validator 再按原始 policy 重算并要求完全相等。该路径只允许研究方案设计，不授权 formal execution；派生 state 仍要求完整 QA/read-smoke 或进入 `NEEDS_DATA`。Catalog admission projection 每次签发时直接重验 receipt freshness，不复用 health cache。
+
 ## 5. Dependency scheduler
 
 Task 只有在所有冻结 dependency role 已经：

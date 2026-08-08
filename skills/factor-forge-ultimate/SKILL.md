@@ -1,6 +1,6 @@
 ---
 name: factor-forge-ultimate
-description: Run or supervise formal end-to-end Factor Forge research. Use for Step1-6, universal conjecture and falsification work, Council synthesis, factor proof certificates, revision loops, and official research decisions.
+description: Run or supervise formal end-to-end Factor Forge research. Use for Step1-6, domain-specialist research organization, universal conjecture and falsification work, Council synthesis, factor proof certificates, revision loops, and official research decisions.
 ---
 
 # Factor Forge Ultimate
@@ -13,6 +13,56 @@ evidence, and durable knowledge writeback.
 
 Miner is a separate candidate factory. A report-led or named factor idea may
 enter Ultimate directly; do not force it through Miner.
+
+## Research Organization Contract
+
+One user-facing task maps to one factor workspace and one Host Research
+Director. Specialist Agents are internal isolated sessions, not separate
+user-visible tasks. Read:
+
+- `docs/architecture/factorforge-research-organization-v1.zh-CN.md`
+- `docs/contracts/factorforge-research-org-plan-v1.zh-CN.md`
+- `docs/contracts/factorforge-agent-task-result-v1.zh-CN.md`
+
+For a new organization-aware run, the Host must freeze and validate
+`identity/research_organization_plan.json` before specialist work. All input
+snapshots, task packets, dispatch manifests, data requests and Agent results
+must remain under
+`objects/research_organization/<report_id>/`. The Host is the only canonical
+merger; specialists return proposals or verification records and never mutate
+Step artifacts, another role's result, shared data or canonical knowledge.
+
+Route from the economic hypothesis and frozen estimand, not from field names,
+operator availability or a preferred mathematical family. Fundamental and
+Price-Volume are active domain plugins. Event/Text and Macro/Cross-Asset are
+capability-gated until their skills and runtime routes exist. A required
+unavailable domain is `WAITING_CAPABILITY`, not silent reassignment.
+
+The minimum organization is Research Director, applicable domain researcher,
+Knowledge Librarian, Data Liaison, Quant Implementation, Validation & Evidence,
+and Independent Council. Data Liaison may resolve catalogs, emit
+`data_request_v1`, and verify delivery evidence; it may not materialize data.
+`WAITING_DATA` is nonterminal and resumes only after catalog/QA/receipt
+validation. The current research-organization MVP only records this state and
+does not yet implement delivery import or result-attempt revision; do not claim
+that automatic resume exists.
+
+Every role consumes `factorforge_agent_task_v1` and returns a
+`factorforge_agent_result_v1` envelope. Public artifacts contain reproducible
+definitions, decisive derivation steps, citations, assumptions and falsifiers;
+private chain-of-thought is neither requested nor persisted. A
+`single_agent_fallback` must be declared truthfully and cannot satisfy an
+independent-session requirement. Independent Council requires a distinct real
+session, must attest review of every role frozen in its task, and cannot be
+impersonated by the Director or an authoring Agent.
+The current v1 plan sets `single_agent_fallback=false`; therefore no current
+specialist task may use fallback mode. A later contract may enable it only by
+making that permission explicit in the frozen task.
+
+A valid plan and dispatch manifest prove routing and workspace governance only.
+They do not prove that multiple Agents executed, that Council independence was
+satisfied, or that the factor passed research. Claim those stronger states only
+after the Host validates every bound result and the normal Step1-6 evidence.
 
 ## Non-Negotiable Entry Contract
 

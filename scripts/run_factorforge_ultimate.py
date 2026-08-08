@@ -28,6 +28,7 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
     write_workspace_manifest,
 )
+from factor_factory.research_org import ResearchOrganizationError, resolve_research_organization_gate
 from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
 from factor_factory.console.web_research_plan import (
     WebResearchPlanError,
@@ -754,6 +755,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--runtime-dispatch', choices=['codex', 'openclaw', 'manual_file', 'unknown'], default=None)
     ap.add_argument('--subagent-provider', default=None)
     ap.add_argument('--subagent-model', default=None)
+    ap.add_argument(
+        '--research-org-mode',
+        choices=['off', 'auto', 'required'],
+        default='auto',
+        help='Validate the workspace research-organization plan; required fails closed when absent.',
+    )
+    ap.add_argument(
+        '--research-org-plan',
+        default=None,
+        help='Explicit plan path. It must equal the active workspace Host-owned plan path.',
+    )
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--allow-legacy-research-protocol-smoke', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--proof-output', default=None)
@@ -922,6 +934,19 @@ def main() -> int:
             print('\n'.join(failures))
             return 1
     ctx = resolve_factorforge_context(args.factorforge_root, factor_workspace=factor_workspace)
+    try:
+        research_organization = resolve_research_organization_gate(
+            mode=str(args.research_org_mode or 'auto'),
+            factor_workspace=ctx.factor_workspace,
+            explicit_plan=(
+                Path(args.research_org_plan).expanduser()
+                if args.research_org_plan
+                else None
+            ),
+        )
+    except ResearchOrganizationError as exc:
+        print(str(exc))
+        return 1
     legacy_protocol_smoke = bool(
         args.allow_legacy_research_protocol_smoke
         and (
@@ -983,6 +1008,10 @@ def main() -> int:
     if ctx.factor_workspace:
         env['FACTORFORGE_FACTOR_WORKSPACE'] = str(ctx.factor_workspace)
         env['FACTORFORGE_FACTOR_WORKSPACE_MANIFEST'] = str(ctx.factor_workspace_manifest or (ctx.factor_workspace / 'manifest.json'))
+        if research_organization.get('status') == 'validated':
+            env['FACTORFORGE_RESEARCH_ORG_PLAN'] = str(
+                research_organization['plan_path']
+            )
         web_catalog_summary = ctx.factor_workspace / 'identity' / 'data_catalog_summary.json'
         if web_catalog_summary.exists() or web_catalog_summary.is_symlink():
             try:
@@ -1135,6 +1164,7 @@ def main() -> int:
         'factorforge_root': str(ctx.factorforge_root),
         'active_root': str(ctx.active_root),
         'factor_workspace': str(ctx.factor_workspace) if ctx.factor_workspace else None,
+        'research_organization': research_organization,
         'repo_root': str(ctx.repo_root),
         'manifest_path': str(manifest_path),
         'start_step': start,

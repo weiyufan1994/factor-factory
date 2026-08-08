@@ -19,6 +19,7 @@ from factor_factory.research_workspace import (
     default_workspace_root,
 )
 from factor_factory.step3.template_runtime import runtime_copy_path
+from factor_factory.research_org import write_research_organization_bundle
 from scripts.run_factorforge_ultimate import council_side_effect_snapshot, disable_provisional_step3b_handoff_for_council
 
 
@@ -195,6 +196,50 @@ def main() -> int:
         '--research-id', research_id,
         '--dry-run',
     ]), 1, BLOCK_WORKSPACE_IDENTITY_INVALID))
+    results.append(expect_rc('ultimate_research_org_required_missing_blocks', run([
+        sys.executable,
+        'scripts/run_factorforge_ultimate.py',
+        '--report-id', report_id,
+        '--start-step', '3',
+        '--end-step', '3',
+        '--factorforge-root', str(factorforge_root),
+        '--factor-workspace', str(workspace),
+        '--factor-id', factor_id,
+        '--research-id', research_id,
+        '--research-org-mode', 'required',
+        '--dry-run',
+    ]), 1, 'BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_MISSING'))
+    write_research_organization_bundle(
+        workspace=workspace,
+        request={
+            'job_id': 'job_workspace_smoke',
+            'factor_id': factor_id,
+            'research_id': research_id,
+            'report_id': report_id,
+            'title': 'Intraday liquidity pressure',
+            'hypothesis': 'Minute price-volume imbalance may reverse after a liquidity shock.',
+            'input_kind': 'hypothesis',
+        },
+    )
+    results.append(expect_rc('validate_workspace_with_research_org', run([
+        sys.executable,
+        'scripts/validate_factor_research_workspace.py',
+        '--workspace-root', str(workspace),
+        '--require-research-org',
+    ]), 0))
+    results.append(expect_rc('ultimate_research_org_required_passes', run([
+        sys.executable,
+        'scripts/run_factorforge_ultimate.py',
+        '--report-id', report_id,
+        '--start-step', '3',
+        '--end-step', '3',
+        '--factorforge-root', str(factorforge_root),
+        '--factor-workspace', str(workspace),
+        '--factor-id', factor_id,
+        '--research-id', research_id,
+        '--research-org-mode', 'required',
+        '--dry-run',
+    ]), 0))
     results.append(expect_rc('ultimate_workspace_dry_run_proof_scoped', run([
         sys.executable,
         'scripts/run_factorforge_ultimate.py',

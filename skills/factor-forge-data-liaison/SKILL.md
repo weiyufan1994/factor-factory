@@ -92,18 +92,22 @@ envelope excluding `result_sha256` itself. The nested proposal uses one of:
 - `under_specified`
 
 Map these to envelope status `PASS`, `NEEDS_DATA`, `BLOCK`, or
-`NEEDS_CLARIFICATION`, respectively. Write the envelope only to
-`objects/research_organization/<report_id>/results/<role_id>.json`. The only
-additional artifact this Skill may create is a requested
-`factorforge_data_request_v1` under the assigned report's `data_requests/`
-directory.
+`NEEDS_CLARIFICATION`, respectively. Write the envelope only to the
+Host-provided private candidate path. Do not write the workspace result path
+directly. The Host validates and atomically admits it to
+`objects/research_organization/<report_id>/results/<role_id>.json` with
+`scripts/admit_factorforge_agent_result.py`. The only additional workspace
+artifact this Skill may create is a requested `factorforge_data_request_v1`
+under the task-authorized report's `data_requests/` directory. The result must
+bind its exact path and file SHA256 so Host admission verifies it.
 
 Set `producer_mode=real_agent` only for an actual isolated Agent session with
-its real unique `session_id`. When the main session performs the role, set
-`producer_mode=single_agent_fallback` and record the actual host/main
-`session_id`; never mint an isolated-looking id. Do not claim session
-independence, independent review, or Council authority. A fallback result
-remains a liaison record for Director verification.
+its real unique `session_id`. Current v1 tasks set
+`single_agent_fallback_allowed=false`; the main/Host session therefore must not
+submit this liaison result. If a later frozen task explicitly permits fallback,
+use `producer_mode=single_agent_fallback` with the actual host/main
+`session_id`; never mint an isolated-looking id or claim independence, review,
+or Council authority.
 
 ## Hard Boundaries
 

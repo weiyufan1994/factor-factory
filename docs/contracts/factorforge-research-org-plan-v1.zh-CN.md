@@ -92,6 +92,7 @@ Plan、task、dispatch 和 result 中的路径必须为当前 workspace 下的�
   "generated_at_utc": "2026-08-08T00:00:00Z",
   "generated_by": "factorforge_host_research_director",
   "routing": {},
+  "input_snapshot_refs": [],
   "agent_registry": {},
   "role_plan": {},
   "execution_policy": {},
@@ -102,7 +103,7 @@ Plan、task、dispatch 和 result 中的路径必须为当前 workspace 下的�
 }
 ```
 
-当前 validator 检查必需合同语义、hash、identity、route、registry、role、policy 和路径；它尚未实现完整 JSON Schema unknown-field closure。不得在文档或验收中把“未知字段全部 fail closed”描述为当前能力。
+当前 validator 检查必需合同语义、hash、identity、route、冻结 input refs、registry、role、policy 和路径；它尚未实现完整 JSON Schema unknown-field closure。不得在文档或验收中把“未知字段全部 fail closed”描述为当前能力。
 
 ## 4. Identity
 
@@ -142,11 +143,15 @@ WAITING_CAPABILITY
 | Router state | Plan state |
 |---|---|
 | `ROUTED` | `ROUTED` |
-| `ROUTED_WITH_CAPABILITY_GAP` | `ROUTED` |
+| `ROUTED_WITH_CAPABILITY_GAP` | `WAITING_CAPABILITY` |
 | `UNDER_SPECIFIED` | `NEEDS_CLARIFICATION` |
 | `WAITING_CAPABILITY` | `WAITING_CAPABILITY` |
 
 Plan 中的 `workflow.states` 只是目标流程声明，不是已实现的 persisted state machine。当前没有 CAS transition、state revision、event append 或恢复执行器。
+
+## 5.1 Frozen Input References
+
+`input_snapshot_refs` 由 Host builder 写入并纳入 `plan_sha256`。它至少包含 Host 有效 request snapshot，并可包含 authoring、knowledge 和 catalog snapshot；路径、顺序、content hash 和 `hash_kind=json_content` 均冻结。每个 task 的 `input_artifacts` 必须逐项等于该列表，不能通过重签 task/dispatch 替换输入集合。
 
 ## 6. Routing
 
@@ -319,7 +324,7 @@ Role plan 是 task generation plan，不是角色已执行或已满足的声明�
 - `single_agent_fallback=false`；
 - artifact 禁止 private chain-of-thought。
 
-当前没有 fallback scheduler。Result 可以声明 `producer_mode=single_agent_fallback`，但不能据此冒充 independent Council；详细规则见 Agent Task / Result 合同。
+当前没有 fallback scheduler，且所有生成 task 的 `single_agent_fallback_allowed=false`。因此当前 result 声明 `producer_mode=single_agent_fallback` 会 BLOCK。未来若引入显式允许，仍不得据此冒充 independent Council；详细规则见 Agent Task / Result 合同。
 
 ## 10. Workflow Declaration
 
@@ -436,7 +441,7 @@ identity/web_research_request.json
 正常 build 写入：
 
 - frozen plan；
-- 当前存在的四类 input snapshot；
+- Host 有效 request snapshot，以及当前存在的 authoring/knowledge/catalog snapshots；
 - required role tasks；
 - dispatch manifest。
 
@@ -495,11 +500,11 @@ CLI 将合同错误写到 stderr 并以非零 return code 退出。顶层错误�
 1. Plan revisions、`current.json` pointer 和 supersedes chain；
 2. persisted organization state、state revision、CAS 和 append-only events；
 3. real Agent runtime adapter、session receipt、parallel dispatch/retry/cancel；
-4. Host-private ingress、secret scan、complete-dispatch staging 和 directory rename；
-5. collection-level peer-session uniqueness/blindness；
+4. runtime private transport、signed session receipt、secret scan、complete-dispatch staging 和 directory rename；
+5. blind-context 的 runtime proof；
 6. Director synthesis、measurement program freeze 和 Ultimate state advancement；
 7. Data delivery import/resume；
-8. Console Research Team projection；
+8. receipt/attempt 驱动的完整 Console Research Team runtime projection；
 9. production factor research 与 formal proof eligibility integration。
 
 ## 17. 当前 MVP 验收

@@ -499,12 +499,15 @@ def build_agent_prompt(
         workspace / "identity" / "data_catalog_summary.json",
         workspace / "identity" / "factor_knowledge_summary.json",
         workspace / "identity" / "web_research_authoring_contract.json",
+        workspace / "identity" / "research_organization_plan.json",
         workspace / "identity" / "web_research_plan.json",
     ]
     packet_list = "\n".join(f"- {path}" for path in dict.fromkeys(packet_files))
     return f"""# Factor Forge Web Research Task
 
-You are the sole runtime researcher for one isolated Factor Forge task. {action}
+You are the initial authoring agent for one isolated Factor Forge task. {action}
+The Host-owned research-organization plan defines the wider specialist roles;
+this authoring session does not impersonate those roles or an independent Council.
 
 ## Immutable identity
 
@@ -558,7 +561,7 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 11. Network egress is restricted to the fixed model broker. Do not attempt to reach S3, Data API, catalog storage, raw data, arbitrary websites, or any other network destination, and do not attempt to bypass the proxy.
 12. The runtime has already completed operator-owned model, network, credential and Data API readiness checks. Never enumerate environment variables or credential material; never run `env`/`printenv`, read `/proc/*/environ`, query instance metadata, inspect AWS credential/config files, or inspect the OpenClaw auth database. Never print, hash, transform, persist or return any API key, access key, session token, password or broker token. If credentials appear unexpectedly, stop and record a BLOCK without reproducing them.
 13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the task-local runtime packet and stop after the research plan or named resume artifact is complete; the Host alone uses the Data API through its public interface and pinned catalog after agent authoring exits.
-14. Do not recursively dump documents or inspect internal schemas. After reading the six packet files, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then complete the plan or pause artifact. The read-only authoring contract and preflight output are sufficient to correct plan syntax; do not inspect validator source.
+14. Do not recursively dump documents or inspect internal schemas. After reading the seven packet files, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then complete the plan or pause artifact. The read-only authoring contract, organization plan and preflight output are sufficient to correct plan syntax; do not inspect validator source.
 
 The host derives authoring status from the validated plan, execution ledger and private
 agent-run receipt. Do not create a separate completion-status artifact or claim that formal

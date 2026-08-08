@@ -72,18 +72,21 @@ The nested proposal uses one of:
 - `out_of_domain`
 
 Map these to envelope status `PASS`, `NEEDS_CLARIFICATION`, `NEEDS_DATA`, or
-`BLOCK`, respectively. Write the envelope only to
-`objects/research_organization/<report_id>/results/<role_id>.json`, using the
-exact report and role from the task. The proposal is not the canonical
+`BLOCK`, respectively. Write the envelope only to the Host-provided private
+candidate path. Do not write the workspace result path directly. The Host
+validates and atomically admits it to
+`objects/research_organization/<report_id>/results/<role_id>.json` with
+`scripts/admit_factorforge_agent_result.py`. The proposal is not the canonical
 measurement program and may not modify Step artifacts, data, code, knowledge,
 or another Agent's result.
 
 Set `producer_mode=real_agent` only for an actual isolated Agent session with
-its real unique `session_id`. When the main session performs the role, set
-`producer_mode=single_agent_fallback` and record the actual host/main
-`session_id`; never mint an isolated-looking id. Do not claim session
-independence, independent review, or Council authority. A fallback proposal
-always remains subject to Director review.
+its real unique `session_id`. Current v1 tasks set
+`single_agent_fallback_allowed=false`; the main/Host session therefore must not
+submit this specialist result. If a later frozen task explicitly permits
+fallback, use `producer_mode=single_agent_fallback` with the actual host/main
+`session_id`; never mint an isolated-looking id or claim independence, review,
+or Council authority.
 
 ## Hard Boundaries
 

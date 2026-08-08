@@ -19,6 +19,11 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
 )
 from factor_factory.runtime_context import load_runtime_manifest
+from factor_factory.research_org import (
+    PLAN_RELATIVE_PATH,
+    ResearchOrganizationError,
+    validate_research_organization_bundle,
+)
 
 
 def _workspace_from_runtime_manifest(path: Path) -> tuple[Path, dict]:
@@ -34,6 +39,11 @@ def main() -> int:
     ap.add_argument("--workspace-root")
     ap.add_argument("--runtime-manifest")
     ap.add_argument("--assert-path", action="append", default=[], help="Extra LABEL=PATH assertion that PATH is under workspace.")
+    ap.add_argument(
+        "--require-research-org",
+        action="store_true",
+        help="Require and validate the Host-owned research-organization bundle.",
+    )
     args = ap.parse_args()
     if not args.workspace_root and not args.runtime_manifest:
         print(f"{BLOCK_WORKSPACE_MANIFEST_INVALID}: pass --workspace-root or --runtime-manifest", file=sys.stderr)
@@ -77,6 +87,15 @@ def main() -> int:
             assert_path_under_workspace(Path(value), workspace_root, label=label)
         except ValueError as exc:
             failures.append(str(exc))
+    research_org = None
+    research_org_path = workspace_root / PLAN_RELATIVE_PATH
+    if args.require_research_org or research_org_path.exists() or research_org_path.is_symlink():
+        try:
+            research_org = validate_research_organization_bundle(
+                workspace=workspace_root
+            )
+        except ResearchOrganizationError as exc:
+            failures.append(str(exc))
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
@@ -85,6 +104,7 @@ def main() -> int:
         "workspace_root": str(workspace_root),
         "workspace_manifest": str(manifest_path),
         "runtime_manifest": str(args.runtime_manifest) if args.runtime_manifest else None,
+        "research_organization": research_org,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

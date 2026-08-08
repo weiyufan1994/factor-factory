@@ -739,13 +739,40 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
     ]
     job.result["backtest_center"]["charts"] = {"gross_nav_chart": chart_id}
     job.result["backtest_center"]["consistency"] = {"status": "CONFLICT"}
+    job.result["research_organization"] = {
+        "contract_version": "factorforge_research_org_plan_v1",
+        "state": "ROUTED",
+        "lead_domain": "price_volume",
+        "supporting_domains": ["fundamental"],
+        "required_roles": [
+            "research_director",
+            "price_volume_researcher",
+            "fundamental_researcher",
+            "knowledge_librarian",
+            "data_liaison",
+            "quant_implementation",
+            "validation_evidence",
+            "independent_council",
+        ],
+        "deferred_roles": [],
+        "capability_gaps": [],
+        "dispatch_task_count": 8,
+        "validated_result_count": 0,
+        "independence_satisfied": False,
+    }
     html = render_job(job, store.list_messages(job.job_id), "csrf-token")
 
     assert "Chatbox" in html
     assert "Research Notebook" in html
+    assert "研究团队" in html
+    assert "Price-Volume" in html
+    assert "Independent Council" in html
+    assert "尚未满足" in html
     assert ">Math<" in html
     assert "回测中心" in html
     assert html.index('href="#conversation"') < html.index('href="#backtest"')
+    assert html.index('href="#conversation"') < html.index('href="#research-organization"')
+    assert html.index('href="#research-organization"') < html.index('href="#backtest"')
     assert html.index('href="#backtest"') < html.index('href="#math"')
     assert html.index('href="#math"') < html.index('href="#notebook"')
     assert html.index('<section id="conversation"') < html.index('<section id="backtest"')

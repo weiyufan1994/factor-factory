@@ -13,7 +13,9 @@
     "scripts/run_factorforge_humphrey_llm_provider.py"
   ],
   "research_protocol_and_workspace_ops": [
+    "scripts/admit_factorforge_agent_result.py",
     "scripts/apply_factor_research_workspace_migration.py",
+    "scripts/build_factorforge_research_org_plan.py",
     "scripts/build_factorforge_component_obligation_report.py",
     "scripts/build_factorforge_metric_verifier_reports.py",
     "scripts/build_factorforge_window_evidence.py",
@@ -23,6 +25,7 @@
     "scripts/summarize_factorforge_run_artifacts.py",
     "scripts/validate_factor_research_workspace.py",
     "scripts/validate_factorforge_factor_proof.py",
+    "scripts/validate_factorforge_research_org.py",
     "scripts/validate_factorforge_research_protocol.py",
     "scripts/write_factorforge_evaluation_release_chain.py",
     "scripts/write_factorforge_research_protocol.py"
@@ -103,6 +106,7 @@
     "scripts/run_factorforge_promotion_proof_gate_smoke.py",
     "scripts/run_factorforge_qlib_status_taxonomy_smoke.py",
     "scripts/run_factorforge_research_protocol_smoke.py",
+    "scripts/run_factorforge_research_org_smoke.py",
     "scripts/run_factorforge_standard_formula_fields_contract_smoke.py",
     "scripts/run_factorforge_state_reuse_contract_smoke.py",
     "scripts/run_factorforge_step3_law_qlib_knowledge_smoke.py",

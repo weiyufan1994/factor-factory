@@ -68,6 +68,11 @@ from factor_factory.console.worktree_allocator import (
 )
 from factor_factory.console.workspace_transaction import workspace_transaction_lock
 from factor_factory.research_workspace import load_workspace_manifest, validate_workspace_manifest
+from factor_factory.research_org import (
+    load_research_organization_plan,
+    validate_research_organization_bundle,
+    write_research_organization_bundle,
+)
 from factor_factory.mechanism_math.main_agent_memo import (
     CONTRACT_VERSION,
     MAX_MECHANISM_MEMO_REVISIONS,
@@ -1391,6 +1396,26 @@ class ResearchRunService:
             isolation_failures = audit_factor_worktree(worktree, workspace)
             if isolation_failures:
                 raise RuntimeError(f"{BLOCK_ISOLATION_AUDIT_FAILED}: {'; '.join(isolation_failures)}")
+            organization_plan_path = (
+                workspace / "identity" / "research_organization_plan.json"
+            )
+            if organization_plan_path.is_symlink() or (
+                organization_plan_path.exists()
+                and not organization_plan_path.is_file()
+            ):
+                raise RuntimeError(
+                    "BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_INVALID: unsafe plan path"
+                )
+            if organization_plan_path.is_file():
+                organization_validation = validate_research_organization_bundle(
+                    workspace=workspace
+                )
+                organization_plan = load_research_organization_plan(workspace)
+            else:
+                # Jobs created before the v1 organization contract remain
+                # resumable, but they receive no organization assurance.
+                organization_validation = None
+                organization_plan = None
             attested_workspace = self._snapshot_workspace_evidence(
                 current_job,
                 workspace,
@@ -1434,6 +1459,45 @@ class ResearchRunService:
                 ),
                 denied_values,
             )
+            if organization_plan is not None and organization_validation is not None:
+                organization_roles = organization_plan.get("role_plan") or {}
+                result["research_organization"] = {
+                    "contract_version": organization_plan.get("contract_version"),
+                    "state": organization_plan.get("state"),
+                    "lead_domain": organization_validation.get("lead_domain"),
+                    "supporting_domains": organization_validation.get("supporting_domains") or [],
+                    "required_roles": organization_roles.get("required_roles") or [],
+                    "deferred_roles": organization_roles.get("deferred_roles") or [],
+                    "capability_gaps": (
+                        organization_plan.get("routing", {}).get("capability_gaps") or []
+                    ),
+                    "dispatch_task_count": organization_validation.get("task_count", 0),
+                    "validated_result_count": organization_validation.get("result_count", 0),
+                    "execution_state": organization_validation.get("execution_state"),
+                    "independence_satisfied": organization_validation.get(
+                        "independence_satisfied", False
+                    ),
+                    "assurance": (
+                        "validated_results_and_independence"
+                        if organization_validation.get("independence_satisfied") is True
+                        else "routing_and_dispatch_contract_only"
+                    ),
+                }
+            else:
+                result["research_organization"] = {
+                    "contract_version": None,
+                    "state": "LEGACY_NOT_PRESENT",
+                    "lead_domain": None,
+                    "supporting_domains": [],
+                    "required_roles": [],
+                    "deferred_roles": [],
+                    "capability_gaps": [],
+                    "dispatch_task_count": 0,
+                    "validated_result_count": 0,
+                    "execution_state": "LEGACY_NOT_PRESENT",
+                    "independence_satisfied": False,
+                    "assurance": "legacy_no_research_organization_contract",
+                }
             result["host_attestation_id"] = host_attestation_id
             result["model_execution"] = {
                 "provider": agent_result.provider,
@@ -2554,6 +2618,12 @@ class ResearchRunService:
             job.research_id,
             "--factor-workspace",
             str(workspace),
+            "--research-org-mode",
+            (
+                "required"
+                if (workspace / "identity" / "research_organization_plan.json").is_file()
+                else "auto"
+            ),
         ]
         ultimate = run_host_command(
             "run_factorforge_ultimate",
@@ -3543,6 +3613,13 @@ class ResearchRunService:
                 preserve_existing_plan=preserve_plan,
                 trusted_resume_start_step=trusted_resume_start_step,
             )
+            research_org_plan = workspace / "identity" / "research_organization_plan.json"
+            if not preserve_plan or research_org_plan.is_file():
+                write_research_organization_bundle(
+                    workspace=workspace,
+                    request=request_payload,
+                    preserve_existing=preserve_plan,
+                )
         except Exception:
             if preserve_plan:
                 try:

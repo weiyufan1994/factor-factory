@@ -114,6 +114,7 @@ def render_job(job: ResearchJob, messages: list[ResearchMessage], csrf_token: st
         _identity_band(job),
         _workspace_nav(),
         _conversation_section(job, messages, result, csrf_token),
+        _research_organization_section(result),
         _backtest_center_section(job, result),
         _stage_timeline(job, result),
         _decision_panel(job, result, csrf_token),
@@ -247,10 +248,75 @@ def _workspace_nav() -> str:
     return """
     <nav class="workspace-nav" aria-label="研究工作区">
       <a href="#conversation">Chatbox</a>
+      <a href="#research-organization">研究团队</a>
       <a href="#backtest">回测中心</a>
       <a href="#math">Math</a>
       <a href="#notebook">Research Notebook</a>
     </nav>
+    """
+
+
+def _research_organization_section(result: dict[str, Any]) -> str:
+    organization = (
+        result.get("research_organization")
+        if isinstance(result.get("research_organization"), dict)
+        else {}
+    )
+    if not organization:
+        return """
+        <section id="research-organization" class="content-section organization-section">
+          <div class="section-heading"><div><p class="section-kicker">RESEARCH ORGANIZATION</p><h2>研究团队</h2></div><span class="evidence-badge">等待路由</span></div>
+        </section>
+        """
+    role_labels = {
+        "research_director": "Research Director",
+        "fundamental_researcher": "Fundamental",
+        "price_volume_researcher": "Price-Volume",
+        "event_researcher": "Event / Text",
+        "macro_cross_asset_researcher": "Macro / Cross-Asset",
+        "knowledge_librarian": "Knowledge Librarian",
+        "data_liaison": "Data Liaison",
+        "quant_implementation": "Quant Implementation",
+        "validation_evidence": "Validation & Evidence",
+        "independent_council": "Independent Council",
+    }
+    required = organization.get("required_roles")
+    required = required if isinstance(required, list) else []
+    deferred = organization.get("deferred_roles")
+    deferred = deferred if isinstance(deferred, list) else []
+    role_cells = []
+    for role_id in required:
+        role_cells.append(
+            f'<div class="organization-role"><span>已规划</span><strong>{escape(role_labels.get(str(role_id), str(role_id)))}</strong></div>'
+        )
+    for role_id in deferred:
+        role_cells.append(
+            f'<div class="organization-role deferred"><span>待前置条件</span><strong>{escape(role_labels.get(str(role_id), str(role_id)))}</strong></div>'
+        )
+    lead = str(organization.get("lead_domain") or "待定")
+    supporting = organization.get("supporting_domains")
+    supporting = supporting if isinstance(supporting, list) else []
+    gaps = organization.get("capability_gaps")
+    gaps = gaps if isinstance(gaps, list) else []
+    task_count = int(organization.get("dispatch_task_count") or 0)
+    result_count = int(organization.get("validated_result_count") or 0)
+    independence = organization.get("independence_satisfied") is True
+    state = str(organization.get("state") or "UNKNOWN")
+    gap_text = ", ".join(str(item) for item in gaps) if gaps else "无"
+    support_text = ", ".join(str(item) for item in supporting) if supporting else "无"
+    independence_text = "已满足" if independence else "尚未满足"
+    return f"""
+    <section id="research-organization" class="content-section organization-section">
+      <div class="section-heading"><div><p class="section-kicker">RESEARCH ORGANIZATION</p><h2>研究团队</h2></div><span class="evidence-badge {'badge-formal' if independence else 'badge-agent'}">{escape(state)}</span></div>
+      <div class="organization-summary">
+        <div><span>主领域</span><strong>{escape(lead)}</strong></div>
+        <div><span>协同领域</span><strong>{escape(support_text)}</strong></div>
+        <div><span>任务 / 已验结果</span><strong>{task_count} / {result_count}</strong></div>
+        <div><span>独立性</span><strong>{escape(independence_text)}</strong></div>
+        <div><span>能力缺口</span><strong>{escape(gap_text)}</strong></div>
+      </div>
+      <div class="organization-roles">{''.join(role_cells)}</div>
+    </section>
     """
 
 
@@ -1471,6 +1537,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .status-badge { display:inline-flex; min-height:26px; align-items:center; padding:3px 8px; border:1px solid var(--line); border-radius:999px; white-space:nowrap; font-size:12px; font-weight:700; }.status-researching,.status-verifying,.status-allocating { color:var(--blue); background:var(--blue-soft); border-color:#bad4df; }.status-completed { color:var(--green); background:var(--green-soft); border-color:#b9d8c7; }.status-blocked,.status-failed { color:var(--red); background:var(--red-soft); border-color:#e7bdb7; }.status-review_required,.status-queued { color:var(--amber); background:var(--amber-soft); border-color:#e6d09f; }
 .verdict-accept{color:var(--green)}.verdict-reject,.verdict-block{color:var(--red)}.verdict-iterate,.verdict-partial{color:var(--amber)}
 .research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label { font-weight:700; }.field input,.field textarea,.field select,.fixed-contract { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.fixed-contract { background:#f3f6f5; color:var(--muted); }.field textarea { resize:vertical; min-height:160px; }.span-2 { grid-column:span 2; }.semantic-resolution { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; margin:0; padding:14px; border:1px solid var(--line); }.semantic-resolution legend { padding:0 6px; color:var(--muted); font-weight:700; }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
+.organization-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; }.organization-summary>div { min-width:0; padding:12px; border-right:1px solid var(--line); }.organization-summary>div:last-child { border-right:0; }.organization-summary span,.organization-role span { display:block; color:var(--muted); font-size:11px; }.organization-summary strong,.organization-role strong { display:block; margin-top:4px; overflow-wrap:anywhere; }.organization-roles { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); border-top:0; background:#fff; }.organization-role { min-width:0; min-height:72px; padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.organization-role.deferred { background:#f3f6f5; color:var(--muted); }
 .breadcrumbs { display:flex; gap:8px; color:var(--muted); margin-bottom:22px; }.breadcrumbs a { color:var(--blue); }.detail-heading { align-items:flex-start; }.detail-heading>div { width:100%; min-width:0; max-width:900px; }.idea-summary { max-width:900px; white-space:pre-line; overflow-wrap:anywhere; color:#3d4a50; font-size:15px; }.identity-band { margin-top:22px; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; }.identity-band div { padding:13px 15px; border-right:1px solid var(--line); display:grid; gap:2px; }.identity-band div:last-child{border-right:0}.identity-band span { color:var(--muted); font-size:12px; }.identity-band strong { overflow-wrap:anywhere; }
 .stage-list { list-style:none; margin:12px 0 0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:6px; overflow:hidden; }.stage { min-height:70px; padding:13px; display:flex; gap:10px; align-items:flex-start; background:#fff; border-right:1px solid var(--line); }.stage:last-child{border-right:0}.stage-dot { width:9px; height:9px; border-radius:50%; margin-top:6px; background:#aab3b6; flex:none; }.stage>div { display:grid; }.stage span:last-child { color:var(--muted); font-size:12px; }.stage-done .stage-dot,.stage-pass .stage-dot{background:var(--green)}.stage-active .stage-dot{background:var(--blue)}.stage-blocked .stage-dot{background:var(--red)}
 .decision-panel { margin-top:26px; padding:18px; border:1px solid var(--line); border-left:4px solid var(--blue); background:#fff; border-radius:5px; }.decision-panel.verdict-accept{border-left-color:var(--green)}.decision-panel.verdict-reject,.decision-panel.verdict-block{border-left-color:var(--red)}.decision-head { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }.decision-head div { display:grid; }.decision-head span { color:var(--muted); font-size:12px; }.decision-head strong { font-size:16px; }.decision-list { margin-top:12px; }.decision-list ul { margin:6px 0 0; padding-left:20px; }
@@ -1491,6 +1558,6 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .backtest-band { margin-top:24px; }.backtest-band h3 { margin:0 0 10px; font-size:15px; }.metric-cell small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.chart-grid figcaption { display:flex; justify-content:space-between; gap:12px; }.chart-grid figcaption span { color:var(--green); font-size:10px; font-weight:800; }.chart-grid figcaption .chart-evidence-conflict { color:var(--red); }.table-scroll { overflow:auto; border:1px solid var(--line); background:#fff; }.table-scroll table { width:100%; border-collapse:collapse; }.table-scroll th,.table-scroll td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }.table-scroll th:first-child,.table-scroll td:first-child { text-align:left; }.table-scroll thead th { color:var(--muted); background:#eef1f0; font-size:12px; }.annual-table { min-width:480px; }.module-table table { min-width:520px; }.module-table th:first-child { width:70%; }.module-state { display:inline-block; min-width:118px; padding:2px 6px; border:1px solid var(--line); text-align:center; font-size:10px; font-weight:800; }.module-available { color:var(--green); background:var(--green-soft); }.module-not_produced { color:var(--muted); background:#eef1f0; }.module-invalid_evidence,.module-evidence_conflict { color:var(--red); background:var(--red-soft); }.return-matrix table { min-width:1080px; }.return-matrix td { font-variant-numeric:tabular-nums; }.return-positive { color:var(--green); background:#f1f8f4; }.return-negative { color:var(--red); background:#fff3f1; }.quantile-table table { min-width:800px; }.risk-turnover-stack { display:grid; gap:12px; }.risk-table table { min-width:900px; }.turnover-table table { min-width:620px; }.provenance-table table { min-width:900px; }.provenance-table th:first-child { width:190px; }.provenance-table td:nth-child(2) { max-width:600px; white-space:normal; overflow-wrap:anywhere; text-align:left; }.provenance-table a { color:var(--blue); }.evidence-conflict-panel { margin-top:18px; padding:14px; border-left:4px solid var(--red); background:var(--red-soft); color:var(--red); }.evidence-conflict-panel ul { margin:8px 0 0; padding-left:20px; }.evidence-conflict-panel li { margin:5px 0; }.evidence-conflict-panel li span { margin-left:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }.missing-proof { padding:12px; margin:0; color:var(--muted); background:#fff; border:1px dashed #aeb8bc; }.missing-proof p { margin:4px 0 0; }.empty-inline { padding:14px; margin:0; color:var(--muted); }.mutation-panel { margin:12px 0; padding:14px; border-left:4px solid var(--amber); background:var(--amber-soft); }.council-synthesis>strong,.mutation-panel>strong { display:block; margin-bottom:6px; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
 .login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }.dashboard-error { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-top:18px; border-radius:4px; }.dashboard-error div { display:grid; gap:2px; }.dashboard-error a { flex:none; color:var(--red); font-weight:700; }
-@media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes,.model-comparison{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}.math-contract-equation{grid-template-columns:1fr;gap:6px}}
-@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form,.semantic-resolution{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.semantic-contract-grid{grid-template-columns:1fr}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}}
+@media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes,.model-comparison{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}.math-contract-equation{grid-template-columns:1fr;gap:6px}.organization-summary{grid-template-columns:repeat(2,1fr)}.organization-roles{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form,.semantic-resolution{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.semantic-contract-grid{grid-template-columns:1fr}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}.organization-summary,.organization-roles{grid-template-columns:1fr}.organization-summary>div{border-right:0;border-bottom:1px solid var(--line)}}
 """

@@ -14,7 +14,7 @@
 factorforge_agent_result_v1.public_research_record
 ```
 
-当前 MVP 生成 task/dispatch，并能校验已有 result；它不创建真实 Agent session，不实现 Host-private ingress、attachments staging 或 dispatch 级目录原子发布。
+当前 MVP 生成 task/dispatch，能校验 result collection，并能由 Host 从 caller-provided 私有候选 JSON 原子 admit 单个 result；它不创建真实 Agent session，也不实现 runtime 私有传输、attachments quarantine 或 dispatch 级目录原子发布。
 
 ## 1. 当前路径与所有权
 
@@ -42,7 +42,6 @@ factorforge_agent_result_v1.public_research_record
 
 ```text
 <workspace>/org/**
-<host_private_root>/**
 <workspace>/staging/**
 ```
 
@@ -51,8 +50,8 @@ factorforge_agent_result_v1.public_research_record
 - Host builder 写 plan、captured input、task 和 dispatch manifest；
 - task 的 `expected_result_path` 冻结 role result 的 canonical workspace path；
 - Data Liaison 的额外 write scope 仅为当前 report 的 `data_requests/**`；
-- 当前代码只验证结果文件，不实现真实 Agent 到 Host-private ingress 的传输；
-- 当前单文件写入使用 temp file + `os.replace()`，不等于 complete-dispatch atomic publish。
+- `scripts/admit_factorforge_agent_result.py` 负责校验私有候选并写入 expected path；真实 Agent 到 Host 的安全传输和 session receipt 仍由未来 runtime 提供；
+- Builder artifact 使用 temp file + `os.replace()`；result admission 在 frozen plan 文件锁下使用 temp file + atomic hard-link create，串行执行跨 role session 检查并禁止覆盖既有 canonical result。两者都不等于 complete-dispatch atomic publish。
 
 ## 2. Agent Task v1
 
@@ -104,6 +103,11 @@ task_04_price_volume_researcher
   "expected_result_path": "objects/research_organization/REPORT_ID/results/price_volume_researcher.json",
   "result_envelope_contract": "factorforge_agent_result_v1",
   "output_contract": "factorforge_domain_research_proposal_v1",
+  "result_ingress": {
+    "mode": "host_validated_atomic_admission",
+    "agent_direct_workspace_write_allowed": false,
+    "admission_script": "scripts/admit_factorforge_agent_result.py"
+  },
   "session_policy": {},
   "research_record_policy": {},
   "created_by": "factorforge_host_research_director",
@@ -111,7 +115,7 @@ task_04_price_volume_researcher
 }
 ```
 
-当前 validator 检查合同版本、hash、identity、plan binding、registry role snapshot、expected result/write scope 和 input artifact hash。当前尚未实现完整 unknown-field allowlist。
+当前 validator 检查合同版本、hash、identity、plan binding、registry role snapshot、deterministic task ID、expected result/write scope、Host ingress policy 和 input artifact hash。Task 的 `input_artifacts` 还必须逐项等于 plan 冻结的 `input_snapshot_refs`。`tasks/` 必须精确等于 dispatch 引用集合，`results/` 只允许当前 required roles 的 expected result 文件；Data Liaison result 的 `generated_data_requests` 必须精确覆盖其 report-local `data_requests/` 普通文件集合。当前尚未实现完整 unknown-field allowlist。
 
 ## 3. Task Binding
 
@@ -175,7 +179,7 @@ PENDING
 
 - 没有 dependency 的 task 为 `READY`；
 - 有 dependency 的 task 为 `PENDING`；
-- 当前 MVP 不实现 dependency scheduler，不会自动把 `PENDING` 更新为 `READY`。
+- 当前 MVP 不实现 dependency scheduler，不会持久化地把 `PENDING` 更新为 `READY`；Host admission 仍会要求所有 `depends_on_roles` 结果已存在且 status 为 `PASS`。
 
 ### 4.3 Dependency 规则
 
@@ -194,14 +198,16 @@ independent_council
   <- research_director
 ```
 
-Intake/domain tasks 当前没有 task dependency。Dependency 是 manifest policy，不是 predecessor 已完成的证明。
+Intake/domain tasks 当前没有 task dependency。Task 文件中的 dependency 仍是冻结 policy；是否已满足由每次 Host admission 在 plan 文件锁内读取并验证 canonical predecessor results 决定，而不是靠 task status 字符串推断。
+
+Independent Council task 还冻结 `required_review_role_ids`，其值为当前 `required_roles` 中除 Council 自身之外的完整有序列表。它比直接 dependency 更宽，用于约束 Council attestation 必须覆盖本轮全部 canonical role results。
 
 ## 5. Input Artifacts
 
-Builder 对以下已存在的文件生成 captured snapshot：
+Builder 始终捕获 Host 实际用于路由的有效 request payload，并对其余三个已存在文件生成 captured snapshot：
 
 ```text
-identity/web_research_request.json
+host_request_payload
 identity/web_research_authoring_contract.json
 identity/factor_knowledge_summary.json
 identity/data_catalog_summary.json
@@ -218,12 +224,15 @@ Snapshot 合同：
 ```json
 {
   "contract_version": "factorforge_research_org_input_snapshot_v1",
-  "source_path": "identity/web_research_request.json",
-  "source_sha256": "<source file sha256>",
+  "source_path": "host_request_payload",
+  "source_hash_kind": "json_content",
+  "source_sha256": "<captured payload sha256>",
   "captured_payload": {},
   "snapshot_sha256": "<json content sha256>"
 }
 ```
+
+其他文件快照的 `source_path` 是 workspace-relative file path，`source_hash_kind=file_bytes`，`source_sha256` 是源文件字节 SHA-256。
 
 Task 的 `input_artifacts` 只引用：
 
@@ -235,7 +244,7 @@ Task 的 `input_artifacts` 只引用：
 }
 ```
 
-Validator 要求 snapshot 为当前 workspace 内的普通文件、contract/hash 一致且不得是 symlink。
+Validator 要求 snapshot 为当前 workspace 内的普通文件、contract/hash 一致且不得是 symlink；对 Host request 还会验证有效 identity、重算 router，并要求 route 与 frozen plan 完全一致。
 
 ## 6. Scope 与 Session Policy
 
@@ -263,7 +272,7 @@ Task validator 要求 `expected_result_path` 位于其 `write_scopes`。当前�
 {
   "requirement": "isolated_session",
   "independence_class": "domain_analysis",
-  "single_agent_fallback_allowed": true
+  "single_agent_fallback_allowed": false
 }
 ```
 
@@ -408,7 +417,7 @@ Council result 还可包含：
 {
   "independence_attestation": {
     "independence_satisfied": true,
-    "reviewed_role_ids": []
+    "reviewed_role_ids": ["research_director", "knowledge_librarian", "data_liaison", "price_volume_researcher", "quant_implementation", "validation_evidence"]
   }
 }
 ```
@@ -548,12 +557,15 @@ factorforge_role_research_record_v1
 9. private reasoning key 的递归阻断；
 10. `artifact_refs` 的 workspace-relative path、ordinary-file 和 SHA-256；
 11. Council independence attestation 和 fallback overclaim。
+12. domain/role identity、proposal status 到 envelope status 的映射；
+13. Data Liaison 生成的 request path/file hash；
+14. plan 禁止 fallback 时的 fallback result；
+15. collection 中 isolated/independent role 的 peer-session reuse。
 
 当前未实现：
 
-- Host runtime receipt 对 `session_id` 的真实性证明；
-- bundle validator 自动汇总全部 peer session IDs；
-- result collection 级 completeness/blindness；
+- Host runtime receipt 对 session ID 真实性和 blind-context 的证明；
+- blind-context 与 declared filesystem diff 的运行时证明；
 - attachment MIME/size/secret scan；
 - unknown-field strict JSON Schema closure；
 - filesystem diff 与 declared write-set 对比。
@@ -566,15 +578,18 @@ factorforge_role_research_record_v1
 
 - 必须存在 `independence_attestation`；
 - `independence_satisfied` 必须为 `true`；
-- 若调用 validator 时显式传入 peer session IDs，Council `session_id` 不得复用其中任何一个。
+- `reviewed_role_ids` 必须逐项等于 task 冻结的 `required_review_role_ids`；
+- Council `session_id` 不得复用 collection 中其他 role 的 session。
 
 ### `producer_mode=single_agent_fallback`
+
+当前 v1 plan 对所有 task 都生成 `single_agent_fallback_allowed=false`，因此任何当前 result 使用该 mode 都会先命中 `fallback_not_allowed`。以下规则保留为未来显式允许 fallback 时仍必须满足的独立性下界：
 
 - `independence_satisfied` 必须为 `false`；
 - result 不得包含 `formal_independent_verdict`；
 - fallback result 不能证明 independent Council 已完成。
 
-当前 bundle validator 调用 result validator 时没有自动传入全体 peer session IDs，因此 collection-level uniqueness 是 Future Phase，不能列为当前验收已闭环。
+当前 bundle validator 会自动汇总全体已存在 result 的 peer session IDs；所有声明 `isolated_session` 或 `independent_session` 的 real Agent result 都不得复用 session。该校验不等于 runtime receipt 的真实性证明。
 
 ## 15. Content Hash
 
@@ -605,8 +620,7 @@ python3 scripts/validate_factorforge_research_org.py \
 ```
 
 - 默认：验证 plan/dispatch/tasks，并验证已经存在的 results；
-- `--require-results`：额外要求所有当前 `READY` task result 存在；
-- `PENDING` task 不因缺 result 而在该选项下 BLOCK；
+- `--require-results`：额外要求 dispatch 中所有 task result 存在；
 - validator 不运行 task，不更新 task status，也不推进 organization state。
 
 ## 17. Blocker Tokens
@@ -635,14 +649,14 @@ BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_INVALID
 
 1. Agent runtime adapter 与独立 session 创建；
 2. attempt/dispatch/session receipts；
-3. Host-private ingress；
+3. runtime-to-Host private transport、signed session receipt 与 secret scan；
 4. attachment quarantine、MIME/size/secret scan；
 5. complete-dispatch staging-directory rename；
-6. result collection completeness 与 peer-session uniqueness；
+6. blind-context runtime proof 与 declared filesystem-diff proof；
 7. retry/cancel/owned-session termination；
 8. task dependency scheduler 与 persisted state transitions；
 9. Director synthesis 和 canonical merge pipeline；
-10. Console/UI 的 role progress projection。
+10. receipt/attempt 驱动的完整 Console/UI role progress projection。
 
 ## 19. 当前 MVP 验收
 
@@ -657,4 +671,4 @@ BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_INVALID
 7. `factorforge_domain_research_proposal_v1` 位于 outer `public_research_record`；
 8. inner contract、最低字段、artifact hash 和 private reasoning guard 有效；
 9. fallback Council 不得声称独立 verdict；
-10. 不声称当前已实现真实 session、Host ingress、CAS/events 或 staging-directory atomic publish。
+10. Host 单结果 admission 和 collection session uniqueness 已闭环；不声称当前已实现真实 session receipt、CAS/events 或 staging-directory atomic publish。

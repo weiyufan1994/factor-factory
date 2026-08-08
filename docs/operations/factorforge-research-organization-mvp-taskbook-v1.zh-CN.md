@@ -12,7 +12,7 @@
 - independent Council run；
 - production factor research proof。
 
-Future Phase 可以继续设计真实 session、CAS/events、Host ingress、staging directory、Data resume 和完整 Ultimate 状态推进，但不得把这些未来能力写成当前验收项。
+Future Phase 可以继续设计真实 session receipt、CAS/events、runtime private transport、dispatch staging directory、Data resume 和完整 Ultimate 状态推进，但不得把这些未来能力写成当前验收项。
 
 权威文档：
 
@@ -38,6 +38,7 @@ docs/contracts/factorforge-agent-task-result-v1.zh-CN.md
 10. Console 可以展示 route/role plan，但必须明确仅为 dispatch contract、independence 尚未满足；
 11. no silent `single_agent_fallback`；
 12. 所有当前能力有 positive/negative test 或 smoke。
+13. Host 可以验证并原子 admit 单个私有候选 result，collection 自动阻断 isolated/independent session reuse。
 
 ## 2. 非目标与禁止扩张
 
@@ -45,12 +46,12 @@ docs/contracts/factorforge-agent-task-result-v1.zh-CN.md
 
 - 创建 Codex/OpenClaw specialist sessions；
 - 并行 dispatch、wait、retry、cancel；
-- task status 从 PENDING 自动推进；
-- Host-private result ingress；
+- task status 从 PENDING 自动推进（当前仅在 admission 时动态检查依赖，不持久化推进）；
+- runtime-to-Host private transport、session receipt 和 secret scan；
 - dispatch/result staging directory 和整目录 rename；
 - CAS state revision 或 `events.jsonl`；
 - plan revisions、`current.json`、supersedes chain；
-- collection-level session uniqueness；
+- blind-context 的 runtime proof；
 - Director synthesis 或 measurement program freeze；
 - Data delivery import/resume；
 - Agent 自动代码 worktree 分配/merge；
@@ -175,7 +176,8 @@ factorforge_research_org_dispatch_v1
 - safe ID；
 - workspace-relative path normalization；
 - ordinary-file/symlink guard；
-- temp file + `os.replace()` 单文件写入；
+- builder artifact 使用 temp file + `os.replace()` 单文件写入；
+- canonical result 在 frozen plan 文件锁下使用 temp file + atomic hard-link create，目标存在即不覆盖；
 - recursive private reasoning key detection。
 
 ### 验收
@@ -184,7 +186,7 @@ factorforge_research_org_dispatch_v1
 - tampered hash 被阻断；
 - absolute/`..`/symlink path 被阻断；
 - private reasoning key 在任意嵌套层被阻断；
-- 文档不得把单文件 `os.replace()` 称为 staging-directory atomic publish。
+- 文档不得把单文件 replace/create 称为 staging-directory atomic publish。
 
 ## 6. 工作包 RO-MVP-02：Deterministic Router
 
@@ -370,6 +372,9 @@ factorforge_agent_result_v1.public_research_record
 ### 验收
 
 - task/identity/role/content hash binding；
+- plan-frozen input refs 与 task input artifacts 完全一致；
+- deterministic dispatch order/task ID 不可通过重签替换；
+- controlled input/task/result directories 不接受未绑定文件或 symlink；
 - inner contract 等于 task `output_contract`；
 - normal domain、Data Liaison 和 role record 的最低字段集；
 - artifact path/hash；
@@ -378,7 +383,8 @@ factorforge_agent_result_v1.public_research_record
 - fallback Council `independence_satisfied=false`；
 - fallback 不得写 `formal_independent_verdict`；
 - direct validator 在传入 peer session IDs 时阻断 reuse；
-- 不声称 bundle validator 已自动完成 collection-level peer session audit。
+- bundle validator 自动完成 collection-level peer session audit；
+- Host admission 在 plan 文件锁内对候选与既有结果做双向 session 隔离检查，提交顺序不能绕过。
 
 ## 10. 工作包 RO-MVP-06：Data 组外部合同
 
@@ -637,10 +643,11 @@ production promotion
 7. no silent fallback，false Council independence 被阻断；
 8. Ultimate required/auto/off gate 语义正确；
 9. workspace validator 能按需 require bundle；
-10. Console 只展示 plan/dispatch assurance，不冒充 execution；
+10. Console 只按已验证 bundle/result 展示 assurance，不冒充 runtime receipt；
 11. targeted tests、smokes 和 diff check 通过；
 12. 未启动 production research、worker、正式 Step3B/Step4/Step6 或 clean data mutation；
-13. 文档没有把 CAS/events/staging directory/real sessions 写成当前能力或验收项。
+13. 文档没有把 CAS/events/staging directory/real sessions 写成当前能力或验收项；
+14. Host 单结果 admission、immutable conflict 和 collection session uniqueness 有正负例。
 
 ## 19. Future Backlog（非当前 MVP、未实现）
 
@@ -648,11 +655,11 @@ production promotion
 
 1. Real runtime adapter 与 Agent session ownership receipt；
 2. Dependency scheduler、parallel dispatch、retry/cancel；
-3. Host-private result ingress 与 secret scanning；
+3. runtime private transport、signed session receipt 与 secret scanning；
 4. Complete-dispatch staging-directory publication；
 5. Persisted state、CAS revision 和 events ledger；
 6. Plan revision/current pointer/supersedes；
-7. Collection-level blindness/session uniqueness；
+7. Collection-level blindness runtime proof；
 8. Director synthesis 与 mechanism freeze；
 9. Data delivery import/resume；
 10. Ultimate Step1-6 organization state advancement；

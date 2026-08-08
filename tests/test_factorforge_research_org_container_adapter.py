@@ -9,6 +9,7 @@ from factor_factory.console.container_agent_adapter import (
     ContainerizedOpenClawResearchAgentAdapter,
 )
 from factor_factory.research_org import ResearchOrgSessionInvocation
+from factor_factory.research_org.runtime_trust import load_runtime_trust_store
 
 
 class _CompletedProcess:
@@ -33,6 +34,15 @@ class _FakePopen:
         return "agent completed", ""
 
 
+class _RunningPopen(_FakePopen):
+    def __init__(self, command, **_kwargs) -> None:
+        type(self).command = list(command)
+        self.returncode = None
+
+    def poll(self):
+        return None
+
+
 def _config(tmp_path: Path) -> ConsoleConfig:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
@@ -52,6 +62,8 @@ def _config(tmp_path: Path) -> ConsoleConfig:
 
 def _invocation(tmp_path: Path, config: ConsoleConfig) -> ResearchOrgSessionInvocation:
     worktree = config.source_repo
+    for relative in ("data", "knowledge"):
+        (worktree / relative).mkdir()
     workspace = worktree / "factor_research" / "FACTOR" / "research"
     workspace.mkdir(parents=True)
     private_root = tmp_path / "private" / "attempt"
@@ -162,6 +174,7 @@ def test_container_research_org_session_uses_staged_read_only_context(
     assert f"dst={invocation.workspace}" in joined_run
     for hidden_root in ("factor_research", "knowledge", "data"):
         assert f"dst={invocation.worktree / hidden_root}" in joined_run
+    assert f"dst={invocation.worktree / 'runs'}" not in joined_run
     assert joined_run.index(
         f"dst={invocation.worktree / 'factor_research'}"
     ) < joined_run.index(f"dst={invocation.workspace}")
@@ -179,6 +192,133 @@ def test_container_research_org_session_uses_staged_read_only_context(
     assert not output_mount.endswith(",readonly")
     assert "readonly" in joined_run
     assert "AWS_ACCESS_KEY_ID" not in joined_run
+
+
+def test_container_research_org_session_signs_initialization_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import factor_factory.console.container_agent_adapter as module
+
+    config = _config(tmp_path)
+    invocation = _invocation(tmp_path, config)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    monkeypatch.setattr(module, "_validate_profile_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "copy_auth_database",
+        lambda _source, destination: destination.write_bytes(b"auth"),
+    )
+    monkeypatch.setattr(module, "validate_auth_database", lambda *_args, **_kwargs: "ok")
+    monkeypatch.setattr(adapter, "_broker_client_token", lambda: "broker-secret-token")
+    monkeypatch.setattr(
+        adapter,
+        "_initialize_credential_material_state",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(adapter, "credential_material_state", lambda _job_id: "not_issued")
+    monkeypatch.setattr(
+        adapter,
+        "_prepare_aws_environment",
+        lambda *_args, **_kwargs: (None, ("broker-secret-token",), None),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_cleanup_aws_environment",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_run_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVAILABLE: init failed")
+        ),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_confirm_research_org_session_terminated",
+        lambda _runtime_id: True,
+    )
+
+    outcome = adapter.run_research_org_session(invocation)
+
+    assert outcome.returncode == 1
+    assert outcome.adapter_receipt is not None
+    assert outcome.adapter_receipt["receipt_type"] == "FAILED"
+    assert outcome.adapter_receipt["outcome"]["termination_confirmed"] is True
+    assert "init failed" in outcome.stderr_tail
+    trust_store = load_runtime_trust_store(
+        config.state_root / "research-org-trust",
+        installation_id=config.installation_id,
+    )
+    assert trust_store.verify(
+        outcome.adapter_receipt,
+        expected_issuer="runtime_adapter",
+    ) == []
+    assert not invocation.private_output_path.exists()
+    assert not (invocation.private_attempt_root / "agent").exists()
+    assert not (invocation.private_attempt_root / "home").exists()
+    assert not (invocation.private_attempt_root / "research_org_task.md").exists()
+
+
+def test_container_research_org_session_preserves_mounts_for_unconfirmed_orphan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import factor_factory.console.container_agent_adapter as module
+
+    config = _config(tmp_path)
+    invocation = _invocation(tmp_path, config)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    invocation.cancel_request_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(module, "_validate_profile_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "copy_auth_database",
+        lambda _source, destination: destination.write_bytes(b"auth"),
+    )
+    monkeypatch.setattr(module, "validate_auth_database", lambda *_args, **_kwargs: "ok")
+    monkeypatch.setattr(module.subprocess, "Popen", _RunningPopen)
+    monkeypatch.setattr(adapter, "_broker_client_token", lambda: "broker-secret-token")
+    monkeypatch.setattr(
+        adapter,
+        "_initialize_credential_material_state",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(adapter, "credential_material_state", lambda _job_id: "not_issued")
+    monkeypatch.setattr(
+        adapter,
+        "_prepare_aws_environment",
+        lambda *_args, **_kwargs: (None, ("broker-secret-token",), None),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_cleanup_aws_environment",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(adapter, "_validate_agent_binding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adapter, "_run_runtime", lambda *_args, **_kwargs: "{}")
+    monkeypatch.setattr(
+        adapter,
+        "cancel_research_org_session",
+        lambda _runtime_id: False,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_confirm_research_org_session_terminated",
+        lambda _runtime_id: False,
+    )
+
+    outcome = adapter.run_research_org_session(invocation)
+
+    assert outcome.adapter_receipt is not None
+    assert outcome.adapter_receipt["outcome"]["termination_confirmed"] is False
+    assert "BLOCK_FACTORFORGE_CONSOLE_AGENT_ORPHANED_WRITER" in outcome.stderr_tail
+    assert (invocation.private_attempt_root / "home").is_dir()
+    assert (invocation.private_attempt_root / "agent").is_dir()
+    assert (invocation.private_attempt_root / "research_org_task.md").is_file()
+    assert invocation.private_output_path.is_file()
+    assert invocation.runtime_instance_id in adapter._active
 
 
 def test_targeted_cancel_refuses_unowned_container(tmp_path: Path, monkeypatch) -> None:
@@ -211,7 +351,74 @@ def test_targeted_cancel_refuses_unowned_container(tmp_path: Path, monkeypatch) 
     )
 
     assert adapter.cancel_research_org_session(runtime_id) is False
+    adapter._active.add(runtime_id)
+    adapter.stop_all()
     assert stop_calls == []
+
+
+def test_targeted_cancel_does_not_treat_no_such_host_as_absent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import factor_factory.console.container_agent_adapter as module
+
+    config = _config(tmp_path)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    runtime_id = "fforg-job12345678-price-volume-1234abcd"
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _CompletedProcess(
+            1,
+            stderr="lookup docker.internal: no such host",
+        ),
+    )
+
+    assert adapter.cancel_research_org_session(runtime_id) is False
+    assert adapter._confirm_research_org_session_terminated(runtime_id) is False
+
+
+def test_targeted_cancel_accepts_exact_container_absence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import factor_factory.console.container_agent_adapter as module
+
+    config = _config(tmp_path)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    runtime_id = "fforg-job12345678-price-volume-1234abcd"
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _CompletedProcess(
+            1,
+            stderr=f"Error: No such object: {runtime_id}",
+        ),
+    )
+
+    assert adapter.cancel_research_org_session(runtime_id) is True
+    assert adapter._confirm_research_org_session_terminated(runtime_id) is True
+
+
+def test_targeted_cancel_permission_error_is_unconfirmed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import factor_factory.console.container_agent_adapter as module
+
+    config = _config(tmp_path)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    runtime_id = "fforg-job12345678-price-volume-1234abcd"
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError("docker socket denied")
+        ),
+    )
+
+    assert adapter.cancel_research_org_session(runtime_id) is False
+    assert adapter._confirm_research_org_session_terminated(runtime_id) is False
 
 
 def test_targeted_cancel_stops_only_bound_runtime(tmp_path: Path, monkeypatch) -> None:

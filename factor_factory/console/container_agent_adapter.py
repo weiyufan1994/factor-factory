@@ -114,6 +114,23 @@ REQUIRED_MODEL_BROKER_URL = "http://172.29.0.1:8781"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
 
 
+def _docker_container_not_found(
+    process: subprocess.CompletedProcess[str],
+    container_name: str,
+) -> bool:
+    if process.returncode == 0:
+        return False
+    detail = f"{process.stdout or ''}\n{process.stderr or ''}".strip().lower()
+    normalized_name = container_name.lower()
+    return detail in {
+        f"error: no such object: {normalized_name}",
+        f"no such object: {normalized_name}",
+        f"error response from daemon: no such object: {normalized_name}",
+        f"error response from daemon: no such container: {normalized_name}",
+        f"no such container: {normalized_name}",
+    }
+
+
 def _research_org_authoring_protected_relatives(
     workspace: Path,
     *,
@@ -316,7 +333,13 @@ class ContainerizedOpenClawResearchAgentAdapter:
         with self._lock:
             names = list(self._active)
         for name in names:
-            self._stop_container(name)
+            if re.fullmatch(r"fforg-[a-z0-9-]{8,62}", name):
+                stopped = self.cancel_research_org_session(name)
+            else:
+                stopped = self._stop_container(name)
+            if stopped:
+                with self._lock:
+                    self._active.discard(name)
 
     def healthcheck(self) -> bool:
         proxy = urlsplit(self.config.container_proxy_url)
@@ -1094,6 +1117,22 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self,
         invocation: ResearchOrgSessionInvocation,
     ) -> ResearchOrgSessionOutcome:
+        """Run one signed research-organization session or sign its failure."""
+
+        started = utc_now()
+        try:
+            return self._run_research_org_session_owned(invocation)
+        except Exception as exc:  # noqa: BLE001 - adapter is the trust boundary.
+            return self._failed_research_org_session_outcome(
+                invocation,
+                started_at_utc=started,
+                error=exc,
+            )
+
+    def _run_research_org_session_owned(
+        self,
+        invocation: ResearchOrgSessionInvocation,
+    ) -> ResearchOrgSessionOutcome:
         """Run one research-organization role in one owned staged-context container."""
 
         worktree = invocation.worktree.resolve(strict=True)
@@ -1265,6 +1304,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         timed_out = False
         private_output_safe = False
         process: subprocess.Popen[str] | None = None
+        run_completed = False
         try:
             process = subprocess.Popen(
                 command,
@@ -1336,19 +1376,27 @@ class ContainerizedOpenClawResearchAgentAdapter:
                         private_output_safe = True
             else:
                 private_output_safe = True
+            run_completed = True
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {self.config.container_runtime}"
             ) from exc
         finally:
-            with self._lock:
-                self._active.discard(container_name)
+            termination_confirmed = run_completed
+            if not termination_confirmed:
+                termination_confirmed = (
+                    self._confirm_research_org_session_terminated(container_name)
+                )
+            if termination_confirmed:
+                with self._lock:
+                    self._active.discard(container_name)
             self._cleanup_aws_environment(aws_env_file, None)
-            shutil.rmtree(agent_dir, ignore_errors=True)
-            shutil.rmtree(home, ignore_errors=True)
-            prompt_path.unlink(missing_ok=True)
-            if not private_output_safe:
-                invocation.private_output_path.unlink(missing_ok=True)
+            if termination_confirmed:
+                shutil.rmtree(agent_dir, ignore_errors=True)
+                shutil.rmtree(home, ignore_errors=True)
+                prompt_path.unlink(missing_ok=True)
+                if not private_output_safe:
+                    invocation.private_output_path.unlink(missing_ok=True)
         finished = utc_now()
         provider_session_handle_sha256 = hashlib.sha256(
             session_key.encode("utf-8")
@@ -1361,10 +1409,6 @@ class ContainerizedOpenClawResearchAgentAdapter:
         ):
             private_output_sha256 = sha256_file(invocation.private_output_path)
             private_output_size_bytes = invocation.private_output_path.stat().st_size
-        trust_store = ensure_runtime_trust_store(
-            self.config.state_root / "research-org-trust",
-            installation_id=self.config.installation_id,
-        )
         receipt_type = (
             "COMPLETED"
             if returncode == 0
@@ -1372,7 +1416,147 @@ class ContainerizedOpenClawResearchAgentAdapter:
             if cancelled or timed_out
             else "FAILED"
         )
-        adapter_receipt = trust_store.sign(
+        adapter_receipt = self._sign_research_org_adapter_receipt(
+            invocation,
+            receipt_type=receipt_type,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            provider_session_handle_sha256=provider_session_handle_sha256,
+            returncode=int(returncode),
+            cancelled=cancelled,
+            error_class=(
+                None
+                if returncode == 0
+                else "cancelled"
+                if cancelled
+                else "timeout"
+                if timed_out
+                else BLOCK_AGENT_RUNTIME_FAILED
+            ),
+            private_output_sha256=private_output_sha256,
+            private_output_size_bytes=private_output_size_bytes,
+            termination_confirmed=True,
+        )
+        return ResearchOrgSessionOutcome(
+            returncode=int(returncode),
+            session_id=invocation.session_id,
+            runtime_instance_id=container_name,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            provider=self.config.openclaw_auth_provider,
+            model=model,
+            transport="openclaw_disposable_container",
+            isolation_class="container_staged_context",
+            owned_termination_supported=True,
+            cancelled=cancelled,
+            stdout_tail=stdout[-4_000:],
+            stderr_tail=stderr[-4_000:],
+            provider_session_handle_sha256=provider_session_handle_sha256,
+            adapter_receipt=adapter_receipt,
+        )
+
+    def _failed_research_org_session_outcome(
+        self,
+        invocation: ResearchOrgSessionInvocation,
+        *,
+        started_at_utc: str,
+        error: Exception,
+    ) -> ResearchOrgSessionOutcome:
+        container_name = invocation.runtime_instance_id
+        termination_confirmed = self._confirm_research_org_session_terminated(
+            container_name
+        )
+        with self._lock:
+            if termination_confirmed:
+                self._active.discard(container_name)
+
+        private_root: Path | None = None
+        try:
+            candidate_root = invocation.private_attempt_root.resolve(strict=True)
+            invocation.private_output_path.parent.resolve(strict=True).relative_to(
+                candidate_root
+            )
+            private_root = candidate_root
+        except (FileNotFoundError, RuntimeError, ValueError):
+            pass
+        if private_root is not None and termination_confirmed:
+            shutil.rmtree(private_root / "agent", ignore_errors=True)
+            shutil.rmtree(private_root / "home", ignore_errors=True)
+            (private_root / "research_org_task.md").unlink(missing_ok=True)
+            invocation.private_output_path.unlink(missing_ok=True)
+
+        job_id = str(invocation.identity.get("job_id") or "")
+        model = _pinned_container_model(self.config.openclaw_model)
+        agent_id = _safe_runtime_token(
+            f"research-org-{invocation.role_id}-{invocation.attempt_id[-8:]}"
+        )
+        session_key = f"agent:{agent_id}:{job_id}:{invocation.session_id}"
+        provider_session_handle_sha256 = hashlib.sha256(
+            session_key.encode("utf-8")
+        ).hexdigest()
+        finished_at_utc = utc_now()
+        error_class = (
+            BLOCK_AGENT_ORPHANED_WRITER
+            if not termination_confirmed
+            else BLOCK_AGENT_RUNTIME_UNAVAILABLE
+            if BLOCK_AGENT_RUNTIME_UNAVAILABLE in str(error)
+            else BLOCK_AGENT_RUNTIME_FAILED
+        )
+        stderr = redact_secrets(f"{type(error).__name__}: {error}")
+        if not termination_confirmed:
+            stderr = (
+                f"{stderr}\n{BLOCK_AGENT_ORPHANED_WRITER}: "
+                "research organization container termination was not confirmed"
+            )
+        adapter_receipt = self._sign_research_org_adapter_receipt(
+            invocation,
+            receipt_type="FAILED",
+            started_at_utc=started_at_utc,
+            finished_at_utc=finished_at_utc,
+            provider_session_handle_sha256=provider_session_handle_sha256,
+            returncode=1,
+            cancelled=False,
+            error_class=error_class,
+            private_output_sha256=None,
+            private_output_size_bytes=None,
+            termination_confirmed=termination_confirmed,
+        )
+        return ResearchOrgSessionOutcome(
+            returncode=1,
+            session_id=invocation.session_id,
+            runtime_instance_id=container_name,
+            started_at_utc=started_at_utc,
+            finished_at_utc=finished_at_utc,
+            provider=self.config.openclaw_auth_provider,
+            model=model,
+            transport="openclaw_disposable_container",
+            isolation_class="container_staged_context",
+            owned_termination_supported=True,
+            stderr_tail=stderr[-4_000:],
+            provider_session_handle_sha256=provider_session_handle_sha256,
+            adapter_receipt=adapter_receipt,
+        )
+
+    def _sign_research_org_adapter_receipt(
+        self,
+        invocation: ResearchOrgSessionInvocation,
+        *,
+        receipt_type: str,
+        started_at_utc: str,
+        finished_at_utc: str,
+        provider_session_handle_sha256: str,
+        returncode: int,
+        cancelled: bool,
+        error_class: str | None,
+        private_output_sha256: str | None,
+        private_output_size_bytes: int | None,
+        termination_confirmed: bool,
+    ) -> dict[str, Any]:
+        trust_store = ensure_runtime_trust_store(
+            self.config.state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+        )
+        return trust_store.sign(
             "runtime_adapter",
             {
                 "receipt_type": receipt_type,
@@ -1387,9 +1571,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "ordering": {
                     "scheduler_epoch": invocation.scheduler_epoch,
                     "dispatch_event_seq": invocation.dispatch_event_seq,
-                    "issued_at_utc": finished,
-                    "started_at_utc": started,
-                    "finished_at_utc": finished,
+                    "issued_at_utc": finished_at_utc,
+                    "started_at_utc": started_at_utc,
+                    "finished_at_utc": finished_at_utc,
                 },
                 "bindings": {
                     "plan_sha256": invocation.plan_sha256,
@@ -1404,7 +1588,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "session": {
                     "session_uid": invocation.session_id,
                     "runtime_handle_sha256": hashlib.sha256(
-                        container_name.encode("utf-8")
+                        invocation.runtime_instance_id.encode("utf-8")
                     ).hexdigest(),
                     "provider_handle_sha256": provider_session_handle_sha256,
                     "adapter_id": self.config.installation_id,
@@ -1425,38 +1609,30 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "outcome": {
                     "returncode": int(returncode),
                     "cancelled": cancelled,
-                    "error_class": (
-                        None
-                        if returncode == 0
-                        else "cancelled"
-                        if cancelled
-                        else "timeout"
-                        if timed_out
-                        else BLOCK_AGENT_RUNTIME_FAILED
-                    ),
+                    "error_class": error_class,
                     "private_output_sha256": private_output_sha256,
                     "private_output_size_bytes": private_output_size_bytes,
-                    "termination_confirmed": True,
+                    "termination_confirmed": termination_confirmed,
                 },
             },
         )
-        return ResearchOrgSessionOutcome(
-            returncode=int(returncode),
-            session_id=invocation.session_id,
-            runtime_instance_id=container_name,
-            started_at_utc=started,
-            finished_at_utc=finished,
-            provider=self.config.openclaw_auth_provider,
-            model=model,
-            transport="openclaw_disposable_container",
-            isolation_class="container_staged_context",
-            owned_termination_supported=True,
-            cancelled=cancelled,
-            stdout_tail=stdout[-4_000:],
-            stderr_tail=stderr[-4_000:],
-            provider_session_handle_sha256=provider_session_handle_sha256,
-            adapter_receipt=adapter_receipt,
-        )
+
+    def _confirm_research_org_session_terminated(
+        self,
+        runtime_instance_id: str,
+    ) -> bool:
+        if self.cancel_research_org_session(runtime_instance_id):
+            return True
+        try:
+            inspect = subprocess.run(
+                [self.config.container_runtime, "inspect", runtime_instance_id],
+                text=True,
+                capture_output=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return _docker_container_not_found(inspect, runtime_instance_id)
 
     def cancel_research_org_session(self, runtime_instance_id: str) -> bool:
         if not re.fullmatch(r"fforg-[a-z0-9-]{8,62}", runtime_instance_id):
@@ -1475,10 +1651,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 timeout=20,
                 check=False,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
             return False
         if inspect.returncode != 0:
-            return "no such" in (inspect.stdout + inspect.stderr).lower()
+            return _docker_container_not_found(inspect, runtime_instance_id)
         try:
             labels = json.loads(inspect.stdout)
         except json.JSONDecodeError:
@@ -2551,6 +2727,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         runtime_root_readonly: bool = False,
         writable_runtime_paths: tuple[Path, ...] = (),
     ) -> list[str]:
+        mounted_worktree = worktree_mount_source or worktree
         command = [
             self.config.container_runtime,
             "run",
@@ -2584,7 +2761,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             f"{os.getuid()}:{os.getgid()}",
             "--mount",
             _mount(
-                worktree_mount_source or worktree,
+                mounted_worktree,
                 readonly=True,
                 target=worktree,
             ),
@@ -2599,6 +2776,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
             ):
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unsafe worktree mask"
+                )
+            mounted_target = mounted_worktree / relative_path
+            if mounted_target.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unsafe worktree mask target"
+                )
+            if not mounted_target.exists():
+                # A read-only worktree cannot create a bind-mount target. There
+                # is also nothing to hide when the source root is absent.
+                continue
+            if not mounted_target.is_dir():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unsafe worktree mask target"
                 )
             mask_source = mask_root / relative_path
             mask_source.mkdir(parents=True, exist_ok=True, mode=0o500)
@@ -3245,13 +3435,17 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 timeout=20,
                 check=False,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
             return False
-        stop_missing = "no such container" in (stop.stderr + stop.stdout).lower()
-        remove_missing = "no such container" in (remove.stderr + remove.stdout).lower()
+        stop_missing = _docker_container_not_found(stop, name)
+        remove_missing = _docker_container_not_found(remove, name)
         stop_ok = stop.returncode == 0 or stop_missing
         remove_ok = remove.returncode == 0 or remove_missing
-        return stop_ok and remove_ok and inspect.returncode != 0
+        return (
+            stop_ok
+            and remove_ok
+            and _docker_container_not_found(inspect, name)
+        )
 
     def _reconcile_stale_containers(self) -> None:
         output = self._run_runtime(

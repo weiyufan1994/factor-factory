@@ -1336,8 +1336,20 @@ def _finalize_attempt(
         )
         created_data_requests = ()
 
+    adapter_receipt_outcome = (
+        outcome.adapter_receipt.get("outcome")
+        if isinstance(outcome.adapter_receipt, Mapping)
+        and isinstance(outcome.adapter_receipt.get("outcome"), Mapping)
+        else None
+    )
+    adapter_termination_confirmed = (
+        adapter_receipt_outcome.get("termination_confirmed")
+        if adapter_receipt_outcome is not None
+        else None
+    )
     retryable = bool(
         receipt_status != "CANCELLED"
+        and adapter_termination_confirmed is not False
         and not any(
             marker in " ".join(reasons)
             for marker in (

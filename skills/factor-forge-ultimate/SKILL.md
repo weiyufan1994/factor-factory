@@ -23,6 +23,7 @@ user-visible tasks. Read:
 - `docs/architecture/factorforge-research-organization-v1.zh-CN.md`
 - `docs/contracts/factorforge-research-org-plan-v1.zh-CN.md`
 - `docs/contracts/factorforge-agent-task-result-v1.zh-CN.md`
+- `docs/contracts/factorforge-research-org-runtime-v1.zh-CN.md`
 
 For a new organization-aware run, the Host must freeze and validate
 `identity/research_organization_plan.json` before specialist work. All input
@@ -43,9 +44,9 @@ Knowledge Librarian, Data Liaison, Quant Implementation, Validation & Evidence,
 and Independent Council. Data Liaison may resolve catalogs, emit
 `data_request_v1`, and verify delivery evidence; it may not materialize data.
 `WAITING_DATA` is nonterminal and resumes only after catalog/QA/receipt
-validation. The current research-organization MVP only records this state and
-does not yet implement delivery import or result-attempt revision; do not claim
-that automatic resume exists.
+validation. The current implementation does not yet provide delivery import,
+plan revision/current-pointer publication, or automatic data resume; do not
+claim those capabilities exist.
 
 Every role consumes `factorforge_agent_task_v1` and returns a
 `factorforge_agent_result_v1` envelope. Public artifacts contain reproducible
@@ -63,6 +64,28 @@ A valid plan and dispatch manifest prove routing and workspace governance only.
 They do not prove that multiple Agents executed, that Council independence was
 satisfied, or that the factor passed research. Claim those stronger states only
 after the Host validates every bound result and the normal Step1-6 evidence.
+
+For a runtime-aware run, the Host uses
+`scripts/run_factorforge_research_org_runtime.py`. Workspace runtime JSON is a
+rebuildable projection only; the Host-private SQLite ledger and signed adapter /
+Host receipts are authoritative. Each specialist must receive a staged,
+role-scoped read-only context and a distinct provider session. The Independent
+Council must have no parent author session. Retry, cancellation and recovery
+must use ledger-owned attempt/runtime handles; never terminate sessions by a
+global process/model-name match.
+
+Keep these assurance levels distinct:
+
+- `workspace_runtime_projection_valid_only`: workspace history is structurally valid;
+- `transactional_runtime_unverified_sessions`: private ledger is valid, but formal signed/pinned session evidence is absent;
+- `signed_specialist_runtime_complete_host_director_external`: all required roles PASS with signed, pinned, causally bound specialist sessions and signed Host admissions.
+
+Only the last level may set runtime `formal_independence_verified=true`. It
+still does not prove factor ACCEPT. To bind this proof into an Ultimate wrapper,
+use `--research-org-runtime-mode formal-complete` with the private root, trust
+root and installation ID. The default is `off` for backward compatibility;
+do not silently upgrade a legacy run. Contract smoke output is never production
+research proof.
 
 ## Non-Negotiable Entry Contract
 

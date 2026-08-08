@@ -1145,7 +1145,7 @@ def validate_research_organization_bundle(
         ),
         None,
     )
-    independence_satisfied = bool(
+    council_independence_attestation_valid = bool(
         execution_state == "COMPLETE"
         and council_result
         and council_result.get("producer_mode") == "real_agent"
@@ -1165,7 +1165,11 @@ def validate_research_organization_bundle(
         "result_count": result_count,
         "execution_state": execution_state,
         "result_statuses": result_statuses,
-        "independence_satisfied": independence_satisfied,
+        "council_independence_attestation_valid": (
+            council_independence_attestation_valid
+        ),
+        "independence_satisfied": False,
+        "independence_authority": "signed_runtime_ledger_required",
         "single_agent_fallback": plan["execution_policy"]["single_agent_fallback"],
     }
 
@@ -1628,10 +1632,6 @@ def resolve_research_organization_gate(
         "supporting_domains": summary["supporting_domains"],
         "dispatch_task_count": summary["task_count"],
         "validated_result_count": summary["result_count"],
-        "formal_org_independence": summary["independence_satisfied"],
-        "assurance": (
-            "validated_results_and_independence"
-            if summary["independence_satisfied"]
-            else "routing_and_dispatch_contract_only"
-        ),
+        "formal_org_independence": False,
+        "assurance": "routing_and_result_envelopes_only",
     }

@@ -2,7 +2,13 @@
 
 ## 0. 文档状态
 
-本文是与当前实现对齐的 MVP 施工与验收说明。当前 MVP 的目标是建立 **deterministic organization planning、workspace-local contracts、validation gate 和只读 UI projection**。
+本文是已完成的 **Phase 1 planning MVP** 施工与验收说明，保留用于审计最初范围，不再代表 Research Organization 的全部当前能力。Phase 2 runtime 的当前权威合同是：
+
+```text
+docs/contracts/factorforge-research-org-runtime-v1.zh-CN.md
+```
+
+Phase 1 的目标是建立 **deterministic organization planning、workspace-local contracts、validation gate 和只读 UI projection**。
 
 当前 MVP 不是：
 
@@ -12,7 +18,7 @@
 - independent Council run；
 - production factor research proof。
 
-Future Phase 可以继续设计真实 session receipt、CAS/events、runtime private transport、dispatch staging directory、Data resume 和完整 Ultimate 状态推进，但不得把这些未来能力写成当前验收项。
+下列“不是/非目标”条目只描述 Phase 1 当时的验收边界。真实 session、Host-private ledger、signed receipt、dependency scheduler、retry/cancel/recovery 已在 Phase 2 实现；dispatch directory staging、Data resume 和完整 Ultimate 自动推进仍未实现。
 
 权威文档：
 
@@ -649,9 +655,9 @@ production promotion
 13. 文档没有把 CAS/events/staging directory/real sessions 写成当前能力或验收项；
 14. Host 单结果 admission、immutable conflict 和 collection session uniqueness 有正负例。
 
-## 19. Future Backlog（非当前 MVP、未实现）
+## 19. Phase 1 收口时的 Future Backlog（历史记录）
 
-后续独立设计/PR 可包含：
+Phase 1 收口时记录的 backlog 如下。第 1、2、3、5、7、11 项已由 Phase 2 runtime 部分或全部关闭；当前权威状态以 runtime 合同和架构书为准。
 
 1. Real runtime adapter 与 Agent session ownership receipt；
 2. Dependency scheduler、parallel dispatch、retry/cancel；
@@ -666,4 +672,4 @@ production promotion
 11. Console runtime status、attempt/history 和 Council proof projection；
 12. Production factor research golden runs。
 
-Future backlog 不计入当前 MVP done，也不能用文档存在证明代码已经实现。
+这份历史 backlog 不计入 Phase 1 MVP done，也不能单凭文档存在证明代码已经实现；每一项仍以代码、validator、测试和独立 review 为准。

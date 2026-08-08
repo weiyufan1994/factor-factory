@@ -4,8 +4,9 @@
 
 本文同时描述：
 
-1. **当前已实现 MVP**：Research Organization 的计划、路由、角色注册、task/dispatch artifact 和结果 envelope 校验；
-2. **目标架构**：后续由 Ultimate/Host 自动运行多个隔离 Agent session，并接入完整状态机、结果 ingress、Data 组和 Council。
+1. **Phase 1 已实现**：Research Organization 的计划、路由、角色注册、task/dispatch artifact 和结果 envelope 校验；
+2. **Phase 2 已实现**：Host-private transactional ledger、隔离 specialist session adapter、签名 receipt、依赖调度、重试/取消/恢复和 Council runtime proof；
+3. **目标架构**：后续继续接入 Director synthesis、Data delivery resume、完整 Ultimate 自动推进和 production golden runs。
 
 除标有“Future Phase”的章节外，本文的 MVP 描述与当前实现对齐。当前实现入口为：
 
@@ -15,7 +16,11 @@ scripts/build_factorforge_research_org_plan.py
 scripts/admit_factorforge_agent_result.py
 scripts/validate_factorforge_research_org.py
 scripts/run_factorforge_research_org_smoke.py
+scripts/run_factorforge_research_org_runtime.py
+scripts/run_factorforge_research_org_runtime_smoke.py
 tests/test_factorforge_research_organization.py
+tests/test_factorforge_research_org_runtime.py
+tests/test_factorforge_research_org_contract_security.py
 
 # thin integration gates/projection
 scripts/run_factorforge_ultimate.py
@@ -24,7 +29,7 @@ factor_factory/console/run_service.py
 factor_factory/console/web_ui.py
 ```
 
-当前 MVP 是 **planning and validation proof**，不是自动多 Agent 执行 proof，也不是 production factor research proof。
+当前代码已具备 **planning proof + signed runtime proof**。它仍不是 production factor research proof；runtime independence、研究结论和 factor acceptance 必须分开表述。Phase 2 的稳定合同见 `docs/contracts/factorforge-research-org-runtime-v1.zh-CN.md`。
 
 ## 1. 不变的组织原则
 
@@ -62,28 +67,28 @@ factor_factory/console/web_ui.py
 17. Independent Council task 冻结完整 `required_review_role_ids`，Council attestation 缺少任一当前角色都会 BLOCK。
 18. Plan hash 冻结 captured input refs；task 必须精确继承，dispatch/task ID 与 role 顺序由 validator 重算。
 19. `inputs/`、`tasks/` 与 `results/` 受目录闭包检查；Data Liaison result 还必须完整绑定其 `data_requests/` 文件集合。未绑定文件、symlink 或目录项会 BLOCK。
+20. Host-private SQLite ledger 作为 runtime authority，workspace JSON 仅为可重建 projection；
+21. Container/OpenClaw adapter 为每个 specialist 创建独立 staged-context session，并写 Host-private output；
+22. Ed25519 adapter/Host receipt 绑定 plan、task、attempt、dependency、session、image 和 output；
+23. scheduler 支持依赖 admission、有限并发、retry disposition、cancel fence 和 crash recovery；
+24. Independent Council 禁止 parent session，并要求独立 provider/session handle；
+25. Console 与 Ultimate 可投影或显式 require runtime assurance，默认不改变 legacy Ultimate 路径。
 
 ### 2.2 当前未实现
 
-以下能力只属于 Future Phases，不能作为当前 MVP 的既成事实或验收项：
+以下能力仍属于 Future Phases，不能作为当前 runtime 的既成事实或验收项：
 
-- 自动创建 Codex/OpenClaw subagent session；
-- 自动并行 dispatch、wait、retry、cancel 或 session receipt；
-- 自动 Agent runtime 到 Host 私有候选文件的安全传输、receipt 和 secret scan；
 - dispatch 级 staging directory 与整目录 atomic rename；
-- runtime receipt 真实性和 blind-context 的外部证明；
-- 独立的 organization state 文件、CAS revision 或 append-only events ledger；
-- plan revision chain、`current.json` pointer 或 supersedes chain；
+- attachment MIME quarantine 和完整 filesystem-diff proof；
+- plan revision、CAS revision、`current.json` pointer 或 supersedes chain；
 - 自动 Director synthesis 和 measurement program freeze；
 - Ultimate Step1-6 的自动状态推进；
 - Data delivery resume；
-- Console 中由真实 session receipt 驱动的 role 运行/完成状态、attempt/history 和 Council proof；
 - 自动代码 worktree 分配、patch merge 或 production research。
 
 Builder 的 `write_workspace_json()` 使用临时文件加 `os.replace()` 做**单文件写入替换**。Result admission 在冻结 plan 的跨进程文件锁下完成全 bundle 校验、session 冲突检查和同目录原子 hard-link create，目标已存在时不覆盖。这仍不等于 dispatch 结果目录的 staging/atomic publication。
 
-当前 Console 已有基础“研究团队”投影。没有完整且通过校验的结果集合时，其 assurance 为
-`routing_and_dispatch_contract_only`，且 `independence_satisfied=false`；它不是多 Agent execution proof。
+Console “研究团队”投影区分 plan-only、partial runtime 与 signed formal runtime。只有 Host-private ledger 和签名链通过时 `independence_satisfied=true`；task 日志、secret 和 private chain-of-thought 不进入 UI。
 
 ## 3. 当前 Artifact 布局
 
@@ -110,6 +115,11 @@ factor_research/<factor_id>/<research_id>/
           <role_id>.json
         data_requests/
           <request>.json
+        runtime/
+          runtime_state.json
+          dispatcher_lock.json
+          events/
+          attempts/<role_id>/<attempt_id>/
 ```
 
 路径含义：
@@ -183,7 +193,7 @@ independent_council
 
 每个 role 定义 capability、activation、required skills、input/output contracts、read/write scopes、model policy、independence class、session requirement、allowed tools 和 forbidden side effects。
 
-Registry 中的 `isolated_session`/`independent_session` 是后续 runtime 必须执行的政策；当前 builder 只冻结要求，不创建 session。
+Registry 中的 `isolated_session`/`independent_session` 是 Phase 2 runtime 必须执行的政策；builder 只冻结要求，不创建 session，runtime adapter 与 formal validator 才执行并证明该政策。
 
 ### 4.4 Task/Dispatch Artifacts
 
@@ -192,7 +202,7 @@ Registry 中的 `isolated_session`/`independent_session` 是后续 runtime 必�
 - `READY`：当前没有依赖；
 - `PENDING`：等待依赖角色结果。
 
-当前代码不会持久化地把 `PENDING` 推进为 `READY`，也没有 scheduler；但 Host admission 会在锁内要求 `depends_on_roles` 的结果均已存在且为 `PASS`，否则拒绝提前落盘。因此早到的 Council 结果不能在事后补齐前序结果后伪装成有效闭环。
+冻结 task 文件不会被改写为 `READY`。Phase 2 scheduler 在 Host-private ledger 中推进动态 task state，并要求 `depends_on_roles` 已由 Host admit 且均为 `PASS`；基础 Host admission 同样会在锁内拒绝前序未完成的结果。因此早到的 Council 结果不能在事后补齐前序结果后伪装成有效闭环。
 
 `factorforge_research_org_dispatch_v1` 保存 task path/hash、role、phase、status 和 expected result path。它是可验证的 dispatch **manifest**，不是实际 session 已 dispatch 的 receipt。
 
@@ -262,7 +272,7 @@ objects/research_organization/<report_id>/results/data_liaison.json
 objects/research_organization/<report_id>/data_requests/**
 ```
 
-当前 MVP 只冻结接口和路径权限；尚未实现 Data 组 delivery import/resume。Data Liaison 不能修改 catalog、materialize datamart 或写 shared data。
+当前实现只冻结 Data 组接口和路径权限；尚未实现 Data 组 delivery import/resume。Data Liaison 不能修改 catalog、materialize datamart 或写 shared data。
 
 ## 7. Result Envelope
 
@@ -291,7 +301,7 @@ outer result envelope
 
 非领域角色使用 `factorforge_role_research_record_v1` 作为 envelope 内部 payload。
 
-当前 validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。当前尚未实现完整 JSON Schema unknown-field closure、Host runtime receipt 真实性或 blind-context 的运行时证明。
+基础 bundle validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。它本身不证明 session 真实性。Phase 2 formal runtime validator 另行验证 adapter/Host signatures、provider handle uniqueness、staged-context binding、dependency ordering 和 Council independence；当前仍未实现完整 JSON Schema unknown-field closure 或完整 filesystem-diff/blindness proof。
 
 ## 8. `single_agent_fallback`
 
@@ -307,11 +317,11 @@ execution_policy.single_agent_fallback=false
 - fallback 必须声明 `independence_satisfied=false`；
 - 不能提供 `formal_independent_verdict`。
 
-当前 MVP 没有自动 fallback 调度器，也不据此计算正式 proof eligibility。
+当前实现没有自动 fallback 调度器；formal runtime proof 只接受满足独立 session 和完整签名链的实际执行，不从 fallback 声明推断独立性。
 
 ## 9. 当前安全与验证
 
-已经实现：
+Planning/result contract 已实现：
 
 - workspace manifest/identity 验证；
 - safe ID；
@@ -324,14 +334,22 @@ execution_policy.single_agent_fallback=false
 - private reasoning key recursive scan；
 - Council fallback overclaim、bundle peer session audit 和 admission prospective session reuse 检查。
 
-尚未实现：
+Phase 2 runtime 另已实现：
+
+- Host-private signed ingress 与 secret scan；
+- dependency scheduler、并行派发、bounded retry、cancel fence 与 owned termination；
+- persisted transactional ledger、event chain 和 crash recovery；
+- staged-context/read-only canonical workspace adapter，并遮蔽 worktree 中未声明的 factor/knowledge/data roots；
+- adapter/Host Ed25519 receipt 和 formal Council runtime proof。
+
+仍未实现：
 
 - dispatch 集合级 completeness publication；
-- Host-private secret scanning ingress；
-- directory staging/rename；
-- runtime-owned session termination；
-- CAS 和 concurrent-worker scheduler；
-- persisted event ledger；
+- attachment/MIME quarantine；
+- complete-dispatch directory staging/rename；
+- 完整 filesystem-diff/blindness proof；
+- plan revision/current pointer/CAS；
+- Data delivery import/resume。
 
 ## 10. 当前状态语义
 
@@ -397,23 +415,26 @@ python3 scripts/run_factorforge_research_org_smoke.py
 
 当前 smoke 验证 bundle build/validate、混合路由、冻结 plan preservation 和 path escape BLOCK；它不启动真实 Agent。
 
-## 12. Future Phases（非当前 MVP 验收）
+## 12. Phases
 
-### Phase 2：真实 Agent Runtime
+### Phase 2：真实 Agent Runtime（已实现）
 
-- Codex/OpenClaw runtime adapter；
+- Container/OpenClaw runtime adapter；
+- Host-private transactional ledger；
 - task dependency scheduler；
-- distinct session receipt；
-- parallel dispatch/wait/retry；
-- blind-context 与 session receipt 真实性检查。
+- distinct signed session receipt；
+- bounded parallel dispatch/wait/retry/cancel；
+- staged-context、private output ingress 与 crash recovery。
 
-### Phase 3：强化 Host Result Ingress
+稳定细节和验收边界见 `docs/contracts/factorforge-research-org-runtime-v1.zh-CN.md`。
 
-- runtime-to-Host private dropbox 和 signed session receipt；
-- secret/MIME/size/filesystem-diff checks；
+### Phase 3：强化 Host Result Ingress（部分实现）
+
+- 已实现 runtime-to-Host private output、signed receipt、size/secret/identity checks；
+- 尚缺 attachment MIME quarantine 和完整 filesystem-diff proof；
 - complete-dispatch staging；
 - directory-level atomic publication；
-- immutable ingress receipts。当前只实现 caller-provided private JSON 的单结果验证与原子 admission。
+- immutable ingress receipts 已进入 Host ledger，但尚无 complete-dispatch directory rename。
 
 ### Phase 4：Ultimate Orchestration
 
@@ -421,21 +442,21 @@ python3 scripts/run_factorforge_research_org_smoke.py
 - Director synthesis；
 - measurement program freeze；
 - Data delivery resume；
-- Council adapter；
-- persisted state、CAS 和 events ledger。
+- organization runtime 已提供 Council adapter、persisted state 和 append-only event chain；
+- 尚缺 Director synthesis、Data resume、plan revision/CAS 和默认 Ultimate 自动推进。
 
 ### Phase 5：Console 与生产验收
 
-- runtime receipt 驱动的 Research Team 运行状态、attempt/history 和 Council proof；
+- Console 已投影 role state、session/receipt count 和 assurance；尚缺用户可操作的完整 attempt/history 控制面；
 - Fundamental/Price-Volume/Mixed golden cases；
-- production-safe runtime isolation；
-- formal proof eligibility integration。
+- production adapter/golden-run isolation proof；
+- 默认 Ultimate orchestration 与完整用户 attempt/history 控制面。
 
-上述能力只有代码、测试和独立 review 完成后才能升级为当前架构能力。
+未完成能力只有代码、测试和独立 review 完成后才能升级为当前架构能力。
 
-## 13. MVP 验收
+## 13. 验收
 
-当前 MVP 只验收：
+Phase 1 planning MVP 验收：
 
 1. plan 固定写到 `identity/research_organization_plan.json`；
 2. dispatch/tasks/results/data_requests 路径都在 `objects/research_organization/<report_id>/`；
@@ -449,7 +470,17 @@ python3 scripts/run_factorforge_research_org_smoke.py
 10. Host admission 具有 hash/identity/status/path/session guard，结果冲突 fail closed；
 11. bundle collection 自动阻断 isolated/independent session reuse；
 12. Ultimate/workspace gate 能强制验证 plan，同时保留显式 legacy auto 边界；
-13. Console 只按已验证结果投影 assurance，不能冒充 runtime 或 independence；
+13. Console plan-only projection 不能冒充 runtime 或 independence；
 14. smoke/test 不写 shared data、repo-root knowledge 或其他 factor workspace。
 
-MVP 验收不得声称真实多 Agent 已运行、Council 已完成或因子已通过正式研究。
+Phase 2 runtime 还必须验收：
+
+1. Host-private ledger 是 authority，workspace JSON 仅为 hash-bound projection；
+2. adapter/Host Ed25519 receipts 全字段和深层 binding 可重算；
+3. dependency admission 的 result/receipt/event sequence 早于 dispatch；
+4. session/provider handle 不复用，Council 无 parent session；
+5. cancel fence、non-retryable failure、crash recovery 和 owned termination 有负例；
+6. strict JSON、symlink/hardlink、TOCTOU 和 ledger read-only validator 有负例；
+7. Console/Ultimate 只在 formal validator PASS 后声明 runtime independence。
+
+Phase 1 smoke 不得声称真实 Agent 已运行。Phase 2 contract smoke 只能证明签名/调度合同；没有真实 adapter/模型/production run 时，仍不得声称生产多 Agent 研究或因子通过正式研究。

@@ -2,7 +2,7 @@
 
 ## 0. 文档状态
 
-本文定义当前已实现的 `factorforge_research_org_plan_v1`。当前 MVP 是 **workspace-local planning and validation proof**，不是自动多 Agent runtime、完整状态机或 production research proof。
+本文只定义 `factorforge_research_org_plan_v1`。Plan 本身是 **workspace-local planning and validation proof**，不等于 runtime 或 production research proof。Phase 2 runtime 已由 `factorforge-research-org-runtime-v1.zh-CN.md` 单独定义，不能反向改变冻结 plan 的语义。
 
 当前唯一权威 plan 路径为：
 
@@ -17,7 +17,7 @@
 - 不实现 compare-and-swap、events ledger 或 staging-directory rename；
 - 不因 plan/dispatch 已生成而声称任何 Agent 已运行。
 
-这些能力若保留为目标设计，只能放在本文的 Future Phase，不能进入当前验收。
+Plan 合同不实现这些能力；其中 runtime state/events 已由独立 runtime 合同实现，plan revision/CAS 仍是 Future Phase。
 
 ## 1. 合同目的
 
@@ -493,19 +493,17 @@ BLOCK_FACTORFORGE_RESEARCH_ORG_INDEPENDENCE_INVALID
 
 CLI 将合同错误写到 stderr 并以非零 return code 退出。顶层错误可能以 plan-invalid 聚合多个底层原因；验收应保留完整原因链。
 
-## 16. Future Phases（非当前 MVP、未实现）
+## 16. Plan 合同外能力
 
-以下设计可以继续演进，但不得作为当前合同验收项：
+以下能力不得作为 plan PASS 的验收项：
 
 1. Plan revisions、`current.json` pointer 和 supersedes chain；
-2. persisted organization state、state revision、CAS 和 append-only events；
-3. real Agent runtime adapter、session receipt、parallel dispatch/retry/cancel；
-4. runtime private transport、signed session receipt、secret scan、complete-dispatch staging 和 directory rename；
-5. blind-context 的 runtime proof；
-6. Director synthesis、measurement program freeze 和 Ultimate state advancement；
-7. Data delivery import/resume；
-8. receipt/attempt 驱动的完整 Console Research Team runtime projection；
-9. production factor research 与 formal proof eligibility integration。
+2. Phase 2 runtime state、event ledger、signed receipt、parallel dispatch/retry/cancel；
+3. Director synthesis、measurement program freeze 和 Ultimate state advancement；
+4. Data delivery import/resume；
+5. production factor research 与 formal proof eligibility integration。
+
+第 2 项已有独立实现与独立 validator，但不能用 runtime PASS 替代 plan PASS，也不能用 plan PASS 替代 runtime PASS。
 
 ## 17. 当前 MVP 验收
 
@@ -520,4 +518,4 @@ CLI 将合同错误写到 stderr 并以非零 return code 退出。顶层错误�
 7. `--preserve-existing` 不修改冻结 plan；
 8. dispatch/tasks/results/data_requests 均在 `objects/research_organization/<report_id>/`；
 9. 不新增 workspace 顶层 `org/` required dirs；
-10. 验收结论不声称当前已实现 runtime、CAS、events、directory staging 或正式因子研究。
+10. 验收结论不把 plan PASS 描述为 runtime、CAS、directory staging 或正式因子研究 proof。

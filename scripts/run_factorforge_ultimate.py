@@ -28,7 +28,12 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
     write_workspace_manifest,
 )
-from factor_factory.research_org import ResearchOrganizationError, resolve_research_organization_gate
+from factor_factory.research_org import (
+    ResearchOrganizationError,
+    load_research_organization_plan,
+    resolve_research_organization_gate,
+    validate_research_organization_runtime,
+)
 from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
 from factor_factory.console.web_research_plan import (
     WebResearchPlanError,
@@ -766,6 +771,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help='Explicit plan path. It must equal the active workspace Host-owned plan path.',
     )
+    ap.add_argument(
+        '--research-org-runtime-mode',
+        choices=['off', 'if-present', 'required', 'formal-complete'],
+        default='off',
+        help='Optionally bind this Ultimate run to the validated specialist runtime.',
+    )
+    ap.add_argument('--research-org-runtime-private-root', default=None)
+    ap.add_argument('--research-org-runtime-trust-root', default=None)
+    ap.add_argument('--research-org-runtime-installation-id', default=None)
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--allow-legacy-research-protocol-smoke', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--proof-output', default=None)
@@ -777,6 +791,79 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--require-state-reuse-contract', action='store_true')
     ap.add_argument('--explicit-data-production-context', action='store_true')
     return ap.parse_args()
+
+
+def resolve_research_organization_runtime_gate(
+    *,
+    args: argparse.Namespace,
+    factor_workspace: Path | None,
+) -> dict[str, Any]:
+    mode = str(args.research_org_runtime_mode or 'off')
+    if mode == 'off':
+        return {
+            'mode': mode,
+            'status': 'disabled',
+            'formal_independence_verified': False,
+            'runtime_assurance': 'not_requested',
+        }
+    if factor_workspace is None:
+        if mode == 'if-present':
+            return {
+                'mode': mode,
+                'status': 'not_present',
+                'formal_independence_verified': False,
+                'runtime_assurance': 'not_present',
+            }
+        raise ResearchOrganizationError(
+            'BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_MISSING',
+            ['factor_workspace_required'],
+        )
+    plan = load_research_organization_plan(factor_workspace)
+    runtime_state = (
+        factor_workspace
+        / str(plan['workspace_policy']['organization_root'])
+        / 'runtime'
+        / 'runtime_state.json'
+    )
+    runtime_entry_present = runtime_state.exists() or runtime_state.is_symlink()
+    if mode == 'if-present' and not runtime_entry_present:
+        return {
+            'mode': mode,
+            'status': 'not_present',
+            'formal_independence_verified': False,
+            'runtime_assurance': 'not_present',
+        }
+    formal = mode == 'formal-complete'
+    if formal and not (
+        args.research_org_runtime_private_root
+        and args.research_org_runtime_trust_root
+        and args.research_org_runtime_installation_id
+    ):
+        raise ResearchOrganizationError(
+            'BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_INVALID',
+            ['formal_runtime_arguments_missing'],
+        )
+    validation = validate_research_organization_runtime(
+        workspace=factor_workspace,
+        require_complete=formal,
+        private_root=(
+            Path(args.research_org_runtime_private_root).expanduser()
+            if args.research_org_runtime_private_root
+            else None
+        ),
+        trust_root=(
+            Path(args.research_org_runtime_trust_root).expanduser()
+            if args.research_org_runtime_trust_root
+            else None
+        ),
+        installation_id=args.research_org_runtime_installation_id,
+        require_formal=formal,
+    )
+    return {
+        'mode': mode,
+        'status': 'validated',
+        **validation,
+    }
 
 
 def _manifest_state_path(manifest: dict[str, Any], key: str) -> Path | None:
@@ -947,6 +1034,14 @@ def main() -> int:
     except ResearchOrganizationError as exc:
         print(str(exc))
         return 1
+    try:
+        research_organization_runtime = resolve_research_organization_runtime_gate(
+            args=args,
+            factor_workspace=ctx.factor_workspace,
+        )
+    except ResearchOrganizationError as exc:
+        print(str(exc))
+        return 1
     legacy_protocol_smoke = bool(
         args.allow_legacy_research_protocol_smoke
         and (
@@ -1011,6 +1106,10 @@ def main() -> int:
         if research_organization.get('status') == 'validated':
             env['FACTORFORGE_RESEARCH_ORG_PLAN'] = str(
                 research_organization['plan_path']
+            )
+        if research_organization_runtime.get('status') == 'validated':
+            env['FACTORFORGE_RESEARCH_ORG_RUNTIME_ID'] = str(
+                research_organization_runtime['runtime_id']
             )
         web_catalog_summary = ctx.factor_workspace / 'identity' / 'data_catalog_summary.json'
         if web_catalog_summary.exists() or web_catalog_summary.is_symlink():
@@ -1165,6 +1264,7 @@ def main() -> int:
         'active_root': str(ctx.active_root),
         'factor_workspace': str(ctx.factor_workspace) if ctx.factor_workspace else None,
         'research_organization': research_organization,
+        'research_organization_runtime': research_organization_runtime,
         'repo_root': str(ctx.repo_root),
         'manifest_path': str(manifest_path),
         'start_step': start,

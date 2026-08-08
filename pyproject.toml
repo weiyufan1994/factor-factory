@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 console = [
+  "cryptography>=46,<47",
   "latex2mathml==3.81.0",
 ]
 step4 = [

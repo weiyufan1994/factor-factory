@@ -71,6 +71,7 @@ from factor_factory.research_workspace import load_workspace_manifest, validate_
 from factor_factory.research_org import (
     load_research_organization_plan,
     validate_research_organization_bundle,
+    validate_research_organization_runtime,
     write_research_organization_bundle,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
@@ -1411,11 +1412,34 @@ class ResearchRunService:
                     workspace=workspace
                 )
                 organization_plan = load_research_organization_plan(workspace)
+                organization_runtime_path = (
+                    workspace
+                    / str(organization_plan["workspace_policy"]["organization_root"])
+                    / "runtime"
+                    / "runtime_state.json"
+                )
+                organization_runtime = (
+                    validate_research_organization_runtime(
+                        workspace=workspace,
+                        private_root=(
+                            self.config.state_root
+                            / "jobs"
+                            / current_job.job_id
+                            / "research_org_private"
+                        ),
+                        trust_root=self.config.state_root / "research-org-trust",
+                        installation_id=self.config.installation_id,
+                    )
+                    if organization_runtime_path.exists()
+                    or organization_runtime_path.is_symlink()
+                    else None
+                )
             else:
                 # Jobs created before the v1 organization contract remain
                 # resumable, but they receive no organization assurance.
                 organization_validation = None
                 organization_plan = None
+                organization_runtime = None
             attested_workspace = self._snapshot_workspace_evidence(
                 current_job,
                 workspace,
@@ -1474,13 +1498,29 @@ class ResearchRunService:
                     "dispatch_task_count": organization_validation.get("task_count", 0),
                     "validated_result_count": organization_validation.get("result_count", 0),
                     "execution_state": organization_validation.get("execution_state"),
-                    "independence_satisfied": organization_validation.get(
-                        "independence_satisfied", False
+                    "council_independence_attestation_valid": (
+                        organization_validation.get(
+                            "council_independence_attestation_valid", False
+                        )
                     ),
+                    "independence_satisfied": bool(
+                        organization_runtime is not None
+                        and organization_runtime.get(
+                            "formal_independence_verified"
+                        )
+                        is True
+                    ),
+                    "runtime": organization_runtime,
                     "assurance": (
-                        "validated_results_and_independence"
-                        if organization_validation.get("independence_satisfied") is True
+                        "validated_results_and_signed_runtime_independence"
+                        if organization_runtime is not None
+                        and organization_runtime.get(
+                            "formal_independence_verified"
+                        )
+                        is True
                         else "routing_and_dispatch_contract_only"
+                        if organization_runtime is None
+                        else "verified_runtime_history_partial"
                     ),
                 }
             else:
@@ -1496,6 +1536,7 @@ class ResearchRunService:
                     "validated_result_count": 0,
                     "execution_state": "LEGACY_NOT_PRESENT",
                     "independence_satisfied": False,
+                    "runtime": None,
                     "assurance": "legacy_no_research_organization_contract",
                 }
             result["host_attestation_id"] = host_attestation_id

@@ -14,7 +14,7 @@
 factorforge_agent_result_v1.public_research_record
 ```
 
-当前 MVP 生成 task/dispatch，能校验 result collection，并能由 Host 从 caller-provided 私有候选 JSON 原子 admit 单个 result；它不创建真实 Agent session，也不实现 runtime 私有传输、attachments quarantine 或 dispatch 级目录原子发布。
+本合同的 base admission API 生成 task/dispatch、校验 result collection，并可由 Host 从 caller-provided 私有候选 JSON 原子 admit 单个 result。Phase 2 runtime 已在该 envelope 之上实现隔离 session、Host-private output 和 signed receipt；attachments quarantine 与 dispatch 级目录原子发布仍未实现。
 
 ## 1. 当前路径与所有权
 
@@ -50,7 +50,7 @@ factorforge_agent_result_v1.public_research_record
 - Host builder 写 plan、captured input、task 和 dispatch manifest；
 - task 的 `expected_result_path` 冻结 role result 的 canonical workspace path；
 - Data Liaison 的额外 write scope 仅为当前 report 的 `data_requests/**`；
-- `scripts/admit_factorforge_agent_result.py` 负责校验私有候选并写入 expected path；真实 Agent 到 Host 的安全传输和 session receipt 仍由未来 runtime 提供；
+- `scripts/admit_factorforge_agent_result.py` 负责手工/外部候选 admission；正式 specialist runtime 使用 `scripts/run_factorforge_research_org_runtime.py` 和 Host-private signed receipt 链；
 - Builder artifact 使用 temp file + `os.replace()`；result admission 在 frozen plan 文件锁下使用 temp file + atomic hard-link create，串行执行跨 role session 检查并禁止覆盖既有 canonical result。两者都不等于 complete-dispatch atomic publish。
 
 ## 2. Agent Task v1
@@ -179,7 +179,7 @@ PENDING
 
 - 没有 dependency 的 task 为 `READY`；
 - 有 dependency 的 task 为 `PENDING`；
-- 当前 MVP 不实现 dependency scheduler，不会持久化地把 `PENDING` 更新为 `READY`；Host admission 仍会要求所有 `depends_on_roles` 结果已存在且 status 为 `PASS`。
+- Builder 本身不运行 dependency scheduler，也不会改写冻结 task 的 `PENDING`。Phase 2 runtime 在 Host-private ledger 中维护动态 task state，并仍要求所有 `depends_on_roles` 已由 Host admit 且 status 为 `PASS`。
 
 ### 4.3 Dependency 规则
 
@@ -264,7 +264,7 @@ Data Liaison 还可写：
 objects/research_organization/<report_id>/data_requests/**
 ```
 
-Task validator 要求 `expected_result_path` 位于其 `write_scopes`。当前代码未实现 runtime filesystem sandbox；这些 scope 是可验证合同和后续 runtime 的执行要求，不能描述成当前已经阻断所有进程级 side effect。
+Task validator 要求 `expected_result_path` 位于其 `write_scopes`。该 validator 本身不构成 runtime filesystem sandbox。Phase 2 adapter 只向 Agent 暴露 staged context、private output 和只读 canonical workspace，但当前仍没有覆盖所有进程级 side effect 的完整 filesystem-diff proof。
 
 ### 6.2 Session Policy
 
@@ -286,7 +286,7 @@ Independent Council 示例：
 }
 ```
 
-当前 builder 只冻结这些政策，不创建 session。`session_id` 的真实性和 runtime ownership 尚无 Host receipt 支撑。
+Builder 只冻结这些政策，不创建 session。Phase 2 runtime 才创建 session，并通过 adapter/Host signed receipt、provider handle uniqueness、owned termination 和 ledger binding 验证 `session_id`；只运行 builder 或基础 bundle validator 时不得声称获得该证明。
 
 ## 7. Research Record Policy
 
@@ -377,7 +377,7 @@ objects/research_organization/<report_id>/dispatch_manifest.json
 }
 ```
 
-该文件只是 **dispatch manifest**。当前 MVP 不产生 session/attempt/dispatch receipt，也不证明 policy 已由 runtime 执行。
+该文件只是 **dispatch manifest**，其自身不产生 session/attempt/dispatch receipt，也不证明 policy 已由 runtime 执行。Phase 2 runtime 会另行生成并验证这些 receipt；dispatch manifest PASS 不能替代 runtime PASS。
 
 ## 10. Agent Result v1 外层 Envelope
 
@@ -562,13 +562,14 @@ factorforge_role_research_record_v1
 14. plan 禁止 fallback 时的 fallback result；
 15. collection 中 isolated/independent role 的 peer-session reuse。
 
-当前未实现：
+workspace-only bundle validator 当前不证明：
 
-- Host runtime receipt 对 session ID 真实性和 blind-context 的证明；
-- blind-context 与 declared filesystem diff 的运行时证明；
+- Host runtime receipt 对 session ID 和 staged-context 的真实性；
 - attachment MIME/size/secret scan；
 - unknown-field strict JSON Schema closure；
 - filesystem diff 与 declared write-set 对比。
+
+需要 stronger proof 时，必须调用 `validate_research_organization_runtime()` 并提供 Host-private ledger/trust root。该 validator 能证明 signed session/staged-context binding，但仍不提供完整 filesystem-diff 或 attachment quarantine。
 
 ## 14. Council Independence 与 Fallback
 
@@ -589,7 +590,7 @@ factorforge_role_research_record_v1
 - result 不得包含 `formal_independent_verdict`；
 - fallback result 不能证明 independent Council 已完成。
 
-当前 bundle validator 会自动汇总全体已存在 result 的 peer session IDs；所有声明 `isolated_session` 或 `independent_session` 的 real Agent result 都不得复用 session。该校验不等于 runtime receipt 的真实性证明。
+当前 bundle validator 会自动汇总全体已存在 result 的 peer session IDs；所有声明 `isolated_session` 或 `independent_session` 的 real Agent result 都不得复用 session。该校验不等于 runtime receipt 的真实性证明；formal runtime 还会验证 adapter/Host signatures、provider handle uniqueness、Council parent session 和 dependency event ordering。
 
 ## 15. Content Hash
 
@@ -643,20 +644,20 @@ BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_INVALID
 
 验收时必须保留原因明细，不能只看顶层 token。
 
-## 18. Future Phases（非当前 MVP、未实现）
+## 18. 合同外能力
 
 以下能力是后续设计，不是当前合同验收项：
 
-1. Agent runtime adapter 与独立 session 创建；
-2. attempt/dispatch/session receipts；
-3. runtime-to-Host private transport、signed session receipt 与 secret scan；
-4. attachment quarantine、MIME/size/secret scan；
-5. complete-dispatch staging-directory rename；
-6. blind-context runtime proof 与 declared filesystem-diff proof；
-7. retry/cancel/owned-session termination；
-8. task dependency scheduler 与 persisted state transitions；
-9. Director synthesis 和 canonical merge pipeline；
-10. receipt/attempt 驱动的完整 Console/UI role progress projection。
+Phase 2 runtime 已实现独立 session、attempt/dispatch receipt、Host-private output、signed receipt、secret scan、retry/cancel/owned termination、dependency scheduler 和 persisted ledger。
+
+仍未实现：
+
+1. attachment quarantine 与 MIME validation；
+2. complete-dispatch staging-directory rename；
+3. 完整 declared filesystem-diff proof；
+4. Director synthesis 和 measurement-program canonical merge；
+5. Data delivery resume；
+6. production factor research golden run。
 
 ## 19. 当前 MVP 验收
 
@@ -671,4 +672,4 @@ BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_INVALID
 7. `factorforge_domain_research_proposal_v1` 位于 outer `public_research_record`；
 8. inner contract、最低字段、artifact hash 和 private reasoning guard 有效；
 9. fallback Council 不得声称独立 verdict；
-10. Host 单结果 admission 和 collection session uniqueness 已闭环；不声称当前已实现真实 session receipt、CAS/events 或 staging-directory atomic publish。
+10. Host 单结果 admission 和 collection session uniqueness 已闭环；本 task/result 合同 PASS 不替代 Phase 2 signed runtime PASS，也不声称 plan revision CAS 或 staging-directory atomic publish。

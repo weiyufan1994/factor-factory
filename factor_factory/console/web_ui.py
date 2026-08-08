@@ -284,10 +284,30 @@ def _research_organization_section(result: dict[str, Any]) -> str:
     required = required if isinstance(required, list) else []
     deferred = organization.get("deferred_roles")
     deferred = deferred if isinstance(deferred, list) else []
+    runtime = organization.get("runtime")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    runtime_role_states = runtime.get("role_states")
+    runtime_role_states = (
+        runtime_role_states if isinstance(runtime_role_states, dict) else {}
+    )
+    runtime_status_labels = {
+        "PENDING": "待依赖",
+        "READY": "等待调度",
+        "RUNNING": "运行中",
+        "WAITING_HOST": "等待 Director",
+        "PASS": "已验收",
+        "NEEDS_DATA": "等待数据",
+        "NEEDS_CLARIFICATION": "等待澄清",
+        "BLOCK": "已阻断",
+        "RETRY_EXHAUSTED": "重试耗尽",
+        "CANCELLED": "已取消",
+    }
     role_cells = []
     for role_id in required:
+        role_runtime_state = str(runtime_role_states.get(str(role_id)) or "")
+        role_status = runtime_status_labels.get(role_runtime_state, "已规划")
         role_cells.append(
-            f'<div class="organization-role"><span>已规划</span><strong>{escape(role_labels.get(str(role_id), str(role_id)))}</strong></div>'
+            f'<div class="organization-role"><span>{escape(role_status)}</span><strong>{escape(role_labels.get(str(role_id), str(role_id)))}</strong></div>'
         )
     for role_id in deferred:
         role_cells.append(
@@ -302,6 +322,19 @@ def _research_organization_section(result: dict[str, Any]) -> str:
     result_count = int(organization.get("validated_result_count") or 0)
     independence = organization.get("independence_satisfied") is True
     state = str(organization.get("state") or "UNKNOWN")
+    runtime_lifecycle = str(runtime.get("lifecycle") or "尚未启动")
+    runtime_receipts = int(runtime.get("receipt_count") or 0)
+    runtime_sessions = int(runtime.get("session_count") or 0)
+    assurance_labels = {
+        "validated_results_and_signed_runtime_independence": "签名运行时与独立 Council 已验证",
+        "verified_runtime_history_partial": "运行历史已验证，未达正式独立",
+        "routing_and_dispatch_contract_only": "仅路由与任务合同",
+        "legacy_no_research_organization_contract": "旧任务，无研究组织合同",
+    }
+    assurance = assurance_labels.get(
+        str(organization.get("assurance") or ""),
+        "尚无运行时证明",
+    )
     gap_text = ", ".join(str(item) for item in gaps) if gaps else "无"
     support_text = ", ".join(str(item) for item in supporting) if supporting else "无"
     independence_text = "已满足" if independence else "尚未满足"
@@ -310,10 +343,11 @@ def _research_organization_section(result: dict[str, Any]) -> str:
       <div class="section-heading"><div><p class="section-kicker">RESEARCH ORGANIZATION</p><h2>研究团队</h2></div><span class="evidence-badge {'badge-formal' if independence else 'badge-agent'}">{escape(state)}</span></div>
       <div class="organization-summary">
         <div><span>主领域</span><strong>{escape(lead)}</strong></div>
-        <div><span>协同领域</span><strong>{escape(support_text)}</strong></div>
-        <div><span>任务 / 已验结果</span><strong>{task_count} / {result_count}</strong></div>
+        <div><span>协同领域 / 能力缺口</span><strong>{escape(support_text)} / {escape(gap_text)}</strong></div>
+        <div><span>任务 / 结果 / 会话</span><strong>{task_count} / {result_count} / {runtime_sessions}</strong></div>
         <div><span>独立性</span><strong>{escape(independence_text)}</strong></div>
-        <div><span>能力缺口</span><strong>{escape(gap_text)}</strong></div>
+        <div><span>Runtime / 收据</span><strong>{escape(runtime_lifecycle)} / {runtime_receipts}</strong></div>
+        <div><span>证据等级</span><strong>{escape(assurance)}</strong></div>
       </div>
       <div class="organization-roles">{''.join(role_cells)}</div>
     </section>

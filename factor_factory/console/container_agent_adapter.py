@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
@@ -67,9 +68,25 @@ from factor_factory.console.workspace_transaction import (
     workspace_transaction_lock,
     workspace_transaction_lock_held,
 )
+from factor_factory.research_org.runtime import (
+    ResearchOrgSessionInvocation,
+    ResearchOrgSessionOutcome,
+    build_research_org_session_prompt,
+)
+from factor_factory.research_org.contracts import sha256_file, stable_json_hash
+from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
 
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
+RESEARCH_ORG_HIDDEN_WORKTREE_ROOTS = (
+    "archive",
+    "data",
+    "evaluations",
+    "factor_research",
+    "generated_code",
+    "knowledge",
+    "runs",
+)
 REQUIRED_RESUME_CONTAINER_TOOLS = ["read"]
 RESUME_TERMINAL_DELIVERY_KEYS = {"status", "memo", "ledger"}
 RESUME_LEDGER_MAX_CHARACTERS = 1_600
@@ -196,6 +213,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self.config = config
         self._active: set[str] = set()
         self._lock = threading.Lock()
+        self._research_org_credential_lock = threading.Lock()
 
     def validate_ready(self) -> str:
         broker_client_token = self._broker_client_token()
@@ -1031,6 +1049,411 @@ class ContainerizedOpenClawResearchAgentAdapter:
             provider=self.config.openclaw_auth_provider,
             model=model,
         )
+
+    def run_research_org_session(
+        self,
+        invocation: ResearchOrgSessionInvocation,
+    ) -> ResearchOrgSessionOutcome:
+        """Run one research-organization role in one owned staged-context container."""
+
+        worktree = invocation.worktree.resolve(strict=True)
+        workspace = invocation.workspace.resolve(strict=True)
+        workspace.relative_to(worktree)
+        context_root = invocation.context_root.resolve(strict=True)
+        private_root = invocation.private_attempt_root.resolve(strict=True)
+        context_root.relative_to(private_root)
+        invocation.private_output_path.parent.resolve(strict=True).relative_to(
+            private_root
+        )
+        if (
+            not re.fullmatch(r"fforg-[a-z0-9-]{8,62}", invocation.runtime_instance_id)
+            or not re.fullmatch(r"session_[a-f0-9]{32}", invocation.session_id)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization runtime identity is invalid"
+            )
+        for skill in invocation.required_skills:
+            skill_path = worktree / "skills" / skill / "SKILL.md"
+            if skill_path.is_symlink() or not skill_path.is_file():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: required role skill is missing"
+                )
+
+        home = private_root / "home"
+        agent_dir = private_root / "agent"
+        profile_dir = home / f".openclaw-{self.config.openclaw_profile}"
+        for path in (home, agent_dir, profile_dir):
+            path.mkdir(parents=True, exist_ok=False, mode=0o700)
+            path.chmod(0o700)
+        assert self.config.openclaw_profile_template is not None
+        profile_config = profile_dir / "openclaw.json"
+        shutil.copy2(self.config.openclaw_profile_template, profile_config)
+        profile_config.chmod(0o600)
+        _validate_profile_policy(
+            json.loads(profile_config.read_text(encoding="utf-8")),
+            expected_model_broker_url=self.config.container_model_broker_url,
+        )
+        auth_store = agent_dir / "openclaw-agent.sqlite"
+        assert self.config.openclaw_auth_seed_db is not None
+        copy_auth_database(self.config.openclaw_auth_seed_db, auth_store)
+        auth_store.chmod(0o600)
+        validate_auth_database(
+            auth_store,
+            provider=self.config.openclaw_auth_provider,
+            label=f"research organization credential store {invocation.role_id}",
+            expected_key=self._broker_client_token(),
+        )
+
+        job_id = invocation.identity["job_id"]
+        with self._research_org_credential_lock:
+            self._initialize_credential_material_state(job_id, resume=False)
+            first_issuance = self.credential_material_state(job_id) == "not_issued"
+            aws_env_file, credential_values, _denied_secret_file = (
+                self._prepare_aws_environment(
+                    job_id,
+                    allow_missing_history=first_issuance,
+                    include_aws_credentials=False,
+                )
+            )
+        model = _pinned_container_model(self.config.openclaw_model)
+        agent_id = _safe_runtime_token(
+            f"research-org-{invocation.role_id}-{invocation.attempt_id[-8:]}"
+        )
+        session_key = f"agent:{agent_id}:{job_id}:{invocation.session_id}"
+        container_name = invocation.runtime_instance_id
+        prompt_path = private_root / "research_org_task.md"
+        prompt_path.write_text(
+            build_research_org_session_prompt(invocation),
+            encoding="utf-8",
+        )
+        prompt_path.chmod(0o600)
+
+        def container_prefix(
+            *,
+            profile_readonly: Path | None,
+            auth_path: Path | None,
+        ) -> list[str]:
+            command = self._container_prefix(
+                container_name=container_name,
+                job_id=job_id,
+                worktree=worktree,
+                workspace=workspace,
+                runtime_root=private_root,
+                home=home,
+                git_dir=None,
+                aws_env_file=None,
+                profile_config_readonly=profile_readonly,
+                auth_store_path=auth_path,
+                worktree_mount_source=worktree,
+                workspace_readonly=True,
+                workspace_mount_source=context_root,
+                masked_worktree_relatives=RESEARCH_ORG_HIDDEN_WORKTREE_ROOTS,
+                runtime_root_readonly=True,
+                writable_runtime_paths=(
+                    home,
+                    agent_dir,
+                    invocation.private_output_path.parent,
+                ),
+            )
+            command[-1:-1] = [
+                "--label",
+                "factorforge.research-org.session=true",
+                "--label",
+                f"factorforge.research-org.runtime={container_name}",
+                "--label",
+                f"factorforge.research-org.role={invocation.role_id}",
+            ]
+            return command
+
+        add_command = [
+            *container_prefix(profile_readonly=None, auth_path=None),
+            self.config.openclaw_binary,
+            "--profile",
+            self.config.openclaw_profile,
+            "agents",
+            "add",
+            agent_id,
+            "--workspace",
+            str(worktree),
+            "--agent-dir",
+            str(agent_dir),
+            "--model",
+            model,
+            "--non-interactive",
+            "--json",
+        ]
+        self._run_runtime(
+            add_command,
+            timeout=120,
+            label=f"research organization {invocation.role_id} initialization",
+            allow_exists=True,
+        )
+        self._validate_agent_binding(
+            profile_config,
+            agent_id,
+            worktree,
+            agent_dir,
+            model,
+        )
+        command = [
+            *container_prefix(
+                profile_readonly=profile_config,
+                auth_path=auth_store,
+            ),
+            self.config.openclaw_binary,
+            "--profile",
+            self.config.openclaw_profile,
+            "agent",
+            "--local",
+            "--agent",
+            agent_id,
+            "--session-key",
+            session_key,
+            "--message-file",
+            str(prompt_path),
+            "--thinking",
+            self.config.openclaw_thinking,
+            "--timeout",
+            str(invocation.timeout_seconds),
+            "--json",
+        ]
+        started = utc_now()
+        returncode = 1
+        stdout = ""
+        stderr = ""
+        cancelled = False
+        timed_out = False
+        private_output_safe = False
+        process: subprocess.Popen[str] | None = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=worktree,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            with self._lock:
+                self._active.add(container_name)
+            deadline = time.monotonic() + invocation.timeout_seconds + 90
+            while process.poll() is None:
+                if invocation.cancel_request_path.is_file():
+                    cancelled = True
+                    if not self.cancel_research_org_session(container_name):
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_ORPHANED_WRITER}: cancelled research organization container remained active"
+                        )
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    if not self.cancel_research_org_session(container_name):
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out research organization container remained active"
+                        )
+                    break
+                time.sleep(0.25)
+            try:
+                stdout, stderr = process.communicate(timeout=30)
+            except subprocess.TimeoutExpired as exc:
+                if not self.cancel_research_org_session(container_name):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_ORPHANED_WRITER}: research organization container could not be reaped"
+                    ) from exc
+                stdout, stderr = process.communicate(timeout=30)
+            returncode = 130 if cancelled else 124 if timed_out else process.returncode
+            stdout = redact_secrets(stdout, extra_values=credential_values)
+            stderr = redact_secrets(stderr, extra_values=credential_values)
+            validate_auth_database(
+                auth_store,
+                provider=self.config.openclaw_auth_provider,
+                label=f"research organization credential store {invocation.role_id} post-run",
+                expected_key=self._broker_client_token(),
+            )
+            if invocation.private_output_path.is_file():
+                try:
+                    private_text = invocation.private_output_path.read_text(
+                        encoding="utf-8"
+                    )
+                except (OSError, UnicodeError):
+                    invocation.private_output_path.unlink(missing_ok=True)
+                    returncode = 1
+                    stderr = (
+                        f"{stderr}\n{BLOCK_AGENT_RUNTIME_FAILED}: "
+                        "research organization private output is unreadable"
+                    ).strip()
+                else:
+                    if redact_secrets(
+                        private_text,
+                        extra_values=credential_values,
+                    ) != private_text:
+                        invocation.private_output_path.unlink(missing_ok=True)
+                        returncode = 1
+                        stderr = (
+                            f"{stderr}\n{BLOCK_AGENT_RUNTIME_FAILED}: "
+                            "research organization private output contains secret material"
+                        ).strip()
+                    else:
+                        private_output_safe = True
+            else:
+                private_output_safe = True
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {self.config.container_runtime}"
+            ) from exc
+        finally:
+            with self._lock:
+                self._active.discard(container_name)
+            self._cleanup_aws_environment(aws_env_file, None)
+            shutil.rmtree(agent_dir, ignore_errors=True)
+            shutil.rmtree(home, ignore_errors=True)
+            prompt_path.unlink(missing_ok=True)
+            if not private_output_safe:
+                invocation.private_output_path.unlink(missing_ok=True)
+        finished = utc_now()
+        provider_session_handle_sha256 = hashlib.sha256(
+            session_key.encode("utf-8")
+        ).hexdigest()
+        private_output_sha256: str | None = None
+        private_output_size_bytes: int | None = None
+        if (
+            invocation.private_output_path.is_file()
+            and not invocation.private_output_path.is_symlink()
+        ):
+            private_output_sha256 = sha256_file(invocation.private_output_path)
+            private_output_size_bytes = invocation.private_output_path.stat().st_size
+        trust_store = ensure_runtime_trust_store(
+            self.config.state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+        )
+        receipt_type = (
+            "COMPLETED"
+            if returncode == 0
+            else "TERMINATED"
+            if cancelled or timed_out
+            else "FAILED"
+        )
+        adapter_receipt = trust_store.sign(
+            "runtime_adapter",
+            {
+                "receipt_type": receipt_type,
+                "identity": {
+                    **invocation.identity,
+                    "runtime_id": invocation.runtime_id,
+                    "task_id": invocation.task_id,
+                    "role_id": invocation.role_id,
+                    "attempt_id": invocation.attempt_id,
+                    "attempt_no": invocation.attempt_number,
+                },
+                "ordering": {
+                    "scheduler_epoch": invocation.scheduler_epoch,
+                    "dispatch_event_seq": invocation.dispatch_event_seq,
+                    "issued_at_utc": finished,
+                    "started_at_utc": started,
+                    "finished_at_utc": finished,
+                },
+                "bindings": {
+                    "plan_sha256": invocation.plan_sha256,
+                    "task_sha256": invocation.task_sha256,
+                    "context_manifest_sha256": invocation.context_manifest_sha256,
+                    "dependency_admissions": [
+                        dict(item) for item in invocation.dependency_admissions
+                    ],
+                    "idempotency_key": invocation.idempotency_key,
+                    "adapter_challenge": invocation.adapter_challenge,
+                },
+                "session": {
+                    "session_uid": invocation.session_id,
+                    "runtime_handle_sha256": hashlib.sha256(
+                        container_name.encode("utf-8")
+                    ).hexdigest(),
+                    "provider_handle_sha256": provider_session_handle_sha256,
+                    "adapter_id": self.config.installation_id,
+                    "adapter_build_sha256": sha256_file(Path(__file__)),
+                    "container_image_digest": self.config.agent_container_image,
+                    "isolation_profile_sha256": stable_json_hash(
+                        {
+                            "class": "container_staged_context",
+                            "network": self.config.container_network,
+                            "workspace_readonly": True,
+                            "aws_credentials": False,
+                            "installation_id": self.config.installation_id,
+                        }
+                    ),
+                    "parent_session_uid": invocation.parent_session_uid,
+                    "lease_epoch": invocation.scheduler_epoch,
+                },
+                "outcome": {
+                    "returncode": int(returncode),
+                    "cancelled": cancelled,
+                    "error_class": (
+                        None
+                        if returncode == 0
+                        else "cancelled"
+                        if cancelled
+                        else "timeout"
+                        if timed_out
+                        else BLOCK_AGENT_RUNTIME_FAILED
+                    ),
+                    "private_output_sha256": private_output_sha256,
+                    "private_output_size_bytes": private_output_size_bytes,
+                    "termination_confirmed": True,
+                },
+            },
+        )
+        return ResearchOrgSessionOutcome(
+            returncode=int(returncode),
+            session_id=invocation.session_id,
+            runtime_instance_id=container_name,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            provider=self.config.openclaw_auth_provider,
+            model=model,
+            transport="openclaw_disposable_container",
+            isolation_class="container_staged_context",
+            owned_termination_supported=True,
+            cancelled=cancelled,
+            stdout_tail=stdout[-4_000:],
+            stderr_tail=stderr[-4_000:],
+            provider_session_handle_sha256=provider_session_handle_sha256,
+            adapter_receipt=adapter_receipt,
+        )
+
+    def cancel_research_org_session(self, runtime_instance_id: str) -> bool:
+        if not re.fullmatch(r"fforg-[a-z0-9-]{8,62}", runtime_instance_id):
+            return False
+        try:
+            inspect = subprocess.run(
+                [
+                    self.config.container_runtime,
+                    "inspect",
+                    "--format",
+                    "{{json .Config.Labels}}",
+                    runtime_instance_id,
+                ],
+                text=True,
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        if inspect.returncode != 0:
+            return "no such" in (inspect.stdout + inspect.stderr).lower()
+        try:
+            labels = json.loads(inspect.stdout)
+        except json.JSONDecodeError:
+            return False
+        if (
+            not isinstance(labels, dict)
+            or labels.get("factorforge.console.managed") != "true"
+            or labels.get("factorforge.console.installation")
+            != self.config.installation_id
+            or labels.get("factorforge.research-org.session") != "true"
+            or labels.get("factorforge.research-org.runtime")
+            != runtime_instance_id
+        ):
+            return False
+        return self._stop_container(runtime_instance_id)
 
     def _prepare_runtime(
         self,
@@ -2084,6 +2507,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
         protected_workspace_relatives: tuple[str, ...] = (),
         writable_workspace_relatives: tuple[str, ...] = (),
         writable_workspace_source_root: Path | None = None,
+        masked_worktree_relatives: tuple[str, ...] = (),
+        runtime_root_readonly: bool = False,
+        writable_runtime_paths: tuple[Path, ...] = (),
     ) -> list[str]:
         command = [
             self.config.container_runtime,
@@ -2122,31 +2548,86 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 readonly=True,
                 target=worktree,
             ),
-            "--mount",
-            _mount(
-                workspace_mount_source or workspace,
-                readonly=workspace_readonly,
-                target=workspace,
-            ),
-            "--mount",
-            _mount(runtime_root, readonly=False),
-            "--env",
-            f"HOME={home}",
-            "--env",
-            f"FACTORFORGE_ROOT={worktree}",
-            "--env",
-            f"FACTORFORGE_FACTOR_WORKSPACE={workspace}",
-            "--env",
-            "PYTHONUNBUFFERED=1",
-            "--env",
-            "PYTHONDONTWRITEBYTECODE=1",
-            "--env",
-            "AWS_EC2_METADATA_DISABLED=true",
-            "--env",
-            f"NO_PROXY={urlsplit(self.config.container_model_broker_url).hostname}",
-            "--env",
-            f"no_proxy={urlsplit(self.config.container_model_broker_url).hostname}",
         ]
+        mask_root = runtime_root / "repo_masks"
+        for relative in masked_worktree_relatives:
+            relative_path = Path(relative)
+            if (
+                relative_path.is_absolute()
+                or relative_path == Path(".")
+                or ".." in relative_path.parts
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unsafe worktree mask"
+                )
+            mask_source = mask_root / relative_path
+            mask_source.mkdir(parents=True, exist_ok=True, mode=0o500)
+            mask_source.chmod(0o500)
+            command.extend(
+                [
+                    "--mount",
+                    _mount(
+                        mask_source,
+                        readonly=True,
+                        target=worktree / relative_path,
+                    ),
+                ]
+            )
+        command.extend(
+            [
+                "--mount",
+                _mount(
+                    workspace_mount_source or workspace,
+                    readonly=workspace_readonly,
+                    target=workspace,
+                ),
+                "--mount",
+                _mount(runtime_root, readonly=runtime_root_readonly),
+            ]
+        )
+        resolved_runtime_root = runtime_root.resolve(strict=True)
+        for writable_path in writable_runtime_paths:
+            if writable_path.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: runtime write path is unsafe"
+                )
+            resolved_writable = writable_path.resolve(strict=True)
+            try:
+                resolved_writable.relative_to(resolved_runtime_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: runtime write path escaped"
+                ) from exc
+            if not resolved_writable.is_dir():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: runtime write path is unsafe"
+                )
+            command.extend(
+                [
+                    "--mount",
+                    _mount(resolved_writable, readonly=False),
+                ]
+            )
+        command.extend(
+            [
+                "--env",
+                f"HOME={home}",
+                "--env",
+                f"FACTORFORGE_ROOT={worktree}",
+                "--env",
+                f"FACTORFORGE_FACTOR_WORKSPACE={workspace}",
+                "--env",
+                "PYTHONUNBUFFERED=1",
+                "--env",
+                "PYTHONDONTWRITEBYTECODE=1",
+                "--env",
+                "AWS_EC2_METADATA_DISABLED=true",
+                "--env",
+                f"NO_PROXY={urlsplit(self.config.container_model_broker_url).hostname}",
+                "--env",
+                f"no_proxy={urlsplit(self.config.container_model_broker_url).hostname}",
+            ]
+        )
         if git_dir is not None:
             command.extend(
                 [

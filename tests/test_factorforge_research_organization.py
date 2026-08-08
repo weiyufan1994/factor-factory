@@ -603,7 +603,9 @@ def test_host_admission_enforces_dependencies_and_can_complete_ordered_bundle(
         require_results=True,
     )
     assert completed["execution_state"] == "COMPLETE"
-    assert completed["independence_satisfied"] is True
+    assert completed["council_independence_attestation_valid"] is True
+    assert completed["independence_satisfied"] is False
+    assert completed["independence_authority"] == "signed_runtime_ledger_required"
 
 
 def test_host_admission_is_immutable_and_rejects_reused_agent_session(

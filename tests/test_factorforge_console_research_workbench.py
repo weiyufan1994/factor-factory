@@ -759,6 +759,21 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
         "dispatch_task_count": 8,
         "validated_result_count": 0,
         "independence_satisfied": False,
+        "runtime": {
+            "lifecycle": "WAITING_HOST_RESULT",
+            "receipt_count": 3,
+            "session_count": 3,
+            "role_states": {
+                "research_director": "WAITING_HOST",
+                "price_volume_researcher": "PASS",
+                "fundamental_researcher": "PENDING",
+                "knowledge_librarian": "PASS",
+                "data_liaison": "PASS",
+                "quant_implementation": "PENDING",
+                "validation_evidence": "PENDING",
+                "independent_council": "PENDING",
+            },
+        },
     }
     html = render_job(job, store.list_messages(job.job_id), "csrf-token")
 
@@ -768,6 +783,9 @@ def test_workbench_html_exposes_four_surfaces_without_control_plane_log(
     assert "Price-Volume" in html
     assert "Independent Council" in html
     assert "尚未满足" in html
+    assert "WAITING_HOST_RESULT / 3" in html
+    assert "等待 Director" in html
+    assert "已验收" in html
     assert ">Math<" in html
     assert "回测中心" in html
     assert html.index('href="#conversation"') < html.index('href="#backtest"')

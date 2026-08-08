@@ -5,7 +5,8 @@ import hashlib
 import json
 import os
 import re
-import tempfile
+import stat
+import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,6 +21,16 @@ AGENT_RESULT_CONTRACT_VERSION = "factorforge_agent_result_v1"
 DOMAIN_PROPOSAL_CONTRACT_VERSION = "factorforge_domain_research_proposal_v1"
 ROLE_RESEARCH_RECORD_CONTRACT_VERSION = "factorforge_role_research_record_v1"
 DISPATCH_MANIFEST_CONTRACT_VERSION = "factorforge_research_org_dispatch_v1"
+RUNTIME_STATE_CONTRACT_VERSION = "factorforge_research_org_runtime_state_v1"
+RUNTIME_EVENT_CONTRACT_VERSION = "factorforge_research_org_runtime_event_v1"
+RUNTIME_ATTEMPT_CONTRACT_VERSION = "factorforge_agent_runtime_attempt_v1"
+RUNTIME_CONTEXT_CONTRACT_VERSION = "factorforge_agent_runtime_context_v1"
+SESSION_RECEIPT_CONTRACT_VERSION = "factorforge_agent_session_receipt_v1"
+PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION = "factorforge_agent_private_output_v1"
+
+MAX_CONTRACT_JSON_BYTES = 16 * 1024 * 1024
+MAX_CONTRACT_JSON_DEPTH = 64
+MAX_CONTRACT_JSON_NODES = 250_000
 
 BLOCK_RESEARCH_ORG_PLAN_MISSING = "BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_MISSING"
 BLOCK_RESEARCH_ORG_PLAN_INVALID = "BLOCK_FACTORFORGE_RESEARCH_ORG_PLAN_INVALID"
@@ -30,6 +41,13 @@ BLOCK_RESEARCH_ORG_ROUTE_INVALID = "BLOCK_FACTORFORGE_RESEARCH_ORG_ROUTE_INVALID
 BLOCK_RESEARCH_ORG_TASK_INVALID = "BLOCK_FACTORFORGE_RESEARCH_ORG_TASK_INVALID"
 BLOCK_RESEARCH_ORG_RESULT_INVALID = "BLOCK_FACTORFORGE_RESEARCH_ORG_RESULT_INVALID"
 BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID = "BLOCK_FACTORFORGE_RESEARCH_ORG_INDEPENDENCE_INVALID"
+BLOCK_RESEARCH_ORG_RUNTIME_MISSING = "BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_MISSING"
+BLOCK_RESEARCH_ORG_RUNTIME_INVALID = "BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_INVALID"
+BLOCK_RESEARCH_ORG_SESSION_FAILED = "BLOCK_FACTORFORGE_RESEARCH_ORG_SESSION_FAILED"
+BLOCK_RESEARCH_ORG_SESSION_RECEIPT_INVALID = (
+    "BLOCK_FACTORFORGE_RESEARCH_ORG_SESSION_RECEIPT_INVALID"
+)
+BLOCK_RESEARCH_ORG_RUNTIME_CANCELLED = "BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_CANCELLED"
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
@@ -56,6 +74,7 @@ class ResearchOrganizationError(RuntimeError):
 def stable_json_hash(value: Any) -> str:
     payload = json.dumps(
         value,
+        allow_nan=False,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -117,25 +136,247 @@ def normalize_workspace_relative_path(
     return candidate.as_posix()
 
 
+def _validated_relative_parts(relative: str) -> tuple[str, ...]:
+    path = Path(relative)
+    if (
+        not relative
+        or path.is_absolute()
+        or path == Path(".")
+        or ".." in path.parts
+    ):
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_PATH_INVALID,
+            [f"unsafe_relative_path:{relative}"],
+        )
+    return path.parts
+
+
+def _open_absolute_directory_fd(path: Path) -> int:
+    if not path.is_absolute():
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_PATH_INVALID,
+            [f"workspace_not_absolute:{path}"],
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open("/", flags)
+    try:
+        for part in path.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_PATH_INVALID,
+                [f"workspace_not_directory:{path}"],
+            )
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _open_workspace_parent_fd(
+    workspace: Path,
+    relative: str,
+    *,
+    create_parents: bool,
+) -> Iterator[tuple[int, str]]:
+    parts = _validated_relative_parts(relative)
+    descriptor = _open_absolute_directory_fd(workspace)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        try:
+            for part in parts[:-1]:
+                try:
+                    next_descriptor = os.open(part, flags, dir_fd=descriptor)
+                except FileNotFoundError:
+                    if not create_parents:
+                        raise
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    next_descriptor = os.open(part, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = next_descriptor
+        except OSError as exc:
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_PATH_INVALID,
+                [f"unsafe_parent:{relative}"],
+            ) from exc
+        yield descriptor, parts[-1]
+    finally:
+        os.close(descriptor)
+
+
+def _read_stable_file_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    relative: str,
+    max_bytes: int,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_PATH_INVALID,
+            [f"unsafe_or_missing:{relative}"],
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size < 0
+            or before.st_size > max_bytes
+        ):
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_PATH_INVALID,
+                [f"unsafe_or_oversized:{relative}"],
+            )
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        path_after = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        path_identity = (
+            path_after.st_dev,
+            path_after.st_ino,
+            path_after.st_size,
+            path_after.st_mtime_ns,
+            path_after.st_ctime_ns,
+        )
+        if (
+            before_identity != after_identity
+            or after_identity != path_identity
+            or len(payload) != before.st_size
+        ):
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_PATH_INVALID,
+                [f"changed_while_reading:{relative}"],
+            )
+        return payload
+    except OSError as exc:
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_PATH_INVALID,
+            [f"changed_while_reading:{relative}"],
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def read_workspace_bytes(
+    workspace: Path,
+    relative_path: str,
+    *,
+    max_bytes: int = MAX_CONTRACT_JSON_BYTES,
+) -> bytes:
+    relative = normalize_workspace_relative_path(
+        relative_path,
+        workspace=workspace,
+        label="read_bytes",
+    )
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        create_parents=False,
+    ) as (parent_descriptor, name):
+        return _read_stable_file_at(
+            parent_descriptor,
+            name,
+            relative=relative,
+            max_bytes=max_bytes,
+        )
+
+
+def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in output:
+            raise ValueError(f"duplicate_json_key:{key}")
+        output[key] = value
+    return output
+
+
+def _reject_non_finite_json(value: str) -> None:
+    raise ValueError(f"non_finite_json:{value}")
+
+
+def _validate_json_shape(value: Any) -> None:
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if depth > MAX_CONTRACT_JSON_DEPTH or nodes > MAX_CONTRACT_JSON_NODES:
+            raise ValueError("json_shape_budget")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+
+
+def strict_json_loads(raw: bytes | str, *, label: str) -> Any:
+    try:
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        payload = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_non_finite_json,
+        )
+        _validate_json_shape(payload)
+        return payload
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_PATH_INVALID,
+            [f"unreadable_json:{label}"],
+        ) from exc
+
+
 def read_workspace_json(workspace: Path, relative_path: str) -> dict[str, Any]:
     relative = normalize_workspace_relative_path(
         relative_path,
         workspace=workspace,
         label="read_json",
     )
-    path = workspace / relative
-    if not path.is_file() or path.is_symlink():
-        raise ResearchOrganizationError(
-            BLOCK_RESEARCH_ORG_PATH_INVALID,
-            [f"unsafe_or_missing:{relative}"],
-        )
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ResearchOrganizationError(
-            BLOCK_RESEARCH_ORG_PATH_INVALID,
-            [f"unreadable_json:{relative}"],
-        ) from exc
+    payload = strict_json_loads(
+        read_workspace_bytes(workspace, relative),
+        label=relative,
+    )
     if not isinstance(payload, dict):
         raise ResearchOrganizationError(
             BLOCK_RESEARCH_ORG_PATH_INVALID,
@@ -144,43 +385,106 @@ def read_workspace_json(workspace: Path, relative_path: str) -> dict[str, Any]:
     return payload
 
 
+def _json_bytes(payload: Mapping[str, Any]) -> bytes:
+    try:
+        return (
+            json.dumps(
+                payload,
+                allow_nan=False,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_PATH_INVALID,
+            ["json_payload_not_canonical"],
+        ) from exc
+
+
+def _write_workspace_bytes(
+    workspace: Path,
+    relative: str,
+    payload: bytes,
+    *,
+    replace: bool,
+) -> Path:
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        create_parents=True,
+    ) as (parent_descriptor, name):
+        if not replace:
+            try:
+                os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(relative)
+        temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(descriptor, payload[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            if replace:
+                os.rename(
+                    temporary,
+                    name,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=parent_descriptor,
+                )
+            else:
+                os.link(
+                    temporary,
+                    name,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                os.unlink(temporary, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+        published = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(published.st_mode) or published.st_nlink != 1:
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_PATH_INVALID,
+                [f"unsafe_published_file:{relative}"],
+            )
+    return workspace / relative
+
+
 def write_workspace_json(workspace: Path, relative_path: str, payload: Mapping[str, Any]) -> Path:
     relative = normalize_workspace_relative_path(
         relative_path,
         workspace=workspace,
         label="write_json",
     )
-    path = workspace / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ResearchOrganizationError(
-            BLOCK_RESEARCH_ORG_PATH_INVALID,
-            [f"unsafe_write_target:{relative}"],
-        )
-    for parent in (path.parent, *path.parent.parents):
-        if parent == workspace.parent:
-            break
-        if parent.is_symlink():
-            raise ResearchOrganizationError(
-                BLOCK_RESEARCH_ORG_PATH_INVALID,
-                [f"symlink_parent:{parent}"],
-            )
-        if parent == workspace:
-            break
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-    return path
+    return _write_workspace_bytes(
+        workspace,
+        relative,
+        _json_bytes(payload),
+        replace=True,
+    )
 
 
 def write_workspace_json_once(
@@ -195,42 +499,12 @@ def write_workspace_json_once(
         workspace=workspace,
         label="write_json_once",
     )
-    path = workspace / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ResearchOrganizationError(
-            BLOCK_RESEARCH_ORG_PATH_INVALID,
-            [f"unsafe_write_target:{relative}"],
-        )
-    for parent in (path.parent, *path.parent.parents):
-        if parent == workspace.parent:
-            break
-        if parent.is_symlink():
-            raise ResearchOrganizationError(
-                BLOCK_RESEARCH_ORG_PATH_INVALID,
-                [f"symlink_parent:{parent}"],
-            )
-        if parent == workspace:
-            break
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-    return path
+    return _write_workspace_bytes(
+        workspace,
+        relative,
+        _json_bytes(payload),
+        replace=False,
+    )
 
 
 @contextmanager
@@ -245,18 +519,33 @@ def workspace_file_lock(
         workspace=workspace,
         label="workspace_lock",
     )
-    path = workspace / relative
-    if not path.is_file() or path.is_symlink():
-        raise ResearchOrganizationError(
-            BLOCK_RESEARCH_ORG_PATH_INVALID,
-            [f"unsafe_lock_target:{relative}"],
-        )
-    with path.open("rb") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    with _open_workspace_parent_fd(
+        workspace,
+        relative,
+        create_parents=False,
+    ) as (parent_descriptor, name):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
         try:
-            yield
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_PATH_INVALID,
+                    [f"unsafe_lock_target:{relative}"],
+                )
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_PATH_INVALID,
+                    [f"lock_target_replaced:{relative}"],
+                )
+            try:
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 def sha256_file(path: Path) -> str:

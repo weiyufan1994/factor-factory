@@ -143,6 +143,54 @@ def require_catalogs_healthy(config: ConsoleConfig) -> None:
         raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_DATA_CATALOG_UNAVAILABLE")
 
 
+def catalog_admission_projection(config: ConsoleConfig) -> dict[str, Any]:
+    """Return a public, hash-bound statement about the active catalog transport.
+
+    This projection deliberately does not promote catalog transport health into a
+    dataset-level QA verdict. Formal dataset acceptance remains owned by Step3.
+    """
+
+    if not config.data_catalogs:
+        return {
+            "version": "factorforge_console_catalog_admission_v1",
+            "verdict": "NOT_APPLICABLE",
+            "admission_scope": "no_catalog_configured",
+            "formal_dataset_qa_implied": False,
+        }
+    if config.catalog_receipt is None:
+        require_catalogs_healthy(config)
+        return {
+            "version": "factorforge_console_catalog_admission_v1",
+            "verdict": "NOT_APPLICABLE",
+            "admission_scope": "local_or_test_catalog_snapshot",
+            "formal_dataset_qa_implied": False,
+        }
+    require_catalogs_healthy(config)
+    receipt_path = config.catalog_receipt
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    catalog_path = config.data_catalogs[0]
+    return {
+        "version": "factorforge_console_catalog_admission_v1",
+        "verdict": "PASS",
+        "admission_scope": "active_catalog_identity_freshness_and_transport",
+        "formal_dataset_qa_implied": False,
+        "catalog_sha256": str(receipt["catalog_sha256"]),
+        "catalog_bytes": int(receipt["catalog_bytes"]),
+        "catalog_receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        "dataset_count": int(receipt["dataset_count"]),
+        "schema_version": receipt["schema_version"],
+        "catalog_source": {
+            "bucket": str(receipt["bucket"]),
+            "key": str(receipt["key"]),
+            "etag": str(receipt["etag"]),
+            "version_id": str(receipt["version_id"]),
+            "source_last_modified_utc": str(receipt["source_last_modified_utc"]),
+            "fetched_at_utc": str(receipt["fetched_at_utc"]),
+        },
+        "host_catalog_filename": catalog_path.name,
+    }
+
+
 def _timestamp(value: Any) -> datetime:
     parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     if parsed.tzinfo is None:

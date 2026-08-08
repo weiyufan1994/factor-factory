@@ -158,6 +158,24 @@ def test_catalog_health_validation_is_single_flight_cached(research_console, mon
     assert calls == 1
 
 
+def test_catalog_admission_projection_is_hash_bound_and_does_not_claim_dataset_qa(
+    research_console,
+):
+    from factor_factory.console.catalog_health import catalog_admission_projection
+
+    _base_url, application = research_console
+    admission = catalog_admission_projection(application.config)
+
+    assert admission["verdict"] == "PASS"
+    assert admission["catalog_sha256"] == hashlib.sha256(
+        application.config.data_catalogs[0].read_bytes()
+    ).hexdigest()
+    assert admission["catalog_receipt_sha256"] == hashlib.sha256(
+        application.config.catalog_receipt.read_bytes()
+    ).hexdigest()
+    assert admission["formal_dataset_qa_implied"] is False
+
+
 def _login_opener(base_url: str):
     cookie_jar = CookieJar()
     opener = build_opener(HTTPCookieProcessor(cookie_jar))

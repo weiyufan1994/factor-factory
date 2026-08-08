@@ -112,6 +112,7 @@ LEGACY_ROUTE_FAMILIES = {
 }
 WEB_NON_FORMULA_DAILY_FIELDS = frozenset({"ts_code", "trade_date"})
 WEB_AUTHORING_DATASETS = frozenset({"clean_daily_bar"})
+WEB_AUTHORING_DATASET_CLASSES = {"clean_daily_bar": "base_market_dataset"}
 WEB_FORMULA_OPERATORS = frozenset(
     name
     for name, metadata in SUPPORTED_OPERATORS.items()
@@ -1361,19 +1362,95 @@ def _column_names(entry: dict[str, Any]) -> list[str]:
     return []
 
 
-def summarize_catalogs(catalogs: Iterable[Path]) -> dict[str, Any]:
+def _public_s3_uri(value: Any) -> str:
+    candidate = str(value or "").strip()
+    return candidate if candidate.startswith("s3://") else ""
+
+
+def _catalog_evidence_refs(
+    entry: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    candidates = (
+        ("dataset_metadata", metadata.get("metadata_uri")),
+        ("qa_summary", metadata.get("qa_summary_path") or metadata.get("qa_json_path")),
+        ("worker_read_smoke", metadata.get("read_smoke_path")),
+        ("delivery_proof", metadata.get("delivery_proof_path")),
+        ("catalog_proof", metadata.get("catalog_proof_path")),
+    )
+    for kind, raw in candidates:
+        uri = _public_s3_uri(raw)
+        if uri and not any(item["uri"] == uri for item in refs):
+            refs.append({"kind": kind, "uri": uri})
+    return refs
+
+
+def summarize_catalogs(
+    catalogs: Iterable[Path],
+    *,
+    catalog_admission: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    catalog_paths = tuple(
+        Path(catalog).expanduser().resolve(strict=True) for catalog in catalogs
+    )
+    admission = deepcopy(dict(catalog_admission or {
+        "version": "factorforge_console_catalog_admission_v1",
+        "verdict": "NOT_APPLICABLE",
+        "admission_scope": "approved_snapshot_without_host_transport_attestation",
+        "formal_dataset_qa_implied": False,
+    }))
+    active_catalog = admission.get("verdict") == "PASS"
+    if active_catalog:
+        reasons: list[str] = []
+        if (
+            admission.get("version") != "factorforge_console_catalog_admission_v1"
+            or admission.get("admission_scope")
+            != "active_catalog_identity_freshness_and_transport"
+            or admission.get("formal_dataset_qa_implied") is not False
+        ):
+            reasons.append("active catalog admission policy")
+        if len(catalog_paths) != 1:
+            reasons.append("active catalog admission cardinality")
+        else:
+            catalog_path = catalog_paths[0]
+            payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+            dataset_count = len(_catalog_entries(payload))
+            if admission.get("catalog_sha256") != sha256_file(catalog_path):
+                reasons.append("active catalog admission hash")
+            if admission.get("catalog_bytes") != catalog_path.stat().st_size:
+                reasons.append("active catalog admission bytes")
+            if admission.get("dataset_count") != dataset_count:
+                reasons.append("active catalog admission dataset count")
+            if re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(admission.get("catalog_receipt_sha256") or ""),
+            ) is None:
+                reasons.append("active catalog receipt hash")
+        if reasons:
+            raise WebResearchPlanError(BLOCK_PLAN_CATALOG_INVALID, reasons)
     summaries: list[dict[str, Any]] = []
-    for catalog in catalogs:
-        path = Path(catalog).expanduser().resolve(strict=True)
+    for path in catalog_paths:
         payload = json.loads(path.read_text(encoding="utf-8"))
         entries = []
         for name, entry in _catalog_entries(payload):
             if name not in WEB_AUTHORING_DATASETS:
                 continue
             metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            materialized_uri = _public_s3_uri(
+                entry.get("uri") or entry.get("materialized_root")
+            )
+            qa_verdict = entry.get("qa_verdict") or metadata.get("qa_verdict")
+            evidence_refs = _catalog_evidence_refs(entry, metadata)
             entries.append(
                 {
                     "name": name,
+                    "dataset_class": WEB_AUTHORING_DATASET_CLASSES[name],
+                    "catalog_membership": (
+                        "active_catalog_member"
+                        if active_catalog
+                        else "approved_catalog_snapshot_member"
+                    ),
                     "description": str(entry.get("description") or "")[:500],
                     "columns": _column_names(entry),
                     "schema_version": entry.get("schema_version") or entry.get("version") or metadata.get("schema_version"),
@@ -1384,8 +1461,35 @@ def summarize_catalogs(catalogs: Iterable[Path]) -> dict[str, Any]:
                     "freshness": entry.get("freshness") or {},
                     "start_date": entry.get("start_date") or metadata.get("start_date"),
                     "end_date": entry.get("end_date") or metadata.get("end_date"),
-                    "qa_verdict": entry.get("qa_verdict") or metadata.get("qa_verdict"),
-                    "storage_scheme": str(entry.get("uri") or entry.get("materialized_root") or "").split(":", 1)[0],
+                    "qa_verdict": qa_verdict,
+                    "materialized_uri": materialized_uri,
+                    "storage_scheme": materialized_uri.split(":", 1)[0],
+                    "format": str(entry.get("format") or ""),
+                    "producer_provenance": {
+                        "source": str(metadata.get("source") or ""),
+                        "source_label": str(metadata.get("source_label") or ""),
+                        "mode": str(metadata.get("mode") or ""),
+                    },
+                    "information_policy": {
+                        "pit_guarantees": deepcopy(metadata.get("pit_guarantees") or {}),
+                        "information_set_legality": str(
+                            metadata.get("information_set_legality") or ""
+                        ),
+                        "no_future_data": metadata.get("no_future_data"),
+                        "no_future_intraday_minutes": metadata.get(
+                            "no_future_intraday_minutes"
+                        ),
+                    },
+                    "evidence_refs": evidence_refs,
+                    "formal_execution_evidence": {
+                        "qa_verdict": qa_verdict,
+                        "qa_reference_present": any(
+                            item["kind"] == "qa_summary" for item in evidence_refs
+                        ),
+                        "worker_read_smoke_reference_present": any(
+                            item["kind"] == "worker_read_smoke" for item in evidence_refs
+                        ),
+                    },
                 }
             )
         summaries.append(
@@ -1396,8 +1500,9 @@ def summarize_catalogs(catalogs: Iterable[Path]) -> dict[str, Any]:
             }
         )
     return {
-        "version": "factorforge_web_data_catalog_summary_v1",
+        "version": "factorforge_web_data_catalog_summary_v2",
         "read_only": True,
+        "active_catalog_admission": admission,
         "catalogs": summaries,
     }
 
@@ -1600,6 +1705,7 @@ def write_web_research_packet(
     worktree: Path,
     request: dict[str, Any],
     catalogs: Iterable[Path],
+    catalog_admission: Mapping[str, Any] | None = None,
     preserve_existing_plan: bool = False,
     trusted_resume_start_step: str | None = None,
 ) -> None:
@@ -1657,7 +1763,10 @@ def write_web_research_packet(
             raise RuntimeError("frozen data catalog summary is unsafe")
         catalog_summary = json.loads(catalog_summary_path.read_text(encoding="utf-8"))
     else:
-        catalog_summary = summarize_catalogs(catalogs)
+        catalog_summary = summarize_catalogs(
+            catalogs,
+            catalog_admission=catalog_admission,
+        )
         write_json_atomic(
             catalog_summary_path,
             catalog_summary,

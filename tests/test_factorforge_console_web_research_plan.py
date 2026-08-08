@@ -25,6 +25,7 @@ from factor_factory.console.web_research_plan import (
     required_web_resume_start_step,
     resolve_workspace_approved_catalog,
     sha256_file,
+    summarize_catalogs,
     source_formula_seed,
     stable_json_hash,
     validate_materialized_web_research,
@@ -347,6 +348,51 @@ def _write_catalog(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def test_catalog_summary_separates_design_admission_from_formal_dataset_qa(tmp_path):
+    catalog = _write_catalog(tmp_path)
+    summary = summarize_catalogs(
+        [catalog],
+        catalog_admission={
+            "version": "factorforge_console_catalog_admission_v1",
+            "verdict": "PASS",
+            "admission_scope": "active_catalog_identity_freshness_and_transport",
+            "formal_dataset_qa_implied": False,
+            "catalog_sha256": sha256_file(catalog),
+            "catalog_bytes": catalog.stat().st_size,
+            "catalog_receipt_sha256": "b" * 64,
+            "dataset_count": 2,
+        },
+    )
+
+    assert summary["version"] == "factorforge_web_data_catalog_summary_v2"
+    assert summary["active_catalog_admission"]["verdict"] == "PASS"
+    assert summary["active_catalog_admission"]["formal_dataset_qa_implied"] is False
+    entry = summary["catalogs"][0]["entries"][0]
+    assert entry["dataset_class"] == "base_market_dataset"
+    assert entry["catalog_membership"] == "active_catalog_member"
+    assert entry["materialized_uri"] == "s3://approved-read-only/clean_daily_bar"
+    assert entry["formal_execution_evidence"]["qa_verdict"] == "ACCEPT"
+
+
+def test_catalog_summary_rejects_unbound_active_admission(tmp_path):
+    catalog = _write_catalog(tmp_path)
+
+    with pytest.raises(WebResearchPlanError, match="CATALOG_INVALID"):
+        summarize_catalogs(
+            [catalog],
+            catalog_admission={
+                "version": "factorforge_console_catalog_admission_v1",
+                "verdict": "PASS",
+                "admission_scope": "active_catalog_identity_freshness_and_transport",
+                "formal_dataset_qa_implied": False,
+                "catalog_sha256": "0" * 64,
+                "catalog_bytes": catalog.stat().st_size,
+                "catalog_receipt_sha256": "b" * 64,
+                "dataset_count": 2,
+            },
+        )
 
 
 def _fill_plan(workspace: Path) -> dict:

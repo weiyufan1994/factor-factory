@@ -31,7 +31,11 @@ from factor_factory.console.agent_adapter import (
     RESUME_MEMO_OPERATOR_FLAG_FIELDS,
 )
 from factor_factory.console.artifact_service import SafeArtifact, publish_official_artifacts
-from factor_factory.console.catalog_health import catalogs_healthy, require_catalogs_healthy
+from factor_factory.console.catalog_health import (
+    catalog_admission_projection,
+    catalogs_healthy,
+    require_catalogs_healthy,
+)
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.conversation_ledger import (
     BLOCK_CONVERSATION_LEDGER_INVALID,
@@ -4345,6 +4349,7 @@ class ResearchRunService:
                 worktree=allocation.worktree_path,
                 request=request_payload,
                 catalogs=self.config.data_catalogs,
+                catalog_admission=catalog_admission_projection(self.config),
                 preserve_existing_plan=preserve_plan,
                 trusted_resume_start_step=trusted_resume_start_step,
             )

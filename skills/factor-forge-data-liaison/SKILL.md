@@ -47,6 +47,34 @@ Accept a reuse hit only when every required item is evidenced. An existing path,
 a prior research artifact, or a knowledge-base mention is not catalog proof.
 Unknown, missing, mismatched, stale, or non-ACCEPT evidence is not a reuse hit.
 
+## Pre-Formal Base Dataset Admission
+
+Keep design feasibility separate from formal execution readiness. During a task
+whose `execution_stage_contract.stage` is `pre_formal_research_design`, a
+registered `base_market_dataset` such as `clean_daily_bar` may be admitted for
+research-plan construction when all of the following are true:
+
+- `active_catalog_admission.verdict=PASS`, its scope is catalog identity,
+  freshness and transport, and it explicitly does not imply dataset QA;
+- the entry is an `active_catalog_member` with an exact materialized URI,
+  producer provenance, required fields and sufficient freshness coverage;
+- the legal information policy is explicit enough to define formation time and
+  excludes future observations; and
+- no derived-state reuse, immediate materialization or formal execution is being
+  authorized by this result.
+
+In that narrow case return `proposal_status=ready_for_director_review`, record a
+design-time reuse hit, and set the handoff to require normal Step3 catalog, QA,
+lookahead and worker-read validation before any formal execution. List absent
+dataset QA/read-smoke evidence as `formal_execution_requirements`, not as a new
+data request. Never describe the base dataset as formally QA ACCEPT unless the
+bound evidence actually says so.
+
+This exception does not apply to derived datamarts or reusable state. Missing
+QA, lookahead, coverage, URI, provenance or read-smoke evidence for those
+dependencies remains `NEEDS_DATA`. It also does not apply to a Step3/Step4 task
+or any task asking the Liaison to certify immediate execution readiness.
+
 ## Missing Dependency
 
 When a dependency is unmet, author a complete `factorforge_data_request_v1`

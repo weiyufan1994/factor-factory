@@ -82,10 +82,11 @@ factor_factory/console/web_ui.py
 32. recognized external formula dialect 绑定可定位且含实际摘录的 specific source evidence，或 explicit user research override provenance；hash-only 不构成证据，内嵌摘录也不冒充外部 source authenticity；legacy v1 只可迁移为 `AUTHORITY_REQUIRED`；
 33. organization Council 只审计执行前研究设计；回测后的 empirical Council 仍由 Ultimate Step6 独立完成。
 34. pre-formal Quant/Validation/Council 使用 v3 controlled-check scope；公开 record 为闭合结构，claims 必须等于有序 checks，finding/falsifier 使用受控 code，禁止自由文本结论，realized outcome 与 promotion authority 永远为 false。
-35. mechanism routing 同时要求机制谓词组成可识别的关系从句、经济主体或状态、可交易/估值/风险目标；三个词表的关键词共现不构成机制。单纯数据可用性与字段描述不能激活 domain，但含完整机制三元组的研报陈述不会因“report contains”容器措辞被误挡。
-36. Host Director 的私有 Agent receipt 必须完整解析并与 adapter 返回值逐字段绑定；目录归属本身不是 real-agent provenance。
-37. Data Liaison admission 是 result 与 Host-materialized request 的同一异常原子操作；任何最终 bundle/ledger validation 异常都回滚本次新建的两类 artifact。
-38. `factorforge_agent_result_v1` 外层 envelope 及其 authority-bearing `identity` 按角色 exact-shape 校验；Council attestation、formal verdict、`artifact_refs` 与 Data Liaison canonical request refs 都禁止未声明字段，避免自由文本或伪 verdict 从相邻通道绕过 v3 controlled record。
+35. Data Liaison 必须区分 `pre-formal design feasibility` 与 `formal data acceptance`。经 Host 校验的 active catalog receipt 可让 `clean_daily_bar` 这类 base market dataset 进入研究方案设计，但 receipt 明确不等价于 dataset QA；正式 Step3 仍必须独立校验 QA、lookahead、coverage 与 worker read。派生 datamart/state 不适用该例外，证据不完整时继续进入 `WAITING_DATA`。
+36. mechanism routing 同时要求机制谓词组成可识别的关系从句、经济主体或状态、可交易/估值/风险目标；三个词表的关键词共现不构成机制。单纯数据可用性与字段描述不能激活 domain，但含完整机制三元组的研报陈述不会因“report contains”容器措辞被误挡。
+37. Host Director 的私有 Agent receipt 必须完整解析并与 adapter 返回值逐字段绑定；目录归属本身不是 real-agent provenance。
+38. Data Liaison admission 是 result 与 Host-materialized request 的同一异常原子操作；任何最终 bundle/ledger validation 异常都回滚本次新建的两类 artifact。
+39. `factorforge_agent_result_v1` 外层 envelope 及其 authority-bearing `identity` 按角色 exact-shape 校验；Council attestation、formal verdict、`artifact_refs` 与 Data Liaison canonical request refs 都禁止未声明字段，避免自由文本或伪 verdict 从相邻通道绕过 v3 controlled record。
 
 ### 2.2 当前未实现
 

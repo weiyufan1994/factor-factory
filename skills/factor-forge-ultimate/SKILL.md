@@ -68,6 +68,14 @@ automatic data resume; do not claim those capabilities exist. A pre-formal
 clarification pause must retain `factor_verdict=UNKNOWN` and instruct the user
 to start a new isolated task with the added mechanism evidence.
 
+Do not confuse pre-formal design feasibility with formal data acceptance. A
+Host-validated active catalog may admit a base market dataset for plan authoring
+while explicitly deferring dataset QA/read-smoke to the normal Step3 gate. That
+does not authorize formal execution and cannot be used for derived-state reuse.
+Derived datamarts and state dependencies remain `WAITING_DATA` until their QA,
+lookahead, coverage, URI, provenance and required worker-read evidence are
+actually bound.
+
 Every role consumes `factorforge_agent_task_v1` and returns a
 `factorforge_agent_result_v1` envelope. Public artifacts contain reproducible
 definitions, decisive derivation steps, citations, assumptions and falsifiers;

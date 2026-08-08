@@ -635,9 +635,21 @@ def _initial_research_messages(
             "max_sum_convention": _field(fields, "max_sum_convention"),
             "zscore_ddof": _field(fields, "zscore_ddof"),
         }
+        semantic_authority = {
+            "kind": _field(fields, "semantic_authority_kind"),
+            "reference": _field(fields, "semantic_authority_reference"),
+            "rationale": _raw_field(fields, "semantic_authority_rationale").strip(),
+            "source_excerpt": _raw_field(fields, "semantic_source_excerpt").strip(),
+            "source_excerpt_sha256": _field(fields, "semantic_source_excerpt_sha256"),
+            "override_reason": _raw_field(fields, "semantic_override_reason").strip(),
+            "implementation_choices_not_performance_selected": (
+                _field(fields, "semantic_choices_not_performance_selected") == "true"
+            ),
+        }
         source_contract = resolve_source_formula(
             formula,
             choices if uses_source_dialect(formula) else None,
+            semantic_authority if uses_source_dialect(formula) else None,
         )
         formula_ir = parse_formula(
             source_contract["canonical_formula"],
@@ -686,6 +698,13 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
         "skew_convention",
         "max_sum_convention",
         "zscore_ddof",
+        "semantic_authority_kind",
+        "semantic_authority_reference",
+        "semantic_authority_rationale",
+        "semantic_source_excerpt",
+        "semantic_source_excerpt_sha256",
+        "semantic_override_reason",
+        "semantic_choices_not_performance_selected",
         "universe",
         "sample_start",
         "sample_end",
@@ -696,7 +715,37 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
 def _research_request_error(error: Exception) -> str:
     message = str(error)
     if message.startswith(BLOCK_SOURCE_SEMANTICS_UNRESOLVED):
-        return "该第三方公式存在算子语义冲突。请明确选择峰度、偏度、区间求和和截面标准差口径后再提交。"
+        reasons = error.reasons if isinstance(error, SourceFormulaDialectError) else ()
+        prompts: list[str] = []
+        choice_labels = {
+            "kurtosis_convention": "峰度",
+            "skew_convention": "偏度",
+            "max_sum_convention": "区间求和",
+            "zscore_ddof": "截面标准差",
+        }
+        missing_choices = [
+            label
+            for field, label in choice_labels.items()
+            if any(reason.startswith(f"{field} must be one of ") for reason in reasons)
+        ]
+        if missing_choices:
+            prompts.append("请选择" + "、".join(missing_choices) + "口径")
+        if any("semantic_authority.kind" in reason for reason in reasons):
+            prompts.append("请选择具体源证据或显式用户研究覆盖作为语义权威")
+        if any("semantic_authority.reference" in reason for reason in reasons):
+            prompts.append("填写可定位的语义权威引用")
+        if any("semantic_authority.rationale" in reason for reason in reasons):
+            prompts.append("填写采用这些实现口径的理由")
+        if any("source_excerpt" in reason for reason in reasons):
+            prompts.append("具体源证据模式必须填写可定位的原文摘录；哈希不能替代摘录")
+        if any("override_reason" in reason for reason in reasons):
+            prompts.append("显式用户研究覆盖模式必须填写覆盖原因")
+        if any("not_performance_selected" in reason for reason in reasons):
+            prompts.append("确认实现口径未依据回测或绩效结果选择")
+        detail = "；".join(dict.fromkeys(prompts))
+        return "该第三方公式的源语义权威尚未满足正式合同要求。" + (
+            detail + "。" if detail else "请补全语义口径与来源依据后再提交。"
+        )
     if message.startswith("formula preflight failed:"):
         return "公式当前无法进入可信 Formula IR：" + message.split(":", 1)[1].strip()
     translated = {

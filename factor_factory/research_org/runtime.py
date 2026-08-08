@@ -42,9 +42,21 @@ from factor_factory.research_org.contracts import (
     write_workspace_json_once,
 )
 from factor_factory.research_org.director import (
+    DATA_REQUEST_CONTRACT_VERSION,
+    PREFORMAL_BLOCK_DECISION,
+    PREFORMAL_CLAIM_SCOPE,
+    PREFORMAL_CLEAR_DECISION,
+    PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+    PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+    PREFORMAL_EXECUTIVE_SUMMARIES,
+    PREFORMAL_FALSIFIER_CODES,
+    PREFORMAL_FINDING_CODES,
+    PREFORMAL_ROLE_CHECK_IDS,
     PLAN_RELATIVE_PATH,
     admit_agent_result,
+    cleanup_materialized_data_requests,
     load_research_organization_plan,
+    materialize_data_liaison_requests,
     validate_agent_result,
     validate_research_organization_bundle,
 )
@@ -171,6 +183,69 @@ def build_research_org_session_prompt(
         / "tasks"
         / f"{invocation.task_id}.json"
     )
+    if invocation.role_id in PREFORMAL_ROLE_CHECK_IDS:
+        check_ids = json.dumps(
+            list(PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]),
+            ensure_ascii=False,
+        )
+        claim_scope = json.dumps(PREFORMAL_CLAIM_SCOPE, ensure_ascii=False)
+        finding_codes = json.dumps(PREFORMAL_FINDING_CODES, ensure_ascii=False)
+        falsifier_codes = json.dumps(
+            {
+                check_id: PREFORMAL_FALSIFIER_CODES[check_id]
+                for check_id in PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]
+            },
+            ensure_ascii=False,
+        )
+        executive_summaries = json.dumps(
+            PREFORMAL_EXECUTIVE_SUMMARIES,
+            ensure_ascii=False,
+        )
+        role_contract_guidance = f"""
+For this `{invocation.role_id}` role, `public_research_record.design_review`
+is mandatory. It must use contract
+`{PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION}`, stage
+`pre_formal_research_design`, evidence_basis
+`pre_registered_design_only`, empirical_factor_verdict `NOT_ISSUED`, and
+claim_scope exactly `{claim_scope}`. This is a controlled record: the only
+top-level public record keys are `contract_version`, `executive_summary`,
+`claims`, `artifact_refs`, `handoff`, and `design_review`; handoff must equal
+`{{"status":"ready_for_host_review"}}`. Use exactly these ordered check_ids:
+{check_ids}. Every check has exactly `check_id`,
+`claim_type=DESIGN_REQUIREMENT`, `status=PASS|BLOCK`, `finding_code`,
+`falsifier_code`, and `evidence_refs`. Finding codes are {finding_codes};
+falsifier codes are {falsifier_codes}. Evidence refs are paths only and must
+also appear as hash-bound `artifact_refs` authorized by the frozen task.
+`public_research_record.claims` must exactly equal the ordered `checks` list;
+no free-text claim, finding, falsifier, blocker, or extra field is allowed.
+`blockers` must exactly list the ordered check_ids whose status is BLOCK.
+Executive summaries must be selected exactly from {executive_summaries}. Use decision
+`{PREFORMAL_CLEAR_DECISION}` only when every check
+passes and `blockers=[]`; otherwise use `{PREFORMAL_BLOCK_DECISION}` and outer
+status `BLOCK`. Do not report realized Sharpe, IC/ICIR, returns, drawdown,
+historical-simulation outcomes, promotion suitability, backtest proof, or an
+empirical factor verdict.
+"""
+        if invocation.role_id == "independent_council":
+            role_contract_guidance += f"""
+Also include top-level `formal_independent_verdict` using contract
+`{PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION}`, the same pre-formal stage and
+claim_scope, decision, the exact task `required_review_role_ids`, the same blockers under
+`blocking_findings`, and empirical_factor_verdict `NOT_ISSUED`. This clears or
+blocks only formal execution; it is never factor ACCEPT/REJECT/PROMOTE.
+"""
+    elif invocation.role_id == "data_liaison":
+        role_contract_guidance = f"""
+If a dependency is missing, do not attempt to write the read-only staged
+workspace. In `catalog_resolution.generated_data_requests`, embed each request
+as exactly `request_id`, the task-authorized workspace-relative `path`, and
+`request_payload`. The payload must use `{DATA_REQUEST_CONTRACT_VERSION}` and
+bind the exact factor/research/report consumer identity. The Host validates and
+atomically materializes the request, replaces the embedded payload with its
+path/file hash reference, and only then admits your result.
+"""
+    else:
+        role_contract_guidance = ""
     return f"""# Factor Forge isolated specialist session
 
 You are the `{invocation.role_id}` specialist for exactly one frozen Factor
@@ -197,6 +272,14 @@ only files listed there. The engine repository is read-only and may be used to
 read these declared role skills:
 
 {skill_lines}
+
+This organization runtime is the pre-formal research-design stage. Follow the
+task's `execution_stage_contract` exactly. Quant Implementation audits the
+planned estimator and implementation boundary; Validation & Evidence audits
+the preregistration and falsification design; Independent Council reviews that
+complete pre-execution design. None of these roles may claim that a backtest ran
+or issue an empirical factor verdict. Formal execution and the post-execution
+empirical Council remain owned by Ultimate/Step6.
 
 Do not inspect another factor workspace, another role's unlisted result,
 credentials, environment variables, instance metadata, Agent stores, or
@@ -229,6 +312,8 @@ Expose only reproducible definitions, decisive derivation steps, assumptions,
 evidence references, uncertainties, and falsifiers. The Host will bind the
 task/session identity, compute the result hash, validate the record, and decide
 whether it is admitted.
+
+{role_contract_guidance}
 """
 
 
@@ -502,6 +587,7 @@ def _safe_private_root(workspace: Path, private_root: Path) -> Path:
 
 
 def _context_source_paths(
+    workspace: Path,
     task: Mapping[str, Any],
     tasks_by_role: Mapping[str, Mapping[str, Any]],
 ) -> list[str]:
@@ -518,11 +604,79 @@ def _context_source_paths(
     dependency_roles = list(task.get("depends_on_roles") or [])
     if task.get("role_id") == "independent_council":
         dependency_roles = list(task.get("required_review_role_ids") or [])
-    for role_id in dependency_roles:
+    dependency_closure: list[str] = []
+    pending = list(dependency_roles)
+    while pending:
+        role_id = str(pending.pop(0))
+        if role_id in dependency_closure:
+            continue
+        dependency_closure.append(role_id)
+        dependency_task = tasks_by_role.get(role_id)
+        if dependency_task is not None:
+            pending.extend(
+                str(item)
+                for item in dependency_task.get("depends_on_roles") or []
+            )
+    for role_id in dependency_closure:
         dependency = tasks_by_role.get(str(role_id))
         if dependency is not None:
-            paths.append(str(dependency["expected_result_path"]))
+            result_relative = str(dependency["expected_result_path"])
+            paths.append(result_relative)
+            result_path = workspace / result_relative
+            if result_path.is_file() and not result_path.is_symlink():
+                result = read_workspace_json(workspace, result_relative)
+                record = result.get("public_research_record")
+                for reference in _typed_public_artifact_refs(record):
+                    artifact_relative = normalize_workspace_relative_path(
+                        reference["path"],
+                        workspace=workspace,
+                        label="runtime_dependency_artifact",
+                    )
+                    artifact_path = workspace / artifact_relative
+                    if (
+                        not artifact_path.is_file()
+                        or artifact_path.is_symlink()
+                        or sha256_file(artifact_path)
+                        != reference.get("sha256")
+                    ):
+                        raise ResearchOrganizationError(
+                            BLOCK_RESEARCH_ORG_RUNTIME_INVALID,
+                            [
+                                "dependency_artifact_hash:"
+                                f"{role_id}:{artifact_relative}"
+                            ],
+                        )
+                    paths.append(artifact_relative)
     return list(dict.fromkeys(paths))
+
+
+def _typed_public_artifact_refs(record: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(record, Mapping):
+        return []
+    candidates: list[Any] = list(record.get("artifact_refs") or [])
+    catalog_resolution = record.get("catalog_resolution")
+    if isinstance(catalog_resolution, Mapping):
+        candidates.extend(
+            catalog_resolution.get("generated_data_requests") or []
+        )
+    references: list[Mapping[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for reference in candidates:
+        if (
+            not isinstance(reference, Mapping)
+            or not isinstance(reference.get("path"), str)
+            or not isinstance(reference.get("sha256"), str)
+        ):
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_RUNTIME_INVALID,
+                ["dependency_artifact_ref_contract"],
+            )
+        key = (str(reference["path"]), str(reference["sha256"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        references.append(reference)
+    return references
 
 
 def _copy_context_file(
@@ -574,7 +728,7 @@ def _prepare_context(
             context_root=context_root,
             relative=relative,
         )
-        for relative in _context_source_paths(task, tasks_by_role)
+        for relative in _context_source_paths(workspace, task, tasks_by_role)
     ]
     if sum(int(item["size_bytes"]) for item in files) > MAX_STAGED_CONTEXT_BYTES:
         raise ResearchOrganizationError(
@@ -1122,6 +1276,7 @@ def _finalize_attempt(
     error_code: str | None = None
     receipt_status = "FAILED"
     ledger_receipt_ref: dict[str, Any] | None = None
+    created_data_requests: tuple[str, ...] = ()
     cancelled_before_admission = bool(
         outcome.cancelled or (workspace / paths["cancel"]).is_file()
     )
@@ -1142,6 +1297,11 @@ def _finalize_attempt(
                 task=task,
                 invocation=invocation,
                 private_output=private_output,
+            )
+            canonical, created_data_requests = materialize_data_liaison_requests(
+                result=canonical,
+                task=task,
+                workspace=workspace,
             )
             peer_session_ids = [
                 str(result.get("session_id") or "")
@@ -1169,6 +1329,13 @@ def _finalize_attempt(
         error_code = BLOCK_RESEARCH_ORG_SESSION_FAILED
         canonical = None
 
+    if canonical is None and created_data_requests:
+        cleanup_materialized_data_requests(
+            workspace=workspace,
+            relative_paths=created_data_requests,
+        )
+        created_data_requests = ()
+
     retryable = bool(
         receipt_status != "CANCELLED"
         and not any(
@@ -1195,12 +1362,22 @@ def _finalize_attempt(
         )
     except ResearchOrganizationError as exc:
         if exc.token != BLOCK_RESEARCH_ORG_RUNTIME_CANCELLED or canonical is None:
+            cleanup_materialized_data_requests(
+                workspace=workspace,
+                relative_paths=created_data_requests,
+            )
+            created_data_requests = ()
             raise
         cancelled_before_admission = True
         receipt_status = "CANCELLED"
         error_code = BLOCK_RESEARCH_ORG_RUNTIME_CANCELLED
         canonical = None
         retryable = False
+        cleanup_materialized_data_requests(
+            workspace=workspace,
+            relative_paths=created_data_requests,
+        )
+        created_data_requests = ()
         host_receipt = ledger.complete_attempt(
             attempt_id=invocation.attempt_id,
             adapter_receipt=outcome.adapter_receipt,
@@ -1211,12 +1388,33 @@ def _finalize_attempt(
             observed_private_output_sha256=output_sha,
             observed_private_output_size_bytes=output_size,
         )
-    if canonical is not None and host_receipt is not None:
-        admit_agent_result(
+    except Exception:
+        cleanup_materialized_data_requests(
             workspace=workspace,
-            result=canonical,
-            role_id=role_id,
+            relative_paths=created_data_requests,
         )
+        created_data_requests = ()
+        raise
+    if canonical is None and created_data_requests:
+        cleanup_materialized_data_requests(
+            workspace=workspace,
+            relative_paths=created_data_requests,
+        )
+        created_data_requests = ()
+    if canonical is not None and host_receipt is not None:
+        try:
+            admit_agent_result(
+                workspace=workspace,
+                result=canonical,
+                role_id=role_id,
+            )
+        except Exception:
+            cleanup_materialized_data_requests(
+                workspace=workspace,
+                relative_paths=created_data_requests,
+            )
+            raise
+        created_data_requests = ()
         receipt_status = "ADMITTED"
         ledger_receipt_ref = {
             "ledger_contract_version": LEDGER_CONTRACT_VERSION,
@@ -2321,7 +2519,11 @@ def validate_research_organization_runtime(
             if not isinstance(context_files, list):
                 reasons.append(f"context_files:{role_id}:{attempt_id}")
                 context_files = []
-            expected_sources = _context_source_paths(task, tasks_by_role)
+            expected_sources = _context_source_paths(
+                workspace,
+                task,
+                tasks_by_role,
+            )
             actual_sources = [
                 item.get("path") if isinstance(item, dict) else None
                 for item in context_files

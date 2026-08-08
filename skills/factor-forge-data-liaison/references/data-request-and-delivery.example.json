@@ -1,6 +1,6 @@
 {
-  "generated_data_request_path": "objects/research_organization/example_report/data_requests/data_request__example_report__required_state_v1.json",
-  "generated_data_request_v1": {
+  "task_authorized_request_path": "objects/research_organization/example_report/data_requests/data_request__example_report__required_state_v1.json",
+  "agent_private_request_payload": {
     "contract_version": "factorforge_data_request_v1",
     "request_id": "data_request__example_report__required_state_v1",
     "request_type": "state_datamart_missing",
@@ -31,6 +31,11 @@
     },
     "status": "requested",
     "production_execution_allowed": false
+  },
+  "host_canonical_result_ref_after_materialization": {
+    "request_id": "data_request__example_report__required_state_v1",
+    "path": "objects/research_organization/example_report/data_requests/data_request__example_report__required_state_v1.json",
+    "sha256": "<host-computed-file-sha256>"
   },
   "incoming_delivery_receipt_example": {
     "contract_version": "<data-group-authoritative-receipt-version>",

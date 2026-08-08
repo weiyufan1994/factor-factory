@@ -15,6 +15,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ from factor_factory.console.models import (
     validate_pilot_evaluation_request,
     validate_public_source_url,
 )
+from factor_factory.console.model_broker import normalize_deepseek_openclaw_model
 from factor_factory.console.runner_health import probe_runner_health
 from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import ResearchJobStore, utc_now
@@ -57,6 +59,7 @@ from factor_factory.console.ultimate_reader import UltimateRunSummary, read_ulti
 from factor_factory.console.web_research_plan import (
     required_web_resume_start_step,
     stable_json_hash,
+    validate_plan,
     validate_materialized_web_research,
     write_text_atomic,
     write_web_research_packet,
@@ -69,10 +72,17 @@ from factor_factory.console.worktree_allocator import (
 from factor_factory.console.workspace_transaction import workspace_transaction_lock
 from factor_factory.research_workspace import load_workspace_manifest, validate_workspace_manifest
 from factor_factory.research_org import (
+    AGENT_RESULT_CONTRACT_VERSION,
+    admit_agent_result,
     load_research_organization_plan,
+    run_research_organization_runtime,
     validate_research_organization_bundle,
     validate_research_organization_runtime,
     write_research_organization_bundle,
+)
+from factor_factory.research_org.contracts import with_content_hash
+from factor_factory.research_org.director import (
+    DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
     CONTRACT_VERSION,
@@ -94,8 +104,18 @@ BLOCK_AGENT_WRITE_SCOPE_INVALID = "BLOCK_FACTORFORGE_CONSOLE_AGENT_WRITE_SCOPE_I
 BLOCK_AGENT_RESUME_ARTIFACT_INVALID = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RESUME_ARTIFACT_INVALID"
 BLOCK_AGENT_DELIVERABLE_MISSING = "BLOCK_FACTORFORGE_CONSOLE_AGENT_DELIVERABLE_MISSING"
 BLOCK_HOST_FORMAL_EXECUTION_FAILED = "BLOCK_FACTORFORGE_CONSOLE_HOST_FORMAL_EXECUTION_FAILED"
+BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED = (
+    "BLOCK_FACTORFORGE_CONSOLE_RESEARCH_ORG_RUNTIME_REQUIRED"
+)
+BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE = (
+    "BLOCK_FACTORFORGE_CONSOLE_RESEARCH_ORG_RUNTIME_INCOMPLETE"
+)
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
 EXPLICIT_HUMAN_DECISION_REQUIRED = "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED"
+RESEARCH_ORG_CLARIFICATION_REQUIRED = (
+    "FACTORFORGE_CONSOLE_RESEARCH_ORG_CLARIFICATION_REQUIRED"
+)
+HOST_DIRECTOR_RECORD_RELATIVE = "identity/web_research_director_record.json"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
 FORMAL_ENGINE_SCRIPTS = {
     "materialize_web_research": Path("scripts/materialize_factorforge_web_research.py"),
@@ -1035,6 +1055,574 @@ class ResearchRunService:
         self._run_job(job)
         return self.store.get_job(job.job_id)
 
+    def _research_org_runtime_available(self) -> bool:
+        return bool(
+            callable(getattr(self.agent_adapter, "run_research_org_session", None))
+            and callable(
+                getattr(self.agent_adapter, "cancel_research_org_session", None)
+            )
+        )
+
+    def _run_research_org_stage(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        stage: str,
+    ) -> dict[str, Any]:
+        if not self._research_org_runtime_available():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED}: "
+                "the configured agent adapter has no isolated specialist runtime"
+            )
+        self.store.append_event(
+            job.job_id,
+            "RESEARCH_ORG_RUNTIME_STARTED",
+            "研究组织正在执行隔离 specialist sessions",
+            {"stage": stage},
+        )
+        result = run_research_organization_runtime(
+            workspace=workspace,
+            worktree=worktree,
+            private_root=(
+                self.config.state_root
+                / "jobs"
+                / job.job_id
+                / "research_org_private"
+            ),
+            runner=self.agent_adapter,
+            max_attempts=2,
+            max_concurrency=1,
+            timeout_seconds=max(
+                60,
+                min(3_300, int(self.config.agent_timeout_seconds)),
+            ),
+            trust_root=self.config.state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+        )
+        self.store.append_event(
+            job.job_id,
+            "RESEARCH_ORG_RUNTIME_STOPPED",
+            f"研究组织阶段结束：{result['lifecycle']}",
+            {
+                "stage": stage,
+                "lifecycle": result["lifecycle"],
+                "result_count": result["result_count"],
+                "formal_independence_verified": result[
+                    "formal_independence_verified"
+                ],
+            },
+        )
+        return result
+
+    def _research_org_ultimate_args(
+        self,
+        *,
+        job: ResearchJob,
+        workspace: Path,
+    ) -> list[str]:
+        plan_path = workspace / "identity" / "research_organization_plan.json"
+        if not plan_path.is_file() or plan_path.is_symlink():
+            return []
+        if self.config.auth_disabled:
+            return []
+        return [
+            "--research-org-runtime-mode",
+            "formal-complete",
+            "--research-org-runtime-private-root",
+            str(
+                self.config.state_root
+                / "jobs"
+                / job.job_id
+                / "research_org_private"
+            ),
+            "--research-org-runtime-trust-root",
+            str(self.config.state_root / "research-org-trust"),
+            "--research-org-runtime-installation-id",
+            self.config.installation_id,
+        ]
+
+    @staticmethod
+    def _research_org_task(workspace: Path, role_id: str) -> dict[str, Any]:
+        validate_research_organization_bundle(workspace=workspace)
+        plan = load_research_organization_plan(workspace)
+        dispatch_path = workspace / str(
+            plan["workspace_policy"]["dispatch_manifest_path"]
+        )
+        if dispatch_path.is_symlink() or not dispatch_path.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED}: unsafe dispatch manifest"
+            )
+        dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
+        matches = [
+            item
+            for item in dispatch.get("tasks") or []
+            if isinstance(item, dict) and item.get("role_id") == role_id
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED}: missing role task {role_id}"
+            )
+        task_path = workspace / str(matches[0]["path"])
+        if task_path.is_symlink() or not task_path.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED}: unsafe role task {role_id}"
+            )
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        if not isinstance(task, dict):
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED}: invalid role task {role_id}"
+            )
+        return task
+
+    def _admit_host_research_director_result(
+        self,
+        *,
+        job: ResearchJob,
+        workspace: Path,
+        agent_result: AgentRunResult,
+    ) -> dict[str, Any]:
+        plan_path = workspace / "identity" / "web_research_plan.json"
+        if plan_path.is_symlink() or not plan_path.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: Host Director plan is missing"
+            )
+        try:
+            authored_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: Host Director plan is invalid"
+            ) from exc
+        if not isinstance(authored_plan, dict):
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: Host Director plan is invalid"
+            )
+        validate_plan(authored_plan, workspace=workspace)
+        task = self._research_org_task(workspace, "research_director")
+        organization = validate_research_organization_bundle(workspace=workspace)
+        reviewed_roles = list(task.get("depends_on_roles") or [])
+        if (
+            not reviewed_roles
+            or any(
+                organization.get("result_statuses", {}).get(role_id) != "PASS"
+                for role_id in reviewed_roles
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host Director specialist intake is incomplete"
+            )
+        reviewed_results: list[dict[str, str]] = []
+        for role_id in reviewed_roles:
+            dependency_task = self._research_org_task(workspace, role_id)
+            result_relative = str(dependency_task["expected_result_path"])
+            result_path = workspace / result_relative
+            if result_path.is_symlink() or not result_path.is_file():
+                raise RuntimeError(
+                    f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                    f"Host Director specialist result is missing:{role_id}"
+                )
+            dependency_result = json.loads(result_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(dependency_result, dict)
+                or dependency_result.get("role_id") != role_id
+                or dependency_result.get("status") != "PASS"
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(dependency_result.get("result_sha256") or ""),
+                )
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                    f"Host Director specialist result is invalid:{role_id}"
+                )
+            reviewed_results.append(
+                {
+                    "role_id": role_id,
+                    "path": result_relative,
+                    "result_sha256": str(dependency_result["result_sha256"]),
+                }
+            )
+        ledger_path = workspace / "identity" / "web_execution_ledger.md"
+        if ledger_path.is_symlink() or not ledger_path.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: Host Director ledger is missing"
+            )
+        director_record_path = workspace / HOST_DIRECTOR_RECORD_RELATIVE
+        if director_record_path.is_symlink() or not director_record_path.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "agent-authored Host Director record is missing"
+            )
+        try:
+            director_record = json.loads(
+                director_record_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "agent-authored Host Director record is invalid"
+            ) from exc
+        expected_record_keys = {
+            "contract_version",
+            "identity",
+            "task_ref",
+            "reviewed_specialist_results",
+            "plan_ref",
+            "ledger_ref",
+            "synthesis",
+            "handoff_status",
+        }
+        synthesis = (
+            director_record.get("synthesis")
+            if isinstance(director_record, dict)
+            else None
+        )
+        if (
+            not isinstance(director_record, dict)
+            or set(director_record) != expected_record_keys
+            or director_record.get("contract_version")
+            != DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION
+            or director_record.get("identity") != task.get("identity")
+            or director_record.get("task_ref")
+            != {"task_id": task.get("task_id"), "sha256": task.get("task_sha256")}
+            or director_record.get("reviewed_specialist_results")
+            != reviewed_results
+            or director_record.get("plan_ref")
+            != {
+                "path": "identity/web_research_plan.json",
+                "sha256": _sha256(plan_path),
+            }
+            or director_record.get("ledger_ref")
+            != {
+                "path": "identity/web_execution_ledger.md",
+                "sha256": _sha256(ledger_path),
+            }
+            or director_record.get("handoff_status")
+            != "ready_for_specialist_verification"
+            or not isinstance(synthesis, dict)
+            or set(synthesis)
+            != {
+                "mechanism_decision",
+                "selected_measurement_object",
+                "rejected_alternatives",
+                "unresolved_risks",
+                "falsifiers",
+            }
+            or any(
+                not isinstance(synthesis.get(field), str)
+                or not str(synthesis.get(field)).strip()
+                for field in ("mechanism_decision", "selected_measurement_object")
+            )
+            or any(
+                not isinstance(synthesis.get(field), list)
+                or (field != "unresolved_risks" and not synthesis.get(field))
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in synthesis.get(field) or []
+                )
+                for field in (
+                    "rejected_alternatives",
+                    "unresolved_risks",
+                    "falsifiers",
+                )
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "agent-authored Host Director record is not causally bound"
+            )
+        resolved_receipt = self._validated_host_agent_receipt(
+            job=job,
+            agent_result=agent_result,
+        )
+        artifact_refs = [
+            {
+                "path": "identity/web_research_plan.json",
+                "sha256": _sha256(plan_path),
+            },
+            {
+                "path": "identity/web_execution_ledger.md",
+                "sha256": _sha256(ledger_path),
+            },
+            {
+                "path": HOST_DIRECTOR_RECORD_RELATIVE,
+                "sha256": _sha256(director_record_path),
+            },
+        ]
+        assert isinstance(synthesis, dict)
+        director_synthesis = {
+            "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+            "stage": "pre_formal_research_design",
+            **deepcopy(synthesis),
+            "reviewed_specialist_results": reviewed_results,
+            "source_record_ref": artifact_refs[-1],
+            "handoff_status": "ready_for_specialist_verification",
+        }
+        payload = with_content_hash(
+            {
+                "contract_version": AGENT_RESULT_CONTRACT_VERSION,
+                "task_ref": {
+                    "task_id": task["task_id"],
+                    "sha256": task["task_sha256"],
+                },
+                "identity": task["identity"],
+                "role_id": "research_director",
+                "status": "PASS",
+                "producer_mode": "real_agent",
+                "session_id": agent_result.session_key,
+                "public_research_record": {
+                    "contract_version": task["output_contract"],
+                    "executive_summary": str(synthesis["mechanism_decision"]),
+                    "claims": [
+                        {
+                            "claim": str(synthesis["selected_measurement_object"]),
+                            "falsifier": str(synthesis["falsifiers"][0]),
+                        }
+                    ],
+                    "artifact_refs": artifact_refs,
+                    "director_synthesis": director_synthesis,
+                    "handoff": {
+                        "status": "ready_for_specialist_verification",
+                        "reviewed_specialist_results": reviewed_results,
+                        "web_research_plan_sha256": _sha256(plan_path),
+                        "web_execution_ledger_sha256": _sha256(ledger_path),
+                        "host_agent_run_receipt_sha256": _sha256(resolved_receipt),
+                        "host_agent_provider": agent_result.provider,
+                        "host_agent_model": agent_result.model,
+                        "host_agent_started_at_utc": agent_result.started_at_utc,
+                        "host_agent_finished_at_utc": agent_result.finished_at_utc,
+                    },
+                },
+            },
+            hash_field="result_sha256",
+        )
+        return admit_agent_result(
+            workspace=workspace,
+            result=payload,
+            role_id="research_director",
+        )
+
+    def _validated_host_agent_receipt(
+        self,
+        *,
+        job: ResearchJob,
+        agent_result: AgentRunResult,
+    ) -> Path:
+        agent_receipt_path = Path(agent_result.result_path).expanduser()
+        if agent_receipt_path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host Director private Agent receipt is unsafe"
+            )
+        try:
+            resolved_receipt = agent_receipt_path.resolve(strict=True)
+            resolved_receipt.relative_to(
+                (self.config.state_root / "jobs" / job.job_id).resolve(strict=True)
+            )
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host Director private Agent receipt is invalid"
+            ) from exc
+        if resolved_receipt.is_symlink() or not resolved_receipt.is_file():
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host Director private Agent receipt is unsafe"
+            )
+        try:
+            receipt = json.loads(resolved_receipt.read_text(encoding="utf-8"))
+            expected_model = normalize_deepseek_openclaw_model(
+                self.config.openclaw_model
+            )
+            started = datetime.fromisoformat(
+                agent_result.started_at_utc.replace("Z", "+00:00")
+            )
+            finished = datetime.fromisoformat(
+                agent_result.finished_at_utc.replace("Z", "+00:00")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host Director private Agent receipt is invalid"
+            ) from exc
+        required_keys = {
+            "version",
+            "job_id",
+            "factor_id",
+            "research_id",
+            "report_id",
+            "agent_id",
+            "session_key_sha256",
+            "resume",
+            "resume_attempt_id",
+            "started_at_utc",
+            "finished_at_utc",
+            "returncode",
+            "provider",
+            "model",
+            "error_code",
+            "stdout_tail",
+            "stderr_tail",
+        }
+        expected_bindings = {
+            "version": "factorforge_console_agent_run_v1",
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "agent_id": agent_result.agent_id,
+            "session_key_sha256": hashlib.sha256(
+                agent_result.session_key.encode("utf-8")
+            ).hexdigest(),
+            "resume": False,
+            "resume_attempt_id": "",
+            "started_at_utc": agent_result.started_at_utc,
+            "finished_at_utc": agent_result.finished_at_utc,
+            "returncode": agent_result.returncode,
+            "provider": agent_result.provider,
+            "model": agent_result.model,
+            "stdout_tail": agent_result.stdout_tail,
+            "stderr_tail": agent_result.stderr_tail,
+        }
+        invalid = bool(
+            not isinstance(receipt, dict)
+            or set(receipt) - {*required_keys, "execution_mode"}
+            or not required_keys.issubset(receipt)
+            or any(receipt.get(key) != value for key, value in expected_bindings.items())
+            or agent_result.returncode != 0
+            or receipt.get("error_code") != ""
+            or not agent_result.provider
+            or agent_result.provider != self.config.openclaw_auth_provider
+            or not agent_result.model
+            or agent_result.model != expected_model
+            or not agent_result.started_at_utc.endswith("Z")
+            or not agent_result.finished_at_utc.endswith("Z")
+            or started.tzinfo is None
+            or finished.tzinfo is None
+            or started.astimezone(timezone.utc) > finished.astimezone(timezone.utc)
+            or (
+                "execution_mode" in receipt
+                and receipt.get("execution_mode") != self.config.execution_mode
+            )
+        )
+        if invalid:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host Director private Agent receipt binding is invalid"
+            )
+        return resolved_receipt
+
+    def _pause_for_research_org_gate(
+        self,
+        *,
+        job: ResearchJob,
+        workspace: Path,
+        runtime: dict[str, Any] | None,
+    ) -> str:
+        organization = validate_research_organization_bundle(workspace=workspace)
+        lifecycle = str((runtime or {}).get("lifecycle") or "NOT_STARTED")
+        plan = load_research_organization_plan(workspace)
+        route = plan.get("routing") if isinstance(plan.get("routing"), dict) else {}
+        capability_gaps = route.get("capability_gaps") or []
+        if organization["state"] == "NEEDS_CLARIFICATION" or lifecycle == "WAITING_CLARIFICATION":
+            stage = "research_clarification_required"
+            code = RESEARCH_ORG_CLARIFICATION_REQUIRED
+            message = (
+                "当前输入尚未给出足以选择研究领域的经济机制。请补充要交易的状态、"
+                "付款方/收益来源、观测时点和可证伪预测后新建研究任务。"
+            )
+        elif organization["state"] == "WAITING_CAPABILITY":
+            stage = "research_capability_required"
+            code = RESEARCH_ORG_CLARIFICATION_REQUIRED
+            message = (
+                "研究所需领域能力尚未安装，任务保持待处理，未转派给不匹配的研究员。"
+            )
+        elif lifecycle == "WAITING_DATA":
+            stage = "waiting_data"
+            code = RESEARCH_ORG_CLARIFICATION_REQUIRED
+            message = "Data Liaison 已识别数据缺口；收到 catalog、QA 和 delivery receipt 后再继续。"
+        else:
+            stage = "research_org_review_required"
+            code = BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE
+            message = f"研究组织未达到正式执行条件：{lifecycle}。"
+        result = {
+            "summary": message,
+            "next_actions": [
+                "在新的输入中明确 economic hypothesis 与可证伪的 measurement target。"
+            ],
+            "research_organization": {
+                "contract_version": plan.get("contract_version"),
+                "state": organization["state"],
+                "lead_domain": organization.get("lead_domain"),
+                "supporting_domains": organization.get("supporting_domains") or [],
+                "capability_gaps": capability_gaps,
+                "dispatch_task_count": organization["task_count"],
+                "validated_result_count": organization["result_count"],
+                "execution_state": organization["execution_state"],
+                "independence_satisfied": False,
+                "runtime": runtime,
+                "assurance": (
+                    "verified_runtime_history_partial"
+                    if runtime is not None
+                    else "routing_and_dispatch_contract_only"
+                ),
+            },
+        }
+        self.store.update_job(
+            job.job_id,
+            execution_status="REVIEW_REQUIRED",
+            protocol_status="PAUSED",
+            factor_verdict="UNKNOWN",
+            council_status="NOT_STARTED",
+            formal_proof_eligible=False,
+            current_stage=stage,
+            result=result,
+            error_code=code,
+            error_message=message,
+            finished_at_utc="",
+        )
+        self.store.append_event(
+            job.job_id,
+            "RESEARCH_ORG_REVIEW_REQUIRED",
+            message,
+            {"state": organization["state"], "lifecycle": lifecycle},
+        )
+        plan_sha256 = str(plan.get("plan_sha256") or "")
+        attestation_root = (
+            self.config.state_root
+            / "jobs"
+            / job.job_id
+            / "research-org-gates"
+        )
+        attestation_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        attestation_root.chmod(0o700)
+        unsigned = {
+            "version": "factorforge_console_research_org_gate_attestation_v1",
+            **self._private_lifecycle_identity(job),
+            "plan_sha256": plan_sha256,
+            "organization_state": organization["state"],
+            "execution_state": organization["execution_state"],
+            "runtime_lifecycle": lifecycle,
+            "formal_independence_verified": bool(
+                (runtime or {}).get("formal_independence_verified") is True
+            ),
+            "disposition": stage,
+            "created_at_utc": utc_now(),
+        }
+        payload = {**unsigned, "attestation_sha256": stable_json_hash(unsigned)}
+        attestation_path = (
+            attestation_root
+            / f"attestation_{plan_sha256[:20] or job.report_id}.json"
+        )
+        _write_json_atomic(
+            attestation_path,
+            payload,
+            root=self.config.state_root,
+        )
+        return attestation_path.relative_to(self.config.state_root).as_posix()
+
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
             if not catalogs_healthy(self.config) or not self.healthcheck():
@@ -1061,6 +1649,8 @@ class ResearchRunService:
         private_completion_status: str | None = None
         private_attestation_id = ""
         council_ingress_tasks: tuple[CouncilIngressTask, ...] = ()
+        organization_runtime: dict[str, Any] | None = None
+        organization_runtime_required = False
         try:
             resume = bool(job.workspace_path and job.worktree_path)
             self._begin_private_execution(job, resume=resume)
@@ -1206,6 +1796,47 @@ class ResearchRunService:
                     {"base_commit": allocation.base_commit},
                 )
 
+                organization = validate_research_organization_bundle(
+                    workspace=workspace
+                )
+                if organization["state"] != "ROUTED":
+                    private_attestation_id = self._pause_for_research_org_gate(
+                        job=job,
+                        workspace=workspace,
+                        runtime=None,
+                    )
+                    private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
+                    return
+
+                if self._research_org_runtime_available():
+                    organization_runtime_required = True
+                    organization_runtime = self._run_research_org_stage(
+                        job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        stage="specialist_intake",
+                    )
+                    if organization_runtime["lifecycle"] != "WAITING_HOST_RESULT":
+                        private_attestation_id = self._pause_for_research_org_gate(
+                            job=job,
+                            workspace=workspace,
+                            runtime=organization_runtime,
+                        )
+                        private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
+                        return
+                elif not self.config.auth_disabled:
+                    raise RuntimeError(
+                        f"{BLOCK_RESEARCH_ORG_RUNTIME_REQUIRED}: "
+                        "production web research requires the isolated specialist runtime"
+                    )
+                else:
+                    self.store.append_event(
+                        job.job_id,
+                        "RESEARCH_ORG_DEVELOPMENT_BYPASS",
+                        "开发测试 adapter 未提供 specialist runtime；不得据此声明正式组织独立性",
+                        {},
+                    )
+
             uses_research_agent = bool(
                 not resume
                 or (
@@ -1220,6 +1851,9 @@ class ResearchRunService:
                     workspace,
                     report_id=job.report_id,
                     resume=resume,
+                    require_research_director_record=(
+                        organization_runtime_required and not resume
+                    ),
                     trusted_resume_proof_sha256=(
                         str(resume_trust["ultimate_proof_sha256"])
                         if resume_trust is not None
@@ -1348,6 +1982,30 @@ class ResearchRunService:
                     agent_result=agent_result,
                 )
 
+            if organization_runtime_required:
+                self._admit_host_research_director_result(
+                    job=current_job,
+                    workspace=workspace,
+                    agent_result=agent_result,
+                )
+                organization_runtime = self._run_research_org_stage(
+                    current_job,
+                    worktree=worktree,
+                    workspace=workspace,
+                    stage="specialist_verification_and_council",
+                )
+                if (
+                    organization_runtime["lifecycle"] != "COMPLETE"
+                    or organization_runtime["formal_independence_verified"] is not True
+                ):
+                    private_attestation_id = self._pause_for_research_org_gate(
+                        job=current_job,
+                        workspace=workspace,
+                        runtime=organization_runtime,
+                    )
+                    private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
+                    return
+
             if validated_resume_artifacts is not None:
                 _require_validated_resume_artifacts_unchanged(
                     workspace,
@@ -1421,6 +2079,7 @@ class ResearchRunService:
                 organization_runtime = (
                     validate_research_organization_runtime(
                         workspace=workspace,
+                        require_complete=not self.config.auth_disabled,
                         private_root=(
                             self.config.state_root
                             / "jobs"
@@ -1429,6 +2088,7 @@ class ResearchRunService:
                         ),
                         trust_root=self.config.state_root / "research-org-trust",
                         installation_id=self.config.installation_id,
+                        require_formal=not self.config.auth_disabled,
                     )
                     if organization_runtime_path.exists()
                     or organization_runtime_path.is_symlink()
@@ -1545,13 +2205,27 @@ class ResearchRunService:
                 "model": agent_result.model,
                 "provenance": "host_pinned_agent_runtime",
             }
-            execution_status = _web_execution_status(summary, agent_result.returncode)
+            require_formal_organization = bool(
+                organization_plan is not None and not self.config.auth_disabled
+            )
+            execution_status = _web_execution_status(
+                summary,
+                agent_result.returncode,
+                organization_runtime=organization_runtime,
+                require_formal_organization=require_formal_organization,
+            )
             finished = utc_now() if execution_status in {"COMPLETED", "BLOCKED", "FAILED", "CANCELLED"} else ""
             error_code = ""
             error_message = ""
             if execution_status == "FAILED":
                 error_code = BLOCK_FORMAL_EVIDENCE_MISSING
                 error_message = "研究代理返回后未形成可核验的正式终态或暂停态。"
+            elif execution_status == "BLOCKED" and require_formal_organization:
+                error_code = BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE
+                error_message = (
+                    "Ultimate 已返回，但签名 specialist runtime、Host Director admission "
+                    "或 Independent Council 未形成完整正式证明。"
+                )
             elif (
                 execution_status == "REVIEW_REQUIRED"
                 and summary.current_stage
@@ -1569,9 +2243,26 @@ class ResearchRunService:
                 job.job_id,
                 execution_status=execution_status,
                 protocol_status=_normalize_protocol(summary.protocol_status),
-                factor_verdict=summary.factor_verdict,
+                factor_verdict=(
+                    "BLOCK"
+                    if execution_status == "BLOCKED"
+                    and require_formal_organization
+                    else summary.factor_verdict
+                ),
                 council_status=_normalize_council(summary.council_status),
-                formal_proof_eligible=summary.formal_proof_eligible,
+                formal_proof_eligible=bool(
+                    summary.formal_proof_eligible
+                    and (
+                        not require_formal_organization
+                        or (
+                            organization_runtime is not None
+                            and organization_runtime.get(
+                                "formal_independence_verified"
+                            )
+                            is True
+                        )
+                    )
+                ),
                 current_stage=_web_stage(summary),
                 result=result,
                 error_code=error_code,
@@ -2666,6 +3357,9 @@ class ResearchRunService:
                 else "auto"
             ),
         ]
+        ultimate_argv.extend(
+            self._research_org_ultimate_args(job=job, workspace=workspace)
+        )
         ultimate = run_host_command(
             "run_factorforge_ultimate",
             ultimate_argv,
@@ -5340,6 +6034,7 @@ def _allowed_agent_write_paths(
     resume: bool,
     trusted_resume_proof_sha256: str | None = None,
     council_ingress_tasks: tuple[CouncilIngressTask, ...] = (),
+    require_research_director_record: bool = False,
 ) -> tuple[set[str], set[str]]:
     prompt = "identity/web_agent_resume.md" if resume else "identity/web_agent_task.md"
     allowed = {
@@ -5361,6 +6056,9 @@ def _allowed_agent_write_paths(
             )
         allowed.add("identity/web_research_plan.json")
         required.add("identity/web_research_plan.json")
+        if require_research_director_record:
+            allowed.add(HOST_DIRECTOR_RECORD_RELATIVE)
+            required.add(HOST_DIRECTOR_RECORD_RELATIVE)
         return allowed, required
 
     proof_path = (
@@ -5666,9 +6364,21 @@ def _conversation_snapshot_from_messages(
     return {**unsigned, "sha256": stable_json_hash(unsigned)}
 
 
-def _web_execution_status(summary: UltimateRunSummary, agent_returncode: int) -> str:
+def _web_execution_status(
+    summary: UltimateRunSummary,
+    agent_returncode: int,
+    *,
+    organization_runtime: dict[str, Any] | None = None,
+    require_formal_organization: bool = False,
+) -> str:
     if agent_returncode != 0:
         return "FAILED"
+    if require_formal_organization and not (
+        organization_runtime is not None
+        and organization_runtime.get("lifecycle") == "COMPLETE"
+        and organization_runtime.get("formal_independence_verified") is True
+    ):
+        return "BLOCKED"
     status = summary.execution_status.upper()
     if status == "COMPLETED" or status == "REJECTED":
         return "COMPLETED"

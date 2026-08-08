@@ -25,6 +25,7 @@ from factor_factory.console.web_research_plan import (
     required_web_resume_start_step,
     resolve_workspace_approved_catalog,
     sha256_file,
+    source_formula_seed,
     stable_json_hash,
     validate_materialized_web_research,
     validate_plan,
@@ -32,6 +33,7 @@ from factor_factory.console.web_research_plan import (
     write_text_atomic,
     write_web_research_packet,
 )
+from factor_factory.formula.source_dialects import resolve_source_formula
 from factor_factory.knowledge_reference import stable_hash, tokens
 from factor_factory.research_workspace import build_workspace_manifest, write_workspace_manifest
 
@@ -93,6 +95,96 @@ def _request() -> dict:
     request["conversation_snapshot"] = snapshot
     request["conversation_snapshot_sha256"] = snapshot["sha256"]
     return request
+
+
+def _legacy_source_formula_request() -> tuple[dict, dict]:
+    request = _request()
+    formula = "-1 * NORMALIZE(TS_KURTOSIS(CLOSE,5),STANDARDIZE=1)"
+    legacy_choices = {
+        "kurtosis_convention": "excess_unbiased",
+        "skew_convention": "inner_window_extrema",
+        "max_sum_convention": "contiguous_subwindow",
+        "zscore_ddof": "0",
+    }
+    current = resolve_source_formula(
+        formula,
+        legacy_choices,
+        {
+            "kind": "explicit_user_research_override",
+            "reference": "research-decision:legacy-fixture",
+            "rationale": "Construct the exact historical v1 contract fixture.",
+            "override_reason": "Only the v1 shape is retained in the request.",
+            "implementation_choices_not_performance_selected": True,
+        },
+    )
+    legacy = {
+        "contract_version": "factorforge_formula_source_dialect_v1",
+        "dialect_id": "rongliang_factor365_20260707_v1",
+        "source_reference": current["source_reference"],
+        "raw_formula": current["raw_formula"],
+        "raw_formula_sha256": current["raw_formula_sha256"],
+        "canonical_formula": current["canonical_formula"],
+        "semantic_choices": legacy_choices,
+        "detected_source_operators": current["detected_source_operators"],
+        "ambiguities_resolved": True,
+        "unit_translation": current["unit_translation"],
+        "source_conflicts": [
+            "TS_MAX_SUM body describes contiguous subwindows while the footnote describes top-k values.",
+            "TS_MAX_SKEW and TS_MIN_SKEW do not freeze estimator or nested-window semantics.",
+            "S_LOG_LP is treated as the source typo for documented S_LOG_1P.",
+        ],
+    }
+    legacy["contract_sha256"] = stable_json_hash(legacy)
+    messages = [
+        {
+            "message_id": "msg_formula",
+            "sequence_no": 1,
+            "role": "user",
+            "content_kind": "formula",
+            "content": formula,
+            "model": "deepseek-v4-flash",
+            "created_at_utc": "2026-08-05T00:00:01Z",
+        },
+        {
+            "message_id": "msg_legacy_contract",
+            "sequence_no": 2,
+            "role": "assistant",
+            "content_kind": "formula_contract",
+            "content": json.dumps(
+                legacy,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "model": "factorforge-system",
+            "created_at_utc": "2026-08-05T00:00:02Z",
+        },
+        {
+            "message_id": "msg_hypothesis",
+            "sequence_no": 3,
+            "role": "user",
+            "content_kind": "hypothesis",
+            "content": request["hypothesis"],
+            "model": "deepseek-v4-flash",
+            "created_at_utc": "2026-08-05T00:00:03Z",
+        },
+    ]
+    unsigned = {
+        "contract_version": "factorforge_console_conversation_snapshot_v1",
+        "job_id": request["job_id"],
+        "message_count": len(messages),
+        "total_message_count": len(messages),
+        "omitted_message_count": 0,
+        "content_truncated": False,
+        "history_complete": True,
+        "character_budget": 40_000,
+        "included_character_count": sum(len(item["content"]) for item in messages),
+        "messages": messages,
+    }
+    snapshot = {**unsigned, "sha256": stable_json_hash(unsigned)}
+    request["conversation_snapshot"] = snapshot
+    request["conversation_snapshot_sha256"] = snapshot["sha256"]
+    return request, legacy
 
 
 def _dcf_request() -> dict:
@@ -2010,6 +2102,180 @@ def test_legacy_v1_resume_accepts_only_append_only_conversation_context(tmp_path
             preserve_existing_plan=True,
             trusted_resume_start_step="6",
         )
+
+
+def test_legacy_source_formula_resume_preserves_state_but_requires_v2_authority(
+    tmp_path,
+):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    request, legacy_contract = _legacy_source_formula_request()
+
+    seed = source_formula_seed(request)
+    assert seed["authority_resolution_required"] is True
+    assert seed["canonical_formula"] == legacy_contract["canonical_formula"]
+    assert seed["source_contract"]["formal_execution_eligible"] is False
+    assert seed["source_contract"]["source_meaning_verified"] is False
+
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=request,
+        catalogs=[catalog],
+    )
+    _fill_plan(workspace)
+    migration_path = workspace / "identity" / "source_formula_contract_migration.json"
+    migration_receipt = json.loads(migration_path.read_text(encoding="utf-8"))
+    assert migration_receipt["status"] == "AUTHORITY_REQUIRED"
+    assert migration_receipt["formal_execution_eligible"] is False
+
+    plan_path = workspace / "identity" / "web_research_plan.json"
+    authoring_path = workspace / "identity" / "web_research_authoring_contract.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    authoring = json.loads(authoring_path.read_text(encoding="utf-8"))
+
+    # Recreate the two exact v1 provenance fields an older frozen packet carried.
+    plan["submitted_input_contract"]["source_formula_contract"] = legacy_contract
+    authoring["formula_ir_contract"]["submitted_formula"][
+        "source_contract_sha256"
+    ] = stable_json_hash(legacy_contract)
+    plan["authoring_contract"]["sha256"] = stable_json_hash(authoring)
+    authoring_path.write_text(
+        json.dumps(authoring, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    plan_path.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    bootstrap_path = workspace / "identity" / "web_research_bootstrap_result.json"
+    bootstrap_path.write_text(
+        json.dumps(
+            {
+                "verdict": "PASS",
+                "agent_authored_plan_sha256": sha256_file(plan_path),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    persisted_request = json.loads(
+        (workspace / "identity" / "web_research_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    full_messages = persisted_request["conversation_snapshot"]["messages"]
+    bounded_unsigned = {
+        key: value
+        for key, value in persisted_request["conversation_snapshot"].items()
+        if key != "sha256"
+    }
+    bounded_unsigned.update(
+        {
+            "message_count": 1,
+            "total_message_count": len(full_messages),
+            "omitted_message_count": len(full_messages) - 1,
+            "content_truncated": True,
+            "history_complete": False,
+            "included_character_count": len(full_messages[-1]["content"]),
+            "messages": [full_messages[-1]],
+        }
+    )
+    persisted_request["conversation_snapshot"] = {
+        **bounded_unsigned,
+        "sha256": stable_json_hash(bounded_unsigned),
+    }
+    persisted_request["conversation_snapshot_sha256"] = persisted_request[
+        "conversation_snapshot"
+    ]["sha256"]
+    frozen_plan = plan_path.read_bytes()
+    frozen_authoring = authoring_path.read_bytes()
+    migration_path.unlink()
+
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=persisted_request,
+        catalogs=[catalog],
+        preserve_existing_plan=True,
+        trusted_resume_start_step="6",
+    )
+
+    assert plan_path.read_bytes() == frozen_plan
+    assert authoring_path.read_bytes() == frozen_authoring
+    assert migration_path.is_file()
+    with pytest.raises(WebResearchPlanError) as exc:
+        validate_plan(
+            json.loads(plan_path.read_text(encoding="utf-8")),
+            workspace=workspace,
+        )
+    assert exc.value.token == BLOCK_PLAN_INVALID
+    assert (
+        "BLOCK_FACTORFORGE_FORMULA_SOURCE_SEMANTICS_UNRESOLVED:"
+        "legacy_v1_requires_explicit_v2_authority"
+    ) in exc.value.reasons
+    assert "submitted_input_contract" not in exc.value.reasons
+
+
+def test_newer_v2_authority_supersedes_legacy_formula_contract() -> None:
+    request, legacy_contract = _legacy_source_formula_request()
+    current = resolve_source_formula(
+        legacy_contract["raw_formula"],
+        legacy_contract["semantic_choices"],
+        {
+            "kind": "explicit_user_research_override",
+            "reference": "research-decision:resume-authority-v2",
+            "rationale": "Preserve the old choices while supplying the missing v2 authority.",
+            "override_reason": "The v1 source meaning was never independently verified.",
+            "implementation_choices_not_performance_selected": True,
+        },
+    )
+    snapshot = request["conversation_snapshot"]
+    messages = list(snapshot["messages"])
+    messages.append(
+        {
+            "message_id": "msg_v2_contract",
+            "sequence_no": 4,
+            "role": "assistant",
+            "content_kind": "formula_contract",
+            "content": json.dumps(
+                current,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "model": "factorforge-system",
+            "created_at_utc": "2026-08-05T00:00:04Z",
+        }
+    )
+    unsigned = {
+        key: value for key, value in snapshot.items() if key != "sha256"
+    }
+    unsigned.update(
+        {
+            "message_count": len(messages),
+            "total_message_count": len(messages),
+            "included_character_count": sum(
+                len(str(item["content"])) for item in messages
+            ),
+            "messages": messages,
+        }
+    )
+    request["conversation_snapshot"] = {
+        **unsigned,
+        "sha256": stable_json_hash(unsigned),
+    }
+    request["conversation_snapshot_sha256"] = request["conversation_snapshot"][
+        "sha256"
+    ]
+
+    seed = source_formula_seed(request)
+
+    assert seed["authority_resolution_required"] is False
+    assert seed["source_contract"] == current
+    assert seed["source_contract"]["source_meaning_verified"] is False
+    assert seed["source_contract"]["formal_execution_eligible"] is True
 
 
 def test_resume_packet_and_ultimate_enforce_exact_formal_pause(tmp_path):

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,6 +19,8 @@ from factor_factory.formula.semantics import (
 from factor_factory.formula.source_dialects import (
     BLOCK_SOURCE_SEMANTICS_UNRESOLVED,
     SourceFormulaDialectError,
+    migrate_legacy_source_formula_contract,
+    recognize_legacy_source_formula_contract,
     resolve_source_formula,
     valid_source_formula_contract,
 )
@@ -38,8 +44,40 @@ def _choices(**overrides: str) -> dict[str, str]:
     return choices
 
 
-def _source_ir(**overrides: str) -> tuple[dict, dict]:
-    contract = resolve_source_formula(SOURCE_FORMULA, _choices(**overrides))
+def _source_evidence_authority(**overrides: object) -> dict[str, object]:
+    authority: dict[str, object] = {
+        "kind": "specific_source_evidence",
+        "reference": "source-report.pdf#page=7",
+        "rationale": "The cited operator definitions fix these implementation choices.",
+        "source_excerpt": "TS_MAX_SUM uses the maximum contiguous k-period sum.",
+        "implementation_choices_not_performance_selected": True,
+    }
+    authority.update(overrides)
+    return authority
+
+
+def _override_authority(**overrides: object) -> dict[str, object]:
+    authority: dict[str, object] = {
+        "kind": "explicit_user_research_override",
+        "reference": "research-decision:FF-2026-08-09-01",
+        "rationale": "Freeze one auditable implementation before evaluation.",
+        "override_reason": "The source does not resolve the documented operator conflict.",
+        "implementation_choices_not_performance_selected": True,
+    }
+    authority.update(overrides)
+    return authority
+
+
+def _source_ir(
+    *,
+    semantic_authority: dict[str, object] | None = None,
+    **overrides: str,
+) -> tuple[dict, dict]:
+    contract = resolve_source_formula(
+        SOURCE_FORMULA,
+        _choices(**overrides),
+        semantic_authority or _source_evidence_authority(),
+    )
     formula_ir = parse_formula(
         contract["canonical_formula"],
         available_columns=["close", "volume", "pct_chg"],
@@ -72,9 +110,86 @@ def test_source_formula_requires_explicit_semantic_resolution() -> None:
     assert exc.value.token == BLOCK_SOURCE_SEMANTICS_UNRESOLVED
 
 
+def test_partial_source_formula_requires_only_relevant_semantic_choices() -> None:
+    contract = resolve_source_formula(
+        "TS_KURTOSIS(CLOSE,5)+TS_MAX_SKEW(VOLUME,5,3)",
+        {
+            "kurtosis_convention": "excess_unbiased",
+            "skew_convention": "inner_window_extrema",
+        },
+        _source_evidence_authority(),
+    )
+
+    assert contract["semantic_choices"] == {
+        "kurtosis_convention": "excess_unbiased",
+        "skew_convention": "inner_window_extrema",
+    }
+    assert contract["implementation_variant_set"]["implemented_variant_count"] == 4
+    assert not any("TS_MAX_SUM" in item for item in contract["source_conflicts"])
+
+
+def test_raw_semantic_enum_selection_without_authority_is_blocked() -> None:
+    with pytest.raises(SourceFormulaDialectError) as exc:
+        resolve_source_formula(SOURCE_FORMULA, _choices())
+
+    assert exc.value.token == BLOCK_SOURCE_SEMANTICS_UNRESOLVED
+    assert any("semantic_authority.kind" in reason for reason in exc.value.reasons)
+    assert any("not_performance_selected" in reason for reason in exc.value.reasons)
+
+
+@pytest.mark.parametrize(
+    "authority,missing_reason",
+    [
+        (
+            _source_evidence_authority(source_excerpt=""),
+            "source_excerpt is required",
+        ),
+        (_override_authority(override_reason=""), "override_reason"),
+        (
+            _source_evidence_authority(
+                implementation_choices_not_performance_selected=False
+            ),
+            "not_performance_selected",
+        ),
+        (_source_evidence_authority(rationale=""), "semantic_authority.rationale"),
+    ],
+)
+def test_semantic_authority_requires_mode_specific_provenance(
+    authority: dict[str, object],
+    missing_reason: str,
+) -> None:
+    with pytest.raises(SourceFormulaDialectError) as exc:
+        resolve_source_formula(SOURCE_FORMULA, _choices(), authority)
+
+    assert any(missing_reason in reason for reason in exc.value.reasons)
+
+
 def test_source_formula_translation_freezes_semantics_and_true_lookback() -> None:
     contract, formula_ir = _source_ir()
 
+    assert contract["implementation_choices_frozen"] is True
+    assert contract["source_meaning_verified"] is True
+    assert (
+        contract["source_meaning_status"]
+        == "verified_from_auditable_specific_source_evidence"
+    )
+    assert contract["source_authenticity_verified"] is False
+    assert contract["source_verification_scope"] == (
+        "submitted_request_evidence_integrity"
+    )
+    assert contract["semantic_authority"]["source_excerpt_sha256"] == hashlib.sha256(
+        contract["semantic_authority"]["source_excerpt"].encode("utf-8")
+    ).hexdigest()
+    evidence = contract["semantic_authority"]["evidence_object"]
+    assert evidence["artifact_path"] == "request://semantic_authority/source_excerpt"
+    assert evidence["artifact_sha256"] == evidence["excerpt_sha256"]
+    assert evidence["hash_verified"] is True
+    assert evidence["network_access_used"] is False
+    assert contract["implementation_variant_set"] == {
+        "scope": "bounded_implementation_set",
+        "implemented_variant_count": 16,
+        "exhaustive_source_truth": False,
+    }
     assert contract["unit_translation"] == {"CHANGE_PCT": "returns=pct_chg/100"}
     assert {
         "cs_zscore",
@@ -101,6 +216,214 @@ def test_source_formula_contract_hash_and_semantics_are_not_forgeable() -> None:
     tampered["canonical_formula"] = "close"
 
     assert valid_source_formula_contract(tampered) is False
+
+    provenance_tampered = json.loads(json.dumps(contract))
+    provenance_tampered["semantic_authority"]["rationale"] = "Selected after backtest review."
+    assert valid_source_formula_contract(provenance_tampered) is False
+
+    excerpt_tampered = json.loads(json.dumps(contract))
+    excerpt_tampered["semantic_authority"]["source_excerpt"] += " tampered"
+    assert valid_source_formula_contract(excerpt_tampered) is False
+
+
+def test_excerpt_hash_only_is_blocked_and_explicit_override_remains_valid() -> None:
+    excerpt = "TS_MAX_SUM uses the maximum contiguous k-period sum."
+    hash_only = _source_evidence_authority(
+        source_excerpt="",
+        source_excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+    )
+    with pytest.raises(SourceFormulaDialectError) as exc:
+        _source_ir(semantic_authority=hash_only)
+
+    override_contract, _ = _source_ir(semantic_authority=_override_authority())
+
+    assert any("hash-only evidence" in reason for reason in exc.value.reasons)
+    assert override_contract["source_meaning_verified"] is False
+    assert (
+        override_contract["source_meaning_status"]
+        == "not_verified_explicit_user_research_override"
+    )
+    assert valid_source_formula_contract(override_contract) is True
+
+
+@pytest.mark.parametrize(
+    "authority",
+    [
+        _source_evidence_authority(
+            reference="x",
+            source_excerpt="x",
+            source_excerpt_sha256="0" * 64,
+        ),
+        _source_evidence_authority(
+            reference="x",
+            source_excerpt="x",
+            source_excerpt_sha256=hashlib.sha256(b"x").hexdigest(),
+        ),
+    ],
+)
+def test_arbitrary_reference_or_forged_excerpt_hash_cannot_verify_source(
+    authority: dict[str, object],
+) -> None:
+    with pytest.raises(SourceFormulaDialectError) as exc:
+        resolve_source_formula(SOURCE_FORMULA, _choices(), authority)
+
+    assert exc.value.token == BLOCK_SOURCE_SEMANTICS_UNRESOLVED
+    assert any(
+        "source locator" in reason or "does not match source_excerpt" in reason
+        for reason in exc.value.reasons
+    )
+
+
+def test_workspace_evidence_requires_readable_hash_bound_artifact(
+    tmp_path: Path,
+) -> None:
+    evidence_path = tmp_path / "evidence" / "operator-semantics.md"
+    evidence_path.parent.mkdir()
+    excerpt = "TS_MAX_SUM uses the maximum contiguous k-period sum."
+    evidence_path.write_text(
+        "# Operator semantics\n\n" + excerpt + "\n",
+        encoding="utf-8",
+    )
+    artifact_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    authority = {
+        "kind": "specific_source_evidence",
+        "reference": "evidence/operator-semantics.md#line=3",
+        "rationale": "The checked workspace artifact freezes the implementation choice.",
+        "implementation_choices_not_performance_selected": True,
+        "evidence_object": {
+            "storage_kind": "workspace_artifact",
+            "artifact_path": "evidence/operator-semantics.md",
+            "artifact_sha256": artifact_sha256,
+            "locator": "evidence/operator-semantics.md#line=3",
+            "excerpt": excerpt,
+        },
+    }
+
+    contract = resolve_source_formula(
+        SOURCE_FORMULA,
+        _choices(),
+        authority,
+        evidence_root=tmp_path,
+    )
+
+    assert contract["source_meaning_verified"] is True
+    assert contract["source_authenticity_verified"] is True
+    assert contract["semantic_authority"]["evidence_object"]["read_verified"] is True
+    assert valid_source_formula_contract(contract, evidence_root=tmp_path) is True
+    assert valid_source_formula_contract(contract) is False
+
+    forged = json.loads(json.dumps(authority))
+    forged["evidence_object"]["artifact_sha256"] = "0" * 64
+    with pytest.raises(SourceFormulaDialectError) as exc:
+        resolve_source_formula(
+            SOURCE_FORMULA,
+            _choices(),
+            forged,
+            evidence_root=tmp_path,
+        )
+    assert any("does not match artifact" in reason for reason in exc.value.reasons)
+
+    evidence_path.write_text("tampered after contract creation\n", encoding="utf-8")
+    assert valid_source_formula_contract(contract, evidence_root=tmp_path) is False
+
+
+def test_workspace_evidence_cannot_escape_root(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-source-evidence.md"
+    outside.write_text("TS_MAX_SUM source meaning", encoding="utf-8")
+    authority = {
+        "kind": "specific_source_evidence",
+        "reference": "../outside-source-evidence.md#line=1",
+        "rationale": "Attempted escaped evidence.",
+        "implementation_choices_not_performance_selected": True,
+        "evidence_object": {
+            "storage_kind": "workspace_artifact",
+            "artifact_path": "../outside-source-evidence.md",
+            "artifact_sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+            "locator": "../outside-source-evidence.md#line=1",
+            "excerpt": "TS_MAX_SUM source meaning",
+        },
+    }
+
+    with pytest.raises(SourceFormulaDialectError) as exc:
+        resolve_source_formula(
+            SOURCE_FORMULA,
+            _choices(),
+            authority,
+            evidence_root=tmp_path,
+        )
+
+    assert any(
+        "workspace-relative" in reason or "locator" in reason
+        for reason in exc.value.reasons
+    )
+
+
+def test_provenance_changes_contract_and_formula_identity_without_changing_formula() -> None:
+    first, first_ir = _source_ir()
+    second, second_ir = _source_ir(
+        semantic_authority=_source_evidence_authority(
+            reference="source-report.pdf#page=8",
+            rationale="A second specific source location supports the same frozen choices.",
+        )
+    )
+
+    assert first["canonical_formula"] == second["canonical_formula"]
+    assert first["contract_sha256"] != second["contract_sha256"]
+    assert first_ir["formula_hash"] != second_ir["formula_hash"]
+
+
+def test_canonical_formula_remains_valid_without_source_provenance() -> None:
+    contract = resolve_source_formula("-(open / pre_close - 1)", None)
+
+    assert contract["dialect_id"] == "canonical_factorforge_formula_ir"
+    assert contract["canonical_formula"] == "-(open / pre_close - 1)"
+    assert contract["semantic_choices"] == {}
+    assert "semantic_authority" not in contract
+    assert "contract_sha256" not in contract
+
+
+def test_v1_contract_is_recognized_only_for_explicit_migration() -> None:
+    current, _ = _source_ir()
+    legacy = {
+        "contract_version": "factorforge_formula_source_dialect_v1",
+        "dialect_id": "rongliang_factor365_20260707_v1",
+        "source_reference": current["source_reference"],
+        "raw_formula": current["raw_formula"],
+        "raw_formula_sha256": current["raw_formula_sha256"],
+        "canonical_formula": current["canonical_formula"],
+        "semantic_choices": current["semantic_choices"],
+        "detected_source_operators": current["detected_source_operators"],
+        "ambiguities_resolved": True,
+        "unit_translation": current["unit_translation"],
+        "source_conflicts": current["source_conflicts"],
+    }
+    legacy["contract_sha256"] = hashlib.sha256(
+        json.dumps(
+            legacy,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert recognize_legacy_source_formula_contract(legacy) is True
+    assert valid_source_formula_contract(legacy) is False
+    recoverable = migrate_legacy_source_formula_contract(legacy, None)
+    assert recoverable["contract_version"] == (
+        "factorforge_formula_source_dialect_migration_v1"
+    )
+    assert recoverable["authority_resolution"]["status"] == "AUTHORITY_REQUIRED"
+    assert recoverable["source_meaning_verified"] is False
+    assert recoverable["formal_execution_eligible"] is False
+    assert recoverable["canonical_formula"] == legacy["canonical_formula"]
+    assert valid_source_formula_contract(recoverable) is False
+
+    migrated = migrate_legacy_source_formula_contract(
+        legacy,
+        _override_authority(),
+    )
+    assert migrated["contract_version"] == "factorforge_formula_source_dialect_v2"
+    assert valid_source_formula_contract(migrated) is True
 
 
 def test_semantic_choices_change_canonical_identity_instead_of_silently_aliasing() -> None:

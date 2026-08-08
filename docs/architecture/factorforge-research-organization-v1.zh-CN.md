@@ -6,7 +6,7 @@
 
 1. **Phase 1 已实现**：Research Organization 的计划、路由、角色注册、task/dispatch artifact 和结果 envelope 校验；
 2. **Phase 2 已实现**：Host-private transactional ledger、隔离 specialist session adapter、签名 receipt、依赖调度、重试/取消/恢复和 Council runtime proof；
-3. **目标架构**：后续继续接入 Director synthesis、Data delivery resume、完整 Ultimate 自动推进和 production golden runs。
+3. **Phase 3 已实现（待 release/canary 证据）**：production Web 的 mechanism-first 路由、signed intake、Host Director 因果绑定、pre-formal Council 和 formal-complete Ultimate gate；后续仍需 Data delivery resume、plan revision 与 production factor golden runs。
 
 除标有“Future Phase”的章节外，本文的 MVP 描述与当前实现对齐。当前实现入口为：
 
@@ -51,7 +51,7 @@ factor_factory/console/web_ui.py
 1. 读取并验证已有 factor workspace manifest；
 2. 从研究 request 生成冻结的 `factorforge_research_org_plan_v1`；
 3. 将 Agent Registry snapshot 内嵌在 plan 中；
-4. 用 deterministic weighted router 选择 Fundamental、Price-Volume 或记录 capability gap；
+4. 只用 mechanism-bearing hypothesis/research direction/decision/report 选择 Fundamental、Price-Volume 或记录 capability gap；formula/code/title 只形成 exploratory candidates；
 5. 生成 role task files 和 `factorforge_research_org_dispatch_v1` manifest；
 6. 对 plan、registry、task、dispatch 和可选 result 做 content hash 与 workspace path 校验；
 7. 校验 `factorforge_agent_result_v1` 外层 envelope；
@@ -59,20 +59,33 @@ factor_factory/console/web_ui.py
 9. 递归阻断 private chain-of-thought 字段；
 10. 阻断 independent Council fallback 冒充独立 verdict；
 11. 用 `--preserve-existing` 验证并保留已有冻结 plan，不覆盖它；
-12. 将 Data Liaison 的写入范围限定到当前 report 的 result 和 `data_requests/`；
+12. Data Liaison 只在私有输出内嵌 task-authorized `data_request_v1`；Host 校验后才可在当前 report 的 `data_requests/` 原子落盘；
 13. 通过 Ultimate 的 `off/auto/required` gate 和 workspace validator 校验 frozen bundle；
 14. 由 Console 创建/保留 bundle，并展示 route、planned roles、task/result count 和明确未满足的 independence。
 15. 由 Host 从私有候选 JSON 校验并原子 admit 单个 role result，已落盘结果保持 immutable/idempotent；
 16. bundle validator 汇总已存在 result 的 peer session IDs，阻断 isolated/independent role 会话复用。
 17. Independent Council task 冻结完整 `required_review_role_ids`，Council attestation 缺少任一当前角色都会 BLOCK。
 18. Plan hash 冻结 captured input refs；task 必须精确继承，dispatch/task ID 与 role 顺序由 validator 重算。
-19. `inputs/`、`tasks/` 与 `results/` 受目录闭包检查；Data Liaison result 还必须完整绑定其 `data_requests/` 文件集合。未绑定文件、symlink 或目录项会 BLOCK。
+19. `inputs/`、`tasks/` 与 `results/` 受目录闭包检查；Host 物化后的 Data Liaison result 还必须完整绑定其 `data_requests/` 文件集合。未绑定文件、symlink 或目录项会 BLOCK。
 20. Host-private SQLite ledger 作为 runtime authority，workspace JSON 仅为可重建 projection；
 21. Container/OpenClaw adapter 为每个 specialist 创建独立 staged-context session，并写 Host-private output；
 22. Ed25519 adapter/Host receipt 绑定 plan、task、attempt、dependency、session、image 和 output；
 23. scheduler 支持依赖 admission、有限并发、retry disposition、cancel fence 和 crash recovery；
 24. Independent Council 禁止 parent session，并要求独立 provider/session handle；
-25. Console 与 Ultimate 可投影或显式 require runtime assurance，默认不改变 legacy Ultimate 路径。
+25. Console 与 Ultimate 可投影或显式 require runtime assurance，默认不改变 legacy Ultimate 路径；
+26. production Web 主链先运行 signed Knowledge/Data/Domain intake，再由真实 Host Director session 生成绑定全部 dependency path/hash、plan、ledger 和私有 receipt 的 authoring record 后 admission；
+27. Host admission 后运行 Quant、pre-execution Validation 与 Independent Council，且 staged context 包含传递依赖结果及其哈希绑定 artifact refs；
+28. organization runtime 未达到 `COMPLETE` 和 `formal_independence_verified=true` 时，不启动正式 materializer/Ultimate；
+29. production Ultimate 固定使用 `--research-org-runtime-mode formal-complete`，Ultimate 自身完成也不能绕过组织门；
+30. 公式/代码/标题缺少机制证据时停在 `NEEDS_CLARIFICATION`，不冒充领域路由或 factor verdict；
+31. Web plan 在 Host admission 前强制冻结 IS/OOS、purge/embargo、trial budget、timing、cost/capacity model、终态条件、消融和 falsifier；
+32. recognized external formula dialect 绑定可定位且含实际摘录的 specific source evidence，或 explicit user research override provenance；hash-only 不构成证据，内嵌摘录也不冒充外部 source authenticity；legacy v1 只可迁移为 `AUTHORITY_REQUIRED`；
+33. organization Council 只审计执行前研究设计；回测后的 empirical Council 仍由 Ultimate Step6 独立完成。
+34. pre-formal Quant/Validation/Council 使用 v3 controlled-check scope；公开 record 为闭合结构，claims 必须等于有序 checks，finding/falsifier 使用受控 code，禁止自由文本结论，realized outcome 与 promotion authority 永远为 false。
+35. mechanism routing 同时要求机制谓词组成可识别的关系从句、经济主体或状态、可交易/估值/风险目标；三个词表的关键词共现不构成机制。单纯数据可用性与字段描述不能激活 domain，但含完整机制三元组的研报陈述不会因“report contains”容器措辞被误挡。
+36. Host Director 的私有 Agent receipt 必须完整解析并与 adapter 返回值逐字段绑定；目录归属本身不是 real-agent provenance。
+37. Data Liaison admission 是 result 与 Host-materialized request 的同一异常原子操作；任何最终 bundle/ledger validation 异常都回滚本次新建的两类 artifact。
+38. `factorforge_agent_result_v1` 外层 envelope 及其 authority-bearing `identity` 按角色 exact-shape 校验；Council attestation、formal verdict、`artifact_refs` 与 Data Liaison canonical request refs 都禁止未声明字段，避免自由文本或伪 verdict 从相邻通道绕过 v3 controlled record。
 
 ### 2.2 当前未实现
 
@@ -81,8 +94,7 @@ factor_factory/console/web_ui.py
 - dispatch 级 staging directory 与整目录 atomic rename；
 - attachment MIME quarantine 和完整 filesystem-diff proof；
 - plan revision、CAS revision、`current.json` pointer 或 supersedes chain；
-- 自动 Director synthesis 和 measurement program freeze；
-- Ultimate Step1-6 的自动状态推进；
+- clarification pause 的同任务 plan revision/current-pointer resume；
 - Data delivery resume；
 - 自动代码 worktree 分配、patch merge 或 production research。
 
@@ -221,7 +233,7 @@ Ultimate 当前支持：
 - validated plan 必须处于 `ROUTED`；
 - gate 输出明确 `formal_org_independence=false` 和 `assurance=routing_and_dispatch_contract_only`。
 
-Workspace validator 支持 `--require-research-org`；plan 已存在时也会验证 bundle。两者都只执行 validation gate，不 dispatch specialist Agent。
+Workspace validator 支持 `--require-research-org`；plan 已存在时也会验证 bundle。CLI validator 本身只执行 validation gate；production Console run service 负责 dispatch specialist Agent。
 
 ### 4.6 Console 基础投影
 
@@ -229,11 +241,14 @@ Console run service 当前会：
 
 - 新研究生成 organization bundle；
 - trusted resume 通过 `--preserve-existing` 保留 frozen plan；
-- 将 plan 加入初始 authoring Agent 的只读 packet；
-- 明确该 authoring session 不能冒充 specialist roles 或 independent Council；
-- 在公开 result 中投影 route、required/deferred roles、capability gaps 和 task/result count。
+- 先运行 signed Knowledge/Data/Domain specialist intake；
+- 将 admitted intake 与 plan 加入 Host Director authoring Agent 的只读 packet；
+- 用真实 Host session ID 和 plan hash admission Director result；
+- 再运行 Quant、pre-execution Validation 与 Independent Council；
+- 只有 signed runtime COMPLETE 后才运行 formal-complete Ultimate；
+- 在公开 result 中投影 route、required/deferred roles、capability gaps、task/result/session/receipt count 和 assurance。
 
-UI 使用“已规划”“待前置条件”和“独立性尚未满足”。它不表示 role session 已创建、已运行或已完成。
+UI 必须按 validated runtime 显示“已规划”“执行中”“待前置条件”或“签名独立性已满足”。plan-only 仍不能表示 role session 已创建、已运行或已完成。
 
 ## 5. 角色组织
 
@@ -245,8 +260,8 @@ UI 使用“已规划”“待前置条件”和“独立性尚未满足”。�
 | `knowledge_librarian` | active registry/task | 检索 prior/counterexample/tool candidate |
 | `data_liaison` | active registry/task + data request scope | catalog-first 解析；不得 materialize data |
 | `quant_implementation` | active registry/PENDING task | 将 frozen mechanism 实现为 operator/direct code/hybrid |
-| `validation_evidence` | active registry/PENDING task | 验证实现和正式 evidence |
-| `independent_council` | active registry/PENDING task + independence checks | 独立反证；不得由 fallback 冒充 |
+| `validation_evidence` | active registry/PENDING task | 执行前审计 preregistration、timing、成本、阈值、消融和 falsifier；不得声称已有回测 evidence |
+| `independent_council` | active registry/PENDING task + independence checks | 独立审查完整执行前设计；不得由 fallback 冒充，不替代 Step6 empirical Council |
 | Event/Macro | planned | Future domain plugins |
 
 当前存在 registry/task 不代表该角色已运行、已完成或已产生研究结论。
@@ -265,14 +280,14 @@ Plan 固定：
 }
 ```
 
-Data Liaison 可写：
+Data Liaison task 可声明、但隔离 Agent 不可直接写；实际文件只由 Host 在 admission 前物化：
 
 ```text
 objects/research_organization/<report_id>/results/data_liaison.json
 objects/research_organization/<report_id>/data_requests/**
 ```
 
-当前实现只冻结 Data 组接口和路径权限；尚未实现 Data 组 delivery import/resume。Data Liaison 不能修改 catalog、materialize datamart 或写 shared data。
+隔离 Data Liaison 在私有 result 中内嵌完整 request payload。Host 复核 consumer、schema、边界和 path 后原子写入，并把 payload 替换成 path/hash reference；ledger/admission 失败会回滚本轮文件。当前尚未实现 Data 组 delivery import/resume。Data Liaison 不能修改 catalog、materialize datamart 或写 shared data。
 
 ## 7. Result Envelope
 
@@ -301,7 +316,7 @@ outer result envelope
 
 非领域角色使用 `factorforge_role_research_record_v1` 作为 envelope 内部 payload。
 
-基础 bundle validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。它本身不证明 session 真实性。Phase 2 formal runtime validator 另行验证 adapter/Host signatures、provider handle uniqueness、staged-context binding、dependency ordering 和 Council independence；当前仍未实现完整 JSON Schema unknown-field closure 或完整 filesystem-diff/blindness proof。
+基础 bundle validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。Result envelope、pre-formal v3 record、Council attestation/formal verdict、artifact ref 与 canonical data-request ref 已按 exact shape 关闭 unknown fields；普通 domain/Data Liaison plugin 的全部深层对象仍只执行合同化语义检查，并非全树 JSON Schema closure。它本身不证明 session 真实性。Phase 2 formal runtime validator 另行验证 adapter/Host signatures、provider handle uniqueness、staged-context binding、dependency ordering 和 Council independence；当前仍未实现完整 filesystem-diff/blindness proof。
 
 ## 8. `single_agent_fallback`
 
@@ -438,19 +453,19 @@ python3 scripts/run_factorforge_research_org_smoke.py
 
 ### Phase 4：Ultimate Orchestration
 
-- Step1-2 后自动 build plan；
-- Director synthesis；
-- measurement program freeze；
-- Data delivery resume；
+- Web request 后自动 build plan；
+- signed specialist intake、Host Director synthesis/admission、pre-execution Council 已接入；
+- measurement program 与 experiment preregistration 在 web plan validator 中冻结；
+- production Ultimate 自动携带 formal-complete runtime proof gate；
 - organization runtime 已提供 Council adapter、persisted state 和 append-only event chain；
-- 尚缺 Director synthesis、Data resume、plan revision/CAS 和默认 Ultimate 自动推进。
+- 尚缺 Data resume、同任务 clarification plan revision/CAS 和自动代码 patch merge。
 
 ### Phase 5：Console 与生产验收
 
-- Console 已投影 role state、session/receipt count 和 assurance；尚缺用户可操作的完整 attempt/history 控制面；
+- Console 已投影 role state、session/receipt count 和 assurance，并以组织正式完成作为 Web `COMPLETED` 前置条件；尚缺用户可操作的完整 attempt/history 控制面；
 - Fundamental/Price-Volume/Mixed golden cases；
 - production adapter/golden-run isolation proof；
-- 默认 Ultimate orchestration 与完整用户 attempt/history 控制面。
+- 完整用户 attempt/history 控制面与 production factor golden run proof。
 
 未完成能力只有代码、测试和独立 review 完成后才能升级为当前架构能力。
 
@@ -462,7 +477,7 @@ Phase 1 planning MVP 验收：
 2. dispatch/tasks/results/data_requests 路径都在 `objects/research_organization/<report_id>/`；
 3. 不新增 workspace 顶层 `org/` required dirs；
 4. Fundamental/Price-Volume active，Event/Macro capability gap fail closed；
-5. hypothesis/research text 的路由权重大于 formula/code；
+5. 只有 mechanism-bearing hypothesis/research text 可激活 domain；formula/code/title 的词法命中只能进入 exploratory candidates；
 6. plan/registry/task/dispatch hash 和 workspace path guard 有效；
 7. `--preserve-existing` 不改冻结 plan；
 8. result envelope 与内层 domain proposal 层级正确；

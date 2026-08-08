@@ -35,6 +35,8 @@ from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import SUPPORTED_OPERATORS, canonical_operator_name
 from factor_factory.formula.source_dialects import (
     BLOCK_SOURCE_SEMANTICS_UNRESOLVED,
+    migrate_legacy_source_formula_contract,
+    recognize_legacy_source_formula_contract,
     resolve_source_formula,
     valid_source_formula_contract,
     uses_source_dialect,
@@ -171,19 +173,31 @@ def _conversation_messages(
     return sorted(messages, key=lambda item: int(item.get("sequence_no") or 0))
 
 
-def _is_source_contract_message(message: Mapping[str, Any]) -> bool:
+def _source_contract_message_payload(
+    message: Mapping[str, Any],
+    *,
+    evidence_root: Path | None = None,
+) -> tuple[str, dict[str, Any]] | None:
     content_kind = message.get("content_kind")
     is_internal = content_kind == "formula_contract"
     is_legacy_internal = content_kind == "decision" and str(
         message.get("idempotency_key") or ""
     ).startswith("initial:")
     if not (is_internal or is_legacy_internal):
-        return False
+        return None
     try:
         payload = json.loads(str(message.get("content") or ""))
     except (TypeError, ValueError, json.JSONDecodeError):
-        return False
-    return valid_source_formula_contract(payload)
+        return None
+    if valid_source_formula_contract(payload, evidence_root=evidence_root):
+        return "v2", dict(payload)
+    if recognize_legacy_source_formula_contract(payload):
+        return "v1", dict(payload)
+    return None
+
+
+def _is_source_contract_message(message: Mapping[str, Any]) -> bool:
+    return _source_contract_message_payload(message) is not None
 
 
 def request_input_modalities(
@@ -235,6 +249,7 @@ def source_formula_seed(
     *,
     maximum_sequence_no: int | None = None,
     messages: Iterable[Mapping[str, Any]] | None = None,
+    evidence_root: Path | None = None,
 ) -> dict[str, Any]:
     conversation_messages = _conversation_messages(
         request,
@@ -252,13 +267,17 @@ def source_formula_seed(
         return {}
     formula_message = formulas[-1]
     raw_formula = str(formula_message.get("content") or "").strip()
-    contracts: list[dict[str, Any]] = []
+    contracts: list[tuple[str, dict[str, Any]]] = []
     for message in conversation_messages:
-        if not _is_source_contract_message(message):
+        classified = _source_contract_message_payload(
+            message,
+            evidence_root=evidence_root,
+        )
+        if classified is None:
             continue
-        payload = json.loads(str(message.get("content") or ""))
+        _version, payload = classified
         if str(payload.get("raw_formula") or "").strip() == raw_formula:
-            contracts.append(payload)
+            contracts.append(classified)
 
     if uses_source_dialect(raw_formula):
         if not contracts:
@@ -266,18 +285,27 @@ def source_formula_seed(
                 BLOCK_PLAN_INVALID,
                 [BLOCK_SOURCE_SEMANTICS_UNRESOLVED],
             )
-        supplied = contracts[-1]
-        recomputed = resolve_source_formula(
-            raw_formula,
-            supplied.get("semantic_choices")
-            if isinstance(supplied.get("semantic_choices"), dict)
-            else None,
-        )
-        if stable_json_hash(supplied) != stable_json_hash(recomputed):
-            raise WebResearchPlanError(
-                BLOCK_PLAN_INVALID,
-                ["source_formula_contract_identity_mismatch"],
+        supplied_version, supplied = contracts[-1]
+        if supplied_version == "v1":
+            recomputed = migrate_legacy_source_formula_contract(supplied)
+            authority_resolution_required = True
+        else:
+            recomputed = resolve_source_formula(
+                raw_formula,
+                supplied.get("semantic_choices")
+                if isinstance(supplied.get("semantic_choices"), dict)
+                else None,
+                supplied.get("semantic_authority")
+                if isinstance(supplied.get("semantic_authority"), dict)
+                else None,
+                evidence_root=evidence_root,
             )
+            if stable_json_hash(supplied) != stable_json_hash(recomputed):
+                raise WebResearchPlanError(
+                    BLOCK_PLAN_INVALID,
+                    ["source_formula_contract_identity_mismatch"],
+                )
+            authority_resolution_required = False
         source_contract: dict[str, Any] | None = recomputed
     else:
         source_contract = None
@@ -287,6 +315,9 @@ def source_formula_seed(
         "canonical_formula": recomputed["canonical_formula"],
         "source_contract": source_contract,
         "message_sequence_no": int(formula_message.get("sequence_no") or 0),
+        "authority_resolution_required": authority_resolution_required
+        if uses_source_dialect(raw_formula)
+        else False,
     }
 
 
@@ -316,6 +347,35 @@ def build_submitted_input_contract(
         "source_formula_contract": seed.get("source_contract"),
         "host_authored_immutable": True,
     }
+
+
+def _submitted_input_contract_matches(
+    supplied: Any,
+    expected: dict[str, Any],
+    formula_seed: Mapping[str, Any],
+) -> bool:
+    if stable_json_hash(supplied) == stable_json_hash(expected):
+        return True
+    if not isinstance(supplied, dict):
+        return False
+    migration = formula_seed.get("source_contract")
+    resolution = (
+        migration.get("authority_resolution")
+        if isinstance(migration, dict)
+        else None
+    )
+    supplied_source_contract = supplied.get("source_formula_contract")
+    if (
+        formula_seed.get("authority_resolution_required") is not True
+        or not isinstance(resolution, dict)
+        or not recognize_legacy_source_formula_contract(supplied_source_contract)
+        or stable_json_hash(supplied_source_contract)
+        != str(resolution.get("legacy_contract_json_sha256") or "")
+    ):
+        return False
+    normalized = deepcopy(supplied)
+    normalized["source_formula_contract"] = migration
+    return stable_json_hash(normalized) == stable_json_hash(expected)
 
 
 def _knowledge_index_metadata(
@@ -684,11 +744,54 @@ def _authoring_contract_matches(
     *,
     workspace: Path,
     allow_legacy_conversation_extension: bool,
+    formula_seed: Mapping[str, Any] | None = None,
 ) -> bool:
     if not isinstance(existing_contract, dict):
         return False
     if stable_json_hash(existing_contract) == stable_json_hash(expected_contract):
         return True
+    migration_seed = dict(
+        formula_seed or source_formula_seed(request, evidence_root=workspace)
+    )
+    migration_resolution = (
+        (migration_seed.get("source_contract") or {}).get("authority_resolution")
+        if migration_seed.get("authority_resolution_required") is True
+        else None
+    )
+    if isinstance(migration_resolution, dict):
+        legacy_json_sha256 = str(
+            migration_resolution.get("legacy_contract_json_sha256") or ""
+        )
+        existing_formula = (
+            ((existing_contract.get("formula_ir_contract") or {}).get("submitted_formula"))
+            if isinstance(existing_contract.get("formula_ir_contract"), dict)
+            else None
+        )
+        expected_formula = (
+            ((expected_contract.get("formula_ir_contract") or {}).get("submitted_formula"))
+            if isinstance(expected_contract.get("formula_ir_contract"), dict)
+            else None
+        )
+        if (
+            isinstance(existing_formula, dict)
+            and isinstance(expected_formula, dict)
+            and existing_formula.get("source_contract_sha256") == legacy_json_sha256
+        ):
+            normalized_existing = deepcopy(existing_contract)
+            normalized_existing["formula_ir_contract"]["submitted_formula"][
+                "source_contract_sha256"
+            ] = expected_formula.get("source_contract_sha256")
+            if stable_json_hash(normalized_existing) == stable_json_hash(
+                expected_contract
+            ):
+                return True
+            if allow_legacy_conversation_extension and _legacy_authoring_contract_matches(
+                normalized_existing,
+                expected_contract,
+                request,
+                workspace=workspace,
+            ):
+                return True
     return bool(
         allow_legacy_conversation_extension
         and _legacy_authoring_contract_matches(
@@ -705,6 +808,7 @@ def build_authoring_contract(
     *,
     catalog_summary: dict[str, Any],
     knowledge_summary: dict[str, Any],
+    formula_seed: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     supported_operators = [
         {
@@ -725,7 +829,7 @@ def build_authoring_contract(
         }
         for name in sorted(WEB_FORMULA_OPERATORS)
     ]
-    formula_seed = source_formula_seed(request)
+    formula_seed = dict(formula_seed or source_formula_seed(request))
     return {
         "version": AUTHORING_CONTRACT_VERSION,
         "immutable_host_authored": True,
@@ -1559,7 +1663,34 @@ def write_web_research_packet(
             catalog_summary,
             root=workspace,
         )
-    formula_seed = source_formula_seed(request)
+    source_messages: Iterable[Mapping[str, Any]] | None = None
+    if CONVERSATION_LEDGER_REFERENCE_FIELD in request:
+        validated_ledger = validate_request_conversation_ledger(
+            workspace,
+            request,
+            expected_job_id=str(request.get("job_id") or ""),
+        )
+        source_messages = validated_ledger["current"]["entries"]
+    formula_seed = source_formula_seed(
+        request,
+        messages=source_messages,
+        evidence_root=workspace,
+    )
+    if formula_seed.get("authority_resolution_required") is True:
+        write_json_atomic(
+            identity / "source_formula_contract_migration.json",
+            {
+                "version": "factorforge_formula_source_contract_migration_receipt_v1",
+                "status": "AUTHORITY_REQUIRED",
+                "formal_execution_eligible": False,
+                "source_contract": formula_seed.get("source_contract"),
+                "required_action": (
+                    "Supply a valid v2 semantic authority; legacy semantics are preserved "
+                    "only to keep resume state auditable."
+                ),
+            },
+            root=workspace,
+        )
     seeded_formula_ir: dict[str, Any] = {}
     if formula_seed:
         seeded_formula_ir = parse_formula(
@@ -1581,6 +1712,7 @@ def write_web_research_packet(
         request,
         catalog_summary=catalog_summary,
         knowledge_summary=knowledge_summary,
+        formula_seed=formula_seed,
     )
     authoring_contract_path = identity / "web_research_authoring_contract.json"
     if authoring_contract_path.exists() or authoring_contract_path.is_symlink():
@@ -1596,6 +1728,7 @@ def write_web_research_packet(
                 request,
                 workspace=workspace,
                 allow_legacy_conversation_extension=True,
+                formula_seed=formula_seed,
             ):
                 raise RuntimeError("frozen web research authoring contract changed")
     write_json_atomic(identity / "web_research_request.json", request, root=workspace)
@@ -1823,6 +1956,7 @@ def validate_plan(
         request,
         maximum_sequence_no=frozen_at_message_sequence_no,
         messages=conversation_messages,
+        evidence_root=workspace,
     )
     expected_submitted_inputs = build_submitted_input_contract(
         request,
@@ -1830,10 +1964,17 @@ def validate_plan(
         maximum_sequence_no=frozen_at_message_sequence_no,
         messages=conversation_messages,
     )
-    if stable_json_hash(plan.get("submitted_input_contract")) != stable_json_hash(
-        expected_submitted_inputs
+    if not _submitted_input_contract_matches(
+        plan.get("submitted_input_contract"),
+        expected_submitted_inputs,
+        expected_formula_seed,
     ):
         reasons.append("submitted_input_contract")
+    if expected_formula_seed.get("authority_resolution_required") is True:
+        reasons.append(
+            BLOCK_SOURCE_SEMANTICS_UNRESOLVED
+            + ":legacy_v1_requires_explicit_v2_authority"
+        )
     if expected_formula_seed and str(research.get("formula_or_law") or "") != str(
         expected_formula_seed.get("canonical_formula") or ""
     ):
@@ -1955,6 +2096,7 @@ def validate_plan(
         request,
         catalog_summary=catalog_summary,
         knowledge_summary=knowledge_summary,
+        formula_seed=expected_formula_seed,
     )
     legacy_plan_is_frozen = _legacy_authoring_contract_reference_allowed(
         workspace,
@@ -1966,6 +2108,7 @@ def validate_plan(
         request,
         workspace=workspace,
         allow_legacy_conversation_extension=legacy_plan_is_frozen,
+        formula_seed=expected_formula_seed,
     ):
         raise WebResearchPlanError(
             BLOCK_PLAN_IDENTITY_INVALID,

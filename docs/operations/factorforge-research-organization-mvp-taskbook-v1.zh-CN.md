@@ -673,3 +673,25 @@ Phase 1 收口时记录的 backlog 如下。第 1、2、3、5、7、11 项已由
 12. Production factor research golden runs。
 
 这份历史 backlog 不计入 Phase 1 MVP done，也不能单凭文档存在证明代码已经实现；每一项仍以代码、validator、测试和独立 review 为准。
+
+## 20. Phase 3 Web Runtime Closure
+
+Phase 3 将 signed organization runtime 接入 production Web 主链，验收顺序固定为：
+
+1. mechanism-bearing evidence 才能激活 domain；formula/code/title 只形成 exploratory candidates；
+2. signed Knowledge/Data/Domain intake 先于 Host authoring；
+3. Host Director 必须读取 admitted public records，authoring preflight PASS 后以真实 session ID admission；
+4. Quant、pre-execution Validation 和 Independent Council 使用传递依赖的 staged context，且 Host plan/ledger artifact refs 必须逐文件 hash 绑定；
+5. organization runtime 必须 `COMPLETE` 且 `formal_independence_verified=true`；
+6. production Ultimate 必须携带 `--research-org-runtime-mode formal-complete`；
+7. Ultimate terminal report 不能绕过 organization gate；Web `COMPLETED` 同时要求组织证明和正常 Step3-6 终态证据；
+8. organization Council 只审计执行前研究设计，不得冒充 Step6 empirical Council；
+9. Web plan 必须冻结 IS/OOS、purge/embargo、trial budget、multiple testing、timing、cost/capacity model、终态条件、消融和 falsifier；
+10. external formula source semantics 必须带 specific source evidence 或 explicit user research override provenance，并明确 source meaning 是否真的 verified；
+11. `NEEDS_CLARIFICATION` 保持 `factor_verdict=UNKNOWN`，不运行 Host authoring、materializer 或 Ultimate；
+12. production adapter 缺少 specialist runtime 时直接 BLOCK，不允许 plan-only 降级。
+13. pre-formal Quant/Validation/Council 只接受 v3 controlled-check record；任何自由文本 claim/finding/falsifier/blocker 或额外 record 字段均 BLOCK。
+14. 描述性字段清单不得激活 domain；含关系谓词从句、经济对象和可证伪目标的完整研报机制陈述必须正常路由，关键词共现不得冒充机制。
+15. result outer envelope、authority-bearing identity、Council attestation/formal verdict、artifact refs 与 canonical data-request refs 必须 exact-shape；相邻字段不能成为 pre-formal verdict 的自由文本旁路。
+
+Phase 3 仍不实现：同任务 plan revision/current pointer、Data delivery automatic resume、attachment quarantine、complete-dispatch directory rename 和 production factor golden-run acceptance。它们不能被本轮代码/合同 closure 冒充。

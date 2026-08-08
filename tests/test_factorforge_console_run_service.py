@@ -880,7 +880,113 @@ def _service(tmp_path: Path, adapter):
 def _request(title: str):
     from factor_factory.console.models import ResearchRequest
 
-    return ResearchRequest(title=title, hypothesis="A testable economic and mathematical hypothesis.")
+    return ResearchRequest(
+        title=title,
+        hypothesis=(
+            "Patient liquidity suppliers absorb urgent price-volume order-flow "
+            "pressure from constrained traders; if that mechanism is present, "
+            "the pressure should predict a subsequent reversal rather than continuation."
+        ),
+    )
+
+
+def _admit_director_intake(service, workspace: Path) -> tuple[dict, list[dict[str, str]]]:
+    from factor_factory.research_org import (
+        AGENT_RESULT_CONTRACT_VERSION,
+        admit_agent_result,
+    )
+    from factor_factory.research_org.contracts import with_content_hash
+
+    director_task = service._research_org_task(workspace, "research_director")
+    reviewed_results: list[dict[str, str]] = []
+    for index, role_id in enumerate(director_task["depends_on_roles"]):
+        task = service._research_org_task(workspace, role_id)
+        if role_id == "data_liaison":
+            record = {
+                "contract_version": task["output_contract"],
+                "identity": {
+                    **task["identity"],
+                    "task_id": task["task_id"],
+                    "agent_role": role_id,
+                },
+                "domain": "data_liaison",
+                "proposal_status": "ready_for_director_review",
+                "domain_fit": {"fit": "interface", "reason": "Catalog resolved."},
+                "catalog_resolution": {
+                    "reuse_hits": [],
+                    "generated_data_requests": [],
+                },
+                "delivery_receipt_verification": {"status": "not_required"},
+                "knowledge_use": [],
+                "permissions_boundary": {"data_materialization": False},
+                "uncertainties": [],
+                "handoff": {"status": "ready_for_host_review"},
+            }
+        elif task["output_contract"] == "factorforge_domain_research_proposal_v1":
+            record = {
+                "contract_version": task["output_contract"],
+                "identity": {
+                    **task["identity"],
+                    "task_id": task["task_id"],
+                    "agent_role": role_id,
+                },
+                "domain": "price_volume",
+                "proposal_status": "ready_for_director_review",
+                "domain_fit": {"fit": "primary", "reason": "Mechanism aligned."},
+                "public_research_record": {
+                    "public_derivation_summary": [
+                        "Define the pressure state, projection, and falsifier."
+                    ]
+                },
+                "math_model_search": {
+                    "candidates": ["primary", "alternative", "null"]
+                },
+                "measurement_proposal": {"implementation_route": "direct_code"},
+                "knowledge_use": [],
+                "data_dependencies": [],
+                "falsification_plan": {"distinguishing_tests": ["null test"]},
+                "uncertainties": [],
+                "artifact_refs": [],
+                "handoff": {"status": "ready_for_host_review"},
+            }
+        else:
+            record = {
+                "contract_version": task["output_contract"],
+                "executive_summary": f"Public result from {role_id}.",
+                "claims": [
+                    {
+                        "claim": "The intake obligation was evaluated.",
+                        "falsifier": "A bound source contradicts the intake claim.",
+                    }
+                ],
+                "artifact_refs": [],
+                "handoff": {"status": "ready_for_host_review"},
+            }
+        payload = with_content_hash(
+            {
+                "contract_version": AGENT_RESULT_CONTRACT_VERSION,
+                "task_ref": {
+                    "task_id": task["task_id"],
+                    "sha256": task["task_sha256"],
+                },
+                "identity": task["identity"],
+                "role_id": role_id,
+                "status": "PASS",
+                "producer_mode": "real_agent",
+                "session_id": f"director-intake-{index}-{role_id}",
+                "public_research_record": record,
+            },
+            hash_field="result_sha256",
+        )
+        admit_agent_result(workspace=workspace, result=payload, role_id=role_id)
+        reviewed_results.append(
+            {
+                "role_id": role_id,
+                "path": task["expected_result_path"],
+                "result_sha256": payload["result_sha256"],
+            }
+        )
+    return director_task, reviewed_results
 
 
 def test_resume_request_artifact_failure_restores_parent_conversation_state(
@@ -1168,6 +1274,402 @@ def test_nonzero_agent_returncode_cannot_publish_stale_terminal_or_pause_status(
         SimpleNamespace(execution_status="COMPLETED"),
         1,
     ) == "FAILED"
+
+
+def test_completed_ultimate_cannot_bypass_required_formal_research_organization():
+    from factor_factory.console.run_service import _web_execution_status
+
+    summary = SimpleNamespace(execution_status="COMPLETED")
+    assert _web_execution_status(
+        summary,
+        0,
+        organization_runtime={
+            "lifecycle": "WAITING_HOST_RESULT",
+            "formal_independence_verified": False,
+        },
+        require_formal_organization=True,
+    ) == "BLOCKED"
+    assert _web_execution_status(
+        summary,
+        0,
+        organization_runtime={
+            "lifecycle": "COMPLETE",
+            "formal_independence_verified": True,
+        },
+        require_formal_organization=True,
+    ) == "COMPLETED"
+
+
+def test_production_console_blocks_when_specialist_runtime_is_missing(tmp_path):
+    source, store, service = _service(tmp_path, _ForgingAdapter())
+    job = service.submit(
+        _request("Production specialist runtime requirement")
+    )
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    service.config = replace(
+        service.config,
+        auth_disabled=False,
+        invite_password="production-invite-secret",
+        cookie_secret="production-cookie-secret-value-0001",
+        agent_container_image=f"sha256:{'a' * 64}",
+    )
+
+    service._run_job(claimed)
+
+    blocked = store.get_job(job.job_id)
+    assert blocked.execution_status == "BLOCKED"
+    assert blocked.error_code == (
+        "BLOCK_FACTORFORGE_CONSOLE_RESEARCH_ORG_RUNTIME_REQUIRED"
+    )
+    assert service.agent_adapter.calls == 0
+    assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_under_specified_code_pauses_before_host_authoring(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import ResearchRequest
+
+    class RuntimeCapableAdapter(_ForgingAdapter):
+        def run_research_org_session(self, _invocation):
+            raise AssertionError("runtime function is patched for this orchestration test")
+
+        def cancel_research_org_session(self, _runtime_instance_id):
+            return True
+
+    adapter = RuntimeCapableAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = []
+
+    def unexpected_runtime(**_kwargs):
+        runtime_calls.append(True)
+        raise AssertionError("under-specified input must pause before specialist runtime")
+
+    monkeypatch.setattr(
+        module,
+        "run_research_organization_runtime",
+        unexpected_runtime,
+    )
+    code = "def factor(close, volume): return close / volume"
+    job = service.submit(
+        ResearchRequest(
+            title="负价量偏度峰度复合因子",
+            hypothesis=code,
+            input_kind="code",
+        )
+    )
+
+    service.run_once()
+
+    paused = store.get_job(job.job_id)
+    assert paused.execution_status == "REVIEW_REQUIRED", (
+        paused.error_code,
+        paused.error_message,
+    )
+    assert paused.current_stage == "research_clarification_required"
+    assert paused.factor_verdict == "UNKNOWN"
+    assert paused.formal_proof_eligible is False
+    assert paused.result["research_organization"]["state"] == "NEEDS_CLARIFICATION"
+    assert adapter.calls == 0
+    assert runtime_calls == []
+
+
+def test_routed_console_runs_specialists_around_host_director(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    import factor_factory.console.ultimate_reader as reader
+    from factor_factory.console.models import ResearchRequest
+
+    class RuntimeTerminalAdapter(_TerminalRejectAdapter):
+        def __init__(self):
+            self.host_runs = 0
+
+        def run(self, *args, **kwargs):
+            self.host_runs += 1
+            return super().run(*args, **kwargs)
+
+        def run_research_org_session(self, _invocation):
+            raise AssertionError("runtime function is patched for this orchestration test")
+
+        def cancel_research_org_session(self, _runtime_instance_id):
+            return True
+
+    adapter = RuntimeTerminalAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    monkeypatch.setattr(
+        reader,
+        "validate_factor_proof_certificate",
+        lambda *args, **kwargs: {"verdict": "REJECT", "block_reasons": []},
+    )
+    monkeypatch.setattr(
+        reader,
+        "validate_protocol_bundle",
+        lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
+    )
+    runtime_calls = []
+
+    def fake_runtime(**_kwargs):
+        runtime_calls.append(len(runtime_calls) + 1)
+        if len(runtime_calls) == 1:
+            return {
+                "lifecycle": "WAITING_HOST_RESULT",
+                "result_count": 3,
+                "formal_independence_verified": False,
+            }
+        return {
+            "lifecycle": "COMPLETE",
+            "result_count": 7,
+            "formal_independence_verified": True,
+        }
+
+    host_admissions = []
+    monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
+    monkeypatch.setattr(
+        service,
+        "_admit_host_research_director_result",
+        lambda **kwargs: host_admissions.append(kwargs["agent_result"].session_key)
+        or {"verdict": "PASS"},
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="Intraday liquidity pressure reversal",
+            hypothesis=(
+                "Minute price-volume imbalance reveals liquidity-constrained "
+                "urgent trading pressure that patient suppliers may absorb."
+            ),
+        )
+    )
+
+    service.run_once()
+
+    completed = store.get_job(job.job_id)
+    assert completed.execution_status == "COMPLETED", (
+        completed.error_code,
+        completed.error_message,
+        completed.protocol_status,
+        completed.factor_verdict,
+        completed.result,
+    )
+    assert runtime_calls == [1, 2]
+    assert adapter.host_runs == 1
+    assert len(host_admissions) == 1
+
+
+def test_host_director_admission_binds_validated_plan_and_real_session(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.agent_adapter import AgentRunResult
+    from factor_factory.console.models import ResearchRequest
+
+    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    job = service.submit(
+        ResearchRequest(
+            title="Intraday liquidity pressure reversal",
+            hypothesis=(
+                "Minute price-volume imbalance reveals liquidity-constrained "
+                "urgent trading pressure that patient suppliers may absorb."
+            ),
+        )
+    )
+    allocation = service.allocator.allocate(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        implementation_mode="operator",
+    )
+    service._write_request_artifacts(job, allocation)
+    workspace = allocation.workspace_path
+    monkeypatch.setattr(module, "validate_plan", lambda *_args, **_kwargs: ({}, {}))
+    director_task, reviewed_results = _admit_director_intake(
+        service,
+        workspace,
+    )
+    (workspace / "identity" / "web_execution_ledger.md").write_text(
+        "Host reviewed admitted specialist records.\n",
+        encoding="utf-8",
+    )
+    plan_path = workspace / "identity" / "web_research_plan.json"
+    ledger_path = workspace / "identity" / "web_execution_ledger.md"
+    director_record = {
+        "contract_version": "factorforge_host_research_director_record_v1",
+        "identity": director_task["identity"],
+        "task_ref": {
+            "task_id": director_task["task_id"],
+            "sha256": director_task["task_sha256"],
+        },
+        "reviewed_specialist_results": reviewed_results,
+        "plan_ref": {
+            "path": "identity/web_research_plan.json",
+            "sha256": _file_sha256(plan_path),
+        },
+        "ledger_ref": {
+            "path": "identity/web_execution_ledger.md",
+            "sha256": _file_sha256(ledger_path),
+        },
+        "synthesis": {
+            "mechanism_decision": "Retain constrained-liquidity reversal.",
+            "selected_measurement_object": "Signed pressure followed by reversal.",
+            "rejected_alternatives": ["Unconditional momentum."],
+            "unresolved_risks": ["Auction confounding."],
+            "falsifiers": ["Pressure predicts continuation after timing controls."],
+        },
+        "handoff_status": "ready_for_specialist_verification",
+    }
+    _write_json(
+        workspace / "identity" / "web_research_director_record.json",
+        director_record,
+    )
+    receipt_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "agent"
+        / "host-director-receipt.json"
+    )
+    agent_id = "host-director-agent"
+    session_key = "host-director-session-001"
+    started_at = "2026-08-09T00:00:00Z"
+    finished_at = "2026-08-09T00:01:00Z"
+    provider = service.config.openclaw_auth_provider
+    model = service.config.openclaw_model
+    _write_json(receipt_path, {"not": "an agent receipt"})
+    agent_result = AgentRunResult(
+        returncode=0,
+        agent_id=agent_id,
+        session_key=session_key,
+        started_at_utc=started_at,
+        finished_at_utc=finished_at,
+        stdout_tail="",
+        stderr_tail="",
+        result_path=str(receipt_path),
+        provider=provider,
+        model=model,
+    )
+
+    forged_record = json.loads(json.dumps(director_record))
+    forged_record["reviewed_specialist_results"][0]["result_sha256"] = "0" * 64
+    _write_json(
+        workspace / "identity" / "web_research_director_record.json",
+        forged_record,
+    )
+    with pytest.raises(RuntimeError, match="not causally bound"):
+        service._admit_host_research_director_result(
+            job=job,
+            workspace=workspace,
+            agent_result=agent_result,
+        )
+    _write_json(
+        workspace / "identity" / "web_research_director_record.json",
+        director_record,
+    )
+    with pytest.raises(RuntimeError, match="private Agent receipt .*invalid"):
+        service._admit_host_research_director_result(
+            job=job,
+            workspace=workspace,
+            agent_result=agent_result,
+        )
+    valid_receipt = {
+        "version": "factorforge_console_agent_run_v1",
+        "execution_mode": service.config.execution_mode,
+        "job_id": job.job_id,
+        "factor_id": job.factor_id,
+        "research_id": job.research_id,
+        "report_id": job.report_id,
+        "agent_id": agent_id,
+        "session_key_sha256": hashlib.sha256(
+            session_key.encode("utf-8")
+        ).hexdigest(),
+        "resume": False,
+        "resume_attempt_id": "",
+        "started_at_utc": started_at,
+        "finished_at_utc": finished_at,
+        "returncode": 0,
+        "provider": provider,
+        "model": model,
+        "error_code": "",
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+    for field, forged_value in (
+        ("job_id", "job_forged"),
+        ("session_key_sha256", "0" * 64),
+        ("provider", "forged-provider"),
+        ("model", "forged-model"),
+        ("finished_at_utc", "2026-08-09T00:02:00Z"),
+        ("returncode", 1),
+    ):
+        forged_receipt = {**valid_receipt, field: forged_value}
+        _write_json(receipt_path, forged_receipt)
+        with pytest.raises(RuntimeError, match="receipt binding is invalid"):
+            service._admit_host_research_director_result(
+                job=job,
+                workspace=workspace,
+                agent_result=agent_result,
+            )
+    _write_json(receipt_path, valid_receipt)
+
+    admitted = service._admit_host_research_director_result(
+        job=job,
+        workspace=workspace,
+        agent_result=agent_result,
+    )
+
+    assert admitted["admitted_role_id"] == "research_director"
+    result_path = (
+        workspace
+        / "objects"
+        / "research_organization"
+        / job.report_id
+        / "results"
+        / "research_director.json"
+    )
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["producer_mode"] == "real_agent"
+    assert payload["session_id"] == "host-director-session-001"
+    assert payload["public_research_record"]["artifact_refs"][0]["path"] == (
+        "identity/web_research_plan.json"
+    )
+    assert payload["public_research_record"]["director_synthesis"][
+        "reviewed_specialist_results"
+    ] == reviewed_results
+    assert payload["public_research_record"]["handoff"][
+        "host_agent_run_receipt_sha256"
+    ] == _file_sha256(receipt_path)
+
+
+def test_production_ultimate_args_require_formal_complete_signed_runtime(tmp_path):
+    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    job = service.submit(_request("Formal runtime argv"))
+    service.config = replace(
+        service.config,
+        auth_disabled=False,
+        invite_password="production-invite-secret",
+        cookie_secret="production-cookie-secret-value-0001",
+        agent_container_image=f"sha256:{'a' * 64}",
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "identity").mkdir(parents=True)
+    _write_json(workspace / "identity" / "research_organization_plan.json", {})
+
+    argv = service._research_org_ultimate_args(job=job, workspace=workspace)
+
+    assert argv[argv.index("--research-org-runtime-mode") + 1] == "formal-complete"
+    assert argv[argv.index("--research-org-runtime-installation-id") + 1] == (
+        service.config.installation_id
+    )
+    assert argv[argv.index("--research-org-runtime-private-root") + 1] == str(
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "research_org_private"
+    )
 
 
 def test_fresh_allocation_attestation_receives_persisted_base_commit(tmp_path):

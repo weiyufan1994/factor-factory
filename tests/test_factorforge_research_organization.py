@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,6 +27,17 @@ from factor_factory.research_org.contracts import (
     with_content_hash,
 )
 from factor_factory.research_org.registry import validate_agent_registry_snapshot
+from factor_factory.research_org.director import (
+    DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+    PREFORMAL_CLAIM_SCOPE,
+    PREFORMAL_CLEAR_DECISION,
+    PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+    PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+    PREFORMAL_EXECUTIVE_SUMMARIES,
+    PREFORMAL_FALSIFIER_CODES,
+    PREFORMAL_FINDING_CODES,
+    PREFORMAL_ROLE_CHECK_IDS,
+)
 from factor_factory.research_workspace import (
     build_workspace_manifest,
     write_workspace_manifest,
@@ -82,6 +94,20 @@ def _task(workspace: Path, role_id: str) -> dict:
     dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
     reference = next(item for item in dispatch["tasks"] if item["role_id"] == role_id)
     return json.loads((workspace / reference["path"]).read_text(encoding="utf-8"))
+
+
+def _preformal_checks(task: dict) -> list[dict]:
+    return [
+        {
+            "check_id": check_id,
+            "claim_type": "DESIGN_REQUIREMENT",
+            "status": "PASS",
+            "finding_code": PREFORMAL_FINDING_CODES["PASS"],
+            "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
+            "evidence_refs": [],
+        }
+        for check_id in PREFORMAL_ROLE_CHECK_IDS[task["role_id"]]
+    ]
 
 
 def _result(task: dict, *, producer_mode: str = "real_agent", session_id: str = "agent_session_1") -> dict:
@@ -141,13 +167,31 @@ def _result(task: dict, *, producer_mode: str = "real_agent", session_id: str = 
             "executive_summary": "Public, reproducible research conclusion.",
             "claims": [
                 {
-                    "claim": "The selected mechanism is testable.",
+                    "claim_type": "DESIGN_REQUIREMENT",
+                    "statement": "The selected mechanism is testable.",
                     "falsifier": "The predicted conditional signature is absent.",
+                    "evidence_refs": [],
                 }
             ],
             "artifact_refs": [],
             "handoff": {"status": "ready_for_host_review"},
         }
+        if task["role_id"] in PREFORMAL_ROLE_CHECK_IDS:
+            checks = _preformal_checks(task)
+            public_record["executive_summary"] = PREFORMAL_EXECUTIVE_SUMMARIES[
+                PREFORMAL_CLEAR_DECISION
+            ]
+            public_record["claims"] = [dict(check) for check in checks]
+            public_record["design_review"] = {
+                "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+                "stage": "pre_formal_research_design",
+                "evidence_basis": "pre_registered_design_only",
+                "claim_scope": PREFORMAL_CLAIM_SCOPE,
+                "empirical_factor_verdict": "NOT_ISSUED",
+                "decision": PREFORMAL_CLEAR_DECISION,
+                "checks": checks,
+                "blockers": [],
+            }
     payload = {
         "contract_version": AGENT_RESULT_CONTRACT_VERSION,
         "task_ref": {"task_id": task["task_id"], "sha256": task["task_sha256"]},
@@ -163,6 +207,78 @@ def _result(task: dict, *, producer_mode: str = "real_agent", session_id: str = 
             "independence_satisfied": producer_mode == "real_agent",
             "reviewed_role_ids": task["required_review_role_ids"],
         }
+        payload["formal_independent_verdict"] = {
+            "contract_version": PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+            "stage": "pre_formal_research_design",
+            "claim_scope": PREFORMAL_CLAIM_SCOPE,
+            "decision": PREFORMAL_CLEAR_DECISION,
+            "reviewed_role_ids": task["required_review_role_ids"],
+            "blocking_findings": [],
+            "empirical_factor_verdict": "NOT_ISSUED",
+        }
+    return with_content_hash(payload, hash_field="result_sha256")
+
+
+def _director_result(
+    workspace: Path,
+    task: dict,
+    *,
+    session_id: str,
+) -> dict:
+    reviewed = []
+    for role_id in task["depends_on_roles"]:
+        dependency_task = _task(workspace, role_id)
+        path = dependency_task["expected_result_path"]
+        payload = json.loads((workspace / path).read_text(encoding="utf-8"))
+        reviewed.append(
+            {
+                "role_id": role_id,
+                "path": path,
+                "result_sha256": payload["result_sha256"],
+            }
+        )
+    source_path = workspace / "identity/web_research_director_record.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+                "reviewed_specialist_results": reviewed,
+                "test_fixture": True,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_ref = {
+        "path": "identity/web_research_director_record.json",
+        "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    }
+    payload = _result(task, session_id=session_id)
+    payload["public_research_record"] = {
+        "contract_version": task["output_contract"],
+        "executive_summary": "The admitted intake defines one frozen mechanism.",
+        "claims": [
+            {
+                "claim": "Liquidity pressure is measured before formal execution.",
+                "falsifier": "The planned observable does not identify pressure.",
+            }
+        ],
+        "artifact_refs": [source_ref],
+        "director_synthesis": {
+            "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+            "stage": "pre_formal_research_design",
+            "mechanism_decision": "Freeze the liquidity-pressure mechanism.",
+            "selected_measurement_object": "A legal-time price-volume pressure projection.",
+            "rejected_alternatives": ["Reject an unconditioned raw return ratio."],
+            "unresolved_risks": [],
+            "falsifiers": ["The conditional pressure signature is absent."],
+            "reviewed_specialist_results": reviewed,
+            "source_record_ref": source_ref,
+            "handoff_status": "ready_for_specialist_verification",
+        },
+        "handoff": {"status": "ready_for_specialist_verification"},
+    }
     return with_content_hash(payload, hash_field="result_sha256")
 
 
@@ -196,6 +312,140 @@ def test_router_prioritizes_economic_hypothesis_over_formula_fields() -> None:
     assert route["route_state"] == "ROUTED"
     assert route["lead_domain"] == "fundamental"
     assert route["domain_scores"]["fundamental"] > route["domain_scores"]["price_volume"]
+    assert route["mechanism_gate"]["passed"] is True
+    assert any(
+        item["source_kind"] == "formula" and item["routing_eligible"] is False
+        for item in route["evidence"]
+    )
+
+
+def test_router_rejects_exact_canary_formula_without_mechanism_evidence(
+    tmp_path: Path,
+) -> None:
+    formula = (
+        "-1 * (NORMALIZE(S_LOG_LP(TS_KURTOSIS(CLOSE,5))"
+        "+TS_MAX_SKEW(VOLUME,5,3)-TS_MIN_SKEW(VOLUME,20,3)"
+        "+TS_MAX_SUM(CHANGE_PCT,20,5),STANDARDIZE=1))"
+    )
+    request = _request(title="负价量偏度峰度复合因子", hypothesis=formula)
+    request["input_kind"] = "formula"
+    request["conversation_snapshot"]["messages"][0]["content_kind"] = "formula"
+
+    route = route_research_request(request)
+
+    assert route["route_state"] == "UNDER_SPECIFIED"
+    assert route["lead_domain"] is None
+    assert route["supporting_domains"] == []
+    assert route["mechanism_gate"] == {
+        "passed": False,
+        "eligible_source_kinds": [],
+        "eligible_source_origins": [],
+        "rejected_claimed_source_origins": [],
+        "reasons": [
+            "NO_MECHANISM_BEARING_USER_EVIDENCE",
+            "EXPLORATORY_LEXICAL_MATCHES_EXCLUDED_FROM_DOMAIN_SELECTION",
+        ],
+    }
+    assert route["exploratory_candidates"][0]["domain"] == "price_volume"
+    assert route["exploratory_candidates"][0]["source_kinds"] == ["formula"]
+
+    workspace = _workspace(tmp_path)
+    write_research_organization_bundle(workspace=workspace, request=request)
+    plan = load_research_organization_plan(workspace)
+    assert plan["state"] == "NEEDS_CLARIFICATION"
+    assert plan["role_plan"]["domain_role_assignments"] == {}
+
+
+def test_router_keeps_code_and_title_matches_exploratory_only() -> None:
+    request = _request(
+        title="Intraday volume liquidity implementation",
+        hypothesis="def factor(close, volume): return close / volume",
+    )
+    request["input_kind"] = "code"
+    request["conversation_snapshot"]["messages"][0]["content_kind"] = "code"
+
+    route = route_research_request(request)
+
+    assert route["route_state"] == "UNDER_SPECIFIED"
+    assert route["lead_domain"] is None
+    assert route["supporting_domains"] == []
+    assert route["exploratory_candidates"][0]["domain"] == "price_volume"
+    assert route["exploratory_candidates"][0]["source_kinds"] == ["code", "title"]
+
+
+def test_router_rejects_formula_disguised_as_hypothesis() -> None:
+    request = _request(
+        title="Liquidity hypothesis",
+        hypothesis="close / volume",
+    )
+
+    route = route_research_request(request)
+
+    assert route["route_state"] == "UNDER_SPECIFIED"
+    assert route["lead_domain"] is None
+    assert route["mechanism_gate"]["rejected_claimed_source_origins"] == [
+        "hypothesis"
+    ]
+    classified = route["routing_input_projection"]["sources"][1]
+    assert classified["kind"] == "hypothesis"
+    assert classified["origin"] == "hypothesis"
+    assert classified["content_class"] == "formula"
+    assert classified["mechanism_bearing"] is False
+    assert len(classified["text_sha256"]) == 64
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "The market price and volume data are available every trading day.",
+        "This report contains market price, volume, turnover, and return fields.",
+        "This report contains forced selling, liquidity pressure, and future return fields.",
+        "This report contains support, resistance, liquidity pressure, and future return fields.",
+        "This report contains support levels, resistance, liquidity pressure, and future return fields.",
+        "This report contains discount rate, cash flow, and valuation gap columns.",
+    ],
+)
+def test_router_rejects_descriptive_market_data_as_mechanism(
+    description: str,
+) -> None:
+    route = route_research_request(
+        _request(title="Available market fields", hypothesis=description)
+    )
+
+    assert route["route_state"] == "UNDER_SPECIFIED"
+    assert route["lead_domain"] is None
+    classified = next(
+        item
+        for item in route["routing_input_projection"]["sources"]
+        if item["origin"] == "hypothesis"
+    )
+    assert classified["content_class"] == "descriptive_prose"
+    assert classified["mechanism_bearing"] is False
+    assert classified["descriptive_data_only"] is True
+
+
+def test_router_accepts_complete_mechanism_triple_inside_report_prose() -> None:
+    mechanism = (
+        "This report contains evidence that forced selling pressure causes a "
+        "temporary price dislocation and predicts future return reversal after "
+        "liquidity suppliers absorb the flow."
+    )
+    request = _request(title="Forced selling report", hypothesis=mechanism)
+    request["input_kind"] = "report"
+    request["conversation_snapshot"]["messages"][0]["content_kind"] = "report"
+
+    route = route_research_request(request)
+
+    assert route["route_state"] == "ROUTED"
+    assert route["lead_domain"] == "price_volume"
+    classified = next(
+        item
+        for item in route["routing_input_projection"]["sources"]
+        if item["origin"] == "hypothesis"
+    )
+    assert classified["content_class"] == "mechanism_prose"
+    assert classified["mechanism_bearing"] is True
+    assert classified["descriptive_data_only"] is False
 
 
 def test_router_fails_closed_for_unsupported_and_under_specified_inputs() -> None:
@@ -210,10 +460,19 @@ def test_router_fails_closed_for_unsupported_and_under_specified_inputs() -> Non
     assert event["capability_gaps"] == ["event_text"]
 
     unknown = route_research_request(
-        _request(title="Idea", hypothesis="There may be a useful relation.")
+        _request(title="Intraday volume idea", hypothesis="There may be a useful relation.")
     )
     assert unknown["route_state"] == "UNDER_SPECIFIED"
     assert unknown["lead_domain"] is None
+    assert unknown["supporting_domains"] == []
+    assert unknown["mechanism_gate"]["passed"] is False
+    assert unknown["mechanism_gate"]["reasons"] == [
+        "NO_MECHANISM_BEARING_USER_EVIDENCE",
+        "CLAIMED_MECHANISM_MODALITY_REJECTED_BY_CONTENT_GATE",
+        "EXPLORATORY_LEXICAL_MATCHES_EXCLUDED_FROM_DOMAIN_SELECTION",
+    ]
+    assert unknown["exploratory_candidates"][0]["domain"] == "price_volume"
+    assert unknown["exploratory_candidates"][0]["source_kinds"] == ["title"]
 
 
 def test_mixed_route_with_unavailable_supporting_domain_waits_for_capability(
@@ -527,6 +786,246 @@ def test_agent_result_blocks_private_reasoning_and_false_independence(tmp_path: 
     )
     assert any("reviewed_roles" in reason for reason in incomplete_reasons)
 
+    empirical_council = _result(
+        council_task,
+        session_id="independent_empirical_claim",
+    )
+    empirical_council["public_research_record"]["executive_summary"] = (
+        "Backtest proves Sharpe = 2.1 and factor verdict ACCEPT."
+    )
+    empirical_council = with_content_hash(
+        empirical_council,
+        hash_field="result_sha256",
+    )
+    empirical_reasons = validate_agent_result(
+        empirical_council,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("empirical_claim" in reason for reason in empirical_reasons)
+
+    paraphrased_empirical_council = _result(
+        council_task,
+        session_id="independent_paraphrased_empirical_claim",
+    )
+    paraphrased_empirical_council["public_research_record"][
+        "executive_summary"
+    ] = (
+        "The completed historical simulation delivered a Sharpe ratio reaching "
+        "2.4, so promotion is warranted."
+    )
+    paraphrased_empirical_council = with_content_hash(
+        paraphrased_empirical_council,
+        hash_field="result_sha256",
+    )
+    paraphrased_reasons = validate_agent_result(
+        paraphrased_empirical_council,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("empirical_claim" in reason for reason in paraphrased_reasons)
+
+    free_text_threshold = _result(
+        council_task,
+        session_id="independent_preregistered_threshold",
+    )
+    free_text_threshold["public_research_record"]["executive_summary"] = (
+        "The frozen design preregisters a Sharpe ratio threshold of 1.0 as a "
+        "future falsification criterion; no performance evidence is observed."
+    )
+    free_text_threshold = with_content_hash(
+        free_text_threshold,
+        hash_field="result_sha256",
+    )
+    threshold_reasons = validate_agent_result(
+        free_text_threshold,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any(
+        "preformal_record.executive_summary" in reason
+        for reason in threshold_reasons
+    )
+
+    for index, claim in enumerate(
+        (
+            "The retrospective experiment posted SR 2.4; graduate this signal "
+            "to the production factor library.",
+            "The historical simulation posted a risk-adjusted score of 2.4, so "
+            "graduate this signal.",
+            "Ex post testing posted a risk adjusted score of 2.4 and supports "
+            "production inclusion.",
+        ),
+        start=1,
+    ):
+        paraphrase = _result(
+            council_task,
+            session_id=f"independent_controlled_record_paraphrase_{index}",
+        )
+        paraphrase["public_research_record"]["executive_summary"] = claim
+        paraphrase = with_content_hash(paraphrase, hash_field="result_sha256")
+        paraphrase_reasons = validate_agent_result(
+            paraphrase,
+            task=council_task,
+            workspace=workspace,
+        )
+        assert any(
+            "preformal_record.executive_summary" in reason
+            for reason in paraphrase_reasons
+        )
+
+    free_text_check = _result(
+        council_task,
+        session_id="independent_free_text_check_injection",
+    )
+    free_text_check["public_research_record"]["design_review"]["checks"][0][
+        "finding"
+    ] = "The retrospective experiment posted SR 2.4."
+    free_text_check = with_content_hash(
+        free_text_check,
+        hash_field="result_sha256",
+    )
+    free_text_check_reasons = validate_agent_result(
+        free_text_check,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any(
+        "design_review.check_shape" in reason
+        for reason in free_text_check_reasons
+    )
+
+    outer_claim = _result(
+        council_task,
+        session_id="independent_outer_envelope_claim",
+    )
+    outer_claim["factor_verdict"] = "PROMOTE"
+    outer_claim = with_content_hash(outer_claim, hash_field="result_sha256")
+    outer_claim_reasons = validate_agent_result(
+        outer_claim,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("result_envelope.shape" in reason for reason in outer_claim_reasons)
+
+    identity_claim = _result(
+        council_task,
+        session_id="independent_identity_claim",
+    )
+    identity_claim["identity"] = dict(identity_claim["identity"])
+    identity_claim["identity"]["factor_verdict"] = "PROMOTE"
+    identity_claim["identity"]["note"] = "The historical experiment supports inclusion."
+    identity_claim = with_content_hash(
+        identity_claim,
+        hash_field="result_sha256",
+    )
+    identity_claim_reasons = validate_agent_result(
+        identity_claim,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("identity.shape" in reason for reason in identity_claim_reasons)
+
+    attestation_claim = _result(
+        council_task,
+        session_id="independent_attestation_claim",
+    )
+    attestation_claim["independence_attestation"]["note"] = (
+        "The historical experiment supports production inclusion."
+    )
+    attestation_claim = with_content_hash(
+        attestation_claim,
+        hash_field="result_sha256",
+    )
+    attestation_claim_reasons = validate_agent_result(
+        attestation_claim,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any(
+        "attestation.shape" in reason
+        for reason in attestation_claim_reasons
+    )
+
+    artifact_claim = _result(
+        council_task,
+        session_id="independent_artifact_ref_claim",
+    )
+    source_ref = dict(council_task["input_artifacts"][0])
+    source_ref["note"] = "The retrospective experiment posted SR 2.4."
+    artifact_claim["public_research_record"]["artifact_refs"] = [source_ref]
+    artifact_claim = with_content_hash(
+        artifact_claim,
+        hash_field="result_sha256",
+    )
+    artifact_claim_reasons = validate_agent_result(
+        artifact_claim,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("artifact_ref" in reason for reason in artifact_claim_reasons)
+
+    untyped_claim = _result(
+        council_task,
+        session_id="independent_untyped_claim",
+    )
+    untyped_claim["public_research_record"]["claims"] = [
+        {
+            "claim": "The design looks acceptable.",
+            "falsifier": "A future test fails.",
+        }
+    ]
+    untyped_claim = with_content_hash(
+        untyped_claim,
+        hash_field="result_sha256",
+    )
+    untyped_reasons = validate_agent_result(
+        untyped_claim,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any(
+        "typed_claims.controlled_check_binding" in reason
+        for reason in untyped_reasons
+    )
+
+    forged_scope = json.loads(
+        json.dumps(
+            _result(
+                council_task,
+                session_id="independent_forged_claim_scope",
+            )
+        )
+    )
+    forged_scope["public_research_record"]["design_review"]["claim_scope"][
+        "promotion_authority"
+    ] = True
+    forged_scope = with_content_hash(forged_scope, hash_field="result_sha256")
+    forged_scope_reasons = validate_agent_result(
+        forged_scope,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("design_review.claim_scope" in reason for reason in forged_scope_reasons)
+
+    promoted_handoff = _result(
+        council_task,
+        session_id="independent_promoted_handoff",
+    )
+    promoted_handoff["public_research_record"]["handoff"] = {
+        "status": "PROMOTE"
+    }
+    promoted_handoff = with_content_hash(
+        promoted_handoff,
+        hash_field="result_sha256",
+    )
+    promoted_reasons = validate_agent_result(
+        promoted_handoff,
+        task=council_task,
+        workspace=workspace,
+    )
+    assert any("preformal_handoff.shape" in reason for reason in promoted_reasons)
+
     liaison_task = _task(workspace, "data_liaison")
     rogue_request = (
         workspace
@@ -580,21 +1079,31 @@ def test_host_admission_enforces_dependencies_and_can_complete_ordered_bundle(
         )
 
     ordered_roles = [
-        "research_director",
         "knowledge_librarian",
         "data_liaison",
         "price_volume_researcher",
+        "research_director",
         "quant_implementation",
         "validation_evidence",
         "independent_council",
     ]
     for index, role_id in enumerate(ordered_roles):
+        task = _task(workspace, role_id)
+        result = (
+            _director_result(
+                workspace,
+                task,
+                session_id=f"ordered_session_{index}_{role_id}",
+            )
+            if role_id == "research_director"
+            else _result(
+                task,
+                session_id=f"ordered_session_{index}_{role_id}",
+            )
+        )
         outcome = admit_agent_result(
             workspace=workspace,
-            result=_result(
-                _task(workspace, role_id),
-                session_id=f"ordered_session_{index}_{role_id}",
-            ),
+            result=result,
         )
         assert outcome["admitted_role_id"] == role_id
 
@@ -733,15 +1242,24 @@ def test_host_result_cannot_reuse_an_already_admitted_specialist_session(
         session_id=shared_session,
     )
     admit_agent_result(workspace=workspace, result=specialist)
+    for index, role_id in enumerate(("knowledge_librarian", "data_liaison")):
+        admit_agent_result(
+            workspace=workspace,
+            result=_result(
+                _task(workspace, role_id),
+                session_id=f"support_session_{index}",
+            ),
+        )
 
-    host = _result(
+    host = _director_result(
+        workspace,
         _task(workspace, "research_director"),
         session_id=shared_session,
     )
     with pytest.raises(ResearchOrganizationError, match="session_reused"):
         admit_agent_result(workspace=workspace, result=host)
 
-    assert validate_research_organization_bundle(workspace=workspace)["result_count"] == 1
+    assert validate_research_organization_bundle(workspace=workspace)["result_count"] == 3
 
 
 def test_ultimate_gate_is_backward_compatible_but_required_mode_fails_closed(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,6 +67,112 @@ DOMAIN_PROPOSAL_STATUS_MAP = {
     "delivery_rejected": "BLOCK",
 }
 INPUT_SNAPSHOT_CONTRACT_VERSION = "factorforge_research_org_input_snapshot_v1"
+DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION = (
+    "factorforge_host_research_director_record_v1"
+)
+PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION = (
+    "factorforge_preformal_design_review_v3"
+)
+PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION = (
+    "factorforge_preformal_independent_council_verdict_v3"
+)
+DATA_REQUEST_CONTRACT_VERSION = "factorforge_data_request_v1"
+PREFORMAL_CLEAR_DECISION = "CLEAR_FOR_FORMAL_EXECUTION"
+PREFORMAL_BLOCK_DECISION = "BLOCK_FORMAL_EXECUTION"
+PREFORMAL_ROLE_CHECK_IDS = {
+    "quant_implementation": (
+        "estimator_semantics",
+        "timing_and_information_set",
+        "operator_or_direct_code_route",
+        "parity_and_invariants",
+        "data_contract_alignment",
+    ),
+    "validation_evidence": (
+        "is_oos_and_trial_budget",
+        "metric_and_threshold_preregistration",
+        "cost_turnover_and_long_side",
+        "ablations_and_falsifiers",
+        "proof_and_provenance",
+    ),
+    "independent_council": (
+        "economic_mechanism",
+        "math_measurement_identity",
+        "data_and_timing_legality",
+        "implementation_and_parity",
+        "validation_and_falsification",
+        "independence_and_scope",
+    ),
+}
+PREFORMAL_CLAIM_TYPES = ("DESIGN_REQUIREMENT",)
+PREFORMAL_FINDING_CODES = {
+    "PASS": "DESIGN_CHECK_SATISFIED",
+    "BLOCK": "DESIGN_CHECK_UNSATISFIED",
+}
+PREFORMAL_FALSIFIER_CODES = {
+    check_id: f"{check_id.upper()}_FALSIFIED"
+    for check_ids in PREFORMAL_ROLE_CHECK_IDS.values()
+    for check_id in check_ids
+}
+PREFORMAL_EXECUTIVE_SUMMARIES = {
+    PREFORMAL_CLEAR_DECISION: (
+        "Pre-formal design checks cleared; no empirical factor verdict has been issued."
+    ),
+    PREFORMAL_BLOCK_DECISION: (
+        "Pre-formal design checks blocked; no empirical factor verdict has been issued."
+    ),
+}
+PREFORMAL_CLAIM_SCOPE = {
+    "stage": "pre_formal_research_design",
+    "claim_domain": "research_design_only",
+    "allowed_claim_types": list(PREFORMAL_CLAIM_TYPES),
+    "record_semantics": "controlled_design_checks_only",
+    "free_text_claims_allowed": False,
+    "realized_performance_evidence": False,
+    "empirical_factor_verdict": "NOT_ISSUED",
+    "promotion_authority": False,
+}
+_EMPIRICAL_CLAIM_KEY_RE = re.compile(
+    r"^(?:factor_verdict|empirical_verdict|backtest_metrics?|sharpe|icir|"
+    r"rank_?ic|annual(?:ized)?_return|max(?:imum)?_drawdown)$",
+    re.IGNORECASE,
+)
+_REALIZED_EVIDENCE_RE = re.compile(
+    r"(?:completed\s+(?:historical\s+)?(?:simulation|backtest|test)|"
+    r"historical\s+(?:simulation|backtest)\s+(?:result|outcome)|"
+    r"observed\s+(?:in[- ]?sample|out[- ]?of[- ]?sample|oos|empirical)|"
+    r"realized\s+(?:performance|return|result|outcome)|"
+    r"(?:已完成|历史)(?:仿真|模拟|回测)(?:结果|表现)?|"
+    r"(?:样本内|样本外|oos|实证)(?:观察|结果|表现)|已实现(?:收益|表现|结果))",
+    re.IGNORECASE,
+)
+_REALIZED_ASSERTION_RE = re.compile(
+    r"(?:delivered|achieved|reached|recorded|obtained|produced|returned|"
+    r"outperformed|underperformed|demonstrated|confirmed|showed|yielded|"
+    r"达到|实现|录得|获得|产生|跑赢|跑输|证明|证实|显示)",
+    re.IGNORECASE,
+)
+_EMPIRICAL_METRIC_VALUE_RE = re.compile(
+    r"(?:sharpe(?:\s+ratio)?|icir|rank\s*ic|information\s+coefficient|"
+    r"annual(?:ized)?\s+return|max(?:imum)?\s+drawdown|hit\s+rate|t[- ]?stat|"
+    r"夏普(?:比率)?|信息系数|年化收益|最大回撤|胜率|t\s*值)"
+    r".{0,48}?[-+]?\d+(?:\.\d+)?%?",
+    re.IGNORECASE,
+)
+_EMPIRICAL_DISPOSITION_RE = re.compile(
+    r"(?:promotion\s+(?:is\s+)?warranted|should\s+be\s+promoted|"
+    r"factor\s+(?:is|was|should\s+be)\s+(?:accepted|rejected|promoted)|"
+    r"(?:accept|reject|promote)\s+the\s+factor|"
+    r"因子(?:应当|应该|可以|已)?(?:接受|拒绝|晋级|入库)|"
+    r"(?:接受|拒绝|晋级|入库)该因子)",
+    re.IGNORECASE,
+)
+_EMPIRICAL_VALUE_CLAIM_RE = re.compile(
+    r"(?:\bbacktest\s+(?:proves?|proved|shows?|showed|confirms?|confirmed)\b|"
+    r"\bfactor[_\s-]*verdict\s*(?:=|is|:)\s*(?:accept|promote|reject)\b|"
+    r"回测(?:证明|证实|显示)|因子(?:结论|裁决)\s*(?:为|=|:)?\s*"
+    r"(?:accept|promote|reject|接受|晋级|拒绝))",
+    re.IGNORECASE,
+)
 
 
 def utc_now() -> str:
@@ -300,6 +407,8 @@ def _task_phase(role_id: str) -> str:
 def _task_dependencies(role_id: str, role_ids: list[str]) -> list[str]:
     domain = [item for item in role_ids if item.endswith("_researcher")]
     intake = [item for item in ("knowledge_librarian", "data_liaison") if item in role_ids]
+    if role_id == "research_director":
+        return [*domain, *intake]
     if role_id == "quant_implementation":
         return [*domain, *intake, "research_director"]
     if role_id == "validation_evidence":
@@ -307,6 +416,45 @@ def _task_dependencies(role_id: str, role_ids: list[str]) -> list[str]:
     if role_id == "independent_council":
         return ["validation_evidence", "research_director"]
     return []
+
+
+def _execution_stage_contract(role_id: str) -> dict[str, Any]:
+    objectives = {
+        "research_director": (
+            "Synthesize admitted intake into one frozen mechanism-first research plan."
+        ),
+        "knowledge_librarian": (
+            "Retrieve advisory priors, analogous structures, negative results, and "
+            "falsifiers without choosing the estimand."
+        ),
+        "data_liaison": (
+            "Resolve the proposed legal information set against the catalog and emit "
+            "auditable data gaps without materializing data."
+        ),
+        "quant_implementation": (
+            "Audit the frozen plan's estimator, implementation route, operator or "
+            "direct-code boundary, timing, and parity obligations before execution."
+        ),
+        "validation_evidence": (
+            "Audit the pre-registered IS/OOS windows, trial budget, timing, costs, "
+            "thresholds, ablations, falsifiers, and proof obligations before execution."
+        ),
+        "independent_council": (
+            "Independently challenge the complete pre-execution research design and "
+            "either clear it for formal Ultimate execution or return a precise blocker."
+        ),
+    }
+    objective = objectives.get(
+        role_id,
+        "Develop a mechanism-first domain proposal before formal execution.",
+    )
+    return {
+        "stage": "pre_formal_research_design",
+        "objective": objective,
+        "formal_backtest_evidence_available": False,
+        "empirical_factor_verdict_allowed": False,
+        "post_execution_empirical_council_owner": "factor-forge-step6",
+    }
 
 
 def _build_tasks(
@@ -366,6 +514,7 @@ def _build_tasks(
                 "private_chain_of_thought_forbidden": True,
                 "claims_require_artifact_or_falsifier_refs": True,
             },
+            "execution_stage_contract": _execution_stage_contract(role_id),
             "created_by": "factorforge_host_research_director",
         }
         if role_id == "independent_council":
@@ -475,11 +624,14 @@ def build_research_organization_bundle(
 def _identity_reasons(actual: Any, expected: Mapping[str, str], *, label: str) -> list[str]:
     if not isinstance(actual, Mapping):
         return [f"{label}:missing"]
-    return [
+    reasons = [
         f"{label}.{key}_mismatch"
         for key, value in expected.items()
         if str(actual.get(key) or "") != str(value)
     ]
+    if set(actual) != set(expected):
+        reasons.append(f"{label}.shape")
+    return reasons
 
 
 def _ordinary_directory_entries(
@@ -780,6 +932,12 @@ def _validate_task(
         "claims_require_artifact_or_falsifier_refs": True,
     }:
         reasons.append(f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:record_policy")
+    if task.get("execution_stage_contract") != _execution_stage_contract(
+        str(role_id)
+    ):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:execution_stage_contract"
+        )
     if task.get("created_by") != "factorforge_host_research_director":
         reasons.append(f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:created_by")
     if task.get("input_artifacts") != plan.get("input_snapshot_refs"):
@@ -1174,6 +1332,615 @@ def validate_research_organization_bundle(
     }
 
 
+def _nonempty_public_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _contains_realized_outcome_claim(value: str) -> bool:
+    normalized = " ".join(value.split())
+    if _EMPIRICAL_DISPOSITION_RE.search(normalized):
+        return True
+    realized_context = _REALIZED_EVIDENCE_RE.search(normalized) is not None
+    realized_assertion = _REALIZED_ASSERTION_RE.search(normalized) is not None
+    metric_value = _EMPIRICAL_METRIC_VALUE_RE.search(normalized) is not None
+    return bool(
+        _EMPIRICAL_VALUE_CLAIM_RE.search(normalized)
+        or (realized_context and (realized_assertion or metric_value))
+        or (realized_assertion and metric_value)
+    )
+
+
+def _empirical_claim_reasons(value: Any, *, path: str = "public_research_record") -> list[str]:
+    reasons: list[str] = []
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}"
+            if _EMPIRICAL_CLAIM_KEY_RE.fullmatch(key_text):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:empirical_claim_key:{child_path}"
+                )
+            reasons.extend(_empirical_claim_reasons(item, path=child_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            reasons.extend(
+                _empirical_claim_reasons(item, path=f"{path}[{index}]")
+            )
+    elif isinstance(value, str) and _contains_realized_outcome_claim(value):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:empirical_claim:{path}"
+        )
+    return reasons
+
+
+def _preformal_allowed_evidence_paths(task: Mapping[str, Any]) -> set[str]:
+    allowed = {
+        str(item.get("path") or "")
+        for item in task.get("input_artifacts") or []
+        if isinstance(item, Mapping) and _nonempty_public_text(item.get("path"))
+    }
+    identity = task.get("identity") if isinstance(task.get("identity"), Mapping) else {}
+    report_id = str(identity.get("report_id") or "")
+    task_id = str(task.get("task_id") or "")
+    if report_id and task_id:
+        allowed.add(
+            f"objects/research_organization/{report_id}/tasks/{task_id}.json"
+        )
+    for role_id in task.get("depends_on_roles") or []:
+        if isinstance(role_id, str) and role_id:
+            allowed.add(
+                f"objects/research_organization/{report_id}/results/{role_id}.json"
+            )
+    return allowed
+
+
+def _validate_preformal_typed_claims(
+    *,
+    record: Mapping[str, Any],
+    task: Mapping[str, Any],
+    checks: list[Mapping[str, Any]],
+) -> list[str]:
+    reasons: list[str] = []
+    claims = record.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return [f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:typed_claims"]
+    if claims != checks:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:typed_claims.controlled_check_binding"
+        )
+    return reasons
+
+
+def _validate_preformal_design_review(
+    *,
+    result: Mapping[str, Any],
+    record: Mapping[str, Any],
+    task: Mapping[str, Any],
+) -> list[str]:
+    role_id = str(task.get("role_id") or "")
+    expected_check_ids = PREFORMAL_ROLE_CHECK_IDS.get(role_id)
+    if expected_check_ids is None:
+        return []
+    reasons: list[str] = []
+    if set(record) != {
+        "contract_version",
+        "executive_summary",
+        "claims",
+        "artifact_refs",
+        "handoff",
+        "design_review",
+    }:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:preformal_record.shape"
+        )
+    handoff = record.get("handoff")
+    if handoff != {"status": "ready_for_host_review"}:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:preformal_handoff.shape"
+        )
+    review = record.get("design_review")
+    if not isinstance(review, Mapping):
+        return [
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:public_research_record.design_review"
+        ]
+    if review.get("contract_version") != PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.contract_version"
+        )
+    if review.get("stage") != "pre_formal_research_design":
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.stage")
+    if review.get("evidence_basis") != "pre_registered_design_only":
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.evidence_basis"
+        )
+    if review.get("empirical_factor_verdict") != "NOT_ISSUED":
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.empirical_factor_verdict"
+        )
+    if set(review) != {
+        "contract_version",
+        "stage",
+        "evidence_basis",
+        "claim_scope",
+        "empirical_factor_verdict",
+        "decision",
+        "checks",
+        "blockers",
+    }:
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.shape")
+    if review.get("claim_scope") != PREFORMAL_CLAIM_SCOPE:
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.claim_scope")
+    checks = review.get("checks")
+    if not isinstance(checks, list):
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.checks")
+        checks = []
+    observed_ids: list[str] = []
+    observed_statuses: list[str] = []
+    controlled_checks: list[Mapping[str, Any]] = []
+    allowed_paths = _preformal_allowed_evidence_paths(task)
+    artifact_paths = {
+        str(item.get("path") or "")
+        for item in record.get("artifact_refs") or []
+        if isinstance(item, Mapping)
+    }
+    for index, check in enumerate(checks):
+        if not isinstance(check, Mapping):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.checks[{index}]"
+            )
+            continue
+        if set(check) != {
+            "check_id",
+            "claim_type",
+            "status",
+            "finding_code",
+            "falsifier_code",
+            "evidence_refs",
+        }:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.check_shape:{index}"
+            )
+        check_id = str(check.get("check_id") or "")
+        observed_ids.append(check_id)
+        status = str(check.get("status") or "")
+        observed_statuses.append(status)
+        if status not in {"PASS", "BLOCK"}:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.check_status:{check_id}"
+            )
+        if check.get("claim_type") != "DESIGN_REQUIREMENT":
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.claim_type:{check_id}"
+            )
+        if check.get("finding_code") != PREFORMAL_FINDING_CODES.get(status):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.finding_code:{check_id}"
+            )
+        if check.get("falsifier_code") != PREFORMAL_FALSIFIER_CODES.get(check_id):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.falsifier_code:{check_id}"
+            )
+        evidence_refs = check.get("evidence_refs")
+        if not isinstance(evidence_refs, list) or any(
+            not isinstance(item, str)
+            or not item
+            or item not in allowed_paths
+            or item not in artifact_paths
+            for item in evidence_refs or []
+        ):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.evidence_scope:{check_id}"
+            )
+        controlled_checks.append(check)
+    if observed_ids != list(expected_check_ids):
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.check_ids")
+    blockers = review.get("blockers")
+    expected_blockers = [
+        check_id
+        for check_id, status in zip(observed_ids, observed_statuses, strict=False)
+        if status == "BLOCK"
+    ]
+    if blockers != expected_blockers:
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.blockers")
+        blockers = blockers if isinstance(blockers, list) else []
+    clear = bool(
+        observed_ids == list(expected_check_ids)
+        and observed_statuses
+        and all(status == "PASS" for status in observed_statuses)
+        and not blockers
+    )
+    expected_decision = (
+        PREFORMAL_CLEAR_DECISION if clear else PREFORMAL_BLOCK_DECISION
+    )
+    if review.get("decision") != expected_decision:
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.decision")
+    if record.get("executive_summary") != PREFORMAL_EXECUTIVE_SUMMARIES.get(
+        expected_decision
+    ):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:preformal_record.executive_summary"
+        )
+    expected_status = "PASS" if clear else "BLOCK"
+    if result.get("status") != expected_status:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.status_mapping"
+        )
+    reasons.extend(
+        _validate_preformal_typed_claims(
+            record=record,
+            task=task,
+            checks=controlled_checks,
+        )
+    )
+    if role_id == "independent_council":
+        verdict = result.get("formal_independent_verdict")
+        if not isinstance(verdict, Mapping):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict"
+            )
+        else:
+            if (
+                verdict.get("contract_version")
+                != PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION
+            ):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.contract_version"
+                )
+            if verdict.get("stage") != "pre_formal_research_design":
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.stage"
+                )
+            if verdict.get("decision") != expected_decision:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.decision"
+                )
+            if verdict.get("reviewed_role_ids") != task.get(
+                "required_review_role_ids"
+            ):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.reviewed_roles"
+                )
+            if verdict.get("blocking_findings") != blockers:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.blockers"
+                )
+            if verdict.get("empirical_factor_verdict") != "NOT_ISSUED":
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.empirical_factor_verdict"
+                )
+            if set(verdict) != {
+                "contract_version",
+                "stage",
+                "claim_scope",
+                "decision",
+                "reviewed_role_ids",
+                "blocking_findings",
+                "empirical_factor_verdict",
+            }:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.shape"
+                )
+            if verdict.get("claim_scope") != PREFORMAL_CLAIM_SCOPE:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:formal_verdict.claim_scope"
+                )
+            reasons.extend(
+                _empirical_claim_reasons(
+                    verdict,
+                    path="formal_independent_verdict",
+                )
+            )
+    elif result.get("formal_independent_verdict") is not None:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:unexpected_formal_verdict"
+        )
+    return reasons
+
+
+def _validate_director_synthesis(
+    *,
+    result: Mapping[str, Any],
+    record: Mapping[str, Any],
+    task: Mapping[str, Any],
+    workspace: Path,
+) -> list[str]:
+    if task.get("role_id") != "research_director":
+        return []
+    reasons: list[str] = []
+    synthesis = record.get("director_synthesis")
+    if not isinstance(synthesis, Mapping):
+        return [
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:public_research_record.director_synthesis"
+        ]
+    if synthesis.get("contract_version") != DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.contract_version"
+        )
+    if synthesis.get("stage") != "pre_formal_research_design":
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.stage"
+        )
+    if synthesis.get("handoff_status") != "ready_for_specialist_verification":
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.handoff_status"
+        )
+    for field in ("mechanism_decision", "selected_measurement_object"):
+        if not _nonempty_public_text(synthesis.get(field)):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.{field}"
+            )
+    for field in ("rejected_alternatives", "falsifiers"):
+        values = synthesis.get(field)
+        if not isinstance(values, list) or not values or any(
+            not _nonempty_public_text(item) for item in values
+        ):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.{field}"
+            )
+    unresolved = synthesis.get("unresolved_risks")
+    if not isinstance(unresolved, list) or any(
+        not _nonempty_public_text(item) for item in unresolved
+    ):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.unresolved_risks"
+        )
+    expected_roles = list(task.get("depends_on_roles") or [])
+    reviewed = synthesis.get("reviewed_specialist_results")
+    if not isinstance(reviewed, list):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.reviewed_specialist_results"
+        )
+        reviewed = []
+    observed_roles: list[str] = []
+    report_id = str((task.get("identity") or {}).get("report_id") or "")
+    for item in reviewed:
+        if not isinstance(item, Mapping):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.reviewed_result_ref"
+            )
+            continue
+        role_id = str(item.get("role_id") or "")
+        observed_roles.append(role_id)
+        expected_path = (
+            f"objects/research_organization/{report_id}/results/{role_id}.json"
+        )
+        if item.get("path") != expected_path:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.reviewed_result_path:{role_id}"
+            )
+            continue
+        path = workspace / expected_path
+        if not path.is_file() or path.is_symlink():
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.reviewed_result_missing:{role_id}"
+            )
+            continue
+        dependency_result = read_workspace_json(workspace, expected_path)
+        if (
+            dependency_result.get("role_id") != role_id
+            or dependency_result.get("status") != "PASS"
+            or dependency_result.get("result_sha256")
+            != item.get("result_sha256")
+        ):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.reviewed_result_binding:{role_id}"
+            )
+    if observed_roles != expected_roles:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.reviewed_roles"
+        )
+    source_ref = synthesis.get("source_record_ref")
+    artifact_refs = record.get("artifact_refs") or []
+    if (
+        not isinstance(source_ref, Mapping)
+        or source_ref.get("path") != "identity/web_research_director_record.json"
+        or not any(
+            isinstance(item, Mapping)
+            and item.get("path") == source_ref.get("path")
+            and item.get("sha256") == source_ref.get("sha256")
+            for item in artifact_refs
+        )
+    ):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.source_record_ref"
+        )
+    if result.get("status") != "PASS":
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:director_synthesis.status_mapping"
+        )
+    return reasons
+
+
+def _data_request_payload_reasons(
+    payload: Any,
+    *,
+    task: Mapping[str, Any],
+    request_id: str,
+) -> list[str]:
+    if not isinstance(payload, Mapping):
+        return ["request_payload_object_required"]
+    reasons: list[str] = []
+    if payload.get("contract_version") != DATA_REQUEST_CONTRACT_VERSION:
+        reasons.append("request_payload.contract_version")
+    if payload.get("request_id") != request_id:
+        reasons.append("request_payload.request_id")
+    for field in ("request_type", "dataset_id"):
+        if not _nonempty_public_text(payload.get(field)):
+            reasons.append(f"request_payload.{field}")
+    required_fields = payload.get("required_fields")
+    if not isinstance(required_fields, list) or not required_fields or any(
+        not _nonempty_public_text(item) for item in required_fields
+    ):
+        reasons.append("request_payload.required_fields")
+    if not isinstance(payload.get("required_coverage"), Mapping):
+        reasons.append("request_payload.required_coverage")
+    if not isinstance(payload.get("parameters"), Mapping):
+        reasons.append("request_payload.parameters")
+    if not isinstance(payload.get("lookahead_policy_required"), bool):
+        reasons.append("request_payload.lookahead_policy_required")
+    if "qa_required" in payload and not isinstance(payload.get("qa_required"), bool):
+        reasons.append("request_payload.qa_required")
+    expected_consumer = {
+        "factor_id": (task.get("identity") or {}).get("factor_id"),
+        "research_id": (task.get("identity") or {}).get("research_id"),
+        "report_id": (task.get("identity") or {}).get("report_id"),
+    }
+    if payload.get("consumer") != expected_consumer:
+        reasons.append("request_payload.consumer")
+    if payload.get("status") != "requested":
+        reasons.append("request_payload.status")
+    if payload.get("production_execution_allowed") is not False:
+        reasons.append("request_payload.production_execution_allowed")
+    if private_reasoning_paths(payload):
+        reasons.append("request_payload.private_reasoning")
+    return reasons
+
+
+def materialize_data_liaison_requests(
+    *,
+    result: Mapping[str, Any],
+    task: Mapping[str, Any],
+    workspace: Path,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Publish embedded Liaison requests through the Host, never the Agent mount."""
+
+    candidate = copy.deepcopy(dict(result))
+    if task.get("role_id") != "data_liaison":
+        return candidate, ()
+    hash_reasons = validate_content_hash(
+        candidate,
+        hash_field="result_sha256",
+        label="result",
+    )
+    if hash_reasons:
+        raise ResearchOrganizationError(
+            BLOCK_RESEARCH_ORG_RESULT_INVALID,
+            [f"embedded_data_request:{reason}" for reason in hash_reasons],
+        )
+    record = candidate.get("public_research_record")
+    catalog_resolution = (
+        record.get("catalog_resolution")
+        if isinstance(record, dict)
+        else None
+    )
+    requests = (
+        catalog_resolution.get("generated_data_requests")
+        if isinstance(catalog_resolution, dict)
+        else None
+    )
+    if not isinstance(requests, list):
+        return candidate, ()
+    if not any(
+        isinstance(item, Mapping) and "request_payload" in item
+        for item in requests
+    ):
+        return candidate, ()
+    report_id = str((task.get("identity") or {}).get("report_id") or "")
+    request_root = f"objects/research_organization/{report_id}/data_requests/"
+    created: list[str] = []
+    canonical_refs: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    seen_ids: set[str] = set()
+    try:
+        for index, item in enumerate(requests):
+            if not isinstance(item, Mapping) or set(item) != {
+                "request_id",
+                "path",
+                "request_payload",
+            }:
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                    [f"embedded_data_request.entry:{index}"],
+                )
+            request_id = str(item.get("request_id") or "")
+            identity_reasons = validate_identity_value(
+                request_id,
+                label=f"data_request[{index}].request_id",
+            )
+            if identity_reasons:
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                    identity_reasons,
+                )
+            relative = normalize_workspace_relative_path(
+                item.get("path"),
+                workspace=workspace,
+                label="embedded_data_request.path",
+            )
+            if (
+                not relative.startswith(request_root)
+                or relative != f"{request_root}{request_id}.json"
+                or relative in seen_paths
+                or request_id in seen_ids
+            ):
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                    [f"embedded_data_request.path:{relative}"],
+                )
+            payload = copy.deepcopy(item.get("request_payload"))
+            payload_reasons = _data_request_payload_reasons(
+                payload,
+                task=task,
+                request_id=request_id,
+            )
+            if payload_reasons:
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                    [f"embedded_data_request:{reason}" for reason in payload_reasons],
+                )
+            path = workspace / relative
+            if path.exists() or path.is_symlink():
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or stable_json_hash(read_workspace_json(workspace, relative))
+                    != stable_json_hash(payload)
+                ):
+                    raise ResearchOrganizationError(
+                        BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                        [f"embedded_data_request.immutable_conflict:{relative}"],
+                    )
+            else:
+                write_workspace_json_once(workspace, relative, payload)
+                created.append(relative)
+            seen_paths.add(relative)
+            seen_ids.add(request_id)
+            canonical_refs.append(
+                {
+                    "request_id": request_id,
+                    "path": relative,
+                    "sha256": sha256_file(workspace / relative),
+                }
+            )
+    except Exception:
+        cleanup_materialized_data_requests(
+            workspace=workspace,
+            relative_paths=created,
+        )
+        raise
+    assert isinstance(record, dict)
+    assert isinstance(catalog_resolution, dict)
+    catalog_resolution["generated_data_requests"] = canonical_refs
+    candidate = with_content_hash(candidate, hash_field="result_sha256")
+    return candidate, tuple(created)
+
+
+def cleanup_materialized_data_requests(
+    *,
+    workspace: Path,
+    relative_paths: Iterable[str],
+) -> None:
+    for value in reversed(tuple(relative_paths)):
+        relative = normalize_workspace_relative_path(
+            value,
+            workspace=workspace,
+            label="data_request_cleanup",
+        )
+        path = workspace / relative
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+
+
 def validate_agent_result(
     result: Any,
     *,
@@ -1184,6 +1951,28 @@ def validate_agent_result(
     reasons: list[str] = []
     if not isinstance(result, dict):
         return [f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:missing"]
+    session_policy = (
+        task.get("session_policy")
+        if isinstance(task.get("session_policy"), dict)
+        else {}
+    )
+    expected_result_keys = {
+        "contract_version",
+        "task_ref",
+        "identity",
+        "role_id",
+        "status",
+        "producer_mode",
+        "session_id",
+        "public_research_record",
+        "result_sha256",
+    }
+    if session_policy.get("independence_class") == "independent_review":
+        expected_result_keys.update(
+            {"independence_attestation", "formal_independent_verdict"}
+        )
+    if set(result) != expected_result_keys:
+        reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:result_envelope.shape")
     if result.get("contract_version") != AGENT_RESULT_CONTRACT_VERSION:
         reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:contract_version")
     reasons.extend(
@@ -1288,10 +2077,26 @@ def validate_agent_result(
                     reasons.append(
                         f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:public_research_record.{key}"
                     )
+            reasons.extend(_empirical_claim_reasons(record))
+            reasons.extend(
+                _validate_preformal_design_review(
+                    result=result,
+                    record=record,
+                    task=task,
+                )
+            )
+            reasons.extend(
+                _validate_director_synthesis(
+                    result=result,
+                    record=record,
+                    task=task,
+                    workspace=workspace,
+                )
+            )
     for path in private_reasoning_paths(result):
         reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:private_reasoning:{path}")
     for artifact in (record or {}).get("artifact_refs") or []:
-        if not isinstance(artifact, dict):
+        if not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}:
             reasons.append(f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:artifact_ref")
             continue
         try:
@@ -1319,7 +2124,11 @@ def validate_agent_result(
         request_root = f"objects/research_organization/{report_id}/data_requests/"
         expected_request_paths: set[str] = set()
         for request_ref in generated_requests:
-            if not isinstance(request_ref, dict):
+            if not isinstance(request_ref, dict) or set(request_ref) != {
+                "request_id",
+                "path",
+                "sha256",
+            }:
                 reasons.append(
                     f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:data_request_ref"
                 )
@@ -1354,7 +2163,6 @@ def validate_agent_result(
             reasons.append(
                 f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:data_request_directory"
             )
-    session_policy = task.get("session_policy") if isinstance(task.get("session_policy"), dict) else {}
     if (
         producer_mode == "single_agent_fallback"
         and session_policy.get("single_agent_fallback_allowed") is not True
@@ -1370,6 +2178,13 @@ def validate_agent_result(
         attestation = result.get("independence_attestation")
         if not isinstance(attestation, dict):
             reasons.append(f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:attestation")
+        elif set(attestation) != {
+            "independence_satisfied",
+            "reviewed_role_ids",
+        }:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:attestation.shape"
+            )
         elif producer_mode == "real_agent":
             if attestation.get("independence_satisfied") is not True:
                 reasons.append(f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:not_satisfied")
@@ -1456,62 +2271,97 @@ def _admit_agent_result_locked(
             peer_session_ids.append(str(peer.get("session_id") or ""))
             peer_task = read_workspace_json(resolved, str(reference.get("path") or ""))
             peer_results.append((peer_task, peer))
-    candidate = dict(result)
-    reasons = validate_agent_result(
-        candidate,
+    candidate, created_data_requests = materialize_data_liaison_requests(
+        result=result,
         task=task,
         workspace=resolved,
-        peer_session_ids=peer_session_ids,
     )
-    candidate_session_id = str(candidate.get("session_id") or "")
-    for peer_task, peer in peer_results:
-        peer_policy = (
-            peer_task.get("session_policy")
-            if isinstance(peer_task.get("session_policy"), dict)
-            else {}
-        )
-        if (
-            candidate.get("producer_mode") == "real_agent"
-            and peer.get("producer_mode") == "real_agent"
-            and candidate_session_id
-            and candidate_session_id == str(peer.get("session_id") or "")
-            and peer_policy.get("requirement")
-            in {"isolated_session", "independent_session"}
-        ):
-            reasons.append(
-                f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:session_reused"
-            )
-    if reasons:
-        raise ResearchOrganizationError(BLOCK_RESEARCH_ORG_RESULT_INVALID, reasons)
-    expected_result_path = str(task["expected_result_path"])
-    destination = resolved / expected_result_path
-    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
-        raise ResearchOrganizationError(
-            BLOCK_RESEARCH_ORG_RESULT_INVALID,
-            [f"unsafe_result_path:{expected_result_path}"],
-        )
-    if destination.is_file():
-        existing = read_workspace_json(resolved, expected_result_path)
-        if stable_json_hash(existing) != stable_json_hash(candidate):
-            raise ResearchOrganizationError(
-                BLOCK_RESEARCH_ORG_RESULT_INVALID,
-                [f"immutable_result_conflict:{expected_result_path}"],
-            )
-        summary = validate_research_organization_bundle(workspace=resolved)
-        return {**summary, "admitted_role_id": requested_role, "idempotent": True}
+    destination: Path | None = None
+    result_created = False
     try:
-        write_workspace_json_once(resolved, expected_result_path, candidate)
-    except FileExistsError:
-        existing = read_workspace_json(resolved, expected_result_path)
-        if stable_json_hash(existing) != stable_json_hash(candidate):
+        reasons = validate_agent_result(
+            candidate,
+            task=task,
+            workspace=resolved,
+            peer_session_ids=peer_session_ids,
+        )
+        candidate_session_id = str(candidate.get("session_id") or "")
+        for peer_task, peer in peer_results:
+            peer_policy = (
+                peer_task.get("session_policy")
+                if isinstance(peer_task.get("session_policy"), dict)
+                else {}
+            )
+            if (
+                candidate.get("producer_mode") == "real_agent"
+                and peer.get("producer_mode") == "real_agent"
+                and candidate_session_id
+                and candidate_session_id == str(peer.get("session_id") or "")
+                and peer_policy.get("requirement")
+                in {"isolated_session", "independent_session"}
+            ):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_INDEPENDENCE_INVALID}:session_reused"
+                )
+        if reasons:
+            raise ResearchOrganizationError(BLOCK_RESEARCH_ORG_RESULT_INVALID, reasons)
+        expected_result_path = str(task["expected_result_path"])
+        destination = resolved / expected_result_path
+        if destination.is_symlink() or (
+            destination.exists() and not destination.is_file()
+        ):
             raise ResearchOrganizationError(
                 BLOCK_RESEARCH_ORG_RESULT_INVALID,
-                [f"immutable_result_conflict:{expected_result_path}"],
+                [f"unsafe_result_path:{expected_result_path}"],
             )
+        if destination.is_file():
+            existing = read_workspace_json(resolved, expected_result_path)
+            if stable_json_hash(existing) != stable_json_hash(candidate):
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                    [f"immutable_result_conflict:{expected_result_path}"],
+                )
+            summary = validate_research_organization_bundle(workspace=resolved)
+            return {
+                **summary,
+                "admitted_role_id": requested_role,
+                "idempotent": True,
+            }
+        try:
+            write_workspace_json_once(resolved, expected_result_path, candidate)
+            result_created = True
+        except FileExistsError:
+            existing = read_workspace_json(resolved, expected_result_path)
+            if stable_json_hash(existing) != stable_json_hash(candidate):
+                raise ResearchOrganizationError(
+                    BLOCK_RESEARCH_ORG_RESULT_INVALID,
+                    [f"immutable_result_conflict:{expected_result_path}"],
+                )
+            summary = validate_research_organization_bundle(workspace=resolved)
+            return {
+                **summary,
+                "admitted_role_id": requested_role,
+                "idempotent": True,
+            }
         summary = validate_research_organization_bundle(workspace=resolved)
-        return {**summary, "admitted_role_id": requested_role, "idempotent": True}
-    summary = validate_research_organization_bundle(workspace=resolved)
-    return {**summary, "admitted_role_id": requested_role, "idempotent": False}
+        return {
+            **summary,
+            "admitted_role_id": requested_role,
+            "idempotent": False,
+        }
+    except Exception:
+        if (
+            result_created
+            and destination is not None
+            and destination.is_file()
+            and not destination.is_symlink()
+        ):
+            destination.unlink()
+        cleanup_materialized_data_requests(
+            workspace=resolved,
+            relative_paths=created_data_requests,
+        )
+        raise
 
 
 def write_research_organization_bundle(

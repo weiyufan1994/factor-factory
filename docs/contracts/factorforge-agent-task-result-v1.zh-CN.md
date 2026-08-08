@@ -49,7 +49,7 @@ factorforge_agent_result_v1.public_research_record
 
 - Host builder 写 plan、captured input、task 和 dispatch manifest；
 - task 的 `expected_result_path` 冻结 role result 的 canonical workspace path；
-- Data Liaison 的额外 write scope 仅为当前 report 的 `data_requests/**`；
+- Data Liaison task 的额外声明范围仅为当前 report 的 `data_requests/**`；隔离 Agent 仍只有 Host-private output 写权限，实际 request 由 Host 物化；
 - `scripts/admit_factorforge_agent_result.py` 负责手工/外部候选 admission；正式 specialist runtime 使用 `scripts/run_factorforge_research_org_runtime.py` 和 Host-private signed receipt 链；
 - Builder artifact 使用 temp file + `os.replace()`；result admission 在 frozen plan 文件锁下使用 temp file + atomic hard-link create，串行执行跨 role session 检查并禁止覆盖既有 canonical result。两者都不等于 complete-dispatch atomic publish。
 
@@ -110,6 +110,13 @@ task_04_price_volume_researcher
   },
   "session_policy": {},
   "research_record_policy": {},
+  "execution_stage_contract": {
+    "stage": "pre_formal_research_design",
+    "objective": "<role-specific objective>",
+    "formal_backtest_evidence_available": false,
+    "empirical_factor_verdict_allowed": false,
+    "post_execution_empirical_council_owner": "factor-forge-step6"
+  },
   "created_by": "factorforge_host_research_director",
   "task_sha256": "<64 lowercase hex>"
 }
@@ -258,13 +265,13 @@ Validator 要求 snapshot 为当前 workspace 内的普通文件、contract/hash
 objects/research_organization/<report_id>/results/<role_id>.json
 ```
 
-Data Liaison 还可写：
+Data Liaison task 还可声明：
 
 ```text
 objects/research_organization/<report_id>/data_requests/**
 ```
 
-Task validator 要求 `expected_result_path` 位于其 `write_scopes`。该 validator 本身不构成 runtime filesystem sandbox。Phase 2 adapter 只向 Agent 暴露 staged context、private output 和只读 canonical workspace，但当前仍没有覆盖所有进程级 side effect 的完整 filesystem-diff proof。
+Task validator 要求 `expected_result_path` 位于其 `write_scopes`。该 validator 本身不构成 runtime filesystem sandbox。Phase 2 adapter 只向 Agent 暴露 staged context、private output 和只读 canonical workspace；Data Liaison 必须内嵌 request payload，由 Host 校验、落盘并替换成 path/hash ref。当前仍没有覆盖所有进程级 side effect 的完整 filesystem-diff proof。
 
 ### 6.2 Session Policy
 
@@ -287,6 +294,10 @@ Independent Council 示例：
 ```
 
 Builder 只冻结这些政策，不创建 session。Phase 2 runtime 才创建 session，并通过 adapter/Host signed receipt、provider handle uniqueness、owned termination 和 ledger binding 验证 `session_id`；只运行 builder 或基础 bundle validator 时不得声称获得该证明。
+
+Runtime staging 使用 dependency 的传递闭包。已 admission dependency 的 public
+`artifact_refs` 会在 path/hash 复核后一起进入只读 context，因此下游角色可以审计
+Host Director 冻结的 plan，而不是只看到摘要。
 
 ## 7. Research Record Policy
 
@@ -323,6 +334,49 @@ scratchpad
 ```
 
 Validator 递归扫描这些 key。禁止 private CoT 不等于禁止可审计的公开数学推导。
+
+## 7.1 Execution Stage Contract
+
+当前 organization task 全部属于 `pre_formal_research_design`。Role-specific
+objective 由 builder 冻结并由 validator 重算：
+
+- Quant Implementation 审计 estimator、implementation route、timing 与 parity；
+- Validation & Evidence 审计 IS/OOS、trial budget、成本、阈值、消融和 falsifier；
+- Independent Council 独立审查完整执行前研究设计。
+
+`formal_backtest_evidence_available=false` 与
+`empirical_factor_verdict_allowed=false` 是硬边界。Organization Council 的 PASS
+只允许 Host 进入 formal Ultimate，不等于 factor ACCEPT/REJECT；回测后 verdict
+仍由 `factor-forge-step6` 及正式 proof certificate 决定。
+
+Quant、pre-execution Validation 和 Independent Council 必须额外写
+`factorforge_preformal_design_review_v3`。其中 `claim_scope` 必须精确为：
+
+```json
+{
+  "stage": "pre_formal_research_design",
+  "claim_domain": "research_design_only",
+  "allowed_claim_types": ["DESIGN_REQUIREMENT"],
+  "record_semantics": "controlled_design_checks_only",
+  "free_text_claims_allowed": false,
+  "realized_performance_evidence": false,
+  "empirical_factor_verdict": "NOT_ISSUED",
+  "promotion_authority": false
+}
+```
+
+公开 record 只能包含 contract、canonical executive summary、claims、
+artifact refs、固定 handoff 和 design review。`claims[]` 必须逐项等于有序
+`checks[]`；每项只能包含 `check_id`、`claim_type=DESIGN_REQUIREMENT`、
+`status=PASS|BLOCK`、受控 `finding_code`、受控 `falsifier_code` 和
+`evidence_refs`。`blockers[]` 必须精确等于 status=BLOCK 的 check IDs。引用若非
+task 冻结输入、task 自身或 admitted dependency result，或者没有对应
+hash-bound `artifact_refs`，必须 BLOCK。
+
+v3 不提供自由文本 claim/finding/falsifier/blocker，因此 completed simulation、
+realized metric 或 promotion suitability 的自然语言改写没有可落盘通道；递归
+语义扫描继续作为纵深防御。数值 preregistered threshold 应冻结在 Host plan 或
+其 hash-bound design artifact 中，不写入 pre-formal verdict record。
 
 ## 8. Output Contract Mapping
 
@@ -422,6 +476,19 @@ Council result 还可包含：
 }
 ```
 
+普通 result 的根对象字段必须精确等于上面的九项。`independent_review` result
+必须在这九项之外同时且仅增加 `independence_attestation` 与
+`formal_independent_verdict`；任何 `factor_verdict`、`note` 或其他未声明根字段
+都直接 BLOCK，即使提交者重新计算了 `result_sha256`。
+
+根对象内的 `identity` 同样必须精确等于 frozen task identity 的 key/value 集；
+不能在 `identity.factor_verdict`、`identity.note` 或其他额外 metadata 中藏入主张。
+
+`independence_attestation` 的字段也必须精确为
+`independence_satisfied`、`reviewed_role_ids`。所有 `artifact_refs[]` 必须精确为
+`{path, sha256}`；Data Liaison materialize 后的 `generated_data_requests[]` 必须
+精确为 `{request_id, path, sha256}`。这些相邻通道不得承载自由文本 verdict。
+
 ### 10.3 Allowed Values
 
 Result status：
@@ -518,7 +585,7 @@ uncertainties
 handoff
 ```
 
-Data Liaison 不得用 result 宣称已 materialize data。数据可用性必须由 catalog/QA/delivery receipt 支撑；缺口通过 `data_request_v1` 进入当前 report 的 `data_requests/`。
+Data Liaison 不得用 result 宣称已 materialize data。数据可用性必须由 catalog/QA/delivery receipt 支撑。缺口在 Agent-private output 中以 `{request_id,path,request_payload}` 内嵌；Host 验证 `factorforge_data_request_v1`、consumer 和 report-local path 后原子落盘，并在 canonical result 中替换为 `{request_id,path,sha256}`。任何 validation、ledger 或 admission 失败都必须回滚本轮 Host-created request。
 
 ## 12. Role Research Record Plugin
 
@@ -555,8 +622,8 @@ factorforge_role_research_record_v1
 7. inner payload contract version 必须等于 task 的 `output_contract`；
 8. domain/data-liaison/role-record 的最低字段；
 9. private reasoning key 的递归阻断；
-10. `artifact_refs` 的 workspace-relative path、ordinary-file 和 SHA-256；
-11. Council independence attestation 和 fallback overclaim。
+10. `artifact_refs` 的 exact shape、workspace-relative path、ordinary-file 和 SHA-256；
+11. outer envelope、authority-bearing identity、Council independence attestation/formal verdict 和 canonical data-request ref 的 exact shape，以及 fallback overclaim；
 12. domain/role identity、proposal status 到 envelope status 的映射；
 13. Data Liaison 生成的 request path/file hash；
 14. plan 禁止 fallback 时的 fallback result；
@@ -566,7 +633,7 @@ workspace-only bundle validator 当前不证明：
 
 - Host runtime receipt 对 session ID 和 staged-context 的真实性；
 - attachment MIME/size/secret scan；
-- unknown-field strict JSON Schema closure；
+- 普通 domain/Data Liaison plugin 全部深层对象的 unknown-field strict JSON Schema closure；
 - filesystem diff 与 declared write-set 对比。
 
 需要 stronger proof 时，必须调用 `validate_research_organization_runtime()` 并提供 Host-private ledger/trust root。该 validator 能证明 signed session/staged-context binding，但仍不提供完整 filesystem-diff 或 attachment quarantine。
@@ -578,6 +645,7 @@ workspace-only bundle validator 当前不证明：
 ### `producer_mode=real_agent`
 
 - 必须存在 `independence_attestation`；
+- attestation 必须且只能包含 `independence_satisfied`、`reviewed_role_ids`；
 - `independence_satisfied` 必须为 `true`；
 - `reviewed_role_ids` 必须逐项等于 task 冻结的 `required_review_role_ids`；
 - Council `session_id` 不得复用 collection 中其他 role 的 session。

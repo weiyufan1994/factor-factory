@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import factor_factory.research_org.director as director_module
 import factor_factory.research_org.runtime as runtime_module
 from factor_factory.research_org import (
     AGENT_RESULT_CONTRACT_VERSION,
@@ -29,6 +30,17 @@ from factor_factory.research_org.contracts import (
     with_content_hash,
 )
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
+from factor_factory.research_org.director import (
+    DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+    PREFORMAL_CLAIM_SCOPE,
+    PREFORMAL_CLEAR_DECISION,
+    PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+    PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+    PREFORMAL_EXECUTIVE_SUMMARIES,
+    PREFORMAL_FALSIFIER_CODES,
+    PREFORMAL_FINDING_CODES,
+    PREFORMAL_ROLE_CHECK_IDS,
+)
 from factor_factory.research_workspace import (
     build_workspace_manifest,
     write_workspace_manifest,
@@ -145,18 +157,47 @@ def _domain_record(task: dict) -> dict:
             "artifact_refs": [],
             "handoff": {"status": "ready_for_host_review"},
         }
-    return {
+    record = {
         "contract_version": task["output_contract"],
         "executive_summary": f"Public result from {role_id}.",
         "claims": [
             {
-                "claim": "The role-specific obligation was evaluated.",
+                "claim_type": "DESIGN_REQUIREMENT",
+                "statement": "The role-specific obligation was evaluated.",
                 "falsifier": "The bound evidence contradicts the claim.",
+                "evidence_refs": [],
             }
         ],
         "artifact_refs": [],
         "handoff": {"status": "ready_for_host_review"},
     }
+    if role_id in PREFORMAL_ROLE_CHECK_IDS:
+        checks = [
+            {
+                "check_id": check_id,
+                "claim_type": "DESIGN_REQUIREMENT",
+                "status": "PASS",
+                "finding_code": PREFORMAL_FINDING_CODES["PASS"],
+                "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
+                "evidence_refs": [],
+            }
+            for check_id in PREFORMAL_ROLE_CHECK_IDS[role_id]
+        ]
+        record["executive_summary"] = PREFORMAL_EXECUTIVE_SUMMARIES[
+            PREFORMAL_CLEAR_DECISION
+        ]
+        record["claims"] = [dict(check) for check in checks]
+        record["design_review"] = {
+            "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+            "stage": "pre_formal_research_design",
+            "evidence_basis": "pre_registered_design_only",
+            "claim_scope": PREFORMAL_CLAIM_SCOPE,
+            "empirical_factor_verdict": "NOT_ISSUED",
+            "decision": PREFORMAL_CLEAR_DECISION,
+            "checks": checks,
+            "blockers": [],
+        }
+    return record
 
 
 def _private_output(task: dict) -> dict:
@@ -169,6 +210,15 @@ def _private_output(task: dict) -> dict:
         payload["independence_attestation"] = {
             "independence_satisfied": True,
             "reviewed_role_ids": task["required_review_role_ids"],
+        }
+        payload["formal_independent_verdict"] = {
+            "contract_version": PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+            "stage": "pre_formal_research_design",
+            "claim_scope": PREFORMAL_CLAIM_SCOPE,
+            "decision": PREFORMAL_CLEAR_DECISION,
+            "reviewed_role_ids": task["required_review_role_ids"],
+            "blocking_findings": [],
+            "empirical_factor_verdict": "NOT_ISSUED",
         }
     return payload
 
@@ -374,6 +424,54 @@ class SignedFakeSessionRunner(FakeSessionRunner):
 
 def _admit_host_director(workspace: Path) -> None:
     task = _task(workspace, "research_director")
+    record = _domain_record(task)
+    reviewed_results = []
+    for role_id in task["depends_on_roles"]:
+        dependency_task = _task(workspace, role_id)
+        result_relative = dependency_task["expected_result_path"]
+        dependency_result = json.loads(
+            (workspace / result_relative).read_text(encoding="utf-8")
+        )
+        reviewed_results.append(
+            {
+                "role_id": role_id,
+                "path": result_relative,
+                "result_sha256": dependency_result["result_sha256"],
+            }
+        )
+    source_relative = "identity/web_research_director_record.json"
+    source_path = workspace / source_relative
+    source_path.write_text(
+        json.dumps(
+            {
+                "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+                "reviewed_specialist_results": reviewed_results,
+                "mechanism_decision": "Retain the constrained-liquidity reversal mechanism.",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_ref = {
+        "path": source_relative,
+        "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    }
+    record["artifact_refs"] = [
+        source_ref
+    ]
+    record["director_synthesis"] = {
+        "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+        "stage": "pre_formal_research_design",
+        "mechanism_decision": "Retain the constrained-liquidity reversal mechanism.",
+        "selected_measurement_object": "Signed price-volume pressure followed by reversal.",
+        "rejected_alternatives": ["Reject an unconditional momentum interpretation."],
+        "unresolved_risks": ["Auction effects may confound the pressure state."],
+        "falsifiers": ["The signal predicts continuation after timing controls."],
+        "reviewed_specialist_results": reviewed_results,
+        "source_record_ref": source_ref,
+        "handoff_status": "ready_for_specialist_verification",
+    }
     payload = with_content_hash(
         {
             "contract_version": AGENT_RESULT_CONTRACT_VERSION,
@@ -383,7 +481,7 @@ def _admit_host_director(workspace: Path) -> None:
             "status": "PASS",
             "producer_mode": "real_agent",
             "session_id": "host_research_director_session",
-            "public_research_record": _domain_record(task),
+            "public_research_record": record,
         },
         hash_field="result_sha256",
     )
@@ -429,10 +527,301 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
         "transactional_runtime_unverified_sessions"
     )
     assert completed["formal_independence_verified"] is False
+    for role_id in ("quant_implementation", "validation_evidence", "independent_council"):
+        invocation = next(call for call in runner.calls if call.role_id == role_id)
+        context_manifest = json.loads(
+            (invocation.context_root / "runtime_context.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        request_relative = (
+            "objects/research_organization/RUNTIME_REPORT/inputs/"
+            "web_research_request.json"
+        )
+        assert request_relative in {
+            item["path"] for item in context_manifest["files"]
+        }
+        assert (invocation.context_root / request_relative).is_file()
+        assert (
+            invocation.context_root
+            / "objects"
+            / "research_organization"
+            / "RUNTIME_REPORT"
+            / "results"
+            / "research_director.json"
+        ).is_file()
     assert validate_research_organization_runtime(
         workspace=workspace,
         require_complete=True,
     )["verdict"] == "PASS"
+
+
+def test_host_materializes_liaison_request_and_stages_it_transitively(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    liaison_task = _task(workspace, "data_liaison")
+    request_id = "intraday_pressure_state_v1"
+    request_relative = (
+        "objects/research_organization/RUNTIME_REPORT/data_requests/"
+        f"{request_id}.json"
+    )
+    record = _domain_record(liaison_task)
+    record["proposal_status"] = "awaiting_data"
+    record["catalog_resolution"]["generated_data_requests"] = [
+        {
+            "request_id": request_id,
+            "path": request_relative,
+            "request_payload": {
+                "contract_version": "factorforge_data_request_v1",
+                "request_id": request_id,
+                "request_type": "derived_state",
+                "dataset_id": "intraday_pressure_state_v1",
+                "required_fields": ["signed_pressure", "liquidity_capacity"],
+                "required_coverage": {
+                    "start": "2016-01-01",
+                    "end": "2025-07-11",
+                },
+                "parameters": {"bar_frequency": "1min"},
+                "lookahead_policy_required": True,
+                "qa_required": True,
+                "consumer": {
+                    "factor_id": liaison_task["identity"]["factor_id"],
+                    "research_id": liaison_task["identity"]["research_id"],
+                    "report_id": liaison_task["identity"]["report_id"],
+                },
+                "status": "requested",
+                "production_execution_allowed": False,
+            },
+        }
+    ]
+    payload = with_content_hash(
+        {
+            "contract_version": AGENT_RESULT_CONTRACT_VERSION,
+            "task_ref": {
+                "task_id": liaison_task["task_id"],
+                "sha256": liaison_task["task_sha256"],
+            },
+            "identity": liaison_task["identity"],
+            "role_id": "data_liaison",
+            "status": "NEEDS_DATA",
+            "producer_mode": "real_agent",
+            "session_id": "liaison-materialization-session",
+            "public_research_record": record,
+        },
+        hash_field="result_sha256",
+    )
+
+    admit_agent_result(workspace=workspace, result=payload, role_id="data_liaison")
+
+    admitted = json.loads(
+        (workspace / liaison_task["expected_result_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    request_ref = admitted["public_research_record"]["catalog_resolution"][
+        "generated_data_requests"
+    ][0]
+    assert set(request_ref) == {"request_id", "path", "sha256"}
+    assert request_ref["path"] == request_relative
+    assert (workspace / request_relative).is_file()
+    tasks_by_role = {
+        role_id: _task(workspace, role_id)
+        for role_id in (
+            "knowledge_librarian",
+            "data_liaison",
+            "price_volume_researcher",
+            "research_director",
+            "quant_implementation",
+        )
+    }
+    staged = runtime_module._context_source_paths(
+        workspace,
+        tasks_by_role["quant_implementation"],
+        tasks_by_role,
+    )
+    assert request_relative in staged
+
+
+def test_host_admission_rolls_back_result_and_request_on_final_validation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path)
+    liaison_task = _task(workspace, "data_liaison")
+    request_id = "atomic_rollback_pressure_state_v1"
+    request_relative = (
+        "objects/research_organization/RUNTIME_REPORT/data_requests/"
+        f"{request_id}.json"
+    )
+    record = _domain_record(liaison_task)
+    record["proposal_status"] = "awaiting_data"
+    record["catalog_resolution"]["generated_data_requests"] = [
+        {
+            "request_id": request_id,
+            "path": request_relative,
+            "request_payload": {
+                "contract_version": "factorforge_data_request_v1",
+                "request_id": request_id,
+                "request_type": "derived_state",
+                "dataset_id": request_id,
+                "required_fields": ["signed_pressure"],
+                "required_coverage": {"sample": "frozen"},
+                "parameters": {},
+                "lookahead_policy_required": True,
+                "qa_required": True,
+                "consumer": {
+                    "factor_id": liaison_task["identity"]["factor_id"],
+                    "research_id": liaison_task["identity"]["research_id"],
+                    "report_id": liaison_task["identity"]["report_id"],
+                },
+                "status": "requested",
+                "production_execution_allowed": False,
+            },
+        }
+    ]
+    payload = with_content_hash(
+        {
+            "contract_version": AGENT_RESULT_CONTRACT_VERSION,
+            "task_ref": {
+                "task_id": liaison_task["task_id"],
+                "sha256": liaison_task["task_sha256"],
+            },
+            "identity": liaison_task["identity"],
+            "role_id": "data_liaison",
+            "status": "NEEDS_DATA",
+            "producer_mode": "real_agent",
+            "session_id": "liaison-atomic-rollback-session",
+            "public_research_record": record,
+        },
+        hash_field="result_sha256",
+    )
+    original_validate = director_module.validate_research_organization_bundle
+    validation_calls = 0
+
+    def fail_final_validation(*args, **kwargs):
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 2:
+            raise RuntimeError("injected final bundle validation failure")
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        director_module,
+        "validate_research_organization_bundle",
+        fail_final_validation,
+    )
+
+    with pytest.raises(RuntimeError, match="injected final bundle validation failure"):
+        admit_agent_result(
+            workspace=workspace,
+            result=payload,
+            role_id="data_liaison",
+        )
+
+    assert validation_calls == 2
+    assert not (workspace / liaison_task["expected_result_path"]).exists()
+    assert not (workspace / request_relative).exists()
+    assert original_validate(workspace=workspace)["result_count"] == 0
+
+
+def test_liaison_materialization_rolls_back_when_runtime_ledger_commit_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path)
+    request_id = "rollback_pressure_state_v1"
+    request_relative = (
+        "objects/research_organization/RUNTIME_REPORT/data_requests/"
+        f"{request_id}.json"
+    )
+
+    class DataRequestRunner(FakeSessionRunner):
+        def run_research_org_session(
+            self,
+            invocation: ResearchOrgSessionInvocation,
+        ) -> ResearchOrgSessionOutcome:
+            outcome = super().run_research_org_session(invocation)
+            if invocation.role_id != "data_liaison":
+                return outcome
+            task = json.loads(
+                (
+                    invocation.context_root
+                    / "objects/research_organization/RUNTIME_REPORT/tasks"
+                    / f"{invocation.task_id}.json"
+                ).read_text(encoding="utf-8")
+            )
+            record = _domain_record(task)
+            record["proposal_status"] = "awaiting_data"
+            record["catalog_resolution"]["generated_data_requests"] = [
+                {
+                    "request_id": request_id,
+                    "path": request_relative,
+                    "request_payload": {
+                        "contract_version": "factorforge_data_request_v1",
+                        "request_id": request_id,
+                        "request_type": "derived_state",
+                        "dataset_id": "rollback_pressure_state_v1",
+                        "required_fields": ["signed_pressure"],
+                        "required_coverage": {"sample": "frozen"},
+                        "parameters": {},
+                        "lookahead_policy_required": True,
+                        "qa_required": True,
+                        "consumer": {
+                            "factor_id": task["identity"]["factor_id"],
+                            "research_id": task["identity"]["research_id"],
+                            "report_id": task["identity"]["report_id"],
+                        },
+                        "status": "requested",
+                        "production_execution_allowed": False,
+                    },
+                }
+            ]
+            invocation.private_output_path.write_text(
+                json.dumps(
+                    {
+                        "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+                        "status": "NEEDS_DATA",
+                        "public_research_record": record,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return outcome
+
+    original_complete = runtime_module.ResearchOrgRuntimeLedger.complete_attempt
+
+    def fail_liaison_commit(self, *args, canonical_result=None, **kwargs):
+        if (
+            isinstance(canonical_result, dict)
+            and canonical_result.get("role_id") == "data_liaison"
+        ):
+            raise OSError("injected ledger commit failure")
+        return original_complete(
+            self,
+            *args,
+            canonical_result=canonical_result,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        runtime_module.ResearchOrgRuntimeLedger,
+        "complete_attempt",
+        fail_liaison_commit,
+    )
+    with pytest.raises(OSError, match="injected ledger commit failure"):
+        run_research_organization_runtime(
+            workspace=workspace,
+            worktree=PROJECT_ROOT,
+            private_root=tmp_path / "private-runtime",
+            runner=DataRequestRunner(workspace),
+            allow_unverified_test_runner=True,
+            max_concurrency=1,
+            max_attempts=2,
+            timeout_seconds=60,
+        )
+
+    assert not (workspace / request_relative).exists()
 
 
 def test_runtime_retries_with_a_distinct_session(tmp_path: Path) -> None:

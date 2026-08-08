@@ -128,6 +128,33 @@ context manifest 冻结：
 - idempotency key；
 - adapter challenge。
 
+对于有依赖的角色，Host 计算完整传递依赖闭包，不只复制直接 parent。
+每个已 admission dependency 的 public `artifact_refs` 也必须在复制前重新校验
+workspace-relative path 与 SHA-256，然后进入 staged context。由此 Quant、
+pre-execution Validation 和 Independent Council 可以读取 Host Director 绑定的
+`identity/web_research_plan.json` 与 public ledger，而不是只看到一句摘要。
+
+本 runtime 的组织角色运行在 `pre_formal_research_design` 阶段：Quant 审计
+estimator/implementation boundary，Validation 审计 preregistration/falsification，
+Independent Council 审查完整执行前设计。三者均不得声称已有 backtest evidence
+或给出 empirical factor verdict；该责任属于后续 Ultimate Step6。
+
+三者的公开输出使用 `factorforge_preformal_design_review_v3` 与固定
+design-only `claim_scope`。公开 record 是闭合的 controlled-check 结构：claims
+必须逐项等于有序 checks，finding/falsifier 只能使用合同 code，blockers 只能是
+被阻断的 check IDs，executive summary 只能使用固定语义。不存在可承载 completed
+simulation、realized metric 或 promotion suitability 改写的自由文本字段；旧的
+语义扫描仅作为纵深防御。Evidence refs 仍只能引用 frozen task/input 或已
+admission dependency 的 hash-bound 路径。
+
+关闭结构不只覆盖 v3 record 本身。`factorforge_agent_result_v1` 外层 envelope
+必须按 task independence class 使用精确字段集，内部 `identity` 也必须与 frozen
+task identity 使用相同且仅相同的 keys；Council 的
+`independence_attestation` 与 formal verdict、所有 public `artifact_refs`、以及
+Data Liaison materialize 后的 canonical request refs 也必须为 exact shape。
+任何相邻对象中的额外 verdict、note 或自由文本字段都会在 Host admission 前
+BLOCK，不能通过重新计算 content hash 获得合法性。
+
 Host 在 admission 前重新检查 staged context 未变化。Agent 输出不得包含 private chain-of-thought；只允许公开、可复现的定义、关键推导步骤、假设、证据引用、falsifier 和 uncertainty。
 
 ## 4. Signed receipts
@@ -138,6 +165,12 @@ Host 在 admission 前重新检查 staged context 未变化。Agent 输出不得
 runtime_adapter
 host_admission
 ```
+
+外部 Host Research Director 的主 Agent receipt 还必须先通过
+`factorforge_console_agent_run_v1` 结构与绑定校验。仅验证 receipt 文件位于
+`state/jobs/<job_id>` 不足以建立来源：Host 必须逐项核对 job/factor/research/
+report identity、agent ID、session-key hash、provider、model、开始/结束时间、
+returncode、stdout/stderr tail，并与 adapter 返回的 `AgentRunResult` 完全一致。
 
 trust root 必须为当前用户所有、权限不宽于 `0700`；private key 文件必须为单链接普通文件，权限不宽于 `0600`。validator 只加载既有 key，不自动生成。
 
@@ -173,7 +206,9 @@ Host 在同一 SQLite transaction 内：
 
 Host receipt 必须绑定 adapter receipt ID、result hash、dependency snapshot、context hash和 event sequence。合法但属于其他 attempt 的旧 receipt 不可重放。
 
-Research Director 是 Host external session，不由 specialist adapter 派发；其 result 仍必须由 Host admission key 签名导入 ledger。
+Research Director 是 Host external session，不由 specialist adapter 派发。它必须生成独立的 authoring record，逐项绑定 task 的全部 dependency result path/hash、validated plan、公开 ledger 和 Host-private Agent receipt。Host 只从该 record 派生 canonical Director synthesis，并用真实 provider/model/session/timestamp 和 receipt hash 导入 ledger；缺任一绑定都 BLOCK。
+
+Data Liaison 的 staged workspace 同样只读。缺口 request 以完整 payload 写入其 Host-private candidate；Host 先验证 consumer/schema/path，再原子物化到 report-local `data_requests/` 并把 candidate 改写为 path/hash ref。若 result validation、ledger commit、cancel fence 或 canonical admission 失败，本轮 Host-created request 必须删除。
 
 ## 5. Dependency scheduler
 
@@ -319,16 +354,18 @@ unsafe_private_runtime_ledger
 
 本合同尚不实现：
 
-- 自动生成 Research Director synthesis 或 measurement program；
 - Data API delivery import/resume；
 - attachment/MIME quarantine；
 - complete-dispatch directory rename；
 - plan revision/CAS/current pointer；
 - 自动 patch merge 或 specialist code worktree；
-- 默认把 organization runtime 插入所有 Ultimate runs；
+- 将 organization runtime 默认插入 legacy/CLI-only Ultimate runs（production Web 已强制接入）；
 - production factor research golden run。
 
-Console 可以投影 role state、session/receipt count 和 assurance，但不展示 task logs、secrets 或 private chain-of-thought。
+Production Console 已按 intake -> Host Director admission -> Quant/Validation/Council ->
+`formal-complete` Ultimate 的顺序执行，并投影 role state、session/receipt count 和
+assurance；它不展示 task logs、secrets 或 private chain-of-thought。Plan-only 或
+Ultimate-only evidence不能获得 Web `COMPLETED`。
 
 ## 11. 验收
 

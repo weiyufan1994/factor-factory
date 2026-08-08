@@ -14,8 +14,11 @@ independent Data group. You may only:
 2. generate `factorforge_data_request_v1` for an unmet dependency; and
 3. verify an incoming delivery receipt against the request and catalog.
 
-Return one `factorforge_agent_result_v1` envelope whose
-`public_research_record` is a `factorforge_domain_research_proposal_v1`. Do not
+Under the signed organization runtime, return one
+`factorforge_agent_private_output_v1` whose `public_research_record` is a
+`factorforge_domain_research_proposal_v1`. The Host, not this role, binds the
+task/session identity, creates the canonical `factorforge_agent_result_v1`, and
+computes its result hash. Do not
 reproduce Ultimate or Step1-6, and do not make factor-quality decisions.
 The frozen economic mechanism and measurement proposal define the data need.
 Do not select mathematical tools, reinterpret the mechanism, or change the
@@ -46,13 +49,18 @@ Unknown, missing, mismatched, stale, or non-ACCEPT evidence is not a reuse hit.
 
 ## Missing Dependency
 
-When a dependency is unmet, generate a separate
-`factorforge_data_request_v1` only under
-`objects/research_organization/<report_id>/data_requests/` and return
-`proposal_status=awaiting_data`. Bind the request to the consumer
+When a dependency is unmet, author a complete `factorforge_data_request_v1`
+payload and embed it in
+`catalog_resolution.generated_data_requests[]` as exactly
+`request_id`, the task-authorized report-local `path`, and `request_payload`.
+Return `proposal_status=awaiting_data`. Bind the payload to the consumer
 identity, required schema/fields/coverage/parameters, information policy, QA,
 lookahead, and acceptance evidence. Do not select an easier proxy or ask Step4
-to scan a production raw-minute window.
+to scan a production raw-minute window. The staged workspace is read-only: do
+not create the declared path yourself. The Host validates the payload,
+atomically writes it under
+`objects/research_organization/<report_id>/data_requests/`, replaces the
+embedded payload with `request_id/path/sha256`, and only then admits the result.
 
 ## Delivery Verification
 
@@ -80,11 +88,10 @@ missing data.
 
 Read [the proposal example](references/domain-research-proposal-v1.example.json)
 and [the request/receipt examples](references/data-request-and-delivery.example.json)
-before authoring. The result envelope has exactly these required bindings:
-`task_ref`, `identity`, `role_id`, `status`, `producer_mode`, `session_id`,
-`public_research_record`, and `result_sha256`. Copy task identity and hashes from
-the assigned `factorforge_agent_task_v1`; compute `result_sha256` over the full
-envelope excluding `result_sha256` itself. The nested proposal uses one of:
+before authoring. In the signed runtime, the private output has exactly
+`contract_version`, `status`, and `public_research_record`; do not add task,
+session, producer, hash, receipt, or canonical path fields. The nested proposal
+uses one of:
 
 - `ready_for_director_review`
 - `awaiting_data`
@@ -94,20 +101,16 @@ envelope excluding `result_sha256` itself. The nested proposal uses one of:
 Map these to envelope status `PASS`, `NEEDS_DATA`, `BLOCK`, or
 `NEEDS_CLARIFICATION`, respectively. Write the envelope only to the
 Host-provided private candidate path. Do not write the workspace result path
-directly. The Host validates and atomically admits it to
-`objects/research_organization/<report_id>/results/<role_id>.json` with
-`scripts/admit_factorforge_agent_result.py`. The only additional workspace
-artifact this Skill may create is a requested `factorforge_data_request_v1`
-under the task-authorized report's `data_requests/` directory. The result must
-bind its exact path and file SHA256 so Host admission verifies it.
+directly. The Host wraps, signs, validates, and atomically admits it to
+`objects/research_organization/<report_id>/results/<role_id>.json`. A missing
+dependency is the only case where this role may declare an additional path,
+and it does so only through the embedded request payload described above; the
+Host owns the actual workspace write.
 
-Set `producer_mode=real_agent` only for an actual isolated Agent session with
-its real unique `session_id`. Current v1 tasks set
-`single_agent_fallback_allowed=false`; the main/Host session therefore must not
-submit this liaison result. If a later frozen task explicitly permits fallback,
-use `producer_mode=single_agent_fallback` with the actual host/main
-`session_id`; never mint an isolated-looking id or claim independence, review,
-or Council authority.
+Current v1 tasks set `single_agent_fallback_allowed=false`; the main/Host
+session therefore must not impersonate this liaison. Session identity and
+`producer_mode=real_agent` are derived by the Host from the real isolated
+runtime receipt, never authored inside the private output.
 
 ## Hard Boundaries
 

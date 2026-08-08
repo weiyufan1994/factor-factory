@@ -39,14 +39,34 @@ Price-Volume are active domain plugins. Event/Text and Macro/Cross-Asset are
 capability-gated until their skills and runtime routes exist. A required
 unavailable domain is `WAITING_CAPABILITY`, not silent reassignment.
 
+Only mechanism-bearing user evidence may activate a domain: an economic
+hypothesis, research direction, explicit decision, or report argument. A title,
+formula, operator list, field list, or code fragment may create auditable
+exploratory candidates, but cannot select a domain by lexical resemblance. If
+mechanism-bearing evidence is absent, set `NEEDS_CLARIFICATION`; do not let an
+OHLCV-looking expression silently become a Price-Volume thesis.
+Descriptive data-availability prose is also insufficient. A routed mechanism
+must contain a causal or measurement predicate, a genuine economic actor/state,
+and a payoff, valuation, pressure, reversal, premium, or other falsifiable
+target state. The predicate must form an actual relational clause; co-occurrence
+of one token from each marker family is not a mechanism. Noun phrases such as
+`support levels` or `discount rate` are not relational clauses. Container wording such
+as "this report contains evidence" does
+not disqualify a statement that contains that complete mechanism triple; a
+field inventory without the triple remains exploratory only.
+
 The minimum organization is Research Director, applicable domain researcher,
 Knowledge Librarian, Data Liaison, Quant Implementation, Validation & Evidence,
-and Independent Council. Data Liaison may resolve catalogs, emit
-`data_request_v1`, and verify delivery evidence; it may not materialize data.
+and Independent Council. Data Liaison may resolve catalogs, embed a proposed
+`data_request_v1`, and verify delivery evidence; it may not write the staged
+workspace or materialize data. The Host validates and atomically publishes an
+embedded request under the current report before result admission.
 `WAITING_DATA` is nonterminal and resumes only after catalog/QA/receipt
 validation. The current implementation does not yet provide delivery import,
-plan revision/current-pointer publication, or automatic data resume; do not
-claim those capabilities exist.
+plan revision/current-pointer publication, in-place clarification resume, or
+automatic data resume; do not claim those capabilities exist. A pre-formal
+clarification pause must retain `factor_verdict=UNKNOWN` and instruct the user
+to start a new isolated task with the added mechanism evidence.
 
 Every role consumes `factorforge_agent_task_v1` and returns a
 `factorforge_agent_result_v1` envelope. Public artifacts contain reproducible
@@ -86,6 +106,68 @@ use `--research-org-runtime-mode formal-complete` with the private root, trust
 root and installation ID. The default is `off` for backward compatibility;
 do not silently upgrade a legacy run. Contract smoke output is never production
 research proof.
+
+For a production web task, the required order is fixed:
+
+1. run signed Knowledge, Data and routed Domain intake sessions;
+2. let the external Host Research Director synthesize their admitted public
+   records into a validator-PASS web research plan;
+3. require an agent-authored Director record that binds every intake result
+   path/hash, the plan, public ledger and private Agent receipt; then admit that
+   Host result with its real session identity;
+4. run isolated Quant Implementation, pre-execution Validation & Evidence, and
+   Independent Council sessions over the transitive, staged dependency context;
+5. require runtime `COMPLETE` plus signed formal independence;
+6. only then materialize and invoke Ultimate with
+   `--research-org-runtime-mode formal-complete`;
+7. run the normal post-execution Step6 empirical Council before any factor
+   terminal decision.
+
+The organization Council in step 4 audits research design and preregistration;
+it is not the empirical Step6 Council and cannot claim backtest evidence or a
+factor verdict. Web `COMPLETED` requires both the signed organization proof and
+the normal Ultimate terminal evidence. A completed Ultimate report alone must
+not bypass this gate.
+
+Quant, pre-execution Validation, and organization Council must use the v3
+pre-formal controlled-check contract. Their `claim_scope` is exactly
+design-only, realized performance evidence is false, empirical verdict is
+`NOT_ISSUED`, and promotion authority is false. The public record has a closed
+shape: its claims exactly equal the ordered checks, and each check contains only
+the frozen check ID, status, controlled finding/falsifier codes, and hash-bound
+task/dependency evidence paths. Executive summaries are canonical, blockers
+are check IDs, and free-text claims/findings/falsifiers or extra fields are
+forbidden. Preregistered thresholds belong in the frozen Host plan or bound
+design artifact, not in this pre-formal verdict record.
+
+This closure extends to adjacent channels. The outer Agent result envelope and
+its authority-bearing identity are exact-shape by independence class; Council attestation and formal verdict,
+every `artifact_refs[]` item, and each canonical Data Liaison request ref reject
+unknown fields. Rehashing a result does not authorize an extra note, verdict,
+or claim outside the controlled v3 record.
+
+The external Host Director receipt is not trusted merely because it is inside
+the private job directory. Before admission, validate its exact agent-run
+contract, job/factor/research/report identity, session-key hash, provider,
+model, timestamps, return code, stdout/stderr tails, and equality to the
+adapter-returned `AgentRunResult`.
+
+Before Host Director admission, freeze exact IS/OOS windows, purge and embargo,
+trial budget, multiple-testing policy, signal timestamp, entry/exit timing,
+transaction/capacity model IDs, terminal success/reject/block conditions,
+component ablations, falsifiers and promotion evidence. Vague experiment plans
+do not satisfy specialist validation or Council.
+
+For a recognized external formula dialect, implementation choices are not the
+same as verified source meaning. Formal intake must bind either specific source
+evidence (a locatable reference plus the actual excerpt, with its hash recomputed
+or checked by the Host) or an explicit user research
+override (reference, rationale and override reason), and attest that the choice
+was not selected from backtest performance. Legacy semantic-choice-only
+artifacts may be recognized for migration but cannot satisfy a new formal run
+until v2 authority is supplied. An embedded request excerpt verifies submitted
+content integrity, not external source authenticity; hash-only evidence is
+invalid.
 
 ## Non-Negotiable Entry Contract
 

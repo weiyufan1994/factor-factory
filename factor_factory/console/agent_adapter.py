@@ -502,6 +502,41 @@ def build_agent_prompt(
         workspace / "identity" / "research_organization_plan.json",
         workspace / "identity" / "web_research_plan.json",
     ]
+    organization_plan_path = workspace / "identity" / "research_organization_plan.json"
+    if organization_plan_path.is_file() and not organization_plan_path.is_symlink():
+        try:
+            organization_plan = json.loads(
+                organization_plan_path.read_text(encoding="utf-8")
+            )
+            dispatch_path = workspace / str(
+                organization_plan["workspace_policy"]["dispatch_manifest_path"]
+            )
+            dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
+            director_refs = [
+                item
+                for item in dispatch.get("tasks") or []
+                if isinstance(item, dict)
+                and item.get("role_id") == "research_director"
+            ]
+            if len(director_refs) == 1:
+                packet_files.extend(
+                    [dispatch_path, workspace / str(director_refs[0]["path"])]
+                )
+        except (KeyError, OSError, UnicodeError, json.JSONDecodeError, TypeError):
+            pass
+    organization_results = (
+        workspace
+        / "objects"
+        / "research_organization"
+        / job.report_id
+        / "results"
+    )
+    if organization_results.is_dir() and not organization_results.is_symlink():
+        packet_files.extend(
+            path
+            for path in sorted(organization_results.glob("*.json"))
+            if path.is_file() and not path.is_symlink()
+        )
     packet_list = "\n".join(f"- {path}" for path in dict.fromkeys(packet_files))
     return f"""# Factor Forge Web Research Task
 
@@ -561,13 +596,15 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 11. Network egress is restricted to the fixed model broker. Do not attempt to reach S3, Data API, catalog storage, raw data, arbitrary websites, or any other network destination, and do not attempt to bypass the proxy.
 12. The runtime has already completed operator-owned model, network, credential and Data API readiness checks. Never enumerate environment variables or credential material; never run `env`/`printenv`, read `/proc/*/environ`, query instance metadata, inspect AWS credential/config files, or inspect the OpenClaw auth database. Never print, hash, transform, persist or return any API key, access key, session token, password or broker token. If credentials appear unexpectedly, stop and record a BLOCK without reproducing them.
 13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the task-local runtime packet and stop after the research plan or named resume artifact is complete; the Host alone uses the Data API through its public interface and pinned catalog after agent authoring exits.
-14. Do not recursively dump documents or inspect internal schemas. After reading the seven packet files, write a concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`, then complete the plan or pause artifact. The read-only authoring contract, organization plan and preflight output are sufficient to correct plan syntax; do not inspect validator source.
+14. Do not recursively dump documents or inspect internal schemas. After reading the Host-named packet files, including every admitted specialist result listed above, complete the plan and make its authoring preflight PASS. Then write the final concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`; do not edit it again afterward. Finally write `identity/web_research_director_record.json` as the Agent-authored Director product. It must contain exactly: `contract_version=factorforge_host_research_director_record_v1`; exact task `identity` and `task_ref`; `reviewed_specialist_results` in the Director task's exact dependency order, each with role_id, canonical result path and the result envelope's `result_sha256`; exact plan and ledger path plus file SHA-256; `synthesis` with non-empty mechanism_decision, selected_measurement_object, rejected_alternatives, falsifiers, and a list-valued unresolved_risks; and `handoff_status=ready_for_specialist_verification`. Use `sha256sum` for the two file hashes. Do not invent or omit an intake result. The Host will reject any mismatch and bind this Agent-authored record to the private Agent-run receipt before canonical admission. The read-only authoring contract, organization plan, specialist public records and preflight output are sufficient; do not inspect validator source.
 
-The host derives authoring status from the validated plan, execution ledger and private
-agent-run receipt. Do not create a separate completion-status artifact or claim that formal
-research ran. On a fresh run, exit only after the plan is complete and its preflight returns
-PASS; on resume, exit after the exact permitted pause artifact is complete. Do not include
-secrets or absolute paths in the execution ledger.
+The host derives authoring status from the validated plan, execution ledger,
+Agent-authored Director record and private agent-run receipt. Do not create a
+separate completion-status artifact or claim that formal research ran. On a
+fresh run, exit only after the plan is complete, its preflight returns PASS and
+the Director record is complete; on resume, exit after the exact permitted
+pause artifact is complete. Do not include secrets or absolute paths in the
+execution ledger or Director record.
 """
 
 

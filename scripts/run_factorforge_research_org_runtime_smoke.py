@@ -27,6 +27,17 @@ from factor_factory.research_org.contracts import (
     PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
     with_content_hash,
 )
+from factor_factory.research_org.director import (
+    DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+    PREFORMAL_CLAIM_SCOPE,
+    PREFORMAL_CLEAR_DECISION,
+    PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+    PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+    PREFORMAL_EXECUTIVE_SUMMARIES,
+    PREFORMAL_FALSIFIER_CODES,
+    PREFORMAL_FINDING_CODES,
+    PREFORMAL_ROLE_CHECK_IDS,
+)
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
 from factor_factory.research_workspace import (
     build_workspace_manifest,
@@ -88,18 +99,47 @@ def public_record(task: dict[str, Any]) -> dict[str, Any]:
             "artifact_refs": [],
             "handoff": {"status": "ready_for_host_review"},
         }
-    return {
+    record = {
         "contract_version": task["output_contract"],
         "executive_summary": f"Contract-smoke result from {role_id}.",
         "claims": [
             {
-                "claim": "The role-specific contract was evaluated.",
+                "claim_type": "DESIGN_REQUIREMENT",
+                "statement": "The role-specific contract was evaluated.",
                 "falsifier": "A bound artifact contradicts the claim.",
+                "evidence_refs": [],
             }
         ],
         "artifact_refs": [],
         "handoff": {"status": "ready_for_host_review"},
     }
+    if role_id in PREFORMAL_ROLE_CHECK_IDS:
+        checks = [
+            {
+                "check_id": check_id,
+                "claim_type": "DESIGN_REQUIREMENT",
+                "status": "PASS",
+                "finding_code": PREFORMAL_FINDING_CODES["PASS"],
+                "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
+                "evidence_refs": [],
+            }
+            for check_id in PREFORMAL_ROLE_CHECK_IDS[role_id]
+        ]
+        record["executive_summary"] = PREFORMAL_EXECUTIVE_SUMMARIES[
+            PREFORMAL_CLEAR_DECISION
+        ]
+        record["claims"] = [dict(check) for check in checks]
+        record["design_review"] = {
+            "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+            "stage": "pre_formal_research_design",
+            "evidence_basis": "pre_registered_design_only",
+            "claim_scope": PREFORMAL_CLAIM_SCOPE,
+            "empirical_factor_verdict": "NOT_ISSUED",
+            "decision": PREFORMAL_CLEAR_DECISION,
+            "checks": checks,
+            "blockers": [],
+        }
+    return record
 
 
 class SignedContractSmokeRunner:
@@ -134,6 +174,15 @@ class SignedContractSmokeRunner:
             private_output["independence_attestation"] = {
                 "independence_satisfied": True,
                 "reviewed_role_ids": task["required_review_role_ids"],
+            }
+            private_output["formal_independent_verdict"] = {
+                "contract_version": PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+                "stage": "pre_formal_research_design",
+                "claim_scope": PREFORMAL_CLAIM_SCOPE,
+                "decision": PREFORMAL_CLEAR_DECISION,
+                "reviewed_role_ids": task["required_review_role_ids"],
+                "blocking_findings": [],
+                "empirical_factor_verdict": "NOT_ISSUED",
             }
         output_bytes = json.dumps(
             private_output,
@@ -245,7 +294,10 @@ def main() -> int:
         "research_id": "org_runtime_smoke",
         "report_id": REPORT_ID,
         "title": "Signed research organization contract smoke",
-        "hypothesis": "Price-volume pressure may identify a constrained-liquidity state.",
+        "hypothesis": (
+            "Abnormally high signed price-volume pressure reflects constrained "
+            "liquidity and predicts reversal in next-day stock returns."
+        ),
         "input_kind": "hypothesis",
     }
     for name, payload in (
@@ -289,6 +341,53 @@ def main() -> int:
         == "research_director"
     )
     director_task = json.loads(director_task_path.read_text(encoding="utf-8"))
+    reviewed_results = []
+    for role_id in director_task["depends_on_roles"]:
+        result_path = (
+            workspace
+            / f"objects/research_organization/{REPORT_ID}/results/{role_id}.json"
+        )
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        reviewed_results.append(
+            {
+                "role_id": role_id,
+                "path": result_path.relative_to(workspace).as_posix(),
+                "result_sha256": result["result_sha256"],
+            }
+        )
+    source_relative = "identity/web_research_director_record.json"
+    source_path = workspace / source_relative
+    source_path.write_text(
+        json.dumps(
+            {
+                "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+                "reviewed_specialist_results": reviewed_results,
+                "mechanism_decision": "Retain constrained-liquidity reversal.",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_ref = {
+        "path": source_relative,
+        "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    }
+    director_record = public_record(director_task)
+    director_record["artifact_refs"] = [source_ref]
+    director_record["director_synthesis"] = {
+        "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+        "stage": "pre_formal_research_design",
+        "mechanism_decision": "Retain constrained-liquidity reversal.",
+        "selected_measurement_object": "Signed pressure followed by reversal.",
+        "rejected_alternatives": ["Unconditional momentum."],
+        "unresolved_risks": ["Auction confounding."],
+        "falsifiers": ["Pressure predicts continuation after timing controls."],
+        "reviewed_specialist_results": reviewed_results,
+        "source_record_ref": source_ref,
+        "handoff_status": "ready_for_specialist_verification",
+    }
     director_result = with_content_hash(
         {
             "contract_version": AGENT_RESULT_CONTRACT_VERSION,
@@ -301,7 +400,7 @@ def main() -> int:
             "status": "PASS",
             "producer_mode": "real_agent",
             "session_id": "host_research_director_contract_smoke",
-            "public_research_record": public_record(director_task),
+            "public_research_record": director_record,
         },
         hash_field="result_sha256",
     )

@@ -114,6 +114,38 @@ REQUIRED_MODEL_BROKER_URL = "http://172.29.0.1:8781"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
 
 
+def _research_org_authoring_protected_relatives(
+    workspace: Path,
+    *,
+    report_id: str,
+) -> tuple[str, ...]:
+    candidates = [workspace / "identity" / "research_organization_plan.json"]
+    organization_root = (
+        workspace / "objects" / "research_organization" / report_id
+    )
+    if organization_root.exists() or organization_root.is_symlink():
+        if organization_root.is_symlink() or not organization_root.is_dir():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization root is unsafe"
+            )
+        candidates.extend(sorted(organization_root.rglob("*")))
+    protected: list[str] = []
+    for path in candidates:
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization input is unsafe"
+            )
+        if path.is_file():
+            protected.append(path.relative_to(workspace).as_posix())
+        elif not path.is_dir():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization input is unsafe"
+            )
+    return tuple(dict.fromkeys(protected))
+
+
 def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
     if (
         not prefix.strip()
@@ -393,6 +425,14 @@ class ContainerizedOpenClawResearchAgentAdapter:
             if resume_task is not None
             else None
         )
+        fresh_research_org_inputs = (
+            _research_org_authoring_protected_relatives(
+                workspace,
+                report_id=job.report_id,
+            )
+            if resume_workspace_view is None
+            else ()
+        )
         git_dir = self._prepare_git_view(
             runtime_root=runtime_root,
             worktree=worktree,
@@ -427,7 +467,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             protected_workspace_relatives=(
                 tuple(relative for relative, _digest in resume_workspace_view.read_only_file_sha256)
                 if resume_workspace_view is not None
-                else ()
+                else fresh_research_org_inputs
             ),
         )
         model = _pinned_container_model(job.request.model or self.config.openclaw_model)
@@ -491,7 +531,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                         for relative, _digest in resume_workspace_view.read_only_file_sha256
                     )
                     if resume_workspace_view is not None
-                    else ()
+                    else fresh_research_org_inputs
                 ),
             )
             command = [

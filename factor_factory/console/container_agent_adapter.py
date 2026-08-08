@@ -2767,6 +2767,12 @@ class ContainerizedOpenClawResearchAgentAdapter:
             ),
         ]
         mask_root = runtime_root / "repo_masks"
+        try:
+            workspace_relative = workspace.relative_to(worktree)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: workspace mount target escaped"
+            ) from exc
         for relative in masked_worktree_relatives:
             relative_path = Path(relative)
             if (
@@ -2791,7 +2797,24 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: unsafe worktree mask target"
                 )
             mask_source = mask_root / relative_path
-            mask_source.mkdir(parents=True, exist_ok=True, mode=0o500)
+            mask_source.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                nested_workspace_relative = workspace_relative.relative_to(
+                    relative_path
+                )
+            except ValueError:
+                nested_workspace_relative = None
+            if nested_workspace_relative not in {None, Path(".")}:
+                nested_workspace_target = mask_source / nested_workspace_relative
+                nested_workspace_target.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                    mode=0o500,
+                )
+                current = nested_workspace_target
+                while current != mask_source:
+                    current.chmod(0o500)
+                    current = current.parent
             mask_source.chmod(0o500)
             command.extend(
                 [

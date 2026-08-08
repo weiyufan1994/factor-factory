@@ -192,6 +192,15 @@ def test_container_research_org_session_uses_staged_read_only_context(
     assert not output_mount.endswith(",readonly")
     assert "readonly" in joined_run
     assert "AWS_ACCESS_KEY_ID" not in joined_run
+    nested_workspace_mountpoint = (
+        invocation.private_attempt_root
+        / "repo_masks"
+        / "factor_research"
+        / "FACTOR"
+        / "research"
+    )
+    assert nested_workspace_mountpoint.is_dir()
+    assert nested_workspace_mountpoint.stat().st_mode & 0o777 == 0o500
 
 
 def test_container_research_org_session_signs_initialization_failure(

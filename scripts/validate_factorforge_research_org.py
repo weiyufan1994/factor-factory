@@ -43,6 +43,12 @@ def main() -> int:
         result = validate_research_organization_bundle(
             workspace=Path(args.workspace_root).expanduser().resolve(strict=False),
             require_results=args.require_results,
+            review_trust_root=(
+                Path(args.runtime_trust_root).expanduser().resolve(strict=False)
+                if args.runtime_trust_root
+                else None
+            ),
+            review_installation_id=args.runtime_installation_id,
         )
         if (
             args.require_runtime

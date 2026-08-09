@@ -26,6 +26,14 @@ def main() -> int:
         help="Research request JSON. Defaults to identity/web_research_request.json.",
     )
     parser.add_argument("--preserve-existing", action="store_true")
+    parser.add_argument(
+        "--researcher-memory-root",
+        help="Host-private canonical researcher-memory store outside repo/workspace.",
+    )
+    parser.add_argument(
+        "--installation-id",
+        help="Stable Host installation identity required with --researcher-memory-root.",
+    )
     args = parser.parse_args()
 
     workspace = Path(args.workspace_root).expanduser().resolve(strict=False)
@@ -45,6 +53,12 @@ def main() -> int:
             workspace=workspace,
             request=request,
             preserve_existing=args.preserve_existing,
+            researcher_memory_root=(
+                Path(args.researcher_memory_root).expanduser()
+                if args.researcher_memory_root
+                else None
+            ),
+            researcher_memory_installation_id=args.installation_id,
         )
     except (
         OSError,

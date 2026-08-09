@@ -150,11 +150,12 @@ python3 scripts/run_factor_knowledge_graph_smoke.py
 python3 scripts/retrieve_factor_knowledge_context.py \
   --tag market_consensus:reversal \
   --text moneyflow \
-  --top-k 5 \
-  --output /tmp/factor_knowledge_context.json
+  --top-k 5
 ```
 
 输出 schema 为 `factor_knowledge_context_v1`，会展开节点的 `mechanism`、`evidence`、`relations`、`reuse_guidance` 和 `source_paths`。它适合写入 formal artifact 的 knowledge provenance；`query_factor_knowledge_graph.py` 只适合人工快速查看。
+retrieval CLI 只向 stdout 输出；正式 artifact 必须由具备 workspace path guard 和
+provenance 的 Host writer 接管，不能使用 retrieval CLI 直接写文件。
 
 ## Step1/Step2/Step6 接入
 

@@ -296,6 +296,7 @@ def build_research_organization_plan(
     workspace_manifest: Mapping[str, Any],
     request: Mapping[str, Any],
     input_snapshot_refs: Iterable[Mapping[str, str]],
+    researcher_memory_binding: Mapping[str, Any] | None = None,
     generated_at_utc: str | None = None,
 ) -> dict[str, Any]:
     identity = _identity(workspace_manifest, request)
@@ -359,6 +360,10 @@ def build_research_organization_plan(
             "cross_factor_reads_or_writes_allowed": False,
         },
     }
+    if researcher_memory_binding is not None:
+        payload["researcher_memory"] = copy.deepcopy(
+            dict(researcher_memory_binding)
+        )
     return with_content_hash(payload, hash_field="plan_sha256")
 
 
@@ -511,6 +516,30 @@ def _execution_stage_contract(role_id: str) -> dict[str, Any]:
     }
 
 
+def _task_role_memory(
+    plan: Mapping[str, Any],
+    *,
+    role_id: str,
+) -> dict[str, Any] | None:
+    from factor_factory.researcher_memory import CANDIDATE_CONTRACT_VERSION
+
+    binding = plan.get("researcher_memory")
+    if not isinstance(binding, Mapping):
+        return None
+    references = binding.get("role_snapshot_refs")
+    if not isinstance(references, Mapping):
+        return None
+    reference = references.get(role_id)
+    if not isinstance(reference, Mapping):
+        return None
+    return {
+        "required": True,
+        "snapshot_ref": copy.deepcopy(dict(reference)),
+        "learning_output_contract": CANDIDATE_CONTRACT_VERSION,
+        "canonical_write_allowed": False,
+    }
+
+
 def _build_tasks(
     *,
     plan: Mapping[str, Any],
@@ -571,6 +600,9 @@ def _build_tasks(
             "execution_stage_contract": _execution_stage_contract(role_id),
             "created_by": "factorforge_host_research_director",
         }
+        role_memory = _task_role_memory(plan, role_id=role_id)
+        if role_memory is not None:
+            payload["role_memory"] = role_memory
         if role_id == "independent_council":
             payload["required_review_role_ids"] = [
                 item for item in role_ids if item != "independent_council"
@@ -615,6 +647,8 @@ def build_research_organization_bundle(
     *,
     workspace: Path,
     request: Mapping[str, Any],
+    researcher_memory_root: Path | None = None,
+    researcher_memory_installation_id: str | None = None,
     generated_at_utc: str | None = None,
 ) -> dict[str, Any]:
     resolved, manifest = _load_valid_workspace(workspace)
@@ -659,10 +693,51 @@ def build_research_organization_bundle(
         {key: value for key, value in item.items() if key != "payload"}
         for item in input_snapshots
     ]
+    memory_snapshots: dict[str, dict[str, Any]] = {}
+    memory_binding: dict[str, Any] | None = None
+    if researcher_memory_root is not None:
+        from factor_factory.researcher_memory import (
+            build_role_memory_snapshots,
+            build_snapshot_binding,
+        )
+
+        if not researcher_memory_installation_id:
+            raise ResearchOrganizationError(
+                BLOCK_RESEARCH_ORG_PLAN_INVALID,
+                ["researcher_memory_installation_id_required"],
+            )
+        route = route_research_request(request)
+        registry = build_agent_registry_snapshot()
+        role_ids = list(_role_plan(route, registry)["required_roles"])
+        role_map = registry_role_map(registry)
+        memory_snapshots = build_role_memory_snapshots(
+            researcher_memory_root,
+            installation_id=researcher_memory_installation_id,
+            identity=identity,
+            roles=[role_map[role_id] for role_id in role_ids],
+            repo_root=Path(str(manifest["repo_root"])),
+            workspace=resolved,
+        )
+        memory_snapshot_refs = {
+            role_id: {
+                "path": (
+                    f"objects/research_organization/{report_id}"
+                    f"/memory_snapshots/{role_id}.json"
+                ),
+                "sha256": memory_snapshots[role_id]["snapshot_sha256"],
+                "hash_kind": "json_content",
+            }
+            for role_id in role_ids
+        }
+        memory_binding = build_snapshot_binding(
+            role_snapshot_refs=memory_snapshot_refs,
+            snapshots=memory_snapshots,
+        )
     plan = build_research_organization_plan(
         workspace_manifest=manifest,
         request=request,
         input_snapshot_refs=input_artifacts,
+        researcher_memory_binding=memory_binding,
         generated_at_utc=generated_at_utc,
     )
     tasks = _build_tasks(plan=plan, input_artifacts=input_artifacts)
@@ -670,6 +745,7 @@ def build_research_organization_bundle(
     return {
         "plan": plan,
         "input_snapshots": input_snapshots,
+        "memory_snapshots": memory_snapshots,
         "tasks": tasks,
         "dispatch": dispatch,
     }
@@ -813,6 +889,7 @@ def validate_research_organization_plan(
             seen_snapshot_paths.add(relative)
     role_map = registry_role_map(registry) if isinstance(registry, dict) else {}
     role_plan = plan.get("role_plan")
+    required_role_ids: list[str] = []
     if not isinstance(role_plan, dict):
         reasons.append(f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:role_plan")
     else:
@@ -821,12 +898,43 @@ def validate_research_organization_plan(
             reasons.append(f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:required_roles")
         elif any(role not in role_map or role_map[role].get("status") != "active" for role in required_roles):
             reasons.append(f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:inactive_required_role")
+        else:
+            required_role_ids = [str(role) for role in required_roles]
         if (
             isinstance(route, dict)
             and isinstance(registry, dict)
             and role_plan != _role_plan(route, registry)
         ):
             reasons.append(f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:role_plan_mismatch")
+    memory_binding = plan.get("researcher_memory")
+    if memory_binding is not None:
+        from factor_factory.researcher_memory import validate_snapshot_binding
+
+        reasons.extend(
+            validate_snapshot_binding(
+                memory_binding,
+                required_role_ids=required_role_ids,
+            )
+        )
+        memory_refs = (
+            memory_binding.get("role_snapshot_refs")
+            if isinstance(memory_binding, Mapping)
+            else None
+        )
+        if isinstance(memory_refs, Mapping):
+            input_paths = {
+                str(reference.get("path") or "")
+                for reference in input_snapshot_refs or []
+                if isinstance(reference, Mapping)
+            }
+            if any(
+                str(reference.get("path") or "") in input_paths
+                for reference in memory_refs.values()
+                if isinstance(reference, Mapping)
+            ):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:researcher_memory_shared_input"
+                )
     execution = plan.get("execution_policy")
     if execution != {
         "one_user_task_per_factor": True,
@@ -994,6 +1102,16 @@ def _validate_task(
         )
     if task.get("created_by") != "factorforge_host_research_director":
         reasons.append(f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:created_by")
+    expected_role_memory = _task_role_memory(plan, role_id=str(role_id))
+    if expected_role_memory is None:
+        if "role_memory" in task:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:unexpected_role_memory"
+            )
+    elif task.get("role_memory") != expected_role_memory:
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:role_memory"
+        )
     if task.get("input_artifacts") != plan.get("input_snapshot_refs"):
         reasons.append(
             f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:{expected_path}:input_artifacts"
@@ -1065,6 +1183,8 @@ def validate_research_organization_bundle(
     *,
     workspace: Path,
     require_results: bool = False,
+    review_trust_root: Path | None = None,
+    review_installation_id: str | None = None,
 ) -> dict[str, Any]:
     resolved, manifest = _load_valid_workspace(workspace)
     plan_path = resolved / PLAN_RELATIVE_PATH
@@ -1082,6 +1202,25 @@ def validate_research_organization_bundle(
         workspace=resolved,
         expected_identity=expected_identity,
     )
+    review_trust_store: Any | None = None
+    if (review_trust_root is None) is not (review_installation_id is None):
+        reasons.append(
+            f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_review_trust_binding"
+        )
+    elif review_trust_root is not None and review_installation_id is not None:
+        try:
+            from factor_factory.research_org.runtime_trust import (
+                load_runtime_trust_store,
+            )
+
+            review_trust_store = load_runtime_trust_store(
+                Path(review_trust_root),
+                installation_id=review_installation_id,
+            )
+        except (OSError, ResearchOrganizationError) as exc:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_review_trust:{exc}"
+            )
     input_root_relative = (
         f"objects/research_organization/{expected_identity['report_id']}/inputs"
     )
@@ -1175,6 +1314,69 @@ def validate_research_organization_bundle(
             )
     except (OSError, ResearchOrganizationError) as exc:
         reasons.append(str(exc))
+    memory_binding = plan.get("researcher_memory")
+    memory_snapshot_root = (
+        f"objects/research_organization/{expected_identity['report_id']}"
+        "/memory_snapshots"
+    )
+    if isinstance(memory_binding, Mapping):
+        from factor_factory.researcher_memory import validate_role_memory_snapshot
+
+        memory_refs = memory_binding.get("role_snapshot_refs")
+        if not isinstance(memory_refs, Mapping):
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:researcher_memory_refs"
+            )
+            memory_refs = {}
+        expected_memory_paths = {
+            str(reference.get("path") or "")
+            for reference in memory_refs.values()
+            if isinstance(reference, Mapping)
+        }
+        memory_entries, memory_entry_reasons = _ordinary_directory_entries(
+            workspace=resolved,
+            relative_root=memory_snapshot_root,
+            label="organization.memory_snapshot_root",
+            required=True,
+        )
+        reasons.extend(memory_entry_reasons)
+        if set(memory_entries) != expected_memory_paths:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:researcher_memory_directory"
+            )
+        for role_id, reference in memory_refs.items():
+            if not isinstance(reference, Mapping):
+                continue
+            relative = str(reference.get("path") or "")
+            try:
+                snapshot = read_workspace_json(resolved, relative)
+            except ResearchOrganizationError as exc:
+                reasons.append(str(exc))
+                continue
+            reasons.extend(
+                validate_role_memory_snapshot(
+                    snapshot,
+                    expected_identity=expected_identity,
+                    expected_role_id=str(role_id),
+                )
+            )
+            if (
+                snapshot.get("snapshot_sha256") != reference.get("sha256")
+                or snapshot.get("store_id") != memory_binding.get("store_id")
+                or snapshot.get("source_generation")
+                != memory_binding.get("source_generation")
+                or snapshot.get("source_manifest_sha256")
+                != memory_binding.get("source_manifest_sha256")
+            ):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:researcher_memory_binding:{role_id}"
+                )
+    else:
+        memory_root_path = resolved / memory_snapshot_root
+        if memory_root_path.exists() or memory_root_path.is_symlink():
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_PLAN_INVALID}:unexpected_researcher_memory_directory"
+            )
     request_snapshot = snapshots.get(request_snapshot_relative, {})
     captured_request = request_snapshot.get("captured_payload")
     if (
@@ -1336,6 +1538,113 @@ def validate_research_organization_bundle(
                 tasks_by_role=tasks_by_role,
             )
         )
+    candidate_root_relative = (
+        f"objects/research_organization/{expected_identity['report_id']}"
+        "/memory_candidates"
+    )
+    candidate_root = resolved / candidate_root_relative
+    candidate_payloads_by_path: dict[str, Mapping[str, Any]] = {}
+    if plan.get("researcher_memory") is None:
+        if candidate_root.exists() or candidate_root.is_symlink():
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:unexpected_memory_candidates"
+            )
+    else:
+        from factor_factory.researcher_memory import validate_memory_candidate
+
+        candidate_entries, candidate_entry_reasons = _ordinary_directory_entries(
+            workspace=resolved,
+            relative_root=candidate_root_relative,
+            label="organization.memory_candidate_root",
+            required=False,
+        )
+        reasons.extend(candidate_entry_reasons)
+        results_by_role = {
+            str(task.get("role_id")): result
+            for task, result in task_results
+            if result is not None
+        }
+        for relative in candidate_entries:
+            try:
+                candidate = read_workspace_json(resolved, relative)
+            except ResearchOrganizationError as exc:
+                reasons.append(str(exc))
+                continue
+            role_id = str(candidate.get("source_role_id") or "")
+            task = tasks_by_role.get(role_id)
+            result = results_by_role.get(role_id)
+            if task is None or result is None:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_candidate_source:{relative}"
+                )
+                continue
+            expected_name = f"{role_id}__{candidate.get('candidate_id')}.json"
+            if Path(relative).name != expected_name:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_candidate_name:{relative}"
+                )
+            reasons.extend(
+                validate_memory_candidate(
+                    candidate,
+                    task=task,
+                    result=result,
+                    trust_store=review_trust_store,
+                )
+            )
+            candidate_payloads_by_path[relative] = candidate
+    review_root_relative = (
+        f"objects/research_organization/{expected_identity['report_id']}"
+        "/memory_reviews"
+    )
+    review_root = resolved / review_root_relative
+    if plan.get("researcher_memory") is None:
+        if review_root.exists() or review_root.is_symlink():
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:unexpected_memory_reviews"
+            )
+    else:
+        from factor_factory.researcher_memory import validate_candidate_review
+
+        review_entries, review_entry_reasons = _ordinary_directory_entries(
+            workspace=resolved,
+            relative_root=review_root_relative,
+            label="organization.memory_review_root",
+            required=False,
+        )
+        reasons.extend(review_entry_reasons)
+        if review_entries and review_trust_store is None:
+            reasons.append(
+                f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_review_trust_required"
+            )
+        for relative in review_entries:
+            try:
+                review = read_workspace_json(resolved, relative)
+            except ResearchOrganizationError as exc:
+                reasons.append(str(exc))
+                continue
+            candidate_ref = review.get("candidate_ref")
+            candidate_path = (
+                str(candidate_ref.get("path") or "")
+                if isinstance(candidate_ref, Mapping)
+                else ""
+            )
+            candidate = candidate_payloads_by_path.get(candidate_path)
+            if candidate is None:
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_review_candidate:{relative}"
+                )
+                continue
+            if Path(relative).name != f"{review.get('review_id')}.json":
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:memory_review_name:{relative}"
+                )
+            reasons.extend(
+                validate_candidate_review(
+                    review,
+                    candidate=candidate,
+                    trust_store=review_trust_store,
+                )
+            )
     if reasons:
         raise ResearchOrganizationError(BLOCK_RESEARCH_ORG_PLAN_INVALID, reasons)
     result_statuses = {
@@ -3171,6 +3480,8 @@ def write_research_organization_bundle(
     workspace: Path,
     request: Mapping[str, Any],
     preserve_existing: bool = False,
+    researcher_memory_root: Path | None = None,
+    researcher_memory_installation_id: str | None = None,
 ) -> dict[str, Any]:
     resolved, manifest = _load_valid_workspace(workspace)
     plan_path = resolved / PLAN_RELATIVE_PATH
@@ -3189,7 +3500,12 @@ def write_research_organization_bundle(
             BLOCK_RESEARCH_ORG_PLAN_INVALID,
             ["plan_exists_without_preserve"],
         )
-    bundle = build_research_organization_bundle(workspace=resolved, request=request)
+    bundle = build_research_organization_bundle(
+        workspace=resolved,
+        request=request,
+        researcher_memory_root=researcher_memory_root,
+        researcher_memory_installation_id=researcher_memory_installation_id,
+    )
     plan = bundle["plan"]
     tasks = bundle["tasks"]
     report_id = plan["identity"]["report_id"]
@@ -3199,6 +3515,14 @@ def write_research_organization_bundle(
             snapshot["path"],
             snapshot["payload"],
         )
+    memory_binding = plan.get("researcher_memory")
+    if isinstance(memory_binding, Mapping):
+        for role_id, reference in memory_binding["role_snapshot_refs"].items():
+            write_workspace_json(
+                resolved,
+                str(reference["path"]),
+                bundle["memory_snapshots"][role_id],
+            )
     for task in tasks:
         relative = f"objects/research_organization/{report_id}/tasks/{task['task_id']}.json"
         write_workspace_json(resolved, relative, task)

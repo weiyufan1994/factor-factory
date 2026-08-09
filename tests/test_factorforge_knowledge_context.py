@@ -235,6 +235,98 @@ def test_retrieval_blocks_when_any_indexed_node_path_is_stale(tmp_path, monkeypa
         )
 
 
+def test_missing_indexes_block_without_creating_or_building_files(tmp_path) -> None:
+    import factor_factory.knowledge_context as module
+
+    graph_root = tmp_path / "missing_graph"
+    node_index = graph_root / "factor_knowledge_nodes.jsonl"
+    edge_index = graph_root / "factor_knowledge_edges.jsonl"
+
+    with pytest.raises(
+        module.KnowledgeRetrievalError,
+        match=module.BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE,
+    ):
+        module.retrieve_factor_knowledge_context(
+            text="liquidity pressure",
+            node_index=node_index,
+            edge_index=edge_index,
+            taxonomy=graph_root / "taxonomy.json",
+        )
+
+    assert not graph_root.exists()
+
+
+@pytest.mark.parametrize("compatibility_flag", [False, True])
+def test_retrieval_cli_is_read_only_when_indexes_are_missing(
+    tmp_path: Path,
+    compatibility_flag: bool,
+) -> None:
+    graph_root = tmp_path / "missing_cli_graph"
+    command = [
+        "python3",
+        "scripts/retrieve_factor_knowledge_context.py",
+        "--node-index",
+        str(graph_root / "nodes.jsonl"),
+        "--edge-index",
+        str(graph_root / "edges.jsonl"),
+        "--taxonomy",
+        str(graph_root / "taxonomy.json"),
+        "--text",
+        "liquidity pressure",
+    ]
+    if compatibility_flag:
+        command.append("--no-build")
+    completed = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_UNAVAILABLE" in completed.stderr
+    assert not graph_root.exists()
+
+
+def test_retrieval_cli_has_no_output_file_write_surface(tmp_path: Path) -> None:
+    protected_index = tmp_path / "protected-index.jsonl"
+    original = b'{"sentinel":true}\n'
+    protected_index.write_bytes(original)
+
+    completed = subprocess.run(
+        [
+            "python3",
+            "scripts/retrieve_factor_knowledge_context.py",
+            "--output",
+            str(protected_index),
+            "--text",
+            "liquidity pressure",
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "unrecognized arguments: --output" in completed.stderr
+    assert protected_index.read_bytes() == original
+
+
+def test_researcher_skill_forbids_direct_repo_graph_writeback() -> None:
+    skill = (PROJECT_ROOT / "skills/factor-forge-researcher/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    retrieval_cli = (
+        PROJECT_ROOT / "scripts/retrieve_factor_knowledge_context.py"
+    ).read_text(encoding="utf-8")
+
+    assert "write a machine-readable knowledge node under" not in skill
+    assert "build_factor_knowledge_graph.py" not in retrieval_cli
+    assert "subprocess.run" not in retrieval_cli
+
+
 def test_formula_semantics_retrieve_prior_distribution_regime_case() -> None:
     import factor_factory.knowledge_context as module
 

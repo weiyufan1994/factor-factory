@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
+
+import pytest
 
 from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.container_agent_adapter import (
@@ -106,6 +109,56 @@ def _invocation(tmp_path: Path, config: ConsoleConfig) -> ResearchOrgSessionInvo
         required_skills=(),
         timeout_seconds=60,
     )
+
+
+@pytest.mark.parametrize("runtime_fails", [False, True])
+def test_memory_reviewer_always_deactivates_owned_secret_registry(
+    tmp_path: Path,
+    monkeypatch,
+    runtime_fails: bool,
+) -> None:
+    import factor_factory.researcher_memory_review as review_module
+
+    config = _config(tmp_path)
+    invocation = replace(
+        _invocation(tmp_path, config),
+        role_id="researcher_memory_reviewer",
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    cleanup_calls: list[str] = []
+
+    if runtime_fails:
+        monkeypatch.setattr(
+            adapter,
+            "run_research_org_session",
+            lambda _invocation: (_ for _ in ()).throw(RuntimeError("failed")),
+        )
+    else:
+        outcome = object()
+        monkeypatch.setattr(
+            adapter,
+            "run_research_org_session",
+            lambda _invocation: outcome,
+        )
+        monkeypatch.setattr(
+            review_module,
+            "sign_completed_reviewer_session",
+            lambda **_kwargs: {"status": "signed"},
+        )
+    monkeypatch.setattr(
+        adapter,
+        "deactivate_denied_secrets",
+        lambda job_id: cleanup_calls.append(job_id),
+    )
+
+    if runtime_fails:
+        with pytest.raises(RuntimeError, match="failed"):
+            adapter.run_researcher_memory_review_session(invocation)
+    else:
+        assert adapter.run_researcher_memory_review_session(invocation) == {
+            "status": "signed"
+        }
+    assert cleanup_calls == [invocation.identity["job_id"]]
 
 
 def test_container_research_org_session_uses_staged_read_only_context(

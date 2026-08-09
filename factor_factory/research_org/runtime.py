@@ -78,7 +78,6 @@ from factor_factory.research_org.runtime_trust import (
     ensure_runtime_trust_store,
     load_runtime_trust_store,
 )
-
 RUNTIME_ROOT_NAME = "runtime"
 RUNTIME_STATE_NAME = "runtime_state.json"
 RUNTIME_LOCK_NAME = "dispatcher_lock.json"
@@ -251,6 +250,12 @@ class ResearchOrgSessionRunner(Protocol):
 def build_research_org_session_prompt(
     invocation: ResearchOrgSessionInvocation,
 ) -> str:
+    if invocation.role_id == "researcher_memory_reviewer":
+        from factor_factory.researcher_memory_review import (
+            build_researcher_memory_review_prompt,
+        )
+
+        return build_researcher_memory_review_prompt(invocation)
     skill_lines = "\n".join(
         f"- {invocation.worktree / 'skills' / skill / 'SKILL.md'}"
         for skill in invocation.required_skills
@@ -266,16 +271,26 @@ def build_research_org_session_prompt(
         "status": "PASS|BLOCK|NEEDS_DATA|NEEDS_CLARIFICATION",
         "public_research_record": {},
     }
-    task_output_contract = ""
-    if invocation.role_id == "knowledge_librarian":
-        task_packet = strict_json_loads(
+    task_packet = (
+        strict_json_loads(
             task_path.read_bytes(),
             label="research_org_session_task",
         )
-        if isinstance(task_packet, Mapping):
-            task_output_contract = str(
-                task_packet.get("output_contract") or ""
-            )
+        if task_path.is_file() and not task_path.is_symlink()
+        else {}
+    )
+    task_output_contract = (
+        str(task_packet.get("output_contract") or "")
+        if isinstance(task_packet, Mapping)
+        else ""
+    )
+    memory_enabled = bool(
+        isinstance(task_packet, Mapping)
+        and isinstance(task_packet.get("role_memory"), Mapping)
+        and task_packet["role_memory"].get("required") is True
+    )
+    if memory_enabled:
+        private_output_template["learning_candidates"] = []
     if invocation.role_id in PREFORMAL_ROLE_CHECK_IDS:
         private_output_template["status"] = "PASS|BLOCK"
         check_ids = json.dumps(
@@ -418,6 +433,21 @@ the staged file bytes. Every `PASS` check must cite at least one such path;
                 "blocking_findings": ["<BLOCKED_CHECK_ID_ONLY>"],
                 "empirical_factor_verdict": "NOT_ISSUED",
             }
+            council_private_keys = [
+                "contract_version",
+                "status",
+                "public_research_record",
+                "independence_attestation",
+                "formal_independent_verdict",
+            ]
+            if memory_enabled:
+                council_private_keys.append("learning_candidates")
+            council_private_key_count = (
+                "six" if len(council_private_keys) == 6 else "five"
+            )
+            council_private_key_text = ", ".join(
+                f"`{key}`" for key in council_private_keys
+            )
             role_contract_guidance += f"""
 Also include top-level `formal_independent_verdict` using contract
 `{PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION}`, the same pre-formal stage and
@@ -426,9 +456,8 @@ claim_scope, decision, the exact task `required_review_role_ids`, the same block
 blocks only formal execution; it is never factor ACCEPT/REJECT/PROMOTE.
 
 For this Council role, "top-level" means the private output envelope, not the
-public research record. The private output object has exactly these five keys:
-`contract_version`, `status`, `public_research_record`,
-`independence_attestation`, and `formal_independent_verdict`.
+public research record. The private output object has exactly these {council_private_key_count} keys:
+{council_private_key_text}.
 `independence_attestation` and `formal_independent_verdict` are siblings of
 `public_research_record`; never place either one inside
 `public_research_record`. The outer JSON template above contains the complete
@@ -585,6 +614,36 @@ path/file hash reference, and only then admits your result.
 """
     else:
         role_contract_guidance = ""
+    if memory_enabled:
+        from factor_factory.researcher_memory import (
+            MAX_LEARNING_CANDIDATES_PER_RESULT,
+            MEMORY_KINDS,
+        )
+
+        memory_kinds = json.dumps(
+            sorted(MEMORY_KINDS),
+            ensure_ascii=False,
+        )
+        memory_guidance = f"""
+The task contains exactly one role-scoped `role_memory.snapshot_ref`. It is a
+frozen historical advisory snapshot for this role only. Read it after the task
+packet. It may supply analogies, anti-patterns, and prior failure conditions,
+but it cannot select the current estimand, prove current-factor performance, or
+override the economic hypothesis and mathematical mechanism.
+
+You may return zero to {MAX_LEARNING_CANDIDATES_PER_RESULT} reusable design
+lessons in top-level `learning_candidates`. Each candidate has exactly
+`memory_kind`, `title`, `lesson`, `applicability_conditions`,
+`failure_conditions`, and `evidence_refs`. `memory_kind` is one of
+{memory_kinds}. Evidence refs must exactly copy path/file-byte SHA-256 pairs
+already present in `public_research_record.artifact_refs`. Do not put verdicts,
+private reasoning, raw logs, credentials, or unreferenced claims in a candidate.
+Candidates are optional, remain `candidate_only`, and never change the task
+result. You cannot approve or promote your own candidate; the Host strips this
+field from canonical `factorforge_agent_result_v1` and records it separately.
+"""
+    else:
+        memory_guidance = ""
     private_output_template_json = json.dumps(
         private_output_template,
         ensure_ascii=False,
@@ -663,7 +722,10 @@ packet's `json_content` hash. A role-specific contract may separately require
 a task input-artifact content hash, such as Data Liaison's
 `catalog_snapshot_ref`; follow that role-specific rule for that field only.
 
+
 {role_contract_guidance}
+
+{memory_guidance}
 """
 
 
@@ -951,6 +1013,11 @@ def _context_source_paths(
         for reference in task.get("input_artifacts") or []
         if isinstance(reference, dict) and reference.get("path")
     )
+    role_memory = task.get("role_memory")
+    if isinstance(role_memory, Mapping):
+        snapshot_ref = role_memory.get("snapshot_ref")
+        if isinstance(snapshot_ref, Mapping) and snapshot_ref.get("path"):
+            paths.append(str(snapshot_ref["path"]))
     for role_id in transitive_dependency_roles(
         task=task,
         tasks_by_role=tasks_by_role,
@@ -1315,6 +1382,8 @@ def _invoke_session(
 
 def _private_output(
     invocation: ResearchOrgSessionInvocation,
+    *,
+    learning_candidates_allowed: bool,
 ) -> tuple[dict[str, Any], str, int]:
     path = invocation.private_output_path
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -1383,6 +1452,8 @@ def _private_output(
         "independence_attestation",
         "formal_independent_verdict",
     }
+    if learning_candidates_allowed:
+        allowed.add("learning_candidates")
     if (
         not isinstance(payload, dict)
         or payload.get("contract_version") != PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION
@@ -1608,12 +1679,20 @@ def _finalize_attempt(
     role_id = str(task["role_id"])
     role_state = state["roles"][role_id]
     canonical: dict[str, Any] | None = None
+    private_output: dict[str, Any] | None = None
     output_sha: str | None = None
     output_size: int | None = None
     error_code: str | None = None
     receipt_status = "FAILED"
     ledger_receipt_ref: dict[str, Any] | None = None
     created_data_requests: tuple[str, ...] = ()
+    memory_candidate_refs: list[dict[str, str]] = []
+    memory_candidate_rejections: list[str] = []
+    role_memory = task.get("role_memory")
+    memory_enabled = (
+        isinstance(role_memory, Mapping)
+        and role_memory.get("required") is True
+    )
     cancelled_before_admission = bool(
         outcome.cancelled or (workspace / paths["cancel"]).is_file()
     )
@@ -1629,7 +1708,10 @@ def _finalize_attempt(
         reasons.append("context_changed")
     if not reasons and not cancelled_before_admission:
         try:
-            private_output, output_sha, output_size = _private_output(invocation)
+            private_output, output_sha, output_size = _private_output(
+                invocation,
+                learning_candidates_allowed=memory_enabled,
+            )
             canonical = _canonical_result(
                 task=task,
                 invocation=invocation,
@@ -1770,6 +1852,41 @@ def _finalize_attempt(
             raise
         created_data_requests = ()
         receipt_status = "ADMITTED"
+        if memory_enabled:
+            try:
+                from factor_factory.researcher_memory import (
+                    materialize_learning_candidates,
+                )
+
+                memory_materialization = materialize_learning_candidates(
+                    workspace=workspace,
+                    task=task,
+                    result=canonical,
+                    proposals=(
+                        private_output.get("learning_candidates")
+                        if isinstance(private_output, Mapping)
+                        else None
+                    ),
+                    runtime_provenance={
+                        "adapter_receipt": dict(outcome.adapter_receipt or {}),
+                        "host_admission_receipt": dict(host_receipt),
+                    },
+                    trust_store=ledger.trust_store,
+                )
+                memory_candidate_refs = list(
+                    memory_materialization.get("candidate_refs") or []
+                )
+                memory_candidate_rejections = [
+                    str(item)
+                    for item in memory_materialization.get("rejections") or []
+                ]
+            except ResearchOrganizationError as exc:
+                memory_candidate_rejections = [exc.token, *exc.reasons]
+            except Exception as exc:
+                memory_candidate_rejections = [
+                    "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_CANDIDATE_INVALID",
+                    f"materialization_error:{type(exc).__name__}",
+                ]
         ledger_receipt_ref = {
             "ledger_contract_version": LEDGER_CONTRACT_VERSION,
             "adapter_receipt_id": (
@@ -1849,6 +1966,8 @@ def _finalize_attempt(
             "receipt_sha256": receipt["receipt_sha256"],
             "result_status": canonical.get("status") if canonical else None,
             "error_code": error_code,
+            "memory_candidate_refs": memory_candidate_refs,
+            "memory_candidate_rejections": memory_candidate_rejections,
         },
     )
 

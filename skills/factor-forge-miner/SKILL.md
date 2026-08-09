@@ -29,6 +29,32 @@ repo-root generated data.
 
 Inspect repository/worktree state before starting. Never use `git add .`.
 
+### Shared Research Machine
+
+Local execution is the default. If a remote research machine is explicitly
+needed, treat it as shared infrastructure. Before dispatch, require explicit
+authorization from the user or machine owner and record a bounded campaign
+lease: host, private roots, CPU/GPU/RAM/disk/network/port budget, wall-clock
+expiry, process supervisor, and cleanup owner. Missing or expired leases BLOCK.
+
+- use a campaign-private clone when fetch, ref/config changes, submodule updates,
+  repack, GC, prune or repository maintenance is needed. A clean worktree from a
+  shared repository is allowed only when the shared Git metadata is read-only;
+- allocate campaign-private workspace, output, log, runtime, cache and port
+  paths. Never reuse another task's mutable path or exceed the recorded lease;
+- launch processes under a campaign-owned supervisor, cgroup or container that
+  binds campaign identity and start time. Stop work through that boundary. If a
+  direct PID signal is unavoidable, first revalidate PID, start time, UID,
+  command and working directory; any mismatch forbids the signal and BLOCKS;
+- never shut down, reboot, stop, resize, terminate or otherwise take ownership
+  of the research machine lifecycle;
+- seed an existing cache only by copying files into the campaign-private cache
+  with distinct inodes. Reject symlinks, require every resolved destination to
+  remain under the private cache root, and deny writes by other campaigns.
+  Hardlinks and writes or deletes against the source cache are forbidden;
+- if authorization, lease, path isolation, process identity or resource bounds
+  cannot be proven, BLOCK instead of running remotely.
+
 ## Search Control
 
 Before screening, author

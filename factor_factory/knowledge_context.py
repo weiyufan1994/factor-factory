@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -136,18 +134,12 @@ def score_text(query: str, row: dict[str, Any]) -> tuple[float, list[str]]:
 
 
 def ensure_graph_index(node_index_path: Path, edge_index_path: Path) -> None:
-    if node_index_path.exists() and edge_index_path.exists():
-        return
-    builder = REPO_ROOT / "scripts" / "build_factor_knowledge_graph.py"
-    if not builder.exists():
-        return
-    subprocess.run(
-        [sys.executable, str(builder)],
-        cwd=REPO_ROOT,
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    for role, path in (("node", node_index_path), ("edge", edge_index_path)):
+        if not path.is_file() or path.is_symlink():
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: "
+                f"{role} index missing or unsafe: {path}"
+            )
 
 
 def compact_node(full_node: dict[str, Any], indexed_row: dict[str, Any], overlap_terms: list[str]) -> dict[str, Any]:
@@ -185,11 +177,6 @@ def retrieve_factor_knowledge_context(
     node_index_path = Path(node_index).expanduser()
     edge_index_path = Path(edge_index).expanduser()
     ensure_graph_index(node_index_path, edge_index_path)
-    for role, path in (("node", node_index_path), ("edge", edge_index_path)):
-        if not path.is_file() or path.is_symlink():
-            raise KnowledgeRetrievalError(
-                f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: {role} index missing or unsafe: {path}"
-            )
     required_tags, alias_resolution = resolve_tags(tags or [], taxonomy)
     required_status = set(status or [])
     required_node_types = set(node_type or [])

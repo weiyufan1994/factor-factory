@@ -88,6 +88,10 @@ from factor_factory.research_org.contracts import with_content_hash
 from factor_factory.research_org.director import (
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
 )
+from factor_factory.researcher_memory import (
+    BLOCK_MEMORY_STORE_INVALID,
+    record_research_outcome,
+)
 from factor_factory.mechanism_math.main_agent_memo import (
     CONTRACT_VERSION,
     MAX_MECHANISM_MEMO_REVISIONS,
@@ -2116,6 +2120,68 @@ class ResearchRunService:
                 report_id=job.report_id,
             )
             self._validate_summary_identity(current_job, summary)
+            require_formal_organization = bool(
+                organization_plan is not None and not self.config.auth_disabled
+            )
+            execution_status = _web_execution_status(
+                summary,
+                agent_result.returncode,
+                organization_runtime=organization_runtime,
+                require_formal_organization=require_formal_organization,
+            )
+            normalized_protocol_status = _normalize_protocol(summary.protocol_status)
+            normalized_factor_verdict = (
+                "BLOCK"
+                if execution_status == "BLOCKED"
+                and require_formal_organization
+                else summary.factor_verdict
+            )
+            normalized_council_status = _normalize_council(summary.council_status)
+            normalized_formal_proof_eligible = bool(
+                summary.formal_proof_eligible
+                and (
+                    not require_formal_organization
+                    or (
+                        organization_runtime is not None
+                        and organization_runtime.get(
+                            "formal_independence_verified"
+                        )
+                        is True
+                    )
+                )
+            )
+            runtime_ledger = (
+                organization_runtime.get("transactional_ledger")
+                if isinstance(organization_runtime, dict)
+                else None
+            )
+            organization_runtime_verified = bool(
+                isinstance(organization_runtime, dict)
+                and organization_runtime.get("lifecycle") == "COMPLETE"
+                and organization_runtime.get("formal_independence_verified")
+                is True
+                and organization_runtime.get("runtime_assurance")
+                == "signed_specialist_runtime_complete_host_director_external"
+                and isinstance(runtime_ledger, dict)
+                and runtime_ledger.get("ledger_state") == "COMPLETE"
+                and runtime_ledger.get("formal_independence_verified") is True
+                and runtime_ledger.get("assurance")
+                == "signed_specialist_runtime_complete_host_director_external"
+            )
+            researcher_memory_attested_outcome = {
+                "execution_status": execution_status,
+                "protocol_status": normalized_protocol_status,
+                "factor_verdict": normalized_factor_verdict,
+                "council_status": normalized_council_status,
+                "formal_proof_eligible": normalized_formal_proof_eligible,
+                "organization_runtime_verified": organization_runtime_verified,
+                "roles": list(
+                    (organization_plan.get("role_plan") or {}).get(
+                        "required_roles"
+                    )
+                    or []
+                ),
+            }
             host_attestation_id = self._write_host_attestation(
                 job=current_job,
                 workspace=workspace,
@@ -2126,6 +2192,13 @@ class ResearchRunService:
                 formal_execution=formal_execution,
                 resume_task=resume_task,
                 validated_resume_artifacts=validated_resume_artifacts,
+                researcher_memory_outcome=researcher_memory_attested_outcome,
+            )
+            researcher_memory_outcome: dict[str, Any] | None = None
+            memory_binding = (
+                organization_plan.get("researcher_memory")
+                if isinstance(organization_plan, dict)
+                else None
             )
             publication_id, public_artifacts = publish_official_artifacts(
                 attested_workspace,
@@ -2209,15 +2282,6 @@ class ResearchRunService:
                 "model": agent_result.model,
                 "provenance": "host_pinned_agent_runtime",
             }
-            require_formal_organization = bool(
-                organization_plan is not None and not self.config.auth_disabled
-            )
-            execution_status = _web_execution_status(
-                summary,
-                agent_result.returncode,
-                organization_runtime=organization_runtime,
-                require_formal_organization=require_formal_organization,
-            )
             finished = utc_now() if execution_status in {"COMPLETED", "BLOCKED", "FAILED", "CANCELLED"} else ""
             error_code = ""
             error_message = ""
@@ -2243,30 +2307,97 @@ class ResearchRunService:
                     "Council 已完成证据审议，但下一步需要显式数学推导或主代理综合，"
                     "普通续跑不能代替该决定。"
                 )
+            if (
+                isinstance(memory_binding, dict)
+                and execution_status == "COMPLETED"
+                and normalized_factor_verdict in {"ACCEPT", "REJECT"}
+                and organization_runtime_verified
+            ):
+                attestation_path = self.config.state_root / host_attestation_id
+                try:
+                    researcher_memory_outcome = record_research_outcome(
+                        self.config.state_root / "researcher-memory",
+                        installation_id=self.config.installation_id,
+                        store_id=str(memory_binding.get("store_id") or ""),
+                        identity={
+                            "job_id": current_job.job_id,
+                            "factor_id": current_job.factor_id,
+                            "research_id": current_job.research_id,
+                            "report_id": current_job.report_id,
+                        },
+                        role_ids=list(
+                            (organization_plan.get("role_plan") or {}).get(
+                                "required_roles"
+                            )
+                            or []
+                        ),
+                        execution_status=execution_status,
+                        protocol_status=normalized_protocol_status,
+                        factor_verdict=normalized_factor_verdict,
+                        council_status=normalized_council_status,
+                        formal_proof_eligible=normalized_formal_proof_eligible,
+                        organization_runtime_verified=True,
+                        host_attestation_ref={
+                            "id": host_attestation_id,
+                            "sha256": _sha256(attestation_path),
+                        },
+                        model_execution={
+                            "provider": agent_result.provider or "unknown",
+                            "model": agent_result.model or "unknown",
+                            "provenance": "host_pinned_agent_runtime",
+                        },
+                        repo_root=worktree,
+                        workspace=workspace,
+                    )
+                except Exception as exc:  # noqa: BLE001 - secondary governance write.
+                    memory_error_token = getattr(
+                        exc,
+                        "token",
+                        BLOCK_MEMORY_STORE_INVALID,
+                    )
+                    if not isinstance(memory_error_token, str) or not re.fullmatch(
+                        r"[A-Z0-9_]+",
+                        memory_error_token,
+                    ):
+                        memory_error_token = BLOCK_MEMORY_STORE_INVALID
+                    result["researcher_memory"] = {
+                        "status": "WRITE_BLOCKED",
+                        "authority": "host_private_store",
+                        "retryable": True,
+                        "error_code": memory_error_token,
+                        "formal_outcome_preserved": True,
+                    }
+            result["researcher_memory"] = (
+                {
+                    "status": "OUTCOME_RECORDED",
+                    "authority": "host_private_store",
+                    **researcher_memory_outcome,
+                }
+                if researcher_memory_outcome is not None
+                else result.get("researcher_memory")
+                or {
+                    "status": (
+                        "AWAITING_VERIFIED_ORGANIZATION_OUTCOME"
+                        if isinstance(memory_binding, dict)
+                        and not organization_runtime_verified
+                        else "AWAITING_TERMINAL_OUTCOME"
+                        if isinstance(memory_binding, dict)
+                        else "LEGACY_NOT_ENABLED"
+                    ),
+                    "authority": (
+                        "host_private_store"
+                        if isinstance(memory_binding, dict)
+                        else "none"
+                    ),
+                }
+            )
             updated = self.store.update_job(
                 job.job_id,
                 execution_status=execution_status,
-                protocol_status=_normalize_protocol(summary.protocol_status),
-                factor_verdict=(
-                    "BLOCK"
-                    if execution_status == "BLOCKED"
-                    and require_formal_organization
-                    else summary.factor_verdict
-                ),
-                council_status=_normalize_council(summary.council_status),
-                formal_proof_eligible=bool(
-                    summary.formal_proof_eligible
-                    and (
-                        not require_formal_organization
-                        or (
-                            organization_runtime is not None
-                            and organization_runtime.get(
-                                "formal_independence_verified"
-                            )
-                            is True
-                        )
-                    )
-                ),
+                protocol_status=normalized_protocol_status,
+                factor_verdict=normalized_factor_verdict,
+                council_status=normalized_council_status,
+                formal_proof_eligible=normalized_formal_proof_eligible,
                 current_stage=_web_stage(summary),
                 result=result,
                 error_code=error_code,
@@ -3706,6 +3837,7 @@ class ResearchRunService:
         agent_result: AgentRunResult,
         web_materialization: dict[str, str],
         formal_execution: dict[str, Any],
+        researcher_memory_outcome: dict[str, Any],
         resume_task: AgentResumeTask | None = None,
         validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
     ) -> str:
@@ -4153,8 +4285,11 @@ class ResearchRunService:
             ),
             "host_observed_ultimate_process": True,
             "agent_returncode": agent_result.returncode,
-            "agent_provider": agent_result.provider,
-            "agent_model": agent_result.model,
+            "agent_provider": agent_result.provider or "unknown",
+            "agent_model": agent_result.model or "unknown",
+            "researcher_memory_outcome": deepcopy(
+                researcher_memory_outcome
+            ),
             "agent_result_id": agent_receipt_snapshot_relative,
             "agent_result_sha256": agent_receipt_snapshot_sha256,
             "agent_result_source_id": agent_result_relative.as_posix(),
@@ -4359,6 +4494,12 @@ class ResearchRunService:
                     workspace=workspace,
                     request=request_payload,
                     preserve_existing=preserve_plan,
+                    researcher_memory_root=(
+                        self.config.state_root / "researcher-memory"
+                    ),
+                    researcher_memory_installation_id=(
+                        self.config.installation_id
+                    ),
                 )
         except Exception:
             if preserve_plan:

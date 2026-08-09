@@ -22,6 +22,7 @@ from factor_factory.research_org import (
     load_research_organization_plan,
     request_research_organization_cancel,
     run_research_organization_runtime,
+    validate_research_organization_bundle,
     validate_research_organization_runtime,
     write_research_organization_bundle,
 )
@@ -30,6 +31,7 @@ from factor_factory.research_org.contracts import (
     KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
     PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
     ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
+    stable_json_hash,
     with_content_hash,
 )
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
@@ -66,7 +68,7 @@ def test_preformal_check_rubrics_cover_every_controlled_check() -> None:
     }
 
 
-def _workspace(tmp_path: Path) -> Path:
+def _workspace(tmp_path: Path, *, memory_enabled: bool = False) -> Path:
     runtime = tmp_path / "factorforge"
     workspace = runtime / "factor_research" / "RUNTIME_FACTOR" / "runtime_research"
     manifest = build_workspace_manifest(
@@ -117,6 +119,19 @@ def _workspace(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (identity / "data_catalog_summary.json").write_text("{}\n", encoding="utf-8")
+    memory_options = (
+        {
+            "researcher_memory_root": tmp_path / "host-private-memory",
+            "researcher_memory_installation_id": "runtime-memory-test",
+        }
+        if memory_enabled
+        else {}
+    )
+    if memory_enabled:
+        ensure_runtime_trust_store(
+            tmp_path / "research-org-trust",
+            installation_id="runtime-memory-test",
+        )
     write_research_organization_bundle(
         workspace=workspace,
         request={
@@ -141,6 +156,7 @@ def _workspace(tmp_path: Path) -> Path:
                 ]
             },
         },
+        **memory_options,
     )
     return workspace
 
@@ -345,6 +361,7 @@ class FakeSessionRunner:
         mutate_context_on_role: str | None = None,
         hardlink_output_role: str | None = None,
         transitive_evidence_roles: set[str] | None = None,
+        learning_candidate_roles: set[str] | None = None,
     ) -> None:
         self.workspace = workspace
         self.fail_once_roles = set(fail_once_roles or set())
@@ -353,6 +370,7 @@ class FakeSessionRunner:
         self.mutate_context_on_role = mutate_context_on_role
         self.hardlink_output_role = hardlink_output_role
         self.transitive_evidence_roles = set(transitive_evidence_roles or set())
+        self.learning_candidate_roles = set(learning_candidate_roles or set())
         self.calls: list[ResearchOrgSessionInvocation] = []
         self.cancelled_instances: list[str] = []
         self._counts: dict[str, int] = {}
@@ -422,11 +440,27 @@ class FakeSessionRunner:
             source.write_text("{}\n", encoding="utf-8")
         if invocation.role_id in self.fail_once_roles and count == 1:
             return self._outcome(invocation, returncode=1)
+        private_output = _private_output(task, evidence_ref=evidence_ref)
+        if invocation.role_id in self.learning_candidate_roles:
+            private_output["learning_candidates"] = [
+                {
+                    "memory_kind": "falsification_pattern",
+                    "title": "Prior-evidence authority check",
+                    "lesson": (
+                        "Treat a retrieved historical case as advisory until "
+                        "the current factor reproduces its mechanism signature."
+                    ),
+                    "applicability_conditions": [
+                        "The current study imports a historical mechanism prior."
+                    ],
+                    "failure_conditions": [
+                        "The current-factor evidence does not reproduce the prior signature."
+                    ],
+                    "evidence_refs": [dict(evidence_ref)],
+                }
+            ]
         invocation.private_output_path.write_text(
-            json.dumps(
-                _private_output(task, evidence_ref=evidence_ref),
-                ensure_ascii=False,
-            ),
+            json.dumps(private_output, ensure_ascii=False),
             encoding="utf-8",
         )
         if self.hardlink_output_role == invocation.role_id:
@@ -478,8 +512,12 @@ class SignedFakeSessionRunner(FakeSessionRunner):
         tamper_signature: bool = False,
         fixed_provider_handle_sha256: str | None = None,
         container_image_digest: str | None = None,
+        learning_candidate_roles: set[str] | None = None,
     ) -> None:
-        super().__init__(workspace)
+        super().__init__(
+            workspace,
+            learning_candidate_roles=learning_candidate_roles,
+        )
         self.trust_store = ensure_runtime_trust_store(
             trust_root,
             installation_id=installation_id,
@@ -868,6 +906,535 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
         workspace=workspace,
         require_complete=True,
     )["verdict"] == "PASS"
+
+
+def test_runtime_materializes_role_memory_candidate_outside_canonical_result(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path, memory_enabled=True)
+    runner = SignedFakeSessionRunner(
+        workspace,
+        trust_root=tmp_path / "research-org-trust",
+        installation_id="runtime-memory-test",
+        learning_candidate_roles={"knowledge_librarian"},
+    )
+
+    summary = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=tmp_path / "private-runtime-memory",
+        runner=runner,
+        trust_root=tmp_path / "research-org-trust",
+        installation_id="runtime-memory-test",
+        allow_unverified_test_runner=True,
+        max_concurrency=3,
+        max_attempts=2,
+        timeout_seconds=60,
+    )
+
+    assert summary["lifecycle"] == "WAITING_HOST_RESULT"
+    task = _task(workspace, "knowledge_librarian")
+    result = json.loads(
+        (workspace / task["expected_result_path"]).read_text(encoding="utf-8")
+    )
+    assert "learning_candidates" not in result
+    candidate_root = (
+        workspace
+        / "objects"
+        / "research_organization"
+        / "RUNTIME_REPORT"
+        / "memory_candidates"
+    )
+    candidate_paths = list(candidate_root.glob("*.json"))
+    assert len(candidate_paths) == 1
+    candidate = json.loads(candidate_paths[0].read_text(encoding="utf-8"))
+    assert candidate["source_role_id"] == "knowledge_librarian"
+    assert candidate["source_session_id"] == result["session_id"]
+    assert candidate["authority"] == "candidate_only"
+    assert candidate["promotion_allowed"] is False
+    event_root = (
+        workspace
+        / "objects"
+        / "research_organization"
+        / "RUNTIME_REPORT"
+        / "runtime"
+        / "events"
+    )
+    events = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(event_root.glob("event_*.json"))
+    ]
+    admitted_event = next(
+        event
+        for event in events
+        if event["event_type"] == "SESSION_RESULT_ADMITTED"
+        and event["role_id"] == "knowledge_librarian"
+    )
+    assert admitted_event["detail"]["memory_candidate_refs"] == [
+        {
+            "path": candidate_paths[0].relative_to(workspace).as_posix(),
+            "sha256": candidate["candidate_sha256"],
+        }
+    ]
+    assert admitted_event["detail"]["memory_candidate_rejections"] == []
+    assert validate_research_organization_bundle(workspace=workspace)[
+        "verdict"
+    ] == "PASS"
+    _admit_host_director(workspace)
+    completed = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=tmp_path / "private-runtime-memory",
+        runner=runner,
+        trust_root=tmp_path / "research-org-trust",
+        installation_id="runtime-memory-test",
+        allow_unverified_test_runner=True,
+        max_concurrency=3,
+        max_attempts=2,
+        timeout_seconds=60,
+    )
+    assert completed["lifecycle"] == "COMPLETE"
+    council_invocation = next(
+        call for call in runner.calls if call.role_id == "independent_council"
+    )
+    council_prompt = runtime_module.build_research_org_session_prompt(
+        council_invocation
+    )
+    assert "exactly these six keys" in council_prompt
+    assert "`learning_candidates`" in council_prompt
+    from factor_factory.researcher_memory import (
+        load_candidate_review_material,
+        record_candidate_review,
+        record_research_outcome,
+    )
+    from factor_factory.researcher_memory_review import (
+        REVIEW_AGENT_RECORD_CONTRACT_VERSION,
+        REVIEW_CHECKS,
+    )
+
+    plan = load_research_organization_plan(workspace)
+    roles = list(plan["role_plan"]["required_roles"])
+    attestation_root = tmp_path / "attestations" / task["identity"]["job_id"]
+    attestation_root.mkdir(mode=0o700, parents=True)
+    attestation_root.chmod(0o700)
+    receipt_root = tmp_path / "receipts" / task["identity"]["job_id"]
+    receipt_root.mkdir(mode=0o700, parents=True)
+    receipt_root.chmod(0o700)
+    receipt_path = receipt_root / "formal.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "version": "factorforge_console_host_formal_execution_v2",
+                **task["identity"],
+                "commands": [
+                    {"name": "materialize_web_research", "returncode": 0},
+                    {"name": "run_factorforge_ultimate", "returncode": 0},
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    receipt_path.chmod(0o600)
+    evidence_entries = {"objects/runtime_context/proof.json": "7" * 64}
+    evidence_tree_path = attestation_root / "evidence_tree_runtime_memory_test.json"
+    evidence_tree_path.write_text(
+        json.dumps(
+            {
+                "version": "factorforge_console_workspace_evidence_tree_v1",
+                **task["identity"],
+                "entries": evidence_entries,
+                "tree_sha256": stable_json_hash(evidence_entries),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_tree_path.chmod(0o600)
+    attestation_path = attestation_root / "attestation_runtime_memory_test.json"
+    attestation_path.write_text(
+        json.dumps(
+            {
+                "version": "factorforge_console_host_execution_attestation_v2",
+                **task["identity"],
+                "host_observed_ultimate_process": True,
+                "host_evidence_reader_invoked": True,
+                "host_terminal_formal_validation_status": "BLOCK",
+                "agent_provider": "test",
+                "agent_model": "fixture",
+                "researcher_memory_outcome": {
+                    "execution_status": "COMPLETED",
+                    "protocol_status": "PASS",
+                    "factor_verdict": "REJECT",
+                    "council_status": "PASS",
+                    "formal_proof_eligible": False,
+                    "organization_runtime_verified": True,
+                    "roles": roles,
+                },
+                "formal_execution_receipt_id": receipt_path.relative_to(
+                    tmp_path
+                ).as_posix(),
+                "formal_execution_receipt_sha256": hashlib.sha256(
+                    receipt_path.read_bytes()
+                ).hexdigest(),
+                "workspace_evidence_tree_id": evidence_tree_path.relative_to(
+                    tmp_path
+                ).as_posix(),
+                "workspace_evidence_tree_sha256": hashlib.sha256(
+                    evidence_tree_path.read_bytes()
+                ).hexdigest(),
+                "workspace_evidence_tree_root_sha256": stable_json_hash(
+                    evidence_entries
+                ),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    attestation_path.chmod(0o600)
+    outcome = record_research_outcome(
+        tmp_path / "host-private-memory",
+        installation_id="runtime-memory-test",
+        store_id=plan["researcher_memory"]["store_id"],
+        identity=task["identity"],
+        role_ids=roles,
+        execution_status="COMPLETED",
+        protocol_status="PASS",
+        factor_verdict="REJECT",
+        council_status="PASS",
+        formal_proof_eligible=False,
+        organization_runtime_verified=True,
+        host_attestation_ref={
+            "id": attestation_path.relative_to(tmp_path).as_posix(),
+            "sha256": hashlib.sha256(attestation_path.read_bytes()).hexdigest(),
+        },
+        model_execution={
+            "provider": "test",
+            "model": "fixture",
+            "provenance": "host_pinned_agent_runtime",
+        },
+        repo_root=PROJECT_ROOT,
+        workspace=workspace,
+    )
+    candidate_ref = {
+        "path": candidate_paths[0].relative_to(workspace).as_posix(),
+        "sha256": candidate["candidate_sha256"],
+    }
+    outcome_ref = {
+        "event_id": outcome["event_id"],
+        "sha256": outcome["event_sha256"],
+    }
+    rationale = (
+        "The lesson is structurally valid but intentionally rejected in this fixture."
+    )
+    reviewer = {
+        "reviewer_id": "independent_runtime_memory_reviewer",
+        "reviewer_session_id": "runtime_memory_review_session",
+        "runtime_instance_id": "runtime_memory_review_instance",
+        "independence_class": "runtime_attested_independent_review",
+    }
+    public_reviewer = {
+        "reviewer_id": reviewer["reviewer_id"],
+        "reviewer_session_id": reviewer["reviewer_session_id"],
+        "independence_class": "host_attested_independent_review",
+    }
+    from factor_factory import researcher_memory as memory_module
+
+    material = load_candidate_review_material(
+        workspace=workspace,
+        candidate_relative=candidate_ref["path"],
+        root=tmp_path / "host-private-memory",
+        installation_id="runtime-memory-test",
+        outcome_event_id=outcome["event_id"],
+        repo_root=PROJECT_ROOT,
+    )
+    review_parent = material["review_parent"]
+    expected_parent_generation = int(review_parent["generation"]) + 1
+    current_memory_ref = {
+        "path": (
+            "objects/research_organization/"
+            f"{candidate['identity']['report_id']}"
+            "/memory_review_context/current_role_memory_snapshot.json"
+        ),
+        "sha256": material["current_memory_snapshot"]["snapshot_sha256"],
+        "hash_kind": "json_content",
+    }
+    request = with_content_hash(
+        {
+            "contract_version": (
+                "factorforge_researcher_memory_review_request_v1"
+            ),
+            "identity": dict(candidate["identity"]),
+            "reviewer_role_id": "researcher_memory_reviewer",
+            "candidate_ref": candidate_ref,
+            "outcome_event_ref": outcome_ref,
+            "source_session_id": candidate["source_session_id"],
+            "review_parent": review_parent,
+            "current_memory_snapshot_ref": current_memory_ref,
+            "decision_options": ["APPROVE_CANONICAL", "REJECT"],
+            "review_checks": list(REVIEW_CHECKS),
+            "staged_files": [],
+            "policy": {
+                "current_factor_proof_authority": False,
+                "canonical_write_authority": False,
+                "private_reasoning_allowed": False,
+                "reviewer_selects_decision": True,
+            },
+        },
+        hash_field="request_sha256",
+    )
+    checks = {check: True for check in REVIEW_CHECKS}
+    checks["novel_or_nonduplicative"] = False
+    review_output = {
+        "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+        "status": "PASS",
+        "public_research_record": {
+            "contract_version": REVIEW_AGENT_RECORD_CONTRACT_VERSION,
+            "identity": dict(candidate["identity"]),
+            "reviewer_role_id": "researcher_memory_reviewer",
+            "candidate_ref": candidate_ref,
+            "outcome_event_ref": outcome_ref,
+            "review_parent": review_parent,
+            "current_memory_snapshot_ref": current_memory_ref,
+            "decision": "REJECT",
+            "rationale": rationale,
+            "checks": checks,
+        },
+    }
+    output_bytes = (json.dumps(review_output, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    output_sha256 = hashlib.sha256(output_bytes).hexdigest()
+    claim_sha256 = memory_module._review_claim_sha256(
+        identity=candidate["identity"],
+        candidate_ref=candidate_ref,
+        outcome_event_ref=outcome_ref,
+        reviewer=public_reviewer,
+        source_session_id=candidate["source_session_id"],
+        decision="REJECT",
+        rationale=rationale,
+        canonical_write_authorized=False,
+        review_parent=review_parent,
+        expected_parent_generation=expected_parent_generation,
+    )
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="runtime-memory-test",
+    )
+    adapter_receipt = trust_store.sign(
+        "runtime_adapter",
+        {
+            "receipt_type": "COMPLETED",
+            "identity": {
+                **dict(candidate["identity"]),
+                "runtime_id": "runtime_memory_review_fixture",
+                "task_id": "memory_review_fixture",
+                "role_id": "researcher_memory_reviewer",
+                "attempt_id": "attempt_memory_review_fixture",
+                "attempt_no": 1,
+            },
+            "session": {
+                "session_uid": reviewer["reviewer_session_id"],
+                "runtime_handle_sha256": hashlib.sha256(
+                    reviewer["runtime_instance_id"].encode("utf-8")
+                ).hexdigest(),
+                "adapter_id": "runtime-memory-test",
+                "parent_session_uid": None,
+            },
+            "bindings": {"task_sha256": request["request_sha256"]},
+            "outcome": {
+                "returncode": 0,
+                "cancelled": False,
+                "termination_confirmed": True,
+                "private_output_sha256": output_sha256,
+                "private_output_size_bytes": len(output_bytes),
+            },
+        },
+    )
+    reviewer_receipt = trust_store.sign(
+        "runtime_adapter",
+        {
+            "receipt_type": "RESEARCHER_MEMORY_REVIEW_COMPLETED",
+            "identity": dict(candidate["identity"]),
+            "reviewer": reviewer,
+            "bindings": {
+                "candidate_ref": candidate_ref,
+                "outcome_event_ref": outcome_ref,
+                "source_session_id": candidate["source_session_id"],
+                "review_claim_sha256": claim_sha256,
+                "review_parent": review_parent,
+                "expected_parent_generation": expected_parent_generation,
+            },
+            "runtime_evidence": {
+                "adapter_completion_receipt": adapter_receipt,
+                "review_request": request,
+                "review_output": review_output,
+                "review_output_sha256": output_sha256,
+                "model_execution": {
+                    "provider": "test",
+                    "model": "fixture",
+                    "transport": "test_disposable_container",
+                    "isolation_class": "container_staged_context",
+                    "owned_termination_supported": True,
+                },
+            },
+            "outcome": {
+                "returncode": 0,
+                "termination_confirmed": True,
+                "secret_scan": "PASS",
+            },
+        },
+    )
+    reviewer_receipt_root = tmp_path / "reviewer-session-receipts"
+    reviewer_receipt_root.mkdir(mode=0o700)
+    reviewer_receipt_root.chmod(0o700)
+    reviewer_receipt_path = (
+        reviewer_receipt_root / f"{reviewer_receipt['receipt_id']}.json"
+    )
+    reviewer_receipt_path.write_text(
+        json.dumps(reviewer_receipt, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    reviewer_receipt_path.chmod(0o600)
+    review = record_candidate_review(
+        workspace=workspace,
+        candidate_relative=candidate_paths[0].relative_to(workspace).as_posix(),
+        root=tmp_path / "host-private-memory",
+        installation_id="runtime-memory-test",
+        decision="REJECT",
+        reviewer_session_receipt_ref={
+            "id": reviewer_receipt_path.relative_to(tmp_path).as_posix(),
+            "sha256": hashlib.sha256(
+                reviewer_receipt_path.read_bytes()
+            ).hexdigest(),
+        },
+        outcome_event_id=outcome["event_id"],
+        rationale=rationale,
+        repo_root=PROJECT_ROOT,
+    )
+    assert validate_research_organization_bundle(
+        workspace=workspace,
+        review_trust_root=tmp_path / "research-org-trust",
+        review_installation_id="runtime-memory-test",
+    )[
+        "verdict"
+    ] == "PASS"
+    review_path = workspace / review["workspace_path"]
+    review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+    review_payload["reviewer"]["reviewer_session_id"] = result["session_id"]
+    review_payload = with_content_hash(
+        {
+            key: value
+            for key, value in review_payload.items()
+            if key != "review_sha256"
+        },
+        hash_field="review_sha256",
+    )
+    review_path.write_text(
+        json.dumps(review_payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ResearchOrganizationError, match="MEMORY_REVIEW_INVALID"):
+        validate_research_organization_bundle(
+            workspace=workspace,
+            review_trust_root=tmp_path / "research-org-trust",
+            review_installation_id="runtime-memory-test",
+        )
+
+
+def test_runtime_rejects_learning_candidate_when_role_memory_is_disabled(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    runner = FakeSessionRunner(
+        workspace,
+        learning_candidate_roles={"knowledge_librarian"},
+    )
+
+    summary = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=tmp_path / "private-runtime-memory-disabled",
+        runner=runner,
+        allow_unverified_test_runner=True,
+        max_concurrency=1,
+        max_attempts=1,
+        timeout_seconds=60,
+    )
+
+    task = _task(workspace, "knowledge_librarian")
+    assert summary["role_states"]["knowledge_librarian"] == "RETRY_EXHAUSTED"
+    assert not (workspace / task["expected_result_path"]).exists()
+    candidate_root = (
+        workspace
+        / "objects"
+        / "research_organization"
+        / "RUNTIME_REPORT"
+        / "memory_candidates"
+    )
+    assert not candidate_root.exists()
+
+
+def test_memory_candidate_io_failure_does_not_rollback_admitted_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path, memory_enabled=True)
+    runner = FakeSessionRunner(
+        workspace,
+        learning_candidate_roles={"knowledge_librarian"},
+    )
+
+    def fail_materialization(**_kwargs):
+        raise OSError("simulated candidate filesystem failure")
+
+    import factor_factory.researcher_memory as memory_module
+
+    monkeypatch.setattr(
+        memory_module,
+        "materialize_learning_candidates",
+        fail_materialization,
+    )
+    summary = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=tmp_path / "private-runtime-memory-io-failure",
+        runner=runner,
+        allow_unverified_test_runner=True,
+        max_concurrency=3,
+        max_attempts=2,
+        timeout_seconds=60,
+    )
+
+    assert summary["lifecycle"] == "WAITING_HOST_RESULT"
+    task = _task(workspace, "knowledge_librarian")
+    assert (workspace / task["expected_result_path"]).is_file()
+    event_root = (
+        workspace
+        / "objects"
+        / "research_organization"
+        / "RUNTIME_REPORT"
+        / "runtime"
+        / "events"
+    )
+    events = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(event_root.glob("event_*.json"))
+    ]
+    admitted = next(
+        event
+        for event in events
+        if event["event_type"] == "SESSION_RESULT_ADMITTED"
+        and event["role_id"] == "knowledge_librarian"
+    )
+    assert admitted["detail"]["memory_candidate_refs"] == []
+    assert admitted["detail"]["memory_candidate_rejections"] == [
+        "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_CANDIDATE_INVALID",
+        "materialization_error:OSError",
+    ]
 
 
 def test_frozen_legacy_knowledge_task_remains_resumable_and_cancellable(

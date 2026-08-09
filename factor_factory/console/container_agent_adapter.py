@@ -1129,6 +1129,32 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 error=exc,
             )
 
+    def run_researcher_memory_review_session(
+        self,
+        invocation: ResearchOrgSessionInvocation,
+    ) -> dict[str, Any]:
+        """Run and adapter-sign one independent researcher-memory review."""
+
+        if invocation.role_id != "researcher_memory_reviewer":
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: memory reviewer role is invalid"
+            )
+        job_id = str(invocation.identity.get("job_id") or "")
+        try:
+            outcome = self.run_research_org_session(invocation)
+            from factor_factory.researcher_memory_review import (
+                sign_completed_reviewer_session,
+            )
+
+            return sign_completed_reviewer_session(
+                invocation=invocation,
+                outcome=outcome,
+                state_root=self.config.state_root,
+                installation_id=self.config.installation_id,
+            )
+        finally:
+            self.deactivate_denied_secrets(job_id)
+
     def _run_research_org_session_owned(
         self,
         invocation: ResearchOrgSessionInvocation,

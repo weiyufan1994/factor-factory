@@ -1,0 +1,4 @@
+interface:
+  display_name: "Factor Forge Researcher Memory"
+  short_description: "Govern persistent researcher-role memory safely"
+  default_prompt: "Use $factor-forge-researcher-memory to freeze role memory, record reviewed lessons, and promote only approved candidates."

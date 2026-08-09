@@ -82,10 +82,82 @@ def _stub_materialized_web_contract(monkeypatch):
             "factor_spec_sha256": "factor-spec-hash",
         },
     )
+    def write_host_attestation_stub(self, **kwargs):
+        job = kwargs["job"]
+        agent_result = kwargs["agent_result"]
+        memory_outcome = kwargs["researcher_memory_outcome"]
+        receipt_relative = f"jobs/{job.job_id}/formal-execution/receipt.json"
+        receipt_path = self.config.state_root / receipt_relative
+        _write_json(
+            receipt_path,
+            {
+                "version": "factorforge_console_host_formal_execution_v2",
+                "job_id": job.job_id,
+                "factor_id": job.factor_id,
+                "research_id": job.research_id,
+                "report_id": job.report_id,
+                "commands": [
+                    {"name": "materialize_web_research", "returncode": 0},
+                    {"name": "run_factorforge_ultimate", "returncode": 0},
+                ],
+            },
+        )
+        receipt_path.chmod(0o600)
+        evidence_entries = {"objects/runtime_context/proof.json": "7" * 64}
+        evidence_relative = (
+            f"attestations/{job.job_id}/evidence_tree_unit-test.json"
+        )
+        evidence_path = self.config.state_root / evidence_relative
+        _write_json(
+            evidence_path,
+            {
+                "version": "factorforge_console_workspace_evidence_tree_v1",
+                "job_id": job.job_id,
+                "factor_id": job.factor_id,
+                "research_id": job.research_id,
+                "report_id": job.report_id,
+                "entries": evidence_entries,
+                "tree_sha256": stable_json_hash(evidence_entries),
+            },
+        )
+        evidence_path.chmod(0o600)
+        relative = f"attestations/{job.job_id}/attestation_unit-test.json"
+        attestation_path = self.config.state_root / relative
+        _write_json(
+            attestation_path,
+            {
+                "version": "factorforge_console_host_execution_attestation_v2",
+                "job_id": job.job_id,
+                "factor_id": job.factor_id,
+                "research_id": job.research_id,
+                "report_id": job.report_id,
+                "host_observed_ultimate_process": True,
+                "host_evidence_reader_invoked": True,
+                "host_terminal_formal_validation_status": (
+                    "PASS"
+                    if memory_outcome["formal_proof_eligible"] is True
+                    else "BLOCK"
+                ),
+                "agent_provider": agent_result.provider or "unknown",
+                "agent_model": agent_result.model or "unknown",
+                "researcher_memory_outcome": memory_outcome,
+                "formal_execution_receipt_id": receipt_relative,
+                "formal_execution_receipt_sha256": _file_sha256(receipt_path),
+                "workspace_evidence_tree_id": evidence_relative,
+                "workspace_evidence_tree_sha256": _file_sha256(evidence_path),
+                "workspace_evidence_tree_root_sha256": stable_json_hash(
+                    evidence_entries
+                ),
+                "fixture": True,
+            },
+        )
+        attestation_path.chmod(0o600)
+        return relative
+
     monkeypatch.setattr(
         module.ResearchRunService,
         "_write_host_attestation",
-        lambda self, **_kwargs: "attestations/unit-test.json",
+        write_host_attestation_stub,
     )
     monkeypatch.setattr(
         module,
@@ -122,7 +194,9 @@ def _stub_materialized_web_contract(monkeypatch):
             "ultimate_proof_sha256": _file_sha256(proof_path),
             # Mirror the attestation returned by the host stub above. Production
             # resume validation reads this identity from the current pointer.
-            "attestation_id": "attestations/unit-test.json",
+            "attestation_id": (
+                f"attestations/{job.job_id}/attestation_unit-test.json"
+            ),
             "attestation_sha256": "attestation-hash",
             "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
             "receipt_sha256": "receipt-hash",
@@ -183,6 +257,21 @@ def _make_source_repo(tmp_path: Path) -> Path:
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_research_org_runtime_marker(workspace: Path) -> None:
+    plan = json.loads(
+        (workspace / "identity" / "research_organization_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    _write_json(
+        workspace
+        / str(plan["workspace_policy"]["organization_root"])
+        / "runtime"
+        / "runtime_state.json",
+        {},
+    )
 
 
 def _file_sha256(path: Path) -> str:
@@ -1303,7 +1392,11 @@ def test_service_runs_two_factors_in_separate_worktrees_and_preserves_reject(
     first_done = store.get_job(first.job_id)
     second_done = store.get_job(second.job_id)
 
-    assert first_done.execution_status == "COMPLETED"
+    assert first_done.execution_status == "COMPLETED", (
+        first_done.error_code,
+        first_done.error_message,
+        first_done.result,
+    )
     assert first_done.protocol_status == "PASS"
     assert first_done.factor_verdict == "REJECT"
     assert first_done.formal_proof_eligible is True
@@ -1319,11 +1412,31 @@ def test_service_runs_two_factors_in_separate_worktrees_and_preserves_reject(
     assert (first_identity / "factor_knowledge_summary.json").is_file()
     plan = json.loads((first_identity / "web_research_plan.json").read_text(encoding="utf-8"))
     assert plan["identity"]["factor_id"] == first_done.factor_id
+    organization_plan = json.loads(
+        (first_identity / "research_organization_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert organization_plan["researcher_memory"]["mode"] == "enabled"
+    assert organization_plan["researcher_memory"]["source_generation"] == 0
+    assert first_done.result["researcher_memory"]["status"] == (
+        "AWAITING_VERIFIED_ORGANIZATION_OUTCOME"
+    )
+    from factor_factory.researcher_memory import validate_researcher_memory_store
+
+    memory_validation = validate_researcher_memory_store(
+        service.config.state_root / "researcher-memory",
+        installation_id=service.config.installation_id,
+        repo_root=source,
+        workspace=Path(first_done.workspace_path),
+    )
+    assert memory_validation["outcome_event_count"] == 0
+    assert memory_validation["canonical_record_count"] == 0
     assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
 
 
 def test_wrapper_pass_with_council_pause_becomes_review_required(tmp_path):
-    _source, store, service = _service(tmp_path, _PausedAdapter())
+    source, store, service = _service(tmp_path, _PausedAdapter())
     job = service.submit(_request("Paused factor"))
     service.run_once()
     paused = store.get_job(job.job_id)
@@ -1332,6 +1445,18 @@ def test_wrapper_pass_with_council_pause_becomes_review_required(tmp_path):
     assert paused.protocol_status == "PAUSED"
     assert paused.council_status == "PAUSED"
     assert paused.formal_proof_eligible is False
+    assert paused.result["researcher_memory"]["status"] == (
+        "AWAITING_VERIFIED_ORGANIZATION_OUTCOME"
+    )
+    from factor_factory.researcher_memory import validate_researcher_memory_store
+
+    memory_validation = validate_researcher_memory_store(
+        service.config.state_root / "researcher-memory",
+        installation_id=service.config.installation_id,
+        repo_root=source,
+        workspace=Path(paused.workspace_path),
+    )
+    assert memory_validation["outcome_event_count"] == 0
 
 
 def test_nonzero_agent_returncode_cannot_publish_stale_terminal_or_pause_status():
@@ -1485,6 +1610,21 @@ def test_routed_console_runs_specialists_around_host_director(
         lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
     )
     runtime_calls = []
+    complete_runtime = {
+        "lifecycle": "COMPLETE",
+        "result_count": 7,
+        "formal_independence_verified": True,
+        "runtime_assurance": (
+            "signed_specialist_runtime_complete_host_director_external"
+        ),
+        "transactional_ledger": {
+            "ledger_state": "COMPLETE",
+            "formal_independence_verified": True,
+            "assurance": (
+                "signed_specialist_runtime_complete_host_director_external"
+            ),
+        },
+    }
 
     def fake_runtime(**_kwargs):
         runtime_calls.append(len(runtime_calls) + 1)
@@ -1494,14 +1634,16 @@ def test_routed_console_runs_specialists_around_host_director(
                 "result_count": 3,
                 "formal_independence_verified": False,
             }
-        return {
-            "lifecycle": "COMPLETE",
-            "result_count": 7,
-            "formal_independence_verified": True,
-        }
+        _write_research_org_runtime_marker(Path(_kwargs["workspace"]))
+        return complete_runtime
 
     host_admissions = []
     monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
+    monkeypatch.setattr(
+        module,
+        "validate_research_organization_runtime",
+        lambda **_kwargs: complete_runtime,
+    )
     monkeypatch.setattr(
         service,
         "_admit_host_research_director_result",
@@ -1531,6 +1673,96 @@ def test_routed_console_runs_specialists_around_host_director(
     assert runtime_calls == [1, 2]
     assert adapter.host_runs == 1
     assert len(host_admissions) == 1
+    assert completed.result["researcher_memory"]["status"] == "OUTCOME_RECORDED"
+
+
+def test_memory_write_failure_preserves_official_factor_outcome(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    import factor_factory.console.ultimate_reader as reader
+
+    class RuntimeTerminalAdapter(_TerminalRejectAdapter):
+        def run_research_org_session(self, _invocation):
+            raise AssertionError("runtime is patched for this orchestration test")
+
+        def cancel_research_org_session(self, _runtime_instance_id):
+            return True
+
+    _source, store, service = _service(tmp_path, RuntimeTerminalAdapter())
+    monkeypatch.setattr(
+        reader,
+        "validate_factor_proof_certificate",
+        lambda *args, **kwargs: {"verdict": "REJECT", "block_reasons": []},
+    )
+    monkeypatch.setattr(
+        reader,
+        "validate_protocol_bundle",
+        lambda *args, **kwargs: {"verdict": "PASS", "block_reasons": []},
+    )
+    runtime_calls = []
+    complete_runtime = {
+        "lifecycle": "COMPLETE",
+        "result_count": 7,
+        "formal_independence_verified": True,
+        "runtime_assurance": (
+            "signed_specialist_runtime_complete_host_director_external"
+        ),
+        "transactional_ledger": {
+            "ledger_state": "COMPLETE",
+            "formal_independence_verified": True,
+            "assurance": (
+                "signed_specialist_runtime_complete_host_director_external"
+            ),
+        },
+    }
+
+    def fake_runtime(**_kwargs):
+        runtime_calls.append(True)
+        if len(runtime_calls) == 1:
+            return {
+                "lifecycle": "WAITING_HOST_RESULT",
+                "result_count": 3,
+                "formal_independence_verified": False,
+            }
+        _write_research_org_runtime_marker(Path(_kwargs["workspace"]))
+        return complete_runtime
+
+    monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
+    monkeypatch.setattr(
+        module,
+        "validate_research_organization_runtime",
+        lambda **_kwargs: complete_runtime,
+    )
+    monkeypatch.setattr(
+        service,
+        "_admit_host_research_director_result",
+        lambda **_kwargs: {"verdict": "PASS"},
+    )
+    monkeypatch.setattr(
+        module,
+        "record_research_outcome",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("simulated host-private memory failure")
+        ),
+    )
+    job = service.submit(_request("Memory failure must not alter verdict"))
+
+    service.run_once()
+
+    completed = store.get_job(job.job_id)
+    assert completed.execution_status == "COMPLETED"
+    assert completed.protocol_status == "PASS"
+    assert completed.factor_verdict == "REJECT"
+    assert completed.formal_proof_eligible is True
+    assert completed.result["researcher_memory"] == {
+        "status": "WRITE_BLOCKED",
+        "authority": "host_private_store",
+        "retryable": True,
+        "error_code": "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_STORE_INVALID",
+        "formal_outcome_preserved": True,
+    }
 
 
 def test_host_director_admission_binds_validated_plan_and_real_session(
@@ -3821,6 +4053,14 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
         agent_result=agent_result,
         web_materialization={"formula_hash": "formula-hash"},
         formal_execution=formal_execution,
+        researcher_memory_outcome={
+            "execution_status": "COMPLETED",
+            "protocol_status": "PASS",
+            "factor_verdict": "REJECT",
+            "council_status": "PASS",
+            "formal_proof_eligible": False,
+            "roles": [],
+        },
     )
     step4_evidence.write_bytes(original_step4_before_attestation)
     service._finish_private_execution(
@@ -3969,6 +4209,14 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
             agent_result=agent_result,
             web_materialization={"formula_hash": "formula-hash"},
             formal_execution=resumed_formal_execution,
+            researcher_memory_outcome={
+                "execution_status": "COMPLETED",
+                "protocol_status": "PASS",
+                "factor_verdict": "REJECT",
+                "council_status": "PASS",
+                "formal_proof_eligible": False,
+                "roles": [],
+            },
         )
     resumed_relative = _ORIGINAL_WRITE_HOST_ATTESTATION(
         service,
@@ -3979,6 +4227,14 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
         agent_result=agent_result,
         web_materialization={"formula_hash": "formula-hash"},
         formal_execution=resumed_formal_execution,
+        researcher_memory_outcome={
+            "execution_status": "COMPLETED",
+            "protocol_status": "PASS",
+            "factor_verdict": "REJECT",
+            "council_status": "PASS",
+            "formal_proof_eligible": False,
+            "roles": [],
+        },
     )
     service._finish_private_execution(
         job,
@@ -4434,7 +4690,9 @@ def test_formal_failure_checkpoint_is_attested_and_resumable(
 
     assert blocked.execution_status in {"BLOCKED", "FAILED"}
     assert blocked.error_code != "BLOCK_FACTORFORGE_CONSOLE_INTERNAL_ERROR"
-    assert blocked.result["host_attestation_id"] == "attestations/unit-test.json"
+    assert blocked.result["host_attestation_id"] == (
+        f"attestations/{job.job_id}/attestation_unit-test.json"
+    )
     lifecycle = json.loads(
         service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
     )

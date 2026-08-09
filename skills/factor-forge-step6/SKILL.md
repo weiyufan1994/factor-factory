@@ -498,6 +498,19 @@ the official library. Rejections and blocked routes still write workspace-local
 knowledge with identity, evidence boundary, anti-pattern and reopen condition.
 Repo-root knowledge is an explicit audited export only.
 
+After the Ultimate Host has attested the terminal outcome, reusable cross-factor
+lessons may enter `factor-forge-researcher-memory` review. Step6 may supply
+public evidence and a concise candidate, but it cannot approve or promote that
+candidate. Preserve the distinction between factor verdict, protocol status,
+memory-review decision, and canonical-memory generation. Only normalized
+terminal `ACCEPT/REJECT` outcomes are admissible; `ACCEPT` requires formal proof
+eligibility, while an evidence-bound `REJECT` may teach a bounded failure mode.
+The independent reviewer must have a different session, an adapter-signed exact
+claim receipt, a current canonical role-memory snapshot, and a Host
+countersignature. The signed review parent/generation must still match at
+promotion. Step6's own session cannot self-review its candidate, and an operator
+label or direct review-CLI call is not independence proof.
+
 ## On-Demand Reference
 
 Read `references/legacy-operations-reference.md` only for historical schemas,

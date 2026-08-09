@@ -24,6 +24,25 @@ user-visible tasks. Read:
 - `docs/contracts/factorforge-research-org-plan-v1.zh-CN.md`
 - `docs/contracts/factorforge-agent-task-result-v1.zh-CN.md`
 - `docs/contracts/factorforge-research-org-runtime-v1.zh-CN.md`
+- `docs/architecture/factorforge-researcher-memory-evolution-v1.zh-CN.md`
+
+For organization-aware console runs, also use
+`factor-forge-researcher-memory`. The Host freezes one role-specific memory
+snapshot before dispatch and keeps specialist sessions disposable. Role memory
+is advisory and cannot select the current estimand, prove the current factor,
+or mutate skills. Agents may emit workspace-local learning candidates only;
+final outcome recording, independent review, and canonical promotion remain
+separate Host actions. A promotable candidate must carry the signed source
+runtime and Host admission chain plus a Host-signed candidate materialization
+receipt. Independent review freezes the current canonical role-memory snapshot,
+runs through the dedicated disposable reviewer entrypoint, and requires its
+adapter-signed full session receipt; the lower-level admission CLI cannot
+manufacture session independence. The Host records only normalized terminal
+`COMPLETED + ACCEPT/REJECT` outcomes; `ACCEPT` requires formal-proof eligibility.
+A different reviewer session plus adapter- and Host-signed exact-binding
+receipts are required, not just reviewer labels. Review and promotion bind the
+exact parent manifest generation; stale or duplicate canonical content blocks.
+A legacy memory-off plan stays memory-off on resume.
 
 For a new organization-aware run, the Host must freeze and validate
 `identity/research_organization_plan.json` before specialist work. All input

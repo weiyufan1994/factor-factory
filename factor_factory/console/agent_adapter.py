@@ -28,6 +28,9 @@ BLOCK_AGENT_RUNTIME_UNAVAILABLE = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_UNAVA
 BLOCK_AGENT_ORPHANED_WRITER = "BLOCK_FACTORFORGE_CONSOLE_AGENT_ORPHANED_WRITER"
 BLOCK_AGENT_RUNTIME_FAILED = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED"
 BLOCK_AGENT_RUNTIME_TIMEOUT = "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_TIMEOUT"
+BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID = (
+    "BLOCK_FACTORFORGE_CONSOLE_HOST_DIRECTOR_PROMPT_BINDING_INVALID"
+)
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
 RESUME_MEMO_MAX_BYTES = 24_000
 RESUME_MEMO_AGENT_PATCH_MAX_BYTES = 16_000
@@ -502,42 +505,27 @@ def build_agent_prompt(
         workspace / "identity" / "research_organization_plan.json",
         workspace / "identity" / "web_research_plan.json",
     ]
-    organization_plan_path = workspace / "identity" / "research_organization_plan.json"
-    if organization_plan_path.is_file() and not organization_plan_path.is_symlink():
-        try:
-            organization_plan = json.loads(
-                organization_plan_path.read_text(encoding="utf-8")
-            )
-            dispatch_path = workspace / str(
-                organization_plan["workspace_policy"]["dispatch_manifest_path"]
-            )
-            dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
-            director_refs = [
-                item
-                for item in dispatch.get("tasks") or []
-                if isinstance(item, dict)
-                and item.get("role_id") == "research_director"
-            ]
-            if len(director_refs) == 1:
-                packet_files.extend(
-                    [dispatch_path, workspace / str(director_refs[0]["path"])]
-                )
-        except (KeyError, OSError, UnicodeError, json.JSONDecodeError, TypeError):
-            pass
-    organization_results = (
-        workspace
-        / "objects"
-        / "research_organization"
-        / job.report_id
-        / "results"
+    director_projection = _host_director_record_prompt_template(
+        workspace,
+        report_id=job.report_id,
+        expected_identity={
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "job_id": job.job_id,
+        },
     )
-    if organization_results.is_dir() and not organization_results.is_symlink():
-        packet_files.extend(
-            path
-            for path in sorted(organization_results.glob("*.json"))
-            if path.is_file() and not path.is_symlink()
-        )
+    if director_projection is None:
+        director_template = None
+    else:
+        director_template, director_packet_paths = director_projection
+        packet_files.extend(workspace / relative for relative in director_packet_paths)
     packet_list = "\n".join(f"- {path}" for path in dict.fromkeys(packet_files))
+    director_template_text = (
+        json.dumps(director_template, ensure_ascii=False, indent=2)
+        if director_template is not None
+        else "Unavailable until the frozen Director task and intake results exist."
+    )
     return f"""# Factor Forge Web Research Task
 
 You are the initial authoring agent for one isolated Factor Forge task. {action}
@@ -596,7 +584,13 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 11. Network egress is restricted to the fixed model broker. Do not attempt to reach S3, Data API, catalog storage, raw data, arbitrary websites, or any other network destination, and do not attempt to bypass the proxy.
 12. The runtime has already completed operator-owned model, network, credential and Data API readiness checks. Never enumerate environment variables or credential material; never run `env`/`printenv`, read `/proc/*/environ`, query instance metadata, inspect AWS credential/config files, or inspect the OpenClaw auth database. Never print, hash, transform, persist or return any API key, access key, session token, password or broker token. If credentials appear unexpectedly, stop and record a BLOCK without reproducing them.
 13. Do not replace formal execution with ad hoc environment, package-source, credential or network probes. Begin from the task-local runtime packet and stop after the research plan or named resume artifact is complete; the Host alone uses the Data API through its public interface and pinned catalog after agent authoring exits.
-14. Do not recursively dump documents or inspect internal schemas. After reading the Host-named packet files, including every admitted specialist result listed above, complete the plan and make its authoring preflight PASS. Then write the final concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`; do not edit it again afterward. Finally write `identity/web_research_director_record.json` as the Agent-authored Director product. It must contain exactly: `contract_version=factorforge_host_research_director_record_v1`; exact task `identity` and `task_ref`; `reviewed_specialist_results` in the Director task's exact dependency order, each with role_id, canonical result path and the result envelope's `result_sha256`; exact plan and ledger path plus file SHA-256; `synthesis` with non-empty mechanism_decision, selected_measurement_object, rejected_alternatives, falsifiers, and a list-valued unresolved_risks; and `handoff_status=ready_for_specialist_verification`. Use `sha256sum` for the two file hashes. Do not invent or omit an intake result. The Host will reject any mismatch and bind this Agent-authored record to the private Agent-run receipt before canonical admission. The read-only authoring contract, organization plan, specialist public records and preflight output are sufficient; do not inspect validator source.
+14. Do not recursively dump documents or inspect internal schemas. After reading the Host-named packet files, including every admitted specialist result listed above, complete the plan and make its authoring preflight PASS. Then write the final concise execution ledger of at most 4,000 characters to `identity/web_execution_ledger.md`; do not edit it again afterward. Finally write `identity/web_research_director_record.json` as the Agent-authored Director product. Copy the fixed identity/task/result bindings from the exact JSON template below. Replace both SHA placeholders only after the final plan and ledger exist, and replace the synthesis placeholders with substantive public research text. Every object is closed: use `path` inside each reviewed result, never `result_path`; use top-level `ledger_ref`, never `execution_ledger_ref`; add no alias, note, status or other field. Use `sha256sum` for the two final file hashes. Do not invent, omit or reorder an intake result. The Host will reject any mismatch and bind this Agent-authored record to the private Agent-run receipt before canonical admission. The read-only authoring contract, organization plan, specialist public records and preflight output are sufficient; do not inspect validator source.
+
+Exact Host Director record template:
+
+```json
+{director_template_text}
+```
 
 The host derives authoring status from the validated plan, execution ledger,
 Agent-authored Director record and private agent-run receipt. Do not create a
@@ -606,6 +600,172 @@ the Director record is complete; on resume, exit after the exact permitted
 pause artifact is complete. Do not include secrets or absolute paths in the
 execution ledger or Director record.
 """
+
+
+def _host_director_record_prompt_template(
+    workspace: Path,
+    *,
+    report_id: str,
+    expected_identity: dict[str, str],
+) -> tuple[dict[str, Any], tuple[str, ...]] | None:
+    from factor_factory.research_org.contracts import (
+        ResearchOrganizationError,
+        normalize_workspace_relative_path,
+        read_workspace_json,
+        validate_content_hash,
+        workspace_file_lock,
+    )
+    from factor_factory.research_org.director import (
+        PLAN_RELATIVE_PATH,
+        validate_research_organization_bundle,
+    )
+
+    plan_path = workspace / PLAN_RELATIVE_PATH
+    if not plan_path.exists() and not plan_path.is_symlink():
+        return None
+    try:
+        with workspace_file_lock(workspace, PLAN_RELATIVE_PATH):
+            validation = validate_research_organization_bundle(
+                workspace=workspace,
+            )
+            plan = read_workspace_json(workspace, PLAN_RELATIVE_PATH)
+            dispatch_relative = normalize_workspace_relative_path(
+                (plan.get("workspace_policy") or {}).get(
+                    "dispatch_manifest_path"
+                ),
+                workspace=workspace,
+                label="host_director_prompt.dispatch",
+            )
+            dispatch = read_workspace_json(workspace, dispatch_relative)
+            references = dispatch.get("tasks")
+            if not isinstance(references, list):
+                raise ValueError("dispatch tasks are invalid")
+            role_references = {
+                str(reference.get("role_id")): reference
+                for reference in references
+                if isinstance(reference, dict)
+                and isinstance(reference.get("role_id"), str)
+            }
+            if len(role_references) != len(references):
+                raise ValueError("dispatch role references are not unique")
+            director_reference = role_references.get("research_director")
+            if not isinstance(director_reference, dict):
+                raise ValueError("Director task reference is missing")
+            director_relative = normalize_workspace_relative_path(
+                director_reference.get("path"),
+                workspace=workspace,
+                label="host_director_prompt.task",
+            )
+            director = read_workspace_json(workspace, director_relative)
+            if (
+                director.get("role_id") != "research_director"
+                or director.get("identity") != expected_identity
+                or director.get("task_sha256")
+                != director_reference.get("sha256")
+                or validate_content_hash(
+                    director,
+                    hash_field="task_sha256",
+                    label="host_director_prompt.task",
+                )
+            ):
+                raise ValueError("Director task binding is invalid")
+            dependencies = director.get("depends_on_roles")
+            if not isinstance(dependencies, list) or not dependencies:
+                raise ValueError("Director dependencies are invalid")
+            reviewed: list[dict[str, str]] = []
+            packet_paths = [dispatch_relative, director_relative]
+            for raw_role_id in dependencies:
+                role_id = str(raw_role_id)
+                reference = role_references.get(role_id)
+                if not isinstance(reference, dict):
+                    raise ValueError(f"dependency task is missing:{role_id}")
+                task_relative = normalize_workspace_relative_path(
+                    reference.get("path"),
+                    workspace=workspace,
+                    label="host_director_prompt.dependency_task",
+                )
+                dependency = read_workspace_json(workspace, task_relative)
+                if (
+                    dependency.get("role_id") != role_id
+                    or dependency.get("identity") != expected_identity
+                    or dependency.get("task_sha256") != reference.get("sha256")
+                    or validate_content_hash(
+                        dependency,
+                        hash_field="task_sha256",
+                        label="host_director_prompt.dependency_task",
+                    )
+                ):
+                    raise ValueError(
+                        f"dependency task binding is invalid:{role_id}"
+                    )
+                relative = normalize_workspace_relative_path(
+                    dependency.get("expected_result_path"),
+                    workspace=workspace,
+                    label="host_director_prompt.dependency_result",
+                )
+                result = read_workspace_json(workspace, relative)
+                result_sha256 = str(result.get("result_sha256") or "")
+                if (
+                    validation.get("result_statuses", {}).get(role_id) != "PASS"
+                    or result.get("role_id") != role_id
+                    or result.get("status") != "PASS"
+                    or result.get("identity") != expected_identity
+                    or not re.fullmatch(r"[0-9a-f]{64}", result_sha256)
+                    or validate_content_hash(
+                        result,
+                        hash_field="result_sha256",
+                        label="host_director_prompt.dependency_result",
+                    )
+                ):
+                    raise ValueError(
+                        f"dependency result binding is invalid:{role_id}"
+                    )
+                reviewed.append(
+                    {
+                        "role_id": role_id,
+                        "path": relative,
+                        "result_sha256": result_sha256,
+                    }
+                )
+                packet_paths.extend((task_relative, relative))
+    except (
+        ResearchOrganizationError,
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise RuntimeError(
+            f"{BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID}: {exc}"
+        ) from exc
+    template = {
+        "contract_version": "factorforge_host_research_director_record_v1",
+        "identity": director.get("identity"),
+        "task_ref": {
+            "task_id": director.get("task_id"),
+            "sha256": director.get("task_sha256"),
+        },
+        "reviewed_specialist_results": reviewed,
+        "plan_ref": {
+            "path": "identity/web_research_plan.json",
+            "sha256": "<SHA256_OF_FINAL_WEB_RESEARCH_PLAN>",
+        },
+        "ledger_ref": {
+            "path": "identity/web_execution_ledger.md",
+            "sha256": "<SHA256_OF_FINAL_WEB_EXECUTION_LEDGER>",
+        },
+        "synthesis": {
+            "mechanism_decision": "<NONEMPTY_MECHANISM_DECISION>",
+            "selected_measurement_object": "<NONEMPTY_MEASUREMENT_OBJECT>",
+            "rejected_alternatives": ["<AT_LEAST_ONE_REJECTED_ALTERNATIVE>"],
+            "unresolved_risks": [],
+            "falsifiers": ["<AT_LEAST_ONE_FALSIFIER>"],
+        },
+        "handoff_status": "ready_for_specialist_verification",
+    }
+    return template, tuple(dict.fromkeys(packet_paths))
 
 
 def _resume_prompt_error(detail: str) -> RuntimeError:

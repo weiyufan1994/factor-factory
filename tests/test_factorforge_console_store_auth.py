@@ -697,6 +697,47 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "web_agent_completion.json" not in prompt
 
 
+def test_agent_prompt_blocks_malformed_organization_plan(tmp_path):
+    from factor_factory.console.agent_adapter import (
+        BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID,
+        build_agent_prompt,
+    )
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.models import ResearchJob
+
+    worktree = tmp_path / "worktree"
+    workspace = worktree / "factor_research" / "FACTOR" / "research"
+    (workspace / "identity").mkdir(parents=True)
+    (workspace / "identity/research_organization_plan.json").write_text(
+        "{malformed\n",
+        encoding="utf-8",
+    )
+    job = ResearchJob(
+        job_id="job_123",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="report",
+        request=_request(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID,
+    ):
+        build_agent_prompt(
+            job,
+            worktree=worktree,
+            workspace=workspace,
+            config=ConsoleConfig(
+                source_repo=tmp_path / "source",
+                state_root=tmp_path / "state",
+                worktree_root=tmp_path / "runs",
+                auth_disabled=True,
+            ),
+            resume=False,
+        )
+
+
 def test_container_agent_refuses_prompt_symlink_escape(tmp_path):
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.container_agent_adapter import (

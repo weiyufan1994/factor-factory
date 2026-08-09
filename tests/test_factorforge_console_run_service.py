@@ -1465,7 +1465,11 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
     monkeypatch,
 ):
     import factor_factory.console.run_service as module
-    from factor_factory.console.agent_adapter import AgentRunResult
+    from factor_factory.console.agent_adapter import (
+        BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID,
+        AgentRunResult,
+        build_agent_prompt,
+    )
     from factor_factory.console.models import ResearchRequest
 
     _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
@@ -1491,6 +1495,81 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
         service,
         workspace,
     )
+    prompt = build_agent_prompt(
+        job,
+        worktree=allocation.worktree_path,
+        workspace=workspace,
+        config=service.config,
+        resume=False,
+    )
+    assert '"ledger_ref"' in prompt
+    assert '"path": "objects/research_organization/' in prompt
+    assert '"result_path"' not in prompt
+    assert '"execution_ledger_ref"' not in prompt
+    assert prompt.index('"role_id": "price_volume_researcher"') < prompt.index(
+        '"role_id": "knowledge_librarian"'
+    ) < prompt.index('"role_id": "data_liaison"')
+
+    dependency_task_path = next(
+        path
+        for path in (
+            workspace
+            / f"objects/research_organization/{job.report_id}/tasks"
+        ).glob("task_*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["role_id"]
+        == "data_liaison"
+    )
+    dependency_task_bytes = dependency_task_path.read_bytes()
+    tampered_task = json.loads(dependency_task_bytes)
+    tampered_task["expected_result_path"] = str(tmp_path / "outside.json")
+    _write_json(dependency_task_path, tampered_task)
+    (tmp_path / "outside.json").write_text(
+        json.dumps({"result_sha256": "f" * 64}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID,
+    ):
+        build_agent_prompt(
+            job,
+            worktree=allocation.worktree_path,
+            workspace=workspace,
+            config=service.config,
+            resume=False,
+        )
+    dependency_task_path.write_bytes(dependency_task_bytes)
+
+    plan_path = workspace / "identity/research_organization_plan.json"
+    plan_bytes = plan_path.read_bytes()
+    tampered_plan = json.loads(plan_bytes)
+    outside_dispatch = tmp_path / "outside_dispatch.json"
+    outside_dispatch.write_text('{"tasks": []}\n', encoding="utf-8")
+    tampered_plan["workspace_policy"]["dispatch_manifest_path"] = str(
+        outside_dispatch
+    )
+    _write_json(plan_path, tampered_plan)
+    original_read_text = Path.read_text
+
+    def guard_outside_dispatch_read(path, *args, **kwargs):
+        if path == outside_dispatch:
+            raise AssertionError("outside dispatch must not be opened")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guard_outside_dispatch_read)
+    with pytest.raises(
+        RuntimeError,
+        match=BLOCK_HOST_DIRECTOR_PROMPT_BINDING_INVALID,
+    ):
+        build_agent_prompt(
+            job,
+            worktree=allocation.worktree_path,
+            workspace=workspace,
+            config=service.config,
+            resume=False,
+        )
+    plan_path.write_bytes(plan_bytes)
+
     (workspace / "identity" / "web_execution_ledger.md").write_text(
         "Host reviewed admitted specialist records.\n",
         encoding="utf-8",

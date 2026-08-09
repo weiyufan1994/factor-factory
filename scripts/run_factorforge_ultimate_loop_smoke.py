@@ -727,6 +727,9 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
     role = task.get("agent_role") or "unknown_agent"
     task_id = task.get("task_id") or f"agent_{role}"
     law_id = f"{task_id}_terminal_reject_law"
+    measurement_binding = task.get("measurement_program_binding") or {}
+    frozen_equation = measurement_binding.get("mechanism_equation_or_functional")
+    frozen_object = measurement_binding.get("mathematical_object")
     return {
         "result_version": "factorforge_agentic_revision_council_result_v1",
         "status": "final",
@@ -758,6 +761,7 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
             "route_fingerprint": task.get("route_fingerprint"),
             "blind_context_hash": task.get("blind_context_hash"),
         },
+        "measurement_program_binding": measurement_binding,
         "proof_obligation_updates": [
             {
                 "obligation_id": obligation_id,
@@ -806,9 +810,14 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
             "selected_tool": "statistical_falsification",
             "selected_tool_rationale": "Executed child evidence can reject a branch while preserving the need for a distinct derivation.",
             "rejected_tools": [{"tool": "terminal_factor_reject", "reason": "One branch failure is insufficient before max loop cap."}],
-            "baseline_model": "branch payoff succeeds only if its estimator improves net evidence without repeating known failures",
+            "baseline_model": frozen_equation,
             "model_mutation": "mark the branch as falsified and require a distinct mathematical mechanism before further execution",
-            "mathematical_objects": ["branch_net_evidence", "revision_law_identity", "forbidden_repeat_hash"],
+            "mathematical_objects": [
+                frozen_object,
+                "branch_net_evidence",
+                "revision_law_identity",
+                "forbidden_repeat_hash",
+            ],
             "derivation_steps": ["Compare child net evidence to parent.", "Classify the failed law as branch-level falsification."],
             "derived_state_variables": ["falsified_revision_branch_state"],
             "observable_estimators": ["child cost-adjusted return", "child drawdown", "child formula hash"],
@@ -850,6 +859,12 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
                 }
             ],
             "mathematical_objects": [
+                {
+                    "name": frozen_object,
+                    "meaning": "Frozen mechanism-conditioned measurement object from the signed task packet.",
+                    "unit_or_dimension": "as specified by the frozen measurement program",
+                    "information_set": "signed Council task packet",
+                },
                 {
                     "name": "net_long_side_evidence",
                     "meaning": "Cost-adjusted long-side evidence after the child revision.",

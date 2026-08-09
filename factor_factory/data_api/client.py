@@ -6,6 +6,21 @@ from typing import Any
 import json
 import os
 
+import pandas as pd
+
+
+def _first_accessible_existing_path(candidates: list[str | Path | None]) -> Path | None:
+    for raw_path in candidates:
+        if not raw_path:
+            continue
+        candidate = Path(raw_path).expanduser()
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return None
+
 
 def _ensure_independent_data_api() -> None:
     try:
@@ -21,7 +36,7 @@ def _ensure_independent_data_api() -> None:
             Path("/Users/humphrey/projects/factorforge-data-api"),
         ]
         for sibling in candidates:
-            if sibling.exists() and str(sibling) not in sys.path:
+            if _first_accessible_existing_path([sibling]) and str(sibling) not in sys.path:
                 sys.path.insert(0, str(sibling))
                 break
 
@@ -95,7 +110,7 @@ def default_catalog_path() -> Path | None:
 
 
 def _read_json(path: Path | None) -> dict[str, Any]:
-    if path is None or not path.exists():
+    if path is None or _first_accessible_existing_path([path]) is None:
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -111,6 +126,90 @@ def _catalog_item(catalog_path: Path | None, dataset_id: str) -> dict[str, Any]:
             if isinstance(item, dict) and item.get("dataset_id") == dataset_id:
                 return item
     return {}
+
+
+def _column_names(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    columns: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            columns.append(item.strip())
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("column") or item.get("field")
+            if isinstance(name, str) and name.strip():
+                columns.append(name.strip())
+    return list(dict.fromkeys(columns))
+
+
+def _catalog_schema(catalog_item: dict[str, Any]) -> dict[str, Any]:
+    metadata = catalog_item.get("metadata") if isinstance(catalog_item.get("metadata"), dict) else {}
+    schema = catalog_item.get("schema") if isinstance(catalog_item.get("schema"), dict) else {}
+    columns = (
+        _column_names(schema.get("columns"))
+        or _column_names(catalog_item.get("columns"))
+        or _column_names(catalog_item.get("fields"))
+        or _column_names(metadata.get("columns"))
+    )
+    return {
+        "columns": columns,
+        "date_column": schema.get("date_column") or catalog_item.get("date_column") or metadata.get("date_column"),
+        "symbol_column": (
+            schema.get("symbol_column")
+            or catalog_item.get("symbol_column")
+            or metadata.get("symbol_column")
+        ),
+        "qlib_field_map": schema.get("qlib_field_map") or catalog_item.get("qlib_field_map") or {},
+        "logical_fields": schema.get("logical_fields") or catalog_item.get("logical_fields") or {},
+        "schema_hash": schema.get("schema_hash") or catalog_item.get("schema_hash") or metadata.get("schema_hash"),
+    }
+
+
+def _local_catalog_sidecar(uri: Any) -> dict[str, Any]:
+    if not isinstance(uri, str) or not uri.strip() or "://" in uri:
+        return {}
+    path = Path(uri).expanduser()
+    meta_path = path.with_suffix(".meta.json")
+    try:
+        return _read_json(meta_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _catalog_inventory(catalog_item: dict[str, Any], *, uri: Any = None) -> dict[str, Any]:
+    metadata = catalog_item.get("metadata") if isinstance(catalog_item.get("metadata"), dict) else {}
+    freshness = catalog_item.get("freshness") if isinstance(catalog_item.get("freshness"), dict) else {}
+    if not freshness and isinstance(metadata.get("freshness"), dict):
+        freshness = metadata["freshness"]
+    inventory = dict(catalog_item.get("coverage")) if isinstance(catalog_item.get("coverage"), dict) else {}
+    sidecar = _local_catalog_sidecar(uri)
+    summaries = [
+        freshness,
+        metadata.get("output_summary") if isinstance(metadata.get("output_summary"), dict) else {},
+        sidecar.get("output_summary") if isinstance(sidecar.get("output_summary"), dict) else {},
+        (sidecar.get("clean_meta") or {}).get("counts")
+        if isinstance(sidecar.get("clean_meta"), dict)
+        and isinstance((sidecar.get("clean_meta") or {}).get("counts"), dict)
+        else {},
+    ]
+    aliases = {
+        "row_count": ("row_count", "rows"),
+        "date_count": ("date_count", "trade_dates", "dates"),
+        "ticker_count": ("ticker_count", "tickers", "symbols"),
+        "trade_date_min": ("trade_date_min", "start_date", "date_min"),
+        "trade_date_max": ("trade_date_max", "end_date", "date_max", "latest_trade_date"),
+    }
+    for target, source_keys in aliases.items():
+        if inventory.get(target) is not None:
+            continue
+        for summary in summaries:
+            value = next((summary.get(key) for key in source_keys if summary.get(key) is not None), None)
+            if value is not None:
+                inventory[target] = value
+                break
+    if inventory:
+        inventory["scope"] = "dataset_inventory"
+    return inventory
 
 
 def _default_fields(dataset_id: str) -> list[str]:
@@ -145,7 +244,16 @@ def _normalize_result_metadata(result: Any, catalog_path: Path | None, dataset_i
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     schema = payload.get("schema") if isinstance(payload.get("schema"), dict) else {}
     coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    catalog_schema = _catalog_schema(catalog_item)
+    catalog_uri = catalog_item.get("uri") or catalog_item.get("path")
     freshness = payload.get("freshness") if isinstance(payload.get("freshness"), dict) else {}
+    if not freshness:
+        freshness = (
+            catalog_item.get("freshness")
+            if isinstance(catalog_item.get("freshness"), dict)
+            else (catalog_item.get("metadata") or {}).get("freshness") or {}
+        )
+    catalog_inventory = _catalog_inventory(catalog_item, uri=catalog_uri or source.get("uri"))
     policy = (
         catalog_item.get("daily_filter_policy")
         or catalog_item.get("policy")
@@ -160,23 +268,28 @@ def _normalize_result_metadata(result: Any, catalog_path: Path | None, dataset_i
         "access_mode": "catalog",
         "catalog_path": str(catalog_path) if catalog_path else source.get("catalog_path"),
         "request": payload.get("query"),
-        "source_uri": source.get("uri"),
-        "source": source,
+        "source_uri": source.get("uri") or catalog_uri,
+        "source": {"uri": catalog_uri, **source} if catalog_uri and not source.get("uri") else source,
         "freshness": freshness,
         "schema": {
-            "columns": schema.get("columns") or [],
-            "date_column": schema.get("date_column"),
-            "symbol_column": schema.get("symbol_column"),
-            "qlib_field_map": schema.get("qlib_field_map") or {},
-            "logical_fields": schema.get("logical_fields") or {},
-            "schema_hash": schema.get("schema_hash"),
+            "columns": schema.get("columns") or catalog_schema["columns"],
+            "date_column": schema.get("date_column") or catalog_schema["date_column"],
+            "symbol_column": schema.get("symbol_column") or catalog_schema["symbol_column"],
+            "qlib_field_map": schema.get("qlib_field_map") or catalog_schema["qlib_field_map"],
+            "logical_fields": schema.get("logical_fields") or catalog_schema["logical_fields"],
+            "schema_hash": schema.get("schema_hash") or catalog_schema["schema_hash"],
         },
         "coverage": coverage,
+        "catalog_inventory": catalog_inventory,
         "daily_filter_policy": policy,
         "resolved_fields": payload.get("resolved_fields") or {},
         "proxy_rules": payload.get("proxy_rules") or [],
         "metadata": {
-            "dataset_version": catalog_item.get("version") or catalog_item.get("dataset_version"),
+            "dataset_version": (
+                catalog_item.get("version")
+                or catalog_item.get("dataset_version")
+                or (catalog_item.get("metadata") or {}).get("schema_version")
+            ),
             "producer": catalog_item.get("producer") or (catalog_item.get("metadata") or {}).get("producer"),
             "independent_package": "factorforge_data_api",
         },
@@ -227,6 +340,147 @@ def fetch_data_api_dataset(
     frequency: str | None = None,
     catalog_path: str | Path | None = None,
 ):
+    if (
+        dataset_id == "daily_basic"
+        and os.getenv("FACTORFORGE_DISABLE_CLEAN_DAILY_LOCAL_PARQUET", "").strip().lower()
+        not in {"1", "true", "yes", "on"}
+    ):
+        requested_fields = fields or _default_fields(dataset_id)
+        candidates = [
+            os.getenv("FACTORFORGE_CLEAN_DAILY_PARQUET"),
+            "/Users/humphrey/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
+            "/Users/humphrey/projects/factor-factory/data/clean/daily_clean.parquet",
+            "/home/ubuntu/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
+        ]
+        local_path = _first_accessible_existing_path(candidates)
+        if local_path is not None:
+            read_columns = list(dict.fromkeys(["ts_code", "trade_date", *requested_fields]))
+            try:
+                frame = pd.read_parquet(local_path, columns=read_columns)
+            except Exception:
+                frame = None
+            if frame is not None:
+                start_s = str(start).replace("-", "")
+                end_s = str(end).replace("-", "")
+                frame = frame[
+                    (frame["trade_date"].astype(str) >= start_s)
+                    & (frame["trade_date"].astype(str) <= end_s)
+                ]
+                if isinstance(universe, list):
+                    symbols = {str(symbol).strip() for symbol in universe if str(symbol).strip()}
+                    frame = frame[frame["ts_code"].astype(str).isin(symbols)]
+                frame = frame.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+                query = {
+                    "dataset": dataset_id,
+                    "start_date": start_s,
+                    "end_date": end_s,
+                    "universe": universe,
+                    "fields": list(requested_fields),
+                    "frequency": frequency or _default_frequency(dataset_id),
+                }
+                meta_path = local_path.with_suffix(".meta.json")
+                local_meta = _read_json(meta_path)
+                return LocalDataApiResult(
+                    dataset_id,
+                    frame,
+                    query,
+                    {
+                        "source": {
+                            "access_mode": "local_clean_daily_parquet_warm_cache",
+                            "uri": str(local_path),
+                            "meta_uri": (
+                                str(meta_path)
+                                if _first_accessible_existing_path([meta_path]) is not None
+                                else None
+                            ),
+                        },
+                        "freshness": local_meta.get("freshness") or {
+                            "latest_trade_date": str(frame["trade_date"].max()) if not frame.empty else None,
+                            "trade_date_min": str(frame["trade_date"].min()) if not frame.empty else None,
+                            "trade_date_max": str(frame["trade_date"].max()) if not frame.empty else None,
+                        },
+                        "performance_profile": {
+                            "version": "factorforge_daily_basic_from_clean_daily_local_parquet_profile_v1",
+                            "clean_daily_selected_format": "parquet",
+                            "clean_daily_cache_path": str(local_path),
+                            "daily_basic_rows": int(len(frame)),
+                            "daily_basic_dates": int(frame["trade_date"].nunique()) if not frame.empty else 0,
+                            "daily_basic_tickers": int(frame["ts_code"].nunique()) if not frame.empty else 0,
+                        },
+                        "resolved_fields": {field: field for field in requested_fields},
+                        "independent_package": "factorforge_data_api",
+                        "local_proxy": "factor_factory.data_api.clean_daily_local_parquet.daily_basic_fields",
+                    },
+                )
+
+    if (
+        dataset_id == "clean_daily_bar"
+        and os.getenv("FACTORFORGE_DISABLE_CLEAN_DAILY_LOCAL_PARQUET", "").strip().lower()
+        not in {"1", "true", "yes", "on"}
+    ):
+        candidates = [
+            os.getenv("FACTORFORGE_CLEAN_DAILY_PARQUET"),
+            "/Users/humphrey/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
+            "/home/ubuntu/projects/factor-factory-data-api/data/clean/daily_clean.parquet",
+        ]
+        local_path = _first_accessible_existing_path(candidates)
+        if local_path is not None:
+            requested_fields = fields or _default_fields(dataset_id)
+            read_columns = list(dict.fromkeys(["ts_code", "trade_date", *requested_fields]))
+            frame = pd.read_parquet(local_path, columns=read_columns)
+            start_s = str(start).replace("-", "")
+            end_s = str(end).replace("-", "")
+            frame = frame[
+                (frame["trade_date"].astype(str) >= start_s)
+                & (frame["trade_date"].astype(str) <= end_s)
+            ]
+            if isinstance(universe, list):
+                symbols = {str(symbol).strip() for symbol in universe if str(symbol).strip()}
+                frame = frame[frame["ts_code"].astype(str).isin(symbols)]
+            frame = frame.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+            query = {
+                "dataset": dataset_id,
+                "start_date": start_s,
+                "end_date": end_s,
+                "universe": universe,
+                "fields": list(requested_fields),
+                "frequency": frequency or _default_frequency(dataset_id),
+            }
+            meta_path = local_path.with_suffix(".meta.json")
+            local_meta = _read_json(meta_path)
+            return LocalDataApiResult(
+                dataset_id,
+                frame,
+                query,
+                {
+                    "source": {
+                        "access_mode": "local_parquet_warm_cache",
+                        "uri": str(local_path),
+                        "meta_uri": (
+                            str(meta_path)
+                            if _first_accessible_existing_path([meta_path]) is not None
+                            else None
+                        ),
+                    },
+                    "freshness": local_meta.get("freshness") or {
+                        "latest_trade_date": str(frame["trade_date"].max()) if not frame.empty else None,
+                        "trade_date_min": str(frame["trade_date"].min()) if not frame.empty else None,
+                        "trade_date_max": str(frame["trade_date"].max()) if not frame.empty else None,
+                    },
+                    "performance_profile": {
+                        "version": "factorforge_clean_daily_local_parquet_profile_v1",
+                        "clean_daily_selected_format": "parquet",
+                        "clean_daily_cache_path": str(local_path),
+                        "clean_daily_rows": int(len(frame)),
+                        "clean_daily_dates": int(frame["trade_date"].nunique()) if not frame.empty else 0,
+                        "clean_daily_tickers": int(frame["ts_code"].nunique()) if not frame.empty else 0,
+                    },
+                    "resolved_fields": {field: field for field in requested_fields},
+                    "independent_package": "factorforge_data_api",
+                    "local_proxy": "factor_factory.data_api.clean_daily_local_parquet",
+                },
+            )
+
     if (
         dataset_id == "daily_basic"
         and os.getenv("FACTORFORGE_DISABLE_DAILY_BASIC_PARQUET_CACHE", "").strip().lower()
@@ -331,25 +585,75 @@ def resolve_data_api_dataset(
             end=end,
             fields=requested_fields,
         )
-    try:
-        result = fetch_data_api_dataset(
-            dataset_id,
-            start=start or "19000101",
-            end=end or "29991231",
-            fields=requested_fields,
-            universe=universe,
-            frequency=frequency,
-            catalog_path=catalog,
-        )
-    except DataQueryInvalid as exc:
+    catalog_item = _catalog_item(catalog, dataset_id)
+    if not catalog_item:
         return _blocked_metadata(
             dataset_id,
-            status="blocked",
-            block_code="DATA_API_QUERY_INVALID",
-            reason=str(exc),
+            status="dataset_missing",
+            block_code="DATA_API_DATASET_MISSING",
+            reason=f"dataset not registered in catalog: {dataset_id}",
             catalog_path=catalog,
             start=start,
             end=end,
             fields=requested_fields,
         )
-    return _normalize_result_metadata(result, catalog, dataset_id)
+    source = catalog_item.get("source") if isinstance(catalog_item.get("source"), dict) else {}
+    metadata = catalog_item.get("metadata") if isinstance(catalog_item.get("metadata"), dict) else {}
+    schema = _catalog_schema(catalog_item)
+    freshness = catalog_item.get("freshness") if isinstance(catalog_item.get("freshness"), dict) else {}
+    if not freshness and isinstance(metadata.get("freshness"), dict):
+        freshness = metadata["freshness"]
+    policy = (
+        catalog_item.get("daily_filter_policy")
+        or catalog_item.get("policy")
+        or metadata.get("daily_filter_policy")
+        or metadata.get("policy")
+        or {}
+    )
+    uri = (
+        catalog_item.get("uri")
+        or catalog_item.get("path")
+        or source.get("uri")
+        or source.get("path")
+    )
+    return {
+        "dataset_id": dataset_id,
+        "status": catalog_item.get("status") or "ready",
+        "blocked_reason": catalog_item.get("blocked_reason"),
+        "access_mode": "catalog",
+        "catalog_path": str(catalog),
+        "request": {
+            "dataset": dataset_id,
+            "start_date": str(start) if start is not None else None,
+            "end_date": str(end) if end is not None else None,
+            "universe": universe,
+            "fields": list(requested_fields),
+            "frequency": frequency or _default_frequency(dataset_id),
+        },
+        "source_uri": uri,
+        "source": {"uri": uri, **source} if uri else source,
+        "freshness": freshness,
+        "schema": {
+            "columns": schema.get("columns") or [],
+            "date_column": schema.get("date_column"),
+            "symbol_column": schema.get("symbol_column"),
+            "qlib_field_map": schema.get("qlib_field_map") or {},
+            "logical_fields": schema.get("logical_fields") or {},
+            "schema_hash": schema.get("schema_hash"),
+        },
+        "coverage": {},
+        "catalog_inventory": _catalog_inventory(catalog_item, uri=uri),
+        "daily_filter_policy": policy,
+        "resolved_fields": {field: field for field in requested_fields},
+        "proxy_rules": catalog_item.get("proxy_rules") or [],
+        "metadata": {
+            "dataset_version": (
+                catalog_item.get("version")
+                or catalog_item.get("dataset_version")
+                or metadata.get("schema_version")
+            ),
+            "producer": catalog_item.get("producer") or metadata.get("producer"),
+            "independent_package": "factorforge_data_api",
+            "resolve_mode": "catalog_only",
+        },
+    }

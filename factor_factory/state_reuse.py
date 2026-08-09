@@ -85,6 +85,57 @@ def validate_state_dependency_contract(contract: dict[str, Any]) -> list[str]:
     return failures
 
 
+def build_state_dependency_contract_from_data_prep(
+    data_prep_master: dict[str, Any],
+    *,
+    producer: str,
+) -> dict[str, Any]:
+    requirements: list[dict[str, Any]] = []
+    for item in data_prep_master.get("minute_derived_state_requirements") or []:
+        if not isinstance(item, dict) or not item.get("dataset_id"):
+            continue
+        requirements.append(
+            {
+                "dataset_id": item.get("dataset_id"),
+                "schema_version": item.get("schema_version"),
+                "window": {
+                    "start": item.get("start_date"),
+                    "end": item.get("end_date"),
+                },
+                "required_fields": list(item.get("required_fields") or []),
+                "parameters": {
+                    "cutoff_time": item.get("cutoff_time"),
+                    "source_minute_dataset_id": item.get(
+                        "source_minute_dataset_id"
+                    ),
+                    "source_data_version": item.get("source_data_version"),
+                },
+                "qa_required": True,
+                "lookahead_policy_required": True,
+                "no_future_intraday_minutes": True,
+                "fallback_policy": item.get("fallback_policy")
+                or "block_or_explicit_backfill",
+            }
+        )
+    return {
+        "contract_version": STATE_DEPENDENCY_CONTRACT_VERSION,
+        "producer": producer,
+        "report_id": data_prep_master.get("report_id"),
+        "factor_id": data_prep_master.get("factor_id"),
+        "required_datasets": requirements,
+        "no_state_required": not bool(requirements),
+        "no_state_reason": (
+            "daily_or_catalog_data_only_no_derived_state_dependency"
+            if not requirements
+            else None
+        ),
+        "allowed_missing_behavior": "block",
+        "raw_minute_full_window_allowed": False,
+        "bounded_smoke_allowed": True,
+        "data_request_on_missing": True,
+    }
+
+
 def _catalog_entries(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
     raw = catalog.get("datasets", catalog)
     if isinstance(raw, dict):

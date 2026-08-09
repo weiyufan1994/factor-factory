@@ -23,16 +23,20 @@ Use this skill when a factor already has Step4 evidence and we need to answer:
 ## Core Philosophy
 
 Always reason in this order:
-1. identify the return source,
-2. identify the objective constraints,
-3. interpret the metrics,
-4. run the math discipline check,
-5. extract transferable lessons and idea seeds,
-6. separate macro/micro/portfolio revisions from stop-or-kill decisions,
-7. choose a program-search mode when iteration is needed,
+1. freeze the economic hypothesis, estimand, payer and information set,
+2. search an open mathematical-tool space, compare mechanism-distinct models,
+   and select one from the economic hypothesis,
+3. derive the mechanism-specific mathematical object, its market-outcome map,
+   observation equation, and only the specialized audits that apply,
+4. bind a mechanism-conditioned measurement program and implementation route,
+5. interpret metrics as tests of the pre-registered mathematical claims,
+6. extract transferable lessons and idea seeds,
+7. localize any failure before choosing a bounded search/revision mode,
 8. then decide promote / iterate / reject.
 
 Do **not** start from IC/backtest metrics alone.
+Do not start from an available operator and reverse-engineer an economic story,
+or change the estimand because a convenient field is available.
 
 Every completed Step6 loop must also leave a user-facing `loop_research_brief`
 artifact in Markdown and JSON. The brief is not a chat summary: it is the
@@ -40,6 +44,84 @@ durable research note that explains economic interpretation, metric/chart
 evidence, knowledge comparison, next research direction, and the final loop
 conclusion. Long-short and decile evidence must be labeled diagnostic-only, and
 the next direction must explain why portfolio-expression repair is forbidden.
+
+## Research Quality Claim Ladder
+
+The research brain must grade every mechanism claim. Do not let a fluent
+explanation masquerade as validation.
+
+Use this ordered ladder:
+
+```text
+none
+narrative_only
+math_framed
+metric_consistent
+component_validated
+payer_validated
+```
+
+`narrative_only` is a story. `math_framed` names a mathematical object or tool.
+`metric_consistent` requires an accepted, replayable factor-proof certificate;
+aggregate IC/NAV/group evidence without that certificate remains
+`metric_candidate`. `component_validated` requires the trusted full-versus-
+ablated verifier, not a narrative ablation claim.
+`payer_validated` requires a falsifiable counterparty or payer proxy.
+`stochastic_validated` remains an optional protocol qualifier only when the
+selected mechanism actually makes a stochastic-process claim; it requires
+state, conditional return distribution, transition/persistence, or
+barrier/tail evidence. It is not a stage that fundamental, valuation, causal,
+spectral, functional or other non-stochastic factors must pass.
+
+For a formal claim, `component_validated` specifically requires the replayable
+full-versus-ablated panel verifier. Joint buckets or regime splits remain useful
+diagnostics unless a trusted verifier contract covers them. The current v1
+kernel does not mechanically certify payer or stochastic claims, so do not use
+those labels merely because the memo contains the corresponding fields.
+
+Every serious review must also produce an evidence tier map:
+
+- `promotion_gate_evidence`
+- `robustness_evidence`
+- `diagnostic_evidence`
+- `window_contract_evidence`
+- `exploratory_evidence`
+
+Promotion can use only promotion-gate evidence. Diagnostic, supplemental, and
+window-contract evidence can explain or falsify, but cannot be promoted into
+adoption proof.
+
+Promotion-gate metrics require the frozen-search -> locked-threshold ->
+one-time-OOS-release chain. The release binds actual panel dates, at least 60
+daily periods and the panel hash. Formal long-end judgment uses net geometric
+return and positive terminal/minimum wealth; arithmetic return is only the
+gross-to-cost reconciliation.
+
+Do not interpret an overlapping `t+5` forward-return panel as 217 independent
+daily portfolio returns. Formal verifier v2 supports only a disjoint one-day
+return path with execution equal to label start. It must verify actual label
+start/end dates and prices against the full
+`factorforge_data_access.trade_cal_csv` calendar independently resolved
+outside the factor workspace. Its normalized open-date snapshot must match the
+explicit snapshot id in the Git-anchored trusted calendar registry, and the
+proof binds `verification_scope=production`, the raw file, normalized snapshot,
+registry SHA, anchor commit/blob, and snapshot id before recomputing the return.
+A narrative horizon, workspace-provided or unregistered sparse calendar, or
+renamed `fwd_ret_5d` column is not proof. Neither a `SMOKE` name nor a modified
+worktree registry changes this authority. Multi-day labels remain
+predictive diagnostics until a valid daily cohort/NAV path or supported
+non-overlapping stride contract exists.
+
+If the review invokes stochastic processes, stopping times, hidden states, or
+barriers, explicitly state whether the claim is `framing_only` or `validated`.
+If it is validated, name the state space, conditional drift/return
+distribution, transition persistence or half-life, barrier/tail test, and what
+information each revision preserves or deletes.
+
+If the review claims Dirac-style induction or a reusable symbolic law, require a
+public memo with atomic state, invariant, estimator law, deleted-information
+audit, limiting cases, falsification design, reuse boundary, and overclaim
+guard. Without that artifact, call it a hypothesis, not an induction result.
 
 ## Current Trading Mandate
 
@@ -49,12 +131,15 @@ The current Factor Forge mandate is **long-only**:
 - no adoption based on long-short spread,
 - no revision by changing portfolio expression, rebalance mechanics, or decile trading.
 
-Deciles are allowed only as diagnostics for:
+For non-risk-premium claims, deciles are allowed only as diagnostics for:
 - whether higher factor values map monotonically to higher future returns,
 - whether the high-score long side earns positive return,
 - whether the expression direction is economically coherent.
 
 If a factor is monotonic only because the short side loses money, it is not adoptable. If the long side is weak or negative, revise the factor expression/Step3B code or reject the factor.
+For `risk_premium`, quintile/decile monotonicity is a formal obligation. Use
+value-based quantiles and BLOCK if ties collapse the required 5/10 buckets;
+never split ties by asset order.
 
 ## Long-Side Performance Economics
 
@@ -81,6 +166,109 @@ Default working thresholds:
 - recovery soft limit: recovery days no longer than one trading year (`252`)
 
 These thresholds are research governance defaults, not eternal truths. They may be tightened by asset class, liquidity bucket, turnover, or portfolio context. A positive-return factor with low Sharpe, high volatility drag, deep drawdown, or slow recovery should be iterated or rejected, not promoted.
+
+## Pre-Cost Information First
+
+Do not let turnover or trading cost make the research decision before the
+factor's information content is understood. Cost can block official promotion;
+it should not automatically block learning, feature retention, or slower-horizon
+repair.
+
+Use a two-layer judgment:
+
+1. **Information layer:** decide whether the factor contains a pre-cost premium
+   and what market process produces it.
+2. **Tradability layer:** decide whether the current expression, horizon,
+   turnover, drawdown, and capacity can become a live long-only factor.
+
+The information layer must inspect:
+
+- return source: `risk_premium`, `information_advantage`,
+  `constraint_driven_arbitrage`, or `mixed`;
+- profit payer / counterparty: why the payer exists, why the behavior repeats,
+  and which observation would falsify the payer;
+- pre-cost premium: IC/rank IC, grouped gross returns, long-end gross return,
+  and Fama-MacBeth or cross-sectional regression where available;
+- monotonicity: shape, direction, and stability across full IS, IS subsamples,
+  OOS diagnostics, liquidity buckets, and regimes;
+- stochastic risk source: whether volatility and max drawdown come from
+  continuous sigma exposure, jump/tail events, regime switching, liquidity
+  crunch, crowding, or implementation noise.
+
+Tighten evidence by return source:
+
+- `risk_premium`: require strong monotonicity and Fama-MacBeth /
+  cross-sectional regression support, because compensation should be priced
+  broadly and stably.
+- `information_advantage`: allow weaker monotonicity if the long end has
+  significant gross and risk-adjusted return; the edge may be concentrated in
+  the highest-information tail.
+- `constraint_driven_arbitrage`: require clear constraint/payer logic and
+  evidence that the premium appears when the constraint binds.
+
+These standards are enforced through the factor proof certificate:
+
+- every claim class must reconcile IC, ICIR, volatility cost, transaction
+  cost, maximum drawdown and executable long-end return;
+- Fama-MacBeth and quintile/decile monotonicity are acceptance obligations only
+  for `claim_class=risk_premium`;
+- for all other claim classes, monotonicity is diagnostic and cannot be marked
+  as universal promotion-gate evidence;
+- every passed result must bind a workspace-local evidence file, verifier ID
+  and SHA256, with thresholds registered before evaluation;
+- formal metric proof must come from the deterministic frozen-panel verifier,
+  not a researcher-authored JSON carrying a trusted verifier name.
+- formal component proof must come from the deterministic component-obligation
+  verifier and be replayable against its source panel/spec.
+
+If cost overwhelms net performance but the information layer is strong, classify
+the result as `feature_candidate`, `state_descriptor`, `needs_horizon_repair`,
+or `execution_research_needed`. Do not call it no-information unless the
+pre-cost evidence and mechanism also fail.
+
+## Factor Complexity Penalty
+
+Do not impose a hard limit such as "at most three primitives." A factor may be
+mathematically richer when the economic hypothesis requires it. But every added
+state, interaction, threshold, nonlinear gate, data dependency, or free
+parameter must pay a complexity cost.
+
+Use this research objective when comparing revisions:
+
+$$
+\mathcal{J}(f)
+=
+\mathrm{OOSLongEdge}(f)
++ \alpha\,IC_{\mathrm{resid}}(f)
+- \lambda_C\,\mathrm{Complexity}(f)
+$$
+
+where complexity should increase with:
+
+$$
+\mathrm{Complexity}(f)
+=
+aN_{\mathrm{primitive}}
++ bN_{\mathrm{interaction}}
++ cN_{\mathrm{free\ parameter}}
++ dN_{\mathrm{data\ dependency}}
++ eN_{\mathrm{nonlinear\ gate}}
+$$
+
+This is a soft penalty, not a style preference. A complex factor can win if it
+delivers durable OOS long-side improvement, residual IC, lower drawdown, or a
+clearer economic mapping. A complex factor should lose if it only improves
+in-sample raw IC, adds opaque gates, or hides overfit behind mathematical
+language.
+
+For every proposed revision, state:
+- which economic state or stochastic-process component the new term represents
+  (`drift`, `volatility`, `barrier distance`, `hitting probability`, or another
+  named object),
+- why the added complexity improves generalization rather than backtest fit,
+- what metric improvement must appear for the added complexity to be worth it,
+- and which term, gate, or parameter should be removed if the improvement does
+  not appear.
 
 ## Canonical Return Sources
 
@@ -118,11 +306,16 @@ A proper review should answer:
 A proper revision proposal should answer:
 1. Which return source is this modification trying to strengthen?
 2. Which objective constraints is it exploiting or adapting to?
-3. Why does the revised factor expression map more linearly/monotonically to risk-adjusted long-side expected returns?
+3. Why should the revised factor expression improve the claim-specific
+   long-side return shape? Require broad monotonicity only for risk-premium
+   claims; for other claims state the predicted tail, threshold or regime
+   shape instead.
 4. What is the `revision_operator` and why should it improve generalization?
 5. What are the `overfit_risk` and `kill_criteria`?
-6. Should the next loop use genetic formula mutation, Bayesian parameter search, RL-policy advisory, or multi-agent parallel exploration?
-7. Confirm that the proposal changes the factor expression or Step3B code itself, not portfolio mechanics.
+6. What complexity was added or removed, and is the marginal benefit worth the
+   complexity penalty?
+7. Should the next loop use genetic formula mutation, Bayesian parameter search, RL-policy advisory, or multi-agent parallel exploration?
+8. Confirm that the proposal changes the factor expression or Step3B code itself, not portfolio mechanics.
 
 ## Program Search Policy
 
@@ -134,37 +327,38 @@ Step6 may borrow search methods from program-level factor mining:
 
 For a single cold-start factor, prefer controlled genetic/Bayesian/multi-branch search over automatic RL. RL becomes meaningful only after many saved trajectories.
 
+Search is subordinate to the mathematical contract. Its neighborhood must be
+defined in terms of model assumptions, state variables, estimators and preserved
+invariants before formula/operator/code mutation begins. A candidate that
+changes the estimand is a new hypothesis branch, not a parameter mutation.
+
 Do not use DD-view-edge-trade in Factor Forge. That framework is for individual-stock diligence, not the factor-mining control loop.
 
 ## Math Discipline
 
-When reviewing Step5/Step6 output, require `math_discipline_review`:
-- `step1_random_object`
-- `target_statistic`
-- `information_set_legality`
-- `spec_stability`
-- `signal_vs_portfolio_gap`
-- `revision_operator`
-- `generalization_argument`
-- `overfit_risk`
-- `kill_criteria`
+Read and apply:
 
-If these cannot be answered, do not promote the factor.
-
-Mechanism Math Contract v1 extends this discipline. Each factor should
-preferably state the economic mechanism, mathematical model family, state or
-object, observable estimator, target functional, expected metric signature,
-revision operators, falsification tests, and kill criteria. `under_specified`
-is acceptable when the mechanism is not yet clear; pretending a mechanism exists
-is not. The contract sharpens research reasoning but never replaces real
-Step4/5 evidence or promotion gates.
-
-Use repo reference:
+- `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md`
 - `docs/operations/factorforge-math-research-discipline.zh-CN.md`
+
+`docs/contracts/mechanism_math_contract_v2.zh-CN.md` is legacy compatibility
+material only. Read it when an existing artifact already carries v2; do not
+synthesize v2 for current research.
+
+Require `math_discipline_review` to bind the mathematical object, estimand,
+information set, selected/competing models, measurement semantics and any
+mechanism-applicable audits, observation equation,
+measurement program, generalization argument, overfit risk and kill criteria.
+`under_specified` is valid; invented certainty is not. The contracts discipline
+research but never replace Step4/5 evidence or promotion gates.
 
 ## Learning And Innovation
 
 The knowledge base is not an archive only. Every serious case should improve future researchers.
+
+Prior cases remain `advisory_prior`, `counterexample`, or `tool_candidate`.
+They may broaden model selection and expose failed measurements, but they cannot
+override the current derivation or serve as current-factor proof.
 
 Require Step6 to extract:
 - transferable patterns,
@@ -278,14 +472,18 @@ substantive derivation record is invalid.
 
 The symbolic-law role should treat the factor formula as a mathematical object:
 state variable, estimator mapping, target functional, invariance or scaling
-claim, limiting cases, stochastic or statistical structure, and falsification
-tests. It may use dimensional analysis, stochastic calculus, spectral analysis,
-projection, robust statistics, functional analysis, dynamical systems, stopping
-time, information theory, or other justified tools. It should select tools based
-on the factor and evidence, not apply a fixed checklist. Mathematical
+claim, limiting cases, mechanism-specific structure, and falsification tests.
+It may use DCF, residual income, accounting identities, dimensional analysis,
+stochastic calculus, spectral analysis, projection, robust statistics,
+functional analysis, causal models, dynamical systems, stopping time,
+information theory, optimization, a composition of tools, or another justified
+method. It should select tools based on the factor and evidence, not apply a
+fixed checklist. Mathematical
 plausibility is not evidence and must be checked against Step4/5/6 evidence and
 provenance gates before any future human-approved implementation work.
 
-## Mechanism Math Contract v2
-
-Research interpretation must start from the economic hypothesis and choose a primary mechanism model before discussing formulas. The primary model may be stochastic, microstructure, scaling, barrier, information-theoretic, spectral, dependence, regime-switching, behavioral, inventory/execution, network/contagion, or another justified family. Regardless of family, state the stochastic price-process projection: which term of the conditional return distribution changes, why, and how the formula estimates it. Do not use generic SDE text as decoration; if the model cannot name state variables, observable proxies, expected metric signature, falsification tests, and kill criteria, mark it under-specified or block promotion.
+Council is route-based, not title-based. Generate routes from the active
+approach registry; preserve at least one blind null/alias attack; bind each
+dispatch/result to route fingerprint, blind-context hash, expected agent
+identity and packet/result hashes. Root synthesis compares incompatible
+assumptions and discriminating evidence. Majority vote cannot choose a law.

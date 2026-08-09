@@ -1,0 +1,71 @@
+{
+  "approval_context": "User approved moving/continuing cleanup; repo-root knowledge export requires explicit provenance manifest.",
+  "contract_version": "factorforge_repo_root_knowledge_export_manifest_v1",
+  "created_at_utc": "2026-06-23T02:31:45.776192Z",
+  "export_root": "knowledge/因子工厂",
+  "export_target": "repo_root_knowledge_vault",
+  "files": [
+    {
+      "bytes": 302,
+      "path": "knowledge/因子工厂/Home.md",
+      "sha256": "c23eec595d0c29171b5a30d148e84140209c840b54ad60b63eb1eb99f421d754"
+    },
+    {
+      "bytes": 115108,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_coverage.json",
+      "sha256": "2a1a0e74c75e1ade992edb9d832212caa5e51be1b4c9deb30fa58788a757efc5"
+    },
+    {
+      "bytes": 26731,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_edges.jsonl",
+      "sha256": "714b0043eb4639c5f0d79076be5b0b13b28d8dd9b8240358d3ca0d9af5003234"
+    },
+    {
+      "bytes": 7251,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_graph_manifest.json",
+      "sha256": "6f7736abbbcedde00dd657965e118d31be0d4e7c2a25d4612963a81ba60f063b"
+    },
+    {
+      "bytes": 149421,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_nodes.jsonl",
+      "sha256": "a72c006d2a1498a89e45388e1caecefaf2a9ee56f49de4cc9a937b8159d0cd17"
+    },
+    {
+      "bytes": 3895,
+      "path": "knowledge/因子工厂/graph/nodes/CS_RESIDUAL_VOL_20D_NEG_20260616.json",
+      "sha256": "3dda32f885aa391c1d6e068646af63dffd9f07bd0b1345ef3179a144968d207b"
+    },
+    {
+      "bytes": 5604,
+      "path": "knowledge/因子工厂/graph/nodes/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.json",
+      "sha256": "503359a0d5072f4508a4358f55bca1825502ba8aa4d927c6b434cc42976e2e0c"
+    },
+    {
+      "bytes": 4242,
+      "path": "knowledge/因子工厂/graph/nodes/VP_SUPPORT_OVERHANG_OCCUPATION_20260610.json",
+      "sha256": "b5874f0800f772939eb0e50c78a5b3a5603d6ea2d014daf892cfc1d9792a5a72"
+    },
+    {
+      "bytes": 6111,
+      "path": "knowledge/因子工厂/仪表盘/普通因子库.md",
+      "sha256": "d4d6fb8483b122ff1c23766c656de85dae95635c276551d45dba35e86f92c73a"
+    },
+    {
+      "bytes": 16199,
+      "path": "knowledge/因子工厂/仪表盘/知识网络.md",
+      "sha256": "7ec96f1745087648751a48f088767acf790e680f6209a6f3193ededa1caf3288"
+    },
+    {
+      "bytes": 2018,
+      "path": "knowledge/因子工厂/仪表盘/知识网络覆盖率.md",
+      "sha256": "330ce25a23147078079c00562b17ee45adcd00690339c063b431ed1a130f9ef9"
+    },
+    {
+      "bytes": 4718,
+      "path": "knowledge/因子工厂/普通因子库/FACTOR_LIBRARY_INDEX.md",
+      "sha256": "38944091e5bb177a66325e6f64dde131a29d95a1d2c323f947325b10facbda2d"
+    }
+  ],
+  "reason": "Record accumulated Factor Forge knowledge graph/library export after workspace hygiene cleanup and path migration.",
+  "source_boundary": "factor workspace canonical knowledge exported to repo-root vault for review/search; default writes remain workspace-local"
+}

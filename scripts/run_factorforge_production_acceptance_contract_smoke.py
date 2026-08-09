@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pandas as pd
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -16,6 +18,16 @@ if str(REPO_ROOT) not in sys.path:
 def load_validator():
     path = REPO_ROOT / 'skills/factor-forge-step4/scripts/validate_step4.py'
     spec = importlib.util.spec_from_file_location('step4_validator_acceptance_smoke', path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'cannot load {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_runner():
+    path = REPO_ROOT / 'skills/factor-forge-step4/scripts/run_step4.py'
+    spec = importlib.util.spec_from_file_location('step4_runner_acceptance_smoke', path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f'cannot load {path}')
     module = importlib.util.module_from_spec(spec)
@@ -70,6 +82,12 @@ def validate(module, summary: dict | None) -> list[dict]:
     return issues
 
 
+def validate_formal_signal_coverage(module, run_master: dict, diagnostics: dict) -> list[dict]:
+    issues: list[dict] = []
+    module.validate_formal_signal_coverage(run_master=run_master, diagnostics=diagnostics, issues=issues)
+    return issues
+
+
 def has(issues: list[dict], code: str) -> bool:
     return any(item.get('code') == code for item in issues)
 
@@ -100,6 +118,7 @@ def run_performance_profile(root: Path, report_id: str) -> dict:
 
 def main() -> None:
     module = load_validator()
+    runner = load_runner()
     cases: dict[str, dict] = {}
 
     issues = validate(module, None)
@@ -127,6 +146,62 @@ def main() -> None:
 
     issues = validate(module, base_summary())
     cases['valid_acceptance_summary_passes'] = {'ok': not issues, 'issues': issues}
+
+    issues = validate_formal_signal_coverage(
+        module,
+        {'run_status': 'success', 'signal_column': 'factor_value'},
+        {'quality_checks': {'null_ratio': {'factor_value': 0.9884}}},
+    )
+    cases['formal_signal_sparse_null_ratio_blocks'] = {
+        'ok': has(issues, 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW'),
+        'issues': issues,
+    }
+
+    issues = validate_formal_signal_coverage(
+        module,
+        {
+            'run_status': 'success',
+            'formal_signal_coverage': {
+                'coverage_gate_verdict': 'PASS',
+                'factor_value_non_null_coverage': 0.98,
+                'nonnull_end': '20250711',
+                'actual_window': {'end': '20250711'},
+            },
+        },
+        {'quality_checks': {}},
+    )
+    cases['formal_signal_dense_coverage_passes'] = {'ok': not issues, 'issues': issues}
+
+    rows = []
+    for date_i, date in enumerate(pd.bdate_range('2020-01-01', periods=10)):
+        for ticker in ['000001.SZ', '000002.SZ']:
+            rows.append({
+                'ts_code': ticker,
+                'trade_date': date.strftime('%Y%m%d'),
+                'factor_value': None if date_i < 4 else 1.0 + date_i,
+            })
+    warmup_profile = runner.build_formal_signal_coverage_profile(
+        result_df=pd.DataFrame(rows),
+        signal_col='factor_value',
+        actual_start='20200101',
+        actual_end='20200114',
+        effective_target_start='20200101',
+        effective_target_end='20200114',
+        formula_max_lookback=5,
+    )
+    issues = validate_formal_signal_coverage(
+        module,
+        {'run_status': 'success', 'formal_signal_coverage': warmup_profile},
+        {'quality_checks': {}},
+    )
+    cases['formal_signal_long_lookback_warmup_adjusted_coverage_passes'] = {
+        'ok': not issues
+        and warmup_profile.get('coverage_basis') == 'warmup_adjusted'
+        and float(warmup_profile.get('raw_factor_value_non_null_coverage') or 0.0) < 0.90
+        and float(warmup_profile.get('factor_value_non_null_coverage') or 0.0) >= 0.90,
+        'issues': issues,
+        'profile': warmup_profile,
+    }
 
     with tempfile.TemporaryDirectory(prefix='factorforge_acceptance_summary_smoke_') as tmp:
         root = Path(tmp)

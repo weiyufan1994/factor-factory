@@ -8,15 +8,17 @@ import os
 import subprocess
 import sys
 import tempfile
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+sys.path[:] = [item for item in sys.path if item != str(REPO_ROOT)]
+sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_workspace import (
+    BLOCK_OUTPUT_OUTSIDE_WORKSPACE,
     BLOCK_WORKSPACE_MISSING,
     build_workspace_manifest,
     default_workspace_root,
@@ -26,7 +28,20 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
     write_workspace_manifest,
 )
+from factor_factory.research_org import (
+    ResearchOrganizationError,
+    load_research_organization_plan,
+    resolve_research_organization_gate,
+    validate_research_organization_runtime,
+)
 from factor_factory.runtime_context import load_runtime_manifest, resolve_factorforge_context, utc_now, write_json_atomic
+from factor_factory.console.web_research_plan import (
+    WebResearchPlanError,
+    required_web_resume_start_step,
+    resolve_workspace_approved_catalog,
+    validate_materialized_web_research,
+)
+from factor_factory.council_terminal import classify_terminal_rejection_result
 from factor_factory.state_reuse import (
     BLOCK_STATE_DEPENDENCY_UNDECLARED,
     StateReuseBlock,
@@ -273,6 +288,209 @@ def load_json_if_exists(path: Path) -> dict[str, Any]:
         return {}
 
 
+DATA_REQUEST_BLOCKER_PATTERNS = (
+    'BLOCK_FACTORFORGE_DATA_REQUEST_REQUIRED',
+    'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING',
+    'BLOCK_STEP4_DATA_API_FETCH_FAILED',
+    'BLOCK_STEP4_DATA_CONTRACT_MISSING',
+    'BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED',
+    'BLOCK_STEP4_MINUTE_DERIVED_STATE_EMPTY',
+    'BLOCK_MINUTE_DERIVED_STATE_COVERAGE_INCOMPLETE',
+    'missing_data_api',
+    'Data API could not resolve',
+    'dataset_not_found',
+    'missing_intraday_flow_proxy_dataset',
+    'Required clean/precomputed intraday proxy dataset',
+    'BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED',
+)
+
+
+def safe_request_token(raw: str) -> str:
+    token = re.sub(r'[^A-Za-z0-9_.-]+', '_', raw.strip())
+    return token.strip('_') or 'unknown'
+
+
+def resolve_data_api_root(repo_root: Path) -> Path | None:
+    candidates = []
+    env_root = os.environ.get('FACTORFORGE_DATA_API_ROOT')
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    candidates.extend(
+        [
+            Path('/Users/humphrey/projects/factor-factory-data-api'),
+            repo_root.parent / 'factor-factory-data-api',
+            repo_root.parent / 'factorforge-data-api',
+        ]
+    )
+    for candidate in candidates:
+        if (candidate / 'scripts' / 'data_request_inbox.py').exists():
+            return candidate
+    return None
+
+
+def extract_missing_datasets(payload: Any) -> list[str]:
+    found: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'missing_datasets' and isinstance(item, list):
+                    found.extend(str(dataset) for dataset in item if str(dataset).strip())
+                elif key in {'dataset_id', 'requested_dataset_id'} and isinstance(item, str):
+                    if any(marker in item for marker in ('intraday_', 'daily_basic', 'minute_bar', 'clean_daily')):
+                        found.append(item)
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    deduped: list[str] = []
+    for item in found:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def feasibility_has_data_blocker(feasibility: dict[str, Any]) -> bool:
+    if not feasibility:
+        return False
+    verdicts = {
+        str(feasibility.get(key) or '').strip().lower()
+        for key in ('feasibility', 'final_result', 'status', 'verdict')
+    }
+    if verdicts & {'block', 'blocked', 'fail', 'failed', 'missing', 'unavailable'}:
+        return True
+    if feasibility.get('blocked') is True:
+        return True
+    blocked_items = feasibility.get('blocked_items')
+    if isinstance(blocked_items, list) and bool(blocked_items):
+        return True
+
+    def has_explicit_missing_list(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'missing_datasets' and isinstance(item, list):
+                    if any(str(dataset).strip() for dataset in item):
+                        return True
+                elif has_explicit_missing_list(item):
+                    return True
+        elif isinstance(value, list):
+            return any(has_explicit_missing_list(item) for item in value)
+        return False
+
+    return has_explicit_missing_list(feasibility)
+
+
+def data_request_candidate_from_failure(
+    *,
+    report_id: str,
+    command_name: str,
+    output: str,
+    ctx: Any,
+) -> dict[str, Any] | None:
+    if command_name not in {'run_step3', 'validate_step3', 'run_step3b', 'validate_step3b', 'run_step4', 'validate_step4'}:
+        return None
+    feasibility_path = ctx.objects_root / 'validation' / f'data_feasibility_report__{report_id}.json'
+    feasibility = load_json_if_exists(feasibility_path)
+    feasibility_blocked = feasibility_has_data_blocker(feasibility)
+    combined = output
+    if feasibility_blocked:
+        combined += '\n' + json.dumps(feasibility, ensure_ascii=False)
+    if not any(pattern in combined for pattern in DATA_REQUEST_BLOCKER_PATTERNS):
+        return None
+    missing_datasets = extract_missing_datasets(feasibility) if feasibility_blocked else []
+    if 'intraday_flow_distribution_moments_v1' in combined and 'intraday_flow_distribution_moments_v1' not in missing_datasets:
+        missing_datasets.insert(0, 'intraday_flow_distribution_moments_v1')
+    if 'daily_basic_backtest_base' in combined and 'daily_basic_backtest_base' not in missing_datasets:
+        missing_datasets.append('daily_basic_backtest_base')
+    if not missing_datasets:
+        if 'minute' in combined.lower() or 'intraday' in combined.lower():
+            missing_datasets = ['intraday_derived_datamart']
+        elif 'clean_daily_bar' in combined:
+            missing_datasets = ['clean_daily_bar']
+        else:
+            missing_datasets = [f'{safe_request_token(report_id)}_data_dependency']
+    dataset_id = missing_datasets[0]
+    request_type = 'new_datamart' if any(token in dataset_id for token in ('intraday_', 'datamart', 'state')) else 'coverage_repair'
+    timestamp = utc_now().replace('-', '').replace(':', '').replace('T', '').replace('Z', '')
+    return {
+        'schema_version': 'data_request_v1',
+        'request_id': f'{safe_request_token(report_id)}__{safe_request_token(dataset_id)}__{timestamp}',
+        'created_at_utc': utc_now(),
+        'created_by': 'factorforge-ultimate-wrapper',
+        'report_id': report_id,
+        'priority': 'P0',
+        'requested_dataset_id': dataset_id,
+        'request_type': request_type,
+        'research_need': {
+            'economic_purpose': 'Automatically generated from Factor Forge Ultimate data blocker.',
+            'formula_or_state': '',
+            'upstream_datasets': missing_datasets,
+        },
+        'window': {
+            'is_start': '20160104',
+            'is_end': '20250711',
+            'oos_start': '20250714',
+            'research_window_rule': 'OOS marked holdout; do not fit parameters on OOS',
+        },
+        'information_set': {
+            'cutoff_times': [],
+            'no_future_data': True,
+            'state_continuity_required': 'state' in dataset_id or 'slow' in dataset_id,
+        },
+        'unique_key': ['ts_code', 'trade_date'],
+        'required_fields': ['ts_code', 'trade_date'],
+        'qa_requirements': [
+            'duplicate_key_count=0',
+            'missing_dates=[]',
+            'coverage_summary',
+            'representative_read_smoke',
+            'worker_read_smoke',
+        ],
+        'execution_preference': {
+            'preferred_executor': 'research_worker',
+            'batch_spot_allowed': True,
+            'requires_cost_estimate_before_full_run': True,
+        },
+        'boundaries': {
+            'do_not_start_clean_data': True,
+            'do_not_start_search_worker': True,
+            'do_not_start_official_promotion': True,
+            'do_not_write_factor_forge_research_artifacts': True,
+            'do_not_start_factor_loop': True,
+        },
+        'auto_generation_context': {
+            'command': command_name,
+            'feasibility_path': str(feasibility_path),
+            'source': 'run_factorforge_ultimate_failure_handler',
+        },
+    }
+
+
+def write_data_request_candidate(candidate: dict[str, Any], *, repo_root: Path, ctx: Any) -> dict[str, Any]:
+    paths: dict[str, str] = {}
+    local_dir = ctx.active_root / 'objects' / 'data_requests'
+    local_path = local_dir / f"data_request__{safe_request_token(candidate['request_id'])}.json"
+    write_json_atomic(local_path, candidate)
+    paths['local_request_path'] = str(local_path)
+    data_api_root = resolve_data_api_root(repo_root)
+    if data_api_root is not None:
+        inbox = data_api_root / 'factorforge' / 'data' / 'requests' / 'inbox'
+        inbox_path = inbox / f"data_request__{safe_request_token(candidate['request_id'])}.json"
+        write_json_atomic(inbox_path, candidate)
+        paths['data_api_inbox_path'] = str(inbox_path)
+        paths['data_api_root'] = str(data_api_root)
+    return {
+        'status': 'CREATED',
+        'request_id': candidate['request_id'],
+        'dataset_id': candidate['requested_dataset_id'],
+        'request_type': candidate['request_type'],
+        **paths,
+    }
+
+
 def research_memo_from_iteration(iteration: dict[str, Any]) -> dict[str, Any]:
     return ((iteration.get('research_judgment') or {}).get('research_memo') or {})
 
@@ -403,6 +621,49 @@ def summarize_council_dispatch(factorforge_root: Path, report_id: str, side_effe
     return payload
 
 
+def agentic_dispatch_required_results_present(
+    factorforge_root: Path,
+    report_id: str,
+) -> bool:
+    council_dir = (
+        factorforge_root
+        / 'objects'
+        / 'research_iteration_master'
+        / 'revision_council'
+        / report_id
+    )
+    manifest_path = council_dir / f'dispatch_manifest__{report_id}.json'
+    manifest = load_json_if_exists(manifest_path)
+    tasks = manifest.get('agent_tasks')
+    if (
+        manifest.get('dispatch_manifest_version')
+        != 'factorforge_agentic_council_dispatch_manifest_v1'
+        or manifest.get('report_id') != report_id
+        or not isinstance(tasks, list)
+        or not tasks
+    ):
+        return False
+    result_root = (council_dir / 'agent_results').resolve(strict=False)
+    for task in tasks:
+        if not isinstance(task, dict) or task.get('required') is not True:
+            return False
+        raw = task.get('expected_result_path')
+        if not isinstance(raw, str) or not raw:
+            return False
+        candidate = Path(raw)
+        candidate = candidate if candidate.is_absolute() else factorforge_root / candidate
+        if candidate.is_symlink():
+            return False
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(result_root)
+        except (FileNotFoundError, ValueError):
+            return False
+        if resolved.is_symlink() or not resolved.is_file():
+            return False
+    return True
+
+
 def summarize_main_agent_memo_pause(factorforge_root: Path, report_id: str) -> dict[str, Any]:
     rim = factorforge_root / 'objects' / 'research_iteration_master'
     status_path = rim / f'main_agent_mechanism_memo_status__{report_id}.json'
@@ -499,7 +760,28 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--runtime-dispatch', choices=['codex', 'openclaw', 'manual_file', 'unknown'], default=None)
     ap.add_argument('--subagent-provider', default=None)
     ap.add_argument('--subagent-model', default=None)
+    ap.add_argument(
+        '--research-org-mode',
+        choices=['off', 'auto', 'required'],
+        default='auto',
+        help='Validate the workspace research-organization plan; required fails closed when absent.',
+    )
+    ap.add_argument(
+        '--research-org-plan',
+        default=None,
+        help='Explicit plan path. It must equal the active workspace Host-owned plan path.',
+    )
+    ap.add_argument(
+        '--research-org-runtime-mode',
+        choices=['off', 'if-present', 'required', 'formal-complete'],
+        default='off',
+        help='Optionally bind this Ultimate run to the validated specialist runtime.',
+    )
+    ap.add_argument('--research-org-runtime-private-root', default=None)
+    ap.add_argument('--research-org-runtime-trust-root', default=None)
+    ap.add_argument('--research-org-runtime-installation-id', default=None)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--allow-legacy-research-protocol-smoke', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--proof-output', default=None)
     ap.add_argument('--state-dependency-contract', default=None)
     ap.add_argument('--state-catalog', default=None)
@@ -509,6 +791,79 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--require-state-reuse-contract', action='store_true')
     ap.add_argument('--explicit-data-production-context', action='store_true')
     return ap.parse_args()
+
+
+def resolve_research_organization_runtime_gate(
+    *,
+    args: argparse.Namespace,
+    factor_workspace: Path | None,
+) -> dict[str, Any]:
+    mode = str(args.research_org_runtime_mode or 'off')
+    if mode == 'off':
+        return {
+            'mode': mode,
+            'status': 'disabled',
+            'formal_independence_verified': False,
+            'runtime_assurance': 'not_requested',
+        }
+    if factor_workspace is None:
+        if mode == 'if-present':
+            return {
+                'mode': mode,
+                'status': 'not_present',
+                'formal_independence_verified': False,
+                'runtime_assurance': 'not_present',
+            }
+        raise ResearchOrganizationError(
+            'BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_MISSING',
+            ['factor_workspace_required'],
+        )
+    plan = load_research_organization_plan(factor_workspace)
+    runtime_state = (
+        factor_workspace
+        / str(plan['workspace_policy']['organization_root'])
+        / 'runtime'
+        / 'runtime_state.json'
+    )
+    runtime_entry_present = runtime_state.exists() or runtime_state.is_symlink()
+    if mode == 'if-present' and not runtime_entry_present:
+        return {
+            'mode': mode,
+            'status': 'not_present',
+            'formal_independence_verified': False,
+            'runtime_assurance': 'not_present',
+        }
+    formal = mode == 'formal-complete'
+    if formal and not (
+        args.research_org_runtime_private_root
+        and args.research_org_runtime_trust_root
+        and args.research_org_runtime_installation_id
+    ):
+        raise ResearchOrganizationError(
+            'BLOCK_FACTORFORGE_RESEARCH_ORG_RUNTIME_INVALID',
+            ['formal_runtime_arguments_missing'],
+        )
+    validation = validate_research_organization_runtime(
+        workspace=factor_workspace,
+        require_complete=formal,
+        private_root=(
+            Path(args.research_org_runtime_private_root).expanduser()
+            if args.research_org_runtime_private_root
+            else None
+        ),
+        trust_root=(
+            Path(args.research_org_runtime_trust_root).expanduser()
+            if args.research_org_runtime_trust_root
+            else None
+        ),
+        installation_id=args.research_org_runtime_installation_id,
+        require_formal=formal,
+    )
+    return {
+        'mode': mode,
+        'status': 'validated',
+        **validation,
+    }
 
 
 def _manifest_state_path(manifest: dict[str, Any], key: str) -> Path | None:
@@ -666,20 +1021,80 @@ def main() -> int:
             print('\n'.join(failures))
             return 1
     ctx = resolve_factorforge_context(args.factorforge_root, factor_workspace=factor_workspace)
+    try:
+        research_organization = resolve_research_organization_gate(
+            mode=str(args.research_org_mode or 'auto'),
+            factor_workspace=ctx.factor_workspace,
+            explicit_plan=(
+                Path(args.research_org_plan).expanduser()
+                if args.research_org_plan
+                else None
+            ),
+        )
+    except ResearchOrganizationError as exc:
+        print(str(exc))
+        return 1
+    try:
+        research_organization_runtime = resolve_research_organization_runtime_gate(
+            args=args,
+            factor_workspace=ctx.factor_workspace,
+        )
+    except ResearchOrganizationError as exc:
+        print(str(exc))
+        return 1
+    legacy_protocol_smoke = bool(
+        args.allow_legacy_research_protocol_smoke
+        and (
+            str(ctx.active_root).startswith('/tmp/')
+            or str(ctx.active_root).startswith('/private/tmp/')
+        )
+        and ('SMOKE' in args.report_id or args.report_id.startswith('STEP6_INTEL_'))
+    )
+    if args.allow_legacy_research_protocol_smoke and not legacy_protocol_smoke:
+        print('BLOCK_FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE_SCOPE_INVALID')
+        return 1
     if args.manifest:
         manifest_path = Path(args.manifest).expanduser()
         manifest = runtime_manifest_from_args if runtime_manifest_from_args else ctx.build_manifest(args.report_id, branch_id=args.branch_id)
     else:
         manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
-        manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
+        if ctx.factor_workspace:
+            manifest_path = (
+                ctx.objects_root
+                / 'runtime_context'
+                / f'factorforge_runtime_manifest__{args.report_id}.json'
+            )
+        else:
+            manifest_path = Path(tempfile.gettempdir()) / f'factorforge_runtime_manifest__{args.report_id}__{os.getpid()}.json'
         write_json_atomic(manifest_path, manifest)
 
     if args.proof_output:
-        proof_path = Path(args.proof_output).expanduser()
+        proof_path = Path(args.proof_output).expanduser().resolve(
+            strict=False
+        )
+    elif ctx.factor_workspace:
+        proof_path = (
+            ctx.objects_root
+            / 'runtime_context'
+            / f'ultimate_run_report__{args.report_id}.json'
+        )
     elif args.dry_run:
         proof_path = Path(tempfile.gettempdir()) / f'ultimate_run_report__{args.report_id}.json'
     else:
         proof_path = ctx.objects_root / 'runtime_context' / f'ultimate_run_report__{args.report_id}.json'
+    if ctx.factor_workspace:
+        active_root = ctx.active_root.resolve(strict=False)
+        resolved_proof = proof_path.resolve(strict=False)
+        if (
+            resolved_proof != active_root
+            and active_root not in resolved_proof.parents
+        ):
+            print(
+                f'{BLOCK_OUTPUT_OUTSIDE_WORKSPACE}: '
+                f'proof_output={resolved_proof}'
+            )
+            return 1
+        proof_path = resolved_proof
     env = os.environ.copy()
     env.pop('FACTORFORGE_ALLOW_DIRECT_STEP', None)
     env.pop('FACTORFORGE_ALLOW_LEGACY_STEP6_HANDOFF', None)
@@ -688,7 +1103,52 @@ def main() -> int:
     if ctx.factor_workspace:
         env['FACTORFORGE_FACTOR_WORKSPACE'] = str(ctx.factor_workspace)
         env['FACTORFORGE_FACTOR_WORKSPACE_MANIFEST'] = str(ctx.factor_workspace_manifest or (ctx.factor_workspace / 'manifest.json'))
+        if research_organization.get('status') == 'validated':
+            env['FACTORFORGE_RESEARCH_ORG_PLAN'] = str(
+                research_organization['plan_path']
+            )
+        if research_organization_runtime.get('status') == 'validated':
+            env['FACTORFORGE_RESEARCH_ORG_RUNTIME_ID'] = str(
+                research_organization_runtime['runtime_id']
+            )
+        web_catalog_summary = ctx.factor_workspace / 'identity' / 'data_catalog_summary.json'
+        if web_catalog_summary.exists() or web_catalog_summary.is_symlink():
+            try:
+                approved_catalog, _approved_catalog_hash = resolve_workspace_approved_catalog(
+                    ctx.factor_workspace,
+                    environ=env,
+                )
+            except WebResearchPlanError as exc:
+                print(str(exc))
+                return 1
+            env['FACTORFORGE_STATE_CATALOG'] = str(approved_catalog)
+            env['FACTORFORGE_DATA_CATALOG'] = str(approved_catalog)
+        else:
+            env.setdefault('FACTORFORGE_DATA_CATALOG', str(ctx.factorforge_root / 'data' / 'catalog' / 'data_catalog.json'))
     env['FACTORFORGE_ULTIMATE_RUN'] = '1'
+    if legacy_protocol_smoke:
+        env['FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE'] = '1'
+
+    web_materialization: dict[str, str] | None = None
+    web_resume_start_step: str | None = None
+    web_catalog_summary = ctx.active_root / 'identity' / 'data_catalog_summary.json'
+    if web_catalog_summary.exists() or web_catalog_summary.is_symlink():
+        try:
+            web_materialization = validate_materialized_web_research(ctx.active_root)
+            web_resume_start_step = required_web_resume_start_step(
+                ctx.active_root,
+                args.report_id,
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, WebResearchPlanError) as exc:
+            print(str(exc))
+            return 1
+        expected_start = web_resume_start_step or '3'
+        if start != expected_start or end != '6':
+            print(
+                'BLOCK_FACTORFORGE_WEB_RESEARCH_RESUME_POINT_INVALID: '
+                f'expected start-step={expected_start}, end-step=6; got {start}/{end}'
+            )
+            return 1
 
     py = sys.executable
     commands: list[tuple[str, list[str]]] = []
@@ -696,6 +1156,7 @@ def main() -> int:
     if runtime_dispatch is None:
         runtime_dispatch = 'manual_file' if args.agentic_dispatch_adapter == 'manual_file' else 'unknown'
     taskbook_runtime_args = ['--runtime-dispatch', runtime_dispatch]
+    taskbook_protocol_mode = 'off' if legacy_protocol_smoke else 'required'
     if args.subagent_provider:
         taskbook_runtime_args.extend(['--subagent-provider', args.subagent_provider])
     if args.subagent_model:
@@ -707,6 +1168,38 @@ def main() -> int:
     if '2' in steps:
         commands.append(('run_step2', [py, 'skills/factor-forge-step2/scripts/run_step2.py', '--report-id', args.report_id]))
         commands.append(('validate_step2', [py, 'skills/factor-forge-step2/scripts/validate_step2.py', '--report-id', args.report_id]))
+        if '6' in steps and not legacy_protocol_smoke:
+            commands.append(
+                (
+                    'validate_research_protocol_pre_council',
+                    [
+                        py,
+                        'scripts/validate_factorforge_research_protocol.py',
+                        '--workspace-root',
+                        str(ctx.active_root),
+                        '--report-id',
+                        args.report_id,
+                        '--stage',
+                        'pre_council',
+                    ],
+                )
+            )
+    elif '6' in steps and not legacy_protocol_smoke:
+        commands.append(
+            (
+                'validate_research_protocol_pre_council',
+                [
+                    py,
+                    'scripts/validate_factorforge_research_protocol.py',
+                    '--workspace-root',
+                    str(ctx.active_root),
+                    '--report-id',
+                    args.report_id,
+                    '--stage',
+                    'pre_council',
+                ],
+            )
+        )
 
     if '3' in steps and not args.skip_step3a:
         commands.append(('run_step3', [py, 'skills/factor-forge-step3/scripts/run_step3.py', '--manifest', str(manifest_path)]))
@@ -719,6 +1212,20 @@ def main() -> int:
     if '4' in steps:
         commands.append(('run_step4', [py, 'skills/factor-forge-step4/scripts/run_step4.py', '--manifest', str(manifest_path)]))
         commands.append(('validate_step4', [py, 'skills/factor-forge-step4/scripts/validate_step4.py', '--report-id', args.report_id]))
+        if web_materialization is not None:
+            commands.append(
+                (
+                    'finalize_web_factor_proof',
+                    [
+                        py,
+                        'scripts/finalize_factorforge_web_factor_proof.py',
+                        '--workspace-root',
+                        str(ctx.active_root),
+                        '--report-id',
+                        args.report_id,
+                    ],
+                )
+            )
 
     if '5' in steps:
         commands.append(('run_step5', [py, 'skills/factor-forge-step5/scripts/run_step5.py', '--manifest', str(manifest_path)]))
@@ -731,22 +1238,54 @@ def main() -> int:
         commands.append(('run_step6', [py, 'skills/factor-forge-step6/scripts/run_step6.py', '--manifest', str(manifest_path)]))
         commands.append(('validate_step6', [py, 'skills/factor-forge-step6/scripts/validate_step6.py', '--report-id', args.report_id]))
 
+    prior_proof_archive: str | None = None
+    if web_resume_start_step and proof_path.exists():
+        prior_digest = sha256_file(proof_path)
+        archive_path = proof_path.with_name(
+            f'{proof_path.stem}__prior_{prior_digest[:12]}{proof_path.suffix}'
+        )
+        counter = 1
+        while archive_path.exists() or archive_path.is_symlink():
+            archive_path = proof_path.with_name(
+                f'{proof_path.stem}__prior_{prior_digest[:12]}_{counter}{proof_path.suffix}'
+            )
+            counter += 1
+        os.replace(proof_path, archive_path)
+        prior_proof_archive = str(archive_path)
+
     proof: dict[str, Any] = {
         'contract_version': 'factorforge_ultimate_wrapper_v1',
         'report_id': args.report_id,
+        'factor_id': ctx.factor_id,
+        'research_id': ctx.research_id,
         'started_at_utc': utc_now(),
         'finished_at_utc': None,
         'factorforge_root': str(ctx.factorforge_root),
         'active_root': str(ctx.active_root),
         'factor_workspace': str(ctx.factor_workspace) if ctx.factor_workspace else None,
+        'research_organization': research_organization,
+        'research_organization_runtime': research_organization_runtime,
         'repo_root': str(ctx.repo_root),
         'manifest_path': str(manifest_path),
         'start_step': start,
         'end_step': end,
         'requested_steps': steps,
         'dry_run': bool(args.dry_run),
+        'contract_smoke_only': bool(legacy_protocol_smoke),
+        'formal_proof_eligible': False,
         'status': 'RUNNING',
         'commands': [],
+        'formal_command_contract': {
+            'required_command_names': [name for name, _ in commands],
+            'research_protocol_verifier_required': (
+                '6' in steps and not legacy_protocol_smoke
+            ),
+            'research_protocol_verifier_name': (
+                'validate_research_protocol_pre_council'
+            ),
+            'all_commands_must_execute_and_pass': True,
+            'satisfied': False,
+        },
         'child_env_policy': {
             'FACTORFORGE_ULTIMATE_RUN': '1',
             'removed': ['FACTORFORGE_ALLOW_DIRECT_STEP', 'FACTORFORGE_ALLOW_LEGACY_STEP6_HANDOFF'],
@@ -754,6 +1293,7 @@ def main() -> int:
         'expected_artifacts_before': collect_expected_artifacts(manifest),
         'expected_artifacts_after': {},
         'step3b_mode_decision': collect_step3b_mode_decision(manifest),
+        'runtime_manifest_refreshes': [],
         'revision_council': {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'status': 'skipped', 'reason': 'disabled'} if args.council_mode == 'off' else {'requested_mode': args.council_mode, 'auto_council_policy': args.auto_council_policy, 'executor': args.agentic_council_executor, 'dispatch_adapter': args.agentic_dispatch_adapter, 'runtime_dispatch': runtime_dispatch, 'subagent_provider': args.subagent_provider, 'subagent_model': args.subagent_model, 'status': 'pending'},
         'state_reuse_gate': None,
         'research_loop_policy': {
@@ -769,6 +1309,9 @@ def main() -> int:
             'note': 'Current wrapper runs one formal Step2-6 pass plus Council attachment/dispatch. Subsequent approved revision loops must be launched as child report ids through the guarded revision/search contracts.',
         },
         'failure': None,
+        'web_research_preflight': web_materialization,
+        'web_resume_start_step': web_resume_start_step,
+        'prior_proof_archive': prior_proof_archive,
         'usage_rule': 'This proof report is the only acceptable evidence for a claimed factor-forge-ultimate run. Agents must not replace formal Step4/5/6 execution by ad-hoc metrics or post-hoc object writing.',
     }
     try:
@@ -794,6 +1337,33 @@ def main() -> int:
         print(f'[PROOF] {proof_path}')
         return 1
     write_json_atomic(proof_path, proof)
+
+    def refresh_runtime_manifest_for_command(command_name: str) -> None:
+        nonlocal manifest
+        if args.manifest or args.dry_run:
+            return
+        if command_name not in {
+            'run_step3',
+            'validate_step3',
+            'run_step3b',
+            'validate_step3b',
+            'run_step4',
+            'run_step5',
+            'run_step6',
+        }:
+            return
+        manifest = ctx.build_manifest(args.report_id, branch_id=args.branch_id)
+        write_json_atomic(manifest_path, manifest)
+        refresh = {
+            'command': command_name,
+            'manifest_path': str(manifest_path),
+            'refreshed_at_utc': utc_now(),
+            'manifest_identity': manifest.get('manifest_identity') or {},
+        }
+        proof.setdefault('runtime_manifest_refreshes', []).append(refresh)
+        proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
+        proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
+        write_json_atomic(proof_path, proof)
 
     if args.council_mode == 'agentic':
         if args.agentic_council_executor == 'none':
@@ -847,6 +1417,7 @@ def main() -> int:
             return 1
 
     for name, command in commands:
+        refresh_runtime_manifest_for_command(name)
         result = run_command(name, command, cwd=ctx.repo_root, env=env, dry_run=args.dry_run)
         proof['commands'].append(asdict(result))
         proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
@@ -854,7 +1425,19 @@ def main() -> int:
         proof['finished_at_utc'] = utc_now()
         if result.returncode != 0:
             output = (result.stdout_tail or '') + '\n' + (result.stderr_tail or '')
-            if name == 'run_step6' and 'AWAITING_MAIN_AGENT_MECHANISM_MEMO' in output:
+            mechanism_pause_token = next(
+                (
+                    token
+                    for token in (
+                        'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW',
+                        'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION',
+                        'AWAITING_MAIN_AGENT_MECHANISM_MEMO',
+                    )
+                    if token in output
+                ),
+                '',
+            )
+            if name == 'run_step6' and mechanism_pause_token:
                 proof['status'] = 'PAUSED'
                 proof['main_agent_mechanism_memo'] = summarize_main_agent_memo_pause(ctx.active_root, args.report_id)
                 proof['revision_council'] = {
@@ -865,13 +1448,26 @@ def main() -> int:
                 proof['failure'] = None
                 proof['finished_at_utc'] = utc_now()
                 write_json_atomic(proof_path, proof)
-                print('AWAITING_MAIN_AGENT_MECHANISM_MEMO')
+                print(mechanism_pause_token)
                 print(f'[PROOF] {proof_path}')
                 return 0
             proof['status'] = 'FAIL'
             proof['failure'] = {'command': name, 'returncode': result.returncode}
+            data_request_candidate = data_request_candidate_from_failure(
+                report_id=args.report_id,
+                command_name=name,
+                output=output,
+                ctx=ctx,
+            )
+            if data_request_candidate:
+                proof['data_request'] = write_data_request_candidate(data_request_candidate, repo_root=ctx.repo_root, ctx=ctx)
+                proof['status'] = 'BLOCK_DATA_REQUEST_PENDING'
+                proof['failure']['data_request_id'] = proof['data_request']['request_id']
+                proof['failure']['block_class'] = 'data_request_pending'
             write_json_atomic(proof_path, proof)
             print(f'[FAIL] {name} rc={result.returncode}')
+            if proof.get('data_request'):
+                print(f"[DATA_REQUEST] {proof['data_request']['request_id']}")
             print(f'[PROOF] {proof_path}')
             return int(result.returncode or 1)
         write_json_atomic(proof_path, proof)
@@ -885,6 +1481,7 @@ def main() -> int:
             }
             write_json_atomic(proof_path, proof)
         else:
+            agentic_dispatch_finalizing = False
             iteration_path = ctx.objects_root / 'research_iteration_master' / f'research_iteration_master__{args.report_id}.json'
             iteration = load_json_if_exists(iteration_path)
             should_run = False
@@ -958,14 +1555,45 @@ def main() -> int:
                 provisional_handoff_policy = disable_provisional_step3b_handoff_for_council(council_root, args.report_id)
                 side_effect_before = council_side_effect_snapshot(council_root, args.report_id, clean_data_root=ctx.clean_data_root)
                 if effective_mode in {'agentic_dispatch_manifest', 'agentic_contract_mock'}:
+                    council_dir = (
+                        council_root
+                        / 'objects'
+                        / 'research_iteration_master'
+                        / 'revision_council'
+                        / args.report_id
+                    )
+                    existing_dispatch_manifest = (
+                        council_dir / f'dispatch_manifest__{args.report_id}.json'
+                    )
                     if effective_mode == 'agentic_dispatch_manifest':
-                        council_commands = [
-                            ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
-                            ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'dispatch_manifest', *taskbook_runtime_args]),
-                            ('build_agentic_council_dispatch_manifest', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py', '--report-id', args.report_id]),
-                            ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
-                        ]
-                        if args.agentic_dispatch_adapter == 'manual_file':
+                        if existing_dispatch_manifest.exists():
+                            agentic_dispatch_finalizing = (
+                                agentic_dispatch_required_results_present(
+                                    council_root,
+                                    args.report_id,
+                                )
+                            )
+                            if agentic_dispatch_finalizing:
+                                council_commands = [
+                                    ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
+                                    ('collect_agentic_council_results', [py, 'skills/factor-forge-step6/scripts/collect_agentic_council_results.py', '--report-id', args.report_id]),
+                                    ('finalize_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/finalize_agentic_council_dispatch.py', '--report-id', args.report_id]),
+                                ]
+                            else:
+                                council_commands = [
+                                    ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
+                                ]
+                        else:
+                            council_commands = [
+                                ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
+                                ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'dispatch_manifest', '--research-protocol', taskbook_protocol_mode, *taskbook_runtime_args]),
+                                ('build_agentic_council_dispatch_manifest', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py', '--report-id', args.report_id]),
+                                ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id]),
+                            ]
+                        if (
+                            args.agentic_dispatch_adapter == 'manual_file'
+                            and not existing_dispatch_manifest.exists()
+                        ):
                             council_commands.extend(
                                 [
                                     ('build_agentic_council_manual_dispatch_bundle', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_manual_dispatch_bundle.py', '--report-id', args.report_id]),
@@ -974,16 +1602,35 @@ def main() -> int:
                                 ]
                             )
                     else:
-                        council_commands = [
-                            ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
-                            ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'local_mock', *taskbook_runtime_args]),
-                            ('run_agentic_council_local_mock', [py, 'skills/factor-forge-step6/scripts/run_agentic_council_local_mock.py', '--report-id', args.report_id]),
-                            ('validate_agentic_council_result', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_result.py', '--report-id', args.report_id]),
-                            ('merge_revision_council', [py, 'skills/factor-forge-step6/scripts/merge_revision_council.py', '--report-id', args.report_id]),
-                            ('build_council_derivation_appendix', [py, 'skills/factor-forge-step6/scripts/build_council_derivation_appendix.py', '--report-id', args.report_id]),
-                            ('attach_revision_council_to_step6', [py, 'skills/factor-forge-step6/scripts/attach_revision_council_to_step6.py', '--report-id', args.report_id]),
-                            ('validate_step6_after_council_attach', [py, 'skills/factor-forge-step6/scripts/validate_step6.py', '--report-id', args.report_id]),
-                        ]
+                        council_commands = []
+                        if not existing_dispatch_manifest.exists():
+                            council_commands.extend(
+                                [
+                                    ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
+                                    ('build_agentic_council_taskbook', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py', '--report-id', args.report_id, '--executor', 'local_mock', '--research-protocol', taskbook_protocol_mode, *taskbook_runtime_args]),
+                                    ('build_agentic_council_dispatch_manifest', [py, 'skills/factor-forge-step6/scripts/build_agentic_council_dispatch_manifest.py', '--report-id', args.report_id]),
+                                ]
+                            )
+                        council_commands.append(
+                            ('validate_agentic_council_dispatch', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_dispatch.py', '--report-id', args.report_id])
+                        )
+                        result_dir = council_dir / 'agent_results'
+                        existing_results = (
+                            result_dir.exists() and any(result_dir.glob('agent_result__*.json'))
+                        )
+                        if not existing_results:
+                            council_commands.append(
+                                ('run_agentic_council_local_mock', [py, 'skills/factor-forge-step6/scripts/run_agentic_council_local_mock.py', '--report-id', args.report_id])
+                            )
+                        council_commands.extend(
+                            [
+                                ('validate_agentic_council_result', [py, 'skills/factor-forge-step6/scripts/validate_agentic_council_result.py', '--report-id', args.report_id]),
+                                ('merge_revision_council', [py, 'skills/factor-forge-step6/scripts/merge_revision_council.py', '--report-id', args.report_id]),
+                                ('build_council_derivation_appendix', [py, 'skills/factor-forge-step6/scripts/build_council_derivation_appendix.py', '--report-id', args.report_id]),
+                                ('attach_revision_council_to_step6', [py, 'skills/factor-forge-step6/scripts/attach_revision_council_to_step6.py', '--report-id', args.report_id]),
+                                ('validate_step6_after_council_attach', [py, 'skills/factor-forge-step6/scripts/validate_step6.py', '--report-id', args.report_id]),
+                            ]
+                        )
                 else:
                     council_commands = [
                         ('build_revision_council_packet', [py, 'skills/factor-forge-step6/scripts/build_revision_council_packet.py', '--report-id', args.report_id]),
@@ -1051,15 +1698,154 @@ def main() -> int:
                     print(token)
                     print(f'[PROOF] {proof_path}')
                     return 1
-                if effective_mode == 'agentic_dispatch_manifest':
+                if (
+                    effective_mode == 'agentic_dispatch_manifest'
+                    and not agentic_dispatch_finalizing
+                ):
                     proof['revision_council'].update(summarize_council_dispatch(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'awaiting_agent_results'
                     proof['revision_council']['formal_council_status'] = 'awaiting_agent_results'
+                    proof['status'] = 'PAUSED'
+                    proof['formal_proof_eligible'] = False
+                    proof['proof_semantics'] = 'awaiting_revision_council_agent_results'
+                    proof['failure'] = None
+                    proof['finished_at_utc'] = utc_now()
+                    proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
+                    proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
+                    write_json_atomic(proof_path, proof)
+                    print('AWAITING_REVISION_COUNCIL_AGENT_RESULTS')
+                    print(f'[PROOF] {proof_path}')
+                    return 0
                 else:
                     proof['revision_council'].update(summarize_council_attachment(council_root, args.report_id, side_effect_after, side_effect_before))
                     proof['revision_council']['status'] = 'completed'
-                    proof['revision_council']['formal_council_status'] = 'agentic_completed' if effective_mode == 'agentic_contract_mock' else 'scaffold_only'
+                    proof['revision_council']['formal_council_status'] = (
+                        'agentic_results_completed'
+                        if agentic_dispatch_finalizing
+                        else (
+                            'contract_mock_completed'
+                            if effective_mode == 'agentic_contract_mock'
+                            else 'scaffold_only'
+                        )
+                    )
                     proof['revision_council']['attached'] = proof['revision_council'].get('attached') is True
+                    if web_materialization is not None and agentic_dispatch_finalizing:
+                        terminal_command = [
+                            py,
+                            'skills/factor-forge-step6/scripts/close_terminal_council_rejection.py',
+                            '--report-id',
+                            args.report_id,
+                            '--factorforge-root',
+                            str(council_root),
+                            '--loop-index',
+                            '1',
+                            '--max-loops',
+                            str(args.max_council_loops),
+                        ]
+                        terminal_result = run_command(
+                            'close_terminal_council_rejection',
+                            terminal_command,
+                            cwd=ctx.repo_root,
+                            env=env,
+                            dry_run=False,
+                        )
+                        proof['revision_council']['commands'].append(
+                            asdict(terminal_result)
+                        )
+                        terminal_output = (
+                            f'{terminal_result.stdout_tail}\n'
+                            f'{terminal_result.stderr_tail}'
+                        )
+                        terminal_state = classify_terminal_rejection_result(
+                            returncode=int(terminal_result.returncode or 0),
+                            output=terminal_output,
+                            branch_falsification_exists=(
+                                council_dir
+                                / f'branch_falsification__{args.report_id}.json'
+                            ).is_file(),
+                        )
+                        if terminal_state == 'closed':
+                            final_protocol_result = run_command(
+                                'validate_research_protocol_final',
+                                [
+                                    py,
+                                    'scripts/validate_factorforge_research_protocol.py',
+                                    '--workspace-root',
+                                    str(council_root),
+                                    '--report-id',
+                                    args.report_id,
+                                    '--stage',
+                                    'final',
+                                ],
+                                cwd=ctx.repo_root,
+                                env=env,
+                                dry_run=False,
+                            )
+                            proof['revision_council']['commands'].append(
+                                asdict(final_protocol_result)
+                            )
+                            if final_protocol_result.returncode != 0:
+                                proof['status'] = 'FAIL'
+                                proof['revision_council']['status'] = 'failed'
+                                proof['revision_council']['formal_council_status'] = 'blocked'
+                                proof['failure'] = {
+                                    'command': 'validate_research_protocol_final',
+                                    'returncode': final_protocol_result.returncode,
+                                }
+                                proof['finished_at_utc'] = utc_now()
+                                write_json_atomic(proof_path, proof)
+                                print('[FAIL] validate_research_protocol_final')
+                                print(f'[PROOF] {proof_path}')
+                                return int(final_protocol_result.returncode or 1)
+                            proof['revision_council']['status'] = 'terminal_rejected'
+                            proof['revision_council']['formal_council_status'] = 'rejected'
+                            proof['revision_council']['terminal_protocol_validated'] = True
+                            proof['revision_council']['terminal_decision'] = 'REJECT'
+                        elif terminal_state == 'awaiting_next_derivation':
+                            proof['status'] = 'PAUSED'
+                            proof['formal_proof_eligible'] = False
+                            proof['proof_semantics'] = 'awaiting_next_derivation'
+                            proof['final_outcome'] = 'awaiting_next_derivation'
+                            proof['failure'] = None
+                            proof['revision_council']['status'] = 'awaiting_next_derivation'
+                            proof['revision_council']['formal_council_status'] = 'paused'
+                            proof['finished_at_utc'] = utc_now()
+                            write_json_atomic(proof_path, proof)
+                            print('AWAITING_NEXT_DERIVATION')
+                            print(f'[PROOF] {proof_path}')
+                            return 0
+                        elif terminal_state == 'awaiting_main_agent_council_synthesis':
+                            proof['status'] = 'PAUSED'
+                            proof['formal_proof_eligible'] = False
+                            proof['proof_semantics'] = (
+                                'awaiting_main_agent_council_synthesis'
+                            )
+                            proof['final_outcome'] = (
+                                'awaiting_main_agent_council_synthesis'
+                            )
+                            proof['failure'] = None
+                            proof['revision_council']['status'] = (
+                                'awaiting_main_agent_council_synthesis'
+                            )
+                            proof['revision_council']['formal_council_status'] = 'paused'
+                            proof['finished_at_utc'] = utc_now()
+                            write_json_atomic(proof_path, proof)
+                            print('AWAITING_MAIN_AGENT_COUNCIL_SYNTHESIS')
+                            print(f'[PROOF] {proof_path}')
+                            return 0
+                        else:
+                            proof['status'] = 'FAIL'
+                            proof['revision_council']['status'] = 'failed'
+                            proof['revision_council']['formal_council_status'] = 'blocked'
+                            proof['failure'] = {
+                                'command': 'close_terminal_council_rejection',
+                                'returncode': terminal_result.returncode,
+                            }
+                            proof['finished_at_utc'] = utc_now()
+                            write_json_atomic(proof_path, proof)
+                            print('[FAIL] close_terminal_council_rejection')
+                            print(f'[PROOF] {proof_path}')
+                            return int(terminal_result.returncode or 1)
                 write_json_atomic(proof_path, proof)
     elif args.council_mode != 'off':
         proof['revision_council'] = {
@@ -1069,12 +1855,68 @@ def main() -> int:
         }
         write_json_atomic(proof_path, proof)
 
-    proof['status'] = 'PASS'
+    command_contract = proof['formal_command_contract']
+    executed_names = [
+        str(row.get('name') or '')
+        for row in proof.get('commands') or []
+        if isinstance(row, dict)
+    ]
+    required_names = list(command_contract['required_command_names'])
+    commands_passed = (
+        executed_names == required_names
+        and all(
+            row.get('status') == 'PASS'
+            and row.get('returncode') == 0
+            for row in proof.get('commands') or []
+            if isinstance(row, dict)
+        )
+    )
+    command_contract['executed_command_names'] = executed_names
+    command_contract['satisfied'] = bool(commands_passed)
+    if args.dry_run:
+        proof['status'] = 'DRY_RUN'
+        proof['formal_proof_eligible'] = False
+        proof['proof_semantics'] = 'execution_plan_only'
+    else:
+        web_council_terminal = (
+            web_materialization is None
+            or (
+                proof.get('revision_council', {}).get(
+                    'terminal_protocol_validated'
+                )
+                is True
+            )
+        )
+        proof['status'] = 'PASS' if web_council_terminal else 'PAUSED'
+        proof['formal_proof_eligible'] = bool(
+            commands_passed
+            and not legacy_protocol_smoke
+            and web_council_terminal
+        )
+        proof['proof_semantics'] = (
+            'contract_smoke_only'
+            if legacy_protocol_smoke
+            else (
+                'formal_execution_proof'
+                if web_council_terminal
+                else 'awaiting_main_agent_council_synthesis'
+            )
+        )
+        if not web_council_terminal:
+            proof['final_outcome'] = 'awaiting_main_agent_council_synthesis'
     proof['finished_at_utc'] = utc_now()
     proof['expected_artifacts_after'] = collect_expected_artifacts(manifest)
     proof['step3b_mode_decision'] = collect_step3b_mode_decision(manifest)
     write_json_atomic(proof_path, proof)
-    print(f'[PASS] factor-forge-ultimate wrapper completed for {args.report_id}')
+    result_label = (
+        'DRY_RUN'
+        if args.dry_run
+        else ('PASS' if proof['status'] == 'PASS' else 'PAUSED')
+    )
+    print(
+        f'[{result_label}] factor-forge-ultimate wrapper completed '
+        f'for {args.report_id}'
+    )
     print(f'[MANIFEST] {manifest_path}')
     print(f'[PROOF] {proof_path}')
     return 0

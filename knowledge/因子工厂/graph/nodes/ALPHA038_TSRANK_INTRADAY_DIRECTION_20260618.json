@@ -1,0 +1,143 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::alpha038_tsrank_intraday_direction_20260618",
+  "node_type": "feature_candidate",
+  "title": "Alpha038 ts-rank and close/open direction candidate",
+  "summary": "Alpha038 combines a negative rank of 10-day close ts-rank with close/open strength. Qlib-only evidence shows positive IC but unstable quantile-spread direction between IS and OOS, so it is a direction-sensitive feature candidate rather than a promotion-ready standalone factor.",
+  "factor_ids": [
+    "Alpha038"
+  ],
+  "report_ids": [
+    "ALPHA038_QLIB_ONLY_20160101_20250711"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "momentum",
+      "reversal",
+      "microstructure"
+    ],
+    "barra_style": [
+      "momentum",
+      "volatility"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "rank_transform",
+      "ts_operator",
+      "cs_operator"
+    ],
+    "cn_quant_practice": [
+      "index_enhancement",
+      "intraday_reversal",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "alpha_combination_feature",
+      "regime_conditioner"
+    ],
+    "economic_mechanism": [
+      "overreaction",
+      "underreaction",
+      "liquidity_provision",
+      "attention"
+    ],
+    "math_mechanism": [
+      "time_series_state",
+      "cross_sectional_rank",
+      "path_functional",
+      "stochastic_process"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "qlib_provider"
+    ],
+    "tradability": [
+      "long_side",
+      "long_short",
+      "high_turnover_risk",
+      "cost_sensitive",
+      "model_feature_only"
+    ],
+    "research_status": [
+      "candidate",
+      "feature_candidate",
+      "needs_oos"
+    ],
+    "failure_mode": [
+      "turnover_cost_exceeds_gross_edge",
+      "overfit_gate",
+      "smoke_only_false_positive"
+    ]
+  },
+  "mechanism": {
+    "economic_hypothesis": "Alpha038 asks whether a stock that is high in its recent close rank but strong intraday from open to close is overextended or still underreacting. The sign conflict is the core economic uncertainty, so direction must be validated by regime and portfolio policy.",
+    "payer": "either crowded momentum chasers if the reversal interpretation holds, or underreacting sellers if continuation holds; the current evidence does not isolate one payer robustly",
+    "receiver": "stat-arb or model-combination capital that can condition on regime before choosing sign",
+    "random_object": "10-day close time-series rank multiplied by cross-sectional close/open strength rank",
+    "target_statistic": "Rank IC and direction-stable long-side or long-short quantile payoff",
+    "key_equation_latex": "$$\\nS^{038}_{i,t}=-\\operatorname{rank}_{cs}\\left(TSRank_{10}(C_{i,t})\\right)\\cdot \\operatorname{rank}_{cs}\\left(\\frac{C_{i,t}}{O_{i,t}}\\right)\\n$$",
+    "dirac_style_forced_insight": "The product forces a sign audit: one term says recent close location is high, the other says today's intraday move is strong, so the formula can mean overextension or confirmation depending on regime.",
+    "information_preserved_removed": "Ranks preserve ordinal recent-location and intraday-strength information but remove magnitude; the product aliases momentum continuation and reversal unless a regime conditioner is added.",
+    "factor_expression": "((-1 * rank(ts_rank(close, 10))) * rank((close / open)))",
+    "complexity_penalty_reasoning": "The expression is simple, but adding regime conditions is justified only if they resolve sign instability without overfitting OOS."
+  },
+  "evidence": {
+    "window": "IS 2016-01-01 to 2025-07-11; OOS 2025-07-12 to provider latest",
+    "universe": "Qlib cn_data provider Alpha101 judge universe",
+    "portfolio_policy": "5-trading-day non-overlap quantile NAV; Q1-Q10 direction reported without automatic sign flip",
+    "cost_assumption": "Qlib-only partial component judge; no official after-cost promotion",
+    "key_metrics": {
+      "is_rankic_1d": 0.0362584,
+      "is_rankic_ir_1d": 0.204222,
+      "is_rankic_5d": 0.0216406,
+      "is_q1_q10_spread_5d_bps": -33.6671,
+      "is_ls_sharpe_annualized": -0.665334,
+      "is_turnover_mean": 0.777319,
+      "oos_rankic_1d": 0.0372527,
+      "oos_rankic_ir_1d": 0.268125,
+      "oos_rankic_5d": 0.0215561,
+      "oos_q1_q10_spread_5d_bps": 34.7157,
+      "oos_ls_sharpe_annualized": 1.50085,
+      "oos_turnover_mean": 0.77877
+    },
+    "verdict": "feature_candidate",
+    "falsification": "If sign-stability or regime-conditioned direction cannot be explained without OOS fitting, keep Alpha038 as a cautionary feature only.",
+    "artifact_paths": [
+      "knowledge/因子工厂/普通因子库/ALPHA038_QLIB_ONLY_20160101_20250711.md"
+    ]
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/ALPHA038_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA038_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/研究迭代/ALPHA038_QLIB_ONLY_20160101_20250711.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::sign_decomposition",
+      "note": "The product needs decomposition into recent-location and intraday-strength sign components."
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "market_consensus::momentum",
+      "note": "Close/open strength can encode continuation, while the leading negative ts-rank can encode reversal."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::smoke_only_false_positive",
+      "note": "Qlib-only evidence is direction-inconsistent and cannot be used as official promotion proof."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "method::sign_and_regime_audit",
+      "note": "Use this case when a formula can be read as both momentum confirmation and overextension reversal."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node before revising factors that multiply recent-location ranks with intraday-strength ranks.",
+    "Do not resolve sign ambiguity by choosing the better backtest direction; derive a regime or payer explanation first.",
+    "Use as a simple feature candidate if sign is stabilized by another model, not as standalone proof.",
+    "High OOS Sharpe with negative IS LS Sharpe is a warning to inspect split regime and quantile direction."
+  ]
+}

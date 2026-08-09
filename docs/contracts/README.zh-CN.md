@@ -60,3 +60,11 @@ python3 scripts/build_factorforge_runtime_context.py --report-id <report_id> --w
 ```
 
 以后新增 skill / worker 时，优先接入 runtime context，不要复制新的 `LEGACY_WORKSPACE` / `FACTORFORGE_ROOT` / path candidates 逻辑。
+
+## Research Organization 契约
+
+- `factorforge-research-org-plan-v1.zh-CN.md`：冻结路由、角色、task 和 workspace ownership；
+- `factorforge-agent-task-result-v1.zh-CN.md`：task/dispatch/result envelope；
+- `factorforge-research-org-runtime-v1.zh-CN.md`：Host-private ledger、隔离 session、签名 receipt、依赖调度、恢复与 assurance 分级。
+
+Plan PASS、runtime PASS、formal runtime independence 与 factor ACCEPT 是不同结论，不得互相替代。

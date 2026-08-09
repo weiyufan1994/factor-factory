@@ -74,7 +74,11 @@ def main() -> int:
             missing_count += 1
         else:
             try:
-                reasons = validate_agentic_result(load_json(path))
+                reasons = validate_agentic_result(
+                    load_json(path),
+                    expected_task=item,
+                    expected_report_id=rid,
+                )
             except Exception as exc:
                 reasons = [f"agentic_result_unreadable:{exc}"]
             if reasons:

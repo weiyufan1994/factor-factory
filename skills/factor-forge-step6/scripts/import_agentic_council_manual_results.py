@@ -17,7 +17,10 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from validate_agentic_council_result import validate_agentic_result
+from validate_agentic_council_result import (
+    expected_manifest_task,
+    validate_agentic_result,
+)
 
 OBJ = FF / "objects"
 MANUAL_VERSION = "factorforge_agentic_manual_dispatch_manifest_v1"
@@ -51,9 +54,13 @@ def within(path: Path, root: Path) -> bool:
         return False
 
 
-def validate_payload(path: Path) -> list[str]:
+def validate_payload(path: Path, report_id: str) -> list[str]:
     try:
-        return validate_agentic_result(load_json(path))
+        return validate_agentic_result(
+            load_json(path),
+            expected_task=expected_manifest_task(report_id, path),
+            expected_report_id=report_id,
+        )
     except Exception as exc:
         return [f"agentic_result_unreadable:{exc}"]
 
@@ -112,12 +119,16 @@ def main() -> int:
         if payload.get("status") != "final":
             invalid.append({"task_id": task_id, "reason": "not_final", "result_dropbox_path": str(dropbox_path)})
             continue
-        reasons = validate_agentic_result(payload)
+        reasons = validate_agentic_result(
+            payload,
+            expected_task=expected_manifest_task(rid, expected_path),
+            expected_report_id=rid,
+        )
         if reasons:
             invalid.append({"task_id": task_id, "result_dropbox_path": str(dropbox_path), "block_reasons": reasons})
             continue
         if expected_path.exists():
-            existing_reasons = validate_payload(expected_path)
+            existing_reasons = validate_payload(expected_path, rid)
             if not existing_reasons:
                 skipped.append({"task_id": task_id, "reason": "existing_valid_result_not_overwritten", "expected_result_path": str(expected_path)})
                 continue

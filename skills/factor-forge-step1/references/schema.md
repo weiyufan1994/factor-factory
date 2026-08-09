@@ -81,7 +81,7 @@ class StructuredIntake:
   "chief_confidence": "high|medium|low",
   "chief_rationale": "string",
   "research_discipline": {
-    "step1_random_object": "string",
+    "step1_mathematical_object": "string",
     "target_statistic_hint": "string",
     "information_set_hint": "explicit_lag_or_delay_documented|requires_researcher_confirmation_no_forward_leakage|possible_forward_reference_requires_human_review",
     "initial_return_source_hypothesis": "risk_premium|information_advantage|constraint_driven_arbitrage|mixed",
@@ -100,8 +100,8 @@ class StructuredIntake:
       "linked_economic_hypothesis": "string",
       "model_family": "string",
       "math_tools": ["string"],
-      "state_or_object": "string",
-      "process_or_distribution_hypothesis": "string",
+      "mathematical_object": "string",
+      "mechanism_equation_or_functional": "string",
       "observable_estimator": "string",
       "target_functional": "string",
       "why_suitable": "string",
@@ -127,7 +127,7 @@ class StructuredIntake:
     "similar_case_lessons_imported": ["string"]
   },
   "math_discipline_review": {
-    "step1_random_object": "string",
+    "mathematical_object": "string",
     "target_statistic": "string",
     "information_set_legality": "string"
   },

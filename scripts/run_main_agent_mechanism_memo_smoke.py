@@ -19,6 +19,7 @@ from factor_factory.mechanism_math.main_agent_memo import (
     formula_specific_derivation_from_main_agent_memo,
     render_main_agent_mechanism_memo_markdown,
 )
+from factor_factory.measurement_program import measurement_program_template
 
 CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
 RID = "MAIN_AGENT_MEMO_SIGN_VOLUME_SAMPLE_SMOKE"
@@ -32,6 +33,68 @@ ALT_SIGN_VOLUME_FORMULA = (
     "divide(sum(volume,3), sum(volume,30)))"
 )
 OPEN_CLOSE_POSITION_FORMULA = "rank(negate(signedpower(minus(1, divide(open, close)), 1)))"
+
+
+def valid_measurement_program() -> dict[str, Any]:
+    placeholder = "MAIN_AGENT_MEMO_SMOKE_REPLACE"
+    program = measurement_program_template(
+        placeholder=placeholder,
+        implementation_route="operator",
+    )
+
+    def fill(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        if value == placeholder:
+            return "formula-specific, mechanism-conditioned auditable statement"
+        return value
+
+    program = fill(program)
+    candidates = program["model_selection"]["candidate_models"]
+    candidates[0]["model_family"] = "transient_impact"
+    candidates[0]["mathematical_object"] = (
+        "formula-specific signed pressure and participation object"
+    )
+    candidates[0]["mechanism_equation_or_functional"] = (
+        "pressure_i,t=h(signed_price_i,t, participation_i,t); "
+        "pressure_i,t+1=rho*pressure_i,t+eta_i,t+1 with abs(rho)<1"
+    )
+    program["market_outcome_projection"]["source_math_object"] = candidates[0][
+        "mathematical_object"
+    ]
+    candidates[1].update(
+        {
+            "model_family": "permanent information alternative",
+            "mechanism_equation_or_functional": (
+                "information_state_i,t=permanent_update(legal_inputs_i,<=t)"
+            ),
+            "target_functional": "permanent-information continuation payoff",
+            "market_outcome_projection": (
+                "permanent information predicts continuation after costs"
+            ),
+            "observation_mapping": (
+                "map legal-time innovations into a permanent information estimator"
+            ),
+        }
+    )
+    candidates[2].update(
+        {
+            "model_family": "formula alias null",
+            "mechanism_equation_or_functional": (
+                "score_i,t=known_aliases_i,t+measurement_noise_i,t"
+            ),
+            "target_functional": "incremental payoff after known aliases",
+            "market_outcome_projection": (
+                "the null predicts zero incremental after-cost payoff"
+            ),
+            "observation_mapping": (
+                "project the formula score on legal-time known aliases"
+            ),
+        }
+    )
+    return program
 
 
 def is_tmp(path: Path) -> bool:
@@ -85,6 +148,17 @@ def fixture(
     operators: list[str] | None = None,
 ) -> dict[str, Path]:
     objects = root / "objects"
+    measurement_program = valid_measurement_program()
+    if formula_text == OPEN_CLOSE_POSITION_FORMULA:
+        selected = measurement_program["model_selection"]["candidate_models"][0]
+        selected.update({
+            "model_family": "intraday price-location model",
+            "mathematical_object": "legal-time open-to-close price-location statistic",
+            "mechanism_equation_or_functional": (
+                "location_i,t=(close_i,t-open_i,t)/open_i,t; "
+                "payoff_i,t+1=g(location_i,t, controls_i,t)+epsilon_i,t+1"
+            ),
+        })
     spec = {
         "report_id": report_id,
         "factor_id": "SIGN_VOLUME_SAMPLE_FORMULA",
@@ -92,7 +166,9 @@ def fixture(
             "formula_text": formula_text,
             "required_inputs": required_inputs or ["close", "volume"],
             "operators": operators or ["plus", "negate", "rank", "sign", "delta", "delay", "multiply", "divide", "sum"],
+            "mechanism_conditioned_measurement_program": measurement_program,
         },
+        "mechanism_conditioned_measurement_program": measurement_program,
     }
     case = {
         "report_id": report_id,
@@ -107,6 +183,7 @@ def fixture(
             "group_g9_mean_return": 0.003,
             "group_g10_mean_return": -0.002,
         },
+        "mechanism_conditioned_measurement_program": measurement_program,
     }
     evaluation = {
         "report_id": report_id,
@@ -122,7 +199,8 @@ def fixture(
         "mechanism_fit": "weak",
         "return_source": "behavioral_microstructure",
         "factor_family": "liquidity_shock",
-        "mechanism_math_contract": {
+        "mechanism_conditioned_measurement_program": measurement_program,
+        "legacy_stale_mechanism_hint": {
             "model_family": "price_volume_microstructure",
             "math_model_status": "specified",
             "state_or_object": "short signed price pressure plus participation intensity",
@@ -136,7 +214,7 @@ def fixture(
         },
     }
     if stale_dependence_contract:
-        mechanism["mechanism_math_contract"].update({
+        mechanism["legacy_stale_mechanism_hint"].update({
             "factor_as_estimator": "rank and rolling dependence transforms estimate price-volume co-movement as an observable microstructure state",
             "process_hypothesis": "Price-volume rank dependence estimates the current impact or crowded-attention state.",
             "conditional_distribution_hypothesis": "r_i,t+1 | F_t, C_i,t where C is the price-volume dependence estimator",
@@ -164,21 +242,24 @@ def fixture(
         "memo": objects / "research_iteration_master" / f"main_agent_mechanism_memo__{report_id}.json",
         "memo_md": objects / "research_iteration_master" / f"main_agent_mechanism_memo__{report_id}.md",
     }
-    for key, payload in [("spec", spec), ("case", case), ("evaluation", evaluation), ("run", run), ("handoff", {"report_id": report_id}), ("iteration", iteration)]:
+    handoff = {
+        "report_id": report_id,
+        "mechanism_conditioned_measurement_program": measurement_program,
+    }
+    for key, payload in [("spec", spec), ("case", case), ("evaluation", evaluation), ("run", run), ("handoff", handoff), ("iteration", iteration)]:
         write_json(paths[key], payload)
     memo = build_main_agent_mechanism_memo(report_id=report_id, factor_spec=spec, factor_case=case, evaluation_summary=evaluation, step6_iteration=iteration)
     formula_terms = (
         f"the formula uses fields {', '.join(required_inputs or ['close', 'volume'])} "
         f"and operators {', '.join(operators or ['plus', 'negate', 'rank', 'sign', 'delta', 'delay', 'multiply', 'divide', 'sum'])}"
     )
-    field_text = ', '.join(required_inputs or ['close', 'volume']).lower()
-    operator_text = ', '.join(operators or ['plus', 'negate', 'rank', 'sign', 'delta', 'delay', 'multiply', 'divide', 'sum']).lower()
-    if 'volume' in field_text and ('close' in field_text or 'open' in field_text or 'high' in field_text):
-        selected_model_family = 'transient_impact'
-        process_text = 'r_i,t+1 follows a transient impact and liquidity-pressure process with imbalance decay, inventory transfer, or participation-driven state migration depending on the formula-defined state and evidence'
-    else:
-        selected_model_family = 'stochastic_process'
-        process_text = 'r_i,t+1 follows a conditional stochastic return process with drift, reversal, impact decay, or state migration depending on the formula-defined state and evidence'
+    selected_program_model = next(
+        item
+        for item in measurement_program["model_selection"]["candidate_models"]
+        if item.get("selected") is True
+    )
+    selected_model_family = str(selected_program_model["model_family"])
+    process_text = str(selected_program_model["mechanism_equation_or_functional"])
     memo['producer'] = 'current_main_agent'
     memo['agent_authorship'] = {
         'authoring_mode': 'current_agent_freeform',
@@ -187,17 +268,17 @@ def fixture(
         'answered_without_deterministic_template': True,
     }
     memo['mechanism_qa'] = {
-        'formula_state_answer': (
-            f"The current main agent reads {formula_terms}. The estimated state is the observable state produced by those actual fields and operators, "
-            "with the formula structure determining the latent state instead of a fixed menu label."
+        'mathematical_object_answer': (
+            f"The current main agent reads {formula_terms}. The selected mathematical object is produced by those actual fields and operators, "
+            "with the economic hypothesis determining the object instead of a fixed menu label."
         ),
         'economic_hypothesis_answer': (
             "The economic hypothesis is that a constrained or delayed counterparty trades against the formula-defined state, creating a next-horizon "
             "conditional payoff through belief adjustment, liquidity demand, risk transfer, or state migration."
         ),
         'math_model_answer': (
-            "The mathematical model is a conditional stochastic return process whose latent state is mutated by the exact formula components; the model "
-            "must explain state dynamics, payoff sign, horizon, and falsification rather than select a canned factor-family thesis."
+            f"The selected model family is {selected_model_family}. Its mechanism equation or functional is {process_text}; "
+            "the selection follows the economic hypothesis and competing-model tests rather than a universal stochastic template."
         ),
         'payer_answer': (
             "Likely payers are delayed updaters, liquidity demanders, risk-transfer accounts, or extrapolators whose constraints make them trade at prices "
@@ -207,8 +288,8 @@ def fixture(
             "The payoff argument is E[r_i,t+1 | F_t, formula_state_i,t], with sign determined by the stated state direction and only accepted if long-side "
             "and cost-adjusted evidence support that direction."
         ),
-        'estimator_mapping_answer': (
-            f"Estimator mapping follows {formula_terms}: each component contributes an observable piece of the latent state, rank terms test ordering, "
+        'observation_mapping_answer': (
+            f"Observation mapping follows {formula_terms}: each component contributes an observable piece of the selected mathematical object, rank terms test ordering, "
             "arithmetic terms define direction or scale, and all inputs remain in the legal information set."
         ),
         'metric_signature_answer': (
@@ -228,13 +309,13 @@ def fixture(
     }
     memo['math_hypothesis'] = {
         'selected_model_family': selected_model_family,
-        'why_this_model': 'the formula output is modeled as a state variable in a conditional return process',
+        'why_this_model': 'the current measurement program selects this model from the economic hypothesis and competing-model tests',
         'why_not_generic_template': 'the current agent supplied freeform answers linking formula components to payer behavior, payoff, estimator mapping, and falsification',
-        'random_object': 'security-day forward return conditional on legal information set F_t and formula-defined state',
-        'latent_state': 'formula-defined conditional return state from the actual fields and operators',
-        'process_or_distribution': process_text,
-        'target_functional': 'E[r_i,t+1 | F_t, formula_state_i,t]',
-        'formula_as_estimator': memo['mechanism_qa']['estimator_mapping_answer'],
+        'mathematical_object': 'formula-defined return-relevant mathematical object from the actual fields and operators',
+        'mechanism_equation_or_functional': process_text,
+        'target_functional': 'E[r_{i,t+1} | F_t, formula_state_{i,t}]',
+        'market_outcome_projection': 'Forward return at t+1 follows the declared continuation or reversal sign of the measured object after costs.',
+        'observation_mapping': memo['mechanism_qa']['observation_mapping_answer'],
         'expected_metric_signature': {
             'rank_ic': 'rank IC sign must match the declared payoff direction',
             'long_side': 'high-score long side must be positive if the state is monetizable',
@@ -245,7 +326,7 @@ def fixture(
     }
     memo['math_model_selection'] = {
         'model_family': selected_model_family,
-        'baseline_model': process_text,
+        'mechanism_equation_or_functional': process_text,
         'model_mutation': memo['math_hypothesis']['why_this_model'],
     }
     memo['payer'] = {
@@ -253,17 +334,13 @@ def fixture(
         'why_they_pay': memo['economic_hypothesis']['why_they_pay'],
         'necessary_market_structure': memo['economic_hypothesis']['necessary_market_structure'],
     }
-    memo['formula_state_estimator'] = {
-        'latent_state': memo['math_hypothesis']['latent_state'],
-        'observable_mapping': memo['math_hypothesis']['formula_as_estimator'],
+    memo['mathematical_object_mapping'] = {
+        'mathematical_object': memo['math_hypothesis']['mathematical_object'],
+        'observation_mapping': memo['math_hypothesis']['observation_mapping'],
         'component_links': [
-            {
-                'component_id': item.get('component_id'),
-                'observable_estimator': item.get('observable_estimator'),
-                'latent_state_claim': item.get('economic_state'),
-            }
+            str(item.get('component_id'))
             for item in memo.get('formula_component_map') or []
-            if isinstance(item, dict)
+            if isinstance(item, dict) and item.get('component_id')
         ],
     }
     memo['expected_metric_signature'] = memo['math_hypothesis']['expected_metric_signature']
@@ -320,7 +397,7 @@ def main() -> None:
     top_level_required = [
         "math_model_selection",
         "payer",
-        "formula_state_estimator",
+        "mathematical_object_mapping",
         "expected_metric_signature",
         "falsification_tests",
     ]
@@ -433,16 +510,16 @@ def main() -> None:
         paths,
         "invalid_derivation_model_family_blocks_early",
         lambda m: m.setdefault("math_hypothesis", {}).update({"selected_model_family": "unsupported_template_family"}),
-        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_INVALID",
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH",
     ))
 
     paths = fixture(root)
-    cases.append(mutate_and_validate(root, paths, "generic_memo_blocks", lambda m: m.setdefault("math_hypothesis", {}).update({"process_or_distribution": "rank delta sign sum divide close volume"})))
+    cases.append(mutate_and_validate(root, paths, "generic_memo_blocks", lambda m: m.setdefault("math_hypothesis", {}).update({"mechanism_equation_or_functional": "rank delta sign sum divide close volume"})))
     fixture(root)
     cases.append(mutate_and_validate(root, paths, "correlation_claim_without_operator_blocks", lambda m: m.setdefault("operator_claim_consistency", {}).update({"claims_correlation_or_covariance": True, "formula_has_correlation_or_covariance_operator": False, "explicit_dependence_justification": None})))
     fixture(root)
     def text_claim_mutation(m: dict[str, Any]) -> None:
-        m.setdefault("math_hypothesis", {})["formula_as_estimator"] = (
+        m.setdefault("math_hypothesis", {})["observation_mapping"] = (
             "This is a rolling rank covariance and correlation dependence estimator between price and volume ranks."
         )
         m.setdefault("operator_claim_consistency", {}).update({
@@ -461,7 +538,7 @@ def main() -> None:
     ))
     fixture(root)
     def text_claim_with_generated_justification_mutation(m: dict[str, Any]) -> None:
-        m.setdefault("math_hypothesis", {})["formula_as_estimator"] = (
+        m.setdefault("math_hypothesis", {})["observation_mapping"] = (
             "This is a rolling rank covariance and correlation dependence estimator between price and volume ranks."
         )
         m.setdefault("operator_claim_consistency", {}).update({
@@ -510,15 +587,38 @@ def main() -> None:
         "command": packet,
     })
 
-    taskbook = run_cmd([sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", RID, "--executor", "dispatch_manifest"], root)
+    taskbook = run_cmd([sys.executable, "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py", "--report-id", RID, "--executor", "dispatch_manifest", "--research-protocol", "off"], root)
     taskbook_path = root / "objects" / "research_iteration_master" / "revision_council" / RID / f"agentic_taskbook__{RID}.json"
     taskbook_payload = load_json(taskbook_path) if taskbook_path.exists() else {}
     tasks = taskbook_payload.get("agent_tasks") or []
+    blind_tasks = [
+        task
+        for task in tasks
+        if (task.get("blind_context_policy") or {}).get("blind_phase") is True
+    ]
+    critique_tasks = [
+        task
+        for task in tasks
+        if (task.get("blind_context_policy") or {}).get("blind_phase") is False
+    ]
     cases.append({
-        "case": "taskbook_requires_memo_critique",
+        "case": "taskbook_enforces_blind_then_memo_critique",
         "ok": taskbook["rc"] == 0
         and tasks
-        and all(task.get("main_agent_mechanism_memo_ref") for task in tasks)
+        and blind_tasks
+        and critique_tasks
+        and all(task.get("main_agent_mechanism_memo_ref") is None for task in blind_tasks)
+        and all(
+            "favored thesis is intentionally withheld"
+            in str(task.get("research_question") or "")
+            for task in blind_tasks
+        )
+        and all(task.get("main_agent_mechanism_memo_ref") for task in critique_tasks)
+        and all(
+            "Critique the main agent mechanism memo"
+            in str(task.get("research_question") or "")
+            for task in critique_tasks
+        )
         and all("main_agent_memo_agreement" in (task.get("required_outputs") or []) for task in tasks)
         and "main_agent_mechanism_memo_ref" in (taskbook_payload.get("shared_context") or {}),
         "command": taskbook,

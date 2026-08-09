@@ -1,0 +1,108 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::cs_residual_vol_20d_neg_20260616",
+  "node_type": "factor",
+  "title": "Cross-sectional close-volume residual volatility diagnostic",
+  "summary": "CS residual volatility regresses close on volume cross-sectionally, then rewards lower rolling residual volatility; it has IC evidence but unstable endpoint direction and should be treated as a risk/liquidity diagnostic.",
+  "factor_ids": [
+    "CS_RESIDUAL_VOL_20D_NEG"
+  ],
+  "report_ids": [
+    "CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "low_volatility",
+      "liquidity"
+    ],
+    "barra_style": [
+      "volatility",
+      "liquidity"
+    ],
+    "cn_quant_practice": [
+      "risk_overlay",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "risk_factor",
+      "portfolio_construction_signal",
+      "alpha_combination_feature"
+    ],
+    "economic_mechanism": [
+      "risk_premium",
+      "liquidity_provision"
+    ],
+    "math_mechanism": [
+      "covariance_projection",
+      "residualization",
+      "time_series_state"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "qlib_provider"
+    ],
+    "tradability": [
+      "long_side",
+      "model_feature_only"
+    ],
+    "research_status": [
+      "candidate",
+      "needs_oos"
+    ],
+    "failure_mode": [
+      "liquidity_exposure"
+    ]
+  },
+  "mechanism": {
+    "payer": "stocks with unstable price-volume residual risk should demand compensation or be avoided",
+    "receiver": "portfolio that prefers stable residual price-volume relationship after removing cross-sectional volume level",
+    "random_object": "cross-sectional regression residual and its rolling time-series standard deviation",
+    "formula_latex": "S_{i,t}=-\\mathrm{TS\\_STDDEV}(\\epsilon_{i,t}^{close\\sim volume},20)",
+    "math_forced_insight": "Residualization can remove a broad volume-level component, but endpoint direction can flip if the residual risk proxy aliases liquidity, size, or regime exposure."
+  },
+  "evidence": {
+    "classification": "qlib_only_research_reference",
+    "is_window": "20160101-20250711",
+    "oos_window": "20250712-20260610",
+    "key_metrics": {
+      "is_rank_ic_1d": 0.0428,
+      "is_rank_ic_5d": 0.059,
+      "oos_rank_ic_1d": 0.0276,
+      "oos_rank_ic_5d": 0.0246,
+      "is_q1_minus_q10_bps_5d": -43.1229,
+      "oos_q1_minus_q10_bps_5d": 24.6518
+    },
+    "boundary": "Direction instability and missing tradability-risk-flag/cost checks prevent promotion."
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md",
+    "factor_research/_quarantine/legacy_unmanifested/cs_resid_vol_20260616/knowledge/CS_RESIDUAL_VOL_20D_NEG_QLIB_ONLY_20160101_20250711.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::residualization",
+      "note": "The factor starts from cross-sectional regression residuals."
+    },
+    {
+      "edge_type": "uses_math",
+      "target": "math::covariance_projection",
+      "note": "Regression projects close on volume before measuring residual volatility."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::endpoint_direction_flip",
+      "note": "IS and OOS endpoint direction differed, so it is not yet a clean long-only factor."
+    },
+    {
+      "edge_type": "requires_data_state",
+      "target": "data::tradability_risk_flags_daily",
+      "note": "Future formal evidence must join tradability flags and transaction cost."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node for residualization or low-vol/liquidity diagnostic ideas.",
+    "Before promotion, compare against simple volatility and liquidity-volatility baselines.",
+    "Treat sign and endpoint direction as unstable until tradability filters and cost model are applied."
+  ]
+}

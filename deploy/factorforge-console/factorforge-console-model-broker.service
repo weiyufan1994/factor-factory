@@ -1,0 +1,30 @@
+[Unit]
+Description=Factor Forge fixed-destination model broker
+After=network-online.target factorforge-console-network.service
+Wants=network-online.target
+Requires=factorforge-console-network.service
+Before=factorforge-console-runner.service
+
+[Service]
+Type=simple
+User=factorforge-model
+Group=factorforge-secret-scan
+SupplementaryGroups=factorforge-console
+WorkingDirectory=/srv/factorforge/control
+ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_model_broker.py --api-key-file /etc/factorforge-console/deepseek-api-key --client-token-file /etc/factorforge-console/model-broker-client-token --denied-secret-root /var/lib/factorforge-console/secret-scan
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/factorforge-console/secret-scan
+
+[Install]
+WantedBy=multi-user.target

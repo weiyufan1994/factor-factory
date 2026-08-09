@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -16,11 +17,15 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.measurement_program import measurement_program_binding_failures
+
 OBJ = FF / "objects"
 TOKEN_SUMMARY_MISSING = "BLOCK_REVISION_COUNCIL_SUMMARY_MISSING"
 TOKEN_PACKET_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING"
 TOKEN_PACKET_MISMATCH = "BLOCK_REVISION_COUNCIL_PACKET_MISMATCH"
 TOKEN_PACKET_SUMMARY_MISMATCH = "BLOCK_REVISION_COUNCIL_PACKET_SUMMARY_MISMATCH"
+TOKEN_AGENT_RESULT_HASH_MISMATCH = "BLOCK_REVISION_COUNCIL_AGENT_RESULT_HASH_MISMATCH"
+TOKEN_AGENT_RESULT_BINDING_INVALID = "BLOCK_REVISION_COUNCIL_AGENT_RESULT_BINDING_INVALID"
 TOKEN_CANONICAL_WRITE = "revision_council_no_canonical_write_permission"
 TOKEN_EXECUTION_DEFAULT = "revision_council_no_execution_by_default"
 
@@ -32,6 +37,14 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def utc_now() -> str:
@@ -78,6 +91,79 @@ def summary_path_for(report_id: str) -> Path:
     return council_dir(report_id) / f"revision_council_summary__{report_id}.json"
 
 
+def agent_result_integrity_failures(
+    report_id: str,
+    packet: dict[str, Any],
+    summary: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    expected_root = (council_dir(report_id) / "agent_results").resolve()
+    measurement_program = packet.get("mechanism_conditioned_measurement_program")
+    seen_paths: set[Path] = set()
+    for index, item in enumerate(summary.get("valid_agent_results") or []):
+        prefix = f"valid_agent_results[{index}]"
+        if not isinstance(item, dict):
+            failures.append(f"{prefix}:not_object")
+            continue
+        raw_path = item.get("path")
+        expected_hash = item.get("result_sha256")
+        if not isinstance(raw_path, str) or not raw_path or not isinstance(expected_hash, str) or not expected_hash:
+            failures.append(f"{prefix}:path_or_hash_missing")
+            continue
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = FF / path
+        path = path.resolve()
+        try:
+            path.relative_to(expected_root)
+        except ValueError:
+            failures.append(f"{prefix}:path_outside_agent_results")
+            continue
+        if path in seen_paths:
+            failures.append(f"{prefix}:duplicate_path")
+            continue
+        seen_paths.add(path)
+        if not path.exists() or not path.is_file():
+            failures.append(f"{prefix}:result_missing")
+            continue
+        if sha256_file(path) != expected_hash:
+            failures.append(f"{prefix}:sha256_mismatch")
+            continue
+
+        result = load_json(path)
+        for key in ("report_id", "task_id", "agent_role"):
+            expected_value = report_id if key == "report_id" else item.get(key)
+            if result.get(key) != expected_value:
+                failures.append(f"{prefix}:{key}_mismatch")
+        binding = result.get("measurement_program_binding")
+        failures.extend(
+            f"{prefix}:{reason}"
+            for reason in measurement_program_binding_failures(
+                binding,
+                measurement_program,
+                prefix="measurement_program_binding",
+            )
+        )
+        if not isinstance(binding, dict):
+            continue
+        frozen_model = binding.get("mechanism_equation_or_functional")
+        frozen_object = binding.get("mathematical_object")
+        derivation = result.get("math_mechanism_derivation") or {}
+        if derivation.get("baseline_model") != frozen_model:
+            failures.append(f"{prefix}:frozen_baseline_model_mismatch")
+        if frozen_object not in (derivation.get("mathematical_objects") or []):
+            failures.append(f"{prefix}:frozen_mathematical_object_missing")
+        public = result.get("public_derivation_record") or {}
+        public_objects = {
+            entry.get("name")
+            for entry in public.get("mathematical_objects") or []
+            if isinstance(entry, dict)
+        }
+        if frozen_object not in public_objects:
+            failures.append(f"{prefix}:public_frozen_object_missing")
+    return list(dict.fromkeys(failures))
+
+
 def selected_proposal_ids(summary: dict[str, Any]) -> list[str]:
     ids: list[str] = []
     for branch in summary.get("recommended_branch_templates") or []:
@@ -93,8 +179,6 @@ def proposal_from_agent_result(result: dict[str, Any], path: Path) -> dict[str, 
     public = result.get("public_derivation_record") or {}
     laws = [item for item in (result.get("candidate_revision_laws") or []) if isinstance(item, dict)]
     law = laws[0] if laws else {}
-    mathematical_objects = public.get("mathematical_objects") if isinstance(public.get("mathematical_objects"), list) else []
-    first_object = mathematical_objects[0] if mathematical_objects and isinstance(mathematical_objects[0], dict) else {}
     return {
         "report_id": result.get("report_id"),
         "agent_role": result.get("agent_role"),
@@ -108,10 +192,9 @@ def proposal_from_agent_result(result: dict[str, Any], path: Path) -> dict[str, 
         "target_failure_signature": "cost_too_high" if result.get("agent_role") == "microstructure_cost_analyst" else "mechanism_unclear",
         "selected_math_tools": [item.get("tool") for item in public.get("selected_tools") or [] if isinstance(item, dict) and item.get("tool")],
         "market_phenomenon": public.get("research_question") or "Agentic Council research result.",
-        "symbolic_model": {
-            "state_or_object": first_object.get("name") or "agentic_state",
-            "target_functional": ((public.get("formula_claims") or [{}])[0] or {}).get("formula_or_relation") if isinstance(public.get("formula_claims"), list) else "E[next evidence | state]",
-        },
+        "symbolic_model": dict(
+            result.get("measurement_program_binding") or {}
+        ),
         "candidate_revision_laws": [
             {
                 "law_statement": item.get("law_statement"),
@@ -185,6 +268,25 @@ def preflight_packet_summary_proposals(report_id: str) -> tuple[dict[str, Any], 
                     "summary_value": summary.get(field),
                 },
             )
+
+    integrity_failures = agent_result_integrity_failures(
+        report_id,
+        packet,
+        summary,
+    )
+    if integrity_failures:
+        token = (
+            TOKEN_AGENT_RESULT_HASH_MISMATCH
+            if any("sha256_mismatch" in item for item in integrity_failures)
+            else TOKEN_AGENT_RESULT_BINDING_INVALID
+        )
+        block(
+            token,
+            {
+                "report_id": report_id,
+                "failures": integrity_failures,
+            },
+        )
 
     proposals = load_proposals(report_id)
     candidate = summary.get("candidate_proposals") or []
@@ -263,7 +365,11 @@ def hypothesis_from_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
     return {
         "hypothesis_id": proposal.get("proposal_id"),
         "hypothesis": law.get("law_statement") or derivation_hypothesis.get("hypothesis") or proposal.get("risk_notes") or "Council advisory hypothesis.",
-        "mechanism_target": (proposal.get("symbolic_model") or {}).get("state_or_object") or "unknown",
+        "mechanism_target": (
+            (proposal.get("symbolic_model") or {}).get("mathematical_object")
+            or (proposal.get("symbolic_model") or {}).get("state_or_object")
+            or "unknown"
+        ),
         "revision_model_layer": proposal.get("revision_model_layer") or law.get("revision_model_layer") or derivation_hypothesis.get("revision_model_layer") or "observable_estimator",
         "expression_change": proposal.get("expression_change") or derivation_hypothesis.get("expression_direction") or "See council proposal.",
         "implementation_mode_preference": "unknown",

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .evaluator import _is_key_sorted, _prepare_optimized_frame, _validate_formula_ir_inputs, evaluate_formula_frame
+from .parser import resolve_formula_fields_for_schema
 POLARS_ENGINE = 'polars_experimental'
 SUPPORTED_POLARS_OPERATORS = {'rank', 'delta', 'delay', 'sum', 'sign', 'multiply', 'divide', 'plus', 'minus', 'negate'}
 
@@ -44,28 +45,13 @@ def first_unsupported_operator(formula_ir: dict[str, Any]) -> str | None:
 
 
 def _resolve_formula_ir_for_schema(formula_ir: dict[str, Any], available_columns: set[str]) -> dict[str, Any]:
-    resolved_ir = json.loads(json.dumps(formula_ir, ensure_ascii=False))
-    aliases = resolved_ir.get('field_aliases') if isinstance(resolved_ir.get('field_aliases'), dict) else {}
-
-    def resolve_field(name: str, current: str | None) -> str:
-        candidates = []
-        for value in [current, name, *(aliases.get(name) or [])]:
-            if value and value not in candidates:
-                candidates.append(str(value))
-        for candidate in candidates:
-            if candidate in available_columns:
-                return candidate
-        raise KeyError(f'BLOCK_POLARS_EXPERIMENTAL_MISSING_FIELD:{name}')
-
-    def update_node(node: dict[str, Any]) -> dict[str, Any]:
-        if node.get('type') == 'field':
-            node['resolved_field'] = resolve_field(str(node.get('name')), node.get('resolved_field'))
-        elif node.get('type') == 'operator':
-            node['args'] = [update_node(arg) for arg in node.get('args') or []]
-        return node
-
-    resolved_ir['root'] = update_node(resolved_ir['root'])
-    return resolved_ir
+    try:
+        return resolve_formula_fields_for_schema(
+            formula_ir,
+            sorted(available_columns),
+        )
+    except (KeyError, ValueError) as exc:
+        raise KeyError(f'BLOCK_POLARS_EXPERIMENTAL_MISSING_FIELD:{exc}') from exc
 
 
 def _collect_resolved_fields(node: dict[str, Any], out: set[str]) -> None:
@@ -150,10 +136,19 @@ def _sign_expr(expr: Any, pl: Any) -> Any:
     )
 
 
+def _field_expr(node: dict[str, Any], pl: Any) -> Any:
+    resolved = str(node['resolved_field'])
+    value = pl.col(resolved).cast(pl.Float64, strict=False)
+    semantic_name = str(node.get('name') or '').strip().lower()
+    if semantic_name in {'returns', 'return', 'ret'} and resolved.strip().lower() == 'pct_chg':
+        value = value / 100.0
+    return _nullify_nan(value)
+
+
 def _eval_expr(node: dict[str, Any], pl: Any):
     typ = node.get('type')
     if typ == 'field':
-        return _nullify_nan(pl.col(node['resolved_field']).cast(pl.Float64, strict=False))
+        return _field_expr(node, pl)
     if typ == 'constant':
         return _nullify_nan(pl.lit(_constant_value(node.get('value'))))
     if typ != 'operator':
@@ -208,7 +203,7 @@ def _eval_column(node: dict[str, Any], pl_frame: Any, pl: Any, cache: dict[str, 
     name = f'__ff_polars_{len(cache)}_{key}'
     typ = node.get('type')
     if typ == 'field':
-        pl_frame = pl_frame.with_columns(_nullify_nan(pl.col(node['resolved_field']).cast(pl.Float64, strict=False)).alias(name))
+        pl_frame = pl_frame.with_columns(_field_expr(node, pl).alias(name))
         cache[key] = name
         return pl_frame, name
     if typ == 'constant':

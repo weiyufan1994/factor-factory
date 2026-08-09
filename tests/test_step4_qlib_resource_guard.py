@@ -59,6 +59,20 @@ def test_qlib_native_resource_guard_skips_large_full_native_backtest(monkeypatch
         "_import_native_qlib",
         lambda: (_ for _ in ()).throw(AssertionError("native qlib should be resource-guarded")),
     )
+    monkeypatch.setattr(
+        adapter,
+        "to_qlib_signal_frame",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("native qlib signal frame should be resource-guarded")
+        ),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "daily_to_qlib_features",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("native qlib daily frame should be resource-guarded")
+        ),
+    )
 
     payload = adapter.run_qlib_backtest_stub(report_id)
 

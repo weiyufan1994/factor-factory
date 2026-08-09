@@ -1,0 +1,108 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::<stable_lowercase_id>_<yyyymmdd>",
+  "node_type": "factor | mechanism | anti_pattern | feature_candidate | methodology | data_state",
+  "title": "<short human-readable title>",
+  "summary": "<one paragraph: what this node teaches future factor researchers>",
+  "factor_ids": [
+    "<factor_id_or_family>"
+  ],
+  "report_ids": [
+    "<optional_report_id>"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "momentum",
+      "reversal",
+      "microstructure",
+      "capital_flow"
+    ],
+    "barra_style": [
+      "momentum",
+      "liquidity"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "rank_transform",
+      "ts_operator"
+    ],
+    "cn_quant_practice": [
+      "index_enhancement",
+      "market_neutral",
+      "moneyflow_alpha",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "microstructure_alpha",
+      "flow_alpha",
+      "alpha_combination_feature"
+    ],
+    "economic_mechanism": [
+      "underreaction"
+    ],
+    "math_mechanism": [
+      "stochastic_process"
+    ],
+    "data_source": [
+      "daily_ohlcv"
+    ],
+    "tradability": [
+      "long_side",
+      "cost_sensitive"
+    ],
+    "research_status": [
+      "candidate"
+    ],
+    "failure_mode": []
+  },
+  "mechanism": {
+    "economic_hypothesis": "<who pays, who receives, and why the mispricing can exist>",
+    "payer": "<profit payer, forced buyer/seller, uninformed trader, benchmark pressure, etc.>",
+    "receiver": "<smart absorber, liquidity provider, risk bearer, informed capital, etc.>",
+    "mathematical_object": "<cash-flow functional, accounting identity, price path, return process, occupation measure, hidden state, covariance residual, etc.>",
+    "target_statistic": "<expected return, first-passage payoff, residual IC, long-side return, etc.>",
+    "key_equation_latex": "$$\\n<main equation>\\n$$",
+    "dirac_style_forced_insight": "<what the math object forced that formula prose did not reveal>",
+    "information_preserved_removed": "<what the transform preserves, removes, aliases, or makes untradeable>",
+    "factor_expression": "<executable formula, law id, or direct-code state reference>",
+    "complexity_penalty_reasoning": "<why added gates/parameters are justified, or why the simple version is preferred>"
+  },
+  "evidence": {
+    "window": "<IS/OOS dates>",
+    "universe": "<full, fixed small, CSI800, custom, etc.>",
+    "portfolio_policy": "<decile, topN, equal-weight, signal-weight, cap-weight, etc.>",
+    "cost_assumption": "<bps, after-cost, before-cost>",
+    "key_metrics": {
+      "ic": null,
+      "rank_ic": null,
+      "long_side_return": null,
+      "turnover": null,
+      "max_drawdown": null
+    },
+    "verdict": "<official | candidate | feature_candidate | rejected | data_blocked | anti_pattern>",
+    "falsification": "<what result failed or would kill the hypothesis>",
+    "artifact_paths": [
+      "<path_to_step4_or_report_artifact>"
+    ]
+  },
+  "source_paths": [
+    "<human_readable_note_or_formal_artifact_path>"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::<taxonomy_or_named_mechanism>",
+      "note": "<why this relation matters>"
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "market_consensus::<style>",
+      "note": "<style relationship>"
+    }
+  ],
+  "reuse_guidance": [
+    "<when future agents should reuse this>",
+    "<when future agents should avoid or invert this>"
+  ]
+}

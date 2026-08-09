@@ -173,6 +173,7 @@ def test_daily_step3a_snapshot_uses_query_safe_current_end(monkeypatch, tmp_path
                     "high": 10.2,
                     "low": 9.9,
                     "close": 10.1,
+                    "pre_close": 9.9,
                     "vol": 100.0,
                     "amount": 1010.0,
                     "pct_chg": 0.1,
@@ -193,14 +194,26 @@ def test_daily_step3a_snapshot_uses_query_safe_current_end(monkeypatch, tmp_path
     result = run_step3.materialize_shared_daily_slice(
         "STEP3A_CURRENT_WINDOW_DAILY",
         {"start": "2016-01-01", "end": "current"},
-        required_fields=["close"],
+        required_fields=["open", "pre_close"],
+        formula_ir={
+            "resolved_fields": {"open": "open", "pre_close": "pre_close"},
+            "operator_set": ["divide", "minus", "negate"],
+            "root": {},
+        },
     )
 
-    assert result["sample_window_actual"]["end"] == "current"
+    assert result["sample_window_actual"]["end"] == "20160808"
+    assert result["step4_full_window"]["end"] == "20260603"
     assert result["step4_data_contract"]["full_queries"]["clean_daily_bar"]["end_date"] == "20260603"
     assert calls
+    clean_daily_calls = [
+        kwargs for _kind, dataset, kwargs in calls if dataset == "clean_daily_bar"
+    ]
+    assert clean_daily_calls
+    assert all("pre_close" in kwargs["fields"] for kwargs in clean_daily_calls)
+    assert "pre_close" in result["step4_data_contract"]["full_queries"]["clean_daily_bar"]["fields"]
     assert all(call[2].get("start") == "20160101" for call in calls)
-    assert all(call[2].get("end") == "20260603" for call in calls)
+    assert all(call[2].get("end") == "20160808" for call in calls)
 
 
 def test_minute_step3a_snapshot_resolution_uses_query_safe_current_end(monkeypatch, tmp_path):
@@ -213,7 +226,10 @@ def test_minute_step3a_snapshot_resolution_uses_query_safe_current_end(monkeypat
 
     def fake_resolve(dataset, **kwargs):
         calls.append((dataset, kwargs))
-        return _ready_resolution(dataset, **kwargs)
+        resolution = _ready_resolution(dataset, **kwargs)
+        if dataset == "minute_bar":
+            resolution["status"] = "blocked"
+        return resolution
 
     monkeypatch.setattr(run_step3, "resolve_data_api_dataset", fake_resolve)
 
@@ -222,9 +238,9 @@ def test_minute_step3a_snapshot_resolution_uses_query_safe_current_end(monkeypat
         {"start": "2016-01-01", "end": "current"},
     )
 
-    assert result["sample_window_actual"]["end"] == "current"
+    assert result["snapshot_source"] == "missing_data_api_minute_or_daily"
     assert result["step4_data_contract"]["full_queries"]["clean_daily_bar"]["end_date"] == "20260603"
     assert result["step4_data_contract"]["full_queries"]["minute_bar"]["end_date"] == "20260603"
     assert {dataset for dataset, _kwargs in calls} == {"clean_daily_bar", "minute_bar"}
     assert all(kwargs.get("start") == "20160101" for _dataset, kwargs in calls)
-    assert all(kwargs.get("end") == "20260603" for _dataset, kwargs in calls)
+    assert all(kwargs.get("end") == "20160808" for _dataset, kwargs in calls)

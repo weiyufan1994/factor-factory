@@ -1,0 +1,23 @@
+{
+  "contract_version": "factorforge_factor_research_workspace_v1",
+  "factor_id": "moneyflow_v18_long_edge",
+  "research_id": "moneyflow_v18_long_edge_20260611",
+  "status": "research_side_workspace",
+  "scope": "Moneyflow V11/V15/V18 long-edge, first-passage, portfolio-policy, and OOS feature validation research artifacts.",
+  "production_artifact": false,
+  "official_promotion": false,
+  "canonical_write_policy": {
+    "repo_root_scripts_allowed": false,
+    "repo_root_operations_notes_allowed": false,
+    "official_library_write_allowed": false
+  },
+  "paths": {
+    "scripts": "scripts",
+    "docs": "docs",
+    "results": "results"
+  },
+  "notes": [
+    "This workspace groups research-side scripts and notes that previously lived in repo-root scripts/ and docs/operations/.",
+    "Evidence may reference temporary S3 or worker paths; promotion requires formal Factor Forge Step5/Step6 artifacts."
+  ]
+}

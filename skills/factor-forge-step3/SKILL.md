@@ -321,7 +321,7 @@ This skill is intended to be ClawHub-publishable after Step 3 references and con
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported operators, missing `formula_ir`, missing field aliases, unavailable parity, or unsafe direct code must BLOCK. Family-plugin builders are explicit-contract-only and must never repair an unrelated spec.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must execute the `operator`, `hybrid`, or `direct_code` route frozen by the mechanism-conditioned measurement program. Route choice follows the mathematical/numerical object, not a fixed implementation preference. Missing route contracts, unsupported operators, missing `formula_ir`, missing field aliases, unavailable parity, or unsafe direct code must BLOCK; Step3B must not silently change routes to make a factor run. Family-plugin builders are explicit-contract-only and must never repair an unrelated spec.
 
 ## Operator / Qlib Engine
 
@@ -367,4 +367,7 @@ Explicit bans: no "qlib partial success"; no "partial run without layer"; no
 raw formula restatement as mechanism; no generic stochastic process as
 explanation.
 
-Required literal terms for validator coverage: unit policy; derive if needed without source fields; generic stochastic process as explanation.
+Validator coverage must explicitly reject missing data-unit policy, unbound
+"derive if needed" fields, and a generic stochastic-process story used as a
+mechanism substitute. This data-unit check is not a universal dimensional
+analysis requirement.

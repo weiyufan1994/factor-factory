@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -31,20 +32,30 @@ from factor_factory.provenance import (
     build_knowledge_provenance,
     derive_identity as derive_provenance_identity,
 )
-from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
+from factor_factory.knowledge_context import graph_node_to_similar_case, retrieve_factor_knowledge_context
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
     validate_formula_specific_derivation,
     validate_mechanism_formula_consistency,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
+    MAX_MECHANISM_MEMO_REVISIONS,
     build_main_agent_mechanism_questionnaire,
     formula_specific_derivation_from_main_agent_memo,
     render_main_agent_mechanism_questionnaire_markdown,
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
+from factor_factory.measurement_program import (
+    BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    validate_measurement_program,
+)
 from factor_factory.mechanism_math.factor_discovery_queue import build_default_discovery_queue
+from factor_factory.research_conjecture import (
+    research_protocol_paths,
+    validate_protocol_bundle,
+)
+from factor_factory.research_proof import validate_factor_proof_certificate
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
@@ -351,7 +362,10 @@ def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, A
         'top_decile_recovery_days',
         'bottom_decile_mean_return',
     ]:
-        if key in ql_stub:
+        # qlib stub metrics are supplementary. Do not let absent/null stub
+        # values overwrite the fuller self_quant group diagnostics used by
+        # Step6/Council loop briefs.
+        if key in ql_stub and ql_stub.get(key) is not None:
             metrics[f'group_{key}'] = ql_stub.get(key)
     return metrics
 
@@ -1133,11 +1147,15 @@ def _step6_spec_text(bundle: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Return a valid upstream legacy v1 contract without synthesizing one.
+
+    The legacy schema contains process-specific fields that are not universal.
+    New research is governed by the mechanism-conditioned measurement program.
+    """
     spec = bundle.get('factor_spec_master') or {}
     case = bundle.get('factor_case_master') or {}
     handoff = bundle.get('handoff_to_step6') or {}
     canonical = spec.get('canonical_spec') or {}
-    stale_failures: list[dict[str, str]] = []
     for candidate in [
         spec.get('mechanism_math_contract'),
         canonical.get('mechanism_math_contract'),
@@ -1148,19 +1166,21 @@ def mechanism_math_contract_from_bundle(bundle: dict[str, Any]) -> dict[str, Any
             failures = validate_mechanism_math_contract(candidate)
             if not failures:
                 return candidate
-            stale_failures.extend(failures)
-    rebuilt = build_mechanism_math_contract(spec or canonical or bundle)
-    if stale_failures:
-        evidence = rebuilt.get('classification_evidence')
-        if not isinstance(evidence, dict):
-            evidence = {}
-        evidence['rebuilt_from_stale_or_invalid_upstream_contract'] = True
-        evidence['upstream_contract_failure_codes'] = sorted({str(item.get('code')) for item in stale_failures if item.get('code')})
-        rebuilt['classification_evidence'] = evidence
-    return rebuilt
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_LEGACY_MECHANISM_MATH_CONTRACT_INVALID: '
+                + json.dumps(failures, ensure_ascii=False)
+            )
+    return {}
 
 
 def mechanism_math_contract_v2_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Return a valid upstream legacy v2 contract without synthesizing one.
+
+    The v2 schema requires a stochastic benchmark and is retained only for
+    compatibility. New research is governed by the mechanism-conditioned
+    measurement program, so manufacturing v2 here would make stochastic
+    modeling look universally mandatory.
+    """
     spec = bundle.get('factor_spec_master') or {}
     case = bundle.get('factor_case_master') or {}
     handoff = bundle.get('handoff_to_step6') or {}
@@ -1171,9 +1191,54 @@ def mechanism_math_contract_v2_from_bundle(bundle: dict[str, Any]) -> dict[str, 
         case.get('mechanism_math_contract_v2'),
         handoff.get('mechanism_math_contract_v2'),
     ]:
-        if isinstance(candidate, dict) and candidate and not validate_mechanism_math_contract_v2(candidate):
-            return candidate
-    return build_mechanism_math_contract_v2(spec or canonical or bundle)
+        if isinstance(candidate, dict) and candidate:
+            failures = validate_mechanism_math_contract_v2(candidate)
+            if not failures:
+                return candidate
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_LEGACY_MECHANISM_MATH_CONTRACT_V2_INVALID: '
+                + json.dumps(failures, ensure_ascii=False)
+            )
+    return {}
+
+
+def measurement_program_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Load one exact current measurement program from the formal bundle."""
+    spec = bundle.get('factor_spec_master') or {}
+    case = bundle.get('factor_case_master') or {}
+    handoff = bundle.get('handoff_to_step6') or {}
+    canonical = spec.get('canonical_spec') or {}
+    candidates = [
+        spec.get('mechanism_conditioned_measurement_program'),
+        canonical.get('mechanism_conditioned_measurement_program'),
+        case.get('mechanism_conditioned_measurement_program'),
+        handoff.get('mechanism_conditioned_measurement_program'),
+    ]
+    present = [item for item in candidates if isinstance(item, dict) and item]
+    if not present:
+        return {}
+    program = present[0]
+    if any(item != program for item in present[1:]):
+        raise SystemExit(
+            f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: Step6 bundle copies mismatch'
+        )
+    declared_node_ids = {
+        str(node_id)
+        for component in ((program.get('implementation') or {}).get('components') or [])
+        if isinstance(component, dict)
+        for node_id in (component.get('knowledge_node_ids') or [])
+        if str(node_id).strip()
+    }
+    reasons = validate_measurement_program(
+        program,
+        available_knowledge_node_ids=declared_node_ids,
+        require_web_executable=False,
+    )
+    if reasons:
+        raise SystemExit(
+            f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: Step6 program invalid: {reasons}'
+        )
+    return program
 
 
 def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
@@ -1220,6 +1285,109 @@ def mechanism_math_summary_from_contract(contract: dict[str, Any]) -> dict[str, 
         'under_specified_reason': contract.get('under_specified_reason'),
         'next_human_research_question': contract.get('next_human_research_question'),
     }
+
+
+def mechanism_math_summary_from_measurement_program(
+    program: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the Step6 math summary from the selected mechanism, not a template.
+
+    This summary intentionally has no universal stochastic-process, latent-state,
+    conditional-distribution, or dimensional-analysis fields. Those belong in
+    the program only when the selected mechanism actually requires them.
+    """
+    if not isinstance(program, dict) or not program:
+        return {
+            'math_model_status': 'under_specified',
+            'under_specified_reason': 'current mechanism-conditioned measurement program is missing',
+            'next_human_research_question': 'Which mathematical object and estimand are selected by the economic hypothesis?',
+        }
+    selection = program.get('model_selection') or {}
+    candidates = selection.get('candidate_models') or []
+    selected = next(
+        (
+            item for item in candidates
+            if isinstance(item, dict) and item.get('selected') is True
+        ),
+        {},
+    )
+    tools = program.get('math_tool_selection') or {}
+    observation = program.get('observation_and_estimation') or {}
+    projection = program.get('market_outcome_projection') or {}
+    implementation = program.get('implementation') or {}
+    validation = program.get('deterministic_validation_plan') or {}
+    search = program.get('search_policy') or {}
+    components = [
+        item for item in implementation.get('components') or []
+        if isinstance(item, dict)
+    ]
+    falsifiers = [
+        str(item).strip()
+        for item in [
+            selected.get('decisive_test'),
+            projection.get('falsifier'),
+            *[component.get('falsifier') for component in components],
+            *list(validation.get('limiting_case_oracles') or []),
+            *list(validation.get('ablation_and_alias_tests') or []),
+        ]
+        if str(item or '').strip()
+    ]
+    expected_component_signatures = {
+        str(component.get('component_id') or f'component_{index + 1}'):
+            component.get('expected_metric_signature')
+        for index, component in enumerate(components)
+        if component.get('expected_metric_signature')
+    }
+    selected_tools = [
+        str(item) for item in tools.get('selected_tool_families') or []
+        if str(item).strip()
+    ]
+    mathematical_object = str(
+        selected.get('mathematical_object') or 'under_specified'
+    )
+    estimator = str(observation.get('estimator') or 'under_specified')
+    estimand = str(observation.get('estimand') or 'under_specified')
+    return {
+        'contract_version': program.get('contract_version'),
+        'summary_source': 'mechanism_conditioned_measurement_program',
+        'math_model_status': 'specified',
+        'model_family': selected.get('model_family') or 'under_specified',
+        'economic_mechanism_family': selected.get('economic_implication') or 'under_specified',
+        'math_tool_family': selected_tools[0] if selected_tools else 'under_specified',
+        'model_equation_family': selected.get('model_family') or 'under_specified',
+        'math_toolkits': selected_tools,
+        'mathematical_object': mathematical_object,
+        'state_or_object': mathematical_object,
+        'factor_as_estimator': estimator,
+        'target_functional': estimand,
+        'observation_map': observation.get('observation_map') or 'under_specified',
+        'identification_assumptions': observation.get('identification_assumptions') or [],
+        'market_outcome_projection': projection.get('projection_equation_or_map') or 'under_specified',
+        'relationship_shape': projection.get('projection_kind') or 'under_specified',
+        'monotonicity_claim': projection.get('link_to_observation_equation') or 'mechanism_specific',
+        'expected_metric_signature': expected_component_signatures or {
+            'traded_quantity': projection.get('traded_quantity'),
+            'affected_terms': projection.get('affected_payoff_or_distribution_terms') or [],
+        },
+        'metric_signature_match': 'evaluate_selected_model_against_step4_and_step5_evidence',
+        'mechanism_falsification_tests': falsifiers,
+        'applicable_audits': program.get('applicable_audits') or {},
+        'revision_operator_summary': {
+            'revision_target_math_object': mathematical_object,
+            'math_change': '; '.join(
+                str(item) for item in search.get('allowed_model_or_estimator_variations') or []
+                if str(item).strip()
+            ) or 'mechanism-specific model or estimator revision only',
+        },
+    }
+
+
+def mechanism_math_summary_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    program = measurement_program_from_bundle(bundle)
+    if program:
+        return mechanism_math_summary_from_measurement_program(program)
+    legacy = mechanism_math_contract_from_bundle(bundle)
+    return mechanism_math_summary_from_contract(legacy)
 
 
 def _contains_any(text: str, tokens: set[str]) -> bool:
@@ -1295,7 +1463,12 @@ def build_mechanism_analysis(
     text, canonical = _step6_spec_text(bundle)
     mechanism_math_contract = mechanism_math_contract_from_bundle(bundle)
     mechanism_math_contract_v2 = mechanism_math_contract_v2_from_bundle(bundle)
-    mechanism_math_summary = mechanism_math_summary_from_contract(mechanism_math_contract)
+    measurement_program = measurement_program_from_bundle(bundle)
+    mechanism_math_summary = (
+        mechanism_math_summary_from_measurement_program(measurement_program)
+        if measurement_program
+        else mechanism_math_summary_from_contract(mechanism_math_contract)
+    )
     factor_family, classification_evidence_items, uncertainty = _classify_mechanism_family(text, canonical)
     formula_understanding = mechanism_math_contract.get('formula_understanding') if isinstance(mechanism_math_contract, dict) else {}
     interaction_structure = str((formula_understanding or {}).get('interaction_structure') or '')
@@ -1377,6 +1550,46 @@ def build_mechanism_analysis(
         necessary = ['human researcher must restate the return source before promotion', 'Step4 long-side evidence alone is insufficient without a testable mechanism']
         failures = ['ambiguous mechanism', 'data-mined transform without stable economic state', 'unexplained regime dependence']
 
+    if measurement_program:
+        selection = measurement_program.get('model_selection') or {}
+        selected_models = [
+            item for item in selection.get('candidate_models') or []
+            if isinstance(item, dict) and item.get('selected') is True
+        ]
+        observation = measurement_program.get('observation_and_estimation') or {}
+        projection = measurement_program.get('market_outcome_projection') or {}
+        if len(selected_models) == 1:
+            selected_model = selected_models[0]
+            hypothesis = (
+                'Current mechanism-conditioned program selects model_family='
+                f"{selected_model.get('model_family')}; mathematical_object="
+                f"{selected_model.get('mathematical_object')}; economic_implication="
+                f"{selected_model.get('economic_implication')}; market_outcome_projection="
+                f"{projection.get('projection_equation_or_map')}. Formula classification remains a diagnostic prior only."
+            )
+            necessary = [
+                str(item).strip()
+                for item in [
+                    selected_model.get('identifiability_condition'),
+                    *list(observation.get('identification_assumptions') or []),
+                    observation.get('legal_information_time'),
+                ]
+                if str(item or '').strip()
+            ]
+            failures = [
+                str(item).strip()
+                for item in [
+                    selected_model.get('decisive_test'),
+                    projection.get('falsifier'),
+                ]
+                if str(item or '').strip()
+            ]
+            classification_evidence_items = list(dict.fromkeys([
+                'current_measurement_program_selected_model',
+                *classification_evidence_items,
+            ]))
+            uncertainty = 'medium'
+
     short_dominance = bool(metrics.get('short_side_dominance_suspected'))
     cost_negative = long_quality.get('cost_adjusted_status') == 'negative' or bool(cost_risk.get('cogs_destroy_alpha'))
     long_negative = long_quality.get('long_side_return_positive') is False
@@ -1427,7 +1640,7 @@ def build_mechanism_analysis(
     elif short_dominance or long_negative:
         failed_equation_component = 'observable_estimator'
     elif metrics.get('metric_verdict') in {'negative', 'inconclusive'}:
-        failed_equation_component = 'price_process_projection'
+        failed_equation_component = 'market_outcome_projection'
 
     return {
         'return_source': return_source,
@@ -1453,10 +1666,16 @@ def build_mechanism_analysis(
             'strong_mechanism_support': strong_mechanism_support,
             'mechanism_math_model_family': mechanism_math_summary.get('model_family'),
             'mechanism_math_status': mechanism_math_summary.get('math_model_status'),
+            'classification_basis': (
+                'current_measurement_program'
+                if measurement_program
+                else 'formula_and_evidence_diagnostic'
+            ),
         },
         'classification_uncertainty': uncertainty,
         'mechanism_math_contract': mechanism_math_contract,
         'mechanism_math_contract_v2': mechanism_math_contract_v2,
+        'mechanism_conditioned_measurement_program': measurement_program,
         'mechanism_math_summary': mechanism_math_summary,
         'research_equation_review': {
             'reviewer_task': 'research_equation_reviewer',
@@ -1481,14 +1700,14 @@ def build_mechanism_analysis(
         'mechanism_projection_diagnosis': {
             'economic_hypothesis': 'supported' if fit in {'strong', 'partial'} else 'challenged',
             'primary_mechanism_model': 'supported' if fit in {'strong', 'partial'} else 'challenged',
-            'stochastic_projection': 'supported' if metrics.get('metric_verdict') in {'supportive', 'mixed'} else 'challenged',
+            'market_outcome_projection': 'supported' if metrics.get('metric_verdict') in {'supportive', 'mixed'} else 'challenged',
             'observable_estimator': 'supported' if not short_dominance and not long_negative else 'challenged',
             'implementation_data_contract': evidence_verdict,
         },
         'metric_signature_match': {
             'economic_hypothesis': fit,
             'primary_mechanism_model': fit,
-            'stochastic_projection': metrics.get('metric_verdict') or 'inconclusive',
+            'market_outcome_projection': metrics.get('metric_verdict') or 'inconclusive',
             'observable_estimator': long_quality.get('long_side_verdict') or 'inconclusive',
             'implementation_contract': evidence_verdict,
         },
@@ -1497,7 +1716,7 @@ def build_mechanism_analysis(
             for layer, failed in {
                 'economic_hypothesis': fit in {'weak', 'contradicted'},
                 'primary_mechanism_model': fit in {'weak', 'contradicted'},
-                'stochastic_projection': metrics.get('metric_verdict') in {'negative', 'inconclusive'},
+                'market_outcome_projection': metrics.get('metric_verdict') in {'negative', 'inconclusive'},
                 'observable_estimator': short_dominance or long_negative,
                 'implementation_contract': evidence_verdict == 'blocked',
             }.items()
@@ -1505,7 +1724,7 @@ def build_mechanism_analysis(
         ] or ['none'],
         'revision_model_target': 'implementation_contract' if evidence_verdict == 'blocked' else (
             'observable_estimator' if short_dominance or long_negative else (
-                'stochastic_projection' if metrics.get('metric_verdict') in {'negative', 'inconclusive'} else 'primary_mechanism_model'
+                'market_outcome_projection' if metrics.get('metric_verdict') in {'negative', 'inconclusive'} else 'primary_mechanism_model'
             )
         ),
     }
@@ -1711,7 +1930,7 @@ def _revision_hypothesis(
         revision_model_layer = 'primary_mechanism_model'
     elif 'regime' in target_text or 'state' in target_text:
         revision_target_math_object = 'state_variable'
-        revision_model_layer = 'stochastic_projection'
+        revision_model_layer = 'market_outcome_projection'
     elif 'smooth' in target_text or 'persistence' in target_text or 'window' in target_text:
         revision_target_math_object = 'estimator_kernel'
         revision_model_layer = 'observable_estimator'
@@ -2133,6 +2352,28 @@ def build_search_policy_decision(
             blockers.append('advisory_only')
         else:
             blockers.append('advisory_only')
+    elif signature == 'unstable_regime' and quality == 'actionable' and loop_authorization == 'approved_for_step3b_handoff':
+        mode = 'bayesian_exploit'
+        why = 'The factor has useful signal evidence but unstable OOS/portfolio geometry; test expression-level regime stability before promotion.'
+        branch_templates.append(_search_branch_template(
+            branch_id='exploit_regime_stability_gate',
+            branch_role='exploit',
+            search_mode='bayesian_search',
+            research_question='Can persistence, smoothing, or state gating keep the residual-volatility mechanism while improving OOS monotonicity and long-side tradability?',
+            hypothesis='Residual price-volume instability may be useful only when it is persistent or confirmed by a measurable state; controlled smoothing/gating should preserve RankIC while reducing OOS top-bottom degradation.',
+            mechanism_target='residual_volatility_regime_stability',
+            revision_hypothesis_id=revision_hypothesis_id,
+            success_criteria=[
+                'OOS top-minus-bottom spread becomes positive without weakening full-IS RankIC materially',
+                'long-side Sharpe improves after transaction costs',
+                'required IS samples keep positive RankIC and avoid isolated stress-period dependence',
+            ],
+            falsification_tests=[
+                'regime gate removes the gross signal or materially lowers coverage',
+                'OOS monotonicity remains unstable',
+                'cost-adjusted long-side Sharpe remains below candidate threshold',
+            ],
+        ))
     elif signature == 'none' and revision_strategy.get('revision_needed') is False and decision == 'promote_official':
         mode = 'none'
         why = 'No search is recommended after official promotion and no revision-needed signal.'
@@ -2319,6 +2560,37 @@ def build_math_discipline_review(
     ts_steps = _as_list(canonical.get('time_series_steps'))
     cs_steps = _as_list(canonical.get('cross_sectional_steps'))
     metric_gap_items = list(metric_interpretation.get('ambiguities') or [])
+    measurement_program = (
+        spec.get('mechanism_conditioned_measurement_program')
+        or canonical.get('mechanism_conditioned_measurement_program')
+        or idea.get('mechanism_conditioned_measurement_program')
+        or {}
+    )
+    model_selection = (
+        measurement_program.get('model_selection')
+        if isinstance(measurement_program, dict)
+        and isinstance(measurement_program.get('model_selection'), dict)
+        else {}
+    )
+    selected_model = next(
+        (
+            item
+            for item in model_selection.get('candidate_models') or []
+            if isinstance(item, dict) and item.get('selected') is True
+        ),
+        {},
+    )
+    observation = (
+        measurement_program.get('observation_and_estimation')
+        if isinstance(measurement_program, dict)
+        and isinstance(measurement_program.get('observation_and_estimation'), dict)
+        else {}
+    )
+    upstream_math = (
+        spec.get('math_discipline_review')
+        if isinstance(spec.get('math_discipline_review'), dict)
+        else {}
+    )
 
     text_blob = ' '.join([
         formula_text,
@@ -2328,16 +2600,25 @@ def build_math_discipline_review(
         ' '.join(cs_steps),
     ]).lower()
 
-    if any(tok in text_blob for tok in ['return', 'close', 'open', 'high', 'low']):
-        random_object = 'A-share daily price/return panel and cross-sectional return ordering'
+    if selected_model.get('mathematical_object'):
+        mathematical_object = str(selected_model['mathematical_object'])
+    elif upstream_math.get('mathematical_object') or upstream_math.get('step1_random_object'):
+        mathematical_object = str(
+            upstream_math.get('mathematical_object')
+            or upstream_math.get('step1_random_object')
+        )
+    elif any(tok in text_blob for tok in ['return', 'close', 'open', 'high', 'low']):
+        mathematical_object = 'A-share daily price/return panel and cross-sectional return ordering'
     elif any(tok in text_blob for tok in ['volume', 'turnover', 'amount']):
-        random_object = 'A-share liquidity and order-flow proxy panel'
+        mathematical_object = 'A-share liquidity and order-flow proxy panel'
     elif any(tok in text_blob for tok in ['pe', 'pb', 'profit', 'revenue', 'cash', 'liability']):
-        random_object = 'firm fundamental information state observed through financial/accounting fields'
+        mathematical_object = 'firm value, cash-flow, accounting, or disclosure object observed at legal publication time'
     else:
-        random_object = 'not fully identified from canonical spec; researcher should restate the random object before promotion'
+        mathematical_object = 'not fully identified from canonical spec; researcher should restate the mathematical object before promotion'
 
-    if any(tok in text_blob for tok in ['rank', 'argmax', 'argmin', 'quantile']):
+    if observation.get('estimand'):
+        target_statistic = str(observation['estimand'])
+    elif any(tok in text_blob for tok in ['rank', 'argmax', 'argmin', 'quantile']):
         target_statistic = 'cross-sectional or time-series ordering statistic'
     elif any(tok in text_blob for tok in ['std', 'var', 'volatility']):
         target_statistic = 'conditional dispersion / volatility statistic'
@@ -2350,10 +2631,13 @@ def build_math_discipline_review(
 
     lag_terms = [str(item).lower() for item in _as_list(canonical.get('preprocessing')) + ts_steps + cs_steps]
     has_explicit_lag = any('lag' in item or 'shift' in item or 'delay' in item for item in lag_terms)
-    info_legality = (
-        'explicit_lag_or_delay_documented'
-        if has_explicit_lag
-        else 'requires_researcher_confirmation_no_forward_leakage'
+    info_legality = str(
+        observation.get('legal_information_time')
+        or (
+            'explicit_lag_or_delay_documented'
+            if has_explicit_lag
+            else 'requires_researcher_confirmation_no_forward_leakage'
+        )
     )
 
     unstable_ops = sorted({op for op in operators if op in {'rank', 'ts_rank', 'bucket', 'quantile', 'winsorize', 'truncate', 'argmax', 'argmin'}})
@@ -2430,7 +2714,7 @@ def build_math_discipline_review(
             'optimization' if decision == 'iterate' else 'decision_control',
             'robustness_analysis',
         ],
-        'step1_random_object': random_object,
+        'mathematical_object': mathematical_object,
         'target_statistic': target_statistic,
         'information_set_legality': info_legality,
         'spec_stability': spec_stability,
@@ -2722,17 +3006,45 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         except Exception:
             embedding_available = False
 
+    factor_knowledge_context: dict[str, Any] = {
+        'schema_version': 'factor_knowledge_context_v1',
+        'node_count': 0,
+        'nodes': [],
+        'related_edges': [],
+        'retrieval_disabled': True,
+    }
+    graph_candidates: list[dict[str, Any]] = []
+    graph_retrieval_enabled = os.getenv('FACTORFORGE_DISABLE_GRAPH_KNOWLEDGE_CONTEXT') != '1'
+    if graph_retrieval_enabled:
+        try:
+            factor_knowledge_context = retrieve_factor_knowledge_context(text=query_text, top_k=top_k)
+            for node in factor_knowledge_context.get('nodes') or []:
+                overlap_count = len(node.get('overlap_terms') or [])
+                graph_candidates.append(graph_node_to_similar_case(node, score=2.0 + overlap_count * 0.25))
+        except Exception as exc:
+            factor_knowledge_context = {
+                'schema_version': 'factor_knowledge_context_v1',
+                'node_count': 0,
+                'nodes': [],
+                'related_edges': [],
+                'retrieval_error': str(exc),
+            }
+    candidates.extend(graph_candidates)
     candidates.sort(key=lambda item: (-item['score'], str(item.get('report_id') or ''), str(item.get('doc_type') or '')))
     top = candidates[:top_k]
     return {
         'retrieval_index_path': str(RETRIEVAL_INDEX),
         'retrieval_index_available': RETRIEVAL_INDEX.exists(),
+        'factor_knowledge_context_available': bool(factor_knowledge_context.get('node_index_available')),
+        'factor_knowledge_context_node_count': factor_knowledge_context.get('node_count') or 0,
+        'factor_knowledge_context': factor_knowledge_context,
         'embedding_index_available': embedding_available,
         'embedding_endpoint': EMBEDDING_ENDPOINT,
         'query_terms': query_tokens[:40],
         'similar_cases': top,
         'retrieval_notes': [
             'retrieval currently uses lightweight lexical + metadata matching over factorforge_retrieval_index.jsonl',
+            'factor knowledge graph context is appended as analogy/anti-pattern evidence when available',
             'if local embedding index + endpoint are available, similarity scores are added on top of lexical family-aware matching',
             'same-factor_id cases are boosted to prefer family-aware reflection',
         ],
@@ -3249,6 +3561,13 @@ def _qlib_native_status(payloads: dict[str, dict[str, Any]], backend_statuses: d
     return 'partial_payload'
 
 
+def _named_step6_run_status(raw_status: Any) -> str:
+    status = str(raw_status or 'unknown').strip().lower()
+    if status == 'partial':
+        return 'partial_step4_validated_evidence'
+    return status or 'unknown'
+
+
 def build_evidence_status(
     *,
     run_master: dict[str, Any],
@@ -3284,10 +3603,12 @@ def build_evidence_status(
     research_decision = 'promote' if decision == 'promote_official' else decision
     if research_decision not in {'promote', 'iterate', 'reject', 'needs_human_review'}:
         research_decision = 'needs_human_review'
+    raw_run_status = run_master.get('run_status') or evaluation.get('run_status') or 'unknown'
     return {
         'version': 'factorforge_step6_evidence_status_v1',
         'status': 'complete' if evaluation.get('artifact_ready') is True else 'partial_evaluation_artifact',
-        'run_status': str(run_master.get('run_status') or evaluation.get('run_status') or 'unknown'),
+        'run_status': _named_step6_run_status(raw_run_status),
+        'raw_run_status': str(raw_run_status),
         'wrapper_validation_status': 'PASS' if evaluation.get('artifact_ready') is True else 'BLOCK',
         'self_quant_evidence_status': _status_from_backend(backend_statuses, 'self_quant_analyzer'),
         'qlib_native_status': _qlib_native_status(payloads, backend_statuses),
@@ -3300,6 +3621,51 @@ def build_evidence_status(
     }
 
 
+def load_window_evidence(report_id: str) -> dict[str, Any]:
+    path = OBJ / 'window_evidence' / f'window_evidence__{report_id}.json'
+    if not path.exists():
+        return {}
+    try:
+        payload = load_json(path)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    payload.setdefault('artifact_path', str(path))
+    return payload
+
+
+def summarize_window_evidence(window_evidence: dict[str, Any]) -> tuple[list[str], list[str]]:
+    if not window_evidence:
+        return [], ['formal full_is/is_subsamples/oos window evidence is missing']
+    strengths: list[str] = []
+    weaknesses: list[str] = []
+    proof = window_evidence.get('sampling_coverage_proof') or {}
+    full_is = window_evidence.get('full_is') or {}
+    oos = window_evidence.get('oos') or {}
+    if proof.get('full_is_union_covered') is True and proof.get('all_required_intervals_hit') is True:
+        strengths.append(
+            'formal window evidence covers full IS and all required IS sampling stress intervals'
+        )
+    else:
+        weaknesses.append('formal IS sampling coverage proof is incomplete')
+    if proof.get('all_subsamples_at_least_one_year') is not True:
+        weaknesses.append('one or more IS subsamples are shorter than the required one calendar year')
+    latest_clean = window_evidence.get('latest_clean_date')
+    if latest_clean and (window_evidence.get('oos_policy') or {}).get('actual_oos_end_date_reported') == latest_clean:
+        strengths.append(f'OOS evidence reports actual latest clean-data end date {latest_clean}')
+    else:
+        weaknesses.append('OOS evidence does not clearly report latest clean-data end date')
+    if full_is.get('rank_ic_mean_1d') is not None and oos.get('rank_ic_mean_1d') is not None:
+        strengths.append(
+            f"full IS/OOS RankIC1d are both positive ({float(full_is['rank_ic_mean_1d']):.6f} / {float(oos['rank_ic_mean_1d']):.6f})"
+        )
+    q = oos.get('quantile') or {}
+    if q.get('top_minus_bottom_mean_1d') is not None and float(q.get('top_minus_bottom_mean_1d')) <= 0:
+        weaknesses.append('OOS top-minus-bottom long-side spread is flat or negative despite positive RankIC')
+    return strengths, weaknesses
+
+
 def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -3310,6 +3676,10 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     decision = decide(bundle, payloads)
     strengths, weaknesses, risks, modification_targets = derive_strengths_weaknesses(bundle, payloads)
     metrics = extract_headline_metrics(payloads)
+    window_evidence = load_window_evidence(str(report_id))
+    window_strengths, window_weaknesses = summarize_window_evidence(window_evidence)
+    strengths.extend([item for item in window_strengths if item not in strengths])
+    weaknesses.extend([item for item in window_weaknesses if item not in weaknesses])
     retrieval_context = build_retrieval_context(bundle, payloads)
     prior_iteration_path = OBJ / 'research_iteration_master' / f'research_iteration_master__{report_id}.json'
     prior_iteration_no = 0
@@ -3447,6 +3817,11 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         search_policy_decision,
     )
     research_memo['evidence_audit'] = evidence_audit
+    if window_evidence:
+        research_memo['formal_window_evidence'] = window_evidence
+        research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
+            'Formal full_is/is_subsamples/oos window evidence was loaded and preserved under research_memo.formal_window_evidence.'
+        )
     research_memo['mechanism_analysis'] = mechanism_analysis
     research_memo['case_comparison'] = case_comparison
     research_memo['revision_strategy'] = revision_strategy
@@ -3478,6 +3853,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'backend_statuses': backend_statuses,
             'headline_metrics': metrics,
             'evidence_status': evidence_status,
+            'formal_window_evidence': window_evidence,
             'step5_lessons': case.get('lessons') or handoff.get('lessons') or [],
             'step5_next_actions': case.get('next_actions') or handoff.get('next_actions') or [],
         },
@@ -3728,7 +4104,7 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     metrics = (iteration.get('evidence_summary') or {}).get('headline_metrics') or {}
     mechanism = research_memo.get('mechanism_analysis') or {}
     mechanism_math_contract = mechanism.get('mechanism_math_contract') or mechanism_math_contract_from_bundle(bundle)
-    mechanism_math_summary = dict(mechanism.get('mechanism_math_summary') or mechanism_math_summary_from_contract(mechanism_math_contract))
+    mechanism_math_summary = dict(mechanism.get('mechanism_math_summary') or mechanism_math_summary_from_bundle(bundle))
     mechanism_math_summary.setdefault('economic_mechanism_family', mechanism_math_summary.get('model_family') or mechanism_math_contract.get('model_family') or 'other')
     mechanism_math_summary.setdefault('math_tool_family', mechanism_math_contract.get('math_tool_family') or mechanism_math_summary.get('model_family') or 'other')
     mechanism_math_summary.setdefault('model_equation_family', mechanism_math_contract.get('model_equation_family') or 'under_specified')
@@ -3812,7 +4188,11 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
             ),
             'return_source': mechanism.get('return_source') or 'unknown',
             'factor_family': mechanism.get('factor_family') or 'other',
-            'random_object': math_discipline.get('step1_random_object') or 'missing: random object unavailable',
+            'mathematical_object': (
+                math_discipline.get('mathematical_object')
+                or math_discipline.get('step1_random_object')
+                or 'missing: mathematical object unavailable'
+            ),
             'target_statistic': math_discipline.get('target_statistic') or 'missing: target statistic unavailable',
             'information_set': math_discipline.get('information_set_legality') or 'missing: information-set review unavailable',
             'mechanism_hypothesis': mechanism.get('mechanism_hypothesis') or 'missing: mechanism hypothesis unavailable',
@@ -3935,7 +4315,7 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 
     branch_template = next_dir.get('branch_template') or {}
     branch_text = json.dumps(branch_template, ensure_ascii=False) if branch_template else 'none'
-    return f"""# Factor Forge Loop Brief: {brief.get('report_id')} / Iteration {brief.get('iteration_no')}
+    return f"""# Factor Forge Loop Brief: {brief.get('factor_id')} / Iteration {brief.get('iteration_no')}
 
 ## 1. Decision Snapshot
 
@@ -3952,7 +4332,7 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 - Plain-English interpretation: {econ.get('plain_english_interpretation')}
 - Return source: {econ.get('return_source')}
 - Factor family: {econ.get('factor_family')}
-- Random object: {econ.get('random_object')}
+- Mathematical object: {econ.get('mathematical_object')}
 - Target statistic: {econ.get('target_statistic')}
 - Information set: {econ.get('information_set')}
 - Mechanism hypothesis: {econ.get('mechanism_hypothesis')}
@@ -3969,13 +4349,13 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 
 ## 4. Chart Evidence
 
-- Rank IC time series: {charts.get('rank_ic_timeseries')}
-- Pearson IC time series: {charts.get('pearson_ic_timeseries')}
-- Long-side NAV: {charts.get('long_side_nav')}
-- Cost-adjusted long-side NAV: {charts.get('cost_adjusted_long_side_nav')}
-- Quantile NAV: {charts.get('quantile_nav')}
-- Long-short NAV, diagnostic only: {charts.get('long_short_nav_diagnostic_only')}
-- Coverage by day: {charts.get('coverage_by_day')}
+- Rank IC time series: see chart_evidence.rank_ic_timeseries in the JSON brief.
+- Pearson IC time series: see chart_evidence.pearson_ic_timeseries in the JSON brief.
+- Long-side NAV: see chart_evidence.long_side_nav in the JSON brief.
+- Cost-adjusted long-side NAV: see chart_evidence.cost_adjusted_long_side_nav in the JSON brief.
+- Quantile NAV: see chart_evidence.quantile_nav in the JSON brief.
+- Long-short NAV, diagnostic only: see chart_evidence.long_short_nav_diagnostic_only in the JSON brief.
+- Coverage by day: see chart_evidence.coverage_by_day in the JSON brief.
 
 ## 5. Metric Analysis
 
@@ -4038,7 +4418,7 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 - Model equation family: {math_summary.get('model_equation_family') or 'not_specified'}
 - Math toolkits:
 {bullet_list(math_summary.get('math_toolkits'))}
-- State or object: {math_summary.get('state_or_object')}
+- Mathematical object: {math_summary.get('state_or_object')}
 - Factor as estimator: {math_summary.get('factor_as_estimator')}
 - Target functional: {math_summary.get('target_functional')}
 - Monotonicity claim: {math_summary.get('monotonicity_claim')}
@@ -4056,11 +4436,14 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
 - Why not generic template: {formula_derivation.get('why_this_model_not_generic_template') or (formula_derivation.get('economic_to_math_model_selection') or {}).get('why_not_generic_template')}
 - Profit payer: {(formula_derivation.get('profit_payer_derivation') or {}).get('payer_or_counterparty')}
 - Why they pay: {(formula_derivation.get('profit_payer_derivation') or {}).get('why_they_pay')}
-- Process or distribution: {formula_derivation.get('process_or_distribution')}
+- Mathematical object: {formula_derivation.get('mathematical_object') or formula_derivation.get('latent_state') or formula_derivation.get('random_object')}
+- Mechanism equation or functional: {formula_derivation.get('mechanism_equation_or_functional') or formula_derivation.get('process_or_distribution')}
+- Market-outcome projection: {formula_derivation.get('market_outcome_projection') or formula_derivation.get('target_functional')}
+- Observation mapping: {formula_derivation.get('observation_mapping') or formula_derivation.get('formula_as_estimator')}
 - Formula components:
 {bullet_list(formula_derivation.get('formula_components'))}
-- Latent-state mapping:
-{bullet_list(formula_derivation.get('latent_state_mapping'))}
+- Mathematical-object mapping:
+{bullet_list(formula_derivation.get('mathematical_object_mapping') or formula_derivation.get('latent_state_mapping'))}
 """
 
 
@@ -4153,6 +4536,7 @@ def promotion_gate(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[st
     evidence_audit = research_memo.get('evidence_audit') or {}
     mechanism_analysis = research_memo.get('mechanism_analysis') or {}
     mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or mechanism_math_contract_from_bundle(bundle)
+    mechanism_math_summary = mechanism_analysis.get('mechanism_math_summary') or mechanism_math_summary_from_bundle(bundle)
     unresolved_correctness_risk = bool(
         research_memo.get('unresolved_correctness_risk')
         or research_memo.get('human_review_required')
@@ -4168,7 +4552,7 @@ def promotion_gate(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[st
         'evidence_audit_not_blocked': evidence_audit.get('evidence_verdict') != 'blocked',
         'mechanism_return_source_known': mechanism_analysis.get('return_source') != 'unknown',
         'mechanism_not_contradicted': mechanism_analysis.get('mechanism_fit') != 'contradicted',
-        'mechanism_math_not_invalid': mechanism_math_contract.get('math_model_status') != 'invalid',
+        'mechanism_math_not_invalid': mechanism_math_summary.get('math_model_status') != 'invalid',
     }
     blocked = [key for key, ok in checks.items() if not ok]
     return {
@@ -4361,6 +4745,11 @@ def main() -> None:
     main_agent_questionnaire_json_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_questionnaire__{report_id}.json'
     main_agent_questionnaire_md_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_questionnaire__{report_id}.md'
     main_agent_status_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo_status__{report_id}.json'
+    prior_main_agent_status = (
+        load_json(main_agent_status_path)
+        if main_agent_status_path.exists()
+        else {}
+    )
     main_agent_memo_ref = {
         'json_path': str(main_agent_memo_json_path),
         'markdown_path': str(main_agent_memo_md_path),
@@ -4476,6 +4865,111 @@ def main() -> None:
     )
     research_memo['mechanism_analysis'] = mechanism_analysis
 
+    factor_proof_failures: list[str] = []
+    formal_protocol_required = (
+        os.getenv('FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE') != '1'
+        and (
+            os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1'
+            or iteration['research_judgment']['decision'] == 'promote_official'
+        )
+    )
+    if (
+        formal_protocol_required
+        and iteration['research_judgment']['decision'] == 'promote_official'
+    ):
+        protocol_paths = research_protocol_paths(FF, str(report_id))
+        pre_revision_protocol_report = validate_protocol_bundle(
+            root=FF,
+            report_id=str(report_id),
+            stage='pre_revision',
+        )
+        if pre_revision_protocol_report.get('verdict') == 'PASS':
+            obligation_payload = load_json(protocol_paths['obligations'])
+            verified_kinds = {
+                str(row.get('obligation_kind'))
+                for row in obligation_payload.get('obligations') or []
+                if isinstance(row, dict)
+                and row.get('status') == 'passed'
+                and row.get('status_source') == 'verifier'
+            }
+            if {
+                'measurement_validity',
+                'component_ablation',
+            }.issubset(verified_kinds):
+                iteration['mechanism_claim_level'] = 'component_validated'
+                research_memo = (
+                    iteration['research_judgment'].get('research_memo') or {}
+                )
+                research_memo['mechanism_claim_level'] = (
+                    'component_validated'
+                )
+                iteration['research_judgment']['research_memo'] = (
+                    research_memo
+                )
+        proof_path = protocol_paths['factor_proof']
+        proof_report: dict[str, Any]
+        if not proof_path.exists():
+            proof_report = {
+                'verdict': 'BLOCK',
+                'block_reasons': [
+                    'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_MISSING'
+                ],
+            }
+        else:
+            try:
+                factor_proof = load_json(proof_path)
+                proof_report = validate_factor_proof_certificate(
+                    factor_proof,
+                    workspace_root=FF,
+                    expected_report_id=str(report_id),
+                    expected_factor_id=str(iteration.get('factor_id') or ''),
+                )
+                conjecture_path = protocol_paths['conjecture']
+                if conjecture_path.exists():
+                    conjecture = load_json(conjecture_path)
+                    if factor_proof.get('claim_class') != conjecture.get('claim_class'):
+                        proof_report.setdefault('block_reasons', []).append(
+                            'BLOCK_FACTORFORGE_RESEARCH_PROTOCOL_CLAIM_CLASS_MISMATCH'
+                        )
+                        proof_report['verdict'] = 'BLOCK'
+            except Exception as exc:
+                proof_report = {
+                    'verdict': 'BLOCK',
+                    'block_reasons': [
+                        f'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_INVALID:{exc}'
+                    ],
+                }
+        if proof_report.get('verdict') != 'ACCEPT':
+            factor_proof_failures.extend(
+                proof_report.get('block_reasons')
+                or ['BLOCK_FACTORFORGE_PROMOTION_WITHOUT_ACCEPTED_FACTOR_PROOF']
+            )
+        iteration['factor_proof_gate'] = {
+            'required': True,
+            'proof_path': str(proof_path),
+            'verdict': proof_report.get('verdict'),
+            'block_reasons': proof_report.get('block_reasons') or [],
+        }
+        promotion_protocol_report = validate_protocol_bundle(
+            root=FF,
+            report_id=str(report_id),
+            stage='pre_promotion',
+            iteration_payload=iteration,
+        )
+        iteration['research_protocol_promotion_gate'] = {
+            'required': True,
+            'stage': 'pre_promotion',
+            'verdict': promotion_protocol_report.get('verdict'),
+            'block_reasons': (
+                promotion_protocol_report.get('block_reasons') or []
+            ),
+        }
+        if promotion_protocol_report.get('verdict') != 'PASS':
+            factor_proof_failures.extend(
+                promotion_protocol_report.get('block_reasons')
+                or ['BLOCK_FACTORFORGE_PROMOTION_PROTOCOL_GATE_FAILED']
+            )
+
     all_record = build_factor_record(iteration, bundle)
     all_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_all')
     all_record['evidence_identity'] = iteration['evidence_identity']
@@ -4522,10 +5016,13 @@ def main() -> None:
         mechanism_analysis.get('formula_specific_derivation') or {},
     )
     contract_failures: list[str] = []
+    memo_revision_failures: list[str] = []
+    contract_failures.extend(factor_proof_failures)
     if formula_derivation_failures:
-        contract_failures.append('formula_specific_derivation_invalid:' + json.dumps(formula_derivation_failures, ensure_ascii=False))
+        memo_revision_failures.append('formula_specific_derivation_invalid:' + json.dumps(formula_derivation_failures, ensure_ascii=False))
     if mechanism_formula_consistency.get('failures'):
-        contract_failures.append('mechanism_formula_consistency_invalid:' + json.dumps(mechanism_formula_consistency.get('failures'), ensure_ascii=False))
+        memo_revision_failures.append('mechanism_formula_consistency_invalid:' + json.dumps(mechanism_formula_consistency.get('failures'), ensure_ascii=False))
+    contract_failures.extend(memo_revision_failures)
 
     handoff_to_step3b = build_handoff_to_step3b(iteration) if iteration['loop_action']['should_modify_step3b'] else None
     would_have_written = [
@@ -4556,6 +5053,91 @@ def main() -> None:
             reasons=prewrite_failures,
             would_have_written=would_have_written,
         )
+        if memo_revision_failures and set(prewrite_failures).issubset(
+            set(memo_revision_failures)
+        ):
+            current_memo_sha256 = hashlib.sha256(
+                main_agent_memo_json_path.read_bytes()
+            ).hexdigest()
+            prior_pause_status = prior_main_agent_status.get('status')
+            same_rejected_memo = (
+                prior_pause_status
+                in {
+                    'awaiting_main_agent_mechanism_memo_revision',
+                    'awaiting_main_agent_mechanism_manual_review',
+                }
+                and prior_main_agent_status.get('prior_memo_sha256')
+                == current_memo_sha256
+            )
+            prior_revision_number = (
+                int(prior_main_agent_status.get('revision_number') or 0)
+                if prior_pause_status
+                in {
+                    'awaiting_main_agent_mechanism_memo_revision',
+                    'awaiting_main_agent_mechanism_manual_review',
+                }
+                else 0
+            )
+            revision_number = (
+                prior_revision_number
+                if same_rejected_memo
+                or prior_pause_status
+                == 'awaiting_main_agent_mechanism_manual_review'
+                else prior_revision_number + 1
+            )
+            prior_memo_sha256 = current_memo_sha256
+            prewrite_block_path = (
+                OBJ
+                / 'validation'
+                / f'step6_prewrite_block__{report_id}.json'
+            )
+            manual_review_required = (
+                revision_number > MAX_MECHANISM_MEMO_REVISIONS
+            )
+            pause_status = (
+                'awaiting_main_agent_mechanism_manual_review'
+                if manual_review_required
+                else 'awaiting_main_agent_mechanism_memo_revision'
+            )
+            pause_token = (
+                'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW'
+                if manual_review_required
+                else 'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION'
+            )
+            status = {
+                'report_id': str(report_id),
+                'status': pause_status,
+                'token': pause_token,
+                'revision_number': revision_number,
+                'revision_failures': memo_revision_failures,
+                'prior_memo_sha256': prior_memo_sha256,
+                'questionnaire_sha256': hashlib.sha256(
+                    main_agent_questionnaire_json_path.read_bytes()
+                ).hexdigest(),
+                'prewrite_block_ref': str(
+                    prewrite_block_path.relative_to(FF)
+                ),
+                'prewrite_block_sha256': hashlib.sha256(
+                    prewrite_block_path.read_bytes()
+                ).hexdigest(),
+                'questionnaire_ref': main_agent_questionnaire_ref,
+                'expected_memo_ref': main_agent_memo_ref,
+                'prior_memo_ref': main_agent_memo_ref,
+                'next_action': (
+                    'Human review is required because the bounded mechanism memo revision budget is exhausted.'
+                    if manual_review_required
+                    else 'A fresh current main agent must replace the hash-bound rejected memo and resolve every formula-specific failure before Step6 can continue.'
+                ),
+                'canonical_write_permission': False,
+                'execution_allowed_by_default': False,
+                'final_step6_write_allowed': False,
+            }
+            write_json(main_agent_status_path, status)
+            print(pause_token)
+            raise SystemExit(
+                pause_token + ': '
+                + '; '.join(memo_revision_failures)
+            )
         raise SystemExit('STEP6_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
 
     iteration['loop_research_brief'] = write_loop_research_brief(iteration, bundle)

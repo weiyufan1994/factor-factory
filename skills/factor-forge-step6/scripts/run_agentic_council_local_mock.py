@@ -16,7 +16,9 @@ if str(REPO_ROOT) not in sys.path:
 
 OBJ = FF / "objects"
 RESULT_VERSION = "factorforge_agentic_revision_council_result_v1"
+MANIFEST_VERSION = "factorforge_agentic_council_dispatch_manifest_v1"
 TOKEN_TASKBOOK_MISSING = "BLOCK_REVISION_COUNCIL_AGENTIC_TASKBOOK_MISSING"
+TOKEN_DISPATCH_MISSING = "BLOCK_AGENTIC_COUNCIL_DISPATCH_MANIFEST_MISSING"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -33,6 +35,7 @@ def relation_for_role(role: str) -> str:
         "symbolic_law_discovery": "factor_t = estimator_kernel(observable_state_t); higher persistence should improve net long-side evidence",
         "dimensional_scaling_critic": "normalized_state_t = rank_or_scale_adjust(raw_input_t); scale pollution should fall after normalization",
         "stochastic_process_modeler": "state_{t+1} = rho * state_t + shock_{t+1}; rho must be large enough to survive costs",
+        "mechanism_measurement_modeler": "factor_t = observation_map(selected_mathematical_object_t); the map must discriminate the selected mechanism from its alternative and null",
         "microstructure_cost_analyst": "net_alpha = gross_signal - turnover * cost_rate; durable pressure should lower turnover drag",
         "statistical_falsification_agent": "accepted_revision iff out_of_sample_net_metrics improve and falsification tests do not fail",
     }
@@ -43,7 +46,7 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
     role = task.get("agent_role") or "unknown_agent"
     task_id = task.get("task_id") or f"agent_{role}"
     report_id = taskbook.get("report_id")
-    shared = taskbook.get("shared_context") or {}
+    shared = task.get("shared_context") or {}
     failure = shared.get("primary_failure_signature") or "mechanism_unclear"
     mechanism_fit = shared.get("mechanism_fit") or "unknown"
     metrics = shared.get("key_metrics") or {}
@@ -53,8 +56,12 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
     law_id = f"{role}_law_001"
     expression_direction = (
         "Challenge the estimator state, then test expression-level persistence confirmation or smoothing under human approval."
-        if role in {"symbolic_law_discovery", "stochastic_process_modeler", "microstructure_cost_analyst"}
+        if role in {"symbolic_law_discovery", "mechanism_measurement_modeler", "stochastic_process_modeler", "microstructure_cost_analyst"}
         else "Use expression-level normalization and falsification checks before approving any revision path."
+    )
+    measurement_binding = task.get("measurement_program_binding") or {}
+    frozen_object = (
+        measurement_binding.get("mathematical_object") or "factor_value"
     )
     return {
         "result_version": RESULT_VERSION,
@@ -62,12 +69,57 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
         "report_id": report_id,
         "task_id": task_id,
         "agent_role": role,
+        "agent_identifier": task.get("expected_agent_identifier") or f"local_mock_{task_id}",
         "producer": "local_mock_agentic_contract",
         "research_depth": "medium",
         "proposal_generation_mode": "agentic_contract_mock",
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "measurement_program_binding": measurement_binding,
+        "math_mechanism_derivation": {
+            "baseline_model": measurement_binding.get(
+                "mechanism_equation_or_functional"
+            ),
+            "mathematical_objects": [frozen_object],
+        },
+        "approach_route": {
+            "route_id": task.get("route_id"),
+            "route_family": task.get("route_family"),
+            "core_hypothesis": "The assigned route may explain one distinct part of the current failure signature.",
+            "distinct_from_other_routes": "This local contract result is scoped to its assigned route.",
+            "exact_gap_after_analysis": task.get("exact_gap")
+            or "The route remains unproved until real empirical evidence is attached.",
+        },
+        "dispatch_identity": {
+            "source_task_packet_sha256": task.get("task_packet_sha256"),
+            "route_fingerprint": task.get("route_fingerprint"),
+            "blind_context_hash": task.get("blind_context_hash"),
+        },
+        "proof_obligation_updates": [
+            {
+                "obligation_id": obligation_id,
+                "status": "open",
+                "finding": "Local mock checks the contract shape only; this obligation remains open.",
+                "evidence_refs": [],
+            }
+            for obligation_id in task.get("proof_obligation_ids") or []
+            if isinstance(obligation_id, str) and obligation_id
+        ],
+        "counterexamples": [
+            {
+                "attack_type": "null_mechanism",
+                "construction_or_scenario": "The observed metric pattern is noise or an alias rather than the assigned mechanism.",
+                "predicted_failure": "The apparent relation disappears out of sample or after costs.",
+                "discriminating_test": "Use the preregistered OOS and after-cost checks before support is claimed.",
+            }
+        ],
+        "route_status": "inconclusive",
+        "reopen_criteria": [],
+        "independence_attestation": {
+            "favored_thesis_seen_before_submission": False,
+            "derived_from_visible_facts_only": True,
+        },
         "public_derivation_record": {
             "research_question": task.get("research_question") or "What should this agent test?",
             "assumptions": [
@@ -80,15 +132,15 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
             ],
             "mathematical_objects": [
                 {
-                    "name": "factor_value",
+                    "name": frozen_object,
                     "meaning": "The current Step3B factor signal evaluated by Step4/5.",
-                    "unit_or_dimension": "dimensionless_or_unknown",
+                    "measurement_semantics": "factor score under the selected mechanism; units only when applicable",
                     "information_set": "factor timestamp and historical observations only",
                 },
                 {
                     "name": "net_long_side_evidence",
                     "meaning": "Cost-adjusted long-side metric signature used by Step6 admission gates.",
-                    "unit_or_dimension": "annualized_return_or_ratio",
+                    "measurement_semantics": "annualized return or risk-adjusted ratio from post-evaluation evidence",
                     "information_set": "post-evaluation evidence artifact",
                 },
             ],
@@ -102,7 +154,7 @@ def result_for_task(task: dict[str, Any], taskbook: dict[str, Any]) -> dict[str,
             ],
             "formula_claims": [
                 {
-                    "claim": "The factor can be treated as an estimator of a latent state only if the implied state survives the observed cost and stability tests.",
+                    "claim": "The factor can be treated as an estimator of the selected mathematical object only if the observation map discriminates the mechanism and survives cost and stability tests.",
                     "formula_or_relation": relation_for_role(role),
                     "status": "hypothesis",
                     "derivation_summary": f"Mock {role} maps the packet failure signature {failure} and mechanism fit {mechanism_fit} into a testable relation.",
@@ -182,14 +234,38 @@ def main() -> None:
         print(TOKEN_TASKBOOK_MISSING + ": " + json.dumps({"taskbook_path": str(taskbook_path)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)
     taskbook = load_json(taskbook_path)
+    manifest_path = council_dir / f"dispatch_manifest__{rid}.json"
+    if not manifest_path.exists():
+        print(TOKEN_DISPATCH_MISSING + ": " + json.dumps({"dispatch_manifest_path": str(manifest_path)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)
+    manifest = load_json(manifest_path)
+    if manifest.get("dispatch_manifest_version") != MANIFEST_VERSION or manifest.get("report_id") != rid:
+        print("BLOCK_AGENTIC_COUNCIL_DISPATCH_MANIFEST_INVALID", file=sys.stderr)
+        raise SystemExit(1)
+    taskbook_tasks = {
+        str(task.get("task_id")): task
+        for task in taskbook.get("agent_tasks") or []
+        if isinstance(task, dict) and task.get("task_id")
+    }
     out_dir = council_dir / "agent_results"
     paths = []
-    for task in taskbook.get("agent_tasks") or []:
-        if not isinstance(task, dict):
+    for manifest_task in manifest.get("agent_tasks") or []:
+        if not isinstance(manifest_task, dict):
             continue
+        task_id = str(manifest_task.get("task_id") or "")
+        packet_path = Path(str(manifest_task.get("task_packet_path") or ""))
+        packet_path = packet_path if packet_path.is_absolute() else FF / packet_path
+        if not task_id or not packet_path.exists():
+            print("BLOCK_AGENTIC_COUNCIL_TASK_PACKET_MISSING", file=sys.stderr)
+            raise SystemExit(1)
+        task = dict(taskbook_tasks.get(task_id) or {})
+        task.update(load_json(packet_path))
+        task.update(manifest_task)
         result = result_for_task(task, taskbook)
-        task_id = result["task_id"]
-        path = out_dir / f"agent_result__{rid}__{task_id}.json"
+        expected_path = Path(str(manifest_task.get("expected_result_path") or ""))
+        path = expected_path if expected_path.is_absolute() else FF / expected_path
+        if not str(expected_path):
+            path = out_dir / f"agent_result__{rid}__{task_id}.json"
         write_json(path, result)
         paths.append(str(path))
     print(json.dumps({"status": "written", "report_id": rid, "agent_result_paths": paths, "agent_result_count": len(paths)}, ensure_ascii=False, indent=2))

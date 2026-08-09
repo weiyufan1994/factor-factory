@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import re
+from fractions import Fraction
 from typing import Any
 
 
@@ -30,6 +32,10 @@ MODEL_KEYWORDS = {
     "bayesian",
     "signal extraction",
     "cash flow",
+    "fcf",
+    "wacc",
+    "intrinsic value",
+    "residual income",
     "discount",
     "valuation",
     "cointegration",
@@ -232,7 +238,7 @@ def build_formula_understanding(spec_like: dict[str, Any]) -> dict[str, Any]:
         "formula_features": features,
         "component_interpretations": components,
         "interaction_structure": interaction,
-        "latent_state_candidates": list(dict.fromkeys(latent)),
+        "mathematical_object_candidates": list(dict.fromkeys(latent)),
     }
 
 
@@ -314,7 +320,1087 @@ def _text_blob(*values: Any) -> str:
             parts.append(_text_blob(*value))
         elif value is not None:
             parts.append(str(value))
-    return " ".join(parts).lower()
+    return " ; ".join(parts).lower()
+
+
+def _generic_payer_actor_label(value: Any) -> str | None:
+    """Return a generic actor label only when the actor field is itself generic."""
+    words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+    connectors = {"a", "an", "and", "or", "the"}
+    words = [word for word in words if word not in connectors]
+    normalized = " ".join(words)
+    generic_words = {
+        "counterparties",
+        "counterparty",
+        "generic",
+        "investors",
+        "market",
+        "participants",
+        "payer",
+        "traders",
+    }
+    if words and all(word in generic_words for word in words):
+        return normalized
+    return None
+
+
+def _has_explicit_stochastic_model(process: str) -> bool:
+    """Recognize compact model equations even when prose omits MODEL_KEYWORDS."""
+    normalized = process.translate(
+        str.maketrans({"β": "beta", "ε": "epsilon", "η": "eta", "λ": "lambda", "σ": "sigma"})
+    )
+    return_equation = re.search(
+        r"(?:^|[;,.]\s*)(?:r(?:_[a-z0-9_{}]+)?|return(?:_[a-z0-9_{}]+)?|dp(?:_[a-z0-9]+)?/p(?:_[a-z0-9]+)?)\s*=\s*([^;]+)",
+        normalized,
+    )
+    if return_equation is None:
+        return False
+    right_hand_side = return_equation.group(1)
+    has_coefficient = any(
+        marker in right_hand_side
+        for marker in {"alpha", "beta", "lambda", "mu", "phi", "rho", "theta"}
+    )
+    has_residual = any(
+        marker in right_hand_side
+        for marker in {"epsilon", "innovation", "residual", "shock", "+u", "+ u"}
+    )
+    has_conditional_error_law = bool(
+        re.search(
+            r"(?:epsilon|innovation|residual|shock|u)\s*\|\s*f[a-z0-9_{}]*\s*~\s*"
+            r"(?:n(?:ormal)?|gaussian)?\s*\(\s*0(?:\.0+)?\s*,[^)]*"
+            r"(?:sigma(?:\s*(?:\^\s*2|²))|variance|var\(\s*[^)\s][^)]*\))",
+            normalized,
+        )
+    )
+    return has_coefficient and has_residual and has_conditional_error_law
+
+
+def _has_stochastic_process_prose(process: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", process)
+    if len(words) < 8:
+        return False
+    stochastic_objects = {
+        "conditional",
+        "distribution",
+        "innovation",
+        "process",
+        "residual",
+        "shock",
+        "state",
+        "stochastic",
+    }
+    dynamics = {
+        "bayesian",
+        "decay",
+        "drift",
+        "jump",
+        "regime",
+        "reversal",
+        "reverse",
+        "transition",
+        "volatility",
+    }
+    return bool(stochastic_objects.intersection(words)) and bool(
+        dynamics.intersection(words)
+    )
+
+
+def _has_explicit_transient_impact_model(
+    process: str,
+    formula_tokens: set[str],
+    semantic_context: str = "",
+    formula_context: str = "",
+) -> bool:
+    """Recognize bounded structural/reduced-form transient-impact models."""
+    impact_terms = {
+        "impact",
+        "imbalance",
+        "order flow",
+        "temporary",
+        "transient",
+        "冲击",
+        "不平衡",
+        "订单流",
+        "超调",
+    }
+    decomposition_terms = {
+        "decay",
+        "persistent",
+        "temporary",
+        "transitory",
+        "持久",
+        "瞬时",
+        "临时",
+        "衰减",
+    }
+    payoff_terms = {
+        "e[",
+        "return",
+        "r_",
+        "收益",
+    }
+    translation = str.maketrans(
+        {
+            "；": ";",
+            "。": ";",
+            "α": "alpha",
+            "β": "beta",
+            "θ": "theta",
+            "λ": "lambda",
+            "ρ": "rho",
+            "μ": "mu",
+            "ε": "epsilon",
+            "η": "eta",
+        }
+    )
+    normalized = process.translate(translation)
+    semantic_text = f"{process}; {semantic_context}".translate(translation)
+    process_lower = semantic_text.lower()
+
+    symbol_pattern = re.compile(r"[a-zA-Z][a-zA-Z0-9_]*(?:\{[^}]*\})?")
+
+    def canonical_symbol(token: str) -> str:
+        if re.fullmatch(r"I_(?:\{[^}]*\}|[a-zA-Z0-9]+)", token):
+            return "impact_state"
+        if re.fullmatch(r"F_(?:\{[^}]*\}|[a-zA-Z0-9]+)", token):
+            return "formula_state"
+        lower = token.lower()
+        if "_{" in lower:
+            lower = lower.split("_{", 1)[0]
+        else:
+            match = re.fullmatch(r"(.+)_([ijknt]|t\d+)", lower)
+            if match:
+                lower = match.group(1)
+        coefficient = re.fullmatch(
+            r"(alpha|beta|lambda|rho|theta|mu)_[a-zA-Z0-9]+",
+            lower,
+        )
+        if coefficient:
+            lower = coefficient.group(1)
+        return "lambda_coef" if lower == "lambda" else lower
+
+    def symbols(value: str) -> set[str]:
+        result: set[str] = set()
+        for match in symbol_pattern.finditer(value):
+            tail = value[match.end() :].lstrip()
+            if tail.startswith("("):
+                continue
+            symbol = canonical_symbol(match.group(0))
+            if symbol not in {"i", "j", "k", "n", "t"}:
+                result.add(symbol)
+        return result
+
+    canonical_role_text = symbol_pattern.sub(
+        lambda match: canonical_symbol(match.group(0)),
+        semantic_text,
+    ).lower()
+
+    def formula_rhs(value: str) -> str:
+        depth = 0
+        for index, character in enumerate(value):
+            if character in "([{":
+                depth += 1
+            elif character in ")]}" and depth:
+                depth -= 1
+            elif depth == 0 and character in ",，：":
+                value = value[:index]
+                break
+        return re.split(
+            r"(?:即|其中|假设|观测|依据|基于)|"
+            r"\s+(?:is|where|with|after|because|under|given|using|alongside|via)\b",
+            value,
+            maxsplit=1,
+        )[0].strip()
+
+    def canonical_expression(value: str) -> str:
+        return symbol_pattern.sub(
+            lambda match: canonical_symbol(match.group(0)),
+            value,
+        ).replace("^", "**")
+
+    allowed_calls = {"abs", "exp", "log", "mean", "mu", "sigma", "sign", "sqrt"}
+    allowed_binary_ops = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
+    allowed_unary_ops = (ast.UAdd, ast.USub)
+
+    def valid_ast(node: ast.AST) -> bool:
+        if isinstance(node, ast.Expression):
+            return valid_ast(node.body)
+        if isinstance(node, ast.Name):
+            return bool(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", node.id))
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        if isinstance(node, ast.UnaryOp):
+            return isinstance(node.op, allowed_unary_ops) and valid_ast(node.operand)
+        if isinstance(node, ast.BinOp):
+            return (
+                isinstance(node.op, allowed_binary_ops)
+                and valid_ast(node.left)
+                and valid_ast(node.right)
+            )
+        if isinstance(node, ast.Call):
+            return (
+                isinstance(node.func, ast.Name)
+                and node.func.id in allowed_calls
+                and not node.keywords
+                and bool(node.args)
+                and all(valid_ast(arg) for arg in node.args)
+            )
+        return False
+
+    def ast_names(node: ast.AST) -> set[str]:
+        function_names = {
+            child.func.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+        }
+        return {
+            child.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Name) and child.id not in function_names
+        }
+
+    def add_polynomials(
+        left: dict[tuple[str, ...], Fraction],
+        right: dict[tuple[str, ...], Fraction],
+        *,
+        right_sign: int = 1,
+    ) -> dict[tuple[str, ...], Fraction]:
+        result = dict(left)
+        for monomial, coefficient in right.items():
+            result[monomial] = result.get(monomial, Fraction(0)) + right_sign * coefficient
+            if result[monomial] == 0:
+                del result[monomial]
+        return result
+
+    def multiply_polynomials(
+        left: dict[tuple[str, ...], Fraction],
+        right: dict[tuple[str, ...], Fraction],
+    ) -> dict[tuple[str, ...], Fraction] | None:
+        if len(left) * len(right) > 64:
+            return None
+        result: dict[tuple[str, ...], Fraction] = {}
+        for left_monomial, left_coefficient in left.items():
+            for right_monomial, right_coefficient in right.items():
+                monomial = tuple(sorted(left_monomial + right_monomial))
+                result[monomial] = result.get(monomial, Fraction(0)) + (
+                    left_coefficient * right_coefficient
+                )
+                if result[monomial] == 0:
+                    del result[monomial]
+        return result
+
+    def polynomial(node: ast.AST) -> dict[tuple[str, ...], Fraction] | None:
+        if isinstance(node, ast.Expression):
+            return polynomial(node.body)
+        if isinstance(node, ast.Name):
+            return {(node.id,): Fraction(1)}
+        if isinstance(node, ast.Constant):
+            try:
+                return {(): Fraction(str(node.value))}
+            except (ValueError, ZeroDivisionError):
+                return None
+        if isinstance(node, ast.UnaryOp):
+            value = polynomial(node.operand)
+            if value is None:
+                return None
+            if isinstance(node.op, ast.USub):
+                return {monomial: -coefficient for monomial, coefficient in value.items()}
+            return value
+        if isinstance(node, ast.BinOp):
+            left = polynomial(node.left)
+            right = polynomial(node.right)
+            if left is None or right is None:
+                return None
+            if isinstance(node.op, ast.Add):
+                return add_polynomials(left, right)
+            if isinstance(node.op, ast.Sub):
+                return add_polynomials(left, right, right_sign=-1)
+            if isinstance(node.op, ast.Mult):
+                return multiply_polynomials(left, right)
+            if isinstance(node.op, ast.Div):
+                if set(right) != {()} or right[()] == 0:
+                    return None
+                return {
+                    monomial: coefficient / right[()]
+                    for monomial, coefficient in left.items()
+                }
+            if isinstance(node.op, ast.Pow):
+                if set(right) != {()} or right[()].denominator != 1:
+                    return None
+                exponent = int(right[()])
+                if exponent < 0 or exponent > 3:
+                    return None
+                result: dict[tuple[str, ...], Fraction] = {(): Fraction(1)}
+                for _ in range(exponent):
+                    product = multiply_polynomials(result, left)
+                    if product is None:
+                        return None
+                    result = product
+                return result
+        if isinstance(node, ast.Call):
+            opaque = "call:" + ast.dump(node, annotate_fields=False, include_attributes=False)
+            return {(opaque,): Fraction(1)}
+        return None
+
+    def parse_math(value: str) -> dict[str, Any] | None:
+        if re.search(r"[\u3400-\u9fff]", value):
+            return None
+        source = canonical_expression(value)
+        try:
+            tree = ast.parse(source, mode="eval")
+        except (SyntaxError, ValueError):
+            return None
+        if not valid_ast(tree):
+            return None
+        return {
+            "tree": tree,
+            "names": ast_names(tree),
+            "polynomial": polynomial(tree),
+        }
+
+    equations: list[dict[str, Any]] = []
+    for clause in normalized.split(";"):
+        equality_parts = [
+            part.strip()
+            for part in re.split(r"(?<![<>=!])=(?!=)", clause)
+            if part.strip()
+        ]
+        if len(equality_parts) < 2:
+            continue
+        left = re.split(r"[:：]", equality_parts[0])[-1].strip()
+        left_math = parse_math(left)
+        parsed_rights: list[tuple[str, str, dict[str, Any] | None]] = []
+        for candidate_right in equality_parts[1:]:
+            raw_right = candidate_right.strip()
+            right = raw_right if len(equality_parts) > 2 else formula_rhs(raw_right)
+            parsed_rights.append((raw_right, right, parse_math(right)))
+        if any(right_math is None for _, _, right_math in parsed_rights):
+            continue
+        for raw_right, right, right_math in parsed_rights:
+            if (
+                left
+                and right
+                and re.sub(r"\s+", "", left) != re.sub(r"\s+", "", right)
+                and right_math is not None
+                and not (
+                    left_math is not None
+                    and left_math["polynomial"] is not None
+                    and left_math["polynomial"] == right_math["polynomial"]
+                )
+            ):
+                equations.append(
+                    {
+                        "left": left,
+                        "right": right,
+                        "raw_right": raw_right,
+                        "clause": clause.strip(),
+                        "left_symbols": symbols(left),
+                        "right_symbols": set(right_math["names"]),
+                        "right_polynomial": right_math["polynomial"],
+                    }
+                )
+
+    coefficient_terms = {
+        "alpha",
+        "beta",
+        "lambda",
+        "lambda_coef",
+        "rho",
+        "theta",
+        "mu",
+    }
+    residual_terms = {"eps", "epsilon", "eta", "innovation", "residual", "shock"}
+    semantic_states = {
+        "dislocation",
+        "dislocation_state",
+        "flow",
+        "flow_state",
+        "i",
+        "imbalance",
+        "imbalance_state",
+        "impact",
+        "impact_state",
+        "inventory",
+        "inventory_state",
+        "order_flow",
+        "order_flow_state",
+        "pressure",
+        "pressure_state",
+    }
+    payoff_equations: list[dict[str, Any]] = []
+    for equation in equations:
+        left_lower = str(equation["left"]).lower()
+        expectation_lhs = bool(
+            re.search(r"e\[[^\]]*(?:r(?:[_({]|$)|return(?:[_({]|$))", left_lower)
+        )
+        direct_return_lhs = bool(
+            re.match(r"^(?:r(?:[_({]|$)|return(?:[_({]|$))", left_lower)
+        )
+        chinese_direct_return_lhs = bool(
+            re.fullmatch(r"收益(?:率)?", left_lower.strip())
+        )
+        chinese_expected_return_lhs = bool(
+            re.fullmatch(
+                r"(?:(?:条件)?(?:预期|期望)收益(?:率)?|条件收益(?:率)?)",
+                left_lower.strip(),
+            )
+        )
+        right_symbols = set(equation["right_symbols"])
+        if (
+            (
+                expectation_lhs
+                or direct_return_lhs
+                or chinese_direct_return_lhs
+                or chinese_expected_return_lhs
+            )
+            and bool(coefficient_terms.intersection(right_symbols))
+        ):
+            equation["direct_return_lhs"] = (
+                direct_return_lhs or chinese_direct_return_lhs
+            )
+            payoff_equations.append(equation)
+
+    def polynomial_contains(
+        equation: dict[str, Any],
+        required_groups: tuple[set[str], ...],
+    ) -> bool:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return False
+        return any(
+            coefficient != 0
+            and all(group.intersection(monomial) for group in required_groups)
+            for monomial, coefficient in expression.items()
+        )
+
+    def polynomial_symbols(equation: dict[str, Any]) -> set[str]:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return set()
+        return {
+            symbol
+            for monomial, coefficient in expression.items()
+            if coefficient != 0
+            for symbol in monomial
+            if not symbol.startswith("call:")
+        }
+
+    def has_independent_residual(equation: dict[str, Any]) -> bool:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return False
+        for monomial, coefficient in expression.items():
+            if coefficient == 0:
+                continue
+            residual_count = sum(symbol in residual_terms for symbol in monomial)
+            if residual_count == 1 and len(monomial) == 1:
+                return True
+        return False
+
+    def has_time_index(value: str, state: str, *, future: bool) -> bool:
+        compact = re.sub(r"\s+", "", value.lower())
+        pattern = re.compile(
+            rf"(?<![a-zA-Z0-9_]){re.escape(state)}"
+            rf"(?:_\{{(?P<braced>[^}}]+)\}}|_(?P<plain>[a-zA-Z0-9]+))"
+        )
+        for match in pattern.finditer(compact):
+            index = str(match.group("braced") or match.group("plain") or "")
+            if future and (
+                index == "t1"
+                or bool(re.search(r"(?:^|,)t\+1(?:$|,)", index))
+            ):
+                return True
+            if not future and (
+                index == "t"
+                or bool(re.search(r"(?:^|,)t(?:$|,)", index))
+            ):
+                return True
+        return False
+
+    def transition_rho_symbol(value: str, state: str) -> str | None:
+        compact = re.sub(r"\s+", "", value.lower())
+        rho = r"rho(?:_(?:\{[^}]+\}|[a-zA-Z0-9]+))?"
+        state_ref = rf"{re.escape(state)}(?:_(?:\{{[^}}]+\}}|[a-zA-Z0-9]+))?"
+        for pattern in (
+            rf"(?P<rho>{rho})\*{state_ref}(?![a-zA-Z0-9_])",
+            rf"(?<![a-zA-Z0-9_]){state_ref}\*(?P<rho>{rho})",
+        ):
+            match = re.search(pattern, compact)
+            if match:
+                return str(match.group("rho"))
+        return None
+
+    def has_stable_rho_constraint(value: str, rho_symbol: str) -> bool:
+        compact = re.sub(r"\s+", "", value.lower())
+        escaped = re.escape(rho_symbol.lower())
+        boundary = r"(?=$|,|;|\)|\]|\}|(?:and|or|where|with|under|given|且|并))"
+        one = rf"1(?:\.0+)?{boundary}"
+        positive_patterns = (
+            rf"\|{escaped}\|<{one}",
+            rf"abs\({escaped}\)<{one}",
+            rf"-1(?:\.0+)?<{escaped}<{one}",
+        )
+        number = r"(?P<bound>(?:\d+(?:\.\d*)?|\.\d+)(?:e[+\-]?\d+)?)"
+        contradiction_patterns = (
+            rf"\|{escaped}\|(?:>=|>){number}",
+            rf"abs\({escaped}\)(?:>=|>){number}",
+            rf"(?<![a-zA-Z0-9_]){escaped}(?:>=|>){number}",
+            rf"(?<![a-zA-Z0-9_]){escaped}(?:<=|<)-{number}",
+        )
+        for pattern in contradiction_patterns:
+            for match in re.finditer(pattern, compact):
+                try:
+                    if float(match.group("bound")) >= 1.0:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+        equality_patterns = (
+            rf"\|{escaped}\|=(?P<bound>(?:\d+(?:\.\d*)?|\.\d+)(?:e[+\-]?\d+)?)",
+            rf"abs\({escaped}\)=(?P<bound>(?:\d+(?:\.\d*)?|\.\d+)(?:e[+\-]?\d+)?)",
+            rf"(?<![a-zA-Z0-9_]){escaped}=(?P<bound>[+\-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+\-]?\d+)?)",
+        )
+        for pattern in equality_patterns:
+            for match in re.finditer(pattern, compact):
+                try:
+                    if abs(float(match.group("bound"))) >= 1.0:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+        positive_assertion_found = False
+        for assertion in re.split(r"[,;，；]", value.lower()):
+            compact_assertion = re.sub(r"\s+", "", assertion)
+            if not any(
+                re.search(pattern, compact_assertion)
+                for pattern in positive_patterns
+            ):
+                continue
+            constraint_start = re.search(
+                rf"\|\s*{escaped}\s*\||abs\s*\(\s*{escaped}\s*\)|"
+                rf"-\s*1(?:\.0+)?\s*<\s*{escaped}",
+                assertion,
+            )
+            prefix = assertion[: constraint_start.start()] if constraint_start else assertion
+            suffix = assertion[constraint_start.start() :] if constraint_start else ""
+            prefix_negated = bool(
+                re.search(
+                    r"(?:\bnot\b|\bno\b|\bnever\b|\bwithout\b|\bcannot\b|"
+                    r"\bfalse\b|\b(?:do|does|did|is|are|was|were|can|could|"
+                    r"should|would)n['’]?t\b|\bfail(?:s|ed)?\s+to\b|"
+                    r"\bunable\s+to\b|并非|不是|不为|没有|"
+                    r"无(?:法|须|需)|未(?:曾|能|予|被|假设|满足)|"
+                    r"不(?:会|能|应|可|予|作|做|假设|满足|要求|成立|声明)|"
+                    r"(?:不|未|无)\s*$)",
+                    prefix,
+                )
+            )
+            suffix_negated = bool(
+                re.search(
+                    r"(?:\b(?:is|was|does|did)\s+not\s+(?:assumed|satisfied|"
+                    r"required|imposed|valid|true)|不成立|不满足|"
+                    r"并非假设|未被假设)",
+                    suffix,
+                )
+            )
+            if prefix_negated or suffix_negated:
+                return False
+            positive_assertion_found = True
+        return positive_assertion_found
+
+    def is_ar1_transition(equation: dict[str, Any], state: str) -> bool:
+        expression = equation.get("right_polynomial")
+        if not isinstance(expression, dict):
+            return False
+        transition_term = tuple(sorted(("rho", state)))
+        residual_monomials = {
+            (term,) for term in residual_terms
+        }
+        active_terms = {
+            monomial for monomial, coefficient in expression.items() if coefficient != 0
+        }
+        return (
+            transition_term in active_terms
+            and abs(expression[transition_term]) == 1
+            and len(active_terms.intersection(residual_monomials)) == 1
+            and active_terms <= ({transition_term} | residual_monomials)
+        )
+
+    def raw_rho_symbols(value: str) -> set[str]:
+        return {
+            match.group(0).lower()
+            for match in re.finditer(
+                r"(?<![a-zA-Z0-9_])rho(?:_(?:\{[^}]+\}|[a-zA-Z0-9]+))?"
+                r"(?![a-zA-Z0-9_])",
+                value,
+            )
+        }
+
+    formula_role_text = symbol_pattern.sub(
+        lambda match: canonical_symbol(match.group(0)),
+        formula_context.translate(translation),
+    ).lower()
+    formula_markers = {
+        "estimator",
+        "expression",
+        "factor",
+        "factor_state",
+        "formula",
+        "formula_state",
+        "signal",
+        "信号",
+        "公式",
+        "因子",
+    }
+    formula_link_terms = {
+        "capture",
+        "captures",
+        "estimate",
+        "estimated",
+        "estimates",
+        "identify",
+        "identifies",
+        "map",
+        "maps",
+        "measure",
+        "measures",
+        "proxy",
+        "proxies",
+        "represent",
+        "represents",
+        "target",
+        "targets",
+        "代理",
+        "估计",
+        "刻画",
+        "捕捉",
+        "映射",
+        "测度",
+        "识别",
+    }
+
+    def semantic_clauses(value: str) -> list[str]:
+        clauses: list[str] = []
+        start = 0
+        depth = 0
+        for index, character in enumerate(value):
+            if character in "([{":
+                depth += 1
+            elif character in ")]}" and depth:
+                depth -= 1
+            elif depth == 0 and (
+                character in ";；,，。"
+                or (
+                    character == "."
+                    and not (
+                        index > 0
+                        and index + 1 < len(value)
+                        and value[index - 1].isdigit()
+                        and value[index + 1].isdigit()
+                    )
+                )
+            ):
+                clauses.append(value[start:index].strip())
+                start = index + 1
+        clauses.append(value[start:].strip())
+        return [clause for clause in clauses if clause]
+
+    def has_formula_state_link(state: str) -> bool:
+        state_pattern = rf"(?<![a-zA-Z0-9_]){re.escape(state)}(?![a-zA-Z0-9_])"
+        contrast_pattern = (
+            r"\b(?:apart\s+from|but|except|however|instead|other\s+than|"
+            r"rather\s+than|save\s+for|whereas)\b|"
+            r"但|却|而非|与其|不如|除(?:了)?|排除|剔除|"
+            r"以外|之外"
+        )
+        formula_link_found = False
+        formula_link_negated = False
+        for clause in semantic_clauses(formula_role_text):
+            clause_symbols = symbols(clause)
+            has_formula_marker = bool(
+                formula_markers.intersection(clause_symbols)
+            ) or any(marker in clause for marker in {"信号", "公式", "因子"})
+            if not has_formula_marker:
+                continue
+            positive_link = False
+            negative_link = False
+            for term in sorted(formula_link_terms, key=len, reverse=True):
+                term_pattern = (
+                    rf"(?<![a-zA-Z]){re.escape(term)}(?![a-zA-Z])"
+                    if term.isascii()
+                    else re.escape(term)
+                )
+                for match in re.finditer(term_pattern, clause):
+                    prefix = clause[max(0, match.start() - 32) : match.start()]
+                    polarity_prefix = re.split(contrast_pattern, prefix)[-1]
+                    negated = bool(
+                        re.search(
+                            r"(?:\bnot\b|\bnever\b|\bcannot\b|\bno\b|"
+                            r"\b(?:do|does|did|is|are|was|were|can|could|"
+                            r"should|would)n['’]?t\b|\bfail(?:s|ed)?\s+to\b|"
+                            r"\bunable\s+to\b|"
+                            r"并非|没有|无(?:法|须|需)|"
+                            r"未(?:曾|能|予|被|估计|识别|表示)|"
+                            r"不(?:会|能|可|应|再|予|作|做|估计|识别|表示|代表)|"
+                            r"(?:不|未|无)\s*$)",
+                            polarity_prefix,
+                        )
+                    )
+                    tail = clause[match.end() :]
+                    tail = re.split(contrast_pattern, tail, maxsplit=1)[0]
+                    if re.search(state_pattern, tail):
+                        state_prefix = re.split(state_pattern, tail, maxsplit=1)[0]
+                        state_negated = bool(
+                            re.search(
+                                r"(?:\b(?:not|never|no|neither|without|cannot)\s*$|"
+                                r"\bno\s+(?:exposure|reference|relation|link|"
+                                r"dependence)\s+(?:to|on)\s*$|"
+                                r"\bwithout\s+(?:any\s+)?(?:exposure|reference|"
+                                r"relation|link|dependence)\s+(?:to|on)\s*$|"
+                                r"\b(?:apart\s+from|except|excluding|independent\s+of|"
+                                r"other\s+than|orthogonal\s+to|save\s+for|"
+                                r"unrelated\s+to)\s*$|"
+                                r"不(?:了|到|出|成|清|住|得|能|会|可|"
+                                r"由|被)(?:与|和|跟)?\s*$|"
+                                r"(?:不是|不为|并非|而非|非|除(?:了)?|"
+                                r"排除|剔除|以外|之外|无关|不相关|"
+                                r"独立于|正交于)\s*$)",
+                                state_prefix,
+                            )
+                        )
+                        if negated or state_negated:
+                            negative_link = True
+                        else:
+                            positive_link = True
+                    state_matches = list(re.finditer(state_pattern, prefix))
+                    if state_matches:
+                        state_match = state_matches[-1]
+                        state_to_link = prefix[state_match.end() :]
+                        passive_cue = bool(
+                            re.search(
+                                r"\b(?:is|was|be|been|being|gets?|got)\b|由|被",
+                                state_to_link,
+                            )
+                        )
+                        tail_symbols = symbols(tail)
+                        passive_formula_marker = bool(
+                            formula_markers.intersection(tail_symbols)
+                        ) or any(
+                            marker in tail for marker in {"信号", "公式", "因子"}
+                        )
+                        passive_formula_marker = passive_formula_marker or bool(
+                            formula_markers.intersection(symbols(state_to_link))
+                        ) or any(
+                            marker in state_to_link
+                            for marker in {"信号", "公式", "因子"}
+                        )
+                        if passive_cue and passive_formula_marker:
+                            if negated:
+                                negative_link = True
+                            else:
+                                positive_link = True
+            formula_link_found = formula_link_found or positive_link
+            formula_link_negated = formula_link_negated or negative_link
+        return formula_link_found and not formula_link_negated
+
+    transient_role_terms = {"temporary", "transitory", "transient", "瞬时", "临时"}
+
+    def has_transient_state_role(state: str) -> bool:
+        escaped = re.escape(state)
+        positive = False
+        negative = False
+        for role in transient_role_terms:
+            role_pattern = (
+                rf"(?<![a-zA-Z]){re.escape(role)}(?![a-zA-Z])"
+                if role.isascii()
+                else re.escape(role)
+            )
+            for pattern in (
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])"
+                rf"(?P<qualifier>[^,.，。;:：]{{0,56}}){role_pattern}",
+                rf"{role_pattern}(?:\s+(?:component|state|分量|状态))?"
+                rf"(?P<qualifier>[^,.，。;:：]{{0,24}})"
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])",
+            ):
+                for match in re.finditer(pattern, canonical_role_text):
+                    qualifier = str(match.group("qualifier") or "")
+                    if re.search(
+                        r"(?:\bnot\b|\bnon(?:[- ]|$)|\bnever\b|\bno\b|"
+                        r"\bwithout\b|不是|不为|并非|不存在|"
+                        r"没有|不具备|非|无)",
+                        qualifier,
+                    ):
+                        negative = True
+                    else:
+                        positive = True
+        return positive and not negative
+
+    dynamic_states: set[str] = set()
+    for equation in equations:
+        left_symbols = set(equation["left_symbols"])
+        if len(left_symbols) != 1:
+            continue
+        state = next(iter(left_symbols))
+        rho_symbol = transition_rho_symbol(str(equation["raw_right"]), state)
+        transition_rho_symbols = raw_rho_symbols(str(equation["right"]))
+        if (
+            state not in {"r", "return"}
+            and rho_symbol is not None
+            and transition_rho_symbols == {rho_symbol}
+            and has_time_index(str(equation["left"]), state, future=True)
+            and has_time_index(str(equation["raw_right"]), state, future=False)
+            and has_stable_rho_constraint(normalized, rho_symbol)
+            and is_ar1_transition(equation, state)
+            and has_transient_state_role(state)
+        ):
+            dynamic_states.add(state)
+
+    decomposed_dynamic_states = {
+        state
+        for state in dynamic_states
+        if any(
+            state in polynomial_symbols(equation)
+            and bool(
+                polynomial_symbols(equation)
+                - coefficient_terms
+                - residual_terms
+                - {state}
+            )
+            and state not in set(equation["left_symbols"])
+            and has_formula_state_link(state)
+            for equation in equations
+        )
+    }
+    semantic_states.update(decomposed_dynamic_states)
+
+    reduced_form_bound = any(
+        equation.get("direct_return_lhs") is True
+        and polynomial_contains(equation, (coefficient_terms, semantic_states))
+        and has_independent_residual(equation)
+        for equation in payoff_equations
+    )
+
+    defined_impact_states: set[str] = set()
+    for equation in equations:
+        left_symbols = set(equation["left_symbols"])
+        right_symbols = polynomial_symbols(equation)
+        if (
+            len(left_symbols) != 1
+            or not re.search(r"[+\-*/]", str(equation["right"]))
+            or not equation.get("right_polynomial")
+        ):
+            continue
+        state = next(iter(left_symbols))
+        if state not in semantic_states:
+            continue
+        meaningful_right = right_symbols - coefficient_terms - residual_terms
+        if meaningful_right or residual_terms.intersection(right_symbols):
+            defined_impact_states.add(state)
+
+    structural_state_bound = any(
+        polynomial_contains(equation, (coefficient_terms, defined_impact_states))
+        and (
+            equation.get("direct_return_lhs") is not True
+            or has_independent_residual(equation)
+        )
+        for equation in payoff_equations
+    )
+
+    normalized_formula_tokens = {
+        canonical_symbol(token) for token in formula_tokens
+    }
+    persistent_terms = {"persistent", "持久"}
+    transient_terms = {"temporary", "transitory", "transient", "瞬时", "临时"}
+
+    def symbol_has_role(symbol: str, role_terms: set[str]) -> bool:
+        escaped = re.escape(symbol)
+        positive = False
+        negative = False
+        for role in role_terms:
+            role_pattern = (
+                rf"(?<![a-zA-Z]){re.escape(role)}(?![a-zA-Z])"
+                if role.isascii()
+                else re.escape(role)
+            )
+            for match in re.finditer(
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])\s*"
+                rf"(?:为|is|denotes|represents)\s*"
+                rf"(?P<qualifier>[^,，;]{{0,24}}){role_pattern}",
+                canonical_role_text,
+            ):
+                qualifier = match.group("qualifier")
+                if not re.search(
+                    r"(?:\bnot\b|\bnon(?:[- ]|$)|\bnever\b|\bno\b|\bwithout\b|"
+                    r"不是|不为|并非|不存在|没有|不具备|非|无)",
+                    qualifier,
+                ):
+                    positive = True
+                else:
+                    negative = True
+            if re.search(
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])\s*"
+                rf"(?:不为|不是|并非|不具备|没有|无)\s*[^,，;]{{0,16}}{role_pattern}",
+                canonical_role_text,
+            ):
+                negative = True
+            for match in re.finditer(
+                rf"{role_pattern}\s*(?:component|state|分量|状态)?\s*"
+                rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])",
+                canonical_role_text,
+            ):
+                prefix = canonical_role_text[max(0, match.start() - 12) : match.start()]
+                if not re.search(
+                    r"(?:\bnot\s*|\bnon(?:[- ]|$)|\bnever\s*|\bno\s*|"
+                    r"\bwithout\s*|不是|不为|并非|不存在|"
+                    r"没有|不具备|非|无)\s*$",
+                    prefix,
+                ):
+                    positive = True
+                else:
+                    negative = True
+        return positive and not negative
+
+    formula_decomposition_bound = False
+    formula_state_payoff = any(
+        polynomial_contains(
+            equation,
+            (coefficient_terms, {"f", "formula_state"}),
+        )
+        for equation in payoff_equations
+    )
+    if formula_state_payoff:
+        for equation in equations:
+            if not equation.get("right_polynomial"):
+                continue
+            left_symbols = set(equation["left_symbols"])
+            components = (
+                polynomial_symbols(equation)
+                - coefficient_terms
+                - residual_terms
+                - normalized_formula_tokens
+            )
+            persistent_components = {
+                symbol for symbol in components if symbol_has_role(symbol, persistent_terms)
+            }
+            transient_components = {
+                symbol for symbol in components if symbol_has_role(symbol, transient_terms)
+            }
+            if (
+                left_symbols.intersection(normalized_formula_tokens)
+                and persistent_components
+                and transient_components
+                and bool(persistent_components - transient_components)
+                and bool(transient_components - persistent_components)
+            ):
+                formula_decomposition_bound = True
+                break
+
+    bound_model = (
+        reduced_form_bound
+        or structural_state_bound
+        or formula_decomposition_bound
+    )
+
+    def contains_negated_term(terms: set[str]) -> bool:
+        for term in terms:
+            term_pattern = (
+                rf"(?<![a-zA-Z]){re.escape(term)}(?![a-zA-Z])"
+                if term.isascii()
+                else re.escape(term)
+            )
+            if term.isascii():
+                raw_term_pattern = rf"{re.escape(term)}(?![a-zA-Z])"
+                english_negations = (
+                    rf"\bnot\s+(?!only\b)(?:(?:a|an|the|any)\s+)?{term_pattern}",
+                    rf"\bno\s+(?!arbitrage\b)(?:(?:evidence|sign|presence)\s+of\s+)?"
+                    rf"{term_pattern}",
+                    rf"\bnever\s+(?:(?:shows|has|exhibits)\s+)?{term_pattern}",
+                    rf"\bwithout\s+(?!(?:loss\s+of\s+generality|arbitrage\s+capital)\b)"
+                    rf"(?:(?:a|an|the|any)\s+)?{term_pattern}",
+                    rf"\bnon[- ]?{raw_term_pattern}",
+                    rf"{term_pattern}\s+(?:does|do|did)\s+not\s+"
+                    rf"(?:exist|hold|occur|apply)",
+                    rf"{term_pattern}\s+(?:is|are)\s+"
+                    rf"(?:absent|false|invalid|not\s+present)",
+                )
+                if any(re.search(pattern, process_lower) for pattern in english_negations):
+                    return True
+                continue
+            if re.search(
+                rf"(?:不存在|没有(?:任何)?|并非|不是|不为|不具备|缺乏|无(?!套利))"
+                rf"(?:明显|可见|任何)?\s*"
+                rf"(?:瞬时|临时|暂时|持久)?\s*{term_pattern}",
+                process_lower,
+            ):
+                return True
+            if re.search(
+                rf"{term_pattern}\s*(?:并)?(?:不存在|没有(?:出现|发生|成立)?|"
+                rf"不成立|缺失|无效)",
+                process_lower,
+            ):
+                return True
+        return False
+
+    negatable_mechanism_terms = impact_terms | (
+        decomposition_terms - {"persistent", "持久"}
+    )
+    mechanism_claim_negated = contains_negated_term(negatable_mechanism_terms)
+
+    return (
+        bound_model
+        and not mechanism_claim_negated
+        and any(term in process_lower for term in impact_terms)
+        and any(term in process_lower for term in decomposition_terms)
+        and any(term in process_lower for term in payoff_terms)
+    )
+
+
+def _has_explicit_jump_threshold_model(process: str) -> bool:
+    jump_terms = {
+        "boundary",
+        "discontinuity",
+        "jump",
+        "stopping",
+        "threshold",
+        "不连续",
+        "停止时",
+        "边界",
+        "跳跃",
+        "隔夜跳",
+        "阈值",
+    }
+    state_assignment = re.search(
+        r"(?:^|;)\s*(?P<state>s(?:_[a-z0-9_{},]+)?)\s*=\s*(?P<definition>[^;]+)",
+        process,
+    )
+    state_name = state_assignment.group("state") if state_assignment else ""
+    state_definition = state_assignment.group("definition") if state_assignment else ""
+    has_threshold_gate = any(
+        marker in state_definition
+        for marker in {"1{", "indicator", "sign(", "threshold", "不连续", "边界", "阈值"}
+    ) or bool(re.search(r"(?:<=|>=|<|>)", state_definition))
+    has_jump_price_link = bool(
+        re.search(
+            r"(?:^|;)\s*(?:o|open|p|price)(?:_[a-z0-9_{}]+)?\s*=\s*[^;]*"
+            r"(?:j(?:_[a-z0-9_{}]+)?|jump|跳)",
+            process,
+        )
+        or re.search(r"(?:^|;)\s*j(?:_[a-z0-9_{}]+)?\s*=\s*[^;]+", process)
+    )
+    payoff_equation = re.search(r"e\[[^]]+\]\s*=\s*(?P<payoff>[^;]+)", process)
+    payoff_expression = payoff_equation.group("payoff") if payoff_equation else ""
+    has_payoff_state_link = bool(
+        state_name
+        and re.search(
+            rf"(?<![a-z0-9_]){re.escape(state_name)}(?![a-z0-9_])",
+            payoff_expression,
+        )
+    )
+    return (
+        process.count("=") >= 3
+        and any(term in process for term in jump_terms)
+        and has_jump_price_link
+        and has_threshold_gate
+        and has_payoff_state_link
+    )
 
 
 def _economic_text(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any]) -> str:
@@ -349,6 +1435,68 @@ def _select_baseline_model(economic_text: str, features: dict[str, Any]) -> str:
     return "other"
 
 
+def _normalize_baseline_model_family(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "discounted cash-flow valuation": "valuation_identity",
+        "discounted_cash_flow": "valuation_identity",
+        "dcf": "valuation_identity",
+        "residual-income valuation": "valuation_identity",
+        "residual_income": "valuation_identity",
+        "accounting identity": "valuation_identity",
+        "structural causal model": "other",
+        "linear factor projection": "projection_residualization",
+        "price_volume_microstructure": "transient_impact",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in BASELINE_MODEL_FAMILIES else None
+
+
+def _selected_model_from_measurement_program(
+    spec_like: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    canonical = _canonical(spec_like or {})
+    candidates = [
+        mechanism_analysis.get("mechanism_conditioned_measurement_program"),
+        spec_like.get("mechanism_conditioned_measurement_program"),
+        canonical.get("mechanism_conditioned_measurement_program"),
+    ]
+    for program in candidates:
+        if not isinstance(program, dict):
+            continue
+        selection = program.get("model_selection")
+        if not isinstance(selection, dict):
+            continue
+        models = selection.get("candidate_models")
+        if not isinstance(models, list):
+            continue
+        selected = [
+            item
+            for item in models
+            if isinstance(item, dict) and item.get("selected") is True
+        ]
+        if len(selected) != 1:
+            continue
+        return program, selected[0]
+    return None
+
+
+def _selected_baseline_from_measurement_program(
+    spec_like: dict[str, Any],
+    mechanism_analysis: dict[str, Any],
+) -> str | None:
+    selected = _selected_model_from_measurement_program(
+        spec_like,
+        mechanism_analysis,
+    )
+    if selected is None:
+        return None
+    _, model = selected
+    raw = str(model.get("model_family") or "").strip()
+    return _normalize_baseline_model_family(raw) or raw or None
+
+
 def _economic_hypothesis_summary(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any], economic: str) -> str:
     return (
         f"return_source={mechanism_analysis.get('return_source') or 'unknown'}; "
@@ -372,7 +1520,7 @@ def _profit_payer_for_baseline(
     mechanism_analysis: dict[str, Any],
 ) -> dict[str, Any]:
     hypothesis_source = _economic_hypothesis_summary({}, mechanism_analysis, economic)
-    formula_state_link = _component_summary(components) or "primary formula transform estimates the declared latent state"
+    formula_state_link = _component_summary(components) or "primary formula transform estimates the selected mathematical object"
     if baseline == "valuation_identity":
         return {
             "payer_or_counterparty": "valuation-error counterparties absorbing earnings-growth or discount-rate repricing",
@@ -454,6 +1602,14 @@ def build_formula_specific_derivation(
     understanding = build_formula_understanding(spec_like)
     interaction_structure = str(understanding.get("interaction_structure") or "")
     economic = _economic_text(spec_like, mechanism_analysis)
+    selected_baseline = _selected_baseline_from_measurement_program(
+        spec_like,
+        mechanism_analysis,
+    )
+    selected_program_model = _selected_model_from_measurement_program(
+        spec_like,
+        mechanism_analysis,
+    )
     if interaction_structure == "slow_state_x_short_horizon_threshold":
         economic = (
             "Formula-specific hypothesis: a slow winner or long-window trend state interacts with a "
@@ -461,7 +1617,6 @@ def build_formula_specific_derivation(
             "Delayed updaters, trend extrapolators, or liquidity-demand accounts may pay when the "
             "short-state boundary misprices the next-horizon payoff conditional on the slow state."
         )
-        baseline = "stochastic_process"
     elif interaction_structure == "open_close_intraday_position":
         economic = (
             "Formula-specific hypothesis: an open/close relative-position transform estimates overnight-to-intraday "
@@ -469,9 +1624,7 @@ def build_formula_specific_derivation(
             "liquidity demanders, or close-location chasers may pay when the next-horizon return corrects that "
             "short-horizon price-location state."
         )
-        baseline = "stochastic_process"
-    else:
-        baseline = _select_baseline_model(economic, features)
+    baseline = selected_baseline or _select_baseline_model(economic, features)
     components: list[dict[str, Any]] = []
     if features["has_250_window"]:
         components.append({
@@ -505,8 +1658,8 @@ def build_formula_specific_derivation(
         components.append({
             "component": "primary_formula_transform",
             "formula_feature": features.get("formula_text") or "formula_ir",
-            "state_interpretation": "observable estimator for the declared latent state",
-            "mechanism_requirement": "connect this transform to the payer behavior and expected return horizon",
+            "state_interpretation": "observable estimator for the selected mathematical object",
+            "mechanism_requirement": "connect this transform to the selected object, payer behavior, and expected return horizon",
         })
 
     metric_feedback = "Observed metrics must be compared with the expected signature; contradiction should trigger model challenge, formula mutation, or kill criteria."
@@ -517,6 +1670,18 @@ def build_formula_specific_derivation(
         )
 
     payer_derivation = _profit_payer_for_baseline(baseline, components, economic, mechanism_analysis)
+    selected_program = selected_program_model[0] if selected_program_model else {}
+    selected_model = selected_program_model[1] if selected_program_model else {}
+    selected_observation = (
+        selected_program.get("observation_and_estimation")
+        if isinstance(selected_program.get("observation_and_estimation"), dict)
+        else {}
+    )
+    selected_projection = (
+        selected_program.get("market_outcome_projection")
+        if isinstance(selected_program.get("market_outcome_projection"), dict)
+        else {}
+    )
     return {
         "version": DERIVATION_VERSION,
         "economic_to_math_model_selection": {
@@ -525,34 +1690,50 @@ def build_formula_specific_derivation(
                 "Selected from the economic hypothesis and formula structure, not from a fixed factor-family template: "
                 f"{economic[:400] or 'economic hypothesis under-specified'}"
             ),
-            "why_not_generic_template": "The model must explain payer behavior, state dynamics, estimator mapping, and metric signature for this specific formula.",
+            "why_not_generic_template": "The model must explain payer behavior, the selected mathematical object, its mechanism equation or functional, the observation mapping, and the metric signature for this specific formula.",
             "model_mutations_for_this_formula": [
                 item["mechanism_requirement"] for item in components
             ],
         },
         "profit_payer_derivation": payer_derivation,
         "formula_components": components,
-        "latent_state_mapping": [
+        "mathematical_object_mapping": [
             {
                 "observable_component": item["component"],
-                "latent_state_claim": item["state_interpretation"],
-                "estimator_mapping": item["mechanism_requirement"],
+                "mathematical_object_claim": item["state_interpretation"],
+                "observation_mapping": item["mechanism_requirement"],
             }
             for item in components
         ],
         "selected_model_family": baseline,
         "why_this_model_not_generic_template": "It is tied to economic payer behavior, formula components, horizon, sign convention, and metric falsification.",
-        "random_object": "panel of observable factor inputs and next-period returns under the legal information set F_t",
-        "latent_state": "formula-specific latent state implied by the economic hypothesis",
-        "process_or_distribution": _process_for_baseline(baseline, features),
-        "target_functional": "E[r_{t+1:t+h} | F_t, estimated_state_t]",
-        "formula_as_estimator": "the formula maps observable inputs into the declared latent state; each transform must have a payer/horizon interpretation",
+        "mathematical_object": str(
+            selected_model.get("mathematical_object")
+            or _mathematical_object_for_baseline(baseline, features)
+        ),
+        "mechanism_equation_or_functional": str(
+            selected_model.get("mechanism_equation_or_functional")
+            or _mechanism_for_baseline(baseline, features)
+        ),
+        "target_functional": str(
+            selected_observation.get("estimand")
+            or _target_functional_for_baseline(baseline)
+        ),
+        "market_outcome_projection": str(
+            selected_projection.get("projection_equation_or_map")
+            or _market_outcome_projection_for_baseline(baseline)
+        ),
+        "observation_mapping": str(
+            selected_observation.get("observation_map")
+            or selected_observation.get("estimator")
+            or "the formula maps legal-time observables into the selected mathematical object; each transform must have a payer, model-term, and horizon interpretation"
+        ),
         "expected_metric_signature": "rank IC, long-side return, cost-adjusted return, monotonicity, and turnover must match the declared sign and horizon",
         "observed_metric_comparison": metric_feedback,
         "metric_feedback_to_model": "Unsupported metrics must revise the baseline model, mutate the estimator/sign/horizon, or activate kill criteria.",
         "falsification_tests": [
             "Block promotion if long-side cost-adjusted evidence contradicts the expected payoff direction.",
-            "Block or mutate if formula component behavior does not match the declared latent state horizon.",
+            "Block or mutate if formula component behavior does not match the selected mathematical object's declared horizon.",
         ],
         "kill_criteria": [
             "Kill if no identifiable payer or constraint remains after evidence review.",
@@ -562,13 +1743,47 @@ def build_formula_specific_derivation(
     }
 
 
-def _process_for_baseline(baseline: str, features: dict[str, Any]) -> str:
+def _mathematical_object_for_baseline(
+    baseline: str,
+    features: dict[str, Any],
+) -> str:
     if baseline == "valuation_identity":
-        return "cash-flow, earnings-growth, or residual-income valuation process with discount-rate or revision shocks"
+        return "discounted forecast cash-flow or residual-income functional and its intrinsic-value-to-price gap"
+    if baseline == "state_space":
+        return "latent information object together with its legal-time observation map"
+    if baseline == "transient_impact":
+        return "signed temporary order-flow or inventory-pressure component"
+    if baseline == "cointegration":
+        return "cointegrating residual and equilibrium-deviation functional"
+    if baseline == "copula_rank_dependence":
+        return "conditional rank-dependence functional or copula section"
+    if baseline == "jump_threshold":
+        return "threshold-crossing event, stopping time, and boundary direction"
+    if baseline == "projection_residualization":
+        return "orthogonal projection residual after declared nuisance exposure removal"
+    if baseline == "fourier_wavelet":
+        return "localized spectral coefficient or multiscale signal component"
+    if baseline == "dimensional_scaling":
+        return "scale-invariant ratio or scaling-law residual"
+    if baseline == "stochastic_process":
+        return "mechanism-specific return, event, occupation, or path functional under the legal information set"
+    return "researcher-selected mathematical object justified by the economic hypothesis"
+
+
+def _mechanism_for_baseline(baseline: str, features: dict[str, Any]) -> str:
+    if baseline == "valuation_identity":
+        return (
+            "V_t=sum_{k=1}^T FCF_{t+k}/(1+WACC_t)^k "
+            "+ TV_t/(1+WACC_t)^T; valuation_gap_t=V_t/P_t-1"
+        )
     if baseline == "state_space":
         return "latent information state with delayed Bayesian updating or signal extraction under F_t"
     if baseline == "transient_impact":
-        return "transient price impact or order-imbalance state process with constrained liquidity demand"
+        return (
+            "transient order-flow impact state: I_{t+1}=rho*I_t+eta_t with |rho|<1; "
+            "impact_t=lambda*I_t; E[r_{t+1}|F_t,I_t]=-lambda*(1-rho)*I_t after "
+            "the temporary imbalance decays"
+        )
     if baseline == "copula_rank_dependence":
         return "rank-dependence or copula model linking monotone transforms to an economic latent state"
     if baseline == "jump_threshold":
@@ -579,7 +1794,37 @@ def _process_for_baseline(baseline: str, features: dict[str, Any]) -> str:
         if features.get("has_250_window") and features.get("has_short_delay_or_delta"):
             return "price return process combining a slow winner/trend state with a short-horizon reversal or dislocation state"
         return "stochastic return process with drift, reversal, volatility, or jump components estimated from legal history"
-    return "explicit conditional distribution must be supplied by the researcher; formula restatement is insufficient"
+    if baseline == "cointegration":
+        return "z_t=y_t-beta*x_t with stationary equilibrium error z_t; the estimator measures economically justified displacement from the equilibrium relation"
+    if baseline == "projection_residualization":
+        return "f_res=(I-P_X)f, where X contains only declared nuisance exposures and the residual preserves the economic estimand"
+    if baseline == "fourier_wavelet":
+        return "the selected localized basis decomposes the observable path into economically interpretable scale-frequency components before reconstruction of the target feature"
+    if baseline == "dimensional_scaling":
+        return "the selected scale-free functional is invariant to the justified unit transformation and changes only with the economic quantity of interest"
+    return "an explicit model equation or functional must be supplied by the researcher; formula restatement is insufficient"
+
+
+def _target_functional_for_baseline(baseline: str) -> str:
+    if baseline == "valuation_identity":
+        return "valuation_gap_t=intrinsic_value_t/market_price_t-1"
+    if baseline == "cointegration":
+        return "equilibrium_deviation_t=y_t-beta*x_t"
+    if baseline == "projection_residualization":
+        return "orthogonal_residual_t=(I-P_X)f_t"
+    if baseline == "fourier_wavelet":
+        return "mechanism_selected_scale_frequency_component_t"
+    if baseline == "dimensional_scaling":
+        return "mechanism_selected_scale_invariant_functional_t"
+    return "E[r_{t+1:t+h} | F_t, measured_mathematical_object_t]"
+
+
+def _market_outcome_projection_for_baseline(baseline: str) -> str:
+    if baseline == "valuation_identity":
+        return "E[r_{t+1:t+h}|F_t] is increasing in valuation_gap_t when the declared convergence mechanism holds after costs"
+    if baseline == "cointegration":
+        return "E[r_{t+1:t+h}|F_t] follows the declared sign of equilibrium-error correction after costs"
+    return "E[r_{t+1:t+h}|F_t] follows the declared sign and horizon of the selected mathematical object after costs"
 
 
 def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, Any], mechanism_analysis: dict[str, Any] | None = None) -> list[dict[str, str]]:
@@ -590,20 +1835,68 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "formula_specific_derivation version invalid"})
     selection = derivation.get("economic_to_math_model_selection") if isinstance(derivation.get("economic_to_math_model_selection"), dict) else {}
     baseline = selection.get("baseline_model_family") or derivation.get("selected_model_family")
-    if baseline not in BASELINE_MODEL_FAMILIES:
+    selected_program_model = _selected_model_from_measurement_program(
+        spec_like or {},
+        mechanism_analysis or {},
+    )
+    selected_program_family = str(
+        (selected_program_model[1] if selected_program_model else {}).get(
+            "model_family"
+        )
+        or ""
+    ).strip()
+    open_family_matches_program = (
+        bool(selected_program_family)
+        and str(baseline or "").strip().casefold()
+        in {
+            selected_program_family.casefold(),
+            str(
+                _normalize_baseline_model_family(selected_program_family) or ""
+            ).casefold(),
+        }
+    )
+    if baseline not in BASELINE_MODEL_FAMILIES and not open_family_matches_program:
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": f"baseline_model_family invalid: {baseline}"})
-    for path, value in [
+    mathematical_object = (
+        derivation.get("mathematical_object")
+        or derivation.get("latent_state")
+        or derivation.get("random_object")
+    )
+    mechanism_equation = (
+        derivation.get("mechanism_equation_or_functional")
+        or derivation.get("process_or_distribution")
+    )
+    observation_mapping = (
+        derivation.get("observation_mapping")
+        or derivation.get("formula_as_estimator")
+    )
+    current_generic_contract = (
+        "mechanism_equation_or_functional" in derivation
+        or "mathematical_object" in derivation
+        or "observation_mapping" in derivation
+    )
+    required_text_fields = [
         ("economic_to_math_model_selection.why_selected_from_economic_hypothesis", selection.get("why_selected_from_economic_hypothesis")),
         ("economic_to_math_model_selection.why_not_generic_template", selection.get("why_not_generic_template")),
         ("profit_payer_derivation.payer_or_counterparty", (derivation.get("profit_payer_derivation") or {}).get("payer_or_counterparty") if isinstance(derivation.get("profit_payer_derivation"), dict) else None),
         ("profit_payer_derivation.why_they_pay", (derivation.get("profit_payer_derivation") or {}).get("why_they_pay") if isinstance(derivation.get("profit_payer_derivation"), dict) else None),
-        ("process_or_distribution", derivation.get("process_or_distribution")),
-        ("formula_as_estimator", derivation.get("formula_as_estimator")),
+        ("mechanism_equation_or_functional", mechanism_equation),
+        ("observation_mapping", observation_mapping),
         ("metric_feedback_to_model", derivation.get("metric_feedback_to_model")),
         ("revision_implication", derivation.get("revision_implication")),
-    ]:
+    ]
+    if current_generic_contract:
+        required_text_fields.append(("mathematical_object", mathematical_object))
+    for path, value in required_text_fields:
         if not isinstance(value, str) or not value.strip():
             failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": f"{path} missing"})
+    if current_generic_contract and not str(
+        derivation.get("market_outcome_projection") or ""
+    ).strip():
+        failures.append({
+            "code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING",
+            "message": "market_outcome_projection missing",
+        })
     if not isinstance(derivation.get("formula_components"), list) or not derivation.get("formula_components"):
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "formula_components missing"})
     if not isinstance(derivation.get("falsification_tests"), list) or len(derivation.get("falsification_tests") or []) < 2:
@@ -631,15 +1924,15 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         "the counterparty implied by the economic hypothesis",
         "counterparty implied",
         "generic payer",
-        "market participants",
-        "investors",
-        "traders",
         "they pay only if",
         "constrained behavior, delayed information diffusion, risk transfer, or liquidity demand",
         "formula estimates the state",
         "estimated_state_t",
     ]
     generic_hits = [phrase for phrase in generic_phrases if phrase in payer_blob]
+    generic_actor = _generic_payer_actor_label(payer.get("payer_or_counterparty"))
+    if generic_actor:
+        generic_hits.append(generic_actor)
     expression = str(payer.get("expected_payoff_expression_or_argument") or "").strip().lower()
     if expression in {
         "e[r_{t+1:t+h} | f_t, estimated_state_t] must be monotone in the declared direction after costs.",
@@ -647,12 +1940,12 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
     } or re.fullmatch(r"e\[r_\{?t\+1(?::t\+h)?\}?\s*\|\s*f_t,\s*estimated_state_t\].*", expression):
         generic_hits.append("generic expected payoff template")
     model_specific_terms = {
-        "valuation_identity": ["fcf", "cash-flow", "cash flow", "discount", "growth", "valuation"],
-        "state_space": ["latent", "bayesian", "signal", "update", "observation", "filtered"],
-        "transient_impact": ["impact", "imbalance", "inventory", "liquidity", "rho", "decay"],
-        "copula_rank_dependence": ["copula", "conditional rank", "rank state", "dependence"],
-        "jump_threshold": ["threshold", "stopping", "boundary", "discontinu", "tau"],
-        "stochastic_process": ["drift", "reversal", "jump", "volatility", "process", "regime"],
+        "valuation_identity": ["fcf", "cash-flow", "cash flow", "discount", "growth", "valuation", "现金流", "折现", "估值", "盈利增长", "剩余收益"],
+        "state_space": ["latent", "bayesian", "signal", "update", "observation", "filtered", "潜在", "贝叶斯", "信号", "更新", "观测", "滤波", "状态空间"],
+        "transient_impact": ["impact", "imbalance", "inventory", "liquidity", "rho", "decay", "冲击", "不平衡", "库存", "流动性", "衰减"],
+        "copula_rank_dependence": ["copula", "conditional rank", "rank state", "dependence", "条件秩", "秩状态", "依赖", "联结函数"],
+        "jump_threshold": ["threshold", "stopping", "boundary", "discontinu", "tau", "阈值", "停止时", "边界", "不连续", "跳跃", "隔夜跳"],
+        "stochastic_process": ["drift", "reversal", "jump", "volatility", "process", "regime", "漂移", "反转", "跳跃", "波动率", "过程", "状态转换"],
     }
     expected_terms = model_specific_terms.get(str(baseline))
     if expected_terms and not any(term in payer_blob for term in expected_terms):
@@ -662,13 +1955,68 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
             "code": "BLOCK_MECHANISM_PROFIT_PAYER_DERIVATION_GENERIC",
             "message": f"profit payer derivation is generic or incomplete: {sorted(set(generic_hits))}",
         })
-    process = str(derivation.get("process_or_distribution") or "").lower()
+    mechanism_text = str(mechanism_equation or "")
+    mechanism = mechanism_text.lower()
     features = formula_features(spec_like or {}, mechanism_analysis or {})
     formula_tokens = {token for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", str(features.get("formula_text") or "").lower()) if len(token) > 2}
-    model_hits = [token for token in MODEL_KEYWORDS if token in process]
-    formula_hits = [token for token in formula_tokens if token in process]
-    if formula_hits and not model_hits:
-        failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "process_or_distribution merely restates formula tokens without model assumption"})
+    model_hits = [token for token in MODEL_KEYWORDS if token in mechanism]
+    formula_hits = [token for token in formula_tokens if token in mechanism]
+    compact_stochastic_model = _has_explicit_stochastic_model(mechanism)
+    if baseline == "stochastic_process":
+        missing_model_assumption = not (
+            compact_stochastic_model or _has_stochastic_process_prose(mechanism)
+        )
+    elif baseline == "transient_impact":
+        missing_model_assumption = not _has_explicit_transient_impact_model(
+            mechanism_text,
+            formula_tokens,
+            semantic_context=_text_blob(
+                mathematical_object,
+                observation_mapping,
+                derivation.get("profit_payer_derivation"),
+                derivation.get("economic_to_math_model_selection"),
+            ),
+            formula_context=_text_blob(
+                observation_mapping,
+                derivation.get("mathematical_object_mapping")
+                or derivation.get("formula_state_estimator"),
+                derivation.get("operator_consistency_discussion"),
+                payer.get("formula_state_link"),
+            ),
+        )
+    elif baseline == "jump_threshold":
+        missing_model_assumption = not _has_explicit_jump_threshold_model(mechanism)
+    elif baseline == "valuation_identity":
+        has_value_term = any(
+            term in mechanism
+            for term in [
+                "fcf",
+                "cash flow",
+                "residual income",
+                "book value",
+                "intrinsic_value",
+                "intrinsic value",
+            ]
+        )
+        has_discount_term = any(
+            term in mechanism
+            for term in ["wacc", "discount", "cost of equity", "1+", "1 +"]
+        )
+        missing_model_assumption = not (
+            "=" in mechanism and has_value_term and has_discount_term
+        )
+    else:
+        missing_model_assumption = not model_hits
+    if missing_model_assumption and (
+        formula_hits
+        or baseline in {
+            "jump_threshold",
+            "stochastic_process",
+            "transient_impact",
+            "valuation_identity",
+        }
+    ):
+        failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "mechanism_equation_or_functional merely restates formula tokens without a model assumption"})
     return failures
 
 

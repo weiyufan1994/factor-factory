@@ -22,6 +22,9 @@ class HandoffToStep2:
             'alpha_idea_master_ref': f'alpha_idea_master__{report_id}.json',
             'step1_status': 'alpha_idea_master_ready',
             'research_discipline': alpha_idea_master.get('research_discipline') or {},
+            'mechanism_conditioned_measurement_program': alpha_idea_master.get(
+                'mechanism_conditioned_measurement_program'
+            ) or {},
             'handoff_metadata': metadata or {},
             'objects': {
                 'alpha_idea_master': alpha_idea_master,

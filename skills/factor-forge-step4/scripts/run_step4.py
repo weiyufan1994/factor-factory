@@ -9,6 +9,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -28,25 +29,83 @@ import numpy as np
 # COMMENT_POLICY: runtime_path
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
-REPO_ROOT = LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3]
+
+
+def _legacy_path_if_accessible(path: Path) -> Path | None:
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
+
+
+def _optional_path_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _configured_optional_directory(
+    path: Path,
+    *,
+    setting: str,
+    require_exists: bool,
+) -> Path | None:
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        raise SystemExit(
+            f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} accessibility failed '
+            f'({type(exc).__name__})'
+        ) from exc
+    if not exists:
+        if require_exists:
+            raise SystemExit(
+                f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} does not exist'
+            )
+        return None
+    try:
+        is_directory = path.is_dir()
+    except OSError as exc:
+        raise SystemExit(
+            f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} directory check failed '
+            f'({type(exc).__name__})'
+        ) from exc
+    if not is_directory:
+        raise SystemExit(
+            f'BLOCK_STEP4_EXPLICIT_PATH_UNAVAILABLE: {setting} is not a directory'
+        )
+    return path
+
+
+REPO_ROOT = (
+    Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser()
+    if os.getenv('FACTORFORGE_REPO_ROOT')
+    else (_legacy_path_if_accessible(LEGACY_REPO_ROOT) or Path(__file__).resolve().parents[3])
+)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
+FACTORFORGE = Path(
+    os.getenv('FACTORFORGE_ROOT')
+    or (_legacy_path_if_accessible(LEGACY_WORKSPACE / 'factorforge') or REPO_ROOT)
+)
 WORKSPACE = FACTORFORGE.parent
 OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
+from factor_factory.console.web_factor_proof import validate_trusted_calendar_snapshot
 from factor_factory.data_access.minute_derived import (
     DEFAULT_MINUTE_CUTOFF_TIME,
     FLOW_STATE_REQUIRED_COLUMNS,
-    MINUTE_DERIVED_FLOW_STATE_V1,
+MINUTE_DERIVED_FLOW_STATE_V1,
     load_flow_state_partitions,
     normalize_cutoff_time,
     normalize_trade_date,
     research_window_contract as default_research_window_contract,
 )
 from factor_factory.data_api import fetch_data_api_dataset
+from factor_factory.formula.semantics import max_formula_ir_lookback as shared_max_formula_ir_lookback
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
@@ -61,6 +120,8 @@ from factor_factory.state_reuse import (
 )
 
 PLACEHOLDER_TOKENS = {'', 'TODO', 'TBD', 'PLACEHOLDER', 'placeholder', 'todo', 'tbd', None}
+TRADE_DATE_FETCH_STATE_DATASETS = {'intraday_retained_chip_state_v1'}
+WEB_EVALUATION_CONTRACT_VERSION = 'factorforge_web_evaluation_contract_v2'
 
 STEP4_RUN_METADATA_OWNED_FIELDS = {
     'report_id',
@@ -85,8 +146,52 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'shared_evaluation_context',
     'backend_timing_profile',
     'research_window_contract',
+    'formal_signal_coverage',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+
+
+def validate_web_evaluation_contract(fsm: dict[str, Any]) -> None:
+    contract = fsm.get('evaluation_contract') if isinstance(fsm.get('evaluation_contract'), dict) else {}
+    if contract.get('version') != WEB_EVALUATION_CONTRACT_VERSION:
+        return
+    expected = {
+        'rebalance_frequency': 'daily',
+        'signal_timestamp_policy': 'after_close_t',
+        'position_entry_policy': 'close_t_plus_1',
+        'position_exit_policy': 'close_t_plus_2',
+        'payoff_label_expression': 'close.shift(-2) / close.shift(-1) - 1',
+        'forward_horizon': '1d',
+        'label_policy': {
+            'horizon': 'one_trading_day_after_execution',
+            'return_type': 'simple',
+            'entry_price_field': 'close',
+            'exit_price_field': 'close',
+            'execution_lag_sessions': 1,
+            'holding_period_sessions': 1,
+            'return_window': 'close_t_plus_1_to_close_t_plus_2',
+        },
+        'transaction_cost_bps': 30.0,
+        'cost_model_id': 'factorforge_step4_turnover_30bps_v1',
+        'cost_formula': 'one_way_turnover * 0.003',
+    }
+    failures = [
+        field
+        for field, expected_value in expected.items()
+        if contract.get(field) != expected_value
+    ]
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    if canonical.get('evaluation_contract') != contract:
+        failures.append('canonical_spec.evaluation_contract')
+    if not isinstance(contract.get('availability_lags'), list) or not contract.get('availability_lags'):
+        failures.append('availability_lags')
+    if not str(contract.get('missing_data_policy') or '').strip():
+        failures.append('missing_data_policy')
+    if failures:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_WEB_EVALUATION_CONTRACT_UNSUPPORTED: '
+            + ','.join(failures)
+        )
 
 
 def derive_identity(parent: dict[str, Any], role: str, producer: str = 'step4') -> dict[str, Any]:
@@ -254,7 +359,9 @@ def _frame_key_stats(df: Any) -> dict[str, Any]:
             'start': None,
             'end': None,
         }
-    normalized_dates = normalize_trade_date_series(df['trade_date']).dt.strftime('%Y%m%d')
+    # Step4 already consumes normalized daily snapshots. Avoid expensive
+    # full-column datetime formatting here; identity stats only need YYYYMMDD.
+    normalized_dates = df['trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
     return {
         'row_count': int(len(df)),
         'date_count': int(normalized_dates.nunique()),
@@ -724,6 +831,94 @@ def build_acceptance_summary(
     }
 
 
+def build_formal_signal_coverage_profile(
+    *,
+    result_df: Any,
+    signal_col: str,
+    actual_start: str | None,
+    actual_end: str | None,
+    effective_target_start: str | None,
+    effective_target_end: str | None,
+    min_non_null_coverage: float = 0.90,
+    sparse_signal_allowed: bool = False,
+    formula_max_lookback: int = 0,
+) -> dict[str, Any]:
+    row_count = int(len(result_df)) if result_df is not None else 0
+    date_count = int(result_df['trade_date'].nunique()) if row_count and 'trade_date' in result_df.columns else 0
+    coverage_row_count = row_count
+    coverage_mask = None
+    coverage_target_start = effective_target_start
+    warmup_skipped_dates = 0
+    if row_count and 'trade_date' in result_df.columns and formula_max_lookback > 1:
+        normalized_trade_dates = result_df['trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
+        all_dates = sorted(normalized_trade_dates.dropna().unique().tolist())
+        if len(all_dates) > formula_max_lookback:
+            warmup_skipped_dates = formula_max_lookback - 1
+            coverage_target_start = all_dates[warmup_skipped_dates]
+            coverage_mask = normalized_trade_dates >= coverage_target_start
+            coverage_row_count = int(coverage_mask.sum())
+    if row_count <= 0 or signal_col not in result_df.columns:
+        non_null = 0
+        coverage_non_null = 0
+        nonnull_date_count = 0
+        nonnull_start = None
+        nonnull_end = None
+    else:
+        mask = result_df[signal_col].notna()
+        non_null = int(mask.sum())
+        if coverage_mask is not None:
+            coverage_non_null = int((mask & coverage_mask).sum())
+        else:
+            coverage_non_null = non_null
+        if 'trade_date' in result_df.columns and non_null:
+            nonnull_dates = result_df.loc[mask, 'trade_date'].astype(str).str.replace('-', '', regex=False).str.slice(0, 8)
+            nonnull_date_count = int(nonnull_dates.nunique())
+            nonnull_start = str(nonnull_dates.min())
+            nonnull_end = str(nonnull_dates.max())
+        else:
+            nonnull_date_count = 0
+            nonnull_start = None
+            nonnull_end = None
+    raw_coverage = float(non_null / row_count) if row_count else 0.0
+    coverage = float(coverage_non_null / coverage_row_count) if coverage_row_count else 0.0
+    reasons: list[str] = []
+    if not sparse_signal_allowed and coverage < min_non_null_coverage:
+        reasons.append('factor_value_non_null_coverage_below_minimum')
+    if not sparse_signal_allowed and non_null > 0 and actual_end and nonnull_end and str(nonnull_end) != str(actual_end):
+        reasons.append('nonnull_signal_window_does_not_reach_actual_end')
+    if not sparse_signal_allowed and non_null == 0:
+        reasons.append('factor_value_all_null')
+    verdict = 'PASS' if not reasons else 'BLOCK'
+    return {
+        'version': 'factorforge_formal_signal_coverage_v1',
+        'signal_column': signal_col,
+        'row_count': row_count,
+        'date_count': date_count,
+        'factor_value_non_null': non_null,
+        'raw_factor_value_non_null_coverage': raw_coverage,
+        'coverage_row_count': coverage_row_count,
+        'coverage_non_null': coverage_non_null,
+        'factor_value_non_null_coverage': coverage,
+        'nonnull_date_count': nonnull_date_count,
+        'nonnull_start': nonnull_start,
+        'nonnull_end': nonnull_end,
+        'actual_window': {'start': actual_start, 'end': actual_end},
+        'effective_target_window': {'start': effective_target_start, 'end': effective_target_end},
+        'coverage_target_window': {'start': coverage_target_start, 'end': effective_target_end},
+        'formula_max_lookback': int(formula_max_lookback),
+        'warmup_skipped_dates': int(warmup_skipped_dates),
+        'coverage_basis': 'warmup_adjusted' if warmup_skipped_dates else 'full_output_window',
+        'min_non_null_coverage': min_non_null_coverage,
+        'sparse_signal_allowed': bool(sparse_signal_allowed),
+        'coverage_gate_verdict': verdict,
+        'block_reasons': reasons,
+    }
+
+
+def max_formula_ir_lookback(formula_ir: dict[str, Any] | None) -> int:
+    return shared_max_formula_ir_lookback(formula_ir)
+
+
 def add_formal_acceptance_envelope(
     payload: dict[str, Any],
     *,
@@ -784,6 +979,29 @@ def resolve_backend_script_path(raw_path: str | None) -> Path | None:
     return REPO_ROOT / p
 
 
+def _backend_error_class(output: str) -> str:
+    missing_module = re.search(
+        r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]",
+        output,
+    )
+    if missing_module:
+        return f'ModuleNotFoundError:{missing_module.group(1)}'
+    for error_class in (
+        'ModuleNotFoundError',
+        'ImportError',
+        'PermissionError',
+        'FileNotFoundError',
+        'MemoryError',
+        'TimeoutExpired',
+        'OSError',
+        'ValueError',
+        'KeyError',
+    ):
+        if error_class in output:
+            return error_class
+    return 'backend_process_failed'
+
+
 def run_backend_script(
     report_id: str,
     backend: str,
@@ -829,11 +1047,16 @@ def run_backend_script(
         env['QLIB_PROVIDER_URI'] = str(provider_uri)
 
     result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
-    if result.stdout:
-        print(result.stdout, end='')
-    if result.stderr:
-        print(result.stderr, end='')
-    return result.returncode, f'cmd={" ".join(cmd)}'
+    backend_output = (result.stderr or result.stdout or '').strip()
+    error_class = _backend_error_class(backend_output) if result.returncode else None
+    exec_note = (
+        f'backend={backend}; adapter={script_path.name}; '
+        f'returncode={result.returncode}'
+    )
+    if error_class:
+        exec_note += f'; error_class={error_class}'
+    print(f'[BACKEND] {exec_note}')
+    return result.returncode, exec_note
 
 
 def _backend_timing_key(backend: str | None) -> str:
@@ -873,11 +1096,24 @@ def preflight_qlib_native(report_id: str, backend_cfg: dict[str, Any]) -> dict[s
     started = time.perf_counter()
     explicit_provider = _provider_uri_from_backend_config(backend_cfg)
     if explicit_provider:
-        candidate_paths = [_resolve_provider_path(explicit_provider)]
+        explicit_path = _resolve_provider_path(explicit_provider)
+        provider_path = _configured_optional_directory(
+            explicit_path,
+            setting='QLIB_PROVIDER_URI',
+            require_exists=True,
+        )
+        candidate_paths = [explicit_path]
     else:
         candidate_paths = _default_qlib_provider_candidates(report_id)
-
-    provider_path = next((path for path in candidate_paths if path.exists()), None)
+        provider_path = next(
+            (
+                path
+                for path in candidate_paths
+                if _legacy_path_if_accessible(path) is not None
+                and _optional_path_is_dir(path)
+            ),
+            None,
+        )
     provider_present = provider_path is not None
     qlib_import_checked = True
     qlib_import_ok: bool | None = None
@@ -963,11 +1199,15 @@ def write_backend_payloads(
             if backend == 'qlib_backtest':
                 preflight = preflight_qlib_native(report_id, backend_cfg)
                 if preflight.get('status') != 'ready':
+                    preflight_status = 'preflight_blocked'
+                    if preflight.get('status') == 'ready':
+                        preflight_status = 'preflight_ready'
                     payload = {
                         'backend': backend,
                         'report_id': report_id,
                         'status': 'skipped',
                         'mode': backend_cfg.get('mode', 'native'),
+                        'qlib_native_status': preflight_status,
                         'summary': {'reason': preflight.get('reason')},
                         'qlib_preflight': preflight,
                         'shared_evaluation_context': {
@@ -1024,6 +1264,7 @@ def write_backend_payloads(
                     new_item['summary'] = payload.get('native_backtest_metrics') or payload.get('stub_backtest_metrics', payload)
                     if preflight is not None:
                         payload.setdefault('qlib_preflight', {**preflight, 'native_attempted': True})
+                        payload.setdefault('qlib_native_status', qlib_native_status_from_backend_runs([new_item], {'backends': {'qlib_native': {'status': preflight.get('status')}}}))
                         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
             timing_entry = {
                 'attempted': True,
@@ -1097,8 +1338,10 @@ def build_shared_evaluation_context(
     daily_input_path: Path,
     target_window: dict[str, Any],
     effective_target_window: dict[str, Any],
+    evaluation_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    run_dir.mkdir(parents=True, exist_ok=True)
     factor_signal_path = run_dir / f'factor_signal__{report_id}.parquet'
     daily_forward_returns_path = run_dir / f'daily_forward_returns__{report_id}.parquet'
     merged_path = run_dir / f'merged_signal_return__{report_id}.parquet'
@@ -1109,19 +1352,62 @@ def build_shared_evaluation_context(
     factor_signal = factor_signal.rename(columns={'ts_code': 'code'}).copy()
     factor_signal['datetime'] = normalize_trade_date_series(factor_signal['trade_date'])
 
-    required_daily_cols = ['ts_code', 'trade_date', 'close']
+    proof_control_columns = (
+        [
+            str(column)
+            for column in (evaluation_contract.get('proof_control_columns') or [])
+            if str(column).strip()
+        ]
+        if isinstance(evaluation_contract, dict)
+        else []
+    )
+    required_daily_cols = ['ts_code', 'trade_date', 'close', *proof_control_columns]
     missing_daily_cols = [col for col in required_daily_cols if col not in daily_df.columns]
     if missing_daily_cols:
         raise ValueError(f'shared evaluation context requires daily columns: {missing_daily_cols}')
+    web_tradeable_timing = (
+        isinstance(evaluation_contract, dict)
+        and evaluation_contract.get('version') == WEB_EVALUATION_CONTRACT_VERSION
+    )
     daily_forward = build_forward_return_frame(
-        daily_df[[col for col in ['ts_code', 'trade_date', 'close', 'pct_chg'] if col in daily_df.columns]].rename(columns={'ts_code': 'code'}),
+        daily_df[[
+            col
+            for col in [
+                'ts_code',
+                'trade_date',
+                'close',
+                'pct_chg',
+                *proof_control_columns,
+            ]
+            if col in daily_df.columns
+        ]].rename(columns={'ts_code': 'code'}),
         instrument_col='code',
         date_col='trade_date',
         price_col='close',
+        return_col=None if web_tradeable_timing else 'pct_chg',
         horizon=1,
+        entry_offset=1 if web_tradeable_timing else 0,
+        exit_offset=2 if web_tradeable_timing else None,
+        include_label_path=web_tradeable_timing,
+        calendar_dates=(
+            validate_trusted_calendar_snapshot()['dates']
+            if web_tradeable_timing
+            else None
+        ),
     )
+    forward_columns = ['datetime', 'code', 'future_return_1d']
+    if web_tradeable_timing:
+        forward_columns.extend(
+            [
+                'label_start_date',
+                'label_end_date',
+                'label_start_price',
+                'label_end_price',
+            ]
+        )
+        forward_columns.extend(proof_control_columns)
     merged = factor_signal[['datetime', 'trade_date', 'code', signal_col]].merge(
-        daily_forward[['datetime', 'code', 'future_return_1d']],
+        daily_forward[forward_columns],
         on=['datetime', 'code'],
         how='left',
     ).dropna(subset=[signal_col, 'future_return_1d'])
@@ -1137,16 +1423,24 @@ def build_shared_evaluation_context(
         'factor_values_hash': sha256_file(factor_parquet_path),
         'daily_input_hash': sha256_file(daily_input_path),
         'daily_input_path': str(daily_input_path),
-        'label_policy': {
-            'horizon': 'T+1',
-            'return_type': 'simple',
-            'price_field': 'close',
-        },
+        'label_policy': (
+            dict(evaluation_contract['label_policy'])
+            if web_tradeable_timing
+            else {
+                'horizon': 'T+1',
+                'return_type': 'simple',
+                'price_field': 'close',
+            }
+        ),
         'target_window': target_window,
         'effective_target_window': effective_target_window,
     }
     context = {
-        'version': 'factorforge_shared_evaluation_context_v1',
+        'version': (
+            'factorforge_shared_evaluation_context_v2'
+            if web_tradeable_timing
+            else 'factorforge_shared_evaluation_context_v1'
+        ),
         'enabled': True,
         'report_id': report_id,
         'factor_id': factor_id,
@@ -1327,6 +1621,12 @@ def add_direct_code_alias_columns(df: Any) -> Any:
         out['volume'] = out['vol']
     if 'volume' in out.columns and 'vol' not in out.columns:
         out['vol'] = out['volume']
+    if 'pct_chg' in out.columns and 'returns' not in out.columns:
+        out['returns'] = pd.to_numeric(out['pct_chg'], errors='coerce') / 100.0
+    if 'returns' in out.columns and 'return' not in out.columns:
+        out['return'] = out['returns']
+    if 'return' in out.columns and 'returns' not in out.columns:
+        out['returns'] = out['return']
     if 'trade_time' in out.columns and 'datetime' not in out.columns:
         out['datetime'] = out['trade_time']
     if 'datetime' in out.columns and 'trade_time' not in out.columns:
@@ -1444,18 +1744,41 @@ def _z_by_trade_date(frame: pd.DataFrame, col: str) -> pd.Series:
 
 
 def _local_minute_partition_roots() -> list[Path]:
-    candidates = []
+    roots: list[Path] = []
     if os.environ.get('FACTORFORGE_LOCAL_MINUTE_ROOT'):
-        candidates.append(Path(os.environ['FACTORFORGE_LOCAL_MINUTE_ROOT']))
+        explicit = _configured_optional_directory(
+            Path(os.environ['FACTORFORGE_LOCAL_MINUTE_ROOT']),
+            setting='FACTORFORGE_LOCAL_MINUTE_ROOT',
+            require_exists=True,
+        )
+        if explicit is not None:
+            roots.append(explicit)
     if os.environ.get('FACTORFORGE_LOCAL_DATA_ROOT'):
-        candidates.append(Path(os.environ['FACTORFORGE_LOCAL_DATA_ROOT']) / '分钟数据' / 'raw' / 'stk_mins_1min')
+        explicit = _configured_optional_directory(
+            Path(os.environ['FACTORFORGE_LOCAL_DATA_ROOT']) / '分钟数据' / 'raw' / 'stk_mins_1min',
+            setting='FACTORFORGE_LOCAL_DATA_ROOT',
+            require_exists=False,
+        )
+        if explicit is not None and explicit not in roots:
+            roots.append(explicit)
     if os.environ.get('FACTORFORGE_DATA_CACHE'):
-        candidates.append(Path(os.environ['FACTORFORGE_DATA_CACHE']) / 's3_parquet' / 'minute_bar-raw_v1-0b2b836c57d763c6')
-    candidates.append(Path('/home/ubuntu/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6'))
-    candidates.append(Path('/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min'))
-    roots = []
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_dir() and candidate not in roots:
+        explicit = _configured_optional_directory(
+            Path(os.environ['FACTORFORGE_DATA_CACHE']) / 's3_parquet' / 'minute_bar-raw_v1-0b2b836c57d763c6',
+            setting='FACTORFORGE_DATA_CACHE',
+            require_exists=False,
+        )
+        if explicit is not None and explicit not in roots:
+            roots.append(explicit)
+    legacy_candidates = [
+        Path('/home/ubuntu/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6'),
+        Path('/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min'),
+    ]
+    for candidate in legacy_candidates:
+        if (
+            _legacy_path_if_accessible(candidate) is not None
+            and _optional_path_is_dir(candidate)
+            and candidate not in roots
+        ):
             roots.append(candidate)
     return roots
 
@@ -1993,7 +2316,7 @@ def _minute_derived_state_requirements(contract: dict[str, Any], dpm: dict[str, 
 def _minute_flow_state_requirement(contract: dict[str, Any], dpm: dict[str, Any] | None = None) -> dict[str, Any] | None:
     for requirement in _minute_derived_state_requirements(contract, dpm):
         dataset_id = str(requirement.get('dataset_id') or '').strip()
-        if dataset_id in {MINUTE_DERIVED_FLOW_STATE_V1, 'intraday_flow_distribution_moments_v1'}:
+        if dataset_id:
             return requirement
     return None
 
@@ -2026,6 +2349,32 @@ def _generic_minute_full_window_forbidden(dates: list[str]) -> bool:
     return len(dates) > max_days
 
 
+def _catalog_dataset_columns(dataset_id: str, catalog_path: str | Path | None) -> set[str] | None:
+    if not catalog_path:
+        return None
+    path = Path(catalog_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    datasets = payload.get('datasets') if isinstance(payload, dict) else None
+    entry = datasets.get(dataset_id) if isinstance(datasets, dict) else None
+    if not isinstance(entry, dict):
+        entry = payload.get(dataset_id) if isinstance(payload, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    columns = entry.get('columns')
+    if columns is None and isinstance(entry.get('schema'), dict):
+        columns = entry['schema'].get('columns')
+    if isinstance(columns, dict):
+        columns = list(columns)
+    if not isinstance(columns, list):
+        return None
+    return {str(column) for column in columns}
+
+
 def _load_required_minute_flow_state(
     *,
     requirement: dict[str, Any],
@@ -2042,23 +2391,70 @@ def _load_required_minute_flow_state(
     source_data_version = requirement.get('source_data_version')
     fields = requirement.get('required_fields') or FLOW_STATE_REQUIRED_COLUMNS
     if dataset_id != MINUTE_DERIVED_FLOW_STATE_V1:
-        required_fields = list(dict.fromkeys([*fields, 'ts_code', 'trade_date', 'cutoff_time']))
+        catalog_path = requirement.get('catalog_path') or minute_query.get('catalog_path')
+        catalog_columns = _catalog_dataset_columns(dataset_id, catalog_path)
+        include_cutoff_field = 'cutoff_time' in fields
+        if catalog_columns is not None:
+            include_cutoff_field = include_cutoff_field or 'cutoff_time' in catalog_columns
+        else:
+            include_cutoff_field = bool(requirement.get('requires_cutoff_time_column'))
+        required_fields = list(dict.fromkeys([
+            *fields,
+            'ts_code',
+            'trade_date',
+            *(['cutoff_time'] if include_cutoff_field else []),
+        ]))
         started = time.perf_counter()
-        result = fetch_data_api_dataset(
-            dataset_id,
-            start=dates[0],
-            end=dates[-1],
-            fields=required_fields,
-            universe=minute_query.get('universe') or 'a_share_all',
-            frequency=requirement.get('frequency') or 'daily',
-            catalog_path=requirement.get('catalog_path') or minute_query.get('catalog_path'),
-        )
-        if result.status not in {'ready', 'proxy_ready'}:
-            raise SystemExit(
-                f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
-                f"status={result.status} reason={result.blocked_reason}"
+        if dataset_id in TRADE_DATE_FETCH_STATE_DATASETS:
+            frames: list[pd.DataFrame] = []
+            date_profiles: list[dict[str, Any]] = []
+            for date in dates:
+                date_result = fetch_data_api_dataset(
+                    dataset_id,
+                    start=date,
+                    end=date,
+                    fields=required_fields,
+                    universe=minute_query.get('universe') or 'a_share_all',
+                    frequency=requirement.get('frequency') or 'daily',
+                    catalog_path=catalog_path,
+                )
+                if date_result.status not in {'ready', 'proxy_ready'}:
+                    raise SystemExit(
+                        f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
+                        f"date={date} status={date_result.status} reason={date_result.blocked_reason}"
+                    )
+                if not date_result.frame.empty:
+                    frames.append(date_result.frame.copy())
+                date_profiles.append({
+                    'trade_date': date,
+                    'status': date_result.status,
+                    'row_count': int(len(date_result.frame)),
+                    'blocked_reason': date_result.blocked_reason,
+                })
+            frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=required_fields)
+            result_metadata = {
+                'date_fetch_count': len(date_profiles),
+                'date_fetch_empty_count': sum(1 for item in date_profiles if int(item.get('row_count') or 0) == 0),
+                'date_fetch_rows': sum(int(item.get('row_count') or 0) for item in date_profiles),
+                'date_fetch_profile_sample': date_profiles[:3] + date_profiles[-3:] if len(date_profiles) > 6 else date_profiles,
+            }
+        else:
+            result = fetch_data_api_dataset(
+                dataset_id,
+                start=dates[0],
+                end=dates[-1],
+                fields=required_fields,
+                universe=minute_query.get('universe') or 'a_share_all',
+                frequency=requirement.get('frequency') or 'daily',
+                catalog_path=catalog_path,
             )
-        frame = result.frame.copy()
+            if result.status not in {'ready', 'proxy_ready'}:
+                raise SystemExit(
+                    f"BLOCK_STEP4_MINUTE_DERIVED_STATE_FETCH_FAILED: {dataset_id} "
+                    f"status={result.status} reason={result.blocked_reason}"
+                )
+            frame = result.frame.copy()
+            result_metadata = result.to_metadata()
         rows_before_cutoff = int(len(frame))
         if 'cutoff_time' in frame.columns:
             normalized_cutoff = normalize_cutoff_time(cutoff_time)
@@ -2075,7 +2471,7 @@ def _load_required_minute_flow_state(
                 f"BLOCK_STEP4_MINUTE_DERIVED_STATE_EMPTY: {dataset_id} cutoff_time={cutoff_time} "
                 f"date_window={dates[0]}..{dates[-1]}"
             )
-        profile = result.to_metadata()
+        profile = dict(result_metadata)
         profile.update({
             'dataset_id': dataset_id,
             'cutoff_time': normalize_cutoff_time(cutoff_time),
@@ -2084,7 +2480,9 @@ def _load_required_minute_flow_state(
             'date_count_after_filter': int(frame['trade_date'].nunique()) if 'trade_date' in frame.columns else None,
             'ticker_count_after_filter': int(frame['ts_code'].nunique()) if 'ts_code' in frame.columns else None,
             'load_seconds': time.perf_counter() - started,
-            'load_mode': 'data_api_minute_derived_state',
+            'load_mode': 'data_api_minute_derived_state_by_trade_date'
+            if dataset_id in TRADE_DATE_FETCH_STATE_DATASETS
+            else 'data_api_minute_derived_state',
         })
         return frame, profile
 
@@ -2213,7 +2611,7 @@ def compute_factor_from_minute_derived_state(
             raise SystemExit(
                 'BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED: '
                 'minute factor has derived-state requirement, but implementation cannot consume '
-                f'{MINUTE_DERIVED_FLOW_STATE_V1}; add compute_factor_from_derived_state or regenerate direct_code. '
+                f'{dataset_id}; add compute_factor_from_derived_state or regenerate direct_code. '
                 f'error={type(exc).__name__}:{exc}'
             ) from exc
     if not isinstance(result, pd.DataFrame):
@@ -2258,7 +2656,13 @@ def _backtest_base_cache_root() -> Path:
     if cache_root:
         return Path(cache_root).expanduser() / 'backtest_base_daily_controls_v1'
     worker_cache = Path('/home/ubuntu/factorforge_data_api_cache/backtest_base_daily_controls_v1')
-    if worker_cache.exists() or worker_cache.parent.exists():
+    try:
+        worker_cache_exists = worker_cache.exists()
+    except OSError:
+        worker_cache_exists = None
+    if worker_cache_exists is True:
+        return worker_cache
+    if worker_cache_exists is False and _legacy_path_if_accessible(worker_cache.parent) is not None:
         return worker_cache
     return Path.home() / '.cache' / 'factorforge_data_api' / 'backtest_base_daily_controls_v1'
 
@@ -2290,6 +2694,117 @@ def _contract_flag(contract: dict[str, Any], key: str) -> bool:
     return bool(value)
 
 
+def _backtest_base_min_control_tickers() -> int:
+    raw = os.getenv('FACTORFORGE_BACKTEST_BASE_MIN_CONTROL_TICKERS', '100')
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return 100
+
+
+def _backtest_base_min_control_date_ratio() -> float:
+    raw = os.getenv('FACTORFORGE_BACKTEST_BASE_MIN_CONTROL_DATE_RATIO', '0.95')
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except ValueError:
+        return 0.95
+
+
+def _daily_basic_control_columns_from_contract(contract: dict[str, Any]) -> list[str]:
+    daily_basic_query = _contract_query(contract, 'full_queries', 'daily_basic')
+    if not daily_basic_query:
+        return []
+    fields = daily_basic_query.get('fields')
+    candidates: list[str] = []
+    if isinstance(fields, list):
+        candidates.extend(str(field) for field in fields)
+    candidates.extend(['total_mv', 'turnover_rate', 'turnover_rate_f', 'volume_ratio'])
+    alias_map = {
+        'turnover': 'turnover_rate',
+        'market_cap': 'total_mv',
+        'circ_market_cap': 'circ_mv',
+    }
+    normalized: list[str] = []
+    for column in candidates:
+        resolved = alias_map.get(column, column)
+        if resolved not in {'ts_code', 'trade_date'} and resolved not in normalized:
+            normalized.append(resolved)
+    return normalized
+
+
+def _backtest_base_control_coverage(frame: pd.DataFrame, control_columns: list[str]) -> dict[str, Any]:
+    coverage: dict[str, Any] = {}
+    for column in control_columns:
+        if column not in frame.columns:
+            coverage[column] = {
+                'present': False,
+                'non_null_rows': 0,
+                'non_null_ticker_count': 0,
+                'non_null_date_count': 0,
+            }
+            continue
+        mask = frame[column].notna()
+        coverage[column] = {
+            'present': True,
+            'non_null_rows': int(mask.sum()),
+            'non_null_ticker_count': int(frame.loc[mask, 'ts_code'].nunique()) if 'ts_code' in frame.columns else 0,
+            'non_null_date_count': int(frame.loc[mask, 'trade_date'].nunique()) if 'trade_date' in frame.columns else 0,
+        }
+    return coverage
+
+
+def _backtest_base_cache_control_violation(
+    data_path: Path,
+    contract: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    control_columns = _daily_basic_control_columns_from_contract(contract)
+    if not control_columns:
+        return None
+    min_tickers = _backtest_base_min_control_tickers()
+    if min_tickers <= 0:
+        return None
+    available_columns = metadata.get('columns') if isinstance(metadata.get('columns'), list) else []
+    present_controls = [column for column in control_columns if column in available_columns]
+    if not present_controls:
+        return {
+            'reason': 'daily_basic_control_columns_missing_from_cache',
+            'required_control_columns': control_columns,
+            'min_ticker_count': min_tickers,
+        }
+    read_columns = list(dict.fromkeys(['ts_code', 'trade_date'] + present_controls))
+    try:
+        frame = pd.read_parquet(data_path, columns=read_columns)
+    except Exception as exc:
+        return {
+            'reason': 'daily_basic_control_coverage_read_failed',
+            'error': str(exc),
+            'required_control_columns': control_columns,
+            'min_ticker_count': min_tickers,
+        }
+    coverage = _backtest_base_control_coverage(frame, present_controls)
+    total_dates = int(frame['trade_date'].nunique()) if 'trade_date' in frame.columns and len(frame) else 0
+    min_date_count = int(total_dates * _backtest_base_min_control_date_ratio())
+    for column, stats in coverage.items():
+        if stats.get('non_null_ticker_count', 0) < min_tickers:
+            return {
+                'reason': 'daily_basic_control_ticker_coverage_below_minimum',
+                'column': column,
+                'coverage': coverage,
+                'min_ticker_count': min_tickers,
+            }
+        if stats.get('non_null_date_count', 0) < min_date_count:
+            return {
+                'reason': 'daily_basic_control_date_coverage_below_minimum',
+                'column': column,
+                'coverage': coverage,
+                'total_dates': total_dates,
+                'min_date_count': min_date_count,
+                'min_date_ratio': _backtest_base_min_control_date_ratio(),
+            }
+    return None
+
+
 def _backtest_base_cache_paths(contract: dict[str, Any]) -> tuple[Path, Path, dict[str, Any]]:
     identity = _backtest_base_identity(contract)
     identity_hash = _stable_json_hash(identity)
@@ -2310,6 +2825,9 @@ def _load_backtest_base_cache(contract: dict[str, Any]) -> tuple[Path | None, di
     except Exception:
         return None, None
     if metadata.get('identity_hash') != identity.get('identity_hash'):
+        return None, None
+    control_violation = _backtest_base_cache_control_violation(data_path, contract, metadata)
+    if control_violation:
         return None, None
     return data_path, {
         'version': 'factorforge_backtest_base_reuse_profile_v1',
@@ -2346,6 +2864,9 @@ def _write_backtest_base_cache(
         'result_metadata': result_metadata,
         'written_at_utc': utc_now(),
     }
+    control_columns = _daily_basic_control_columns_from_contract(contract)
+    if control_columns:
+        metadata['daily_basic_control_coverage'] = _backtest_base_control_coverage(daily_df, control_columns)
     write_json(meta_path, metadata)
     return data_path, {
         'version': 'factorforge_backtest_base_reuse_profile_v1',
@@ -2673,6 +3194,7 @@ def main() -> None:
             return
 
         fsm = load_json(input_paths['factor_spec_master'])
+        validate_web_evaluation_contract(fsm)
         dpm = load_json(input_paths['data_prep_master'])
         handoff = load_json(input_paths['handoff_to_step4'])
         base_identity = handoff.get('artifact_identity') or fsm.get('artifact_identity') or {}
@@ -3095,18 +3617,66 @@ def main() -> None:
         input_daily_end = _normal_date_value(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
         prepared_start = _normal_date_value(prepared_window.get('start'))
         prepared_end = _normal_date_value(prepared_window.get('end'))
-        effective_target_start = prepared_start or input_daily_start or target_start
-        if str(target_end_raw) == 'current':
-            effective_target_end = input_daily_end
+        # Step3B sample snapshots may leave a short sample_window_actual in
+        # data_prep_master. Once Step4 has materialized the formal Data API
+        # full-query input, that sample window must not cap Step4 coverage.
+        full_contract_input = bool(data_api_profile is not None and force_contract_inputs)
+        if full_contract_input:
+            effective_target_start = input_daily_start or target_start
+            effective_target_end = input_daily_end if str(target_end_raw) == 'current' else (input_daily_end or _normal_date_value(target_end_raw))
         else:
-            effective_target_end = prepared_end or _normal_date_value(target_end_raw)
+            effective_target_start = prepared_start or input_daily_start or target_start
+            if str(target_end_raw) == 'current':
+                effective_target_end = input_daily_end
+            else:
+                effective_target_end = prepared_end or _normal_date_value(target_end_raw)
         target_end = effective_target_end
         coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
         run_status = 'success' if coverage_complete else 'partial'
         failure_reason = None
+        sparse_signal_allowed = bool(
+            step4_contract.get('sparse_signal_allowed')
+            or dpm.get('sparse_signal_allowed')
+            or handoff.get('sparse_signal_allowed')
+        )
+        canonical_spec = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+        formula_ir = canonical_spec.get('formula_ir') if isinstance(canonical_spec.get('formula_ir'), dict) else None
+        formula_max_lookback = max_formula_ir_lookback(formula_ir)
+        formal_signal_coverage = build_formal_signal_coverage_profile(
+            result_df=result_df,
+            signal_col=signal_col,
+            actual_start=actual_start,
+            actual_end=actual_end,
+            effective_target_start=effective_target_start,
+            effective_target_end=effective_target_end,
+            sparse_signal_allowed=sparse_signal_allowed,
+            formula_max_lookback=formula_max_lookback,
+        )
+        if formal_signal_coverage.get('coverage_gate_verdict') == 'BLOCK':
+            token = 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW'
+            issues.append({
+                'severity': 'error',
+                'code': token,
+                'message': 'formal Step4 factor values have insufficient non-null signal coverage for promotion-gate evidence',
+                'evidence': formal_signal_coverage,
+            })
+            run_status = 'failed'
+            failure_reason = token
+        web_evaluation_contract = (
+            fsm.get('evaluation_contract')
+            if isinstance(fsm.get('evaluation_contract'), dict)
+            and fsm.get('evaluation_contract', {}).get('version')
+            == WEB_EVALUATION_CONTRACT_VERSION
+            else None
+        )
+        shared_context_version = (
+            'factorforge_shared_evaluation_context_v2'
+            if web_evaluation_contract is not None
+            else 'factorforge_shared_evaluation_context_v1'
+        )
         shared_context: dict[str, Any] | None = None
         shared_context_profile: dict[str, Any] = {
-            'version': 'factorforge_shared_evaluation_context_v1',
+            'version': shared_context_version,
             'enabled': False,
             'built': False,
             'used_by_step4': False,
@@ -3132,9 +3702,10 @@ def main() -> None:
                 daily_input_path=evaluation_daily_file,
                 target_window=target_window,
                 effective_target_window={'start': effective_target_start, 'end': effective_target_end},
+                evaluation_contract=web_evaluation_contract,
             )
             shared_context_profile = {
-                'version': 'factorforge_shared_evaluation_context_v1',
+                'version': shared_context_version,
                 'enabled': True,
                 'built': True,
                 'used_by_step4': False,
@@ -3175,6 +3746,7 @@ def main() -> None:
             'run_status_candidate': run_status,
             'input_io_profile': input_io_profile,
             'step4_factor_io_profile': step4_factor_io_profile,
+            'formal_signal_coverage': formal_signal_coverage,
             'step4_formal_factor_identity': expected_reuse_identity,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
             'state_datamart_reuse': state_datamart_reuse,
@@ -3222,6 +3794,7 @@ def main() -> None:
                 'actual_end': actual_end,
                 'coverage_complete': coverage_complete,
             },
+            'formal_signal_coverage': formal_signal_coverage,
             'validation_pointer': str(diag_path),
             'handoff_to_step5_path': str(handoff_path),
         }
@@ -3280,10 +3853,12 @@ def main() -> None:
                 'date_count': date_count,
                 'ticker_count': ticker_count,
                 'signal_column': signal_col,
+                'formal_signal_coverage': formal_signal_coverage,
             },
             'quality_checks': {
                 'window_complete': coverage_complete,
                 'null_ratio': null_ratio,
+                'formal_signal_coverage': formal_signal_coverage,
                 'duplicate_ratio': duplicate_ratio,
                 'key_uniqueness': {'ts_code_trade_date_unique': duplicate_ratio.get('ts_code_trade_date', 0.0) == 0.0},
                 'sort_order_ok': sort_order_ok
@@ -3295,9 +3870,13 @@ def main() -> None:
                 'retryable': False
             },
             'recommendation': {
-                'can_handoff_to_step5': True,
+                'can_handoff_to_step5': run_status in {'success', 'partial'},
                 'recommended_status': run_status,
-                'next_action': 'Proceed to Step 5 using declared evaluation scope.'
+                'next_action': (
+                    'Proceed to Step 5 using declared evaluation scope.'
+                    if run_status in {'success', 'partial'}
+                    else 'Fix formal signal coverage and rerun Step 4 before Step 5/6.'
+                )
             }
         }
 
@@ -3324,10 +3903,22 @@ def main() -> None:
             'shared_evaluation_context': shared_context_profile,
             'implementation_mode_decision': implementation_mode_decision,
             'key_warnings': warnings,
-            'failure_reason': None,
-            'can_enter_step5': True,
-            'recommended_step5_scope': 'full' if run_status == 'success' else 'partial_scope_only',
-            'notes_for_step5': ['partial result: evaluate only covered window/instruments'] if run_status == 'partial' else ['full result ready for evaluation']
+            'failure_reason': failure_reason,
+            'can_enter_step5': run_status in {'success', 'partial'},
+            'recommended_step5_scope': (
+                'full'
+                if run_status == 'success'
+                else 'partial_scope_only'
+                if run_status == 'partial'
+                else None
+            ),
+            'notes_for_step5': (
+                ['partial result: evaluate only covered window/instruments']
+                if run_status == 'partial'
+                else ['full result ready for evaluation']
+                if run_status == 'success'
+                else ['Step4 formal signal coverage failed; do not evaluate or promote.']
+            )
         }
 
         acceptance_summary = build_acceptance_summary(

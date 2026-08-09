@@ -18,7 +18,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.artifact_identity import build_spec_hash
-from scripts.step12_intake_common import build_canonical_formula_step1
+from factor_factory.knowledge_reference import build_knowledge_reference_contract
+from factor_factory.measurement_program import measurement_program_template
+from scripts.step12_intake_common import (
+    attach_agent_authored_measurement_program,
+    build_canonical_formula_step1,
+)
 
 CANONICAL_ROOTS = ["objects", "runs", "evaluations", "generated_code", "archive", "factorforge", "data/clean"]
 RID = "STEP12_HYPOTHESIS_SMOKE"
@@ -277,6 +282,179 @@ def build_alpha019_formula_fixture(root: Path) -> None:
     write_json(objects / "report_maps" / f"report_map__{ALPHA019_RID}__primary.json", bundle["report_map"])
 
 
+def enrich_step1_with_smoke_research_contract(root: Path, report_id: str) -> None:
+    """Inject a test-only, researcher-authored formal contract after intake.
+
+    Production intake deliberately remains under-specified until an agent writes
+    this semantic contract; the smoke needs an explicit positive fixture to test
+    Step1 -> Step2 preservation.
+    """
+    path = root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{report_id}.json"
+    aim = load_json(path)
+    discipline = aim.get("research_discipline") if isinstance(aim.get("research_discipline"), dict) else {}
+    math_candidates = discipline.get("math_hypothesis_candidates") or []
+    primary_candidate = (
+        math_candidates[0]
+        if math_candidates and isinstance(math_candidates[0], dict)
+        else {}
+    )
+    primary_family = str(
+        primary_candidate.get("model_family")
+        or "structural conditional-payoff model"
+    )
+    placeholder = "SMOKE_RESEARCHER_MUST_REPLACE"
+    program = measurement_program_template(
+        placeholder=placeholder,
+        implementation_route="operator",
+    )
+
+    def fill(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        if value == placeholder:
+            return "test-only mechanism-specific auditable statement"
+        return value
+
+    program = fill(program)
+    program["math_tool_selection"].update(
+        {
+            "candidate_tool_families": [
+                primary_family,
+                "mechanism-distinct structural alternative",
+                "measurement-alias null model",
+            ],
+            "selected_tool_families": [primary_family],
+            "selection_rationale": "the formula-specific economic state determines this test model; operator availability does not",
+            "rejected_tool_families": [
+                {
+                    "tool_family": "unrelated intrinsic-value or generic diffusion template",
+                    "reason": "it does not explain this formula-specific payer and observable state",
+                }
+            ],
+        }
+    )
+    model_candidates = program["model_selection"]["candidate_models"]
+    model_candidates[0].update(
+        {
+            "model_family": primary_family,
+            "mathematical_object": primary_candidate.get("mathematical_object") or "formula-specific mathematical object estimated at legal time t",
+            "mechanism_equation_or_functional": primary_candidate.get(
+                "mechanism_equation_or_functional"
+            ) or "object_t = mechanism(legal_inputs_<=t)",
+            "economic_implication": primary_candidate.get("why_suitable") or "the selected object changes the next-horizon after-cost payoff",
+            "identifiability_condition": "the state survives mechanism controls and component ablation",
+            "decisive_test": next(
+                iter(primary_candidate.get("falsification_tests") or []),
+                "controlled after-cost payoff and component ablation",
+            ),
+        }
+    )
+    model_candidates[1].update(
+        {
+            "model_family": "mechanism-distinct permanent-state alternative",
+            "mathematical_object": "persistent information state",
+            "mechanism_equation_or_functional": (
+                "permanent_state_t = permanent_update(legal_inputs_<=t)"
+            ),
+            "target_functional": "permanent-information continuation payoff",
+            "market_outcome_projection": (
+                "permanent state predicts continuation rather than repair"
+            ),
+            "observation_mapping": (
+                "map legal-time innovations into a permanent-state estimator"
+            ),
+            "economic_implication": "the same observable predicts continuation rather than repair",
+            "identifiability_condition": "continuation remains after transient-state controls",
+            "decisive_test": "compare continuation and repair signatures",
+        }
+    )
+    model_candidates[2].update(
+        {
+            "model_family": "measurement-alias null model",
+            "mathematical_object": "known size, liquidity and reversal aliases",
+            "mechanism_equation_or_functional": (
+                "score_t = known_aliases_t + measurement_noise_t"
+            ),
+            "target_functional": "incremental payoff after known aliases",
+            "market_outcome_projection": (
+                "the null predicts zero incremental after-cost payoff"
+            ),
+            "observation_mapping": (
+                "project the legal-time score on known aliases"
+            ),
+            "economic_implication": "the formula has no incremental mechanism-conditioned payoff",
+            "identifiability_condition": "alias controls span the same score variation",
+            "decisive_test": "incremental payoff is zero after alias controls",
+        }
+    )
+    market_outcome = {
+        "role": "terminal_tradeable_quantity_bridge_not_core_model_restriction",
+        "projection_kind": "formula-specific state to next-horizon after-cost payoff",
+        "source_math_object": model_candidates[0]["mathematical_object"],
+        "traded_quantity": "next-horizon after-cost long-side equity return",
+        "affected_payoff_or_distribution_terms": [
+            "conditional expected return",
+            "after-cost long-side payoff",
+        ],
+        "projection_equation_or_map": "alpha_t = Phi(X_<=t); payoff_t+1 = E[R_t+1 | alpha_t, controls] - trading_cost_t",
+        "link_to_observation_equation": "the canonical formula is the legal-time estimator Phi of the selected state",
+        "falsifier": "the controlled conditional payoff or component ablation does not support the selected state",
+    }
+    program["market_outcome_projection"] = copy.deepcopy(market_outcome)
+    if primary_candidate:
+        program["observation_and_estimation"].update(
+            {
+                "estimand": primary_candidate.get("target_functional") or program["observation_and_estimation"]["estimand"],
+                "observation_map": primary_candidate.get("observable_estimator") or program["observation_and_estimation"]["observation_map"],
+                "estimator": primary_candidate.get("observable_estimator") or program["observation_and_estimation"]["estimator"],
+            }
+        )
+    model_candidates[0].update(
+        {
+            "target_functional": program["observation_and_estimation"][
+                "estimand"
+            ],
+            "market_outcome_projection": program["market_outcome_projection"][
+                "projection_equation_or_map"
+            ],
+            "observation_mapping": program["observation_and_estimation"][
+                "observation_map"
+            ],
+        }
+    )
+    program["model_selection"]["selection_target"] = "formula-specific next-horizon after-cost payoff mechanism"
+    program["model_selection"]["selection_argument"] = "payer, horizon and observable state favor the selected model over the alternative and null"
+    program["model_selection"]["rejected_model_reason"] = "the alternative and null imply different controlled payoff signatures"
+    program["applicable_audits"] = {
+        "selection_rule": "select only specialized audits justified by this smoke mechanism",
+        "selected": [],
+        "rejected": [],
+    }
+    knowledge = build_knowledge_reference_contract(
+        repo_root=REPO_ROOT,
+        knowledge_root=REPO_ROOT / "knowledge" / "因子工厂",
+        query_text=json.dumps(
+            {
+                "economic_hypothesis": discipline.get("economic_hypothesis"),
+                "math_hypothesis_candidates": math_candidates,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        producer="step12_hypothesis_contract_smoke_researcher_fixture",
+        retrieval_required=False,
+    )
+    aim["research_discipline"] = discipline
+    enriched = attach_agent_authored_measurement_program(
+        {"aim": aim},
+        measurement_program=program,
+        knowledge_reference_contract=knowledge,
+    )
+    write_json(path, enriched["aim"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fresh", action="store_true")
@@ -293,14 +471,15 @@ def main() -> int:
     build_fixture(root)
     build_alpha019_formula_fixture(root)
 
-    commands = {
-        "standardize_step1": run([sys.executable, "skills/factor-forge-step1/scripts/standardize_step1_research_fields.py", "--report-id", RID], root),
-        "validate_step1": run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", RID], root),
-        "run_step2_wrapper": run([sys.executable, "scripts/run_factorforge_ultimate.py", "--report-id", RID, "--start-step", "2", "--end-step", "2", "--council-mode", "off"], root),
-        "alpha019_standardize_step1": run([sys.executable, "skills/factor-forge-step1/scripts/standardize_step1_research_fields.py", "--report-id", ALPHA019_RID], root),
-        "alpha019_validate_step1": run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", ALPHA019_RID], root),
-        "alpha019_run_step2_wrapper": run([sys.executable, "scripts/run_factorforge_ultimate.py", "--report-id", ALPHA019_RID, "--start-step", "2", "--end-step", "2", "--council-mode", "off"], root),
-    }
+    commands: dict[str, dict[str, Any]] = {}
+    commands["standardize_step1"] = run([sys.executable, "skills/factor-forge-step1/scripts/standardize_step1_research_fields.py", "--report-id", RID], root)
+    enrich_step1_with_smoke_research_contract(root, RID)
+    commands["validate_step1"] = run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", RID], root)
+    commands["run_step2_wrapper"] = run([sys.executable, "scripts/run_factorforge_ultimate.py", "--report-id", RID, "--start-step", "2", "--end-step", "2", "--council-mode", "off"], root)
+    commands["alpha019_standardize_step1"] = run([sys.executable, "skills/factor-forge-step1/scripts/standardize_step1_research_fields.py", "--report-id", ALPHA019_RID], root)
+    enrich_step1_with_smoke_research_contract(root, ALPHA019_RID)
+    commands["alpha019_validate_step1"] = run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", ALPHA019_RID], root)
+    commands["alpha019_run_step2_wrapper"] = run([sys.executable, "scripts/run_factorforge_ultimate.py", "--report-id", ALPHA019_RID, "--start-step", "2", "--end-step", "2", "--council-mode", "off"], root)
     aim = json.loads((root / "objects" / "alpha_idea_master" / f"alpha_idea_master__{RID}.json").read_text(encoding="utf-8"))
     master_path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{RID}.json"
     handoff_path = root / "objects" / "handoff" / f"handoff_to_step3__{RID}.json"
@@ -318,7 +497,15 @@ def main() -> int:
     alpha019_understanding = alpha019_discipline.get("formula_understanding") or alpha019_aim.get("formula_understanding") or {}
     alpha019_econ = alpha019_discipline.get("economic_hypothesis") or {}
     alpha019_math = alpha019_discipline.get("math_hypothesis_candidates") or []
-    alpha019_contract = alpha019_master.get("mechanism_math_contract") or {}
+    alpha019_program = alpha019_master.get("mechanism_conditioned_measurement_program") or {}
+    alpha019_selected_model = next(
+        (
+            item
+            for item in ((alpha019_program.get("model_selection") or {}).get("candidate_models") or [])
+            if isinstance(item, dict) and item.get("selected") is True
+        ),
+        {},
+    )
     rid_runtime_context = root / "objects" / "runtime_context" / f"runtime_context__{RID}.json"
     alpha019_runtime_context = root / "objects" / "runtime_context" / f"runtime_context__{ALPHA019_RID}.json"
     alpha019_headline_blob = json.dumps({
@@ -329,7 +516,15 @@ def main() -> int:
     }, ensure_ascii=False).lower()
     discipline = aim.get("research_discipline") or {}
     research_contract = master.get("research_contract") or {}
-    mechanism_contract = master.get("mechanism_math_contract") or {}
+    measurement_program = master.get("mechanism_conditioned_measurement_program") or {}
+    selected_model = next(
+        (
+            item
+            for item in ((measurement_program.get("model_selection") or {}).get("candidate_models") or [])
+            if isinstance(item, dict) and item.get("selected") is True
+        ),
+        {},
+    )
     after = file_snapshot()
     pollution = sorted(after - before)
     cases = {
@@ -337,7 +532,15 @@ def main() -> int:
         "step1_math_hypothesis_candidates_present": isinstance(discipline.get("math_hypothesis_candidates"), list) and bool(discipline.get("math_hypothesis_candidates")),
         "step2_preserves_economic_hypothesis": research_contract.get("economic_hypothesis") == discipline.get("economic_hypothesis"),
         "step2_preserves_math_hypotheses": research_contract.get("math_hypothesis_candidates") == discipline.get("math_hypothesis_candidates"),
-        "mechanism_contract_carries_sources": bool(mechanism_contract.get("source_economic_hypothesis")) and bool(mechanism_contract.get("source_math_hypothesis_candidates")),
+        "measurement_program_preserves_one_exact_source_model": (
+            bool(measurement_program)
+            and measurement_program == aim.get("mechanism_conditioned_measurement_program")
+            and measurement_program == (discipline.get("mechanism_conditioned_measurement_program") or {})
+            and measurement_program == ((master.get("canonical_spec") or {}).get("mechanism_conditioned_measurement_program") or {})
+            and measurement_program == (handoff.get("mechanism_conditioned_measurement_program") or {})
+            and not master.get("mechanism_math_contract")
+            and not master.get("mechanism_math_contract_v2")
+        ),
         "wrapper_pass": proof.get("status") == "PASS",
         "alpha019_like_formula_specific_modelling_pass": (
             (((alpha019_econ.get("second_layer") or {}).get("subtype") or "").find("slow_winner") >= 0)
@@ -347,14 +550,15 @@ def main() -> int:
             ])
             and bool(alpha019_math)
             and alpha019_math[0].get("model_family") == "stochastic_process"
-            and alpha019_contract.get("model_family") == "stochastic_process"
+            and alpha019_selected_model.get("model_family") == "stochastic_process"
             and alpha019_understanding.get("interaction_structure") == "slow_state_x_short_horizon_threshold"
             and all(
-                token in json.dumps(alpha019_contract, ensure_ascii=False).lower()
-                for token in ["slow", "short", "threshold", "rank", "sum(returns,250)"]
+                token in json.dumps(alpha019_program, ensure_ascii=False).lower()
+                for token in ["slow", "short", "threshold"]
             )
-            and alpha019_contract.get("source_economic_hypothesis") == (alpha019_master.get("research_contract") or {}).get("economic_hypothesis")
-            and alpha019_contract.get("source_math_hypothesis_candidates") == (alpha019_master.get("research_contract") or {}).get("math_hypothesis_candidates")
+            and alpha019_program == alpha019_aim.get("mechanism_conditioned_measurement_program")
+            and not alpha019_master.get("mechanism_math_contract")
+            and not alpha019_master.get("mechanism_math_contract_v2")
         ),
         "alpha019_headline_formula_specific_no_generic_price_volume": (
             "slow" in alpha019_headline_blob
@@ -365,8 +569,8 @@ def main() -> int:
             isinstance(alpha019_discipline.get("market_process_thesis"), dict)
             and isinstance(alpha019_discipline.get("primary_mechanism_model_candidates"), list)
             and bool(alpha019_discipline.get("primary_mechanism_model_candidates"))
-            and isinstance(alpha019_discipline.get("stochastic_price_process_projection"), dict)
-            and (alpha019_discipline.get("stochastic_price_process_projection") or {}).get("projection_required") is True
+            and isinstance(alpha019_discipline.get("market_outcome_projection"), dict)
+            and isinstance(alpha019_discipline.get("mechanism_conditioned_measurement_program"), dict)
         ),
         "ultimate_wrapper_does_not_write_worker_runtime_context": (
             not rid_runtime_context.exists()
@@ -378,6 +582,23 @@ def main() -> int:
     original_aim = copy.deepcopy(aim)
     original_master = copy.deepcopy(master)
     original_handoff = copy.deepcopy(handoff)
+
+    under_specified = copy.deepcopy(original_aim)
+    under_specified.pop("mechanism_conditioned_measurement_program", None)
+    under_discipline = under_specified.get("research_discipline") or {}
+    if isinstance(under_discipline, dict):
+        under_discipline.pop("mechanism_conditioned_measurement_program", None)
+        under_discipline.pop("market_outcome_projection", None)
+    write_json(aim_path, under_specified)
+    proc = run([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", RID], root)
+    output = proc["stdout_tail"] + proc["stderr_tail"]
+    mutation_cases["unenriched_intake_blocks_before_formal_step2"] = {
+        "rc": proc["rc"],
+        "token_present": "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID" in output,
+        "ok": proc["rc"] == 1
+        and "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID" in output,
+    }
+    write_json(aim_path, original_aim)
 
     if commands["validate_step1"]["rc"] == 0:
         mutated = copy.deepcopy(original_aim)
@@ -399,15 +620,16 @@ def main() -> int:
     if master_path.exists() and handoff_path.exists() and commands["run_step2_wrapper"]["rc"] == 0:
         mutated_master = copy.deepcopy(original_master)
         mutated_handoff = copy.deepcopy(original_handoff)
-        remove_mechanism_source_fields(mutated_master)
-        remove_mechanism_source_fields(mutated_handoff)
+        mutated_program = copy.deepcopy(mutated_master.get("mechanism_conditioned_measurement_program") or {})
+        mutated_program.setdefault("model_selection", {})["selection_argument"] = "tampered after Step2"
+        mutated_master["mechanism_conditioned_measurement_program"] = mutated_program
         refresh_step2_identity_hashes(mutated_master, mutated_handoff)
         write_json(master_path, mutated_master)
         write_json(handoff_path, mutated_handoff)
         proc = run([sys.executable, "skills/factor-forge-step2/scripts/validate_step2.py", "--report-id", RID], root)
         output = proc["stdout_tail"] + proc["stderr_tail"]
-        token_present = "source_hypotheses" in output or "source_economic_hypothesis" in output
-        mutation_cases["missing_mechanism_source_hypotheses_blocks_step2"] = {
+        token_present = "MEASUREMENT_PROGRAM" in output or "measurement_program" in output
+        mutation_cases["measurement_program_copy_mismatch_blocks_step2"] = {
             "rc": proc["rc"],
             "token_present": token_present,
             "ok": proc["rc"] == 1 and token_present,
@@ -415,7 +637,7 @@ def main() -> int:
         write_json(master_path, original_master)
         write_json(handoff_path, original_handoff)
     else:
-        mutation_cases["missing_mechanism_source_hypotheses_blocks_step2"] = {"ok": False, "skipped": "positive Step2 wrapper failed"}
+        mutation_cases["measurement_program_copy_mismatch_blocks_step2"] = {"ok": False, "skipped": "positive Step2 wrapper failed"}
 
     mutation_cases["step3a_blocked_handoff_clears_execution_state"] = run_step3a_blocked_handoff_clears_execution_state_case()
     mutation_cases["step3b_cannot_upgrade_blocked_step3a_handoff"] = run_step3b_cannot_upgrade_blocked_step3a_handoff_case()
@@ -454,7 +676,7 @@ def main() -> int:
         "mutation_cases": mutation_cases,
         "economic_hypothesis": discipline.get("economic_hypothesis"),
         "math_candidate_count": len(discipline.get("math_hypothesis_candidates") or []),
-        "mechanism_model_family": mechanism_contract.get("model_family"),
+        "mechanism_model_family": selected_model.get("model_family"),
         "runtime_context_guard": {
             "rid_runtime_context_exists": rid_runtime_context.exists(),
             "alpha019_runtime_context_exists": alpha019_runtime_context.exists(),
@@ -464,11 +686,13 @@ def main() -> int:
             "step1_economic_hypothesis": alpha019_econ,
             "formula_understanding": alpha019_understanding,
             "math_hypothesis_candidates": alpha019_math,
-            "mechanism_model_family": alpha019_contract.get("model_family"),
-            "mechanism_state_or_object": alpha019_contract.get("state_or_object"),
-            "mechanism_factor_as_estimator": alpha019_contract.get("factor_as_estimator"),
-            "mechanism_process_hypothesis": alpha019_contract.get("process_hypothesis"),
-            "mechanism_conditional_distribution_hypothesis": alpha019_contract.get("conditional_distribution_hypothesis"),
+            "mechanism_model_family": alpha019_selected_model.get("model_family"),
+            "mathematical_object": alpha019_selected_model.get("mathematical_object"),
+            "observation_and_estimation": alpha019_program.get("observation_and_estimation") or {},
+            "legacy_contract_synthesized": bool(
+                alpha019_master.get("mechanism_math_contract")
+                or alpha019_master.get("mechanism_math_contract_v2")
+            ),
         },
         "canonical_pollution": {"polluted": bool(pollution), "new_files": pollution},
     }

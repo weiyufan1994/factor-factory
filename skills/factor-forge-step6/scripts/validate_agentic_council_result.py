@@ -17,7 +17,16 @@ if str(REPO_ROOT) not in sys.path:
 
 OBJ = FF / "objects"
 RESULT_VERSION = "factorforge_agentic_revision_council_result_v1"
+RESEARCH_PROTOCOL_VERSION = "factorforge_research_conjecture_protocol_v1"
 FORBIDDEN_TOKEN = "BLOCK_REVISION_COUNCIL_AGENTIC_FORBIDDEN_TEXT"
+TERMINAL_RECOMMENDATION_VALUES = {
+    "reject",
+    "kill",
+    "stop",
+    "terminal_reject",
+    "no_revision",
+    "no_derived_revision",
+}
 
 FORBIDDEN_PATTERNS = [
     "portfolio",
@@ -93,12 +102,9 @@ def nonempty_limiting_cases(value: Any, min_count: int = 2) -> bool:
 
 def terminal_recommendation_requested(result: dict[str, Any]) -> bool:
     rec = result.get("revision_or_kill_recommendation")
-    pieces: list[str] = []
-    if isinstance(rec, dict):
-        for key in ("recommendation", "reason", "decision", "summary"):
-            if isinstance(rec.get(key), str):
-                pieces.append(rec[key].lower())
-    return any(term in " ".join(pieces) for term in ("reject", "kill", "stop", "terminal", "no_revision"))
+    if not isinstance(rec, dict) or not isinstance(rec.get("recommendation"), str):
+        return False
+    return str(rec["recommendation"]).strip().lower() in TERMINAL_RECOMMENDATION_VALUES
 
 
 def terminal_control_fields(result: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +123,253 @@ def terminal_control_fields(result: dict[str, Any]) -> dict[str, Any]:
 def terminal_proof_present(control: dict[str, Any]) -> bool:
     proof = control.get("terminal_proof") or control.get("proof")
     return isinstance(proof, str) and bool(proof.strip()) or isinstance(proof, dict) and bool(proof)
+
+
+def protocol_task(report_id: str, task_id: Any) -> dict[str, Any]:
+    if not isinstance(task_id, str) or not task_id:
+        return {}
+    path = (
+        OBJ
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"agentic_taskbook__{report_id}.json"
+    )
+    if not path.exists():
+        return {}
+    try:
+        taskbook = load_json(path)
+    except Exception:
+        return {}
+    if taskbook.get("research_protocol_version") != RESEARCH_PROTOCOL_VERSION:
+        return {}
+    for task in taskbook.get("agent_tasks") or []:
+        if isinstance(task, dict) and task.get("task_id") == task_id:
+            return task
+    return {}
+
+
+def resolve_under_root(raw_path: Any) -> Path:
+    if not isinstance(raw_path, str) or not raw_path:
+        return FF / "__missing__"
+    path = Path(raw_path)
+    return path if path.is_absolute() else FF / path
+
+
+def expected_manifest_task(report_id: str, result_path: Path) -> dict[str, Any]:
+    path = (
+        OBJ
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"dispatch_manifest__{report_id}.json"
+    )
+    if not path.exists():
+        return {}
+    manifest = load_json(path)
+    resolved_result = result_path.resolve(strict=False)
+    for task in manifest.get("agent_tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        expected = resolve_under_root(task.get("expected_result_path"))
+        if expected.resolve(strict=False) == resolved_result:
+            return task
+    return {}
+
+
+def validate_dispatch_identity(
+    result: dict[str, Any],
+    expected: dict[str, Any],
+    *,
+    report_id: str,
+) -> list[str]:
+    reasons: list[str] = []
+    if not expected:
+        return ["BLOCK_COUNCIL_RESULT_NOT_BOUND_TO_DISPATCH_TASK"]
+    for field, expected_value in (
+        ("report_id", report_id),
+        ("task_id", expected.get("task_id")),
+        ("agent_role", expected.get("agent_role")),
+        ("agent_identifier", expected.get("expected_agent_identifier")),
+    ):
+        if expected_value is not None and result.get(field) != expected_value:
+            reasons.append(f"BLOCK_COUNCIL_RESULT_DISPATCH_IDENTITY_MISMATCH:{field}")
+    route = result.get("approach_route")
+    route = route if isinstance(route, dict) else {}
+    for field in ("route_id", "route_family"):
+        if route.get(field) != expected.get(field):
+            reasons.append(f"BLOCK_COUNCIL_RESULT_DISPATCH_IDENTITY_MISMATCH:{field}")
+    binding = result.get("dispatch_identity")
+    if not isinstance(binding, dict):
+        reasons.append("BLOCK_COUNCIL_RESULT_DISPATCH_BINDING_MISSING")
+        binding = {}
+    for field, expected_value in (
+        ("source_task_packet_sha256", expected.get("task_packet_sha256")),
+        ("route_fingerprint", expected.get("route_fingerprint")),
+        ("blind_context_hash", expected.get("blind_context_hash")),
+    ):
+        if binding.get(field) != expected_value:
+            reasons.append(f"BLOCK_COUNCIL_RESULT_DISPATCH_BINDING_MISMATCH:{field}")
+    return reasons
+
+
+def _mathematical_object_present(items: Any, expected: Any) -> bool:
+    if not nonempty_str(expected) or not isinstance(items, list):
+        return False
+    for item in items:
+        if item == expected:
+            return True
+        if isinstance(item, dict) and expected in {
+            item.get("name"),
+            item.get("mathematical_object"),
+            item.get("object"),
+        }:
+            return True
+    return False
+
+
+def validate_measurement_program_result_binding(
+    result: dict[str, Any],
+    expected_task: dict[str, Any] | None,
+) -> list[str]:
+    expected_task = expected_task or {}
+    if "measurement_program_binding" not in expected_task:
+        return []
+    expected = expected_task.get("measurement_program_binding")
+    if not isinstance(expected, dict) or not expected:
+        return ["BLOCK_COUNCIL_MEASUREMENT_PROGRAM_EXPECTED_BINDING_INVALID"]
+    actual = result.get("measurement_program_binding")
+    if not isinstance(actual, dict):
+        return ["BLOCK_COUNCIL_MEASUREMENT_PROGRAM_RESULT_BINDING_MISSING"]
+    reasons = [
+        f"BLOCK_COUNCIL_MEASUREMENT_PROGRAM_RESULT_BINDING_MISMATCH:{field}"
+        for field, expected_value in expected.items()
+        if actual.get(field) != expected_value
+    ]
+    if set(actual) != set(expected):
+        reasons.append(
+            "BLOCK_COUNCIL_MEASUREMENT_PROGRAM_RESULT_BINDING_FIELD_SET_INVALID"
+        )
+
+    math = result.get("math_mechanism_derivation")
+    math = math if isinstance(math, dict) else {}
+    if math.get("baseline_model") != expected.get(
+        "mechanism_equation_or_functional"
+    ):
+        reasons.append("BLOCK_COUNCIL_FROZEN_BASELINE_MODEL_MISMATCH")
+    if not _mathematical_object_present(
+        math.get("mathematical_objects"),
+        expected.get("mathematical_object"),
+    ):
+        reasons.append("BLOCK_COUNCIL_FROZEN_MATHEMATICAL_OBJECT_MISSING")
+
+    public = result.get("public_derivation_record")
+    public = public if isinstance(public, dict) else {}
+    if not _mathematical_object_present(
+        public.get("mathematical_objects"),
+        expected.get("mathematical_object"),
+    ):
+        reasons.append(
+            "BLOCK_COUNCIL_PUBLIC_DERIVATION_FROZEN_OBJECT_MISSING"
+        )
+    return list(dict.fromkeys(reasons))
+
+
+def validate_research_protocol_result(
+    result: dict[str, Any],
+    task: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    route = result.get("approach_route")
+    if not nonempty_dict(route):
+        reasons.append("BLOCK_COUNCIL_RESEARCH_ROUTE_MISSING")
+        route = {}
+    if route.get("route_id") != task.get("route_id"):
+        reasons.append("BLOCK_COUNCIL_RESEARCH_ROUTE_ID_MISMATCH")
+    if route.get("route_family") != task.get("route_family"):
+        reasons.append("BLOCK_COUNCIL_RESEARCH_ROUTE_FAMILY_MISMATCH")
+    for field in (
+        "core_hypothesis",
+        "distinct_from_other_routes",
+        "exact_gap_after_analysis",
+    ):
+        if not nonempty_str(route.get(field)):
+            reasons.append(f"BLOCK_COUNCIL_RESEARCH_ROUTE_UNDERSPECIFIED:{field}")
+
+    updates = result.get("proof_obligation_updates")
+    if not nonempty_object_list(updates):
+        reasons.append("BLOCK_COUNCIL_PROOF_OBLIGATION_UPDATES_MISSING")
+        updates = []
+    expected_ids = set(task.get("proof_obligation_ids") or [])
+    actual_ids = {
+        str(item.get("obligation_id"))
+        for item in updates
+        if isinstance(item, dict) and item.get("obligation_id")
+    }
+    if expected_ids and not expected_ids.issubset(actual_ids):
+        reasons.append(
+            "BLOCK_COUNCIL_PROOF_OBLIGATION_COVERAGE_MISSING:"
+            + ",".join(sorted(expected_ids - actual_ids))
+        )
+    for idx, item in enumerate(updates):
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") not in {
+            "open",
+            "blocked",
+            "failed",
+            "passed",
+            "not_applicable",
+        }:
+            reasons.append(f"BLOCK_COUNCIL_PROOF_OBLIGATION_STATUS_INVALID:{idx}")
+        if not nonempty_str(item.get("finding")):
+            reasons.append(f"BLOCK_COUNCIL_PROOF_OBLIGATION_FINDING_MISSING:{idx}")
+        if item.get("status") == "passed" and not nonempty_list(item.get("evidence_refs")):
+            reasons.append(f"BLOCK_COUNCIL_PROOF_OBLIGATION_EVIDENCE_MISSING:{idx}")
+
+    counterexamples = result.get("counterexamples")
+    if not nonempty_object_list(counterexamples):
+        reasons.append("BLOCK_COUNCIL_COUNTEREXAMPLE_SEARCH_MISSING")
+    else:
+        for idx, item in enumerate(counterexamples):
+            for field in (
+                "attack_type",
+                "construction_or_scenario",
+                "predicted_failure",
+                "discriminating_test",
+            ):
+                if not nonempty_str(item.get(field)):
+                    reasons.append(f"BLOCK_COUNCIL_COUNTEREXAMPLE_INVALID:{idx}:{field}")
+
+    route_status = result.get("route_status")
+    if route_status not in {
+        "open",
+        "active",
+        "blocked",
+        "falsified",
+        "supported",
+        "inconclusive",
+        "closed",
+    }:
+        reasons.append("BLOCK_COUNCIL_RESEARCH_ROUTE_STATUS_INVALID")
+    if route_status in {"blocked", "falsified"} and not nonempty_str_list(
+        result.get("reopen_criteria"),
+        min_count=1,
+    ):
+        reasons.append("BLOCK_COUNCIL_RESEARCH_ROUTE_REOPEN_CRITERIA_MISSING")
+
+    attestation = result.get("independence_attestation")
+    if not nonempty_dict(attestation):
+        reasons.append("BLOCK_COUNCIL_INDEPENDENCE_ATTESTATION_MISSING")
+    else:
+        blind = task.get("blind_context_policy")
+        blind = blind if isinstance(blind, dict) else {}
+        if blind.get("blind_phase") is True:
+            if attestation.get("favored_thesis_seen_before_submission") is not False:
+                reasons.append("BLOCK_COUNCIL_BLIND_INDEPENDENCE_VIOLATED")
+            if attestation.get("derived_from_visible_facts_only") is not True:
+                reasons.append("BLOCK_COUNCIL_BLIND_INDEPENDENCE_ATTESTATION_INVALID")
+    return reasons
 
 
 def validate_real_agent_derivation_contract(result: dict[str, Any]) -> list[str]:
@@ -208,10 +461,26 @@ def scan_forbidden(data: Any, path: str = "$") -> list[dict[str, str]]:
     return findings
 
 
-def validate_agentic_result(result: dict[str, Any]) -> list[str]:
+def validate_agentic_result(
+    result: dict[str, Any],
+    *,
+    expected_task: dict[str, Any] | None = None,
+    expected_report_id: str | None = None,
+) -> list[str]:
     reasons: list[str] = []
     if not isinstance(result, dict):
         return ["agentic_result_not_object"]
+    if expected_task is not None or expected_report_id is not None:
+        reasons.extend(
+            validate_dispatch_identity(
+                result,
+                expected_task or {},
+                report_id=str(expected_report_id or result.get("report_id") or ""),
+            )
+        )
+        reasons.extend(
+            validate_measurement_program_result_binding(result, expected_task)
+        )
     if result.get("result_version") != RESULT_VERSION:
         reasons.append("agentic_result_version_invalid")
     if result.get("status") != "final":
@@ -241,6 +510,17 @@ def validate_agentic_result(result: dict[str, Any]) -> list[str]:
         if mode != "agentic":
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_REAL_AGENT_MODE_INVALID")
         reasons.extend(validate_real_agent_derivation_contract(result))
+        task_report_id = str(expected_report_id or result.get("report_id") or "")
+        task_id = (
+            (expected_task or {}).get("task_id")
+            if expected_task is not None
+            else result.get("task_id")
+        )
+        task = protocol_task(task_report_id, task_id)
+        if task:
+            reasons.extend(validate_research_protocol_result(result, task))
+        elif (expected_task or {}).get("route_id"):
+            reasons.append("BLOCK_COUNCIL_RESEARCH_PROTOCOL_TASK_BINDING_MISSING")
     else:
         reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_PRODUCER_INVALID")
 
@@ -319,7 +599,12 @@ def main() -> int:
     for path in paths:
         try:
             payload = load_json(path)
-            reasons = validate_agentic_result(payload)
+            expected = expected_manifest_task(args.report_id, path)
+            reasons = validate_agentic_result(
+                payload,
+                expected_task=expected,
+                expected_report_id=args.report_id,
+            )
         except Exception as exc:
             reasons = [f"agentic_result_unreadable:{exc}"]
         results.append({"path": str(path), "status": "BLOCK" if reasons else "PASS", "block_reasons": reasons})

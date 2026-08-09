@@ -4,6 +4,7 @@ Independent Step 2 runner for FactorForge.
 Consumes Step 1 artifacts and produces Step 2 side artifacts + factor_spec_master.
 """
 import argparse
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -54,8 +55,16 @@ from factor_factory.artifact_identity import (
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
 from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
-from factor_factory.knowledge_reference import build_legacy_knowledge_reference_contract
-from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
+from factor_factory.knowledge_context import retrieve_factor_knowledge_context
+from factor_factory.knowledge_reference import (
+    build_knowledge_reference_contract,
+    build_legacy_knowledge_reference_contract,
+    validate_knowledge_reference_contract,
+)
+from factor_factory.measurement_program import (
+    BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    validate_measurement_program,
+)
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
@@ -93,6 +102,65 @@ def load_json(path: Path) -> Dict[str, Any]:
 def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def _step1_knowledge_node_ids(aim: Dict[str, Any]) -> set[str]:
+    discipline = aim.get('research_discipline') if isinstance(aim.get('research_discipline'), dict) else {}
+    context = discipline.get('factor_knowledge_context') if isinstance(discipline.get('factor_knowledge_context'), dict) else {}
+    node_ids = {
+        str(item.get('id'))
+        for item in context.get('nodes') or []
+        if isinstance(item, dict) and item.get('id')
+    }
+    knowledge = discipline.get('knowledge_reference_contract') if isinstance(discipline.get('knowledge_reference_contract'), dict) else {}
+    node_ids.update(str(item) for item in knowledge.get('cited_node_ids') or [] if str(item).strip())
+    return node_ids
+
+
+def validated_step1_measurement_program(
+    *,
+    aim: Dict[str, Any],
+    primary: Dict[str, Any],
+    implementation_mode: str,
+) -> Dict[str, Any]:
+    discipline = aim.get('research_discipline') if isinstance(aim.get('research_discipline'), dict) else {}
+    candidates = [
+        value
+        for value in (
+            primary.get('mechanism_conditioned_measurement_program'),
+            aim.get('mechanism_conditioned_measurement_program'),
+            discipline.get('mechanism_conditioned_measurement_program'),
+        )
+        if isinstance(value, dict) and value
+    ]
+    if not candidates:
+        raise SystemExit(
+            f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: Step1 measurement program missing'
+        )
+    program = candidates[0]
+    if any(item != program for item in candidates[1:]):
+        raise SystemExit(
+            f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: Step1 measurement program copies mismatch'
+        )
+    reasons = validate_measurement_program(
+        program,
+        available_knowledge_node_ids=_step1_knowledge_node_ids(aim),
+        require_web_executable=False,
+    )
+    route = (
+        (program.get('implementation') or {}).get('route')
+        if isinstance(program.get('implementation'), dict)
+        else None
+    )
+    if route != implementation_mode:
+        reasons.append(
+            'measurement_program.implementation.route_implementation_mode_mismatch'
+        )
+    if reasons:
+        raise SystemExit(
+            f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: ' + ';'.join(reasons)
+        )
+    return deepcopy(program)
     print(f'[WRITE] {path}')
 
 
@@ -492,7 +560,7 @@ def infer_target_statistic(primary: Dict[str, Any], aim: Dict[str, Any]) -> str:
     return 'conditional expected return or cross-sectional ranking effect inferred from the canonical spec'
 
 
-def infer_step1_random_object_fallback(primary: Dict[str, Any], aim: Dict[str, Any]) -> str:
+def infer_step1_mathematical_object_fallback(primary: Dict[str, Any], aim: Dict[str, Any]) -> str:
     text = text_blob(primary, aim)
     if any(tok in text for tok in ['volume', 'turnover', 'amount', '成交量', '换手', '价量']):
         return 'A-share liquidity/order-flow and price panel observed through tradable market data'
@@ -500,7 +568,7 @@ def infer_step1_random_object_fallback(primary: Dict[str, Any], aim: Dict[str, A
         return 'A-share daily/intraday price-return panel and cross-sectional return ordering'
     if any(tok in text for tok in ['revenue', 'profit', 'cash', '营收', '利润', '现金流', '合同负债']):
         return 'firm fundamental information state observed through accounting and disclosure fields'
-    return 'report-defined security panel; researcher must restate the precise random object before promotion'
+    return 'report-defined mathematical object; researcher must restate its precise economic and measurement semantics before promotion'
 
 
 def infer_economic_mechanism(primary: Dict[str, Any], aim: Dict[str, Any], thesis: Dict[str, Any]) -> str:
@@ -562,6 +630,60 @@ def build_reuse_instructions(primary: Dict[str, Any], aim: Dict[str, Any]) -> Li
     ]
 
 
+def build_factor_knowledge_query(primary: Dict[str, Any], aim: Dict[str, Any], thesis: Dict[str, Any]) -> str:
+    discipline = aim.get('research_discipline') or {}
+    final_factor = aim.get('final_factor') or {}
+    parts = [
+        str(final_factor.get('name') or ''),
+        str(final_factor.get('economic_logic') or ''),
+        str(final_factor.get('behavioral_logic') or ''),
+        str(final_factor.get('causal_chain') or ''),
+        ' '.join(str(item) for item in final_factor.get('assembly_steps') or []),
+        str(primary.get('raw_formula_text') or ''),
+        ' '.join(str(item) for item in thesis.get('signals') or []),
+        ' '.join(str(item) for item in thesis.get('key_variables') or []),
+        json.dumps(discipline.get('economic_hypothesis') or {}, ensure_ascii=False),
+        json.dumps(discipline.get('math_hypothesis_candidates') or [], ensure_ascii=False),
+        str(discipline.get('initial_return_source_hypothesis') or ''),
+        str(
+            discipline.get('step1_mathematical_object')
+            or discipline.get('step1_random_object')
+            or ''
+        ),
+    ]
+    return ' '.join(part for part in parts if part and part != '{}')
+
+
+def retrieve_step2_factor_knowledge_context(primary: Dict[str, Any], aim: Dict[str, Any], thesis: Dict[str, Any]) -> Dict[str, Any]:
+    query_text = build_factor_knowledge_query(primary, aim, thesis)
+    try:
+        return retrieve_factor_knowledge_context(text=query_text, top_k=5)
+    except Exception as exc:
+        return {
+            'schema_version': 'factor_knowledge_context_v1',
+            'node_count': 0,
+            'nodes': [],
+            'related_edges': [],
+            'retrieval_error': str(exc),
+            'query': {'text': query_text, 'top_k': 5},
+        }
+
+
+def summarize_factor_knowledge_context(context: Dict[str, Any]) -> List[str]:
+    lessons: List[str] = []
+    for node in context.get('nodes') or []:
+        node_id = node.get('id') or 'unknown_graph_node'
+        status = ','.join(str(item) for item in node.get('research_status') or [])
+        summary = str(node.get('summary') or '').strip()
+        lesson = f'Graph prior {node_id}'
+        if status:
+            lesson += f' [{status}]'
+        if summary:
+            lesson += f': {summary[:260]}'
+        lessons.append(lesson)
+    return lessons
+
+
 def build_step2_research_contract(
     primary: Dict[str, Any],
     consistency: Dict[str, Any],
@@ -573,19 +695,70 @@ def build_step2_research_contract(
     math_hypothesis_candidates = discipline.get('math_hypothesis_candidates') or []
     formula_understanding = discipline.get('formula_understanding') or aim.get('formula_understanding') or {}
     economic_to_math_modelling = discipline.get('economic_to_math_modelling') or aim.get('economic_to_math_modelling') or {}
-    similar_case_lessons = (
+    prior_lessons = (
         discipline.get('similar_case_lessons_imported')
         or (aim.get('learning_and_innovation') or {}).get('similar_case_lessons_imported')
         or ['No similar prior case was imported from Step1; treat this as a cold-start prior and write back lessons after Step6.']
     )
-    knowledge_reference_contract = (
+    factor_knowledge_context = (
+        discipline.get('factor_knowledge_context')
+        or (aim.get('learning_and_innovation') or {}).get('factor_knowledge_context')
+        or retrieve_step2_factor_knowledge_context(primary, aim, thesis)
+    )
+    graph_lessons = summarize_factor_knowledge_context(factor_knowledge_context)
+    similar_case_lessons = list(dict.fromkeys([
+        *[str(item) for item in prior_lessons if str(item).strip()],
+        *graph_lessons,
+    ]))
+    existing_knowledge_reference_contract = (
         discipline.get('knowledge_reference_contract')
         or (aim.get('learning_and_innovation') or {}).get('knowledge_reference_contract')
-        or build_legacy_knowledge_reference_contract(
+    )
+    if existing_knowledge_reference_contract and not validate_knowledge_reference_contract(
+        existing_knowledge_reference_contract,
+        retrieval_required=False,
+    ):
+        knowledge_reference_contract = existing_knowledge_reference_contract
+    else:
+        query_text = build_factor_knowledge_query(primary, aim, thesis)
+        node_ids = [
+            str(item.get('id'))
+            for item in factor_knowledge_context.get('nodes') or []
+            if isinstance(item, dict) and item.get('id')
+        ]
+        graph_paths = [
+            REPO_ROOT / 'knowledge' / '因子工厂' / 'graph' / 'factor_knowledge_nodes.jsonl',
+            REPO_ROOT / 'knowledge' / '因子工厂' / 'graph' / 'factor_knowledge_edges.jsonl',
+        ]
+        knowledge_reference_contract = build_knowledge_reference_contract(
+            repo_root=REPO_ROOT,
+            knowledge_root=REPO_ROOT / 'knowledge' / '因子工厂',
+            query_text=query_text,
+            producer='step2_factor_knowledge_graph_retrieval',
+            retrieval_required=False,
+        )
+        knowledge_reference_contract.update({
+            'source': 'factor_knowledge_graph' if node_ids else 'cold_start_or_unavailable',
+            'context_schema_version': factor_knowledge_context.get('schema_version'),
+            'index_paths_checked': [str(path) for path in graph_paths],
+            'indexes_available': [str(path) for path in graph_paths if path.is_file()],
+            'retrieval_status': 'retrieved' if node_ids else 'cold_start',
+            'hit_count': len(node_ids),
+            'retrieved_case_ids': node_ids,
+            'cited_node_ids': node_ids,
+            'similar_case_lessons_imported': similar_case_lessons,
+            'fallback_reason': None if node_ids else (
+                factor_knowledge_context.get('retrieval_error')
+                or 'knowledge_graph_cold_start_no_similar_case'
+            ),
+            'retrieval_error': factor_knowledge_context.get('retrieval_error'),
+            'not_same_factor_unless_identity_matches': True,
+        })
+    if not knowledge_reference_contract:
+        knowledge_reference_contract = build_legacy_knowledge_reference_contract(
             similar_case_lessons=similar_case_lessons,
             producer='step2_legacy_step1_artifact_adapter',
         )
-    )
     return {
         'target_statistic': infer_target_statistic(primary, aim),
         'economic_mechanism': infer_economic_mechanism(primary, aim, thesis),
@@ -596,12 +769,15 @@ def build_step2_research_contract(
         'expected_failure_modes': infer_expected_failure_modes(primary, consistency, aim),
         'innovative_idea_seeds': infer_innovative_idea_seeds(primary, aim),
         'reuse_instruction_for_future_agents': build_reuse_instructions(primary, aim),
-        'step1_random_object': (
-            (aim.get('research_discipline') or {}).get('step1_random_object')
+        'step1_mathematical_object': (
+            (aim.get('research_discipline') or {}).get('step1_mathematical_object')
+            or aim.get('step1_mathematical_object')
+            or (aim.get('research_discipline') or {}).get('step1_random_object')
             or aim.get('step1_random_object')
-            or infer_step1_random_object_fallback(primary, aim)
+            or infer_step1_mathematical_object_fallback(primary, aim)
         ),
         'similar_case_lessons_imported': similar_case_lessons,
+        'factor_knowledge_context': factor_knowledge_context,
         'knowledge_reference_contract': knowledge_reference_contract,
         'producer': 'step2_research_contract',
     }
@@ -817,6 +993,22 @@ def build_challenger_spec_from_canonical_formula(report_id: str, aim: Dict[str, 
 def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thesis: Dict[str, Any], report_map: Dict[str, Any]) -> Dict[str, Any]:
     variables = list(dict.fromkeys(as_list(aim.get('candidate_variables')) + as_list(thesis.get('key_variables')) + as_list(report_map.get('variables'))))
     formula_text = str((aim.get('final_factor') or {}).get('assembly_steps', [''])[0] or thesis.get('raw_formula_text') or f'hypothesis_score({", ".join(str(x) for x in variables)})')
+    formula_ir = thesis.get('formula_ir') if isinstance(thesis.get('formula_ir'), dict) else None
+    if aim.get('implementation_mode') == 'operator':
+        if not formula_ir or formula_ir.get('parse_status') != 'success':
+            formula_ir = parse_formula(formula_text)
+        if formula_ir.get('parse_status') == 'success':
+            variables = list(formula_ir.get('required_fields') or variables)
+    operators = list(dict.fromkeys(as_list(thesis.get('operators')) + ['change()', 'rank()', 'zscore()', 'lag_guard()']))
+    if formula_ir and formula_ir.get('parse_status') == 'success':
+        operators = [f'{operator}()' for operator in (formula_ir.get('operator_set') or [])]
+    evaluation_contract = (
+        thesis.get('evaluation_contract')
+        if isinstance(thesis.get('evaluation_contract'), dict)
+        else aim.get('evaluation_contract')
+        if isinstance(aim.get('evaluation_contract'), dict)
+        else {}
+    )
     return {
         'factor_id': (aim.get('final_factor') or {}).get('name') or aim.get('title') or report_id,
         'report_id': report_id,
@@ -824,7 +1016,14 @@ def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thes
         'source_type': 'natural_language_hypothesis',
         'producer': 'step2_hypothesis_spec_builder',
         'raw_formula_text': formula_text,
-        'operators': list(dict.fromkeys(as_list(thesis.get('operators')) + ['change()', 'rank()', 'zscore()', 'lag_guard()'])),
+        'formula_ir': formula_ir,
+        'formula_parse_error': (
+            '; '.join(str(item) for item in (formula_ir.get('parse_errors') or []))
+            if formula_ir and formula_ir.get('parse_status') != 'success'
+            else None
+        ),
+        'qlib_expression': to_qlib_expression(formula_ir) if formula_ir else None,
+        'operators': operators,
         'required_inputs': variables or ['close', 'return'],
         'time_series_steps': [
             'Convert the stated hypothesis into lag-safe feature changes or levels.',
@@ -838,7 +1037,13 @@ def build_primary_spec_from_hypothesis(report_id: str, aim: Dict[str, Any], thes
         'preprocessing': ['Use standard universe filters and enforce data availability at rebalance time.'],
         'normalization': ['Cross-sectional rank or z-score; exact choice requires review when the hypothesis is underspecified.'],
         'neutralization': ['Style/industry neutralization is an evaluation variant unless the hypothesis explicitly requires it.'],
-        'rebalance_frequency': 'monthly by default for fundamental hypotheses unless Step3B justifies another cadence',
+        'rebalance_frequency': evaluation_contract.get('rebalance_frequency') or 'monthly by default for fundamental hypotheses unless Step3B justifies another cadence',
+        'availability_lags': evaluation_contract.get('availability_lags') or thesis.get('availability_lags') or [],
+        'missing_data_policy': evaluation_contract.get('missing_data_policy') or thesis.get('missing_data_policy') or '',
+        'forward_horizon': evaluation_contract.get('forward_horizon') or thesis.get('forward_horizon') or '',
+        'transaction_cost_bps': evaluation_contract.get('transaction_cost_bps'),
+        'cost_model_id': evaluation_contract.get('cost_model_id') or thesis.get('cost_model_id') or '',
+        'evaluation_contract': evaluation_contract,
         'implementation_assumptions': [
             'Natural-language intake is a research contract, not executable code.',
             'Ambiguous variables and lags remain human-review items until resolved.',
@@ -910,6 +1115,11 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     producer = formal_step2_producer(source_type)
     upstream_producer = aim.get('producer') or producer
     implementation_mode = infer_implementation_mode(source_type, primary, aim)
+    measurement_program = validated_step1_measurement_program(
+        aim=aim,
+        primary=primary,
+        implementation_mode=implementation_mode,
+    )
     branch_id = str(aim.get('branch_id') or 'main')
     run_id = str(aim.get('run_id') or 'run_001')
     parent_run_id = aim.get('parent_run_id')
@@ -956,6 +1166,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
         'implementation_mode': implementation_mode,
         'producer': producer,
         'upstream_producer': upstream_producer,
+        'evaluation_contract': primary.get('evaluation_contract') or {},
         'source_metadata': {
             'factor_id': aim.get('factor_id'),
             'source_name': aim.get('source_name'),
@@ -982,6 +1193,12 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'normalization': primary.get('normalization', []),
             'neutralization': primary.get('neutralization', []),
             'rebalance_frequency': primary.get('rebalance_frequency', ''),
+            'availability_lags': primary.get('availability_lags', []),
+            'missing_data_policy': primary.get('missing_data_policy', ''),
+            'forward_horizon': primary.get('forward_horizon', ''),
+            'transaction_cost_bps': primary.get('transaction_cost_bps'),
+            'cost_model_id': primary.get('cost_model_id', ''),
+            'evaluation_contract': primary.get('evaluation_contract') or {},
             'implementation_assumptions': primary.get('implementation_assumptions', []),
             'operator_subgraph': (hybrid_contract or {}).get('operator_subgraph'),
             'custom_blocks': (hybrid_contract or {}).get('custom_blocks') or primary.get('custom_blocks') or [],
@@ -1033,7 +1250,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'economic_mechanism': research_contract['economic_mechanism'],
         },
         'math_discipline_review': {
-            'step1_random_object': research_contract.get('step1_random_object'),
+            'mathematical_object': research_contract.get('step1_mathematical_object'),
             'target_statistic': research_contract['target_statistic'],
             'information_set_legality': (aim.get('math_discipline_review') or {}).get('information_set_legality') or (aim.get('research_discipline') or {}).get('information_set_hint') or 'requires_researcher_confirmation_no_forward_leakage',
             'expected_failure_modes': research_contract['expected_failure_modes'],
@@ -1044,6 +1261,7 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             'innovative_idea_seeds': research_contract['innovative_idea_seeds'],
             'reuse_instruction_for_future_agents': research_contract['reuse_instruction_for_future_agents'],
         },
+        'knowledge_reference_contract': research_contract.get('knowledge_reference_contract') or {},
         'research_contract': research_contract,
         'standard_formula_fields_contract': standard_formula_fields_contract,
         'ambiguities': list(dict.fromkeys(primary.get('ambiguities', []) + primary.get('inferred_items', []))),
@@ -1056,10 +1274,11 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
             master['implementation_contract'][key] = family_plugin_selection[key]
     elif family_plugin_selection.get('family_plugin_suggestion'):
         master['implementation_contract']['family_plugin_suggestion'] = family_plugin_selection['family_plugin_suggestion']
+    # Legacy v1 is carried only when an upstream legacy artifact already has it.
+    # Current research is governed by mechanism_conditioned_measurement_program.
     mechanism_math_contract = (
         primary.get('mechanism_math_contract')
         or aim.get('mechanism_math_contract')
-        or build_mechanism_math_contract(master)
     )
     if isinstance(mechanism_math_contract, dict):
         mechanism_math_contract.setdefault('source_economic_hypothesis', research_contract.get('economic_hypothesis') or {})
@@ -1067,19 +1286,48 @@ def build_factor_spec_master(report_id: str, aim: Dict[str, Any], primary: Dict[
     mechanism_math_contract_v2 = (
         primary.get('mechanism_math_contract_v2')
         or aim.get('mechanism_math_contract_v2')
-        or build_mechanism_math_contract_v2(master)
     )
-    master['mechanism_math_contract'] = mechanism_math_contract
-    master['mechanism_math_contract_v2'] = mechanism_math_contract_v2
-    master['canonical_spec']['mechanism_math_contract'] = mechanism_math_contract
-    master['canonical_spec']['mechanism_math_contract_v2'] = mechanism_math_contract_v2
-    master['math_discipline_review']['mechanism_math_contract_ref'] = {
-        'math_model_status': mechanism_math_contract.get('math_model_status'),
-        'model_family': mechanism_math_contract.get('model_family'),
-        'state_or_object': mechanism_math_contract.get('state_or_object'),
-        'target_functional': mechanism_math_contract.get('target_functional'),
-        'monotonicity_claim': mechanism_math_contract.get('monotonicity_claim'),
+    if isinstance(mechanism_math_contract, dict) and mechanism_math_contract:
+        master['mechanism_math_contract'] = mechanism_math_contract
+        master['canonical_spec']['mechanism_math_contract'] = deepcopy(
+            mechanism_math_contract
+        )
+    if isinstance(mechanism_math_contract_v2, dict) and mechanism_math_contract_v2:
+        master['mechanism_math_contract_v2'] = mechanism_math_contract_v2
+        master['canonical_spec']['mechanism_math_contract_v2'] = deepcopy(
+            mechanism_math_contract_v2
+        )
+    master['mechanism_conditioned_measurement_program'] = measurement_program
+    master['canonical_spec'][
+        'mechanism_conditioned_measurement_program'
+    ] = deepcopy(measurement_program)
+    selected_models = [
+        item
+        for item in (measurement_program.get('model_selection') or {}).get(
+            'candidate_models', []
+        )
+        if isinstance(item, dict) and item.get('selected') is True
+    ]
+    selected_model = selected_models[0] if len(selected_models) == 1 else {}
+    master['math_discipline_review']['measurement_program_ref'] = {
+        'contract_version': measurement_program.get('contract_version'),
+        'model_family': selected_model.get('model_family'),
+        'mathematical_object': selected_model.get('mathematical_object'),
+        'estimand': (
+            measurement_program.get('observation_and_estimation') or {}
+        ).get('estimand'),
+        'implementation_route': (
+            measurement_program.get('implementation') or {}
+        ).get('route'),
     }
+    if isinstance(mechanism_math_contract, dict) and mechanism_math_contract:
+        master['math_discipline_review']['legacy_mechanism_math_contract_ref'] = {
+            'math_model_status': mechanism_math_contract.get('math_model_status'),
+            'model_family': mechanism_math_contract.get('model_family'),
+            'state_or_object': mechanism_math_contract.get('state_or_object'),
+            'target_functional': mechanism_math_contract.get('target_functional'),
+            'monotonicity_claim': mechanism_math_contract.get('monotonicity_claim'),
+        }
     spec_hash = build_spec_hash(master)
     formula_ir = (master.get('canonical_spec') or {}).get('formula_ir')
     formula_hash = (
@@ -1145,10 +1393,21 @@ def write_handoff_to_step3(report_id: str, factor_spec_master_path: Path) -> Non
         'factor_spec_master_ref': factor_spec_master_path.name,
         'research_contract': master.get('research_contract') or {},
         'math_discipline_review': master.get('math_discipline_review') or {},
-        'mechanism_math_contract': master.get('mechanism_math_contract') or {},
-        'mechanism_math_contract_v2': master.get('mechanism_math_contract_v2') or {},
+        'mechanism_conditioned_measurement_program': master.get(
+            'mechanism_conditioned_measurement_program'
+        ) or {},
         'learning_and_innovation': master.get('learning_and_innovation') or {},
+        'knowledge_reference_contract': master.get('knowledge_reference_contract') or {},
+        'evaluation_contract': master.get('evaluation_contract') or {},
     }
+    if isinstance(master.get('mechanism_math_contract'), dict) and master.get(
+        'mechanism_math_contract'
+    ):
+        handoff['mechanism_math_contract'] = master['mechanism_math_contract']
+    if isinstance(master.get('mechanism_math_contract_v2'), dict) and master.get(
+        'mechanism_math_contract_v2'
+    ):
+        handoff['mechanism_math_contract_v2'] = master['mechanism_math_contract_v2']
     write_json(HANDOFF_DIR / f'handoff_to_step3__{report_id}.json', handoff)
 
 

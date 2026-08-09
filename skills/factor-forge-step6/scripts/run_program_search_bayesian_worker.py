@@ -58,6 +58,16 @@ def resolve_path(raw: str | None) -> Path | None:
     return CTX.remap_legacy_path(raw)
 
 
+def uses_tradeable_web_timing(report_id: str) -> bool:
+    path = OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json'
+    payload = load_json(path) if path.exists() else {}
+    contract = payload.get('evaluation_contract') if isinstance(payload, dict) else {}
+    return (
+        isinstance(contract, dict)
+        and contract.get('version') == 'factorforge_web_evaluation_contract_v2'
+    )
+
+
 def as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -679,12 +689,16 @@ def main() -> None:
         if missing:
             raise ValueError(f'factor_values missing columns: {sorted(missing)}')
         daily_df = pd.read_csv(daily_path, usecols=['ts_code', 'trade_date', 'close', 'pct_chg'])
+        web_tradeable_timing = uses_tradeable_web_timing(rid)
         daily_eval = build_forward_return_frame(
             daily_df.rename(columns={'ts_code': 'code'}),
             instrument_col='code',
             date_col='trade_date',
             price_col='close',
+            return_col=None if web_tradeable_timing else 'pct_chg',
             horizon=1,
+            entry_offset=1 if web_tradeable_timing else 0,
+            exit_offset=2 if web_tradeable_timing else None,
         )
 
         completed_trials: list[dict[str, Any]] = []

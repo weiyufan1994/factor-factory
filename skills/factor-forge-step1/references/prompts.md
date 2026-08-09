@@ -14,15 +14,18 @@ Full prompt is embedded in SKILL.md. Key structural requirements:
 - preferred_economic_hypothesis must justify why it beats alternatives
 - alternative_return_source_tests must include at least one discriminating test
 - primary_mathematical_model must be selected from the economic hypothesis
-- research_equation must classify the equation as strict_identity, institutional_constraint, behavioral_feedback, empirical_invariance, or research_conjecture, and must include assumptions, validity_scope, latent_state, observable_estimator, expected_metric_signature, falsification_tests, and kill_criteria
-- t0_t1_stochastic_benchmark must explain whether the observable estimator affects drift, diffusion, jump, friction, regime transition, or observation equation over T+0/T+1 or report_horizon
-- Do not default every factor to a stochastic process; stochastic process,
-  Ito calculus, linear algebra, optimization, information theory, and causal
-  tests are benchmark tools for projection, diagnostic, derivation, or
-  falsification unless the report-specific hypothesis selects one as primary
-- formula_as_observable_estimator must state the latent state, constraint,
-  pressure, belief error, risk exposure, or information delay estimated by the
-  formula and why this is not a raw-field restatement
+- research_equation must classify the equation as strict_identity, institutional_constraint, behavioral_feedback, empirical_invariance, or research_conjecture, and must include assumptions, validity_scope, mathematical_object, observation_or_estimation_map, expected_metric_signature, falsification_tests, and kill_criteria
+- market_outcome_projection must derive how the selected mathematical object
+  reaches a tradeable value, payoff, price gap or return quantity over the
+  report horizon
+- Do not default every factor to a stochastic process or dimensional analysis;
+  DCF/residual income, accounting identities, stochastic processes, linear
+  algebra, optimization, information theory, spectral/functional methods and
+  causal tests are selected only when the report-specific hypothesis warrants
+  them
+- formula_as_observable_estimator must state the value, state, constraint,
+  functional, relation, parameter, belief error, risk exposure, or information
+  delay estimated by the formula and why this is not a raw-field restatement
 - formula_implied_information, formula_implied_information_review, metric_signature_match by model layer, and drawdown geometry interpretation must be requested when Step4 metrics exist
 
 ## Challenger Intake Prompt
@@ -70,9 +73,9 @@ Required reasoning chain:
    - research_conjecture
 3. State the equation_text. It may be a strict identity or a quasi-equation based on market assumptions, but it must be explicit enough to be falsified.
 4. State assumptions, validity_scope, payer_or_forced_counterparty, why_the_payer_cannot_stop, participant_constraint_loop, and demotion_triggers.
-5. Select the primary_mathematical_model from the economic hypothesis. Do not select stochastic process as the primary model by default.
-6. Add t0_t1_stochastic_benchmark as a benchmark/projection layer for traded-price implications. Explain whether the factor affects drift, diffusion, jump, friction, regime_transition, or observation_equation.
-7. Explain formula_implied_information: what latent state the formula is trying to recover. Raw-field restatement is invalid.
+5. For the primary, mechanism-distinct alternative, and null/alias candidates, state both the mathematical_object and an independent mechanism_equation_or_functional. Select the primary from the economic hypothesis. Do not select stochastic process as the primary model by default.
+6. Derive market_outcome_projection separately from the selected mathematical object and core mechanism equation to value, payoff, price gap, or return. Do not substitute the payoff projection for the mechanism equation. Add a stochastic benchmark only when the selected claim is stochastic; a DCF, residual-income, accounting, causal, spectral, functional, or other mechanism must use its own mathematical map.
+7. Explain formula_implied_information: what mathematical object the formula is trying to recover. Raw-field restatement is invalid.
 8. State expected_metric_signature, falsification_tests, and kill_criteria.
 9. If the formula implies an unexpected or negative solution, do not discard it. Classify it as bug, data_artifact, implementation_artifact, benign_model_implication, tradable_anomaly, new_factor_seed, or theory_rejected.
 
@@ -103,7 +106,8 @@ Output JSON keys:
     "evidence_tier": "",
     "audit_basis": [],
     "demotion_triggers": [],
-    "latent_state": "",
+    "mathematical_object": "",
+    "observation_or_estimation_map": "",
     "observable_estimator": "",
     "expected_metric_signature": [],
     "falsification_tests": [],
@@ -114,22 +118,28 @@ Output JSON keys:
     "why_this_model_matches_the_hypothesis": "",
     "why_not_alternative_models": []
   },
-  "t0_t1_stochastic_benchmark": {
-    "benchmark_required": true,
-    "affected_terms": [],
-    "conditional_distribution_claim": "",
-    "benchmark_implication": "",
-    "when_primary_model_cannot_infer": "",
-    "falsification_tests": []
+  "market_outcome_projection": {
+    "projection_kind": "",
+    "source_math_object": "",
+    "traded_quantity": "",
+    "affected_payoff_or_distribution_terms": [],
+    "projection_equation_or_map": "",
+    "link_to_observation_equation": "",
+    "falsifier": ""
+  },
+  "applicable_audits": {
+    "selection_rule": "select only audits justified by the chosen mechanism",
+    "selected": [],
+    "rejected": []
   },
   "formula_implied_information": {
-    "latent_state_recovered": "",
+    "mathematical_object_recovered": "",
     "not_raw_field_restatement_reason": "",
     "observable_detector_contract": {
       "detector_name": "",
-      "detected_latent_state": "",
+      "detected_mathematical_object": "",
       "measurement_equation": "",
-      "null_state_behavior": "",
+      "null_or_alias_behavior": "",
       "measurement_noise_sources": [],
       "required_controls": [],
       "detector_failure_modes": []
@@ -138,7 +148,7 @@ Output JSON keys:
 }
 ```
 
-Reject answers that only say "the factor predicts returns because the report says it works." Reject answers that only restate close, volume, rank, correlation, or the formula. The output must explain the market relation, who pays, why the payment repeats, and what observable detector recovers the latent state.
+Reject answers that only say "the factor predicts returns because the report says it works." Reject answers that only restate close, volume, rank, correlation, or the formula. The output must explain the market relation, who pays, why the payment repeats, and what observable detector estimates the selected mathematical object.
 
 ## Equation-To-Factor Discovery Prompt
 
@@ -170,7 +180,7 @@ Output candidate shape:
   "required_controls": [],
   "expected_metric_signature": [],
   "expected_cost_risk_profile": [],
-  "stochastic_benchmark_terms": [],
+  "applicable_audits": {"selected": [], "rejected": []},
   "falsification_tests": [],
   "kill_criteria": [],
   "branch_action": "review_only|human_approval_required",

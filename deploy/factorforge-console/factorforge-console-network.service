@@ -1,0 +1,15 @@
+[Unit]
+Description=Factor Forge Console isolated container network
+Requires=docker.service
+After=docker.service
+Before=factorforge-console-runner.service factorforge-console.service
+
+[Service]
+Type=oneshot
+Environment=FACTORFORGE_CONSOLE_CONTAINER_NETWORK=factorforge-console-egress
+Environment=FACTORFORGE_CONSOLE_CONTAINER_NETWORK_SUBNET=172.29.0.0/24
+ExecStart=/opt/factorforge-console/configure-container-network.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

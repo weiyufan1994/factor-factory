@@ -24,7 +24,8 @@ For normal research, every factor must have:
 - evidence review after Step4,
 - case reflection after Step5,
 - Step6 judgment with knowledge writeback,
-- math discipline review that identifies the random object, target statistic, information-set legality, and overfit controls,
+- math discipline review that identifies the selected mathematical object,
+  target statistic or functional, information-set legality, and overfit controls,
 - learning writeback that extracts transferable patterns, anti-patterns, and innovative idea seeds,
 - and, if needed, a revision brief that sends the loop back to Step3B.
 
@@ -102,6 +103,59 @@ Use `references/research-journal-schema.md`.
 
 The journal is the agent's memory for this factor. It should accumulate the author's original idea, the agent's interpretation, implementation concerns, evidence interpretation, lessons, and revision history.
 
+## Knowledge-First Round Discipline
+
+Before starting any next run, child branch, revision, portfolio-policy test, or
+new mechanism variant, update the research journal and knowledge base with what
+the current round taught. This is required even when the round failed, was
+BLOCKed, produced weak metrics, exposed a framework bug, or only clarified what
+not to do.
+
+## Factor Workspace Discipline
+
+Every real factor research effort needs an explicit active workspace before new
+research-side files are created:
+
+```text
+factor_research/<factor_or_report_id>/<research_id>/
+```
+
+or an existing `factor_research/<research_id>/` folder with a valid
+`manifest.json`.
+
+Keep all factor-specific scripts, research notes, data requests, worker helper
+scripts, result summaries, temporary state, and branch artifacts inside that
+workspace. Do not place new single-factor files in repo-root `scripts/`,
+repo-root `docs/operations/`, shared baseline Step3/Step4 files, or generic
+framework folders. Those locations are only for reusable framework code,
+contracts, validators, smokes, or explicitly promoted shared utilities.
+
+If you discover factor-specific files outside a workspace, stop normal research
+flow and either migrate them into the right workspace or clearly mark them as
+historical/quarantined before continuing. A clean workspace boundary is part of
+research correctness, not cosmetic repo hygiene.
+
+A round is not researcher-complete until the durable record contains:
+
+- the exact report/branch/run identity and artifact roots,
+- the economic hypothesis and mathematical mechanism tested,
+- the executable formula or direct-code law id/hash,
+- the data window, universe, portfolio policy, cost assumption, and IS/OOS
+  boundary,
+- the metrics that matter for the current mandate, especially long-side return,
+  IC/rank IC, turnover, cost, drawdown, recovery, and benchmark comparison,
+- the factor-complexity change: added/removed primitives, interactions,
+  thresholds, nonlinear gates, data dependencies, and free parameters, plus why
+  the marginal evidence justifies or falsifies that complexity,
+- the result classification: improved, falsified, inconclusive, blocked, or
+  framework/data issue,
+- transferable patterns, anti-patterns, and forbidden repeats,
+- next research questions or required data/framework repairs.
+
+If evidence only exists in `/tmp`, worker scratch paths, temporary S3 prefixes,
+or untracked scripts, explicitly mark it as not fully deposited and write the
+missing durable note before continuing.
+
 ## Evidence Dossier
 
 At any point after a `report_id` exists, build a dossier:
@@ -126,7 +180,7 @@ Write/update the journal with:
 - author's stated factor idea,
 - formula or signal family,
 - expected economic mechanism,
-- random object and target statistic,
+- selected mathematical object and target statistic or functional,
 - information set and leakage risks,
 - assumptions that must be tested,
 - likely failure modes,
@@ -148,9 +202,24 @@ Review:
 
 Review:
 - signal metrics: IC, rank IC, grouped spread, monotonicity,
+- pre-cost premium evidence: grouped gross returns, long-end gross return, and
+  Fama-MacBeth or cross-sectional regression evidence when available,
+- return-source fit: `risk_premium`, `information_advantage`,
+  `constraint_driven_arbitrage`, or `mixed`,
+- profit payer and economic logic: who pays, why the behavior repeats, and what
+  would falsify the payer hypothesis,
 - portfolio metrics: account/NAV, turnover, benchmark relation, drawdown if available,
+- risk attribution appropriate to the selected mechanism: for stochastic or
+  path-dependent claims this may distinguish continuous sigma exposure,
+  jump/tail events and regime transitions; for other mechanisms use their own
+  valuation, accounting, liquidity, concentration or implementation risk map,
 - charts and artifacts,
 - whether predictive evidence translates into tradable evidence.
+
+High turnover must not end the research review by itself. First decide whether
+the factor contains pre-cost information and which return source explains it.
+Then decide whether trading cost blocks promotion, suggests horizon/execution
+repair, or means the factor should be retained only as a feature/state.
 
 ### After Step5/Step6
 
@@ -159,6 +228,33 @@ Decide:
 - `iterate`: if signal is interesting but needs formula/implementation/portfolio improvement,
 - `reject`: if hypothesis is broken or research budget is not justified,
 - `needs_human_review`: if evidence is ambiguous or a non-obvious tradeoff needs approval.
+
+Apply source-specific standards:
+
+- `risk_premium`: require strict monotonicity plus Fama-MacBeth or
+  cross-sectional regression support.
+- `information_advantage`: allow weaker monotonicity, but require significant
+  long-end gross and risk-adjusted return.
+- `constraint_driven_arbitrage`: require clear constraint/payer logic and
+  premium concentrated where the constraint binds.
+
+Write and maintain the universal research protocol throughout the run:
+
+- initial preferred/null/alternative conjectures and frozen `claim_class`;
+- economic-game and mathematical-mechanism contracts;
+- a diverse approach registry with blind critic routes;
+- executable proof obligations and counterexample results;
+- a factor proof certificate with evidence hashes, frozen search-trial ledger,
+  preregistered rules and one-time OOS release;
+- route-complete root synthesis and explicit main-agent approval.
+
+Common certificate metrics are IC, ICIR, volatility cost, transaction cost,
+maximum drawdown and long-end return. Fama-MacBeth and quintile/decile
+monotonicity are mandatory only for a frozen `risk_premium` claim. Do not use
+those two diagnostics as a universal rejection rule.
+Formal daily evidence requires actual OOS date binding and at least 60 periods.
+Long-end admission uses net geometric return and positive terminal/minimum
+wealth; arithmetic gross-minus-cost return is only a reconciliation field.
 
 Also extract:
 - transferable patterns,
@@ -173,6 +269,8 @@ If iterating, the researcher must write a revision brief that explains:
 - which return source the change strengthens,
 - why the change is not metric cosmetics,
 - what metrics should improve,
+- what complexity cost the change adds or removes, and which added terms should
+  be removed if OOS long-side or residual-IC evidence does not pay for them,
 - what result would kill the hypothesis,
 - and why the modification should improve generalization rather than merely optimize the latest backtest.
 
@@ -194,6 +292,64 @@ When Step6 begins, use both:
 - Do not leave a case without asking what future Bernard/Humphrey/Codex should learn from it.
 - The ordinary factor library contains every attempt; the official library contains only factors with serious research approval.
 - Knowledge should be portable: future agents must be able to learn from both success and failure.
+- Do not ban complexity by arbitrary rule. Penalize complexity explicitly:
+  additional primitives, interactions, free parameters, nonlinear gates, and
+  data dependencies must be justified by OOS long-side or residual-information
+  evidence and by a clear economic or mathematical object.
+
+## Factor Knowledge Network Writeback
+
+The human-readable vault under `knowledge/因子工厂/` is not enough by itself.
+Before forming a thesis or Step6 revision, retrieve relevant graph context when
+the report/idea suggests known mechanisms, data states, or failure modes:
+
+```bash
+python3 scripts/retrieve_factor_knowledge_context.py --text <idea_or_factor_terms> --top-k 5
+python3 scripts/retrieve_factor_knowledge_context.py --tag <taxonomy_tag> --text <idea_or_factor_terms> --top-k 5
+```
+
+Use retrieved nodes as analogies, reusable mechanisms, and anti-patterns; do
+not treat them as same-factor proof unless artifact identity matches.
+
+When a research branch produces a reusable mechanism, candidate feature, failure
+pattern, or official factor, write a machine-readable knowledge node under:
+
+```text
+knowledge/因子工厂/graph/nodes/
+```
+
+Each node must use `factor_knowledge_node_v1` and the taxonomy in:
+
+```text
+knowledge/因子工厂/taxonomy/factor_taxonomy_v1.json
+```
+
+Start from the writeback template unless an automated generator is available:
+
+```text
+knowledge/因子工厂/graph/templates/factor_knowledge_node_template.json
+knowledge/因子工厂/graph/templates/factor_knowledge_node_writeback_guide.md
+```
+
+Use multi-label taxonomy rather than a single classification tree. At minimum,
+capture market-consensus style, economic mechanism, math mechanism, data source,
+tradability, research status, and failure mode when applicable.
+
+Knowledge nodes should preserve the real research insight, not just process
+metadata. For each node, record the payer/receiver if relevant, selected random
+object, key equation or mechanism, evidence window, falsification result,
+source paths, and relation edges such as `uses_math`, `shares_failure_with`,
+`reusable_as`, `contradicts`, or `inspires`.
+
+Validate graph writeback with:
+
+```bash
+python3 scripts/build_factor_knowledge_graph.py
+python3 scripts/query_factor_knowledge_graph.py --tag <mechanism_or_status>
+```
+
+Do not mark graph presence as official promotion. A graph node can be
+`feature_candidate`, `standalone_rejected`, `anti_pattern`, or `data_blocked`.
 ## Implementation and Factor Isolation Discipline
 
 - Every formal factor artifact must carry `artifact_identity`.

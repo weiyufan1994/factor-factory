@@ -123,6 +123,48 @@ def ts_std(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
     return series.groupby(frame['ts_code'], sort=False).transform(lambda s: s.rolling(window, min_periods=window).std())
 
 
+def cs_regression(y: pd.Series, x: pd.Series, out_type: int, frame: pd.DataFrame) -> pd.Series:
+    """Daily cross-sectional OLS y ~ 1 + x.
+
+    out_type follows the CS_REGRESSION source contract:
+    0 = residual, 1 = fitted y, 2 = beta on x.
+    """
+    out = pd.Series(np.nan, index=frame.index, dtype='float64')
+    if 'trade_date' not in frame.columns:
+        return out
+    y_num = pd.to_numeric(y, errors='coerce')
+    x_num = pd.to_numeric(x, errors='coerce')
+    mode = int(out_type)
+    for _, idx in frame.groupby('trade_date', sort=False).groups.items():
+        group_idx = pd.Index(idx)
+        yy = y_num.loc[group_idx]
+        xx = x_num.loc[group_idx]
+        valid = yy.notna() & xx.notna()
+        if int(valid.sum()) < 2:
+            continue
+        x_valid = xx.loc[valid].astype(float)
+        y_valid = yy.loc[valid].astype(float)
+        x_var = float(x_valid.var(ddof=0))
+        if not np.isfinite(x_var) or abs(x_var) < 1e-18:
+            alpha = float(y_valid.mean())
+            beta = 0.0
+        else:
+            cov = float(((x_valid - x_valid.mean()) * (y_valid - y_valid.mean())).mean())
+            beta = cov / x_var
+            alpha = float(y_valid.mean() - beta * x_valid.mean())
+        fitted = alpha + beta * x_valid
+        if mode == 0:
+            values = y_valid - fitted
+        elif mode == 1:
+            values = fitted
+        elif mode == 2:
+            values = pd.Series(beta, index=x_valid.index, dtype='float64')
+        else:
+            raise ValueError(f'BLOCK_UNSUPPORTED_CS_REGRESSION_OUT_TYPE:{mode}')
+        out.loc[values.index] = values
+    return out
+
+
 def _last_value_pct_rank(values: np.ndarray) -> float:
     return last_value_pct_rank_reference(values)
 
@@ -201,23 +243,174 @@ def ts_delay(series: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
     return series.groupby(frame['ts_code'], sort=False).shift(window)
 
 
+def _rolling_pairwise_aligned(left: pd.Series, right: pd.Series, window: int, frame: pd.DataFrame, mode: str) -> pd.Series:
+    left_values = pd.to_numeric(left, errors='coerce').to_numpy(dtype='float64', copy=False)
+    right_values = pd.to_numeric(right, errors='coerce').to_numpy(dtype='float64', copy=False)
+    result = np.full(len(frame), np.nan, dtype='float64')
+    for positions in frame.groupby('ts_code', sort=False, observed=True).indices.values():
+        pos = np.asarray(positions, dtype=np.intp)
+        left_s = pd.Series(left_values[pos])
+        right_s = pd.Series(right_values[pos])
+        if mode == 'corr':
+            values = left_s.rolling(window, min_periods=window).corr(right_s)
+        elif mode == 'cov':
+            values = left_s.rolling(window, min_periods=window).cov(right_s)
+        else:
+            raise ValueError(f'unsupported pairwise mode: {mode}')
+        result[pos] = values.to_numpy(dtype='float64', copy=False)
+    return pd.Series(result, index=frame.index, name=getattr(left, 'name', None))
+
+
 def rolling_corr(left: pd.Series, right: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
-    tmp = pd.DataFrame({'ts_code': frame['ts_code'], 'left': left, 'right': right})
-    return tmp.groupby('ts_code', sort=False, group_keys=False).apply(
-        lambda g: g['left'].rolling(window, min_periods=window).corr(g['right'])
-    )
+    return _rolling_pairwise_aligned(left, right, window, frame, 'corr')
 
 
 def rolling_cov(left: pd.Series, right: pd.Series, window: int, frame: pd.DataFrame) -> pd.Series:
-    tmp = pd.DataFrame({'ts_code': frame['ts_code'], 'left': left, 'right': right})
-    return tmp.groupby('ts_code', sort=False, group_keys=False).apply(
-        lambda g: g['left'].rolling(window, min_periods=window).cov(g['right'])
-    )
+    return _rolling_pairwise_aligned(left, right, window, frame, 'cov')
 
 
 def cs_scale(series: pd.Series, frame: pd.DataFrame) -> pd.Series:
     denom = series.abs().groupby(frame['trade_date']).transform('sum')
     return series / denom.replace(0, np.nan)
+
+
+def cs_zscore(series: pd.Series, ddof: int, frame: pd.DataFrame) -> pd.Series:
+    values = pd.to_numeric(series, errors='coerce')
+    grouped = values.groupby(frame['trade_date'], sort=False)
+    mean = grouped.transform('mean')
+    std = grouped.transform(lambda item: item.std(ddof=int(ddof)))
+    return (values - mean) / std.replace(0, np.nan)
+
+
+def signed_log1p(series: pd.Series) -> pd.Series:
+    values = pd.to_numeric(series, errors='coerce')
+    return np.sign(values) * np.log1p(np.abs(values))
+
+
+def rolling_kurtosis(
+    series: pd.Series,
+    window: int,
+    frame: pd.DataFrame,
+    *,
+    pearson: bool,
+) -> pd.Series:
+    result = series.groupby(frame['ts_code'], sort=False).transform(
+        lambda item: pd.to_numeric(item, errors='coerce').rolling(
+            int(window), min_periods=int(window)
+        ).kurt()
+    )
+    return result + 3.0 if pearson else result
+
+
+def _unbiased_sample_skew(values: np.ndarray) -> float:
+    finite = np.asarray(values, dtype='float64')
+    finite = finite[np.isfinite(finite)]
+    count = int(finite.size)
+    if count < 3:
+        return np.nan
+    centered = finite - float(finite.mean())
+    second = float(np.mean(centered ** 2))
+    if not np.isfinite(second) or second <= 0:
+        return np.nan
+    third = float(np.mean(centered ** 3))
+    raw_skew = third / (second ** 1.5)
+    return float(np.sqrt(count * (count - 1)) / (count - 2) * raw_skew)
+
+
+def _rolling_order_statistic_skew(
+    series: pd.Series,
+    window: int,
+    subset: int,
+    frame: pd.DataFrame,
+    *,
+    largest: bool,
+) -> pd.Series:
+    window = int(window)
+    subset = int(subset)
+
+    def calculate(values: np.ndarray) -> float:
+        ordered = np.sort(np.asarray(values, dtype='float64'))
+        selected = ordered[-subset:] if largest else ordered[:subset]
+        return _unbiased_sample_skew(selected)
+
+    return series.groupby(frame['ts_code'], sort=False).transform(
+        lambda item: pd.to_numeric(item, errors='coerce').rolling(
+            window, min_periods=window
+        ).apply(calculate, raw=True)
+    )
+
+
+def rolling_topk_skew(series: pd.Series, window: int, subset: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_order_statistic_skew(series, window, subset, frame, largest=True)
+
+
+def rolling_bottomk_skew(series: pd.Series, window: int, subset: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_order_statistic_skew(series, window, subset, frame, largest=False)
+
+
+def _rolling_inner_skew_extreme(
+    series: pd.Series,
+    outer_window: int,
+    inner_window: int,
+    frame: pd.DataFrame,
+    *,
+    mode: str,
+) -> pd.Series:
+    outer_window = int(outer_window)
+    inner_window = int(inner_window)
+    extreme_window = outer_window - inner_window + 1
+
+    def calculate(item: pd.Series) -> pd.Series:
+        numeric = pd.to_numeric(item, errors='coerce')
+        inner = numeric.rolling(inner_window, min_periods=inner_window).skew()
+        rolling = inner.rolling(extreme_window, min_periods=extreme_window)
+        return rolling.max() if mode == 'max' else rolling.min()
+
+    return series.groupby(frame['ts_code'], sort=False).transform(calculate)
+
+
+def rolling_max_inner_skew(series: pd.Series, outer_window: int, inner_window: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_inner_skew_extreme(series, outer_window, inner_window, frame, mode='max')
+
+
+def rolling_min_inner_skew(series: pd.Series, outer_window: int, inner_window: int, frame: pd.DataFrame) -> pd.Series:
+    return _rolling_inner_skew_extreme(series, outer_window, inner_window, frame, mode='min')
+
+
+def rolling_max_subwindow_sum(
+    series: pd.Series,
+    outer_window: int,
+    inner_window: int,
+    frame: pd.DataFrame,
+) -> pd.Series:
+    outer_window = int(outer_window)
+    inner_window = int(inner_window)
+    extreme_window = outer_window - inner_window + 1
+
+    def calculate(item: pd.Series) -> pd.Series:
+        numeric = pd.to_numeric(item, errors='coerce')
+        inner_sum = numeric.rolling(inner_window, min_periods=inner_window).sum()
+        return inner_sum.rolling(extreme_window, min_periods=extreme_window).max()
+
+    return series.groupby(frame['ts_code'], sort=False).transform(calculate)
+
+
+def rolling_topk_sum(series: pd.Series, window: int, subset: int, frame: pd.DataFrame) -> pd.Series:
+    window = int(window)
+    subset = int(subset)
+
+    def calculate(values: np.ndarray) -> float:
+        numeric = np.asarray(values, dtype='float64')
+        if not np.isfinite(numeric).all():
+            return np.nan
+        partitioned = np.partition(numeric, len(numeric) - subset)
+        return float(partitioned[-subset:].sum())
+
+    return series.groupby(frame['ts_code'], sort=False).transform(
+        lambda item: pd.to_numeric(item, errors='coerce').rolling(
+            window, min_periods=window
+        ).apply(calculate, raw=True)
+    )
 
 
 def signed_power(left: pd.Series, right) -> pd.Series:

@@ -106,7 +106,13 @@ def test_clean_daily_bar_resolution_reports_policy_schema_and_coverage(tmp_path)
     assert resolution["daily_filter_policy"]["drop_suspended"] is True
     assert resolution["daily_filter_policy"]["invalid_days_do_not_enter_window"] is True
     assert "close" in resolution["schema"]["columns"]
-    assert resolution["coverage"]["row_count"] == 2
+    assert resolution["coverage"] == {}
+    assert resolution["catalog_inventory"] == {
+        "row_count": 2,
+        "date_count": 2,
+        "ticker_count": 1,
+        "scope": "dataset_inventory",
+    }
 
 
 def test_missing_clean_minute_bar_resolution_blocks_without_silent_fallback(tmp_path):
@@ -122,3 +128,67 @@ def test_missing_clean_minute_bar_resolution_blocks_without_silent_fallback(tmp_
     assert resolution["dataset_id"] == "clean_minute_bar"
     assert resolution["status"] == "catalog_missing"
     assert resolution["block_code"] == "DATA_API_CATALOG_MISSING"
+
+
+def test_real_data_api_catalog_shape_reports_schema_and_freshness_coverage(tmp_path):
+    from factor_factory.data_api import resolve_data_api_dataset
+
+    catalog_path = tmp_path / "data_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "datasets": [
+                    {
+                        "dataset_id": "clean_daily_bar",
+                        "uri": "s3://example-bucket/factorforge/clean_daily_bar/v1/daily_clean.parquet",
+                        "format": "parquet",
+                        "columns": ["ts_code", "trade_date", "open", "close", "pre_close"],
+                        "date_column": "trade_date",
+                        "symbol_column": "ts_code",
+                        "freshness": {
+                            "rows": 11_760_204,
+                            "tickers": 5_186,
+                            "trade_dates": 3_998,
+                            "trade_date_min": "20100104",
+                            "trade_date_max": "20260624",
+                        },
+                        "metadata": {
+                            "schema_version": "clean_daily_bar_v1",
+                            "policy": {"drop_suspended": True},
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    resolution = resolve_data_api_dataset(
+        "clean_daily_bar",
+        start="20160101",
+        end="20250711",
+        fields=["open", "close", "pre_close"],
+        catalog_path=catalog_path,
+    )
+
+    assert resolution["schema"]["columns"] == [
+        "ts_code",
+        "trade_date",
+        "open",
+        "close",
+        "pre_close",
+    ]
+    assert resolution["schema"]["date_column"] == "trade_date"
+    assert resolution["schema"]["symbol_column"] == "ts_code"
+    assert resolution["coverage"] == {}
+    assert resolution["catalog_inventory"] == {
+        "row_count": 11_760_204,
+        "date_count": 3_998,
+        "ticker_count": 5_186,
+        "trade_date_min": "20100104",
+        "trade_date_max": "20260624",
+        "scope": "dataset_inventory",
+    }
+    assert resolution["metadata"]["dataset_version"] == "clean_daily_bar_v1"

@@ -17,13 +17,13 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.mechanism_math.classifier import build_mechanism_math_contract
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
     validate_mechanism_formula_consistency,
 )
 from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.measurement_program import validate_measurement_program
 
 OBJ = FF / "objects"
 TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
@@ -142,7 +142,7 @@ def nested(data: dict[str, Any], *keys: str) -> dict[str, Any]:
 
 
 def mechanism_math_for_packet(spec: dict[str, Any], case: dict[str, Any], handoff: dict[str, Any], memo: dict[str, Any]) -> dict[str, Any]:
-    failures: list[dict[str, str]] = []
+    """Return an existing valid legacy v1 contract; never synthesize one."""
     canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
     for candidate in [
         nested(memo, "mechanism_analysis").get("mechanism_math_contract"),
@@ -155,16 +155,56 @@ def mechanism_math_for_packet(spec: dict[str, Any], case: dict[str, Any], handof
             current_failures = validate_mechanism_math_contract(candidate)
             if not current_failures:
                 return candidate
-            failures.extend(current_failures)
-    rebuilt = build_mechanism_math_contract(spec or canonical or {})
+            raise SystemExit(
+                "BLOCK_FACTORFORGE_LEGACY_MECHANISM_MATH_CONTRACT_INVALID: "
+                + json.dumps(current_failures, ensure_ascii=False)
+            )
+    return {}
+
+
+def measurement_program_for_packet(
+    spec: dict[str, Any],
+    case: dict[str, Any],
+    handoff: dict[str, Any],
+    memo: dict[str, Any],
+) -> dict[str, Any]:
+    """Require one exact current math program before Council deliberation."""
+    canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
+    candidates = [
+        nested(memo, "mechanism_analysis").get("mechanism_conditioned_measurement_program"),
+        spec.get("mechanism_conditioned_measurement_program"),
+        canonical.get("mechanism_conditioned_measurement_program"),
+        case.get("mechanism_conditioned_measurement_program"),
+        handoff.get("mechanism_conditioned_measurement_program"),
+    ]
+    present = [item for item in candidates if isinstance(item, dict) and item]
+    if not present:
+        raise SystemExit(
+            "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID: Revision Council current program missing"
+        )
+    program = present[0]
+    if any(item != program for item in present[1:]):
+        raise SystemExit(
+            "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID: Revision Council program copies mismatch"
+        )
+    declared_node_ids = {
+        str(node_id)
+        for component in ((program.get("implementation") or {}).get("components") or [])
+        if isinstance(component, dict)
+        for node_id in (component.get("knowledge_node_ids") or [])
+        if str(node_id).strip()
+    }
+    failures = validate_measurement_program(
+        program,
+        available_knowledge_node_ids=declared_node_ids,
+        require_web_executable=False,
+    )
     if failures:
-        evidence = rebuilt.get("classification_evidence")
-        if not isinstance(evidence, dict):
-            evidence = {}
-        evidence["rebuilt_from_stale_or_invalid_upstream_contract"] = True
-        evidence["upstream_contract_failure_codes"] = sorted({str(item.get("code")) for item in failures if item.get("code")})
-        rebuilt["classification_evidence"] = evidence
-    return rebuilt
+        raise SystemExit(
+            "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID: "
+            + json.dumps(failures, ensure_ascii=False)
+        )
+    return program
 
 
 def factor_tokens(report_id: str, spec: dict[str, Any], iteration: dict[str, Any]) -> list[str]:
@@ -538,6 +578,12 @@ def main() -> None:
     if isinstance(brief_ref, dict) and brief_ref.get("json_path") and Path(brief_ref["json_path"]).exists():
         brief_json = load_json(Path(brief_ref["json_path"]))
     mechanism_analysis = nested(memo, "mechanism_analysis")
+    measurement_program = measurement_program_for_packet(
+        spec,
+        case,
+        handoff,
+        memo,
+    )
     formula_specific_derivation = mechanism_analysis.get("formula_specific_derivation") if isinstance(mechanism_analysis, dict) else None
     if not isinstance(formula_specific_derivation, dict) or not formula_specific_derivation:
         formula_specific_derivation = brief_json.get("formula_specific_derivation") if isinstance(brief_json.get("formula_specific_derivation"), dict) else {}
@@ -553,9 +599,10 @@ def main() -> None:
         "artifact_identity": iteration.get("artifact_identity") or case.get("artifact_identity") or run.get("artifact_identity") or {},
         "factor_formula": canonical.get("formula_text") or spec.get("formula_text") or nested(brief_json, "economic_interpretation").get("formula"),
         "implementation_mode": (iteration.get("artifact_identity") or {}).get("implementation_mode") or (run.get("artifact_identity") or {}).get("implementation_mode"),
-        "mechanism_math_contract": (
+        "legacy_mechanism_math_contract": (
             mechanism_math_for_packet(spec, case, handoff, memo)
         ),
+        "mechanism_conditioned_measurement_program": measurement_program,
         "formula_specific_derivation": formula_specific_derivation,
         "mechanism_formula_consistency": mechanism_formula_consistency,
         "prior_revision_memory": revision_memory,

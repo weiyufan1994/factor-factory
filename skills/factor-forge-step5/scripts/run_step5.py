@@ -114,7 +114,7 @@ def archive_artifacts(bundle: dict, evaluation_path: Path | None = None, case_pa
 
 def build_handoff_to_step6(bundle: dict, evaluation: dict, case: dict, evaluation_path: Path, case_path: Path, archive_paths: list[str]) -> dict:
     frm = bundle["objects"].get("factor_run_master") or {}
-    return {
+    handoff = {
         "report_id": bundle["report_id"],
         "factor_id": frm.get("factor_id"),
         "final_status": case.get("final_status"),
@@ -126,7 +126,7 @@ def build_handoff_to_step6(bundle: dict, evaluation: dict, case: dict, evaluatio
         "lessons": case.get("lessons") or [],
         "next_actions": case.get("next_actions") or [],
         "math_discipline_review": case.get("math_discipline_review") or {},
-        "mechanism_math_contract": case.get("mechanism_math_contract") or {},
+        "mechanism_conditioned_measurement_program": case.get("mechanism_conditioned_measurement_program") or {},
         "backend_summary": evaluation.get("backend_summary") or [],
         "known_limits": case.get("known_limits") or [],
         "artifact_identity": case.get("artifact_identity") or {},
@@ -136,6 +136,11 @@ def build_handoff_to_step6(bundle: dict, evaluation: dict, case: dict, evaluatio
         "evidence_quality": case.get("evidence_quality") or {},
         "created_by_step": "step5",
     }
+    if case.get("mechanism_math_contract"):
+        handoff["mechanism_math_contract"] = case["mechanism_math_contract"]
+    if case.get("mechanism_math_contract_v2"):
+        handoff["mechanism_math_contract_v2"] = case["mechanism_math_contract_v2"]
+    return handoff
 
 
 def step5_prewrite_failures(evidence_quality: dict) -> list[str]:

@@ -1,0 +1,119 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::alpha007_regime_kurt_skew_20260422",
+  "node_type": "mechanism",
+  "title": "Alpha007 folded reversal with kurtosis-skewness regime weighting",
+  "summary": "Alpha007 research found that folding the signed volume-spike reversal signal and weighting it by kurtosis minus skewness improved decile monotonicity by identifying crash-regime conditions.",
+  "factor_ids": [
+    "Alpha007",
+    "Alpha007Extended"
+  ],
+  "report_ids": [
+    "ALPHA007_PAPER_20160101_20250711",
+    "ALPHA009_ALPHA007_CHOPPY_SKEW_20260422"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "reversal",
+      "momentum"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "rank_transform",
+      "ts_operator"
+    ],
+    "cn_quant_practice": [
+      "intraday_reversal",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "regime_conditioner",
+      "alpha_combination_feature"
+    ],
+    "economic_mechanism": [
+      "overreaction",
+      "liquidity_provision",
+      "attention"
+    ],
+    "math_mechanism": [
+      "distribution_moment",
+      "regime_switching",
+      "path_functional"
+    ],
+    "data_source": [
+      "daily_ohlcv"
+    ],
+    "tradability": [
+      "long_side",
+      "cost_sensitive"
+    ],
+    "research_status": [
+      "validated",
+      "candidate"
+    ],
+    "failure_mode": [
+      "smoke_only_false_positive"
+    ]
+  },
+  "mechanism": {
+    "payer": "crowded or forced short-horizon traders who overreact to large price moves under abnormal volume",
+    "receiver": "liquidity provider or mean-reversion holder compensated when crash-regime overreaction fades",
+    "random_object": "folded absolute 7-day price move under volume condition, modulated by rolling return distribution shape",
+    "formula_latex": "S_{i,t}= -|\\alpha^{007}_{i,t}|\\cdot \\left(1+0.5(\\mathrm{kurtosis}^{z}_{i,t}-\\mathrm{skewness}^{z}_{i,t})\\right)",
+    "math_forced_insight": "Signed ts-rank and folded absolute move are not algebraically equivalent; the distribution-moment regime preserves crash-tail information while avoiding bubble-regime over-amplification."
+  },
+  "evidence": {
+    "source_window": "20160101-20250711",
+    "classification": "validated_candidate_mechanism",
+    "key_metrics": {
+      "folded_rank_ic": 0.068,
+      "kurt_skew_rank_ic": 0.057,
+      "kurt_skew_monotonicity_rho": 0.988,
+      "kurt_skew_g10_daily": 0.00022,
+      "qlib_only_is_rankic_1d": -0.00392144,
+      "qlib_only_oos_rankic_1d": 0.00428732,
+      "qlib_only_is_ls_sharpe": -0.618956,
+      "qlib_only_oos_ls_sharpe": -0.293026,
+      "qlib_only_is_turnover_mean": 0.490667,
+      "qlib_only_oos_turnover_mean": 0.47482
+    },
+    "boundary": "Regime transform improved monotonicity but should still be checked for OOS and cost before being treated as standalone production alpha.",
+    "qlib_only_boundary": "Controlled Qlib-only Alpha007 record is weak/negative and should not override the separate folded kurt-skew candidate mechanism; use it as a sign and portfolio-construction caution."
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/ALPHA007_PAPER_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA009_ALPHA007_CHOPPY_SKEW_20260422.md",
+    "knowledge/因子工厂/知识库/因子迭代方法论.md",
+    "knowledge/因子工厂/普通因子库/ALPHA007_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA007_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/研究迭代/ALPHA007_QLIB_ONLY_20160101_20250711.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::distribution_moment",
+      "note": "Kurtosis and skewness classify crash/bubble distribution shape before weighting the folded signal."
+    },
+    {
+      "edge_type": "refines",
+      "target": "factor::Alpha007",
+      "note": "Fold plus kurt-skew regime refines the original signed Alpha007 formula."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_transform::signed_tsrank_equals_abs_fold",
+      "note": "Testing showed ts_rank(delta) is not equivalent to ts_rank(abs(delta)) times sign."
+    },
+    {
+      "edge_type": "inspires",
+      "target": "method::distribution_moment_regime_filter",
+      "note": "Use rolling skewness/kurtosis when a factor's tail buckets fail in crash or bubble regimes."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node when a factor has tail-bucket instability, crash-regime failure, or signed-vs-magnitude ambiguity.",
+    "Use distribution moments to explain regime-specific payer behavior, not as decorative nonlinear weighting.",
+    "Treat improved monotonicity as useful but still require long-side and OOS/cost evidence."
+  ]
+}

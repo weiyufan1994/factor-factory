@@ -1,0 +1,12 @@
+{
+  "contract_version": "factorforge_workspace_migration_record_v1",
+  "destructive_actions": false,
+  "factor_id": "moneyflow_v18_long_edge",
+  "file_count_after_move": 26,
+  "migration_reason": "legacy_one_level_factor_research_workspace",
+  "moved_at_utc": "2026-06-23T01:48:20.753417Z",
+  "overwrite": false,
+  "research_id": "moneyflow_v18_long_edge_20260611",
+  "source_path": "/Users/humphrey/projects/factor-factory/factor_research/moneyflow_v18_long_edge_20260611",
+  "target_path": "/Users/humphrey/projects/factor-factory/factor_research/moneyflow_v18_long_edge/moneyflow_v18_long_edge_20260611"
+}

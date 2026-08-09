@@ -1,0 +1,694 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import threading
+import time
+import unicodedata
+import uuid
+import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from factor_factory.console.models import ResearchJob, ResearchMessage, ResearchRequest
+from factor_factory.research_workspace import safe_identity
+
+
+ACTIVE_STATUSES = ("ALLOCATING", "RESEARCHING", "VERIFYING")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _factor_identity(request: ResearchRequest) -> str:
+    explicit = request.factor_id_hint.strip()
+    if explicit:
+        normalized = safe_identity(explicit).upper()[:64]
+        if normalized != "UNKNOWN":
+            return normalized
+        canonical = unicodedata.normalize("NFKC", explicit)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16].upper()
+        return f"FACTOR_{digest}"
+
+    canonical_title = " ".join(
+        unicodedata.normalize("NFKC", request.title).split()
+    )
+    readable = safe_identity(canonical_title).upper()
+    digest = hashlib.sha256(canonical_title.encode("utf-8")).hexdigest()[:16].upper()
+    if readable == "UNKNOWN":
+        return f"FACTOR_{digest}"
+    return f"FACTOR_{readable[:40]}_{digest}"
+
+
+class ResearchJobStore:
+    def __init__(self, state_root: str | Path) -> None:
+        self.state_root = Path(state_root).expanduser().resolve()
+        self.state_root.mkdir(parents=True, exist_ok=True, mode=0o770)
+        try:
+            self.state_root.chmod(0o770)
+        except OSError:
+            pass
+        self.path = self.state_root / "console.sqlite3"
+        self._create_shared_database_file()
+        self._lock = threading.RLock()
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=30000")
+        self._ensure_shared_database_permissions()
+        return connection
+
+    def _create_shared_database_file(self) -> None:
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(self.path, flags, 0o660)
+        os.close(descriptor)
+        self._ensure_shared_database_permissions()
+
+    def _ensure_shared_database_permissions(self) -> None:
+        for candidate in (
+            self.path,
+            Path(f"{self.path}-wal"),
+            Path(f"{self.path}-shm"),
+        ):
+            try:
+                candidate.chmod(0o660, follow_symlinks=False)
+            except (FileNotFoundError, PermissionError):
+                continue
+
+    def _initialize(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS research_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    factor_id TEXT NOT NULL,
+                    research_id TEXT NOT NULL,
+                    report_id TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    execution_status TEXT NOT NULL,
+                    protocol_status TEXT NOT NULL,
+                    factor_verdict TEXT NOT NULL,
+                    council_status TEXT NOT NULL,
+                    formal_proof_eligible INTEGER NOT NULL DEFAULT 0,
+                    current_stage TEXT NOT NULL,
+                    base_commit TEXT NOT NULL DEFAULT '',
+                    worktree_path TEXT NOT NULL DEFAULT '',
+                    workspace_path TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT NOT NULL DEFAULT '',
+                    agent_session_key TEXT NOT NULL DEFAULT '',
+                    error_code TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at_utc TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    started_at_utc TEXT NOT NULL DEFAULT '',
+                    finished_at_utc TEXT NOT NULL DEFAULT '',
+                    UNIQUE(factor_id, research_id),
+                    UNIQUE(report_id)
+                );
+                CREATE INDEX IF NOT EXISTS research_jobs_status_created
+                    ON research_jobs(execution_status, created_at_utc);
+                CREATE TABLE IF NOT EXISTS research_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL REFERENCES research_jobs(job_id),
+                    created_at_utc TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS research_events_job
+                    ON research_events(job_id, event_id);
+                CREATE TABLE IF NOT EXISTS research_messages (
+                    message_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES research_jobs(job_id),
+                    sequence_no INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content_kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    UNIQUE(job_id, sequence_no),
+                    UNIQUE(job_id, idempotency_key)
+                );
+                CREATE INDEX IF NOT EXISTS research_messages_job_sequence
+                    ON research_messages(job_id, sequence_no);
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    token_sha256 TEXT PRIMARY KEY,
+                    created_at_utc TEXT NOT NULL,
+                    expires_at_epoch INTEGER NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            self._backfill_initial_messages(connection)
+            self._ensure_shared_database_permissions()
+
+    def _backfill_initial_messages(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT job_id, request_json, created_at_utc
+            FROM research_jobs AS jobs
+            WHERE NOT EXISTS (
+                SELECT 1 FROM research_messages AS messages
+                WHERE messages.job_id = jobs.job_id
+            )
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                request_payload = json.loads(str(row["request_json"]))
+                request = ResearchRequest.from_dict(request_payload)
+                self._insert_message(
+                    connection,
+                    job_id=str(row["job_id"]),
+                    role="user",
+                    content_kind=request.input_kind,
+                    content=request.hypothesis,
+                    model=request.model,
+                    idempotency_key=f"initial:{row['job_id']}",
+                    created_at_utc=str(row["created_at_utc"]),
+                )
+            except (json.JSONDecodeError, TypeError, ValueError, sqlite3.Error):
+                continue
+
+    def healthcheck(self) -> bool:
+        try:
+            with self._lock, self._connect() as connection:
+                row = connection.execute("SELECT 1 AS ok").fetchone()
+            return bool(row and row["ok"] == 1)
+        except sqlite3.Error:
+            return False
+
+    def register_session(self, token: str, *, max_age_seconds: int) -> None:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        expires = int(time.time()) + int(max_age_seconds)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO auth_sessions VALUES (?,?,?,0)",
+                (digest, utc_now(), expires),
+            )
+            connection.execute(
+                "DELETE FROM auth_sessions WHERE revoked=1 OR expires_at_epoch<?",
+                (int(time.time()) - 60,),
+            )
+
+    def session_is_active(self, token: str) -> bool:
+        if not token:
+            return False
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT expires_at_epoch, revoked FROM auth_sessions WHERE token_sha256=?",
+                (digest,),
+            ).fetchone()
+        return bool(row and not row["revoked"] and int(row["expires_at_epoch"]) >= int(time.time()))
+
+    def revoke_session(self, token: str) -> None:
+        if not token:
+            return
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE auth_sessions SET revoked=1 WHERE token_sha256=?",
+                (digest,),
+            )
+
+    def create_job(
+        self,
+        request: ResearchRequest,
+        *,
+        initial_messages: list[tuple[str, str]] | None = None,
+    ) -> ResearchJob:
+        now = utc_now()
+        suffix = uuid.uuid4().hex[:10]
+        factor_id = _factor_identity(request)
+        research_id = f"web_{now[:10].replace('-', '')}_{suffix}"
+        report_prefix = f"WEB_{factor_id}_{now[:10].replace('-', '')}"
+        report_id = f"{report_prefix[:104]}_{suffix}"
+        job = ResearchJob(
+            job_id=f"job_{suffix}",
+            factor_id=factor_id,
+            research_id=research_id,
+            report_id=report_id,
+            request=request,
+            created_at_utc=now,
+            updated_at_utc=now,
+        )
+        messages = list(initial_messages or [(request.input_kind, request.hypothesis)])
+        if not messages or len(messages) > 8:
+            raise ValueError("initial research messages must contain between 1 and 8 items")
+        normalized_messages = [
+            (str(content_kind).strip(), str(content).strip())
+            for content_kind, content in messages
+            if str(content).strip()
+        ]
+        if len(normalized_messages) != len(messages):
+            raise ValueError("initial research messages must not be empty")
+        if (request.input_kind, request.hypothesis.strip()) not in normalized_messages:
+            raise ValueError("initial research messages must include the canonical request input")
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._insert_job(connection, job)
+            for index, (content_kind, content) in enumerate(normalized_messages, start=1):
+                self._insert_message(
+                    connection,
+                    job_id=job.job_id,
+                    role="user",
+                    content_kind=content_kind,
+                    content=content,
+                    model=request.model,
+                    idempotency_key=f"initial:{job.job_id}:{index}",
+                    created_at_utc=now,
+                )
+            self._insert_event(connection, job.job_id, "JOB_CREATED", "研究任务已进入队列", {})
+            connection.execute("COMMIT")
+        return job
+
+    def _insert_job(self, connection: sqlite3.Connection, job: ResearchJob) -> None:
+        connection.execute(
+            """
+            INSERT INTO research_jobs (
+                job_id, factor_id, research_id, report_id, request_json,
+                execution_status, protocol_status, factor_verdict, council_status,
+                formal_proof_eligible, current_stage, base_commit, worktree_path,
+                workspace_path, agent_id, agent_session_key, error_code,
+                error_message, result_json, created_at_utc, updated_at_utc,
+                started_at_utc, finished_at_utc
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                job.job_id,
+                job.factor_id,
+                job.research_id,
+                job.report_id,
+                _compact_json(job.request.to_dict()),
+                job.execution_status,
+                job.protocol_status,
+                job.factor_verdict,
+                job.council_status,
+                int(job.formal_proof_eligible),
+                job.current_stage,
+                job.base_commit,
+                job.worktree_path,
+                job.workspace_path,
+                job.agent_id,
+                job.agent_session_key,
+                job.error_code,
+                job.error_message,
+                _compact_json(job.result),
+                job.created_at_utc,
+                job.updated_at_utc,
+                job.started_at_utc,
+                job.finished_at_utc,
+            ),
+        )
+
+    def get_job(self, job_id: str) -> ResearchJob | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM research_jobs WHERE job_id=?", (job_id,)).fetchone()
+        return self._row_to_job(row) if row else None
+
+    def list_jobs(self, limit: int = 100) -> list[ResearchJob]:
+        safe_limit = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM research_jobs ORDER BY created_at_utc DESC LIMIT ?", (safe_limit,)
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
+
+    def claim_next_job(self) -> ResearchJob | None:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                "SELECT COUNT(*) FROM research_jobs WHERE execution_status IN (?,?,?)", ACTIVE_STATUSES
+            ).fetchone()[0]
+            if active:
+                connection.execute("COMMIT")
+                return None
+            row = connection.execute(
+                "SELECT * FROM research_jobs WHERE execution_status='QUEUED' ORDER BY created_at_utc LIMIT 1"
+            ).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return None
+            started = str(row["started_at_utc"] or now)
+            connection.execute(
+                """
+                UPDATE research_jobs
+                SET execution_status='ALLOCATING', current_stage='allocating_workspace',
+                    protocol_status=CASE WHEN protocol_status='NOT_STARTED' THEN 'RUNNING' ELSE protocol_status END,
+                    started_at_utc=?, updated_at_utc=?
+                WHERE job_id=? AND execution_status='QUEUED'
+                """,
+                (started, now, row["job_id"]),
+            )
+            self._insert_event(
+                connection,
+                str(row["job_id"]),
+                "JOB_CLAIMED",
+                "任务已由研究执行器领取",
+                {},
+            )
+            connection.execute("COMMIT")
+        return self.get_job(str(row["job_id"]))
+
+    def update_job(self, job_id: str, **changes: Any) -> ResearchJob:
+        allowed = {
+            "execution_status",
+            "protocol_status",
+            "factor_verdict",
+            "council_status",
+            "formal_proof_eligible",
+            "current_stage",
+            "base_commit",
+            "worktree_path",
+            "workspace_path",
+            "agent_id",
+            "agent_session_key",
+            "error_code",
+            "error_message",
+            "result",
+            "started_at_utc",
+            "finished_at_utc",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"unsupported job fields: {sorted(unknown)}")
+        if not changes:
+            job = self.get_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            return job
+        assignments: list[str] = []
+        values: list[Any] = []
+        for key, value in changes.items():
+            column = "result_json" if key == "result" else key
+            assignments.append(f"{column}=?")
+            if key == "result":
+                value = _compact_json(value)
+            elif key == "formal_proof_eligible":
+                value = int(bool(value))
+            values.append(value)
+        assignments.append("updated_at_utc=?")
+        values.extend([utc_now(), job_id])
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE research_jobs SET {', '.join(assignments)} WHERE job_id=?", values
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(job_id)
+        job = self.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        return job
+
+    def append_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            self._insert_event(connection, job_id, event_type, message, payload or {})
+
+    def add_message(
+        self,
+        job_id: str,
+        *,
+        content_kind: str,
+        content: str,
+        model: str = "",
+        idempotency_key: str,
+    ) -> ResearchMessage:
+        if not idempotency_key or len(idempotency_key) > 160:
+            raise ValueError("message idempotency key is invalid")
+        if idempotency_key.lower().startswith(("initial:", "internal:", "system:")):
+            raise ValueError("message idempotency key uses a reserved namespace")
+        if self.get_job(job_id) is None:
+            raise KeyError(job_id)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM research_messages WHERE job_id=? AND idempotency_key=?",
+                (job_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                existing_message = self._row_to_message(existing)
+                if (
+                    existing_message.role != "user"
+                    or existing_message.content_kind != content_kind
+                    or existing_message.content != content.strip()
+                    or existing_message.model != model
+                ):
+                    raise ValueError(
+                        "message idempotency key conflicts with a different payload"
+                    )
+                connection.execute("COMMIT")
+                return existing_message
+            message = self._insert_message(
+                connection,
+                job_id=job_id,
+                role="user",
+                content_kind=content_kind,
+                content=content,
+                model=model,
+                idempotency_key=idempotency_key,
+                created_at_utc=utc_now(),
+            )
+            connection.execute("COMMIT")
+        return message
+
+    def _insert_message(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        role: str,
+        content_kind: str,
+        content: str,
+        model: str,
+        idempotency_key: str,
+        created_at_utc: str,
+    ) -> ResearchMessage:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sequence_no), 0) + 1 AS next_sequence FROM research_messages WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        sequence_no = int(row["next_sequence"])
+        message = ResearchMessage(
+            message_id=f"msg_{uuid.uuid4().hex}",
+            job_id=job_id,
+            sequence_no=sequence_no,
+            role=role,
+            content_kind=content_kind,
+            content=content.strip(),
+            model=model,
+            idempotency_key=idempotency_key,
+            created_at_utc=created_at_utc,
+        )
+        connection.execute(
+            """
+            INSERT INTO research_messages(
+                message_id, job_id, sequence_no, role, content_kind, content,
+                model, idempotency_key, created_at_utc
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                message.message_id,
+                message.job_id,
+                message.sequence_no,
+                message.role,
+                message.content_kind,
+                message.content,
+                message.model,
+                message.idempotency_key,
+                message.created_at_utc,
+            ),
+        )
+        return message
+
+    def list_messages(self, job_id: str, limit: int = 200) -> list[ResearchMessage]:
+        _total, messages = self.snapshot_messages(job_id, limit=limit)
+        return messages
+
+    def snapshot_messages(
+        self,
+        job_id: str,
+        *,
+        limit: int = 200,
+    ) -> tuple[int, list[ResearchMessage]]:
+        safe_limit = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                WITH message_total AS (
+                    SELECT COUNT(*) AS total_count
+                    FROM research_messages
+                    WHERE job_id=?
+                )
+                SELECT messages.*, message_total.total_count
+                FROM research_messages AS messages
+                CROSS JOIN message_total
+                WHERE messages.job_id=?
+                ORDER BY messages.sequence_no DESC
+                LIMIT ?
+                """,
+                (job_id, job_id, safe_limit),
+            ).fetchall()
+        total_count = int(rows[0]["total_count"]) if rows else 0
+        return total_count, [self._row_to_message(row) for row in reversed(rows)]
+
+    def _insert_event(
+        self,
+        connection: sqlite3.Connection,
+        job_id: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> None:
+        connection.execute(
+            "INSERT INTO research_events(job_id,created_at_utc,event_type,message,payload_json) VALUES (?,?,?,?,?)",
+            (job_id, utc_now(), event_type, message[:800], _compact_json(payload)),
+        )
+
+    def list_events(self, job_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, created_at_utc, event_type, message, payload_json
+                FROM research_events WHERE job_id=? ORDER BY event_id DESC LIMIT ?
+                """,
+                (job_id, max(1, min(int(limit), 500))),
+            ).fetchall()
+        output = []
+        for row in reversed(rows):
+            output.append(
+                {
+                    "event_id": row["event_id"],
+                    "created_at_utc": row["created_at_utc"],
+                    "event_type": row["event_type"],
+                    "message": row["message"],
+                    "payload": json.loads(row["payload_json"] or "{}"),
+                }
+            )
+        return output
+
+    def request_resume(self, job_id: str) -> ResearchJob:
+        job = self.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.execution_status not in {"REVIEW_REQUIRED", "BLOCKED", "FAILED"}:
+            raise ValueError("only a paused, blocked, or failed job can be resumed")
+        resumed = self.update_job(
+            job_id,
+            execution_status="QUEUED",
+            protocol_status="RUNNING",
+            current_stage="resume_requested",
+            error_code="",
+            error_message="",
+            finished_at_utc="",
+        )
+        self.append_event(job_id, "RESUME_REQUESTED", "已请求研究代理从现有 workspace 继续", {})
+        return resumed
+
+    def cancel_queued(self, job_id: str) -> ResearchJob:
+        job = self.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.execution_status != "QUEUED":
+            raise ValueError("only queued jobs can be cancelled")
+        cancelled = self.update_job(
+            job_id,
+            execution_status="CANCELLED",
+            current_stage="cancelled",
+            finished_at_utc=utc_now(),
+        )
+        self.append_event(job_id, "JOB_CANCELLED", "排队任务已取消", {})
+        return cancelled
+
+    def pause_interrupted_jobs(self) -> int:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT job_id FROM research_jobs WHERE execution_status IN (?,?,?)", ACTIVE_STATUSES
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    """
+                    UPDATE research_jobs
+                    SET execution_status='REVIEW_REQUIRED', protocol_status='PAUSED',
+                        current_stage='service_restart_review',
+                        error_code='BLOCK_FACTORFORGE_CONSOLE_SERVICE_RESTART_REVIEW_REQUIRED',
+                        error_message='服务重启后未自动重复执行；请从现有 workspace 显式继续。',
+                        updated_at_utc=? WHERE job_id=?
+                    """,
+                    (now, row["job_id"]),
+                )
+                self._insert_event(
+                    connection,
+                    str(row["job_id"]),
+                    "SERVICE_RESTART_PAUSE",
+                    "服务重启，任务已安全暂停，未重复创建 worktree",
+                    {},
+                )
+            connection.execute("COMMIT")
+        return len(rows)
+
+    @staticmethod
+    def _row_to_job(row: sqlite3.Row) -> ResearchJob:
+        return ResearchJob(
+            job_id=str(row["job_id"]),
+            factor_id=str(row["factor_id"]),
+            research_id=str(row["research_id"]),
+            report_id=str(row["report_id"]),
+            request=ResearchRequest.from_dict(json.loads(row["request_json"])),
+            execution_status=str(row["execution_status"]),
+            protocol_status=str(row["protocol_status"]),
+            factor_verdict=str(row["factor_verdict"]),
+            council_status=str(row["council_status"]),
+            formal_proof_eligible=bool(row["formal_proof_eligible"]),
+            current_stage=str(row["current_stage"]),
+            base_commit=str(row["base_commit"]),
+            worktree_path=str(row["worktree_path"]),
+            workspace_path=str(row["workspace_path"]),
+            agent_id=str(row["agent_id"]),
+            agent_session_key=str(row["agent_session_key"]),
+            error_code=str(row["error_code"]),
+            error_message=str(row["error_message"]),
+            result=json.loads(row["result_json"] or "{}"),
+            created_at_utc=str(row["created_at_utc"]),
+            updated_at_utc=str(row["updated_at_utc"]),
+            started_at_utc=str(row["started_at_utc"]),
+            finished_at_utc=str(row["finished_at_utc"]),
+        )
+
+    @staticmethod
+    def _row_to_message(row: sqlite3.Row) -> ResearchMessage:
+        return ResearchMessage(
+            message_id=str(row["message_id"]),
+            job_id=str(row["job_id"]),
+            sequence_no=int(row["sequence_no"]),
+            role=str(row["role"]),
+            content_kind=str(row["content_kind"]),
+            content=str(row["content"]),
+            model=str(row["model"]),
+            idempotency_key=str(row["idempotency_key"]),
+            created_at_utc=str(row["created_at_utc"]),
+        )

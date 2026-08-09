@@ -10,10 +10,20 @@ import numpy as np
 import pandas as pd
 
 from .operators import (
+    cs_regression,
     cs_rank,
     cs_scale,
+    cs_zscore,
+    rolling_bottomk_skew,
     rolling_corr,
     rolling_cov,
+    rolling_kurtosis,
+    rolling_max_inner_skew,
+    rolling_max_subwindow_sum,
+    rolling_min_inner_skew,
+    rolling_topk_skew,
+    rolling_topk_sum,
+    signed_log1p,
     signed_power,
     ts_argmax,
     ts_argmin,
@@ -130,10 +140,19 @@ def _profile_operator_name(node: dict) -> str:
     }.get(op, op)
 
 
+def _field_series(node: dict, frame: pd.DataFrame) -> pd.Series:
+    resolved = str(node['resolved_field'])
+    values = pd.to_numeric(frame[resolved], errors='coerce')
+    semantic_name = str(node.get('name') or '').strip().lower()
+    if semantic_name in {'returns', 'return', 'ret'} and resolved.strip().lower() == 'pct_chg':
+        return values / 100.0
+    return values
+
+
 def _eval(node: dict, frame: pd.DataFrame):
     typ = node.get('type')
     if typ == 'field':
-        return pd.to_numeric(frame[node['resolved_field']], errors='coerce')
+        return _field_series(node, frame)
     if typ == 'constant':
         return node['value']
     if typ != 'operator':
@@ -168,6 +187,28 @@ def _eval(node: dict, frame: pd.DataFrame):
         return ts_argmax(args[0], _window(args[1]), frame)
     if op == 'scale':
         return cs_scale(args[0], frame)
+    if op == 'cs_zscore':
+        return cs_zscore(args[0], _window(args[1]), frame)
+    if op == 'signed_log1p':
+        return signed_log1p(args[0])
+    if op == 'rolling_excess_kurtosis':
+        return rolling_kurtosis(args[0], _window(args[1]), frame, pearson=False)
+    if op == 'rolling_pearson_kurtosis':
+        return rolling_kurtosis(args[0], _window(args[1]), frame, pearson=True)
+    if op == 'rolling_topk_skew':
+        return rolling_topk_skew(args[0], _window(args[1]), _window(args[2]), frame)
+    if op == 'rolling_bottomk_skew':
+        return rolling_bottomk_skew(args[0], _window(args[1]), _window(args[2]), frame)
+    if op == 'rolling_max_inner_skew':
+        return rolling_max_inner_skew(args[0], _window(args[1]), _window(args[2]), frame)
+    if op == 'rolling_min_inner_skew':
+        return rolling_min_inner_skew(args[0], _window(args[1]), _window(args[2]), frame)
+    if op == 'rolling_max_subwindow_sum':
+        return rolling_max_subwindow_sum(args[0], _window(args[1]), _window(args[2]), frame)
+    if op == 'rolling_topk_sum':
+        return rolling_topk_sum(args[0], _window(args[1]), _window(args[2]), frame)
+    if op == 'cs_regression':
+        return cs_regression(args[0], args[1], _window(args[2]), frame)
     if op == 'plus':
         return args[0] + args[1]
     if op == 'minus':
@@ -239,7 +280,7 @@ def _eval_cached(
             input_rows=len(frame),
             detail={'node_type': typ, 'field': node.get('resolved_field')},
         ) if profiler is not None else _null_phase()) as event:
-            result = pd.to_numeric(frame[node['resolved_field']], errors='coerce')
+            result = _field_series(node, frame)
             if profiler is not None:
                 profiler.set_output(event, result, output_name=str(node.get('resolved_field') or 'column'))
         cache[key] = result
@@ -303,6 +344,28 @@ def _eval_cached(
                 result = ts_argmax(args[0], _window(args[1]), frame)
         elif op == 'scale':
             result = cs_scale(args[0], frame)
+        elif op == 'cs_zscore':
+            result = cs_zscore(args[0], _window(args[1]), frame)
+        elif op == 'signed_log1p':
+            result = signed_log1p(args[0])
+        elif op == 'rolling_excess_kurtosis':
+            result = rolling_kurtosis(args[0], _window(args[1]), frame, pearson=False)
+        elif op == 'rolling_pearson_kurtosis':
+            result = rolling_kurtosis(args[0], _window(args[1]), frame, pearson=True)
+        elif op == 'rolling_topk_skew':
+            result = rolling_topk_skew(args[0], _window(args[1]), _window(args[2]), frame)
+        elif op == 'rolling_bottomk_skew':
+            result = rolling_bottomk_skew(args[0], _window(args[1]), _window(args[2]), frame)
+        elif op == 'rolling_max_inner_skew':
+            result = rolling_max_inner_skew(args[0], _window(args[1]), _window(args[2]), frame)
+        elif op == 'rolling_min_inner_skew':
+            result = rolling_min_inner_skew(args[0], _window(args[1]), _window(args[2]), frame)
+        elif op == 'rolling_max_subwindow_sum':
+            result = rolling_max_subwindow_sum(args[0], _window(args[1]), _window(args[2]), frame)
+        elif op == 'rolling_topk_sum':
+            result = rolling_topk_sum(args[0], _window(args[1]), _window(args[2]), frame)
+        elif op == 'cs_regression':
+            result = cs_regression(args[0], args[1], _window(args[2]), frame)
         elif op == 'plus':
             result = args[0] + args[1]
         elif op == 'minus':

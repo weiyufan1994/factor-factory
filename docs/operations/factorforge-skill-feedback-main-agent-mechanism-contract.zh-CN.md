@@ -1,5 +1,11 @@
 # Factor Forge Ultimate 问题反馈：主 Agent 公式特异机制推导合同缺失
 
+> **历史反馈，术语已由当前合同校正。** 新研究必须使用
+> `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md` 的开放、
+> mechanism-conditioned 数学选择。下文把 stochastic process 放入通用推导链的
+> 表述只保留为历史问题背景，不是必填 schema；DCF、剩余收益、会计恒等式、
+> 因果、谱/信号、泛函或其他机制均可按经济假设成为首选模型。
+
 Date: 2026-05-18
 
 Audience: Factor Forge Architect
@@ -478,4 +484,3 @@ Council should critique that memo, not replace it.
 ```
 
 Until that contract exists, Factor Forge can still pass wrapper and Council-dispatch tests while carrying a mechanism explanation that is too generic for formal factor research.
-

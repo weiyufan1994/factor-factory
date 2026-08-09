@@ -354,7 +354,26 @@ def build_step5_math_discipline_review(bundle: Dict[str, Any], evaluation: Dict[
     fsm = bundle["objects"].get("factor_spec_master") or {}
     frm = bundle["objects"].get("factor_run_master") or {}
     canonical = fsm.get("canonical_spec") or {}
-    mechanism_math_contract = fsm.get("mechanism_math_contract") or canonical.get("mechanism_math_contract") or {}
+    measurement_program = (
+        fsm.get("mechanism_conditioned_measurement_program")
+        or canonical.get("mechanism_conditioned_measurement_program")
+        or {}
+    )
+    model_selection = measurement_program.get("model_selection") or {}
+    selected_model = next(
+        (
+            item
+            for item in model_selection.get("candidate_models") or []
+            if isinstance(item, dict) and item.get("selected") is True
+        ),
+        {},
+    )
+    observation = measurement_program.get("observation_and_estimation") or {}
+    projection = measurement_program.get("market_outcome_projection") or {}
+    selected_tools = (
+        (measurement_program.get("math_tool_selection") or {}).get("selected_tool_families")
+        or []
+    )
     formula_text = str(canonical.get("formula_text") or "")
     operators = [str(item).lower() for item in _as_list(canonical.get("operators"))]
     preprocessing = [str(item).lower() for item in _as_list(canonical.get("preprocessing"))]
@@ -416,13 +435,14 @@ def build_step5_math_discipline_review(bundle: Dict[str, Any], evaluation: Dict[
         "information_set_legality": information_set_legality,
         "spec_stability": spec_stability,
         "signal_vs_portfolio_gap": signal_vs_portfolio_gap,
-        "mechanism_math_contract_ref": {
-            "math_model_status": mechanism_math_contract.get("math_model_status"),
-            "model_family": mechanism_math_contract.get("model_family"),
-            "state_or_object": mechanism_math_contract.get("state_or_object"),
-            "target_functional": mechanism_math_contract.get("target_functional"),
-            "monotonicity_claim": mechanism_math_contract.get("monotonicity_claim"),
-            "expected_metric_signature": mechanism_math_contract.get("expected_metric_signature") or {},
+        "mechanism_conditioned_measurement_program_ref": {
+            "contract_version": measurement_program.get("contract_version"),
+            "model_family": selected_model.get("model_family"),
+            "mathematical_object": selected_model.get("mathematical_object"),
+            "selected_tool_families": selected_tools,
+            "estimand": observation.get("estimand"),
+            "observation_map": observation.get("observation_map"),
+            "market_outcome_projection": projection.get("projection_equation_or_map"),
         },
         "long_side_objective": long_side_review,
         "monotonicity_objective": "Higher factor values should map to stronger expected long-side returns; decile spreads are diagnostics only.",
@@ -499,6 +519,12 @@ def build_factor_case_master(
     fsm = bundle["objects"].get("factor_spec_master") or {}
     dpm = bundle["objects"].get("data_prep_master") or {}
     mechanism_math_contract = fsm.get("mechanism_math_contract") or (fsm.get("canonical_spec") or {}).get("mechanism_math_contract") or {}
+    mechanism_math_contract_v2 = fsm.get("mechanism_math_contract_v2") or (fsm.get("canonical_spec") or {}).get("mechanism_math_contract_v2") or {}
+    measurement_program = (
+        fsm.get("mechanism_conditioned_measurement_program")
+        or (fsm.get("canonical_spec") or {}).get("mechanism_conditioned_measurement_program")
+        or {}
+    )
 
     case = {
         "report_id": bundle["report_id"],
@@ -522,7 +548,7 @@ def build_factor_case_master(
             "archive_paths": archive_paths,
         },
         "math_discipline_review": build_step5_math_discipline_review(bundle, evaluation),
-        "mechanism_math_contract": mechanism_math_contract,
+        "mechanism_conditioned_measurement_program": measurement_program,
         "adoption_constraints": LONG_ONLY_ADOPTION_CONSTRAINTS,
         "long_side_review": build_long_side_review(evaluation),
         "step4_quality_gate": evaluation.get("step4_quality_gate") or {},
@@ -532,4 +558,8 @@ def build_factor_case_master(
         "created_by_step": "step5",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
     }
+    if mechanism_math_contract:
+        case["mechanism_math_contract"] = mechanism_math_contract
+    if mechanism_math_contract_v2:
+        case["mechanism_math_contract_v2"] = mechanism_math_contract_v2
     return case

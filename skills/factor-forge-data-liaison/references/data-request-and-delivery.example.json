@@ -1,0 +1,83 @@
+{
+  "task_authorized_request_path": "objects/research_organization/example_report/data_requests/data_request__example_report__required_state_v1.json",
+  "agent_private_request_payload": {
+    "contract_version": "factorforge_data_request_v1",
+    "request_id": "data_request__example_report__required_state_v1",
+    "request_type": "state_datamart_missing",
+    "dataset_id": "required_state_v1",
+    "required_schema_version": "required_state_schema_v1",
+    "required_fields": ["instrument", "trade_date", "state_value"],
+    "required_coverage": {
+      "start": "YYYYMMDD",
+      "end": "YYYYMMDD"
+    },
+    "parameters": {
+      "formation_cutoff": "HH:MM:SS"
+    },
+    "lookahead_policy_required": true,
+    "no_future_intraday_minutes": true,
+    "qa_required": true,
+    "acceptance_evidence": [
+      "published_catalog_entry",
+      "qa_verdict_accept",
+      "coverage_and_schema_proof",
+      "lookahead_policy",
+      "worker_read_smoke"
+    ],
+    "consumer": {
+      "factor_id": "EXAMPLE_FACTOR",
+      "research_id": "example_research",
+      "report_id": "example_report"
+    },
+    "status": "requested",
+    "production_execution_allowed": false
+  },
+  "host_canonical_result_ref_after_materialization": {
+    "request_id": "data_request__example_report__required_state_v1",
+    "path": "objects/research_organization/example_report/data_requests/data_request__example_report__required_state_v1.json",
+    "sha256": "<host-computed-file-sha256>"
+  },
+  "incoming_delivery_receipt_example": {
+    "contract_version": "<data-group-authoritative-receipt-version>",
+    "request_id": "data_request__example_report__required_state_v1",
+    "request_sha256": "<sha256>",
+    "consumer": {
+      "factor_id": "EXAMPLE_FACTOR",
+      "research_id": "example_research",
+      "report_id": "example_report"
+    },
+    "dataset_id": "required_state_v1",
+    "schema_version": "required_state_schema_v1",
+    "catalog_path_or_uri": "<published-catalog-path-or-uri>",
+    "catalog_entry_sha256": "<sha256>",
+    "materialized_root": "<catalog-governed-uri>",
+    "qa_path_or_uri": "<qa-path-or-uri>",
+    "qa_sha256": "<sha256>",
+    "qa_verdict": "ACCEPT",
+    "coverage": {
+      "start": "YYYYMMDD",
+      "end": "YYYYMMDD"
+    },
+    "lookahead_policy": {
+      "no_future_intraday_minutes": true
+    },
+    "worker_read_smoke_path_or_uri": "<read-smoke-path-or-uri>",
+    "worker_read_smoke_sha256": "<sha256>",
+    "verdict": "ACCEPT"
+  },
+  "receipt_verification_record_inside_domain_proposal": {
+    "receipt_supplied": true,
+    "receipt_path_or_uri": "<receipt-path-or-uri>",
+    "receipt_sha256": "<sha256>",
+    "checks": [
+      {"check": "request_binding", "verdict": "ACCEPT", "evidence": "request id and sha256 match"},
+      {"check": "consumer_identity", "verdict": "ACCEPT", "evidence": "factor/research/report match"},
+      {"check": "catalog_publication", "verdict": "ACCEPT", "evidence": "approved catalog entry and hash match"},
+      {"check": "schema_fields_coverage", "verdict": "ACCEPT", "evidence": "all requested requirements present"},
+      {"check": "qa_and_information_policy", "verdict": "ACCEPT", "evidence": "QA and no-future proof ACCEPT"},
+      {"check": "worker_read_smoke", "verdict": "ACCEPT", "evidence": "bound read-smoke proof ACCEPT"}
+    ],
+    "verdict": "ACCEPT",
+    "failures": []
+  }
+}

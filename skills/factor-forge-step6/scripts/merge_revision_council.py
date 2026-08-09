@@ -22,7 +22,10 @@ from factor_factory.revision_council.schema import (
     COUNCIL_SUMMARY_VERSION,
 )
 from factor_factory.revision_council.validator import validate_revision_council_proposal
-from validate_agentic_council_result import validate_agentic_result
+from validate_agentic_council_result import (
+    expected_manifest_task,
+    validate_agentic_result,
+)
 
 OBJ = FF / "objects"
 TOKEN_FORBIDDEN_WRITEBACK = "BLOCK_REVISION_COUNCIL_FORBIDDEN_WRITEBACK_PRESENT"
@@ -66,6 +69,17 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def stable_payload_hash(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def directory_digest(path: Path) -> str:
@@ -217,7 +231,10 @@ def branch_from_proposal(proposal: dict[str, Any]) -> dict[str, Any] | None:
         "search_mode": search_mode,
         "research_question": proposal.get("market_phenomenon") or "Evaluate council proposal.",
         "hypothesis": (proposal.get("candidate_revision_laws") or [{}])[0].get("law_statement") if proposal.get("candidate_revision_laws") else proposal.get("risk_notes"),
-        "mechanism_target": (proposal.get("symbolic_model") or {}).get("state_or_object"),
+        "mechanism_target": (
+            (proposal.get("symbolic_model") or {}).get("mathematical_object")
+            or (proposal.get("symbolic_model") or {}).get("state_or_object")
+        ),
         "revision_hypothesis_id": proposal.get("proposal_id"),
         "success_criteria": ["Verified evidence improves under the declared expression-level hypothesis.", "No forbidden repair path is used."],
         "falsification_tests": (proposal.get("candidate_revision_laws") or [{}])[0].get("falsification_tests") if proposal.get("candidate_revision_laws") else ["Reject if evidence remains contradictory."],
@@ -261,10 +278,9 @@ def proposal_like_from_agent_result(result: dict[str, Any]) -> dict[str, Any]:
         "target_failure_signature": "cost_too_high" if role == "microstructure_cost_analyst" else "mechanism_unclear",
         "selected_math_tools": [item.get("tool") for item in public.get("selected_tools") or [] if isinstance(item, dict) and item.get("tool")],
         "market_phenomenon": public.get("research_question") or claim.get("claim") or "Agentic council result.",
-        "symbolic_model": {
-            "state_or_object": ((public.get("mathematical_objects") or [{}])[0] or {}).get("name") if isinstance(public.get("mathematical_objects"), list) else "agentic_state",
-            "target_functional": claim.get("formula_or_relation") or "E[next long-side evidence | agentic state]",
-        },
+        "symbolic_model": dict(
+            result.get("measurement_program_binding") or {}
+        ),
         "candidate_revision_laws": [
             {
                 "law_statement": law.get("law_statement"),
@@ -369,14 +385,22 @@ def main() -> None:
     valid_agent_results = []
     blocked_agent_results = []
     branches = []
+    research_routes = []
+    candidate_law_index: list[dict[str, Any]] = []
     agent_result_paths = sorted((council_dir / "agent_results").glob(f"agent_result__{rid}__*.json"))
     for path in agent_result_paths:
         result = load_json(path)
         result["_source_path"] = str(path)
-        reasons = validate_agentic_result(result)
+        expected = expected_manifest_task(rid, path)
+        reasons = validate_agentic_result(
+            result,
+            expected_task=expected,
+            expected_report_id=rid,
+        )
         if reasons:
             blocked_agent_results.append({"path": str(path), "task_id": result.get("task_id"), "agent_role": result.get("agent_role"), "block_reasons": reasons})
             continue
+        result_sha256 = sha256_file(path)
         valid_agent_results.append({
             "path": str(path),
             "task_id": result.get("task_id"),
@@ -384,7 +408,46 @@ def main() -> None:
             "producer": result.get("producer"),
             "research_depth": result.get("research_depth"),
             "proposal_generation_mode": result.get("proposal_generation_mode"),
+            "route_id": (result.get("approach_route") or {}).get("route_id"),
+            "route_family": (result.get("approach_route") or {}).get("route_family"),
+            "route_status": result.get("route_status"),
+            "result_sha256": result_sha256,
         })
+        approach_route = result.get("approach_route")
+        if isinstance(approach_route, dict) and approach_route:
+            research_routes.append(
+                {
+                    "task_id": result.get("task_id"),
+                    "agent_role": result.get("agent_role"),
+                    "route_id": approach_route.get("route_id"),
+                    "route_family": approach_route.get("route_family"),
+                    "core_hypothesis": approach_route.get("core_hypothesis"),
+                    "exact_gap_after_analysis": approach_route.get(
+                        "exact_gap_after_analysis"
+                    ),
+                    "route_status": result.get("route_status"),
+                    "source_result_path": str(path),
+                    "source_result_sha256": result_sha256,
+                    "proof_obligation_updates": result.get(
+                        "proof_obligation_updates"
+                    )
+                    or [],
+                    "counterexamples": result.get("counterexamples") or [],
+                    "reopen_criteria": result.get("reopen_criteria") or [],
+                    "source_path": str(path),
+                }
+            )
+        for law in result.get("candidate_revision_laws") or []:
+            if not isinstance(law, dict) or not law.get("law_id"):
+                continue
+            candidate_law_index.append(
+                {
+                    "law_id": law.get("law_id"),
+                    "route_id": (result.get("approach_route") or {}).get("route_id"),
+                    "source_result_sha256": result_sha256,
+                    "law_hash": stable_payload_hash(law),
+                }
+            )
         branch = branch_from_agent_result(result)
         if branch:
             if branch.get("blocked_reason"):
@@ -428,7 +491,12 @@ def main() -> None:
             blocked_proposals.append({"agent_role": role, "block_reasons": ["missing_proposal"], "path": str(path)})
             continue
         proposal = load_json(path)
-        reasons = validate_revision_council_proposal(proposal)
+        reasons = validate_revision_council_proposal(
+            proposal,
+            measurement_program=packet.get(
+                "mechanism_conditioned_measurement_program"
+            ),
+        )
         if proposal.get("proposal_status") == "blocked":
             reasons = list(dict.fromkeys(reasons + (proposal.get("block_reasons") or [])))
         if reasons:
@@ -450,6 +518,13 @@ def main() -> None:
                 if not any(item.get("branch_id") == branch.get("branch_id") for item in branches):
                     branches.append(branch)
 
+    taskbook_path = council_dir / f"agentic_taskbook__{rid}.json"
+    taskbook = load_json(taskbook_path) if taskbook_path.exists() else {}
+    route_families = {
+        str(item.get("route_family"))
+        for item in research_routes
+        if item.get("route_family")
+    }
     summary = {
         "contract_version": COUNCIL_SUMMARY_VERSION,
         "report_id": rid,
@@ -458,6 +533,18 @@ def main() -> None:
         "valid_agent_results": valid_agent_results,
         "blocked_agent_results": blocked_agent_results,
         "selection_source": selection_source,
+        "research_protocol_version": taskbook.get("research_protocol_version"),
+        "research_protocol_gate": taskbook.get("research_protocol_gate") or {},
+        "research_route_summary": research_routes,
+        "candidate_law_index": candidate_law_index,
+        "root_synthesis_contract": {
+            "required": bool(research_routes),
+            "majority_vote_forbidden": True,
+            "must_compare_every_route": bool(research_routes),
+            "must_resolve_or_preserve_dissent": bool(research_routes),
+            "must_list_open_proof_obligations": bool(research_routes),
+            "route_family_count": len(route_families),
+        },
         "deterministic_fallback_used": deterministic_fallback_used,
         "ignored_deterministic_proposals": ignored_deterministic_proposals,
         "ignored_deterministic_proposal_ids": ignored_deterministic_proposal_ids,

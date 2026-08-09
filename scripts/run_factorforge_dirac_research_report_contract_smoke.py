@@ -18,7 +18,7 @@ def valid_report() -> dict:
         'formula_implied_information': [{
             'formula_component': 'rank(vwap)',
             'observable': 'price paid by volume',
-            'implied_latent_state': 'liquidity pressure state revealed by price-volume execution imbalance',
+            'implied_mathematical_object': 'liquidity pressure state revealed by price-volume execution imbalance',
             'payer_or_constraint': 'liquidity demanders paying immediacy cost',
             'expected_sign': 'negative after crowded high-score state',
             'falsification_metric': 'long_side_annual_return',
@@ -28,12 +28,11 @@ def valid_report() -> dict:
             'classifications': [{'classification': 'direction_or_sign_error', 'reasoning': 'rank IC and long-side disagree'}],
         },
         'model_linked_metric_signature': {'rank_ic': 'tests observable estimator ordering'},
-        'stochastic_projection_consistency_check': {'drift_vs_volatility_vs_jump': 'separated', 'falsification_metric': 'rank_ic'},
+        'market_outcome_projection_consistency_check': {'value_payoff_or_return_map': 'explicit', 'falsification_metric': 'rank_ic'},
         'volatility_drag_review': {'volatility_drag': 'reviewed'},
         'drawdown_recovery_area_review': {'drawdown_recovery_area': 'reviewed'},
         'component_level_revision_axes': [{'component': 'vwap', 'axis': 'ablation'}],
         'direction_losing_transform_review': {'abs_corr': 'not used'},
-        'dimensional_or_unit_consistency_review': {'units': 'consistent'},
     }
 
 
@@ -47,7 +46,7 @@ def main() -> None:
         ('missing_formula_implied_information_blocks', 'formula_implied_information', 'BLOCK_DIRAC_FORMULA_IMPLIED_INFORMATION_MISSING'),
         ('missing_anomaly_classification_blocks', 'metric_anomaly_review', 'BLOCK_DIRAC_ANOMALY_CLASSIFICATION_MISSING'),
         ('missing_model_linked_metrics_blocks', 'model_linked_metric_signature', 'BLOCK_DIRAC_MODEL_LINKED_METRICS_MISSING'),
-        ('missing_stochastic_projection_check_blocks', 'stochastic_projection_consistency_check', 'BLOCK_DIRAC_STOCHASTIC_PROJECTION_CHECK_MISSING'),
+        ('missing_market_outcome_projection_check_blocks', 'market_outcome_projection_consistency_check', 'BLOCK_DIRAC_MARKET_OUTCOME_PROJECTION_CHECK_MISSING'),
         ('missing_volatility_drag_review_blocks', 'volatility_drag_review', 'BLOCK_DIRAC_VOLATILITY_DRAG_REVIEW_MISSING'),
         ('missing_drawdown_recovery_area_review_blocks', 'drawdown_recovery_area_review', 'BLOCK_DIRAC_DRAWDOWN_RECOVERY_AREA_REVIEW_MISSING'),
     ]:
@@ -57,7 +56,7 @@ def main() -> None:
         cases[case_name] = {'ok': has(reasons, token), 'reasons': reasons}
 
     report = valid_report()
-    report['formula_implied_information'][0]['implied_latent_state'] = 'close'
+    report['formula_implied_information'][0]['implied_mathematical_object'] = 'close'
     reasons = validate_dirac_research_report_contract(report)
     cases['raw_formula_restatement_blocks'] = {'ok': has(reasons, 'BLOCK_DIRAC_FORMULA_RAW_RESTATEMENT'), 'reasons': reasons}
 

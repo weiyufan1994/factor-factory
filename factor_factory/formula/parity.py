@@ -9,11 +9,15 @@ import numpy as np
 import pandas as pd
 
 from .evaluator import evaluate_formula_frame
+from .semantics import max_formula_ir_lookback
 
 
-def make_operator_fixture() -> pd.DataFrame:
+def make_operator_fixture(formula_ir: dict[str, Any] | None = None) -> pd.DataFrame:
     rows = []
-    for day_idx, trade_date in enumerate(['20260101', '20260102', '20260103', '20260104', '20260105', '20260106']):
+    lookback = max_formula_ir_lookback(formula_ir)
+    periods = max(6, lookback + 2) if formula_ir else 6
+    trade_dates = [value.strftime('%Y%m%d') for value in pd.bdate_range('2026-01-01', periods=periods)]
+    for day_idx, trade_date in enumerate(trade_dates):
         for code_idx, code in enumerate(['000001.SZ', '000002.SZ', '000003.SZ', '000004.SZ']):
             base = 10.0 + code_idx * 2.0 + day_idx * 0.3
             rows.append({
@@ -49,7 +53,11 @@ def make_operator_fixture() -> pd.DataFrame:
                     - (58.0 + code_idx * 7.0 + day_idx * 2.0)
                 ),
             })
-    return pd.DataFrame(rows)
+    fixture = pd.DataFrame(rows)
+    if formula_ir:
+        fixture = _with_standard_formula_fixture_fields(formula_ir, fixture)
+        fixture = _with_resolved_formula_fixture_fields(formula_ir, fixture)
+    return fixture
 
 
 def _adv_window(field: str) -> int | None:
@@ -77,7 +85,8 @@ def _with_standard_formula_fixture_fields(formula_ir: dict[str, Any], fixture: p
         return_col = 'return' if 'return' in working.columns else 'pct_chg' if 'pct_chg' in working.columns else None
         if return_col is None:
             raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: fixture missing returns/pct_chg source')
-        working['returns'] = pd.to_numeric(working[return_col], errors='coerce')
+        values = pd.to_numeric(working[return_col], errors='coerce')
+        working['returns'] = values / 100.0 if return_col == 'pct_chg' else values
     if 'return' in required and 'return' not in working.columns and 'returns' in working.columns:
         working['return'] = working['returns']
 
@@ -100,6 +109,38 @@ def _with_standard_formula_fixture_fields(formula_ir: dict[str, Any], fixture: p
             if field in working.columns:
                 continue
             working[field] = grouped_volume.transform(lambda s, window=window: s.rolling(window, min_periods=window).mean())
+    return working
+
+
+def _with_resolved_formula_fixture_fields(
+    formula_ir: dict[str, Any], fixture: pd.DataFrame
+) -> pd.DataFrame:
+    resolved = {
+        str(value).strip()
+        for value in (formula_ir.get("resolved_fields") or {}).values()
+        if isinstance(value, str) and value.strip()
+    }
+
+    def collect(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "field":
+            value = node.get("resolved_field")
+            if isinstance(value, str) and value.strip():
+                resolved.add(value.strip())
+        for child in node.get("args") or []:
+            collect(child)
+
+    collect(formula_ir.get("root"))
+    missing = sorted(resolved - set(fixture.columns) - {"ts_code", "trade_date"})
+    if not missing:
+        return fixture
+    working = fixture.copy()
+    row_index = np.arange(len(working), dtype=float)
+    for field_index, field in enumerate(missing, start=1):
+        # Schema validation proves the field exists in real data. The parity
+        # fixture only needs deterministic, finite variation for both engines.
+        working[field] = 1.0 + field_index * 0.17 + (row_index % 13.0) * 0.031
     return working
 
 
@@ -149,7 +190,7 @@ def compare_outputs(reference: pd.DataFrame, generated: pd.DataFrame, *, toleran
 
 
 def run_operator_parity(formula_ir: dict[str, Any], implementation_path: Path, *, tolerance: float = 1e-9) -> dict[str, Any]:
-    fixture = _with_standard_formula_fixture_fields(formula_ir, make_operator_fixture())
+    fixture = make_operator_fixture(formula_ir)
     reference = evaluate_formula_frame(formula_ir, fixture)
     compute = _load_compute(implementation_path)
     generated = compute(daily_df=fixture.copy(), minute_df=None)

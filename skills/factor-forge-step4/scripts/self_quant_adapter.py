@@ -15,9 +15,18 @@ if str(REPO_ROOT) not in sys.path:
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FF.parent
-MPLCONFIGDIR = WORKSPACE / '.cache' / 'matplotlib'
+FORMAL_FACTOR_WORKSPACE = os.getenv('FACTORFORGE_FACTOR_WORKSPACE')
+MPLCONFIGDIR = (
+    Path(FORMAL_FACTOR_WORKSPACE).expanduser() / '.cache' / 'matplotlib'
+    if FORMAL_FACTOR_WORKSPACE
+    else FF / '.cache' / 'matplotlib'
+)
+if FORMAL_FACTOR_WORKSPACE:
+    os.environ['MPLCONFIGDIR'] = str(MPLCONFIGDIR)
+else:
+    os.environ.setdefault('MPLCONFIGDIR', str(MPLCONFIGDIR))
+MPLCONFIGDIR = Path(os.environ['MPLCONFIGDIR'])
 MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault('MPLCONFIGDIR', str(MPLCONFIGDIR))
 
 from factor_factory.data_access import (
     build_forward_return_frame,
@@ -61,7 +70,11 @@ def _shared_context_env_path() -> Path | None:
 
 
 def _validate_shared_context_identity(report_id: str, context: dict[str, Any]) -> tuple[bool, str | None]:
-    if context.get('version') != 'factorforge_shared_evaluation_context_v1':
+    context_version = context.get('version')
+    if context_version not in {
+        'factorforge_shared_evaluation_context_v1',
+        'factorforge_shared_evaluation_context_v2',
+    }:
         return False, 'version_mismatch'
     if context.get('report_id') != report_id:
         return False, 'report_id_mismatch'
@@ -83,7 +96,20 @@ def _validate_shared_context_identity(report_id: str, context: dict[str, Any]) -
     if context.get('daily_input_hash') != _sha256_file(daily_path):
         return False, 'daily_input_hash_mismatch'
     label_policy = context.get('label_policy') if isinstance(context.get('label_policy'), dict) else {}
-    if label_policy != {'horizon': 'T+1', 'return_type': 'simple', 'price_field': 'close'}:
+    expected_label_policy = (
+        {
+            'horizon': 'one_trading_day_after_execution',
+            'return_type': 'simple',
+            'entry_price_field': 'close',
+            'exit_price_field': 'close',
+            'execution_lag_sessions': 1,
+            'holding_period_sessions': 1,
+            'return_window': 'close_t_plus_1_to_close_t_plus_2',
+        }
+        if context_version == 'factorforge_shared_evaluation_context_v2'
+        else {'horizon': 'T+1', 'return_type': 'simple', 'price_field': 'close'}
+    )
+    if label_policy != expected_label_policy:
         return False, 'label_policy_mismatch'
     artifacts = context.get('artifacts') if isinstance(context.get('artifacts'), dict) else {}
     required_artifacts = {
@@ -170,6 +196,8 @@ def _try_load_shared_context(report_id: str, timer: PhaseTimer) -> tuple[pd.Data
             'identity_validated': True,
             'fallback_reason': None,
             'daily_forward_returns_path': paths.get('daily_forward_returns_parquet'),
+            'context_version': context.get('version'),
+            'label_policy': context.get('label_policy'),
         })
         return factor_df, merged, signal_col, profile
     except Exception as exc:
@@ -185,6 +213,16 @@ def _load_snapshot_note(report_id: str) -> str | None:
     local_paths = payload.get('local_input_paths') or {}
     note = local_paths.get('snapshot_note')
     return str(note) if note else None
+
+
+def _uses_tradeable_web_timing(report_id: str) -> bool:
+    fsm_path = FF / 'objects' / 'factor_spec_master' / f'factor_spec_master__{report_id}.json'
+    payload = _read_json(fsm_path) if fsm_path.exists() else {}
+    contract = payload.get('evaluation_contract') if isinstance(payload, dict) else {}
+    return (
+        isinstance(contract, dict)
+        and contract.get('version') == 'factorforge_web_evaluation_contract_v2'
+    )
 
 
 def _safe_float(value: Any) -> float | None:
@@ -611,6 +649,7 @@ def _build_quality_warnings(
 
 def run_self_quant_quick(report_id: str) -> dict[str, Any]:
     timer = PhaseTimer()
+    web_tradeable_timing = _uses_tradeable_web_timing(report_id)
     shared_factor_df, shared_merged, shared_signal_col, shared_context_profile = _try_load_shared_context(report_id, timer)
     if shared_context_profile.get('used') is True and shared_factor_df is not None and shared_merged is not None and shared_signal_col:
         factor_df = shared_factor_df
@@ -635,7 +674,10 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
                 instrument_col='code',
                 date_col='trade_date',
                 price_col='close',
+                return_col=None if web_tradeable_timing else 'pct_chg',
                 horizon=1,
+                entry_offset=1 if web_tradeable_timing else 0,
+                exit_offset=2 if web_tradeable_timing else None,
             )
 
         with timer.phase('merge_forward_returns'):
@@ -765,12 +807,37 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
             'shared_evaluation_context': shared_context_profile,
         },
         'signal_timing_contract': {
-            'version': 'factorforge_signal_timing_contract_v1',
-            'signal_timestamp_policy': 'close_after_market',
-            'label_policy': 'next_trading_day_return',
-            'ic_alignment': 'factor_value_t_vs_return_t_plus_1',
+            'version': (
+                'factorforge_signal_timing_contract_v2'
+                if web_tradeable_timing
+                else 'factorforge_signal_timing_contract_v1'
+            ),
+            'signal_timestamp_policy': (
+                'after_close_t'
+                if web_tradeable_timing
+                else 'close_after_market'
+            ),
+            'position_entry_policy': (
+                'close_t_plus_1'
+                if web_tradeable_timing
+                else 'legacy_unspecified'
+            ),
+            'label_policy': (
+                'close_t_plus_1_to_close_t_plus_2'
+                if web_tradeable_timing
+                else 'next_trading_day_return'
+            ),
+            'ic_alignment': (
+                'factor_value_t_vs_return_close_t_plus_1_to_close_t_plus_2'
+                if web_tradeable_timing
+                else 'factor_value_t_vs_return_t_plus_1'
+            ),
             'forward_return_horizon': 1,
-            'forward_return_source': 'pct_chg.shift(-1)',
+            'forward_return_source': (
+                'close.shift(-2) / close.shift(-1) - 1'
+                if web_tradeable_timing
+                else 'pct_chg.shift(-1)'
+            ),
             'merge_keys': ['datetime', 'code'],
             'same_day_return_used_as_label': False,
         },

@@ -58,6 +58,31 @@ python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
 
 因子研究员、Bernard、Codex 都应默认使用当前 factor workspace。`knowledge/因子工厂/` 只用于明确执行 `--export-knowledge-vault` 的人工阅读/共享导出。
 
+## Repo-root Vault 显式导出
+
+累计 release 如果包含 `knowledge/因子工厂/` payload，必须新增当前快照
+manifest；历史 manifest 只保留，不回写。当前 manifest 必须覆盖固定 base
+commit 以来的全部 repo-root knowledge payload，并逐文件绑定 bytes 与 SHA-256：
+
+```bash
+python3 scripts/build_factor_knowledge_export_manifest.py \
+  --base-ref <fixed-main-commit> \
+  --output knowledge/因子工厂/export_manifest/repo_root_knowledge_export_<date>.json
+
+python3 scripts/validate_factor_knowledge_commit_scope.py \
+  --export-only \
+  --export-manifest knowledge/因子工厂/export_manifest/repo_root_knowledge_export_<date>.json
+```
+
+验收要求：
+
+- `verdict=ACCEPT`；
+- `required_payload_count` 与 `entry_count` 一致；
+- `failures=[]`；
+- 任一遗漏文件、bytes/SHA 漂移或不属于固定 diff scope 的额外文件都必须 BLOCK；
+- graph index/manifest 只能写 repository/artifact-root 相对路径，不能写 worktree
+  绝对路径或 wall-clock 字段，以免无意义地污染后续 worktree。
+
 ## EC2 拉取 Mac 知识包
 
 在 EC2 repo 根目录执行：

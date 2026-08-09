@@ -128,12 +128,14 @@ def run_ultimate_manual(root: Path, rid: str, *, runtime: str | None = None, pro
             "--skip-researcher-packets",
             "--factorforge-root",
             str(root),
+            "--allow-legacy-global-runtime",
             "--council-mode",
             "agentic",
             "--agentic-council-executor",
             "dispatch_manifest",
             "--agentic-dispatch-adapter",
             "manual_file",
+            "--allow-legacy-research-protocol-smoke",
     ]
     if runtime:
         cmd.extend(["--runtime-dispatch", runtime])
@@ -189,6 +191,29 @@ def clean_results(root: Path, rid: str) -> None:
 def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool = True, suffix: str = "") -> dict[str, Any]:
     task_id = assignment["task_id"]
     role = assignment["agent_role"]
+    dispatch = load_json(council_dir(root, rid) / f"dispatch_manifest__{rid}.json")
+    dispatch_task = next(
+        (
+            item
+            for item in dispatch.get("agent_tasks") or []
+            if isinstance(item, dict) and item.get("task_id") == task_id
+        ),
+        {},
+    )
+    packet_path = root / str(dispatch_task.get("task_packet_path") or "")
+    packet = load_json(packet_path)
+    measurement_binding = (
+        packet.get("measurement_program_binding")
+        or dispatch_task.get("measurement_program_binding")
+        or {}
+    )
+    frozen_model = measurement_binding.get("mechanism_equation_or_functional")
+    frozen_object = measurement_binding.get("mathematical_object")
+    proof_obligation_ids = [
+        str(item)
+        for item in packet.get("proof_obligation_ids") or []
+        if isinstance(item, str) and item
+    ]
     payload = {
         "result_version": "factorforge_agentic_revision_council_result_v1",
         "status": "final",
@@ -196,13 +221,49 @@ def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool
         "task_id": task_id,
         "agent_role": role,
         "producer": "real_agent",
-        "agent_identifier": f"manual_agent_{role}{suffix}",
+        "agent_identifier": dispatch_task.get("expected_agent_identifier") or f"manual_agent_{task_id}{suffix}",
         "research_depth": "medium",
         "proposal_generation_mode": "agentic",
         "expected_result_path": assignment.get("expected_result_path"),
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "measurement_program_binding": measurement_binding,
+        "approach_route": {
+            "route_id": dispatch_task.get("route_id"),
+            "route_family": dispatch_task.get("route_family"),
+            "core_hypothesis": "The assigned route may explain a distinct part of the factor mechanism.",
+            "distinct_from_other_routes": "This manual result uses only its assigned route and visible packet.",
+            "exact_gap_after_analysis": "The route remains inconclusive until empirical evidence is attached.",
+        },
+        "dispatch_identity": {
+            "source_task_packet_sha256": dispatch_task.get("task_packet_sha256"),
+            "route_fingerprint": dispatch_task.get("route_fingerprint"),
+            "blind_context_hash": dispatch_task.get("blind_context_hash"),
+        },
+        "proof_obligation_updates": [
+            {
+                "obligation_id": obligation_id,
+                "status": "open",
+                "finding": "The obligation remains open in this manual-dispatch smoke.",
+                "evidence_refs": [],
+            }
+            for obligation_id in proof_obligation_ids
+        ],
+        "counterexamples": [
+            {
+                "attack_type": "null_mechanism",
+                "construction_or_scenario": "The observed metric pattern is noise rather than the assigned mechanism.",
+                "predicted_failure": "The effect disappears out of sample or after costs.",
+                "discriminating_test": "Run preregistered OOS and after-cost checks before support is claimed.",
+            }
+        ],
+        "route_status": "inconclusive",
+        "reopen_criteria": [],
+        "independence_attestation": {
+            "favored_thesis_seen_before_submission": False,
+            "derived_from_visible_facts_only": True,
+        },
         "economic_hypothesis_review": {
             "preserve_broad_direction": True,
             "refined_second_layer_mechanism": "The manual result reviews the packet mechanism as a testable estimator-state hypothesis.",
@@ -213,9 +274,9 @@ def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool
             "selected_tool": "statistical_inference",
             "selected_tool_rationale": "It links public claims to metric signatures without approving canonical writes.",
             "rejected_tools": [{"tool": "expression_wrapper_repair", "reason": "The manual assignment is expression-level research only."}],
-            "baseline_model": "E[next evidence | manual agent state]",
+            "baseline_model": frozen_model,
             "model_mutation": "challenge persistence and falsification requirements at expression level",
-            "mathematical_objects": ["manual_agent_state", "next_evidence"],
+            "mathematical_objects": [frozen_object, "next_evidence"],
             "derivation_steps": ["Read manual assignment evidence.", "Map evidence to a public estimator-state claim."],
             "derived_state_variables": ["manual_agent_state"],
             "observable_estimators": ["factor score", "net long-side evidence"],
@@ -231,7 +292,7 @@ def fake_result(root: Path, rid: str, assignment: dict[str, Any], *, valid: bool
         "public_derivation_record": {
             "research_question": "Manual dispatch smoke public research question.",
             "assumptions": [{"assumption": "Step6 packet evidence is fixed.", "status": "hypothesis", "why_needed": "No rerun is allowed.", "how_to_falsify": "Block if packet provenance is invalid."}],
-            "mathematical_objects": [{"name": "manual_agent_state", "meaning": "Agent-specific estimator state.", "unit_or_dimension": "dimensionless", "information_set": "factor timestamp evidence only"}],
+            "mathematical_objects": [{"name": frozen_object, "meaning": "The mathematical object frozen by the measurement program.", "unit_or_dimension": "mechanism-dependent", "information_set": "factor timestamp evidence only"}],
             "selected_tools": [{"tool": "statistical_inference", "why_selected": "It links claims to metric signatures.", "what_it_can_answer": "Whether the hypothesis is testable.", "what_it_cannot_answer": "It cannot approve canonical writes."}],
             "formula_claims": [{"claim": "The expression can be tested as an estimator state.", "formula_or_relation": "E[next_evidence | manual_agent_state]", "status": "hypothesis", "derivation_summary": "Public derivation summary for manual dispatch smoke."}],
             "derivation_steps_summary": [{"step_no": 1, "statement": "Map packet evidence to a public estimator-state claim.", "depends_on": []}],
@@ -286,7 +347,7 @@ def case_manual_dispatch_happy(root: Path) -> dict[str, Any]:
     after_clean = directory_digest(root / "data" / "clean")
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and (proof.get("revision_council") or {}).get("status") == "awaiting_agent_results"
         and manual.get("adapter") == "manual_file"
         and policy.get("runtime") == "manual_file"
@@ -316,6 +377,10 @@ def first_assignment_markdown(root: Path, rid: str) -> str:
 
 def case_runtime_policy(root: Path, runtime: str, expected_phrases: list[str], *, provider: str | None = None, model: str | None = None) -> dict[str, Any]:
     rid = REPORT_MANUAL_DISPATCH
+    # Each policy case exercises a new dispatch. Resume must preserve the
+    # already-bound task packet instead of silently changing its runtime.
+    shutil.rmtree(council_dir(root, rid), ignore_errors=True)
+    proof_path(root, rid).unlink(missing_ok=True)
     proc, proof = run_ultimate_manual(root, rid, runtime=runtime, provider=provider, model=model)
     manual = load_json(manual_manifest_path(root, rid))
     dispatch = load_json(dispatch_manifest_path(root, rid))
@@ -324,7 +389,7 @@ def case_runtime_policy(root: Path, runtime: str, expected_phrases: list[str], *
     text = first_assignment_markdown(root, rid)
     ok = (
         proc["rc"] == 0
-        and proof.get("status") == "PASS"
+        and proof.get("status") == "PAUSED"
         and validate["rc"] == 0
         and policy.get("runtime") == runtime
         and policy == dispatch.get("runtime_dispatch_policy")
@@ -483,6 +548,12 @@ def case_complete_manual_results_finalize(root: Path) -> dict[str, Any]:
     iteration = load_json(root / "objects" / "research_iteration_master" / f"research_iteration_master__{rid}.json")
     final = (((iteration.get("research_judgment") or {}).get("research_memo") or {}).get("final_revision_strategy") or {})
     selected_ids = final.get("selected_council_proposal_ids") or []
+    dispatch = load_json(council_dir(root, rid) / f"dispatch_manifest__{rid}.json")
+    expected_selected_ids = {
+        str(task.get("task_id"))
+        for task in dispatch.get("agent_tasks") or []
+        if isinstance(task, dict) and task.get("task_id")
+    }
     ok = (
         import_proc["rc"] == 0
         and ledger.get("ready_for_collection") is True
@@ -490,8 +561,7 @@ def case_complete_manual_results_finalize(root: Path) -> dict[str, Any]:
         and validate_proc["rc"] == 0
         and finalize_proc["rc"] == 0
         and final.get("source") == "revision_council"
-        and selected_ids
-        and all(isinstance(item, str) and item.startswith("agent_") for item in selected_ids)
+        and set(selected_ids) == expected_selected_ids
         and not (root / "objects" / "handoff" / f"handoff_to_step3b__{rid}.json").exists()
         and not (root / "objects" / "factor_library_official" / f"factor_record__{rid}.json").exists()
         and before_code == after_code

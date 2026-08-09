@@ -1,0 +1,143 @@
+{
+  "approval_context": "Cumulative Factor Forge release closure approved by the user; repo-root knowledge remains an explicit audited export.",
+  "contract_version": "factorforge_repo_root_knowledge_export_manifest_v2",
+  "export_root": "knowledge/因子工厂",
+  "export_target": "repo_root_knowledge_vault",
+  "files": [
+    {
+      "bytes": 302,
+      "path": "knowledge/因子工厂/Home.md",
+      "sha256": "c23eec595d0c29171b5a30d148e84140209c840b54ad60b63eb1eb99f421d754"
+    },
+    {
+      "bytes": 111711,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_coverage.json",
+      "sha256": "80ff8576b7b5da3be460a1dd6b4fb781214552bc29048e42d12d93ea62ee5b04"
+    },
+    {
+      "bytes": 21081,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_edges.jsonl",
+      "sha256": "bc7230ab8bf2fc4e588146f74920a1c013da98d9e9954544dd8cd3416e34f378"
+    },
+    {
+      "bytes": 7585,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_graph_manifest.json",
+      "sha256": "c2609be5f5c65822851fbc0874f89ebe55c72f9edc73cacbf9bd41e49e0f8831"
+    },
+    {
+      "bytes": 114600,
+      "path": "knowledge/因子工厂/graph/factor_knowledge_nodes.jsonl",
+      "sha256": "c024052fee42774f1956477979fac205def299cb1d894e605bb0e9247ef9d07f"
+    },
+    {
+      "bytes": 4779,
+      "path": "knowledge/因子工厂/graph/nodes/ALPHA007_REGIME_KURT_SKEW_20260422.json",
+      "sha256": "cca1da96f34cf4f4c7b11dacd77934683362aa6c79fe3a4f865c395d48a5706a"
+    },
+    {
+      "bytes": 10122,
+      "path": "knowledge/因子工厂/graph/nodes/ALPHA013_PRICE_VOLUME_COVARIANCE_REVERSAL_20260618.json",
+      "sha256": "6981ad7e8c4c163182c50ad9a5c040c8d20be5813aa1da4b22483a9d5cc13996"
+    },
+    {
+      "bytes": 8912,
+      "path": "knowledge/因子工厂/graph/nodes/ALPHA014_MOMENTUM_VOLUME_CORR_SMOOTHING_20260618.json",
+      "sha256": "0bb0becafc22e2460cedba9a11ec6e0dbcb55692c6198f988ee157279eeb4922"
+    },
+    {
+      "bytes": 13877,
+      "path": "knowledge/因子工厂/graph/nodes/ALPHA015_CORR_RANK_VOLUME_PRESSURE_20260618.json",
+      "sha256": "5a6fed4d6f880771c7c3adb2d996166c1775ba916218277cd3d9322abb283cfa"
+    },
+    {
+      "bytes": 6536,
+      "path": "knowledge/因子工厂/graph/nodes/ALPHA036_COMPLEX_MULTICOMPONENT_RANK_20260618.json",
+      "sha256": "13f78a99855deb348d294a15bc4f3dd7011453ab821a2bf34b0d9ab9627dfd06"
+    },
+    {
+      "bytes": 6349,
+      "path": "knowledge/因子工厂/graph/nodes/ALPHA038_TSRANK_INTRADAY_DIRECTION_20260618.json",
+      "sha256": "f0af70a5451868e34dc8ff75869aca025f119dcef46683b49254e0061d0f56c0"
+    },
+    {
+      "bytes": 12675,
+      "path": "knowledge/因子工厂/graph/nodes/CPV_OCC_LOC_STABILITY_V3_20260616.json",
+      "sha256": "f3ffabe97e16af982c8cc951b5e66de99abfba804bdcb3b007b2751f2fb15b54"
+    },
+    {
+      "bytes": 3895,
+      "path": "knowledge/因子工厂/graph/nodes/CS_RESIDUAL_VOL_20D_NEG_20260616.json",
+      "sha256": "3dda32f885aa391c1d6e068646af63dffd9f07bd0b1345ef3179a144968d207b"
+    },
+    {
+      "bytes": 5187,
+      "path": "knowledge/因子工厂/graph/nodes/METHOD_MECHANISM_CONDITIONED_MEASUREMENT_SEARCH_20260807.json",
+      "sha256": "c05df2b260f61da0492fef1b679170ec9f055dcc97f708360a1cfd0b8b754be9"
+    },
+    {
+      "bytes": 5604,
+      "path": "knowledge/因子工厂/graph/nodes/MONEYFLOW_FEATURE_CANDIDATES_V15_V18_V19_20260617.json",
+      "sha256": "503359a0d5072f4508a4358f55bca1825502ba8aa4d927c6b434cc42976e2e0c"
+    },
+    {
+      "bytes": 8627,
+      "path": "knowledge/因子工厂/graph/nodes/VALUE_OCCUPATION_V18_LEBESGUE_CLOSEOUT_20260615.json",
+      "sha256": "6fd11ae23783348878db4aa73d99a9717a3696a372af2ee2af034c21adb7a276"
+    },
+    {
+      "bytes": 4242,
+      "path": "knowledge/因子工厂/graph/nodes/VP_SUPPORT_OVERHANG_OCCUPATION_20260610.json",
+      "sha256": "b5874f0800f772939eb0e50c78a5b3a5603d6ea2d014daf892cfc1d9792a5a72"
+    },
+    {
+      "bytes": 3506,
+      "path": "knowledge/因子工厂/graph/templates/factor_knowledge_node_template.json",
+      "sha256": "a8fae8ad00b302e253f6e847b79f47ecdc317a91143558af21148b8f3a91cc81"
+    },
+    {
+      "bytes": 6372,
+      "path": "knowledge/因子工厂/graph/templates/factor_knowledge_node_writeback_guide.md",
+      "sha256": "33c54dc615e174e6acba50a7e22b1d6eedf3d31697e7e7a84490c929c79fe80b"
+    },
+    {
+      "bytes": 8533,
+      "path": "knowledge/因子工厂/taxonomy/factor_taxonomy_v1.json",
+      "sha256": "4fac91e350850e6620b171cd5649d4d1e81ed9837cbe18abb013d44f6eb10d14"
+    },
+    {
+      "bytes": 6111,
+      "path": "knowledge/因子工厂/仪表盘/普通因子库.md",
+      "sha256": "d4d6fb8483b122ff1c23766c656de85dae95635c276551d45dba35e86f92c73a"
+    },
+    {
+      "bytes": 16744,
+      "path": "knowledge/因子工厂/仪表盘/知识网络.md",
+      "sha256": "b4504550cc2ea09274d0b2f2878cbe635fc11368d7c3d238105d8ca57e25927c"
+    },
+    {
+      "bytes": 1893,
+      "path": "knowledge/因子工厂/仪表盘/知识网络覆盖率.md",
+      "sha256": "73091f8ddd2e39f6f2c632c1e187eb2fd26886acd655fc6f10457d0c0406ce77"
+    },
+    {
+      "bytes": 4718,
+      "path": "knowledge/因子工厂/普通因子库/FACTOR_LIBRARY_INDEX.md",
+      "sha256": "38944091e5bb177a66325e6f64dde131a29d95a1d2c323f947325b10facbda2d"
+    }
+  ],
+  "generation_policy": "deterministic_file_identity_no_wall_clock",
+  "payload_snapshot_sha256": "a977b809c2fe7af479f771e9a363bc2027d991e95739388cae01c9590727944c",
+  "previous_manifest": {
+    "bytes": 2997,
+    "path": "knowledge/因子工厂/export_manifest/repo_root_knowledge_export_20260623.json",
+    "sha256": "8d9315172ff676382eb9faa651bf5c918f67c83635d142ef2fe649077a68e270"
+  },
+  "reason": "Capture the exact cumulative repo-root knowledge payload after knowledge-network and math-mechanism integration.",
+  "scope": {
+    "base_commit": "e203c29ccbbda17f2df0584a4ee706ee0e70d450",
+    "export_manifest_paths_excluded": true,
+    "mode": "git_diff_payload_exact",
+    "payload_count": 24
+  },
+  "source_boundary": "factor-workspace canonical knowledge exported to the repo-root vault for governed review and retrieval; default writes remain workspace-local"
+}

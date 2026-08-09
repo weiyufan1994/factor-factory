@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -41,7 +42,7 @@ def _text_blob(*objects: Any) -> str:
     return " ".join(_stringify(obj) for obj in objects).lower()
 
 
-def infer_step1_random_object(alpha_idea_master: Dict[str, Any], *context: Any) -> str:
+def infer_step1_mathematical_object(alpha_idea_master: Dict[str, Any], *context: Any) -> str:
     text = _text_blob(alpha_idea_master, *context)
     if any(tok in text for tok in ["成交量", "换手", "volume", "turnover", "amount", "order", "flow"]):
         return "A-share liquidity/order-flow and price panel observed through tradable market data"
@@ -51,7 +52,7 @@ def infer_step1_random_object(alpha_idea_master: Dict[str, Any], *context: Any) 
         return "firm fundamental information state observed through accounting and disclosure fields"
     if any(tok in text for tok in ["北交所", "转板", "公募", "保险", "mandate", "index", "rebalance"]):
         return "security panel affected by objective market-structure or mandate constraints"
-    return "report-defined security panel; researcher must restate the precise random object before promotion"
+    return "report-defined mathematical object; researcher must restate its precise economic and measurement semantics before promotion"
 
 
 def infer_target_statistic_hint(alpha_idea_master: Dict[str, Any], *context: Any) -> str:
@@ -185,7 +186,7 @@ def build_formula_understanding_from_step1(alpha_idea_master: Dict[str, Any], *c
 def build_math_hypothesis_candidates(
     alpha_idea_master: Dict[str, Any],
     economic_hypothesis: Dict[str, Any],
-    random_object: str,
+    mathematical_object: str,
     target_hint: str,
     *context: Any,
 ) -> List[Dict[str, Any]]:
@@ -197,8 +198,8 @@ def build_math_hypothesis_candidates(
                 "linked_economic_hypothesis": "mixed:slow_winner_state_short_horizon_reversal_or_threshold_migration",
                 "model_family": "stochastic_process",
                 "math_tools": ["probability_theory", "stochastic_process_calculus", "time_series_and_filtering", "statistics"],
-                "state_or_object": "slow winner state interacting with short-horizon reversal/dislocation threshold state",
-                "process_or_distribution_hypothesis": (
+                "mathematical_object": "slow winner state interacting with short-horizon reversal/dislocation threshold state",
+                "mechanism_equation_or_functional": (
                     "return process with slow trend/winner state M_i,t and short-horizon reversal or temporary "
                     "dislocation state I_i,t; sign transform induces threshold migration"
                 ),
@@ -227,8 +228,8 @@ def build_math_hypothesis_candidates(
                 "linked_economic_hypothesis": f"{macro_source}:{subtype}",
                 "model_family": family,
                 "math_tools": tools,
-                "state_or_object": state,
-                "process_or_distribution_hypothesis": process,
+                "mathematical_object": state,
+                "mechanism_equation_or_functional": process,
                 "observable_estimator": estimator,
                 "target_functional": target,
                 "why_suitable": why,
@@ -299,8 +300,8 @@ def build_math_hypothesis_candidates(
             "math_mixed_unresolved_research_prior",
             "other",
             ["probability_theory", "statistics"],
-            random_object,
-            "The report implies a return source, but the precise process/distribution hypothesis remains unresolved.",
+            mathematical_object,
+            "The report implies a return source, but the precise mechanism equation or functional remains unresolved.",
             "report-defined observable estimator",
             f"E[target | F_t, factor_state_t], target_hint={target_hint}",
             "This keeps the hypothesis explicit without forcing a fixed mathematical tool before Step2/Council review.",
@@ -380,29 +381,17 @@ def build_primary_mechanism_model_candidates(math_hypothesis_candidates: List[Di
                 "why_alternatives_are_less_suitable": [
                     "Alternative model families are secondary until they better explain the payer, state variables, and formula estimator mapping."
                 ],
-                "state_variables": [item.get("state_or_object") or "under_specified_state"],
+                "mathematical_objects": [
+                    item.get("mathematical_object")
+                    or item.get("state_or_object")
+                    or "under_specified_mathematical_object"
+                ],
                 "observable_proxies": [item.get("observable_estimator") or "under_specified_observable_estimator"],
                 "target_functional": item.get("target_functional") or "under_specified_target_functional",
                 "preferred": idx == 0,
             }
         )
     return out
-
-
-def build_stochastic_price_process_projection(math_hypothesis_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
-    preferred = math_hypothesis_candidates[0] if math_hypothesis_candidates else {}
-    estimator = preferred.get("observable_estimator") or "under_specified_observable_estimator"
-    target = preferred.get("target_functional") or "E[r_{t+1} | F_t, estimated_state_t]"
-    return {
-        "projection_required": True,
-        "price_process_form": preferred.get("process_or_distribution_hypothesis") or "under_specified_price_process_form",
-        "affected_price_process_terms": ["drift", "observation_equation"],
-        "conditional_distribution_claim": str(target),
-        "formula_should_estimate": str(estimator),
-        "expected_return_distribution_change": (
-            "conditioning on the Step1 state estimator should shift next-period return rank or conditional mean in the declared direction"
-        ),
-    }
 
 
 def infer_information_set_hint(alpha_idea_master: Dict[str, Any], *context: Any) -> str:
@@ -475,11 +464,17 @@ def build_step1_research_discipline(
     repo = repo_root or Path.cwd()
     final_factor = alpha_idea_master.get("final_factor") or {}
     query_text = _text_blob(alpha_idea_master.get("report_id"), final_factor.get("name"), final_factor, alpha_idea_master.get("assembly_path"), *context)
-    random_object = infer_step1_random_object(alpha_idea_master, *context)
+    mathematical_object = infer_step1_mathematical_object(alpha_idea_master, *context)
     target_hint = infer_target_statistic_hint(alpha_idea_master, *context)
     return_source = infer_return_source_hypothesis(alpha_idea_master, *context)
     economic_hypothesis = build_economic_hypothesis(alpha_idea_master, return_source, *context)
-    math_hypothesis_candidates = build_math_hypothesis_candidates(alpha_idea_master, economic_hypothesis, random_object, target_hint, *context)
+    math_hypothesis_candidates = build_math_hypothesis_candidates(
+        alpha_idea_master,
+        economic_hypothesis,
+        mathematical_object,
+        target_hint,
+        *context,
+    )
     formula_understanding = build_formula_understanding_from_step1(alpha_idea_master, *context)
     economic_to_math = {
         "economic_hypothesis": economic_hypothesis,
@@ -512,7 +507,7 @@ def build_step1_research_discipline(
         or _meaningful_list(final_factor.get("key_implementation_risks"))
     )
     return {
-        "step1_random_object": random_object,
+        "step1_mathematical_object": mathematical_object,
         "target_statistic_hint": target_hint,
         "information_set_hint": info_hint,
         "initial_return_source_hypothesis": return_source,
@@ -527,7 +522,6 @@ def build_step1_research_discipline(
         "math_hypothesis_candidates": math_hypothesis_candidates,
         "market_process_thesis": build_market_process_thesis(economic_hypothesis, [str(x) for x in what_must_be_true if str(x).strip()], [str(x) for x in what_would_break_it if str(x).strip()], explicit_thesis),
         "primary_mechanism_model_candidates": build_primary_mechanism_model_candidates(math_hypothesis_candidates),
-        "stochastic_price_process_projection": build_stochastic_price_process_projection(math_hypothesis_candidates),
         "what_must_be_true": [str(x) for x in what_must_be_true if str(x).strip()],
         "what_would_break_it": [str(x) for x in what_would_break_it if str(x).strip()],
         "what_must_be_true_provenance": alpha_idea_master.get("market_process_thesis_provenance"),
@@ -544,13 +538,35 @@ def attach_step1_research_discipline(
 ) -> Dict[str, Any]:
     out = dict(alpha_idea_master)
     discipline = build_step1_research_discipline(out, repo_root, *context)
+    existing_discipline = out.get("research_discipline") or {}
     out["research_discipline"] = {
-        **(out.get("research_discipline") or {}),
+        **existing_discipline,
         **discipline,
     }
-    out.setdefault("step1_random_object", discipline["step1_random_object"])
+    measurement_program = out.get("mechanism_conditioned_measurement_program")
+    if not isinstance(measurement_program, dict) or not measurement_program:
+        measurement_program = existing_discipline.get(
+            "mechanism_conditioned_measurement_program"
+        )
+    if isinstance(measurement_program, dict) and measurement_program:
+        out["mechanism_conditioned_measurement_program"] = deepcopy(
+            measurement_program
+        )
+        out["research_discipline"][
+            "mechanism_conditioned_measurement_program"
+        ] = deepcopy(measurement_program)
+        out["research_discipline"]["market_outcome_projection"] = deepcopy(
+            measurement_program.get("market_outcome_projection") or {}
+        )
+    out.setdefault(
+        "step1_mathematical_object",
+        discipline["step1_mathematical_object"],
+    )
     math_review = dict(out.get("math_discipline_review") or {})
-    math_review.setdefault("step1_random_object", discipline["step1_random_object"])
+    math_review.setdefault(
+        "mathematical_object",
+        discipline["step1_mathematical_object"],
+    )
     math_review.setdefault("target_statistic", discipline["target_statistic_hint"])
     math_review.setdefault("information_set_legality", discipline["information_set_hint"])
     out["math_discipline_review"] = math_review

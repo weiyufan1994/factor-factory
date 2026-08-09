@@ -14,6 +14,7 @@ FIELD_ALIASES = {
     'float_market_cap': ['float_market_cap', 'free_float_mv'],
     'amount': ['amount'],
     'open': ['open'],
+    'pre_close': ['pre_close'],
     'high': ['high'],
     'low': ['low'],
     'close': ['close'],
@@ -224,9 +225,9 @@ def aliases_for(name: str) -> list[str]:
     key = str(name).strip().lower()
     if _adv_token(key):
         return [key]
-    if key not in FIELD_ALIASES:
-        raise KeyError(f'BLOCK_MISSING_FIELD_ALIAS: {name}')
-    return list(FIELD_ALIASES[key])
+    # Catalog-declared custom fields are legal exact-name bindings. The fixed
+    # alias table is only for portable standard fields, not an ontology limit.
+    return list(FIELD_ALIASES.get(key, [key]))
 
 
 def resolve_field(name: str, available_columns: Iterable[str] | None = None) -> str:

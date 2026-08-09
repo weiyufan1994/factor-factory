@@ -1,79 +1,241 @@
 ---
 name: factor-forge-ultimate
-description: Ultimate top-level skill for the full Factor Forge research system. Use when running or supervising the end-to-end Step1-6 workflow, including data prep, execution, evaluation, reflection, review, revision proposal, and library/knowledge writeback.
+description: Run or supervise formal end-to-end Factor Forge research. Use for Step1-6, domain-specialist research organization, universal conjecture and falsification work, Council synthesis, factor proof certificates, revision loops, and official research decisions.
 ---
 
 # Factor Forge Ultimate
 
-## What This Skill Is
+## Role
 
-This is the **top-level orchestration skill** for the entire Factor Forge system.
+Ultimate is the formal deep-research orchestrator. It combines the Step skills,
+the current main agent's research judgment, dynamic Council routes, executable
+evidence, and durable knowledge writeback.
 
-It does not replace the Step skills. It sits above them and tells the agent:
-- which step(s) to run,
-- in what order,
-- when a case can skip earlier steps,
-- how review and revision fit into Step6,
-- and how the final result must be written back into the factor library and knowledge base.
+Miner is a separate candidate factory. A report-led or named factor idea may
+enter Ultimate directly; do not force it through Miner.
 
-In short:
+## Research Organization Contract
 
-> `factor-forge-ultimate` = the full research operating system
-> `factor-forge-step1..6` = the step-level execution skills
-> `factor-forge-research-brain` = the investment-logic layer used mainly inside Step6
-> `factor-forge-researcher` = always-on researcher agent layer spanning Step1 through Step6
-> `factor-forge-step6-researcher` = final independent review specialist that writes a deeper memo before Step6 finalizes library/knowledge writeback
+One user-facing task maps to one factor workspace and one Host Research
+Director. Specialist Agents are internal isolated sessions, not separate
+user-visible tasks. Read:
 
-## Researcher-Led Default
+- `docs/architecture/factorforge-research-organization-v1.zh-CN.md`
+- `docs/contracts/factorforge-research-org-plan-v1.zh-CN.md`
+- `docs/contracts/factorforge-agent-task-result-v1.zh-CN.md`
+- `docs/contracts/factorforge-research-org-runtime-v1.zh-CN.md`
 
-There is no ordinary batch mode for real factor research.
-For every factor, the agent must behave like a researcher from the beginning:
+For a new organization-aware run, the Host must freeze and validate
+`identity/research_organization_plan.json` before specialist work. All input
+snapshots, task packets, dispatch manifests, data requests and Agent results
+must remain under
+`objects/research_organization/<report_id>/`. The Host is the only canonical
+merger; specialists return proposals or verification records and never mutate
+Step artifacts, another role's result, shared data or canonical knowledge.
 
-1. read the report/paper/source idea and understand the author's thesis, including a two-layer economic hypothesis and one or more justified math hypotheses,
-2. check that Step2 preserves the idea as a canonical factor spec,
-3. supervise Step3 data and implementation choices,
-4. interpret Step4 metrics, charts, and portfolio evidence,
-5. use Step5/6 plus prior knowledge to reflect on whether the factor deserves promotion, iteration, or rejection,
-6. apply the math discipline review so evidence is tied to a random object, target statistic, information set, and robustness logic,
-7. preserve the experience chain, including failed branches, so future agents learn from the full search trajectory,
-8. write durable lessons, transferable patterns, anti-patterns, and innovative idea seeds to the knowledge base and factor libraries,
-9. if needed, loop back to Step3B with a research-motivated revision brief and a program-search policy.
+Route from the economic hypothesis and frozen estimand, not from field names,
+operator availability or a preferred mathematical family. Fundamental and
+Price-Volume are active domain plugins. Event/Text and Macro/Cross-Asset are
+capability-gated until their skills and runtime routes exist. A required
+unavailable domain is `WAITING_CAPABILITY`, not silent reassignment.
 
-Only use a mechanical/lightweight run if the user explicitly says this is a smoke test.
+Only mechanism-bearing user evidence may activate a domain: an economic
+hypothesis, research direction, explicit decision, or report argument. A title,
+formula, operator list, field list, or code fragment may create auditable
+exploratory candidates, but cannot select a domain by lexical resemblance. If
+mechanism-bearing evidence is absent, set `NEEDS_CLARIFICATION`; do not let an
+OHLCV-looking expression silently become a Price-Volume thesis.
+Descriptive data-availability prose is also insufficient. A routed mechanism
+must contain a causal or measurement predicate, a genuine economic actor/state,
+and a payoff, valuation, pressure, reversal, premium, or other falsifiable
+target state. The predicate must form an actual relational clause; co-occurrence
+of one token from each marker family is not a mechanism. Noun phrases such as
+`support levels` or `discount rate` are not relational clauses. Container wording such
+as "this report contains evidence" does
+not disqualify a statement that contains that complete mechanism triple; a
+field inventory without the triple remains exploratory only.
 
-## Production vs Experimental Performance Boundary
+The minimum organization is Research Director, applicable domain researcher,
+Knowledge Librarian, Data Liaison, Quant Implementation, Validation & Evidence,
+and Independent Council. Data Liaison may resolve catalogs, embed a proposed
+`data_request_v1`, and verify delivery evidence; it may not write the staged
+workspace or materialize data. The Host validates and atomically publishes an
+embedded request under the current report before result admission.
+`WAITING_DATA` is nonterminal and resumes only after catalog/QA/receipt
+validation. The current implementation does not yet provide delivery import,
+plan revision/current-pointer publication, in-place clarification resume, or
+automatic data resume; do not claim those capabilities exist. A pre-formal
+clarification pause must retain `factor_verdict=UNKNOWN` and instruct the user
+to start a new isolated task with the added mechanism evidence.
 
-This skill is production-ready for new factor research only on the default
-Factor Forge path. Production runs must use the reviewed default acceleration
-surface wherever the contract matches: Data API/catalog reads, Parquet IO,
-Formula-IR `pandas_optimized`, and the reviewed NumPy time-series kernel subset
-for supported operators. These reviewed accelerators are no longer optional
-experiments; Mac and EC2 must keep them enabled unless a named rollback/debug
-gate is being exercised and recorded.
+Do not confuse pre-formal design feasibility with formal data acceptance. A
+Host-validated active catalog may admit a base market dataset for plan authoring
+only when its deterministic Host information-policy attestation passes, while
+explicitly deferring dataset QA/read-smoke to the normal Step3 gate. Free text
+does not establish PIT legality. That does not authorize formal execution and
+cannot be used for derived-state reuse.
+Derived datamarts and state dependencies remain `WAITING_DATA` until their QA,
+lookahead, coverage, URI, provenance and required worker-read evidence are
+actually bound.
 
-For production factor research, do not set these environment variables unless
-the user explicitly asks for a performance experiment or benchmark:
+Every role consumes `factorforge_agent_task_v1` and returns a
+`factorforge_agent_result_v1` envelope. Public artifacts contain reproducible
+definitions, decisive derivation steps, citations, assumptions and falsifiers;
+private chain-of-thought is neither requested nor persisted. A
+`single_agent_fallback` must be declared truthfully and cannot satisfy an
+independent-session requirement. Independent Council requires a distinct real
+session, must attest review of every role frozen in its task, and cannot be
+impersonated by the Director or an authoring Agent.
+The current v1 plan sets `single_agent_fallback=false`; therefore no current
+specialist task may use fallback mode. A later contract may enable it only by
+making that permission explicit in the frozen task.
+
+New Knowledge Librarian tasks use `factorforge_knowledge_prior_record_v1`, not
+the generic role record. Historical claims must copy exact text from an
+admitted node/path in the frozen `factor_knowledge_summary.json`; historical
+metrics must bind exactly to `evidence.key_metrics.<key>`. The Host reconstructs
+query hash, top-k, cold-start state and ordered node IDs from the captured
+payload. Agent-authored retrieval provenance, free claim prose, metric aliases,
+or inference about the current factor must BLOCK. Keep file-byte artifact hashes
+distinct from task snapshot content hashes. A task already frozen with the old
+generic record remains resumable/cancellable only and must not be silently
+migrated to the new shape. This migration accepts only the exact hash-bound
+legacy registry whose sole policy difference is that old Knowledge output
+contract; any other registry drift remains BLOCK. Claims have neither a free
+ID nor a statement field, and captured provenance must contain a 64-hex query
+hash plus a positive integer top-k.
+
+A valid plan and dispatch manifest prove routing and workspace governance only.
+They do not prove that multiple Agents executed, that Council independence was
+satisfied, or that the factor passed research. Claim those stronger states only
+after the Host validates every bound result and the normal Step1-6 evidence.
+
+For a runtime-aware run, the Host uses
+`scripts/run_factorforge_research_org_runtime.py`. Workspace runtime JSON is a
+rebuildable projection only; the Host-private SQLite ledger and signed adapter /
+Host receipts are authoritative. Each specialist must receive a staged,
+role-scoped read-only context and a distinct provider session. The Independent
+Council must have no parent author session. Retry, cancellation and recovery
+must use ledger-owned attempt/runtime handles; never terminate sessions by a
+global process/model-name match.
+
+Keep these assurance levels distinct:
+
+- `workspace_runtime_projection_valid_only`: workspace history is structurally valid;
+- `transactional_runtime_unverified_sessions`: private ledger is valid, but formal signed/pinned session evidence is absent;
+- `signed_specialist_runtime_complete_host_director_external`: all required roles PASS with signed, pinned, causally bound specialist sessions and signed Host admissions.
+
+Only the last level may set runtime `formal_independence_verified=true`. It
+still does not prove factor ACCEPT. To bind this proof into an Ultimate wrapper,
+use `--research-org-runtime-mode formal-complete` with the private root, trust
+root and installation ID. The default is `off` for backward compatibility;
+do not silently upgrade a legacy run. Contract smoke output is never production
+research proof.
+
+For a production web task, the required order is fixed:
+
+1. run signed Knowledge, Data and routed Domain intake sessions;
+2. let the external Host Research Director synthesize their admitted public
+   records into a validator-PASS web research plan;
+3. require an agent-authored Director record that binds every intake result
+   path/hash, the plan, public ledger and private Agent receipt; then admit that
+   Host result with its real session identity;
+4. run isolated Quant Implementation, pre-execution Validation & Evidence, and
+   Independent Council sessions over the transitive, staged dependency context;
+5. require runtime `COMPLETE` plus signed formal independence;
+6. only then materialize and invoke Ultimate with
+   `--research-org-runtime-mode formal-complete`;
+7. run the normal post-execution Step6 empirical Council before any factor
+   terminal decision.
+
+The organization Council in step 4 audits research design and preregistration;
+it is not the empirical Step6 Council and cannot claim backtest evidence or a
+factor verdict. Web `COMPLETED` requires both the signed organization proof and
+the normal Ultimate terminal evidence. A completed Ultimate report alone must
+not bypass this gate.
+
+Quant, pre-execution Validation, and organization Council must use the v3
+pre-formal controlled-check contract. Their `claim_scope` is exactly
+design-only, realized performance evidence is false, empirical verdict is
+`NOT_ISSUED`, and promotion authority is false. The public record has a closed
+shape: its claims exactly equal the ordered checks, and each check contains only
+the frozen check ID, status, controlled finding/falsifier codes, and hash-bound
+task/dependency evidence paths. Executive summaries are canonical, blockers
+are check IDs, and free-text claims/findings/falsifiers or extra fields are
+forbidden. Preregistered thresholds belong in the frozen Host plan or bound
+design artifact, not in this pre-formal verdict record.
+
+Evidence admission follows the frozen direct and transitive dependency graph.
+A pre-formal role may cite an admitted dependency result or that result's
+hash-bound public artifacts only when the exact file is also present in its
+staged runtime manifest. Staged visibility alone grants no evidence authority;
+the validator and context builder must compute the same dependency closure.
+
+For an Independent Council runtime result, `independence_attestation` and
+`formal_independent_verdict` are private-output envelope fields and exact
+siblings of `public_research_record`. Never nest either field inside the public
+record. The public record remains limited to its controlled design-review
+shape.
+
+This closure extends to adjacent channels. The outer Agent result envelope and
+its authority-bearing identity are exact-shape by independence class; Council attestation and formal verdict,
+every `artifact_refs[]` item, and each canonical Data Liaison request ref reject
+unknown fields. Rehashing a result does not authorize an extra note, verdict,
+or claim outside the controlled v3 record.
+
+The external Host Director receipt is not trusted merely because it is inside
+the private job directory. Before admission, validate its exact agent-run
+contract, job/factor/research/report identity, session-key hash, provider,
+model, timestamps, return code, stdout/stderr tails, and equality to the
+adapter-returned `AgentRunResult`.
+
+Before Host Director admission, freeze exact IS/OOS windows, purge and embargo,
+trial budget, multiple-testing policy, signal timestamp, entry/exit timing,
+transaction/capacity model IDs, terminal success/reject/block conditions,
+component ablations, falsifiers and promotion evidence. Vague experiment plans
+do not satisfy specialist validation or Council.
+
+For a recognized external formula dialect, implementation choices are not the
+same as verified source meaning. Formal intake must bind either specific source
+evidence (a locatable reference plus the actual excerpt, with its hash recomputed
+or checked by the Host) or an explicit user research
+override (reference, rationale and override reason), and attest that the choice
+was not selected from backtest performance. Legacy semantic-choice-only
+artifacts may be recognized for migration but cannot satisfy a new formal run
+until v2 authority is supplied. An embedded request excerpt verifies submitted
+content integrity, not external source authenticity; hash-only evidence is
+invalid.
+
+## Non-Negotiable Entry Contract
+
+Before research:
+
+1. inspect the repository status and active worktrees;
+2. create or select exactly one
+   `factor_research/<factor_id>/<research_id>/` workspace;
+3. validate its manifest and identity;
+4. keep code, results, Step3 runtime copy, Council, knowledge, branches and
+   wrapper proof/report outputs under that workspace; an explicit
+   `--proof-output` outside the active workspace is BLOCK;
+5. read the relevant factor knowledge before formulating the conjecture;
+6. never use `git add .`, mutate shared clean data, or write the repo-root
+   knowledge vault implicitly.
+
+Formal Step3-6 execution uses only:
 
 ```bash
-FACTORFORGE_ENABLE_EXPERIMENTAL_POLARS=1
-FACTORFORGE_ENABLE_EXPERIMENTAL_TS_RANK_ENGINE=1
-FACTORFORGE_TS_RANK_ENGINE=numpy_sliding_window_experimental
-FACTORFORGE_ENABLE_EXPERIMENTAL_FORMULA_KERNEL=1
-FACTORFORGE_FORMULA_KERNEL_ENGINE=<experimental_engine>
+python3 scripts/run_factorforge_ultimate.py ...
 ```
 
-Experimental Polars, the independent experimental `ts_rank` engine, and any
-kernel beyond the reviewed default NumPy subset are not production defaults.
-They require explicit opt-in, pandas-reference parity, runtime guards, `/tmp`
-smoke evidence, reviewer acceptance, and separate user approval before any full
-canonical-factor benchmark. They must not alter Step6, Council, promotion
-gates, clean data, search workers, or official library writeback.
+Direct Step scripts may be used only by bounded smokes or when Ultimate invokes
+them. Unsupported data, identity, implementation parity or evidence is BLOCK.
 
-Reuse is mandatory: if a valid artifact with matching report/factor identity,
-implementation path/hash, data window, row/date/ticker counts, and producer
-lineage already exists, downstream steps must consume it as a cache or evidence
-source instead of recomputing. Recompute only when the implementation, data
-contract, identity, or required formal-evidence ownership differs.
+`--dry-run` is an execution plan, never research proof. Its wrapper and loop
+reports must use `status=DRY_RUN`, `formal_proof_eligible=false`, and
+`proof_semantics=execution_plan_only`. A formal consumer accepts `PASS` only
+when `dry_run=false`, the exact command contract executed with every command at
+`PASS`, and Step6 actually ran the research-protocol verifier. Contract smokes
+remain explicitly `contract_smoke_only` and are not promotion evidence.
 
 ## State Datamart Reuse Contract
 
@@ -102,52 +264,83 @@ recorded with checked index paths, query hash, hit count, and fallback reason.
 Missing provenance blocks formal acceptance even if a human-readable lesson
 string is present.
 
+## Math-First Authority Contract
+
+Before Step3, Ultimate must verify the complete authority chain:
+
+```text
+economic hypothesis -> open mathematical-tool search
+-> competing model families / selection -> primary math mechanism
+-> market-outcome projection -> applicable audits
+-> observation equation -> measurement program
+-> operator | direct code | hybrid -> empirical falsification
+```
+
+Read and apply
+`docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md` as the
+current authority. Read `docs/contracts/mechanism_math_contract_v2.zh-CN.md`
+only to validate or migrate an artifact that already contains the legacy v2
+contract; never generate that legacy contract for a new run.
+
+Knowledge/history/data may supply advisory priors, counterexamples and tool
+candidates, but cannot override the math contract. The search space is open:
+fundamental factors may select DCF, residual-income or accounting-identity
+models; path-dependent or microstructure factors may select stochastic,
+spectral, information-theoretic, functional, causal, optimization or newly
+composed objects when justified. No family is a universal default. Specialized
+audits such as dimensional analysis or stochastic-process diagnostics are used
+only when the selected mechanism makes them relevant. Operators are optional;
+direct code and hybrid are valid when each component is bound to a mathematical
+term, measurement semantics, legal information set, expected metric signature
+and falsifier.
+Ultimate must BLOCK reverse-engineered economic stories, data-convenience
+estimand drift, decorative math and missing public derivation records. Public
+records contain reproducible definitions and decisive derivation steps, not
+private chain-of-thought.
+
 ## Memory Pressure and Batch Execution Protocol
 
-The "no ordinary batch mode" research rule means no shallow mechanical research
-shortcut. It does not permit all-in-memory execution when data are too large.
-For minute bars, tick data, large cross-sectional universes, or future deep
-learning/model-training jobs, the production default is bounded batch execution.
+Every non-smoke run uses
+`factorforge_research_conjecture_protocol_v1`. Read:
 
-Before launching a heavy Step3B/Step4 or training run, the agent must estimate
-peak memory from row count, selected columns, dtype size, join/window expansion,
-and expected intermediate materialization. If estimated peak memory exceeds
-about 50-60% of available RAM, or if a prior run shows `Killed`, exit code 137,
-OOM-kill logs, memory allocator failure, or swap exhaustion, the run must not be
-retried with the same all-in-memory path. It must either switch to a batch plan
-or BLOCK with `BLOCK_MEMORY_PRESSURE_BATCH_REQUIRED`.
+- `docs/contracts/factorforge-research-conjecture-protocol-v1.zh-CN.md`
+- `docs/contracts/factorforge-factor-proof-certificate-v2.zh-CN.md`
 
-The batch plan must be explicit in the run proof or implementation plan:
+The current agent must author the semantic artifacts. Deterministic scripts may
+validate and materialize them, but must not invent the hypothesis, payer,
+mathematical object, proof obligation, counterexample or synthesis.
 
-- `batch_execution_plan.version=factorforge_batch_execution_plan_v1`
-- memory budget and estimated peak memory
-- partition key (`trade_date`, month, instrument shard, or model mini-batch)
-- selected columns and predicate pushdown policy
-- rolling/lookback overlap or carried state
-- output format, checkpoint/resume path, and cache identity
-- validation sample/parity policy against a smaller reference run
+Required protocol artifacts:
 
-Batch execution must stream each partition to Parquet or a bounded model
-checkpoint and release intermediates between batches. It must not accumulate a
-list of all batch DataFrames for final concat unless the post-concat size is
-already proven within budget. Rolling time-series factors need lookback overlap
-or per-instrument carry state; cross-sectional ranks need complete per-date
-cross-sections or an explicit two-pass algorithm. Deep learning training must
-use dataset streaming, mini-batches, gradient accumulation/checkpointing, and
-resumeable checkpoints rather than materializing the full tensor dataset.
+```text
+objects/research_protocol/
+  research_state__<report_id>.json
+  research_conjecture__<report_id>.json
+  approach_registry__<report_id>.json
+  proof_obligation_ledger__<report_id>.json
+  counterexample_registry__<report_id>.json
+  factor_proof_certificate__<report_id>.json
+  semantic_verifier_report__<report_id>.json
+```
 
-The current production/experimental split is documented in
-`docs/operations/factorforge-production-vs-experimental-performance.zh-CN.md`.
+The protocol state machine is:
 
-## The Full Workflow
+```text
+FORMULATE -> DIVERSIFY -> ATTACK|DERIVE -> TEST
+-> SYNTHESIZE -> REDIRECT|VERIFY -> ACCEPT|REJECT|BLOCK
+```
 
 ### Step1
 - ingest source report / idea
 - identify canonical source and factor intent
 - produce `alpha_idea_master`
-- standardize and validate Step1 research fields: `step1_random_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`
+- standardize and validate Step1 research fields: `step1_mathematical_object`, `target_statistic_hint`, `information_set_hint`, `initial_return_source_hypothesis`, `economic_hypothesis`, `math_hypothesis_candidates`, and `similar_case_lessons_imported`; the old `step1_random_object` name is read only as a legacy alias
 - `economic_hypothesis` must first classify the broad source as `risk_premium`, `information_advantage`, `market_structure_arbitrage`, or `mixed`, then state the second-layer mechanism and the likely counterparty paying the return
 - `math_hypothesis_candidates` must map the economic mechanism to report-specific mathematical tools. Do not use fixed mappings like "price-volume means microstructure"; use DCF/FCF/PEG, stochastic processes, jumps, cointegration, copulas, wavelets/Fourier, projection, dimensional/scaling analysis, or other tools only when they explain the report-specific counterparty and asset-price logic
+- every candidate model must state its own `mathematical_object`,
+  `mechanism_equation_or_functional`, `target_functional`,
+  `market_outcome_projection`, and `observation_mapping`; keep the core
+  mechanism distinct from its market-outcome projection into the executable payoff
 - every formal research pass must include a flexible math-forced insight step:
   choose the mathematical object and tools from the economic hypothesis, state
   what the tools reveal, what information they preserve or discard, how the
@@ -155,267 +348,142 @@ The current production/experimental split is documented in
   This is a menu of justified tools, not a fixed checklist.
 - researcher records the author's thesis and what must be true for the idea to work
 
-### Step2
-- convert idea into canonical machine-readable spec
-- produce `factor_spec_master`
-- validate that Step2 preserves `target_statistic`, `economic_mechanism`, `economic_hypothesis`, `math_hypothesis_candidates`, `expected_failure_modes`, `innovative_idea_seeds`, and `reuse_instruction_for_future_agents`
-- write `handoff_to_step3`
-- researcher verifies that the canonical spec still reflects the author's idea
+## Staged Workflow
 
-### Step3
-- prepare execution contract and implementation artifacts
-- `Step3A`: data contract / adapters / step3a local inputs
-- `Step3B`: implementation artifacts + first factor run when possible
-- write `handoff_to_step4`
-- researcher reviews whether data and code preserve the original thesis
+### 1. Intake and Formalization
 
-### Step4
-- run factor execution and evaluation backends
-- produce evidence, metrics, diagnostics, and backend payloads
-- researcher separates signal quality from tradable portfolio quality
+Run Step1-2, then stop and inspect their artifacts. The main agent must:
 
-### Step5
-- close the case
-- archive artifacts
-- write lessons / next actions
-- write `handoff_to_step6`
-- researcher checks that case lessons are not merely status summaries
+- state who pays/receives, the persistent constraint and observable falsifier;
+- define the selected mathematical object, mechanism equation or functional,
+  market-outcome projection, observation/estimation map and information set;
+- map every formula component to model term, preserved/deleted information and
+  an ablation;
+- freeze `claim_class`, IS/OOS windows, purge/embargo, trial budget,
+  multiplicity policy, cost/impact/capacity policy and terminal criteria;
+- register at least three routes, including a null/alias route.
+- freeze the mechanism-conditioned measurement program and verify that route
+  choice follows mathematical/numerical need rather than operator availability.
 
-### Step6
-- reflect on the evidence
-- require the Step6 researcher agent to build a deep memo from metrics, charts, and prior cases
-- retrieve similar prior cases
-- classify the return source
-- run `math_discipline_review`
-- extract `learning_and_innovation`
-- build `experience_chain`, `revision_taxonomy`, `program_search_policy`, and `diversity_position`
-- decide `promote_official / iterate / reject / needs_human_review`
-- write back:
-  - factor library all
-  - official factor library (if promoted)
-  - knowledge base
-  - research iteration record
-- if iterate: generate `revision_proposal` and optionally send control back to Step3B
-
-### Loop Child Revisions
-
-When Step6/Council approves a revision loop, the ultimate loop must not merely
-switch to a child report id and rerun Step3B. It must first materialize an
-auditable child revision package:
-
-- main-agent Council orchestration synthesis:
-  `objects/research_iteration_master/revision_council/<report_id>/main_agent_council_synthesis__<report_id>.json`
-  and `.md`, authored by the currently running main agent after reading the
-  Council results
-- main-agent synthesis approval bridge:
-  `skills/factor-forge-step6/scripts/approve_main_agent_council_synthesis.py`
-  must validate the synthesis, record the approval artifact, activate
-  `final_revision_strategy.loop_authorization=approved_for_step3b_handoff`,
-  write the active `handoff_to_step3b`, refresh the loop brief Council section,
-  and rerun `validate_step6.py`
-- child `alpha_idea_master`, `factor_spec_master`, `data_prep_master`, and
-  optional handoffs/configs
-- report-local child daily snapshots copied from the parent Step3A slice
-- `objects/research_iteration_master/executable_revision_spec__<child_report_id>.json`
-  containing the executable child formula or direct-code law statement from the
-  synthesis, implementation mode, parent/child formula or code-law hashes,
-  selected revision law ids, expected metric signature, falsification tests,
-  kill criteria, and the synthesis path/hash
-
-Child Step3B must consume this executable revision spec and BLOCK if it is
-missing or if a non-audit revision leaves the formula hash unchanged. A loop that
-recomputes the same parent formula under a child report id is invalid.
-The materializer must not invent a fallback formula from generic handoff text.
-If Council results are only advisory templates and no main-agent synthesis with
-`selected_revision.child_formula` exists, the loop must BLOCK instead of
-materializing `negate(parent_formula)` or any other inferred default.
-If a completed Council summary and a valid main-agent synthesis already exist,
-`run_factorforge_ultimate_loop.py` may invoke the approval bridge automatically
-before classifying the iteration as ready for child materialization. If the
-bridge validation fails, the loop must BLOCK and must not leave an active
-approved handoff behind.
-
-Direct-code and native minute/tick child revisions are first-class revisions.
-The ultimate loop must not force them through Formula-IR or operator mode. If
-the parent implementation is `direct_code` or `hybrid`, the child revision spec
-must carry `implementation_mode`, `revision_type=direct_code_mutation` or
-`hybrid_mutation`, `direct_code_revision_contract`, required data contracts,
-target function/block, code-law hash, and executable mutation scope. A
-human-readable child law such as an intraday moneyflow state equation is valid
-only when paired with an executable direct-code mutation contract. Replacing it
-with an unrelated parseable formula such as `rank(close)` is research pollution
-and must BLOCK.
-Moneyflow/Miller-style executable laws must be referenced by `law_id` and
-`code_law_hash` through the versioned law registry, not copied into
-`run_step3b.py` for every child. Step3B should import/resolve the law by id and
-block missing or hash-mismatched laws; adding a new law should normally be a
-registry entry plus tests, not a runner rewrite.
-Direct-code child materialization must also carry qlib adapter semantics: copy
-the parent qlib adapter config when supported, or write child-local
-`qlib_native_status=not_applicable` with an explicit reason so Step4 qlib is
-skipped rather than reported as missing-input failure.
-
-If a completed real-agent Council collection unanimously recommends terminal
-rejection and no main-agent synthesis selects a child formula, the loop may
-invoke the terminal Council rejection bridge instead of waiting forever for
-another handoff. This bridge must update Step6 to `decision=reject`, keep
-`loop_authorization=advisory_only`, leave `handoff_to_step3b` absent, and rerun
-`validate_step6.py`. A terminal Council rejection is a stop condition, not an
-executable revision.
-
-If a root loop is resumed after a child revision has already been materialized,
-the loop must reuse the existing child materialization only when the
-materialization report and core child artifacts still exist. It must not call
-the materializer again and fail on already-existing child targets.
-
-When the child reaches Step6, the next Council packet must carry the prior
-revision outcome as first-class negative or positive evidence. It must compare
-parent-vs-child metrics, record the executable derivation rule and formula
-hashes, and label the prior revision as `falsified`, `improved`, or
-`inconclusive`. If the child worsened key evidence, subsequent agentic Council
-tasks must explicitly review that failed revision and must not repeat the same
-derivation rule or re-create an ancestor formula hash.
-
-Multi-branch Council synthesis is a guarded production-loop path when, and only
-when, a completed Council has a valid
-`main_agent_multibranch_synthesis__<report_id>.json/md`. The main agent may use
-that artifact to preserve one exploit branch plus up to two exploration branches
-from Council results. The artifact must pass
-`validate_main_agent_multibranch_synthesis.py` before any multi-child
-materialization work. If no valid multi-branch synthesis exists, the ultimate
-loop stays on the single-child synthesis path.
-
-The production loop may consume the validated multi-branch synthesis
-automatically:
-
-1. approve the synthesis with `approve_main_agent_multibranch_synthesis.py`;
-2. materialize all approved children with
-   `materialize_step6_multibranch_children.py`;
-3. run each child through the normal wrapper from Step3B through Step6;
-4. build and validate
-   `objects/research_iteration_master/branch_comparison__<parent_report_id>__loopNN.json`
-   and `.md`;
-5. continue only from the selected next-parent child.
-
-Each child receives a distinct report id, child-local Step3A snapshot paths, a
-unique formula hash, and branch context in
-`executable_revision_spec__<child_report_id>.json`. The branch comparison must
-cover every sibling child, parent-vs-child metric deltas, branch outcome, and
-the selected next-parent child. If a child executable spec has `branch_group_id`
-and `sibling_branch_count>1`, `build_revision_council_packet.py` must refuse to
-build the next Council packet until a valid comparison exists. Once present, the
-packet carries `sibling_branch_memory`, including unselected sibling outcomes,
-metric deltas, and forbidden repeat formula/law evidence. This prevents the
-loop from silently choosing a next parent from multiple children while dropping
-exploration evidence.
-
-## Important Clarification
-
-### Is review and revision part of Step6?
-
-Yes.
-
-Within the full Step1-6 system:
-- **review** is part of Step6
-- **revision proposal** is part of Step6
-- **actual code modification** goes back to Step3B after Step6 decides to iterate
-
-So the sequence is:
-
-`Step4 evidence -> Step5 case close -> Step6 review -> Step6 revision proposal -> Step3B code modification -> Step4 again`
-
-## When to Use Which Entry Path
-
-### Path A: New research report
-Use full Step1 -> Step6 when:
-- the user provides a new PDF/report
-- the factor idea is not yet canonicalized
-
-Step1 PDF ingestion can still require the OpenClaw PDF route, but once the Step1 artifacts exist, Step2 and every later formal step must enter through the ultimate wrapper:
+Materialize only agent-authored inputs with:
 
 ```bash
-python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 2 --end-step 2
+python3 scripts/write_factorforge_research_protocol.py \
+  --workspace-root <factor_workspace> \
+  --report-id <report_id> \
+  --state <state.json> \
+  --conjecture <conjecture.json> \
+  --approaches <approaches.json>
 ```
 
-Direct Step1/Step2 scripts are for isolated developer debugging only. Formal agent runs from Step2 onward must enter through `scripts/run_factorforge_ultimate.py` so the runtime context, proof manifest, and canonical artifact paths are fixed before later steps consume them.
+Validate `--stage pre_council` before expensive research.
 
-`objects/runtime_context/runtime_context__<report_id>.json` is the worker-entry
-contract. It must not be written before the relevant Step1/2/3A validators have
-all passed. The ultimate wrapper may use a temporary manifest to run local
-validators, but a BLOCKed Step1/Step2/Step3A run must leave the worker-entry
-runtime context absent and must not be described as runnable.
+### 2. Implementation and Evidence
 
-### Path B: Canonical alpha / known formula
-Start from Step3 when:
-- formula is already known
-- `alpha_idea_master`, `factor_spec_master`, and `handoff_to_step3` already exist
+Run Step3-5 through Ultimate. Audit:
 
-### Path C: Re-evaluation / library reflection
-Start from Step4, Step5, or Step6 when:
-- implementation already exists
-- we only need updated evaluation or a new research judgment
+- formula/code identity and legal-time information;
+- Data API catalog/state reuse before raw scans;
+- implementation parity and component ablations;
+- exact universe/masks/window/sample;
+- IS evidence without OOS search leakage;
+- long-side economics after volatility, transaction cost and capacity.
 
-## Data Rules
+Update the obligation and counterexample ledgers with actual executable tests,
+verifier identities, workspace-local evidence paths and SHA256 hashes.
 
-Always prefer the shared clean layer.
-Do not re-clean full history per factor.
+### 3. Factor Proof Certificate
 
-Default behavior:
-1. reuse existing shared clean layer if it exists and covers the requested window
-2. reuse an existing report-level slice if its metadata matches the requested report/window
-3. only rebuild the shared clean layer when the user explicitly asks to update/refresh/sync data, or when the layer is missing/insufficient
-4. only regenerate the report slice when it is missing, stale, or requested with a different window/provider option
-5. then run Step3+
+All claim classes require IC, ICIR, volatility cost, transaction cost, maximum
+drawdown and long-end return. Fama-MacBeth and quintile/decile monotonicity are
+mandatory only for `claim_class=risk_premium`.
 
-Never treat `build_clean_daily_layer.py` as a mandatory per-factor step.
+For non-risk-premium factors, bucket plots may diagnose shape but must not be a
+universal acceptance gate. Long-short and short-leg results are diagnostic only.
 
-## Mac / EC2 / S3 Knowledge Sync
+Thresholds must be registered before evaluation. The verifier recomputes metric
+identities and the final verdict. Every required metric must bind to its own
+trusted-verifier report, exact metric payload, and the same dataset-snapshot
+and window hashes. The locked rule set must bind factor/report/claim/window and
+the frozen search-trial ledger, and contain at least one rule on a core decision
+field for every required metric family. A formal
+`promote_official` decision is blocked before official writeback unless this
+certificate derives `ACCEPT`.
 
-Use this split for operational knowledge sharing:
-
-- GitHub is the canonical source for code, skills, contracts, and SOP documents.
-- Mac is the primary authoring and review environment for Factor Forge knowledge.
-- S3 is the durable shared store for Factor Forge knowledge bundles.
-- EC2 should pull the latest Mac-published knowledge bundle from S3 and keep a local cache for compute.
-- Tailscale may be used as a convenience path, but it must not be the only way EC2 can access knowledge; Mac power/network state must not block EC2 from pulling the last published bundle.
-
-Canonical production knowledge layout:
-
-- each formal factor research owns a factor workspace created before Step3+ execution.
-- structured source of truth: `<factor_workspace>/objects/`
-- human-readable production notes: `<factor_workspace>/knowledge/human_readable/`
-- canonical structured knowledge: `<factor_workspace>/knowledge/canonical/`
-- retrieval index: `<factor_workspace>/knowledge/retrieval/`
-- repo-root `/Users/humphrey/projects/factor-factory/knowledge/因子工厂/` is an explicit export/vault target only; it is not the default production write path.
-
-Do not use legacy duplicate roots as active knowledge stores:
-
-- `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault/`
-- `/Users/humphrey/projects/factor-factory/factorforge/objects/`
-
-The S3 bundle may carry exported vault material, but production writes must originate from the workspace layout and include export provenance when copied to repo-root or S3-facing vault paths.
-
-Mac publishes the authoritative object bundle with:
+Use the formal release sequence. Do not inspect the OOS panel through
+`--identity-only` before threshold registration:
 
 ```bash
-python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
-  --runtime-root /Users/humphrey/projects/factor-factory \
-  --upload \
-  --update-latest \
-  --bucket yufan-data-lake \
-  --prefix factorforge-knowledge/mac-authoritative \
-  --source-role mac_authoritative
+python3 scripts/write_factorforge_evaluation_release_chain.py freeze-search ...
+python3 scripts/write_factorforge_evaluation_release_chain.py register-threshold \
+  --workspace-root <factor_workspace> \
+  --spec <metric_verifier_spec.json> \
+  --decision-rules <decision_rules.json>
+python3 scripts/write_factorforge_evaluation_release_chain.py release-oos \
+  --workspace-root <factor_workspace> \
+  --panel <frozen_oos_panel> \
+  --spec <metric_verifier_spec.json>
+
+python3 scripts/build_factorforge_metric_verifier_reports.py \
+  --workspace-root <factor_workspace> \
+  --panel <frozen_oos_panel> \
+  --spec <metric_verifier_spec.json>
+
+python3 scripts/validate_factorforge_factor_proof.py \
+  --workspace-root <factor_workspace> \
+  --report-id <report_id>
 ```
 
-EC2 pulls the authoritative object bundle with:
+For a web-created task, its plan materializer performs the freeze-search and
+threshold-registration stages before Step4. The formal wrapper must run
+`scripts/finalize_factorforge_web_factor_proof.py` immediately after Step4
+validation. That finalizer releases and replays the exact plan-bound panel,
+writes the factor-proof certificate and bound verifier, and fails closed on
+plan, calendar, label, risk-control, panel or hash drift. Re-running an already
+finalized proof is permitted only as an identical verified replay.
+
+The release command binds actual OOS dates, at least 60 daily periods, panel
+hash, locked rules and the frozen trial ledger. The full verifier must consume
+that same panel and threshold file. The certificate validator replays the
+panel/spec with the current verifier source. Do not hand-author passed metric
+evidence. This is a tamper-evident local ordering contract, not an external
+trusted timestamp; hard OOS secrecy requires an independently controlled data
+release service.
+
+Formal metric-verifier v2 accepts only a disjoint one-trading-day return path:
+`forward_return_horizon_days=1`, `holding_period_days=1`,
+`return_path_mode=daily_one_period_forward_return`, daily rebalance, and
+`execution_timestamp=label_start_timestamp`. The atomic panel must also carry
+signal date, label start/end dates, and label start/end prices. The verifier
+must use the complete authoritative calendar independently resolved by
+`factorforge_data_access.trade_cal_csv`; its actual file must be outside the
+factor workspace. Its normalized open-date snapshot must match the repo-tracked
+trusted calendar registry as read from its approved Git anchor commit/blob.
+Formal specs must declare `verification_scope=production`, and the release/proof
+chain must bind the raw file SHA, normalized snapshot SHA, registry SHA, anchor
+commit/blob, and explicit snapshot id. A task or directory name containing
+`SMOKE` cannot relax this scope. The verifier must
+prove consecutive trading dates and daily signal coverage, and recompute
+`label_end_price/label_start_price-1`; self-reporting horizon 1 is insufficient.
+Multi-day rolling labels may
+support IC/Fama-MacBeth/mechanism diagnostics, but must not be compounded as
+daily long-end returns. Until a daily holding/NAV cohort engine or an explicit
+non-overlapping stride contract exists, a `t+5` formal portfolio proof is
+BLOCK. A locked threshold registration is immutable: identical retry is
+idempotent, while different content at the same path is BLOCK.
+
+Long-end admission uses geometrically compounded net return plus positive
+terminal/minimum wealth. Arithmetic gross-minus-cost return is reconciliation,
+not a substitute. Risk-premium quantiles are value based; unresolved ties that
+collapse 5/10 buckets BLOCK rather than being split by asset order.
+
+`component_validated` also requires deterministic full-versus-ablated evidence:
 
 ```bash
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python \
-  scripts/sync_factorforge_knowledge_bundle.py apply \
-  --runtime-root /home/ubuntu/.openclaw/workspace/factorforge \
-  --source s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json \
-  --apply \
-  --rebuild-index
+python3 scripts/build_factorforge_component_obligation_report.py \
+  --workspace-root <factor_workspace> \
+  --panel <full_vs_ablated_oos_panel> \
+  --spec <component_obligation_spec.json>
 ```
 
 The sync tool must verify the latest manifest sha256 before applying a bundle. Protected records such as official library, factor cases, handoffs, and validation evidence must not be overwritten by default.
@@ -481,7 +549,9 @@ Long-side admission uses the factor-as-business lens:
 - return/risk premium is `revenue`;
 - trading COGS defaults to `turnover * 0.3%` when no better cost estimate exists;
 - volatility is operating instability / risk-capital pressure, not direct COGS;
-- stochastic-process volatility drag is `-0.5 * sigma^2`;
+- under a log-growth model, variance drag may be diagnosed with
+  `-0.5 * sigma^2`; this portfolio diagnostic does not make a stochastic
+  process the factor's core mechanism;
 - max drawdown is capital expenditure / capital impairment;
 - recovery time is depreciation or payback period;
 - risk budget depends on Sharpe, max drawdown, recovery time, capacity, and confidence in repeatability.
@@ -627,7 +697,7 @@ When using this skill, also consult the relevant sub-skills:
 
 ## Correctness Over Completion
 
-FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must follow `operator -> hybrid -> direct_code -> BLOCK`; unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
+FactorForge is a general-purpose factor research framework, not a named-factor or family-template calculator. Step3B must execute the implementation route frozen by the measurement program; it must not prefer an operator when the selected mathematical object requires trusted hybrid or direct code, and it must not change routes after a failure. Unsupported or unsafe implementation must fail explicitly instead of borrowing sample/family code. Family plugins are explicit-contract only and never a fallback.
 
 ## Operator / Qlib Engine
 
@@ -676,12 +746,13 @@ subagents. Typical roles are `symbolic_law_discovery`, `evidence_auditor`,
 
 `symbolic_law_discovery` is not a fixed checklist. It treats the factor formula,
 data fields, evidence, and knowledge base as a mathematical research object. It
-may choose dimensional analysis, scaling laws, stochastic processes, stochastic
-calculus, jump processes, stopping-time reasoning, Fourier/spectral analysis,
-robust statistics, tail-distribution analysis, projection geometry, functional
-analysis, dynamical systems, information theory, market microstructure theory,
-or other justified tools. It must also be allowed to reject tools as unjustified
-when the formula/evidence does not support them.
+may choose DCF or residual-income valuation, accounting identities, dimensional
+or scaling analysis, stochastic processes, jump or stopping-time reasoning,
+Fourier/spectral analysis, robust statistics, projection geometry, functional
+analysis, causal models, dynamical systems, information theory, optimization,
+market microstructure theory, a composition of these, or another justified
+tool. It must reject tools that do not fit the economic hypothesis; neither
+stochastic processes nor dimensional analysis is mandatory.
 
 Every council proposal must include a visible `derivation_record` suitable for
 knowledge-base writeback. This is a public research artifact, not hidden
@@ -810,6 +881,18 @@ Council results that it or its delegated subagents actually researched from the
 task packets. If valid Council results cannot be produced, BLOCK with a precise
 reason instead of asking the user to drive the next command.
 
+A unanimous Council terminal rejection closes a web research task only through
+the terminal-rejection protocol. The close artifact must bind a validated
+factor-proof certificate whose derived verdict is `REJECT`, the dispatch
+manifest, Council summary and collection, every selected raw result, and the
+iteration decision. Final replay must verify hashes, dispatch identities,
+required-result counts and the exact terminal recommendation enum; prose and
+substring matches are not decisions. If a distinct registered route is still
+available, the wrapper must pause as `awaiting_next_derivation` and emit the
+bounded questionnaire. Non-unanimous Council output must pause as
+`awaiting_main_agent_council_synthesis`. Neither pause state is a terminal
+factor verdict or formal proof.
+
 Runtime dispatch is policy, not provider binding. `--runtime-dispatch
 codex|openclaw|manual_file|unknown` records the runtime in taskbook, dispatch
 manifest, task packets, manual manifest, and assignment markdown. If omitted,
@@ -867,4 +950,8 @@ the current runtime.
 
 ## Mechanism Math Contract v2
 
-Factor Forge treats a factor as a falsifiable market-process model first and a formula second. Step1/2/6 artifacts should preserve the chain: market behavior -> economic hypothesis -> primary mechanism model -> stochastic price-process projection -> formula observable estimator -> expected metric signature -> falsification or revision logic. The primary model is selected from the economic hypothesis and is not automatically a stochastic process, but every formal factor must state how the signal changes the conditional distribution of next-horizon return under F_t. Formula explanations that merely restate the formula, or decorative generic SDE/physics language without state variables, observable proxies, and falsification, must BLOCK. Council revisions must declare which model layer they revise: economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract.
+Factor Forge treats a factor as a falsifiable market-process model first and an
+implementation second. The authoritative chain and stage obligations are in the
+two contracts referenced under `Math-First Authority Contract`; do not duplicate
+or weaken them here. Council revisions must name the exact failed/revised layer,
+preserved invariants and new discriminating evidence before any child execution.

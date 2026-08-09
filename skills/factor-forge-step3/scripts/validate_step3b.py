@@ -27,6 +27,7 @@ from factor_factory.artifact_identity import assert_identity_matches_strict, sta
 from factor_factory.factor_families.registry import validate_family_plugin_artifacts
 from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture, run_operator_parity
+from factor_factory.formula.parser import resolved_binding_hash_for_formula_ir
 from factor_factory.formula.registry import operator_meta
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
@@ -185,6 +186,75 @@ def infer_operator_schema(prep: dict) -> dict:
     return {'columns': list(DEFAULT_OPERATOR_SCHEMA_COLUMNS), 'source': 'default_plan_schema', 'strict': False}
 
 
+def assert_resolved_fields_in_operator_schema(formula_ir: dict, prep: dict) -> dict:
+    operator_schema = infer_operator_schema(prep)
+    required_fields = {
+        str(field).strip()
+        for field in formula_ir.get('required_fields') or []
+        if str(field).strip()
+    }
+    raw_resolved_fields = formula_ir.get('resolved_fields')
+    assert isinstance(raw_resolved_fields, dict), (
+        'BLOCK_FORMULA_FIELD_MAPPING_INCOMPLETE: resolved_fields must be an object'
+    )
+    resolved_fields = {
+        str(field).strip(): str(resolved).strip()
+        for field, resolved in raw_resolved_fields.items()
+        if str(field).strip() and str(resolved).strip()
+    }
+    field_nodes: list[tuple[str, str]] = []
+
+    def collect(node) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get('type') == 'field':
+            name = str(node.get('name') or '').strip()
+            resolved = str(node.get('resolved_field') or '').strip()
+            assert name and resolved, (
+                'BLOCK_FORMULA_FIELD_MAPPING_INCOMPLETE: '
+                'every field node requires name and resolved_field'
+            )
+            field_nodes.append((name, resolved))
+        for child in node.get('args') or []:
+            collect(child)
+
+    collect(formula_ir.get('root'))
+    node_fields = {name for name, _resolved in field_nodes}
+    assert required_fields == node_fields, (
+        'BLOCK_FORMULA_REQUIRED_FIELDS_INCOMPLETE: '
+        f'required_fields={sorted(required_fields)} tree_fields={sorted(node_fields)}'
+    )
+    missing_mappings = sorted(node_fields - set(resolved_fields))
+    assert not missing_mappings, (
+        'BLOCK_FORMULA_FIELD_MAPPING_INCOMPLETE: '
+        f'resolved_fields missing {missing_mappings}'
+    )
+    mismatches = [
+        {
+            'field': name,
+            'mapped_resolved_field': resolved_fields.get(name),
+            'node_resolved_field': node_resolved,
+        }
+        for name, node_resolved in field_nodes
+        if resolved_fields.get(name) != node_resolved
+    ]
+    assert not mismatches, (
+        'BLOCK_FORMULA_FIELD_MAPPING_MISMATCH: '
+        f'field node resolved_field differs from resolved_fields: {mismatches}'
+    )
+    available = {str(col).lower() for col in operator_schema.get('columns') or []}
+    missing = [
+        {'field': field, 'resolved_field': resolved}
+        for field, resolved in sorted(resolved_fields.items())
+        if str(resolved).lower() not in available
+    ]
+    assert not missing, (
+        'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in '
+        f'{operator_schema.get("source")}: {missing}'
+    )
+    return operator_schema
+
+
 def assert_artifact_identity(label: str, data: dict, expected: dict | None = None, role: str | None = None) -> dict:
     identity = data.get('artifact_identity') or ((data.get('metadata') or {}).get('artifact_identity'))
     assert isinstance(identity, dict) and identity, f'{label}.artifact_identity is required'
@@ -321,6 +391,38 @@ def candidate_operator_code_paths(*, manifest: dict | None, qlib_data: dict, han
     return paths
 
 
+def assert_resolved_binding_hashes(
+    formula_ir: dict,
+    *,
+    plan: dict,
+    qlib_data: dict,
+    handoff: dict,
+) -> str:
+    expected = resolved_binding_hash_for_formula_ir(formula_ir)
+    assert formula_ir.get('resolved_binding_hash'), (
+        'BLOCK_OPERATOR_BINDING_HASH_MISSING: formula_ir.resolved_binding_hash'
+    )
+    assert formula_ir.get('resolved_binding_hash') == expected, (
+        'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: formula_ir resolved binding hash '
+        f"{formula_ir.get('resolved_binding_hash')} != recomputed {expected}"
+    )
+    metadata = qlib_data.get('metadata') or {}
+    required_sources = {
+        'implementation_plan_master': plan.get('resolved_binding_hash'),
+        'implementation_plan_master.metadata': (plan.get('metadata') or {}).get('resolved_binding_hash'),
+        'qlib_expression_draft': qlib_data.get('resolved_binding_hash'),
+        'qlib_expression_draft.metadata': metadata.get('resolved_binding_hash'),
+        'handoff_to_step4': handoff.get('resolved_binding_hash'),
+    }
+    for label, declared in required_sources.items():
+        assert declared, f'BLOCK_OPERATOR_BINDING_HASH_MISSING: {label}'
+        assert declared == expected, (
+            f'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: {label}={declared} '
+            f'recomputed={expected}'
+        )
+    return expected
+
+
 def validate_operator_mode(
     spec: dict,
     plan: dict,
@@ -343,21 +445,19 @@ def validate_operator_mode(
     )
     assert identity.get('formula_hash'), 'operator mode requires formula_hash'
     assert identity.get('formula_hash') == formula_ir.get('formula_hash'), 'operator formula_hash mismatch between identity and formula_ir'
+    expected_binding_hash = assert_resolved_binding_hashes(
+        formula_ir,
+        plan=plan,
+        qlib_data=qlib_data,
+        handoff=handoff,
+    )
     operator_set = formula_ir.get('operator_set') or canonical.get('operator_set') or canonical.get('operators')
     required_fields = formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs')
     resolved_fields = formula_ir.get('resolved_fields') or canonical.get('resolved_fields')
     assert operator_set, 'operator mode requires operator_set/operators'
     assert required_fields, 'operator mode requires required_fields/required_inputs'
     assert resolved_fields, 'operator mode requires resolved_fields'
-    operator_schema = infer_operator_schema(prep)
-    if operator_schema.get('strict'):
-        available = {str(col).lower() for col in operator_schema.get('columns') or []}
-        missing = [
-            {'field': field, 'resolved_field': resolved}
-            for field, resolved in resolved_fields.items()
-            if str(resolved).lower() not in available
-        ]
-        assert not missing, f'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in {operator_schema.get("source")}: {missing}'
+    assert_resolved_fields_in_operator_schema(formula_ir, prep)
     for operator in operator_set:
         meta = operator_meta(str(operator))
         assert meta.get('supports_pandas') is True, f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}'
@@ -377,6 +477,15 @@ def validate_operator_mode(
     implementation_path = next((path for path in candidates if path and path.exists() and path.suffix == '.py'), None)
     assert implementation_path is not None, f'BLOCK_OPERATOR_ARTIFACT_MISSING: checked {[str(p) for p in candidates]}'
     actual_code_hash = hashlib.sha256(implementation_path.read_bytes()).hexdigest()
+    generated_module = import_module_from_path(implementation_path)
+    embedded_ir = getattr(generated_module, 'FORMULA_IR', {})
+    embedded_metadata = getattr(generated_module, 'METADATA', {})
+    assert isinstance(embedded_ir, dict) and embedded_ir.get('resolved_binding_hash') == expected_binding_hash, (
+        'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: generated code FORMULA_IR'
+    )
+    assert isinstance(embedded_metadata, dict) and embedded_metadata.get('resolved_binding_hash') == expected_binding_hash, (
+        'BLOCK_OPERATOR_BINDING_HASH_MISMATCH: generated code METADATA'
+    )
     declared_hashes = collect_declared_operator_code_hashes(plan, qlib_data, hybrid_data, handoff)
     assert declared_hashes, 'BLOCK_OPERATOR_HASH_MISSING: operator generated artifacts require code_hash'
     for label, declared_hash in declared_hashes:
@@ -912,7 +1021,37 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                     'amount': minute_close * volume,
                 })
     daily_df = add_direct_code_alias_columns(pd.DataFrame(daily_rows))
-    minute_df = add_direct_code_alias_columns(pd.DataFrame(minute_rows))
+    if str((code_contract or {}).get('state_dataset') or '') == 'intraday_retained_chip_state_v1' or 'lcr_raw' in required_fields:
+        state_rows = []
+        for stock_index, ts_code in enumerate(['000001.SZ', '000002.SZ']):
+            for day_index, trade_date in enumerate(dates):
+                amount_sum = 200000000.0 + 1000000.0 * day_index
+                lcr_raw = 0.35 + 0.04 * stock_index + 0.005 * day_index
+                state_rows.append({
+                    'ts_code': ts_code,
+                    'trade_date': trade_date,
+                    'lcr_raw': lcr_raw,
+                    'retained_amount_sum': amount_sum * lcr_raw,
+                    'amount_sum_20d': amount_sum,
+                    'interval_turnover_sum_20d': 1.2 + 0.05 * stock_index,
+                    'survival_weighted_interval_count': 40.0 + day_index,
+                    'interval_count': 80,
+                    'valid_interval_count': 80,
+                    'lookback_days': 20,
+                    'interval_minutes': 15,
+                    'turnover_denominator_source': 'float_share',
+                    'float_share': 1000000000.0,
+                    'float_share_unit': 'share',
+                    'amount_unit': 'CNY',
+                    'source_min_date': dates[0],
+                    'source_max_date': trade_date,
+                    'missing_interval_count': 0,
+                    'turnover_clipped_count': 0,
+                    'qa_status': 'PASS',
+                })
+        minute_df = pd.DataFrame(state_rows)
+    else:
+        minute_df = add_direct_code_alias_columns(pd.DataFrame(minute_rows))
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(daily_df, use_polars)
     minute_input = maybe_polars_frame(minute_df, use_polars)
@@ -972,9 +1111,20 @@ def validate_direct_code_mode(
 ) -> None:
     contract = spec.get('implementation_contract') or {}
     identity = spec.get('artifact_identity') or {}
-    assert contract.get('code_contract'), 'BLOCK_UNSUPPORTED_DIRECT_CODE_VALIDATION: direct_code requires code_contract'
+    code_contract: dict = {}
+    for source in [
+        contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {},
+        (plan.get('implementation_contract') or {}).get('code_contract') if isinstance((plan.get('implementation_contract') or {}).get('code_contract'), dict) else {},
+        plan.get('code_contract') if isinstance(plan.get('code_contract'), dict) else {},
+        qlib_data.get('code_contract') if isinstance(qlib_data.get('code_contract'), dict) else {},
+        hybrid_data.get('code_contract') if isinstance(hybrid_data.get('code_contract'), dict) else {},
+        (handoff.get('implementation_contract') or {}).get('code_contract') if isinstance((handoff.get('implementation_contract') or {}).get('code_contract'), dict) else {},
+        handoff.get('code_contract') if isinstance(handoff.get('code_contract'), dict) else {},
+    ]:
+        code_contract.update(source)
+    assert code_contract, 'BLOCK_UNSUPPORTED_DIRECT_CODE_VALIDATION: direct_code requires code_contract'
     assert identity.get('code_hash') or identity.get('code_contract_hash'), 'direct_code requires code_hash or code_contract_hash'
-    output_schema = plan.get('output_schema') or contract.get('output_schema') or {}
+    output_schema = plan.get('output_schema') or code_contract.get('output_schema') or contract.get('output_schema') or {}
     assert output_schema, 'direct_code requires declared output schema'
     candidates = candidate_direct_code_paths(
         manifest=manifest,
@@ -999,7 +1149,6 @@ def validate_direct_code_mode(
             )
 
     text = implementation_path.read_text(encoding='utf-8')
-    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
     extra_patterns = list(code_contract.get('forbidden_patterns') or contract.get('forbidden_patterns') or [])
     scan_direct_code_text(text, extra_patterns)
     scan_direct_code_ast(text)
@@ -1099,6 +1248,7 @@ def validate_hybrid_mode(
     boundary = contract.get('boundary') or {}
     assert formula_ir, 'BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph.formula_ir missing'
     assert formula_ir.get('parse_status') == 'success', f"BLOCK_INVALID_HYBRID_CONTRACT: operator_subgraph formula_ir parse failed {formula_ir.get('parse_errors')}"
+    assert_resolved_fields_in_operator_schema(formula_ir, prep)
     assert isinstance(custom_blocks, list) and custom_blocks, 'BLOCK_INVALID_HYBRID_CONTRACT: custom_blocks missing'
     assert_hybrid_boundary(boundary, custom_blocks)
     for key in ['formula_hash', 'custom_block_hash', 'hybrid_hash']:
@@ -1107,16 +1257,6 @@ def validate_hybrid_mode(
         assert plan.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: implementation_plan {key} mismatch'
         assert hybrid_data.get(key) == contract.get(key), f'BLOCK_HYBRID_HASH_MISMATCH: hybrid_scaffold {key} mismatch'
 
-    operator_schema = infer_operator_schema(prep)
-    resolved_fields = formula_ir.get('resolved_fields') or {}
-    if operator_schema.get('strict'):
-        available = {str(col).lower() for col in operator_schema.get('columns') or []}
-        missing = [
-            {'field': field, 'resolved_field': resolved}
-            for field, resolved in resolved_fields.items()
-            if str(resolved).lower() not in available
-        ]
-        assert not missing, f'BLOCK_MISSING_FIELD_ALIAS: resolved_fields not present in {operator_schema.get("source")}: {missing}'
     for operator in formula_ir.get('operator_set') or []:
         meta = operator_meta(str(operator))
         assert meta.get('supports_pandas') is True, f'BLOCK_UNSUPPORTED_PANDAS_OPERATOR: {operator}'
@@ -1157,7 +1297,7 @@ def validate_hybrid_mode(
     compute_factor = getattr(module, 'compute_factor', None)
     assert callable(compute_operator), 'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: compute_operator_subgraph missing'
     assert callable(compute_factor), 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: compute_factor missing'
-    fixture = make_operator_fixture()
+    fixture = make_operator_fixture(formula_ir)
     fixture['is_tradable'] = [idx % 2 == 0 for idx in range(len(fixture))]
     fixture['custom_scale'] = 2.0
     fixture['universe_flag'] = [1 if idx % 3 else 0 for idx in range(len(fixture))]

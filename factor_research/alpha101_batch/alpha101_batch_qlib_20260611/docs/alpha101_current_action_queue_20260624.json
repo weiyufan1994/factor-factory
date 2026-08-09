@@ -1,0 +1,112 @@
+{
+  "contract_version": "alpha101_current_action_queue_v1",
+  "created_at": "2026-06-24",
+  "scope": "factor_research/Alpha*/ workspaces",
+  "evidence_role": "coordination_artifact_not_promotion_evidence",
+  "next_action": {
+    "factor_id": "Alpha019",
+    "parent_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+    "recommended_child_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101__LOOP01__ALPHA019_SMOOTHED_PULLBACK_PERSISTENCE_V1",
+    "branch_id": "exploit_cost_persistence",
+    "status": "pending_human_approval_before_step3b_execution",
+    "approval_packet": "factor_research/Alpha019/alpha019_sign_reversal_winner_state_ultimate_20260623/docs/alpha019_next_branch_approval_packet_20260623.zh-CN.md",
+    "execution_boundary": [
+      "do_not_run_from_disabled_provisional_handoff",
+      "do_not_change_portfolio_policy_to_rescue_factor",
+      "materialize_child_through_formal_factor_forge_revision_path_after_approval"
+    ]
+  },
+  "ranked_evidence": [
+    {
+      "factor_id": "Alpha015",
+      "report_id": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+      "rank_ic_mean": 0.0602254,
+      "rank_ic_ir": 0.541872,
+      "long_side_annual_return": 0.222511,
+      "long_side_sharpe": 0.938241,
+      "max_drawdown": -0.395409,
+      "recovery_days": 704,
+      "turnover_mean_daily": 0.244867,
+      "cost_adjusted_annual_return": 0.0374717,
+      "reading": "strongest_current_alpha101_candidate_parent_best_feature_candidate_not_clean_official"
+    },
+    {
+      "factor_id": "Alpha040",
+      "report_id": "ALPHA040_LOWVOL_PV_STATE_20160101__LOOP01__ALPHA040_PERSISTEN__9b9059c42c__LOOP01__ALPHA040_INTERMEDIATE_KERNEL_STATE_V2",
+      "rank_ic_mean": 0.0470855,
+      "rank_ic_ir": 0.355543,
+      "long_side_annual_return": 0.0886839,
+      "long_side_sharpe": 0.407174,
+      "max_drawdown": -0.481638,
+      "recovery_days": 1755,
+      "turnover_mean_daily": 0.154622,
+      "cost_adjusted_annual_return": -0.0281594,
+      "reading": "soft_feature_candidate_positive_information_but_not_standalone"
+    },
+    {
+      "factor_id": "Alpha044",
+      "report_id": "ALPHA044_HIGH_VOLUME_PRICE_COUPLING_20160101__LOOP01__AGENT_STOCHASTIC_PROCESS_MODELER_LAW_001_PERSISTENT_COUPLING_STA",
+      "rank_ic_mean": 0.0428543,
+      "rank_ic_ir": 0.601641,
+      "long_side_annual_return": 0.122544,
+      "long_side_sharpe": 0.534863,
+      "max_drawdown": -0.362931,
+      "recovery_days": 1544,
+      "turnover_mean_daily": 0.358459,
+      "cost_adjusted_annual_return": -0.148334,
+      "reading": "better_long_side_than_parent_but_cost_and_drawdown_blocked"
+    },
+    {
+      "factor_id": "Alpha083",
+      "report_id": "ALPHA083_RANGE_VOLUME_PRESSURE_20160101__LOOP01__ALPHA083_DIMENSIONLESS_CLOSE_LOCATION_PERSISTENCE_V1",
+      "rank_ic_mean": 0.0296721,
+      "rank_ic_ir": 0.284014,
+      "long_side_annual_return": 0.0884725,
+      "long_side_sharpe": 0.388555,
+      "max_drawdown": -0.423278,
+      "recovery_days": 1760,
+      "turnover_mean_daily": 0.172428,
+      "cost_adjusted_annual_return": -0.0418265,
+      "reading": "retained_feature_state_only"
+    },
+    {
+      "factor_id": "Alpha019",
+      "report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+      "rank_ic_mean": 0.0285904,
+      "rank_ic_ir": 0.280932,
+      "long_side_annual_return": 0.0706087,
+      "long_side_sharpe": 0.310165,
+      "max_drawdown": -0.488254,
+      "recovery_days": 1826,
+      "turnover_mean_daily": 0.306927,
+      "cost_adjusted_annual_return": -0.161316,
+      "reading": "weak_positive_signal_cleanest_next_child_repair"
+    }
+  ],
+  "closed_or_deprioritized": [
+    {
+      "factor_id": "Alpha005",
+      "reason": "weak_rank_ic_and_negative_high_score_long_side"
+    },
+    {
+      "factor_id": "Alpha007",
+      "reason": "positive_ic_variants_but_long_side_fails_and_turnover_high"
+    },
+    {
+      "factor_id": "Alpha013",
+      "reason": "strong_rank_ic_but_high_score_long_side_flat_or_negative"
+    },
+    {
+      "factor_id": "Alpha042",
+      "reason": "ordinal_information_but_negative_long_side_direction"
+    }
+  ],
+  "alpha019_child_math": {
+    "parent_state": "S_i_t = B_i_t * (1 + M_i_t)",
+    "parent_short_state": "B_i_t = -sign(C_i_t - C_i_t_minus_7)",
+    "slow_state": "M_i_t = rank_t(1 + sum_{k=0}^{249} r_i_t_minus_k)",
+    "child_pullback_intensity": "P_i_t = rank_t((C_i_t_minus_7 - C_i_t) / C_i_t_minus_7)",
+    "child_formula": "F_child_i_t = mean_5(P_i_t) * (1 + M_i_t)",
+    "formula_ir_draft": "mean(rank(((delay(close, 7) - close) / delay(close, 7))), 5) * (1 + rank((1 + sum(returns, 250))))"
+  }
+}

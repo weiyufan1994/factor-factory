@@ -137,6 +137,8 @@ def loop_command(root: Path, report_id: str, *, start_step: str = "6", max_loops
         executor,
         "--agentic-dispatch-adapter",
         adapter,
+        "--allow-legacy-global-runtime",
+        "--allow-legacy-research-protocol-smoke",
         "--factorforge-root",
         str(root),
     ]
@@ -211,6 +213,225 @@ def run_wrapper_failure_case(root: Path) -> dict[str, Any]:
     }
 
 
+def run_workspace_dry_run_isolation_case(root: Path) -> dict[str, Any]:
+    report_id = "ULTIMATE_LOOP_WORKSPACE_DRY_RUN"
+    factor_id = "ULTIMATE_LOOP_WORKSPACE_FACTOR"
+    research_id = "ultimate_loop_workspace_research"
+    init = run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "init_factor_research_workspace.py"),
+            "--factor-id",
+            factor_id,
+            "--research-id",
+            research_id,
+            "--report-id",
+            report_id,
+            "--factorforge-root",
+            str(root),
+        ],
+        root=root,
+    )
+    workspace = (
+        root / "factor_research" / factor_id / research_id
+    )
+    command = loop_command(
+        root,
+        report_id,
+        max_loops=1,
+        council_mode="off",
+    )
+    command.extend(
+        [
+            "--factor-workspace",
+            str(workspace),
+            "--dry-run",
+        ]
+    )
+    proc = run(command, root=root)
+    workspace_proof = proof_path(workspace, report_id)
+    workspace_brief = brief_path(workspace, report_id)
+    global_proof = proof_path(root, report_id)
+    global_brief = brief_path(root, report_id)
+    proof = read_json(workspace_proof) if workspace_proof.exists() else {}
+    command_rows = [
+        row.get("wrapper_command", {}).get("command") or []
+        for row in proof.get("iterations") or []
+        if isinstance(row, dict)
+    ]
+    command_bound = bool(command_rows) and all(
+        "--factor-workspace" in row
+        and str(workspace) in row
+        for row in command_rows
+    )
+    ok = (
+        init["rc"] == 0
+        and proc["rc"] == 0
+        and workspace_proof.exists()
+        and workspace_brief.exists()
+        and not global_proof.exists()
+        and not global_brief.exists()
+        and command_bound
+        and Path(str(proof.get("factorforge_root") or "")).resolve(
+            strict=False
+        )
+        == workspace.resolve(strict=False)
+        and proof.get("status") == "DRY_RUN"
+        and proof.get("final_outcome") == "dry_run"
+        and proof.get("formal_proof_eligible") is False
+        and proof.get("proof_semantics") == "execution_plan_only"
+    )
+    return {
+        "case": "ultimate_loop_workspace_dry_run_isolated",
+        "init_rc": init["rc"],
+        "loop_rc": proc["rc"],
+        "workspace": str(workspace),
+        "workspace_proof": str(workspace_proof),
+        "workspace_brief": str(workspace_brief),
+        "workspace_outputs_exist": (
+            workspace_proof.exists() and workspace_brief.exists()
+        ),
+        "global_outputs_absent": (
+            not global_proof.exists() and not global_brief.exists()
+        ),
+        "wrapper_command_bound_to_workspace": command_bound,
+        "ok": ok,
+    }
+
+
+def run_wrapper_proof_eligibility_attack_case(root: Path) -> dict[str, Any]:
+    def proof_path_for(report_id: str) -> Path:
+        return (
+            root
+            / "objects"
+            / "runtime_context"
+            / f"ultimate_run_report__{report_id}.json"
+        )
+
+    def passed_command(name: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "status": "PASS",
+            "returncode": 0,
+        }
+
+    dry_report_id = "ULTIMATE_LOOP_DRY_RUN_PROOF_ATTACK"
+    dry_commands = [
+        {
+            "name": "run_step6",
+            "status": "DRY_RUN",
+            "returncode": 0,
+        }
+    ]
+    write_json(
+        proof_path_for(dry_report_id),
+        {
+            "status": "PASS",
+            "dry_run": True,
+            "contract_smoke_only": False,
+            "formal_proof_eligible": False,
+            "requested_steps": ["6"],
+            "commands": dry_commands,
+            "formal_command_contract": {
+                "required_command_names": ["run_step6"],
+                "research_protocol_verifier_required": True,
+                "research_protocol_verifier_name": (
+                    "validate_research_protocol_pre_council"
+                ),
+                "satisfied": False,
+            },
+        },
+    )
+    dry_state = ULTIMATE_LOOP.classify_loop_state(
+        root,
+        dry_report_id,
+        0,
+    )
+
+    missing_protocol_report_id = "ULTIMATE_LOOP_MISSING_PROTOCOL_ATTACK"
+    missing_protocol_commands = [
+        passed_command("run_step6"),
+        passed_command("validate_step6"),
+    ]
+    write_json(
+        proof_path_for(missing_protocol_report_id),
+        {
+            "status": "PASS",
+            "dry_run": False,
+            "contract_smoke_only": False,
+            "formal_proof_eligible": True,
+            "requested_steps": ["6"],
+            "commands": missing_protocol_commands,
+            "formal_command_contract": {
+                "required_command_names": [
+                    row["name"] for row in missing_protocol_commands
+                ],
+                "research_protocol_verifier_required": False,
+                "research_protocol_verifier_name": (
+                    "validate_research_protocol_pre_council"
+                ),
+                "satisfied": True,
+            },
+        },
+    )
+    missing_protocol_state = ULTIMATE_LOOP.classify_loop_state(
+        root,
+        missing_protocol_report_id,
+        0,
+    )
+
+    valid_report_id = "ULTIMATE_LOOP_FORMAL_PROOF_CONTROL"
+    valid_commands = [
+        passed_command("validate_research_protocol_pre_council"),
+        passed_command("run_step6"),
+        passed_command("validate_step6"),
+    ]
+    write_json(
+        proof_path_for(valid_report_id),
+        {
+            "status": "PASS",
+            "dry_run": False,
+            "contract_smoke_only": False,
+            "formal_proof_eligible": True,
+            "requested_steps": ["6"],
+            "commands": valid_commands,
+            "formal_command_contract": {
+                "required_command_names": [
+                    row["name"] for row in valid_commands
+                ],
+                "research_protocol_verifier_required": True,
+                "research_protocol_verifier_name": (
+                    "validate_research_protocol_pre_council"
+                ),
+                "satisfied": True,
+            },
+        },
+    )
+    valid_state = ULTIMATE_LOOP.classify_loop_state(
+        root,
+        valid_report_id,
+        0,
+    )
+    ok = (
+        dry_state.get("proof_status") == "DRY_RUN"
+        and dry_state.get("outcome") == "dry_run"
+        and "DRY_RUN_NOT_FORMAL" in str(dry_state.get("stop_reason"))
+        and missing_protocol_state.get("proof_status") == "FAIL"
+        and missing_protocol_state.get("outcome") == "blocked"
+        and "research_protocol_verifier_missing"
+        in str(missing_protocol_state.get("stop_reason"))
+        and valid_state.get("proof_status") == "PASS"
+        and valid_state.get("outcome") == "exhausted"
+    )
+    return {
+        "case": "wrapper_proof_eligibility_attack_blocks",
+        "dry_run_state": dry_state,
+        "missing_protocol_state": missing_protocol_state,
+        "valid_formal_state": valid_state,
+        "ok": ok,
+    }
+
+
 def run_child_missing_case(root: Path) -> dict[str, Any]:
     report_id = "STEP6_INTEL_HIGH_TURNOVER_REVISION"
     proc = run(
@@ -249,6 +470,57 @@ def write_main_agent_council_synthesis_fixture(
     law_id: str = "smoke_explicit_smoothing_law_001",
 ) -> Path:
     path = main_agent_council_synthesis_path(root, report_id)
+    summary_path = path.parent / f"revision_council_summary__{report_id}.json"
+    summary = read_json(summary_path) if summary_path.exists() else {}
+    routes = [
+        item
+        for item in summary.get("research_route_summary") or []
+        if isinstance(item, dict) and item.get("route_id")
+    ]
+    if not routes:
+        routes = [
+            {
+                "route_id": "economic_game_payer",
+                "exact_gap_after_analysis": "payer and persistence identification",
+                "proof_obligation_updates": [],
+            },
+            {
+                "route_id": "mechanism_object_measurement",
+                "exact_gap_after_analysis": "mathematical-object identifiability and formula-component mapping",
+                "proof_obligation_updates": [],
+            },
+            {
+                "route_id": "microstructure_cost",
+                "exact_gap_after_analysis": "after-cost persistence",
+                "proof_obligation_updates": [],
+            },
+            {
+                "route_id": "null_alias_counterexample",
+                "exact_gap_after_analysis": "strongest alias counterexample",
+                "proof_obligation_updates": [],
+            },
+            {
+                "route_id": "symbolic_law",
+                "exact_gap_after_analysis": "formula-mappable derivation",
+                "proof_obligation_updates": [],
+            },
+        ]
+    route_ids = [str(item["route_id"]) for item in routes]
+    selected_route_ids = (
+        ["symbolic_law"]
+        if "symbolic_law" in route_ids
+        else route_ids[:1]
+    )
+    open_obligation_ids = sorted(
+        {
+            str(update["obligation_id"])
+            for route in routes
+            for update in route.get("proof_obligation_updates") or []
+            if isinstance(update, dict)
+            and update.get("obligation_id")
+            and update.get("status") != "passed"
+        }
+    )
     payload = {
         "contract_version": "factorforge_main_agent_council_synthesis_v1",
         "created_at_utc": utc_now(),
@@ -267,6 +539,33 @@ def write_main_agent_council_synthesis_fixture(
         ],
         "consensus_summary": "Council proposals converge on replacing the noisy parent estimator with a single explicit formula mutation.",
         "disagreement_summary": "No conflicting executable law is selected for this smoke fixture.",
+        "selection_rule": "proof_obligation_and_falsification_quality",
+        "route_comparison": [
+            {
+                "route_id": route_id,
+                "disposition": (
+                    "selected" if route_id in selected_route_ids else "carry_forward"
+                ),
+                "reason": (
+                    "Selected as the explicit formula-mappable smoke route."
+                    if route_id in selected_route_ids
+                    else "Retained as an open alternative; agent count is not a verdict."
+                ),
+                "exact_gap_or_closed_obligation": next(
+                    (
+                        str(item.get("exact_gap_after_analysis"))
+                        for item in routes
+                        if str(item.get("route_id")) == route_id
+                    ),
+                    "route-specific evidence remains open",
+                ),
+            }
+            for route_id in route_ids
+        ],
+        "dissent_resolution": (
+            "The smoke selects an executable symbolic route without treating "
+            "majority agreement as proof; unresolved routes remain open."
+        ),
         "rejected_revision_laws": [
             {
                 "law_id": "generic_sign_challenge",
@@ -275,8 +574,10 @@ def write_main_agent_council_synthesis_fixture(
         ],
         "selected_revision": {
             "law_id": law_id,
+            "source_route_ids": selected_route_ids,
+            "open_proof_obligation_ids": open_obligation_ids,
             "source_agent_roles": ["formula_engineer", "statistical_falsification_agent"],
-            "why_selected": "It is the only explicit executable law in this fixture and changes the formula rather than portfolio construction.",
+            "why_selected": "It is the only explicit executable law in this fixture and changes the observable estimator rather than the execution wrapper.",
             "economic_mechanism_link": "Tests whether a cleaner current-price state preserves signal while reducing turnover and drawdown.",
             "math_model_link": "Maps the selected state estimator into a cross-sectional rank target for next-period return.",
             "child_formula": child_formula,
@@ -378,7 +679,8 @@ def run_child_explicit_orchestrator_synthesis_materializes_case(root: Path) -> d
     spec = read_json(spec_path) if spec_path.exists() else {}
     ok = (
         proc["rc"] == 0
-        and spec.get("source_orchestrator_synthesis_path") == str(synthesis)
+        and Path(str(spec.get("source_orchestrator_synthesis_path") or "")).resolve()
+        == synthesis.resolve()
         and spec.get("child_formula") == child_formula
         and spec.get("derivation_rule") == law_id
         and spec.get("selected_revision_law_ids") == [law_id]
@@ -425,6 +727,9 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
     role = task.get("agent_role") or "unknown_agent"
     task_id = task.get("task_id") or f"agent_{role}"
     law_id = f"{task_id}_terminal_reject_law"
+    measurement_binding = task.get("measurement_program_binding") or {}
+    frozen_equation = measurement_binding.get("mechanism_equation_or_functional")
+    frozen_object = measurement_binding.get("mathematical_object")
     return {
         "result_version": "factorforge_agentic_revision_council_result_v1",
         "status": "final",
@@ -438,6 +743,63 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "approach_route": {
+            "route_id": task.get("route_id"),
+            "route_family": task.get("route_family"),
+            "core_hypothesis": (
+                "The assigned route is falsified for this executed branch, "
+                "without closing unrelated mechanism routes."
+            ),
+            "distinct_from_other_routes": (
+                "This result only terminates the route bound to this task packet."
+            ),
+            "exact_gap_after_analysis": task.get("exact_gap")
+            or "A distinct law and new evidence are required to reopen the route.",
+        },
+        "dispatch_identity": {
+            "source_task_packet_sha256": task.get("task_packet_sha256"),
+            "route_fingerprint": task.get("route_fingerprint"),
+            "blind_context_hash": task.get("blind_context_hash"),
+        },
+        "measurement_program_binding": measurement_binding,
+        "proof_obligation_updates": [
+            {
+                "obligation_id": obligation_id,
+                "status": "failed",
+                "finding": (
+                    "The executed branch did not discharge this route-bound "
+                    "obligation under the observed net evidence."
+                ),
+                "evidence_refs": [],
+            }
+            for obligation_id in task.get("proof_obligation_ids") or []
+            if isinstance(obligation_id, str) and obligation_id
+        ],
+        "counterexamples": [
+            {
+                "attack_type": "executed_branch_failure",
+                "construction_or_scenario": (
+                    "The route's selected estimator fails after costs or repeats "
+                    "a previously falsified revision law."
+                ),
+                "predicted_failure": (
+                    "Net long-side evidence remains non-positive and the route "
+                    "cannot support another automatic run."
+                ),
+                "discriminating_test": (
+                    "Require a distinct formula/law hash and preregistered positive "
+                    "net evidence before reopening."
+                ),
+            }
+        ],
+        "route_status": "falsified",
+        "reopen_criteria": [
+            "A distinct route-bound law with a new hash passes preregistered net evidence."
+        ],
+        "independence_attestation": {
+            "favored_thesis_seen_before_submission": False,
+            "derived_from_visible_facts_only": True,
+        },
         "economic_hypothesis_review": {
             "preserve_broad_direction": True,
             "refined_second_layer_mechanism": "The executed branch is falsified, but this only proves the tested revision law failed.",
@@ -448,9 +810,14 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
             "selected_tool": "statistical_falsification",
             "selected_tool_rationale": "Executed child evidence can reject a branch while preserving the need for a distinct derivation.",
             "rejected_tools": [{"tool": "terminal_factor_reject", "reason": "One branch failure is insufficient before max loop cap."}],
-            "baseline_model": "branch payoff succeeds only if its estimator improves net evidence without repeating known failures",
+            "baseline_model": frozen_equation,
             "model_mutation": "mark the branch as falsified and require a distinct mathematical mechanism before further execution",
-            "mathematical_objects": ["branch_net_evidence", "revision_law_identity", "forbidden_repeat_hash"],
+            "mathematical_objects": [
+                frozen_object,
+                "branch_net_evidence",
+                "revision_law_identity",
+                "forbidden_repeat_hash",
+            ],
             "derivation_steps": ["Compare child net evidence to parent.", "Classify the failed law as branch-level falsification."],
             "derived_state_variables": ["falsified_revision_branch_state"],
             "observable_estimators": ["child cost-adjusted return", "child drawdown", "child formula hash"],
@@ -492,6 +859,12 @@ def terminal_reject_result_for_task(report_id: str, task: dict[str, Any]) -> dic
                 }
             ],
             "mathematical_objects": [
+                {
+                    "name": frozen_object,
+                    "meaning": "Frozen mechanism-conditioned measurement object from the signed task packet.",
+                    "unit_or_dimension": "as specified by the frozen measurement program",
+                    "information_set": "signed Council task packet",
+                },
                 {
                     "name": "net_long_side_evidence",
                     "meaning": "Cost-adjusted long-side evidence after the child revision.",
@@ -565,7 +938,12 @@ def write_terminal_agent_results_fixture(root: Path, report_id: str) -> list[str
     for task in manifest.get("agent_tasks") or []:
         if not isinstance(task, dict):
             continue
-        result = terminal_reject_result_for_task(report_id, task)
+        packet_path = Path(str(task.get("task_packet_path") or ""))
+        if not packet_path.is_absolute():
+            packet_path = root / packet_path
+        packet = read_json(packet_path) if packet_path.exists() else {}
+        bound_task = {**packet, **task}
+        result = terminal_reject_result_for_task(report_id, bound_task)
         raw_path = task.get("expected_result_path")
         path = Path(str(raw_path))
         if not path.is_absolute():
@@ -590,6 +968,8 @@ def prepare_terminal_council_fixture(root: Path, report_id: str) -> dict[str, An
             "agentic",
             "--agentic-council-executor",
             "dispatch_manifest",
+            "--allow-legacy-global-runtime",
+            "--allow-legacy-research-protocol-smoke",
             "--factorforge-root",
             str(root),
         ],
@@ -636,6 +1016,8 @@ def run_council_synthesis_approval_bridge_case(root: Path) -> dict[str, Any]:
             "agentic",
             "--agentic-council-executor",
             "local_mock",
+            "--allow-legacy-global-runtime",
+            "--allow-legacy-research-protocol-smoke",
             "--factorforge-root",
             str(root),
         ],
@@ -664,7 +1046,8 @@ def run_council_synthesis_approval_bridge_case(root: Path) -> dict[str, Any]:
         and handoff_path.exists()
         and final_strategy.get("loop_authorization") == "approved_for_step3b_handoff"
         and handoff.get("loop_authorization") == "approved_for_step3b_handoff"
-        and handoff.get("orchestrator_synthesis_path") == str(synthesis)
+        and Path(str(handoff.get("orchestrator_synthesis_path") or "")).resolve()
+        == synthesis.resolve()
         and ((handoff.get("selected_revision") or {}).get("child_formula") == child_formula)
     )
     return {
@@ -720,11 +1103,18 @@ def run_terminal_council_reject_bridge_case(root: Path) -> dict[str, Any]:
         and proof.get("status") == "PAUSED"
         and proof.get("final_outcome") == "awaiting_next_derivation"
         and first.get("terminal_reject_bridge_rc") == 1
-        and first.get("branch_falsification_path") == str(branch_path)
+        and Path(str(first.get("branch_falsification_path") or "")).resolve()
+        == branch_path.resolve()
         and branch.get("terminal_scope") == "revision_branch_only"
         and branch.get("next_required_action") == "derive_distinct_math_mechanism"
-        and first.get("next_derivation_questionnaire_path") == str(questionnaire_json_path)
-        and branch.get("next_derivation_questionnaire_json_path") == str(questionnaire_json_path)
+        and Path(
+            str(first.get("next_derivation_questionnaire_path") or "")
+        ).resolve()
+        == questionnaire_json_path.resolve()
+        and Path(
+            str(branch.get("next_derivation_questionnaire_json_path") or "")
+        ).resolve()
+        == questionnaire_json_path.resolve()
         and questionnaire_json_path.exists()
         and questionnaire_md_path.exists()
         and questionnaire.get("contract_version") == "factorforge_next_derivation_questionnaire_v1"
@@ -827,6 +1217,8 @@ def run_council_synthesis_approval_validation_failure_rolls_back_case(root: Path
             "agentic",
             "--agentic-council-executor",
             "local_mock",
+            "--allow-legacy-global-runtime",
+            "--allow-legacy-research-protocol-smoke",
             "--factorforge-root",
             str(root),
         ],
@@ -894,6 +1286,8 @@ def run_loop_consumes_completed_council_synthesis_case(root: Path) -> dict[str, 
             "agentic",
             "--agentic-council-executor",
             "local_mock",
+            "--allow-legacy-global-runtime",
+            "--allow-legacy-research-protocol-smoke",
             "--factorforge-root",
             str(root),
         ],
@@ -923,7 +1317,10 @@ def run_loop_consumes_completed_council_synthesis_case(root: Path) -> dict[str, 
         and proc["rc"] == 0
         and first.get("approval_bridge_rc") == 0
         and first.get("materialization_rc") == 0
-        and revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis)
+        and Path(
+            str(revision_spec.get("source_orchestrator_synthesis_path") or "")
+        ).resolve()
+        == synthesis.resolve()
         and revision_spec.get("child_formula") == "rank(close)"
         and proof.get("status") in {"PASS", "PAUSED"}
     )
@@ -938,7 +1335,10 @@ def run_loop_consumes_completed_council_synthesis_case(root: Path) -> dict[str, 
         "materialization_rc": first.get("materialization_rc"),
         "child_report_id": child_id,
         "revision_spec_exists": revision_spec_path.exists(),
-        "revision_spec_uses_synthesis": revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis),
+        "revision_spec_uses_synthesis": Path(
+            str(revision_spec.get("source_orchestrator_synthesis_path") or "")
+        ).resolve()
+        == synthesis.resolve(),
         "child_formula": revision_spec.get("child_formula"),
         "ok": ok,
     }
@@ -961,6 +1361,8 @@ def run_loop_consumes_completed_council_multibranch_synthesis_case(root: Path) -
             "agentic",
             "--agentic-council-executor",
             "local_mock",
+            "--allow-legacy-global-runtime",
+            "--allow-legacy-research-protocol-smoke",
             "--factorforge-root",
             str(root),
         ],
@@ -1178,7 +1580,10 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         and parent_formula_hash
         and child_formula_hash != parent_formula_hash
         and revision_spec.get("child_formula_hash") == child_formula_hash
-        and revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis)
+        and Path(
+            str(revision_spec.get("source_orchestrator_synthesis_path") or "")
+        ).resolve()
+        == synthesis.resolve()
     )
     return {
         "case": "loop_child_report_id_isolation",
@@ -1196,7 +1601,10 @@ def run_child_isolation_case(root: Path) -> dict[str, Any]:
         "parent_not_overwritten_by_child": parent_not_overwritten_by_child,
         "executable_revision_spec_exists": revision_spec_path.exists(),
         "orchestrator_synthesis_path": str(synthesis),
-        "revision_spec_uses_orchestrator_synthesis": revision_spec.get("source_orchestrator_synthesis_path") == str(synthesis),
+        "revision_spec_uses_orchestrator_synthesis": Path(
+            str(revision_spec.get("source_orchestrator_synthesis_path") or "")
+        ).resolve()
+        == synthesis.resolve(),
         "child_daily_snapshot_exists": child_daily_csv.exists() and child_daily_parquet.exists(),
         "child_daily_csv_exists": child_daily_csv.exists(),
         "child_daily_parquet_exists": child_daily_parquet.exists(),
@@ -1246,6 +1654,8 @@ def run_child_revision_spec_missing_case(root: Path) -> dict[str, Any]:
             "3b",
             "--end-step",
             "3b",
+            "--allow-legacy-global-runtime",
+            "--allow-legacy-research-protocol-smoke",
             "--factorforge-root",
             str(root),
         ],
@@ -1625,6 +2035,16 @@ def main() -> int:
             lambda r: run_loop_case(r, "loop_max_10_stops", "STEP6_INTEL_HIGH_TURNOVER_REVISION", "max_loops_reached", max_loops=1, council_mode="off"),
         ),
         run_with_fresh_fixture(root, "loop_wrapper_failure_blocks", run_wrapper_failure_case),
+        run_without_fixture(
+            root,
+            "ultimate_loop_workspace_dry_run_isolated",
+            run_workspace_dry_run_isolation_case,
+        ),
+        run_without_fixture(
+            root,
+            "wrapper_proof_eligibility_attack_blocks",
+            run_wrapper_proof_eligibility_attack_case,
+        ),
         run_with_fresh_fixture(root, "loop_child_orchestrator_synthesis_missing_blocks", run_child_orchestrator_synthesis_missing_case),
         run_with_fresh_fixture(root, "loop_child_explicit_orchestrator_synthesis_materializes", run_child_explicit_orchestrator_synthesis_materializes_case),
         run_with_fresh_fixture(root, "loop_council_synthesis_approval_bridge_activates_handoff", run_council_synthesis_approval_bridge_case),

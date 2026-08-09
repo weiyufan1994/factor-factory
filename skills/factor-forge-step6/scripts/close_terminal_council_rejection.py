@@ -16,8 +16,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.runtime_context import resolve_factorforge_context
+from factor_factory.research_proof import (
+    factor_proof_certificate_path,
+    validate_factor_proof_certificate,
+)
 from validate_agentic_council_collection import validate_collection
-from validate_agentic_council_result import validate_agentic_result
+from validate_agentic_council_result import (
+    expected_manifest_task,
+    validate_agentic_result,
+)
 
 TERMINAL_REJECTION_VERSION = "factorforge_terminal_council_rejection_v1"
 TOKEN_SUMMARY_MISSING = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_SUMMARY_MISSING"
@@ -29,15 +36,17 @@ TOKEN_ITERATION_MISSING = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_ITERATION_MISSING"
 TOKEN_VALIDATION_FAILED = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_VALIDATION_FAILED"
 TOKEN_HANDOFF_EXISTS = "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_APPROVED_HANDOFF_EXISTS"
 TOKEN_PREMATURE_TERMINAL_REJECT = "BLOCK_PREMATURE_TERMINAL_REJECT_BEFORE_MAX_LOOPS"
+TOKEN_FACTOR_PROOF_NOT_REJECTED = (
+    "BLOCK_FACTORFORGE_TERMINAL_COUNCIL_FACTOR_PROOF_NOT_REJECTED"
+)
 
-TERMINAL_RECOMMENDATION_TERMS = {
+TERMINAL_RECOMMENDATION_VALUES = {
     "reject",
     "kill",
     "stop",
-    "terminal",
+    "terminal_reject",
     "no_revision",
-    "no successor",
-    "do not continue",
+    "no_derived_revision",
 }
 
 
@@ -103,6 +112,14 @@ def iteration_path(root: Path, report_id: str) -> Path:
     return root / "objects" / "research_iteration_master" / f"research_iteration_master__{report_id}.json"
 
 
+def factor_library_all_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "factor_library_all" / f"factor_record__{report_id}.json"
+
+
+def research_knowledge_path(root: Path, report_id: str) -> Path:
+    return root / "objects" / "research_knowledge_base" / f"knowledge_record__{report_id}.json"
+
+
 def handoff_path(root: Path, report_id: str) -> Path:
     return root / "objects" / "handoff" / f"handoff_to_step3b__{report_id}.json"
 
@@ -124,8 +141,33 @@ def next_derivation_questionnaire_paths(root: Path, report_id: str) -> tuple[Pat
 
 
 def resolve_under_root(root: Path, raw: Any) -> Path:
-    path = Path(str(raw))
-    return path if path.is_absolute() else root / path
+    resolved_root = root.expanduser().resolve(strict=False)
+    lexical = Path(str(raw)).expanduser()
+    if not lexical.is_absolute():
+        lexical = resolved_root / lexical
+    try:
+        lexical_relative = lexical.relative_to(resolved_root)
+    except ValueError:
+        block(
+            TOKEN_VALIDATION_FAILED,
+            {"reason": "workspace_path_escape_forbidden"},
+        )
+    cursor = resolved_root
+    if any(
+        (cursor := cursor / part).is_symlink()
+        for part in lexical_relative.parts
+    ):
+        block(
+            TOKEN_VALIDATION_FAILED,
+            {"reason": "workspace_path_symlink_forbidden"},
+        )
+    path = lexical.resolve(strict=False)
+    if path != resolved_root and resolved_root not in path.parents:
+        block(
+            TOKEN_VALIDATION_FAILED,
+            {"reason": "workspace_path_escape_forbidden"},
+        )
+    return path
 
 
 def loop_brief_paths(root: Path, iteration: dict[str, Any]) -> tuple[Path | None, Path | None]:
@@ -146,20 +188,11 @@ def result_paths_from_collection(root: Path, collection: dict[str, Any]) -> list
     return paths
 
 
-def terminal_recommendation_text(result: dict[str, Any]) -> str:
+def terminal_recommendation_value(result: dict[str, Any]) -> str:
     rec = result.get("revision_or_kill_recommendation")
-    pieces: list[str] = []
-    if isinstance(rec, dict):
-        for key in ("recommendation", "reason", "decision", "summary"):
-            if isinstance(rec.get(key), str):
-                pieces.append(rec[key])
-    if isinstance(result.get("candidate_revision_laws"), list):
-        for law in result["candidate_revision_laws"]:
-            if isinstance(law, dict):
-                for key in ("revision_type", "law_statement", "expression_change_direction"):
-                    if isinstance(law.get(key), str):
-                        pieces.append(law[key])
-    return " ".join(pieces).lower()
+    if not isinstance(rec, dict) or not isinstance(rec.get("recommendation"), str):
+        return ""
+    return str(rec["recommendation"]).strip().lower()
 
 
 def prior_revision_review_present(result: dict[str, Any]) -> bool:
@@ -179,14 +212,21 @@ def load_valid_terminal_results(root: Path, collection: dict[str, Any]) -> tuple
         except Exception as exc:
             invalid.append({"result_path": str(path), "block_reasons": [f"unreadable:{exc}"]})
             continue
-        reasons = validate_agentic_result(payload)
+        reasons = validate_agentic_result(
+            payload,
+            expected_task=expected_manifest_task(
+                str(collection.get("report_id") or ""),
+                path,
+            ),
+            expected_report_id=str(collection.get("report_id") or ""),
+        )
         if reasons:
             invalid.append({"result_path": str(path), "block_reasons": reasons})
             continue
-        text = terminal_recommendation_text(payload)
-        is_terminal = any(term in text for term in TERMINAL_RECOMMENDATION_TERMS)
+        recommendation = terminal_recommendation_value(payload)
+        is_terminal = recommendation in TERMINAL_RECOMMENDATION_VALUES
         if not is_terminal:
-            non_terminal.append({"result_path": str(path), "task_id": payload.get("task_id"), "recommendation_text": text[:240]})
+            non_terminal.append({"result_path": str(path), "task_id": payload.get("task_id"), "recommendation": recommendation})
             continue
         results.append({"path": str(path), "payload": payload, "prior_review_present": prior_revision_review_present(payload)})
     if invalid:
@@ -517,6 +557,70 @@ def update_loop_brief(root: Path, report_id: str, iteration: dict[str, Any], res
         md_path.write_text(text, encoding="utf-8")
 
 
+def update_record_for_terminal_reject(
+    record: dict[str, Any],
+    *,
+    updated_iteration: dict[str, Any],
+    artifact_path: Path,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    updated = json.loads(json.dumps(record))
+    decision = "reject"
+    reason = reject_reason(results)
+    updated["decision"] = decision
+    updated["terminal_council_rejection"] = {
+        "terminal_rejection_version": TERMINAL_REJECTION_VERSION,
+        "terminal_council_rejection_path": str(artifact_path),
+        "selected_agent_result_ids": selected_ids(results),
+        "reason": reason,
+    }
+    updated["decision_lineage"] = updated_iteration.get("decision_lineage") or updated.get("decision_lineage") or {}
+    updated["knowledge_provenance"] = updated_iteration.get("knowledge_provenance") or updated.get("knowledge_provenance") or {}
+    updated["research_memo"] = (updated_iteration.get("research_judgment") or {}).get("research_memo") or updated.get("research_memo")
+    updated["learning_and_innovation"] = (updated_iteration.get("knowledge_writeback") or {}).get("learning_and_innovation", updated.get("learning_and_innovation"))
+    updated["revision_taxonomy"] = (updated_iteration.get("knowledge_writeback") or {}).get("revision_taxonomy", updated.get("revision_taxonomy"))
+    updated["program_search_policy"] = (updated_iteration.get("knowledge_writeback") or {}).get("program_search_policy", updated.get("program_search_policy"))
+    updated["diversity_position"] = (updated_iteration.get("knowledge_writeback") or {}).get("diversity_position", updated.get("diversity_position"))
+    chain = updated.get("experience_chain")
+    if isinstance(chain, dict):
+        attempt = chain.get("current_attempt")
+        if isinstance(attempt, dict):
+            attempt["decision"] = decision
+            attempt["terminal_council_rejection_path"] = str(artifact_path)
+            failures = attempt.setdefault("strongest_failure_signature", [])
+            if isinstance(failures, list) and reason not in failures:
+                failures.append(reason)
+    updated["loop_action"] = updated_iteration.get("loop_action") or updated.get("loop_action") or {}
+    updated["updated_at_utc"] = utc_now()
+    return updated
+
+
+def refresh_terminal_reject_library_records(
+    *,
+    root: Path,
+    report_id: str,
+    updated_iteration: dict[str, Any],
+    results: list[dict[str, Any]],
+    artifact_path: Path,
+) -> list[Path]:
+    refreshed: list[Path] = []
+    for path in (factor_library_all_path(root, report_id), research_knowledge_path(root, report_id)):
+        if not path.exists():
+            continue
+        record = load_json(path)
+        write_json(
+            path,
+            update_record_for_terminal_reject(
+                record,
+                updated_iteration=updated_iteration,
+                artifact_path=artifact_path,
+                results=results,
+            ),
+        )
+        refreshed.append(path)
+    return refreshed
+
+
 def run_validate_step6(root: Path, report_id: str) -> dict[str, Any]:
     env = dict(os.environ)
     env["FACTORFORGE_ROOT"] = str(root)
@@ -550,6 +654,7 @@ def main() -> int:
     cdir = council_dir(root, rid)
     summary_path = cdir / f"revision_council_summary__{rid}.json"
     collection_path = cdir / f"agentic_result_collection__{rid}.json"
+    dispatch_path = cdir / f"dispatch_manifest__{rid}.json"
     iter_path = iteration_path(root, rid)
     out_handoff = handoff_path(root, rid)
     artifact_path = terminal_rejection_path(root, rid)
@@ -557,6 +662,11 @@ def main() -> int:
         block(TOKEN_SUMMARY_MISSING, {"report_id": rid, "summary_path": str(summary_path)})
     if not collection_path.exists():
         block(TOKEN_COLLECTION_MISSING, {"report_id": rid, "collection_path": str(collection_path)})
+    if not dispatch_path.exists():
+        block(
+            TOKEN_COLLECTION_INVALID,
+            {"report_id": rid, "reason": "dispatch_manifest_missing"},
+        )
     if not iter_path.exists():
         block(TOKEN_ITERATION_MISSING, {"report_id": rid, "iteration_path": str(iter_path)})
     if out_handoff.exists():
@@ -568,6 +678,54 @@ def main() -> int:
     summary = load_json(summary_path)
     collection = load_json(collection_path)
     collection_reasons = validate_collection(rid, collection)
+    dispatch = load_json(dispatch_path)
+    required_tasks = [
+        task
+        for task in dispatch.get("agent_tasks") or []
+        if isinstance(task, dict) and task.get("required") is True
+    ]
+    required_ids = [str(task.get("task_id") or "") for task in required_tasks]
+    valid_results = collection.get("valid_results")
+    valid_ids = [
+        str(row.get("task_id") or "")
+        for row in valid_results or []
+        if isinstance(row, dict)
+    ]
+    if (
+        dispatch.get("dispatch_manifest_version")
+        != "factorforge_agentic_council_dispatch_manifest_v1"
+        or dispatch.get("report_id") != rid
+        or not required_ids
+        or any(not task_id for task_id in required_ids)
+        or len(set(required_ids)) != len(required_ids)
+        or not isinstance(valid_results, list)
+        or set(valid_ids) != set(required_ids)
+        or len(valid_ids) != len(required_ids)
+        or collection.get("required_result_count") != len(required_ids)
+        or collection.get("present_result_count") != len(required_ids)
+        or collection.get("valid_result_count") != len(required_ids)
+    ):
+        collection_reasons.append(
+            "BLOCK_AGENTIC_COUNCIL_COLLECTION_DISPATCH_SET_MISMATCH"
+        )
+    required_paths = {
+        str(task.get("task_id")): resolve_under_root(
+            root,
+            task.get("expected_result_path"),
+        )
+        for task in required_tasks
+    }
+    for row in valid_results or []:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "")
+        if required_paths.get(task_id) != resolve_under_root(
+            root,
+            row.get("result_path"),
+        ):
+            collection_reasons.append(
+                "BLOCK_AGENTIC_COUNCIL_COLLECTION_DISPATCH_PATH_MISMATCH"
+            )
     if collection_reasons:
         block(TOKEN_COLLECTION_INVALID, {"collection_path": str(collection_path), "block_reasons": collection_reasons})
     results, non_terminal = load_valid_terminal_results(root, collection)
@@ -597,6 +755,31 @@ def main() -> int:
                 "required_next_action": "derive_distinct_math_mechanism",
             },
         )
+    proof_path = factor_proof_certificate_path(root, rid)
+    if not proof_path.is_file() or proof_path.is_symlink():
+        block(
+            TOKEN_FACTOR_PROOF_NOT_REJECTED,
+            {"report_id": rid, "factor_proof_path": str(proof_path)},
+        )
+    factor_proof = load_json(proof_path)
+    factor_proof_report = validate_factor_proof_certificate(
+        factor_proof,
+        workspace_root=root,
+        expected_report_id=rid,
+    )
+    if (
+        factor_proof_report.get("verdict") != "REJECT"
+        or factor_proof_report.get("block_reasons")
+    ):
+        block(
+            TOKEN_FACTOR_PROOF_NOT_REJECTED,
+            {
+                "report_id": rid,
+                "factor_proof_path": str(proof_path),
+                "factor_proof_verdict": factor_proof_report.get("verdict"),
+                "block_reasons": factor_proof_report.get("block_reasons") or [],
+            },
+        )
     brief_json_path, brief_md_path = loop_brief_paths(root, iteration)
     rollback = {
         "iteration": read_text_if_exists(iter_path),
@@ -604,6 +787,8 @@ def main() -> int:
         "brief_json": read_text_if_exists(brief_json_path),
         "brief_md": read_text_if_exists(brief_md_path),
         "artifact": read_text_if_exists(artifact_path),
+        "factor_library_all": read_text_if_exists(factor_library_all_path(root, rid)),
+        "research_knowledge_base": read_text_if_exists(research_knowledge_path(root, rid)),
     }
     artifact = {
         "terminal_rejection_version": TERMINAL_REJECTION_VERSION,
@@ -613,8 +798,23 @@ def main() -> int:
         "summary_sha256": sha256_file(summary_path),
         "collection_path": str(collection_path),
         "collection_sha256": sha256_file(collection_path),
+        "dispatch_manifest_path": str(dispatch_path),
+        "dispatch_manifest_sha256": sha256_file(dispatch_path),
+        "factor_proof_path": str(proof_path),
+        "factor_proof_sha256": sha256_file(proof_path),
+        "factor_proof_verdict": "REJECT",
+        "iteration_decision": "reject",
         "selected_agent_result_ids": selected_ids(results),
         "agent_result_paths": [item["path"] for item in results],
+        "agent_result_bindings": [
+            {
+                "task_id": item["payload"].get("task_id"),
+                "result_path": item["path"],
+                "result_sha256": sha256_file(Path(item["path"])),
+                "recommendation": terminal_recommendation_value(item["payload"]),
+            }
+            for item in results
+        ],
         "terminal_recommendations": [
             {
                 "task_id": item["payload"].get("task_id"),
@@ -641,6 +841,14 @@ def main() -> int:
     if out_handoff.exists():
         out_handoff.unlink()
     update_loop_brief(root, rid, updated, results, artifact_path)
+    refreshed_records = refresh_terminal_reject_library_records(
+        root=root,
+        report_id=rid,
+        updated_iteration=updated,
+        results=results,
+        artifact_path=artifact_path,
+    )
+    artifact["refreshed_terminal_reject_records"] = [str(path) for path in refreshed_records]
 
     validate_result: dict[str, Any] | None = None
     if not args.skip_validate_step6:
@@ -652,6 +860,8 @@ def main() -> int:
             restore_text_snapshot(brief_json_path, rollback["brief_json"])
             restore_text_snapshot(brief_md_path, rollback["brief_md"])
             restore_text_snapshot(artifact_path, rollback["artifact"])
+            restore_text_snapshot(factor_library_all_path(root, rid), rollback["factor_library_all"])
+            restore_text_snapshot(research_knowledge_path(root, rid), rollback["research_knowledge_base"])
             artifact["rolled_back_active_writes"] = True
             write_json(artifact_path, artifact)
             block(TOKEN_VALIDATION_FAILED, {"report_id": rid, "validate_step6": validate_result})

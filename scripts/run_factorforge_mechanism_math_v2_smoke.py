@@ -17,6 +17,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract, build_mechanism_math_contract_v2
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
+from factor_factory.knowledge_reference import build_legacy_knowledge_reference_contract
+from factor_factory.measurement_program import measurement_program_template
 from factor_factory.revision_council.validator import validate_revision_council_proposal
 from skills.factor_forge_step1.modules.report_ingestion.intake.pdf_skill_client import PdfSkillClient
 
@@ -100,6 +102,100 @@ def valid_spec() -> dict[str, Any]:
 
 def valid_v2_contract() -> dict[str, Any]:
     return build_mechanism_math_contract_v2(valid_spec())
+
+
+def valid_measurement_program() -> dict[str, Any]:
+    placeholder = "RTA18_RESEARCHER_MUST_REPLACE"
+    program = measurement_program_template(
+        placeholder=placeholder,
+        implementation_route="operator",
+    )
+
+    def fill(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        if value == placeholder:
+            return "RTA18 formula-specific auditable statement"
+        return value
+
+    program = fill(program)
+    program["math_tool_selection"].update(
+        {
+            "candidate_tool_families": [
+                "state-dependent conditional-return process",
+                "permanent information alternative",
+                "measurement-alias null",
+            ],
+            "selected_tool_families": [
+                "state-dependent conditional-return process"
+            ],
+            "selection_rationale": "the delayed-information hypothesis implies a lagged state and conditional payoff",
+            "rejected_tool_families": [
+                {
+                    "tool_family": "discounted cash-flow valuation",
+                    "reason": "the smoke hypothesis contains no fundamental cash-flow claim",
+                }
+            ],
+        }
+    )
+    candidates = program["model_selection"]["candidate_models"]
+    candidates[0].update(
+        {
+            "model_family": "state-dependent conditional-return process",
+            "mechanism_equation_or_functional": "state_t=conditional_reversal_state(delta(close_t,5),F_t)",
+        }
+    )
+    candidates[1].update(
+        {
+            "model_family": "permanent information alternative",
+            "mechanism_equation_or_functional": "information_state_t=permanent_update(close_le_t)",
+            "target_functional": "permanent information continuation payoff",
+            "market_outcome_projection": "permanent state predicts continuation rather than reversal",
+            "observation_mapping": "map legal-time close innovations into permanent information state",
+        }
+    )
+    candidates[2].update(
+        {
+            "model_family": "measurement-alias null",
+            "mechanism_equation_or_functional": "score_t=known_reversal_aliases_t+noise_t",
+            "target_functional": "incremental payoff after alias controls",
+            "market_outcome_projection": "null predicts zero incremental after-cost payoff",
+            "observation_mapping": "project the score on known legal-time reversal aliases",
+        }
+    )
+    market_outcome = {
+        "role": "terminal_tradeable_quantity_bridge_not_core_model_restriction",
+        "projection_kind": "selected state to next-horizon after-cost return",
+        "source_math_object": "latent drift continuation state",
+        "traded_quantity": "next-horizon after-cost equity return",
+        "affected_payoff_or_distribution_terms": ["conditional expected return"],
+        "projection_equation_or_map": "alpha_t=rank(delta(close_t,5)); payoff_t+1=E[R_t+1|alpha_t,F_t]-cost_t",
+        "link_to_observation_equation": "the lagged close delta is the legal-time observation of the selected state",
+        "falsifier": "the state has no controlled after-cost payoff or ablation identity",
+    }
+    program["market_outcome_projection"] = market_outcome
+    candidates[0]["mathematical_object"] = market_outcome[
+        "source_math_object"
+    ]
+    candidates[0].update(
+        {
+            "target_functional": program["observation_and_estimation"]["estimand"],
+            "market_outcome_projection": market_outcome[
+                "projection_equation_or_map"
+            ],
+            "observation_mapping": program["observation_and_estimation"][
+                "observation_map"
+            ],
+        }
+    )
+    program["applicable_audits"] = {
+        "selection_rule": "select only mechanism-relevant specialized audits",
+        "selected": [],
+        "rejected": [],
+    }
+    return program
 
 
 def valid_research_equation() -> dict[str, Any]:
@@ -380,7 +476,14 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
     bridge_chief_prompt = STEP1_BRIDGE.chief_prompt()
     prep_chief_prompt = FORMAL_PREP.step1_chief_prompt()
     step2_prompt_reference = (REPO_ROOT / "skills/factor-forge-step2/references/prompts.md").read_text(encoding="utf-8")
-    step6_skill = (REPO_ROOT / "skills/factor-forge-step6/SKILL.md").read_text(encoding="utf-8")
+    step6_skill = (
+        (REPO_ROOT / "skills/factor-forge-step6/SKILL.md").read_text(encoding="utf-8")
+        + "\n"
+        + (
+            REPO_ROOT
+            / "skills/factor-forge-step6/references/legacy-operations-reference.md"
+        ).read_text(encoding="utf-8")
+    )
 
     def has_all(text: str, terms: list[str]) -> bool:
         lowered = text.lower()
@@ -391,7 +494,12 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
         "economic_hypothesis_candidates": [{"candidate_id": "H1", "return_source_family": "information_advantage_or_delayed_diffusion"}],
         "preferred_economic_hypothesis": {"candidate_id": "H1", "why_preferred_over_alternatives": "report evidence"},
         "alternative_return_source_tests": [{"alternative_source": "risk_premium", "discriminating_test": "tail-state test"}],
-        "primary_mathematical_model": {"model_family": "signal_extraction", "benchmark_math_tools": ["stochastic_return_projection"]},
+        "primary_mathematical_model": {
+            "model_family": "signal_extraction",
+            "candidate_tool_families": ["signal_extraction", "causal_placebo"],
+            "selected_tool_families": ["signal_extraction"],
+            "applicable_specialized_audits": [],
+        },
         "formula_as_observable_estimator": {"latent_state_or_constraint": "delayed belief state"},
     }
     parsed = PdfSkillClient().parse_response("PROMPT_CONTRACT", json.dumps(sample_response))
@@ -411,24 +519,26 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
             "failures": [],
         },
         {
-            "case": "step1_intake_prompt_separates_primary_model_from_stochastic_projection",
+            "case": "step1_intake_prompt_requires_open_mechanism_conditioned_tool_selection",
             "ok": has_all(
                 primary_prompt,
                 [
                     "primary_mathematical_model",
-                    "do not default every factor to a stochastic process",
-                    "projection, diagnostic, derivation, or falsification",
+                    "开放的 math_tool_selection",
+                    "do not default every factor to a stochastic process or dimensional analysis",
+                    "不得由已有算子或数据便利性决定",
                 ],
             ),
             "failures": [],
         },
         {
-            "case": "step1_prompt_requires_research_equation_and_benchmark_fields",
+            "case": "step1_prompt_requires_research_equation_and_universal_projection_fields",
             "ok": has_all(
                 primary_prompt + "\n" + (REPO_ROOT / "skills/factor-forge-step1/references/prompts.md").read_text(encoding="utf-8"),
                 [
                     "research_equation",
-                    "t0_t1_stochastic_benchmark",
+                    "market_outcome_projection",
+                    "applicable_audits",
                     "formula_implied_information_review",
                 ],
             ),
@@ -467,20 +577,22 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
                 step2_prompt_reference,
                 [
                     "do not default every factor to a stochastic process",
-                    "choose the primary mathematical model from the economic hypothesis",
-                    "stochastic return projection",
-                    "benchmark_math_tools",
+                    "open mathematical-tool search",
+                    "DCF/residual income",
+                    "data convenience must not decide",
                 ],
             ),
             "failures": [],
         },
         {
-            "case": "step2_prompt_requires_research_equation_and_t0_t1_benchmark",
+            "case": "step2_prompt_requires_research_equation_and_market_outcome_projection",
             "ok": has_all(
                 step2_prompt_reference,
                 [
                     "research_equation",
-                    "t0_t1_stochastic_benchmark",
+                    "mechanism_conditioned_measurement_program",
+                    "market_outcome_projection",
+                    "applicable_audits",
                     "formula_implied_information_review",
                     "metric_signature_match",
                     "drawdown geometry",
@@ -489,13 +601,14 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
             "failures": [],
         },
         {
-            "case": "step6_skill_preserves_research_rigor_for_analysis_and_council",
+            "case": "step6_skill_preserves_open_math_search_for_analysis_and_council",
             "ok": has_all(
                 step6_skill,
                 [
                     "economic_hypothesis",
                     "primary mathematical model",
-                    "benchmark mathematical tools",
+                    "open tool search",
+                    "DCF/residual income",
                     "council",
                     "falsification",
                 ],
@@ -511,7 +624,8 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
                     "research_equation_review",
                     "research_equation_revision",
                     "drawdown geometry",
-                    "T+0/T+1 stochastic benchmark projection",
+                    "market_outcome_projection",
+                    "A stochastic benchmark is required only when",
                 ],
             ),
             "failures": [],
@@ -520,11 +634,18 @@ def case_prompt_contracts() -> list[dict[str, Any]]:
 
 
 def alpha_idea_master(report_id: str) -> dict[str, Any]:
+    measurement_program = valid_measurement_program()
+    knowledge = build_legacy_knowledge_reference_contract(
+        similar_case_lessons=["cold-start prior"],
+        producer="factorforge_mechanism_math_v2_smoke",
+    )
+    market_outcome = measurement_program["market_outcome_projection"]
     return {
         "report_id": report_id,
         "factor_id": report_id,
         "source_type": "paper_canonical_formula",
         "producer": "step12_canonical_formula_intake",
+        "implementation_mode": "operator",
         "raw_formula": "rank(delta(close, 5))",
         "final_factor": {"name": report_id, "assembly_steps": ["rank(delta(close, 5))"]},
         "research_discipline": {
@@ -548,17 +669,27 @@ def alpha_idea_master(report_id: str) -> dict[str, Any]:
                     "preferred": True,
                 }
             ],
-            "stochastic_price_process_projection": valid_v2_contract()["stochastic_price_process_projection"],
+            "market_outcome_projection": market_outcome,
+            "mechanism_conditioned_measurement_program": measurement_program,
+            "knowledge_reference_contract": knowledge,
             "similar_case_lessons_imported": ["cold-start prior"],
             "what_must_be_true": ["ranked close delta estimates the conditional drift state"],
             "what_would_break_it": ["rank IC and long-side return contradict the projection"],
         },
+        "mechanism_conditioned_measurement_program": measurement_program,
+        "mechanism_math_contract": valid_v2_contract().get(
+            "source_mechanism_math_contract_v1", {}
+        ),
+        "mechanism_math_contract_v2": valid_v2_contract(),
         "math_discipline_review": {
             "step1_random_object": "A-share price-return panel",
             "target_statistic": "cross-sectional rank statistic for future returns",
             "information_set_legality": "requires_researcher_confirmation_no_forward_leakage",
         },
-        "learning_and_innovation": {"similar_case_lessons_imported": ["cold-start prior"]},
+        "learning_and_innovation": {
+            "similar_case_lessons_imported": ["cold-start prior"],
+            "knowledge_reference_contract": knowledge,
+        },
     }
 
 
@@ -587,12 +718,36 @@ def case_step1_step2(root: Path) -> list[dict[str, Any]]:
         "math_discipline_review": master["math_discipline_review"],
         "mechanism_math_contract": master["mechanism_math_contract"],
         "mechanism_math_contract_v2": master["mechanism_math_contract_v2"],
+        "mechanism_conditioned_measurement_program": master["mechanism_conditioned_measurement_program"],
         "learning_and_innovation": master["learning_and_innovation"],
     }
     write_json(master_path, master)
     write_json(root / "objects/handoff" / f"handoff_to_step3__{report_id}.json", handoff)
     step2_proc = run_cmd([sys.executable, "skills/factor-forge-step2/scripts/validate_step2.py", "--report-id", report_id], root=root)
+    legacy_v1 = master.get("mechanism_math_contract")
     v2 = master.get("mechanism_math_contract_v2")
+    current_only_id = "RTA18_STEP2_CURRENT_ONLY"
+    current_only_aim = alpha_idea_master(current_only_id)
+    current_only_aim.pop("mechanism_math_contract", None)
+    current_only_aim.pop("mechanism_math_contract_v2", None)
+    current_primary = STEP2.build_primary_spec_from_canonical_formula(
+        current_only_id,
+        current_only_aim,
+        {"raw_formula_text": current_only_aim["raw_formula"]},
+        {},
+    )
+    current_consistency = STEP2.score_consistency(
+        current_primary,
+        current_primary,
+        current_only_aim,
+    )
+    current_master = STEP2.build_factor_spec_master(
+        current_only_id,
+        current_only_aim,
+        current_primary,
+        current_consistency,
+        {"raw_formula_text": current_only_aim["raw_formula"]},
+    )
     placeholder_report_id = "RTA18_STEP1_PLACEHOLDER_V2"
     placeholder = alpha_idea_master(placeholder_report_id)
     discipline = placeholder["research_discipline"]
@@ -617,13 +772,15 @@ def case_step1_step2(root: Path) -> list[dict[str, Any]]:
             "preferred": True,
         }
     ]
-    discipline["stochastic_price_process_projection"] = {
-        "projection_required": True,
-        "price_process_form": "under_specified",
-        "affected_price_process_terms": ["drift"],
-        "conditional_distribution_claim": "under_specified",
-        "formula_should_estimate": "under_specified",
-        "expected_return_distribution_change": "under_specified",
+    discipline["market_outcome_projection"] = {
+        "role": "terminal_tradeable_quantity_bridge_not_core_model_restriction",
+        "projection_kind": "under_specified",
+        "source_math_object": "under_specified",
+        "traded_quantity": "under_specified",
+        "affected_payoff_or_distribution_terms": ["under_specified"],
+        "projection_equation_or_map": "under_specified",
+        "link_to_observation_equation": "under_specified",
+        "falsifier": "under_specified",
     }
     write_json(root / "objects/alpha_idea_master" / f"alpha_idea_master__{placeholder_report_id}.json", placeholder)
     placeholder_proc = run_cmd([sys.executable, "skills/factor-forge-step1/scripts/validate_step1.py", "--report-id", placeholder_report_id], root=root)
@@ -636,9 +793,12 @@ def case_step1_step2(root: Path) -> list[dict[str, Any]]:
             "stderr_tail": step1_proc.stderr[-1000:],
         },
         {
-            "case": "step2_writes_v2_contract_three_places",
+            "case": "step2_preserves_explicit_legacy_contracts_three_places",
             "ok": (
-                isinstance(v2, dict)
+                isinstance(legacy_v1, dict)
+                and legacy_v1 == master.get("canonical_spec", {}).get("mechanism_math_contract")
+                and legacy_v1 == handoff.get("mechanism_math_contract")
+                and isinstance(v2, dict)
                 and v2 == master.get("canonical_spec", {}).get("mechanism_math_contract_v2")
                 and v2 == handoff.get("mechanism_math_contract_v2")
                 and step2_proc.returncode == 0
@@ -646,6 +806,15 @@ def case_step1_step2(root: Path) -> list[dict[str, Any]]:
             "rc": step2_proc.returncode,
             "stdout_tail": step2_proc.stdout[-1000:],
             "stderr_tail": step2_proc.stderr[-1000:],
+        },
+        {
+            "case": "step2_current_path_does_not_synthesize_legacy_contracts",
+            "ok": (
+                bool(current_master.get("mechanism_conditioned_measurement_program"))
+                and not current_master.get("mechanism_math_contract")
+                and not current_master.get("mechanism_math_contract_v2")
+            ),
+            "failures": [],
         },
         {
             "case": "step1_placeholder_v2_fields_block",
@@ -663,14 +832,14 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         "mechanism_projection_diagnosis": {
             "economic_hypothesis": "supported",
             "primary_mechanism_model": "supported",
-            "stochastic_projection": "supported",
+            "market_outcome_projection": "supported",
             "observable_estimator": "supported",
             "implementation_contract": "validated",
         },
         "metric_signature_match": {
             "economic_hypothesis": "partial",
             "primary_mechanism_model": "partial",
-            "stochastic_projection": "supportive",
+            "market_outcome_projection": "supportive",
             "observable_estimator": "supportive",
             "implementation_contract": "validated",
         },
@@ -717,14 +886,14 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         "mechanism_projection_diagnosis": {
             "economic_hypothesis": "under_specified",
             "primary_mechanism_model": "under_specified",
-            "stochastic_projection": "under_specified",
+            "market_outcome_projection": "under_specified",
             "observable_estimator": "under_specified",
             "implementation_contract": "under_specified",
         },
         "metric_signature_match": {
             "economic_hypothesis": "under_specified",
             "primary_mechanism_model": "under_specified",
-            "stochastic_projection": "under_specified",
+            "market_outcome_projection": "under_specified",
             "observable_estimator": "under_specified",
             "implementation_contract": "under_specified",
         },
@@ -736,7 +905,8 @@ def case_step6_and_council() -> list[dict[str, Any]]:
     packet = {
         "report_id": "RTA18_COUNCIL",
         "factor_formula": "rank(delta(close, 5))",
-        "mechanism_math_contract": valid_v2_contract().get("source_mechanism_math_contract_v1", {}),
+        "mechanism_conditioned_measurement_program": valid_measurement_program(),
+        "legacy_mechanism_math_contract": valid_v2_contract().get("source_mechanism_math_contract_v1", {}),
         "research_memo": {
             "revision_strategy": {"primary_failure_signature": "mechanism_unclear"},
             "mechanism_analysis": {"return_source": "mixed", "factor_family": "reversal", "mechanism_fit": "weak"},
@@ -756,19 +926,29 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             "Reject the revision if long_side_return remains non-positive after costs",
         ],
     }
-    valid_reasons = validate_revision_council_proposal(proposal)
+    measurement_program = packet["mechanism_conditioned_measurement_program"]
+    valid_reasons = validate_revision_council_proposal(
+        proposal,
+        measurement_program=measurement_program,
+    )
     bad_proposal = json.loads(json.dumps(proposal))
     bad_proposal.pop("revision_model_layer", None)
     for law in bad_proposal.get("candidate_revision_laws") or []:
         law.pop("revision_model_layer", None)
     for item in (bad_proposal.get("derivation_record") or {}).get("revision_hypotheses") or []:
         item.pop("revision_model_layer", None)
-    bad_reasons = validate_revision_council_proposal(bad_proposal)
+    bad_reasons = validate_revision_council_proposal(
+        bad_proposal,
+        measurement_program=measurement_program,
+    )
     unclassified_implication = json.loads(json.dumps(proposal))
     unclassified_implication["formula_implied_information_review"] = {
         "unexpected_implications": [{"implication": "negative solution"}]
     }
-    unclassified_reasons = validate_revision_council_proposal(unclassified_implication)
+    unclassified_reasons = validate_revision_council_proposal(
+        unclassified_implication,
+        measurement_program=measurement_program,
+    )
     anomaly_missing_branch = json.loads(json.dumps(proposal))
     anomaly_missing_branch["formula_implied_information_review"] = {
         "unexpected_implications": [
@@ -779,10 +959,16 @@ def case_step6_and_council() -> list[dict[str, Any]]:
             }
         ]
     }
-    anomaly_missing_reasons = validate_revision_council_proposal(anomaly_missing_branch)
+    anomaly_missing_reasons = validate_revision_council_proposal(
+        anomaly_missing_branch,
+        measurement_program=measurement_program,
+    )
     missing_research_equation_revision = json.loads(json.dumps(proposal))
     missing_research_equation_revision.pop("research_equation_revision", None)
-    missing_research_equation_revision_reasons = validate_revision_council_proposal(missing_research_equation_revision)
+    missing_research_equation_revision_reasons = validate_revision_council_proposal(
+        missing_research_equation_revision,
+        measurement_program=measurement_program,
+    )
     generic_research_equation_revision = json.loads(json.dumps(proposal))
     generic_research_equation_revision["research_equation_revision"] = {
         "equation_component_target": "observable_estimator",
@@ -790,7 +976,10 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         "expected_metric_signature_change": ["metrics improve."],
         "falsification_tests": ["test metrics."],
     }
-    generic_research_equation_revision_reasons = validate_revision_council_proposal(generic_research_equation_revision)
+    generic_research_equation_revision_reasons = validate_revision_council_proposal(
+        generic_research_equation_revision,
+        measurement_program=measurement_program,
+    )
     specific_research_equation_revision = json.loads(json.dumps(proposal))
     specific_research_equation_revision["research_equation_revision"] = {
         "equation_component_target": "observable_estimator",
@@ -806,7 +995,8 @@ def case_step6_and_council() -> list[dict[str, Any]]:
         ],
     }
     specific_research_equation_revision_reasons = validate_revision_council_proposal(
-        specific_research_equation_revision
+        specific_research_equation_revision,
+        measurement_program=measurement_program,
     )
     return [
         {

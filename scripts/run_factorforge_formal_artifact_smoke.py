@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from factor_factory.measurement_program import measurement_program_template
+
 SAMPLE_DIRECT_CODE_SOURCE = """import numpy as np
 import pandas as pd
 
@@ -26,6 +31,54 @@ def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame
     out = df[["ts_code", "trade_date", "factor_value"]].replace([np.inf, -np.inf], np.nan)
     return out.dropna(subset=["factor_value"]).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 """
+
+
+def valid_measurement_program(route: str) -> dict:
+    placeholder = "FORMAL_ARTIFACT_SMOKE_RESEARCHER_MUST_REPLACE"
+    program = measurement_program_template(
+        placeholder=placeholder,
+        implementation_route=route,
+    )
+
+    def fill(value):
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        if value == placeholder:
+            return "formal smoke mechanism-specific auditable statement"
+        return value
+
+    program = fill(program)
+    candidates = program["model_selection"]["candidate_models"]
+    candidates[0].update(
+        {
+            "model_family": "direct-code price-state measurement",
+            "mechanism_equation_or_functional": "state_t = lawful_direct_code_map(close_le_t)",
+            "target_functional": program["observation_and_estimation"]["estimand"],
+            "market_outcome_projection": program["market_outcome_projection"]["projection_equation_or_map"],
+            "observation_mapping": program["observation_and_estimation"]["observation_map"],
+        }
+    )
+    candidates[1].update(
+        {
+            "model_family": "permanent information-state alternative",
+            "mechanism_equation_or_functional": "information_state_t = permanent_update(publication_le_t)",
+            "target_functional": "permanent information payoff",
+            "market_outcome_projection": "permanent update predicts continuation after costs",
+            "observation_mapping": "map legal-time publication and close history to information state",
+        }
+    )
+    candidates[2].update(
+        {
+            "model_family": "known price-alias null",
+            "mechanism_equation_or_functional": "score_t = known_price_aliases_t + noise_t",
+            "target_functional": "incremental payoff after known aliases",
+            "market_outcome_projection": "null predicts zero incremental after-cost payoff",
+            "observation_mapping": "project the score on known legal-time price aliases",
+        }
+    )
+    return program
 
 
 def read_json(path: Path) -> dict:
@@ -120,6 +173,23 @@ def write_step2_raw_files(root: Path, report_id: str, *, include_source: bool) -
     return paths
 
 
+def write_step1_raw_files(root: Path, report_id: str, *, route: str) -> dict[str, Path]:
+    raw_dir = root / 'objects' / 'raw_llm' / report_id / 'step1'
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    payload = read_json(ROOT / 'fixtures' / 'step1' / 'sample_intake_response.json')
+    payload['mechanism_conditioned_measurement_program'] = valid_measurement_program(route)
+    paths = {
+        'primary': raw_dir / 'step1_primary_raw.json',
+        'challenger': raw_dir / 'step1_challenger_raw.json',
+    }
+    for path in paths.values():
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+            encoding='utf-8',
+        )
+    return paths
+
+
 def write_bad_existing_artifacts(root: Path, report_id: str) -> None:
     (root / 'objects' / 'alpha_idea_master').mkdir(parents=True, exist_ok=True)
     (root / 'objects' / 'factor_spec_master').mkdir(parents=True, exist_ok=True)
@@ -142,6 +212,7 @@ def write_bad_existing_artifacts(root: Path, report_id: str) -> None:
 
 def run_prepare_formal_debug_chain_case(root: Path) -> dict:
     report_id = 'FORMAL_SMOKE_REPORT'
+    step1_raw = write_step1_raw_files(root, report_id, route='direct_code')
     step2_raw = write_step2_raw_files(root, report_id, include_source=True)
     output = root / 'objects' / 'validation' / f'formal_artifact_prepare_report__{report_id}.json'
     proc = run_cmd([
@@ -154,9 +225,9 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
         '--report-pdf',
         'fixtures/step2/sample_report_stub.pdf',
         '--step1-primary-raw',
-        'fixtures/step1/sample_intake_response.json',
+        str(step1_raw['primary']),
         '--step1-challenger-raw',
-        'fixtures/step1/sample_intake_response.json',
+        str(step1_raw['challenger']),
         '--step2-primary-raw',
         str(step2_raw['primary']),
         '--step2-challenger-raw',
@@ -221,6 +292,7 @@ def run_prepare_formal_debug_chain_case(root: Path) -> dict:
 
 def run_direct_code_missing_source_blocks_case(root: Path) -> dict:
     report_id = 'kaiyuan_20200209_smart_money_v2'
+    step1_raw = write_step1_raw_files(root, report_id, route='direct_code')
     step2_raw = write_step2_raw_files(root, report_id, include_source=False)
     output = root / 'objects' / 'validation' / f'formal_artifact_prepare_report__{report_id}.json'
     proc = run_cmd([
@@ -233,9 +305,9 @@ def run_direct_code_missing_source_blocks_case(root: Path) -> dict:
         '--report-pdf',
         'fixtures/step2/sample_report_stub.pdf',
         '--step1-primary-raw',
-        'fixtures/step1/sample_intake_response.json',
+        str(step1_raw['primary']),
         '--step1-challenger-raw',
-        'fixtures/step1/sample_intake_response.json',
+        str(step1_raw['challenger']),
         '--step2-primary-raw',
         str(step2_raw['primary']),
         '--step2-challenger-raw',

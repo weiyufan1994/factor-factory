@@ -1,0 +1,184 @@
+{
+  "schema_version": "factor_knowledge_node_v1",
+  "id": "node::alpha014_momentum_volume_corr_smoothing_20260618",
+  "node_type": "anti_pattern",
+  "title": "Alpha014 smoothing and low-turnover tradeoff",
+  "summary": "Alpha014 shows a reusable failure boundary: smoothing a return-delta times open-volume correlation signal can improve candidate-level long-side evidence, but low-turnover filters may reduce drawdown while deleting the cross-sectional ranking signal.",
+  "factor_ids": [
+    "Alpha014",
+    "Alpha014_SMOOTH5",
+    "Alpha014_SMOOTH5_LOWTURN_20160101"
+  ],
+  "report_ids": [
+    "ALPHA014_CANONICAL_FORMULA",
+    "ALPHA014_REV_SMOOTH5",
+    "ALPHA014_REV_SMOOTH5_LOWTURN_20160101"
+  ],
+  "taxonomy": {
+    "market_consensus": [
+      "momentum",
+      "reversal",
+      "liquidity",
+      "microstructure"
+    ],
+    "barra_style": [
+      "momentum",
+      "liquidity",
+      "volatility"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "correlation",
+      "decay",
+      "rank_transform",
+      "ts_operator"
+    ],
+    "cn_quant_practice": [
+      "index_enhancement",
+      "intraday_reversal",
+      "risk_overlay",
+      "feature_for_ml"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "risk_factor",
+      "alpha_combination_feature",
+      "regime_conditioner"
+    ],
+    "economic_mechanism": [
+      "overreaction",
+      "forced_flow",
+      "liquidity_provision",
+      "inventory_pressure"
+    ],
+    "math_mechanism": [
+      "time_series_state",
+      "cross_sectional_rank",
+      "path_functional",
+      "stochastic_process"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "qlib_provider"
+    ],
+    "tradability": [
+      "long_side",
+      "cost_sensitive",
+      "high_turnover_risk",
+      "low_turnover",
+      "model_feature_only"
+    ],
+    "research_status": [
+      "anti_pattern",
+      "feature_candidate"
+    ],
+    "failure_mode": [
+      "after_cost_failure",
+      "turnover_cost_exceeds_gross_edge",
+      "liquidity_exposure",
+      "framework_block"
+    ]
+  },
+  "mechanism": {
+    "economic_hypothesis": "Alpha014 tries to buy repair after return-delta pressure when open-volume correlation indicates liquidity-driven movement, but a filter that merely lowers turnover can also remove the payer signal if the payer is embedded in high-activity names.",
+    "payer": "short-horizon liquidity demanders and traders extrapolating recent return deltas under volume pressure",
+    "receiver": "patient reversal or risk-managed stat-arb capital",
+    "random_object": "smoothed return-delta and open-volume correlation path state",
+    "target_statistic": "long-side return after smoothing and risk filter, with rank IC preserved",
+    "key_equation_latex": "$$\\nS^{014}_{i,t}= -\\operatorname{rank}_{cs}(\\Delta_3 r_{i,t})\\cdot \\operatorname{corr}_{10}(O_{i,\\cdot},V_{i,\\cdot})_t,\\qquad S^{smooth5}_{i,t}=\\operatorname{MA}_5(S^{014}_{i,t})\\n$$",
+    "dirac_style_forced_insight": "The low-turnover branch shows that a tradability filter is not automatically a better factor: if the filter conditions away the volume-pressure state, it may reduce drawdown while inverting or weakening Rank IC.",
+    "information_preserved_removed": "Smoothing preserves the same random object while reducing path noise; low-turnover gating removes part of the liquidity-pressure payer and can turn a signal into a risk overlay rather than an alpha.",
+    "factor_expression": "((-1 * rank(delta(returns, 3))) * correlation(open, volume, 10)); revisions include MA5 smoothing and low-turnover gating.",
+    "complexity_penalty_reasoning": "MA5 smoothing is a low-cost transform with evidence improvement; low-turnover gating adds a data-dependent condition that is not justified if it deletes rank ordering."
+  },
+  "evidence": {
+    "window": "20160101 through available IS evidence in Alpha014 library records",
+    "universe": "Factor Forge Alpha101 daily universe",
+    "portfolio_policy": "long-side top group / diagnostic deciles",
+    "cost_assumption": "self_quant turnover cost diagnostics available; after-cost evidence remains weak",
+    "key_metrics": {
+      "canonical_rank_ic_mean": 0.018994,
+      "canonical_long_side_return": 0.08331,
+      "canonical_long_side_sharpe": 0.359,
+      "smooth5_rank_ic_mean": 0.02568169437821508,
+      "smooth5_long_side_annual_return": 0.12169103856563968,
+      "smooth5_long_side_sharpe": 0.5256817585032407,
+      "smooth5_cost_adjusted_annual_return": -0.04342207302104878,
+      "lowturn_rank_ic_mean": -0.015761,
+      "lowturn_long_side_return": 0.095394,
+      "lowturn_max_drawdown": -0.349
+    },
+    "verdict": "anti_pattern",
+    "falsification": "Do not accept a turnover/risk filter if it improves drawdown by destroying Rank IC or removing the economic payer.",
+    "artifact_paths": [
+      "knowledge/因子工厂/普通因子库/ALPHA014_CANONICAL_FORMULA.md",
+      "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5.md",
+      "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md"
+    ],
+    "variant_family_coverage": {
+      "scope": "ALPHA014 historical ordinary/knowledge/iteration records are mapped to this mechanism-family node; individual variants still require their own artifact review before promotion.",
+      "covered_source_path_count": 25,
+      "covered_prefix": "ALPHA014"
+    }
+  },
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/ALPHA014_CANONICAL_FORMULA.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA014_CANONICAL_FORMULA.md",
+    "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5.md",
+    "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA014_20160101_RESEARCH_ARCHIVE.md",
+    "knowledge/因子工厂/知识库/ALPHA014_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_CANONICAL_FORMULA.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH10_LOWTURN_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWAMOUNT_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWTURN_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA014_REV_SMOOTH5_LOWVOL20_20160101.md"
+  ],
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "target": "math::path_functional",
+      "note": "The signal depends on a recent return-delta path and open-volume correlation state."
+    },
+    {
+      "edge_type": "belongs_to",
+      "target": "market_consensus::reversal",
+      "note": "The economic interpretation is pressure repair after recent return movement."
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "target": "failure::turnover_cost_exceeds_gross_edge",
+      "note": "Smooth5 still loses after costs, while low-turn gating reduces drawdown at the cost of ranking information."
+    },
+    {
+      "edge_type": "contradicts",
+      "target": "naive_method::add_low_turnover_filter",
+      "note": "Lower turnover is not sufficient if the filter removes the payer population."
+    },
+    {
+      "edge_type": "reusable_as",
+      "target": "anti_pattern::filter_deletes_random_object",
+      "note": "Use this case to audit whether a risk filter preserves or removes the math object."
+    }
+  ],
+  "reuse_guidance": [
+    "Retrieve this node before adding low-turnover or low-liquidity gates to a price-volume reversal factor.",
+    "Prefer a preserve/remove audit over assuming a smoother or lower-turnover variant is better.",
+    "A drawdown improvement that comes with negative Rank IC is an anti-pattern, not a promotion path.",
+    "Use smoothing as a cheap denoising candidate only when it preserves the original payer and improves after-cost evidence."
+  ]
+}

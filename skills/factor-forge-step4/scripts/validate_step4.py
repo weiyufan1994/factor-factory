@@ -98,6 +98,58 @@ def validate_acceptance_summary(summary: dict[str, Any] | None, issues: list[dic
             issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_SIDE_EFFECTS_MISSING', 'message': f'acceptance_summary.side_effects.{field}=false required'})
 
 
+def validate_formal_signal_coverage(
+    *,
+    run_master: dict[str, Any],
+    diagnostics: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> None:
+    if run_master.get('run_status') not in {'success', 'partial'}:
+        return
+    coverage = run_master.get('formal_signal_coverage')
+    if not isinstance(coverage, dict):
+        coverage = diagnostics.get('formal_signal_coverage')
+    if not isinstance(coverage, dict):
+        coverage = (diagnostics.get('quality_checks') or {}).get('formal_signal_coverage')
+    sparse_signal_allowed = bool(
+        run_master.get('sparse_signal_allowed')
+        or diagnostics.get('sparse_signal_allowed')
+        or (coverage or {}).get('sparse_signal_allowed')
+    )
+    if sparse_signal_allowed:
+        return
+    if isinstance(coverage, dict) and coverage:
+        verdict = coverage.get('coverage_gate_verdict')
+        coverage_value = coverage.get('factor_value_non_null_coverage')
+        nonnull_end = coverage.get('nonnull_end')
+        actual_window = coverage.get('actual_window') if isinstance(coverage.get('actual_window'), dict) else {}
+        actual_end = actual_window.get('end')
+        if verdict == 'BLOCK' or (coverage_value is not None and float(coverage_value) < 0.90):
+            issues.append({
+                'severity': 'error',
+                'code': 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW',
+                'message': 'formal factor signal non-null coverage is too low for promotion-gate evidence',
+                'evidence': coverage,
+            })
+        elif nonnull_end and actual_end and str(nonnull_end) != str(actual_end):
+            issues.append({
+                'severity': 'error',
+                'code': 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_WINDOW_SHORT',
+                'message': 'formal factor signal non-null window does not reach the actual output window end',
+                'evidence': coverage,
+            })
+        return
+    signal_col = diagnostics.get('output_validation', {}).get('signal_column') or run_master.get('signal_column') or 'factor_value'
+    null_ratio = ((diagnostics.get('quality_checks') or {}).get('null_ratio') or {}).get(signal_col)
+    if null_ratio is not None and float(null_ratio) > 0.10:
+        issues.append({
+            'severity': 'error',
+            'code': 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW',
+            'message': 'formal factor signal null ratio is too high for promotion-gate evidence',
+            'evidence': {'signal_column': signal_col, 'null_ratio': null_ratio, 'max_null_ratio': 0.10},
+        })
+
+
 def validate_qlib_taxonomy(payload: dict[str, Any], *, mandatory: bool, issues: list[dict[str, Any]]) -> None:
     status = payload.get('qlib_native_status')
     if status not in QLIB_NATIVE_STATUS_VALUES:
@@ -156,6 +208,7 @@ def main() -> None:
     if proposed_status not in ALLOWED:
         issues.append({'severity': 'error', 'code': 'INVALID_RUN_STATUS', 'message': f'invalid run_status={proposed_status}'})
         proposed_status = 'failed'
+    validate_formal_signal_coverage(run_master=run_master, diagnostics=diagnostics, issues=issues)
 
     output_paths = [Path(p) for p in run_master.get('output_paths', [])]
     output_exists = [p.exists() for p in output_paths]

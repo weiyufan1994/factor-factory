@@ -38,10 +38,15 @@ FORBIDDEN_PRODUCER_TOKENS = {
 ALLOWED_IMPLEMENTATION_MODES = {'operator', 'direct_code', 'hybrid'}
 
 from factor_factory.artifact_identity import build_spec_hash
+from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.factor_families.registry import FamilyPluginContractError, get_family_plugin_contract
 from factor_factory.knowledge_reference import build_legacy_knowledge_reference_contract, validate_knowledge_reference_contract
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
+from factor_factory.measurement_program import (
+    BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    validate_measurement_program,
+)
 
 
 def check(name: str, condition: bool, error: str | None = None, severity: str = 'BLOCK'):
@@ -98,7 +103,7 @@ def direct_code_contract_checks(master):
 def valid_economic_hypothesis(value) -> bool:
     if not isinstance(value, dict) or not value:
         return False
-    if value.get('macro_return_source') not in {'risk_premium', 'information_advantage', 'market_structure_arbitrage', 'mixed'}:
+    if value.get('macro_return_source') not in FORMAL_RETURN_SOURCE_FAMILIES:
         return False
     second = value.get('second_layer')
     return (
@@ -118,8 +123,6 @@ def valid_math_hypothesis_candidates(value) -> bool:
         'linked_economic_hypothesis',
         'model_family',
         'math_tools',
-        'state_or_object',
-        'process_or_distribution_hypothesis',
         'observable_estimator',
         'target_functional',
         'why_suitable',
@@ -129,6 +132,13 @@ def valid_math_hypothesis_candidates(value) -> bool:
         if not isinstance(item, dict):
             return False
         if any(key not in item for key in required):
+            return False
+        if not nonempty_str(item.get('mathematical_object') or item.get('state_or_object')):
+            return False
+        if not nonempty_str(
+            item.get('mechanism_equation_or_functional')
+            or item.get('process_or_distribution_hypothesis')
+        ):
             return False
         if not nonempty_list(item.get('math_tools')) or not nonempty_list(item.get('falsification_tests')):
             return False
@@ -317,9 +327,45 @@ def main() -> None:
         canonical_mechanism_math_contract_v2 = canonical.get('mechanism_math_contract_v2')
         handoff_mechanism_math_contract_v2 = handoff.get('mechanism_math_contract_v2') if isinstance(handoff, dict) else None
         mechanism_math_contract = master_mechanism_math_contract or canonical_mechanism_math_contract
-        mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        has_any_mechanism_math_v1 = any(
+            isinstance(item, dict) and bool(item)
+            for item in [
+                master_mechanism_math_contract,
+                canonical_mechanism_math_contract,
+                handoff_mechanism_math_contract,
+            ]
+        )
+        mechanism_math_failures = (
+            validate_mechanism_math_contract(mechanism_math_contract)
+            if has_any_mechanism_math_v1
+            else []
+        )
         has_any_mechanism_math_v2 = any(isinstance(item, dict) and bool(item) for item in [master_mechanism_math_contract_v2, canonical_mechanism_math_contract_v2, handoff_mechanism_math_contract_v2])
         mechanism_math_v2_failures = validate_mechanism_math_contract_v2(master_mechanism_math_contract_v2) if has_any_mechanism_math_v2 else []
+        master_measurement_program = master.get('mechanism_conditioned_measurement_program')
+        canonical_measurement_program = canonical.get('mechanism_conditioned_measurement_program')
+        handoff_measurement_program = handoff.get('mechanism_conditioned_measurement_program') if isinstance(handoff, dict) else None
+        knowledge_node_ids = {
+            str(item)
+            for contract in (
+                learning.get('knowledge_reference_contract'),
+                research_contract.get('knowledge_reference_contract'),
+            )
+            if isinstance(contract, dict)
+            for item in contract.get('cited_node_ids') or []
+            if str(item).strip()
+        }
+        measurement_program_failures = validate_measurement_program(
+            master_measurement_program,
+            available_knowledge_node_ids=knowledge_node_ids,
+            require_web_executable=False,
+        )
+        measurement_route = (
+            (master_measurement_program.get('implementation') or {}).get('route')
+            if isinstance(master_measurement_program, dict)
+            and isinstance(master_measurement_program.get('implementation'), dict)
+            else None
+        )
         checks.extend([
             check('report_id_match', master.get('report_id') == rid, 'report_id mismatch'),
             check('contract_version_present', nonempty_str(master.get('contract_version')), 'contract_version missing'),
@@ -355,30 +401,35 @@ def main() -> None:
             check('economic_hypothesis_present', valid_economic_hypothesis(research_contract.get('economic_hypothesis')), 'research_contract.economic_hypothesis missing or incomplete'),
             check('math_hypothesis_candidates_present', valid_math_hypothesis_candidates(research_contract.get('math_hypothesis_candidates')), 'research_contract.math_hypothesis_candidates missing or incomplete'),
             check('expected_failure_modes_present', nonempty_list(research_contract.get('expected_failure_modes') or math_review.get('expected_failure_modes')), 'expected_failure_modes missing'),
-            check('mechanism_math_contract_present', isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract), 'mechanism_math_contract missing'),
-            check('mechanism_math_contract_valid', not mechanism_math_failures, f'mechanism_math_contract invalid: {mechanism_math_failures}'),
-            check('mechanism_math_contract_v2_present_or_legacy_v1', has_any_mechanism_math_v2, 'legacy v1 artifact without mechanism_math_contract_v2', severity='WARN'),
+            check('legacy_mechanism_math_contract_valid_when_present', not mechanism_math_failures, f'legacy mechanism_math_contract invalid: {mechanism_math_failures}'),
+            check('legacy_mechanism_math_contract_consistent_when_present', not has_any_mechanism_math_v1 or mechanism_contract_v2_consistent(master_mechanism_math_contract, canonical_mechanism_math_contract, handoff_mechanism_math_contract if handoff else None), 'legacy mechanism_math_contract mismatch across master/canonical/handoff'),
             check('mechanism_math_contract_v2_present', not has_any_mechanism_math_v2 or (isinstance(master_mechanism_math_contract_v2, dict) and bool(master_mechanism_math_contract_v2)), 'mechanism_math_contract_v2 missing'),
             check('canonical_mechanism_math_contract_v2_present', not has_any_mechanism_math_v2 or (isinstance(canonical_mechanism_math_contract_v2, dict) and bool(canonical_mechanism_math_contract_v2)), 'canonical_spec.mechanism_math_contract_v2 missing'),
             check('handoff_mechanism_math_contract_v2_present', not has_any_mechanism_math_v2 or not handoff or (isinstance(handoff_mechanism_math_contract_v2, dict) and bool(handoff_mechanism_math_contract_v2)), 'handoff mechanism_math_contract_v2 missing'),
             check('mechanism_math_contract_v2_valid', not mechanism_math_v2_failures, f'mechanism_math_contract_v2 invalid: {mechanism_math_v2_failures}'),
             check('mechanism_math_contract_v2_consistent', not has_any_mechanism_math_v2 or mechanism_contract_v2_consistent(master_mechanism_math_contract_v2, canonical_mechanism_math_contract_v2, handoff_mechanism_math_contract_v2 if handoff else None), 'mechanism_math_contract_v2 mismatch across master/canonical/handoff'),
+            check('measurement_program_present', isinstance(master_measurement_program, dict) and bool(master_measurement_program), f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: master measurement program missing'),
+            check('canonical_measurement_program_present', isinstance(canonical_measurement_program, dict) and bool(canonical_measurement_program), f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: canonical measurement program missing'),
+            check('handoff_measurement_program_present', not handoff or (isinstance(handoff_measurement_program, dict) and bool(handoff_measurement_program)), f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: handoff measurement program missing'),
+            check('measurement_program_valid', not measurement_program_failures, f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: {measurement_program_failures}'),
+            check('measurement_program_consistent', isinstance(master_measurement_program, dict) and master_measurement_program == canonical_measurement_program and (not handoff or master_measurement_program == handoff_measurement_program), f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: master/canonical/handoff mismatch'),
+            check('measurement_program_route_match', measurement_route == implementation_mode, f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: implementation route mismatch'),
             check(
                 'mechanism_math_contract_source_economic_hypothesis_present',
-                mechanism_contract_carries_source_hypotheses(master_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
-                'mechanism_math_contract.source_economic_hypothesis/source_math_hypothesis_candidates missing or not equal to research_contract',
+                not has_any_mechanism_math_v1 or mechanism_contract_carries_source_hypotheses(master_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
+                'legacy mechanism_math_contract.source_economic_hypothesis/source_math_hypothesis_candidates missing or not equal to research_contract',
             ),
             check(
                 'canonical_mechanism_math_contract_source_hypotheses_present',
-                mechanism_contract_carries_source_hypotheses(canonical_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
-                'canonical_spec.mechanism_math_contract source hypotheses missing or not equal to research_contract',
+                not has_any_mechanism_math_v1 or mechanism_contract_carries_source_hypotheses(canonical_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
+                'legacy canonical_spec.mechanism_math_contract source hypotheses missing or not equal to research_contract',
             ),
             check(
                 'handoff_mechanism_math_contract_source_hypotheses_present',
-                not handoff or mechanism_contract_carries_source_hypotheses(handoff_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
-                'handoff mechanism_math_contract source hypotheses missing or not equal to research_contract',
+                not has_any_mechanism_math_v1 or not handoff or mechanism_contract_carries_source_hypotheses(handoff_mechanism_math_contract, expected_economic_hypothesis, expected_math_hypotheses),
+                'legacy handoff mechanism_math_contract source hypotheses missing or not equal to research_contract',
             ),
-            check('handoff_mechanism_math_contract_match', not handoff or (handoff.get('mechanism_math_contract') or {}) == (mechanism_math_contract or {}), 'handoff mechanism_math_contract mismatch'),
+            check('handoff_legacy_mechanism_math_contract_match', not has_any_mechanism_math_v1 or not handoff or (handoff.get('mechanism_math_contract') or {}) == (mechanism_math_contract or {}), 'legacy handoff mechanism_math_contract mismatch'),
             check('innovative_idea_seeds_present', nonempty_list(learning.get('innovative_idea_seeds') or research_contract.get('innovative_idea_seeds')), 'innovative_idea_seeds missing'),
             check('reuse_instruction_present', nonempty_list(learning.get('reuse_instruction_for_future_agents') or research_contract.get('reuse_instruction_for_future_agents')), 'reuse_instruction_for_future_agents missing'),
             check('similar_case_lessons_imported_present', nonempty_list(learning.get('similar_case_lessons_imported') or research_contract.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),

@@ -1,0 +1,114 @@
+{
+  "schema_version": "factorforge_execution_readiness_v1",
+  "created_at": "2026-06-24",
+  "factor_id": "Alpha019",
+  "parent_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+  "proposed_child_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101__LOOP01__ALPHA019_SMOOTHED_PULLBACK_PERSISTENCE_V1",
+  "workspace": "factor_research/Alpha019/alpha019_sign_reversal_winner_state_ultimate_20260623",
+  "artifact_type": "execution_readiness",
+  "execution_status": {
+    "status": "pending_human_approval",
+    "execution_allowed_by_default": false,
+    "active_handoff_to_step3b": false,
+    "revision_loop_budget_cost": 1,
+    "user_loop_cap": "<=5"
+  },
+  "parent_problem": {
+    "summary": "Alpha019 has weak positive pre-cost information, but the hard sign boundary flips too frequently and produces high turnover, deep drawdown, and negative cost-adjusted returns.",
+    "parent_formula_decomposition": {
+      "signal": "S_{i,t}=B_{i,t}(1+M_{i,t})",
+      "hard_boundary_state": "B_{i,t}=-sign(C_{i,t}-C_{i,t-7})",
+      "winner_state": "M_{i,t}=rank_t(1+sum_{k=0}^{249} r_{i,t-k})"
+    },
+    "parent_metrics": {
+      "rank_ic_mean": 0.0285904,
+      "rank_ic_ir": 0.280932,
+      "gross_long_annual_return": 0.0706,
+      "gross_long_sharpe": 0.310,
+      "max_drawdown": -0.4883,
+      "daily_turnover": 0.3069,
+      "cost_adjusted_annual_return": -0.1613,
+      "cost_adjusted_sharpe": -0.709
+    }
+  },
+  "proposed_child": {
+    "name": "Alpha019 persistence-smoothed pullback threshold",
+    "research_question": "Can a continuous smoothed pullback state preserve winner-state information while reducing hard-threshold churn?",
+    "formula_ir": "mean(rank(((delay(close, 7) - close) / delay(close, 7))), 5) * (1 + rank((1 + sum(returns, 250))))",
+    "latex": "F^{019,child}_{i,t}=mean_5(rank_t((C_{i,t-7}-C_{i,t})/C_{i,t-7}))*(1+rank_t(1+sum_{k=0}^{249}r_{i,t-k}))",
+    "revision_operator": "hard_sign_to_continuous_smoothed_pullback",
+    "portfolio_policy_change": false
+  },
+  "preflight_evidence": {
+    "source_doc": "docs/alpha019_loop01_formula_preflight_20260624.md",
+    "source_json": "knowledge/canonical/alpha019_loop01_formula_preflight_20260624.json",
+    "parse_status": "success",
+    "formula_hash": "8cb8e209277990fb9bb5af3df4c240ade2e010144e16144943bd32d3a017a3e8",
+    "required_fields": [
+      "close",
+      "returns"
+    ],
+    "operator_set": [
+      "delay",
+      "divide",
+      "mean",
+      "minus",
+      "multiply",
+      "plus",
+      "rank",
+      "sum"
+    ],
+    "max_formula_ir_lookback": 250,
+    "synthetic_smoke": {
+      "rows": 3840,
+      "non_null_factor_rows": 852,
+      "nonnull_dates": 71,
+      "first_nonnull_date": "20201215",
+      "last_nonnull_date": "20210323"
+    },
+    "alpha_quality_proven": false
+  },
+  "approved_execution_path": [
+    "materialize_child_revision_package",
+    "generate_child_alpha_idea_factor_spec_data_prep_and_executable_revision_spec",
+    "run_single_wrapper_from_step3b_through_step6",
+    "write_child_step4_step5_step6_evidence",
+    "deposit_success_or_failure_knowledge"
+  ],
+  "forbidden_shortcuts": [
+    "manual_baseline_step3_mutation",
+    "portfolio_policy_repair",
+    "rebalance_frequency_repair",
+    "decile_trading_repair",
+    "short_leg_reliance",
+    "running_unmaterialized_provisional_formula",
+    "skipping_step6_knowledge_deposit"
+  ],
+  "success_signature": {
+    "turnover": "materially_below_parent_0.3069",
+    "gross_long_annual_return": "not_materially_below_parent_0.0706",
+    "cost_adjusted_annual_return": "materially_improved_prefer_positive",
+    "rank_ic": "must_not_collapse_to_near_zero",
+    "drawdown_recovery": "should_improve",
+    "long_side": "improvement_must_come_from_high_score_long_side"
+  },
+  "kill_criteria": [
+    "cost_adjusted_annual_return_still_materially_negative",
+    "turnover_not_materially_reduced",
+    "gross_long_return_deleted_by_smoothing",
+    "long_side_sharpe_below_parent",
+    "improvement_from_portfolio_mechanics_not_expression"
+  ],
+  "complexity_delta": {
+    "removed": [
+      "hard_sign_boundary"
+    ],
+    "added": [
+      "continuous_pullback_ratio",
+      "mean_5_persistence_smoothing"
+    ],
+    "net_complexity_delta": "small_positive_or_neutral",
+    "justification": "The child replaces a noisy discrete threshold with a continuous persistent state; the added complexity is justified only if turnover falls without deleting long-side information."
+  },
+  "current_user_decision_required": "approve_or_reject_alpha019_loop01_execution"
+}

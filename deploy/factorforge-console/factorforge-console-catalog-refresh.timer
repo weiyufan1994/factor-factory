@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Factor Forge Console catalog hourly
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=factorforge-console-catalog-refresh.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,110 @@
+{
+  "schema_version": "alpha101_batch_state_sync_v1",
+  "created_at": "2026-06-24",
+  "scope": "factor_research/Alpha*/ and factor_research/alpha101_batch/alpha101_batch_qlib_20260611",
+  "artifact_type": "batch_state_sync",
+  "promotion_evidence": false,
+  "current_batch_decision": {
+    "best_current_candidate": "Alpha015 parent",
+    "next_executable_research": "Alpha019 LOOP01",
+    "alpha019_execution_status": "pending_human_approval",
+    "do_not_run_child_without_approval": true,
+    "revision_loop_cap": "<=5",
+    "revision_loops_consumed_by_next_child_if_approved": 1
+  },
+  "alpha015": {
+    "workspace": "factor_research/Alpha015/alpha015_ultimate_promising_20260622",
+    "latest_docs": [
+      "docs/alpha015_candidate_packet_post_rerun_20260624.zh-CN.md",
+      "knowledge/canonical/alpha015_candidate_packet_post_rerun_20260624.json"
+    ],
+    "classification": {
+      "candidate_library": true,
+      "feature_candidate": true,
+      "official_factor_library": false,
+      "best_branch": "ALPHA015_SWEEP_TURNPEN_A040_20160101",
+      "mechanism_claim_level": "component_validated",
+      "stochastic_process_status": "framing_only",
+      "payer_validation": "not_validated"
+    },
+    "formal_parent_metrics": {
+      "formal_signal_coverage": 0.992156,
+      "rank_ic_mean": 0.060225,
+      "rank_ic_ir": 0.541872,
+      "long_annual_return": 0.222511,
+      "long_sharpe": 0.9382,
+      "max_drawdown": -0.3954,
+      "recovery_days": 704,
+      "daily_turnover": 0.2449,
+      "cost_adjusted_annual_return": 0.037472,
+      "cost_adjusted_sharpe": 0.1579
+    },
+    "reading": "strongest_current_alpha101_candidate_but_not_official",
+    "do_not_repeat": [
+      "simple_stronger_turnover_gates",
+      "promotion_from_loop01_rank_ic_only",
+      "promotion_from_loop02_turnover_drop_only",
+      "claiming_pure_size_or_liquidity_residual_alpha"
+    ]
+  },
+  "alpha019": {
+    "workspace": "factor_research/Alpha019/alpha019_sign_reversal_winner_state_ultimate_20260623",
+    "latest_docs": [
+      "docs/alpha019_loop01_execution_readiness_20260624.zh-CN.md",
+      "knowledge/canonical/alpha019_loop01_execution_readiness_20260624.json"
+    ],
+    "parent_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101",
+    "proposed_child_report_id": "ALPHA019_SIGN_REVERSAL_WINNER_STATE_20160101__LOOP01__ALPHA019_SMOOTHED_PULLBACK_PERSISTENCE_V1",
+    "execution_status": {
+      "status": "pending_human_approval",
+      "execution_allowed_by_default": false,
+      "active_handoff_to_step3b": false
+    },
+    "proposed_formula_ir": "mean(rank(((delay(close, 7) - close) / delay(close, 7))), 5) * (1 + rank((1 + sum(returns, 250))))",
+    "preflight": {
+      "parse_status": "success",
+      "formula_hash": "8cb8e209277990fb9bb5af3df4c240ade2e010144e16144943bd32d3a017a3e8",
+      "required_fields": [
+        "close",
+        "returns"
+      ],
+      "operator_set": [
+        "delay",
+        "divide",
+        "mean",
+        "minus",
+        "multiply",
+        "plus",
+        "rank",
+        "sum"
+      ],
+      "max_formula_ir_lookback": 250,
+      "synthetic_non_null_factor_rows": 852,
+      "synthetic_nonnull_dates": 71,
+      "alpha_quality_proven": false
+    },
+    "approved_next_path": [
+      "materialize_child_revision_package",
+      "run_single_wrapper_step3b_through_step6",
+      "deposit_child_success_or_failure_knowledge"
+    ]
+  },
+  "other_alpha101_status": {
+    "Alpha040": "positive_information_weak_standalone_economics",
+    "Alpha044": "information_exists_cost_drawdown_blocked",
+    "Alpha083": "feature_state_only",
+    "Alpha005": "closed_or_deprioritized",
+    "Alpha007": "closed_or_deprioritized",
+    "Alpha013": "closed_or_deprioritized",
+    "Alpha042": "closed_or_deprioritized"
+  },
+  "execution_gate": {
+    "required_user_phrase": "approve Alpha019 LOOP01",
+    "forbidden_without_approval": [
+      "run_child_from_disabled_provisional_handoff",
+      "mutate_baseline_step3",
+      "change_portfolio_policy_to_rescue_factor",
+      "skip_step6_knowledge_writeback"
+    ]
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyAnyS3UseOutsideDedicatedEndpoint",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": "__S3_VPCE_ID__"
+        }
+      }
+    },
+    {
+      "Sid": "DenyBucketDiscoveryOutsideApprovedBucket",
+      "Effect": "Deny",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "NotResource": "arn:aws:s3:::yufan-data-lake"
+    },
+    {
+      "Sid": "DenyObjectReadOutsidePilotInputs",
+      "Effect": "Deny",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "NotResource": [
+        "arn:aws:s3:::yufan-data-lake/factorforge/data/catalog/data_catalog.json",
+        "arn:aws:s3:::yufan-data-lake/factorforge/datamart/clean_daily_bar/v1/*"
+      ]
+    },
+    {
+      "Sid": "DenyListOutsidePilotPrefixes",
+      "Effect": "Deny",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::yufan-data-lake",
+      "Condition": {
+        "StringNotLike": {
+          "s3:prefix": [
+            "factorforge/data/catalog/data_catalog.json",
+            "factorforge/datamart/clean_daily_bar/v1",
+            "factorforge/datamart/clean_daily_bar/v1/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyMutationEvenIfAnotherPolicyIsAttached",
+      "Effect": "Deny",
+      "NotAction": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ListOnlyApprovedPrefixes",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::yufan-data-lake",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "factorforge/data/catalog/data_catalog.json",
+            "factorforge/datamart/clean_daily_bar/v1",
+            "factorforge/datamart/clean_daily_bar/v1/*"
+          ]
+        },
+        "StringEquals": {
+          "aws:SourceVpce": "__S3_VPCE_ID__"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyApprovedObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": [
+        "arn:aws:s3:::yufan-data-lake/factorforge/data/catalog/data_catalog.json",
+        "arn:aws:s3:::yufan-data-lake/factorforge/datamart/clean_daily_bar/v1/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceVpce": "__S3_VPCE_ID__"
+        }
+      }
+    }
+  ]
+}

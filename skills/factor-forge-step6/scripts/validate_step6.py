@@ -25,9 +25,18 @@ from factor_factory.mechanism_math.formula_specific import (
 )
 from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
+from factor_factory.measurement_program import validate_measurement_program
 from factor_factory.revision_council.guards import FORBIDDEN_TEXT_TOKEN, FORBIDDEN_PATTERNS
 from factor_factory.revision_council.validator import validate_revision_council_proposal
-from validate_agentic_council_result import validate_agentic_result
+from factor_factory.research_conjecture import (
+    research_protocol_paths,
+    validate_protocol_bundle,
+)
+from factor_factory.research_proof import validate_factor_proof_certificate
+from validate_agentic_council_result import (
+    expected_manifest_task,
+    validate_agentic_result,
+)
 
 OBJ = FF / 'objects'
 VALID_DECISIONS = {'promote_official', 'iterate', 'reject', 'needs_human_review'}
@@ -50,15 +59,6 @@ VALID_FACTOR_FAMILIES = {
     'fundamental_quality',
     'event_constraint',
     'other',
-}
-KNOWN_MECHANISM_FAMILY_TERMS = {
-    'valuation_identity',
-    'stochastic_process',
-    'price_volume_microstructure',
-    'cross_sectional_statistics',
-    'linear_factor_projection',
-    'functional_filter',
-    'constraint_model',
 }
 VALID_MECHANISM_FITS = {'strong', 'partial', 'weak', 'contradicted'}
 VALID_CLASSIFICATION_UNCERTAINTY = {'low', 'medium', 'high'}
@@ -167,13 +167,13 @@ CORE_LOOP_BRIEF_METRICS = {
 }
 SPECIFIED_MECHANISM_MATH_SUMMARY_FIELDS = {
     'model_family',
+    'mathematical_object',
     'state_or_object',
     'factor_as_estimator',
     'target_functional',
-    'process_hypothesis',
-    'latent_state',
-    'observable_estimator',
-    'conditional_distribution_hypothesis',
+    'observation_map',
+    'identification_assumptions',
+    'market_outcome_projection',
     'relationship_shape',
     'expected_metric_signature',
     'metric_signature_match',
@@ -194,6 +194,7 @@ VALID_FINAL_REVISION_SOURCES = {'revision_council', 'deterministic_fallback', 'n
 VALID_MODEL_LAYER_TARGETS = {
     'economic_hypothesis',
     'primary_mechanism_model',
+    'market_outcome_projection',
     'stochastic_projection',
     'observable_estimator',
     'implementation_contract',
@@ -202,7 +203,7 @@ VALID_MODEL_LAYER_TARGETS = {
 REQUIRED_MODEL_LINKAGE_KEYS = {
     'economic_hypothesis',
     'primary_mechanism_model',
-    'stochastic_projection',
+    'market_outcome_projection',
     'observable_estimator',
 }
 IMPLEMENTATION_MODEL_LINKAGE_KEYS = {
@@ -223,9 +224,14 @@ VALID_RESEARCH_EQUATION_SUPPORT = {'supported', 'challenged', 'under_specified'}
 VALID_FAILED_EQUATION_COMPONENTS = {
     'none',
     'assumptions',
+    'math_tool_selection',
+    'primary_math_mechanism',
+    'mathematical_object',
     'latent_state',
     'observable_estimator',
     'price_process_projection',
+    'market_outcome_projection',
+    'applicable_audit',
     'implementation_contract',
     'trading_cost',
     'drawdown_geometry',
@@ -652,31 +658,33 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
         required_headers = [f'## {idx}.' for idx in range(1, 9)]
         missing_headers = [header for header in required_headers if header not in markdown]
         checks.append(check('loop_research_brief_markdown_sections', not missing_headers, f'loop brief markdown missing sections: {missing_headers}'))
-        markdown_lower = markdown.lower()
-        mechanism_markdown_lower = markdown_lower.split('## revision council summary', 1)[0]
-        current_tokens = {
-            token.lower()
-            for token in [
-                current_factor_family,
-                current_model_family,
-                current_economic_mechanism_family,
-                current_math_tool_family,
-                current_model_equation_family,
-                current_derivation_family,
-            ]
-            if isinstance(token, str) and token.strip()
+        authoritative_markdown_fields = {
+            'Factor family': current_factor_family,
+            'Model family': current_model_family,
+            'Economic mechanism family': current_economic_mechanism_family,
+            'Math tool family': current_math_tool_family,
+            'Model equation family': current_model_equation_family,
+            'Selected model family': current_derivation_family,
         }
-        current_token_present = any(token in mechanism_markdown_lower for token in current_tokens)
-        stale_terms = sorted(
-            term for term in KNOWN_MECHANISM_FAMILY_TERMS
-            if term.lower() not in current_tokens and term.lower() in mechanism_markdown_lower
-        )
+        markdown_field_failures: list[str] = []
+        for label, expected_value in authoritative_markdown_fields.items():
+            if not expected_value:
+                continue
+            match = re.search(
+                rf'(?m)^-\s+{re.escape(label)}:\s*(.*?)\s*$',
+                markdown,
+            )
+            actual_value = match.group(1).strip() if match else None
+            if actual_value != expected_value:
+                markdown_field_failures.append(
+                    f'{label} expected={expected_value} actual={actual_value}'
+                )
         checks.append(check(
             'loop_research_brief_mechanism_markdown_consistency',
-            bool(current_token_present) and not stale_terms,
+            not markdown_field_failures,
             (
                 'loop brief markdown mechanism text stale or inconsistent: '
-                f'current_tokens={sorted(current_tokens)}, stale_terms={stale_terms}'
+                f'field_failures={markdown_field_failures}'
             ),
         ))
         if (iteration.get('revision_council_ref') or {}).get('enabled') is True:
@@ -845,6 +853,13 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
     checks.append(check('revision_council_no_execution_by_default', ref.get('execution_allowed_by_default') is False, 'revision_council_ref.execution_allowed_by_default must be false'))
     checks.append(check('revision_council_human_approval_required', ref.get('human_approval_required') is True, 'revision council attachment must require human approval'))
 
+    packet: dict = {}
+    if packet_path.exists():
+        try:
+            packet = load_json(packet_path)
+        except Exception as exc:
+            checks.append(check('revision_council_packet_loadable', False, f'failed to load revision council packet: {exc}'))
+
     summary: dict = {}
     if summary_path.exists():
         try:
@@ -886,7 +901,20 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
                 isinstance(derivation, dict) and bool(derivation),
                 f'selected council proposal missing derivation_record: {proposal_id}',
             ))
-            proposal_reasons = validate_agentic_result(proposal) if is_agentic_result else validate_revision_council_proposal(proposal)
+            proposal_reasons = (
+                validate_agentic_result(
+                    proposal,
+                    expected_task=expected_manifest_task(report_id, proposal_path),
+                    expected_report_id=report_id,
+                )
+                if is_agentic_result
+                else validate_revision_council_proposal(
+                    proposal,
+                    measurement_program=packet.get(
+                        'mechanism_conditioned_measurement_program'
+                    ),
+                )
+            )
             checks.append(check(
                 f'final_revision_strategy_selected_proposal_{idx}_valid',
                 not proposal_reasons,
@@ -958,6 +986,82 @@ if __name__ == '__main__':
 
         decision = iteration.get('research_judgment', {}).get('decision')
         checks.append(check('decision_enum', decision in VALID_DECISIONS, f'invalid decision: {decision}'))
+        protocol_paths = research_protocol_paths(FF, rid)
+        protocol_required = (
+            os.getenv('FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE') != '1'
+            and (
+                os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1'
+                or decision == 'promote_official'
+            )
+        )
+        if protocol_required or protocol_paths['conjecture'].exists():
+            protocol_report = validate_protocol_bundle(
+                root=FF,
+                report_id=rid,
+                stage=(
+                    'pre_promotion'
+                    if decision == 'promote_official'
+                    else 'pre_revision'
+                ),
+                iteration_path=iteration_path,
+            )
+            checks.append(check(
+                (
+                    'research_conjecture_protocol_pre_promotion'
+                    if decision == 'promote_official'
+                    else 'research_conjecture_protocol_pre_revision'
+                ),
+                protocol_report.get('verdict') == 'PASS',
+                '; '.join(protocol_report.get('block_reasons') or []),
+            ))
+        if protocol_required and decision == 'promote_official':
+            factor_proof_path = protocol_paths['factor_proof']
+            try:
+                factor_proof = (
+                    load_json(factor_proof_path)
+                    if factor_proof_path.exists()
+                    else {}
+                )
+                factor_proof_report = (
+                    validate_factor_proof_certificate(
+                        factor_proof,
+                        workspace_root=FF,
+                        expected_report_id=rid,
+                        expected_factor_id=str(iteration.get('factor_id') or ''),
+                    )
+                    if factor_proof
+                    else {
+                        'verdict': 'BLOCK',
+                        'block_reasons': ['BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_MISSING'],
+                    }
+                )
+            except Exception as exc:
+                factor_proof = {}
+                factor_proof_report = {
+                    'verdict': 'BLOCK',
+                    'block_reasons': [
+                        f'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_INVALID:{exc}'
+                    ],
+                }
+            conjecture = (
+                load_json(protocol_paths['conjecture'])
+                if protocol_paths['conjecture'].exists()
+                else {}
+            )
+            claim_class_matches = (
+                bool(factor_proof)
+                and factor_proof.get('claim_class') == conjecture.get('claim_class')
+            )
+            checks.append(check(
+                'official_promotion_factor_proof_accept',
+                factor_proof_report.get('verdict') == 'ACCEPT',
+                '; '.join(factor_proof_report.get('block_reasons') or []),
+            ))
+            checks.append(check(
+                'official_promotion_factor_proof_claim_class_matches_conjecture',
+                claim_class_matches,
+                'BLOCK_FACTORFORGE_RESEARCH_PROTOCOL_CLAIM_CLASS_MISMATCH',
+            ))
         checks.append(check('report_id_match', iteration.get('report_id') == all_record.get('report_id') == knowledge.get('report_id') == rid, 'report_id mismatch'))
         checks.append(check('factor_id_match', iteration.get('factor_id') == all_record.get('factor_id') == knowledge.get('factor_id'), 'factor_id mismatch'))
         checks.append(check('headline_metrics_present', isinstance(iteration.get('evidence_summary', {}).get('headline_metrics'), dict), 'headline_metrics missing'))
@@ -1086,28 +1190,50 @@ if __name__ == '__main__':
         checks.append(check('mechanism_classification_uncertainty_enum', mechanism_analysis.get('classification_uncertainty') in VALID_CLASSIFICATION_UNCERTAINTY, f"invalid classification_uncertainty: {mechanism_analysis.get('classification_uncertainty')}"))
         mechanism_math_contract = mechanism_analysis.get('mechanism_math_contract') or {}
         mechanism_math_contract_v2 = mechanism_analysis.get('mechanism_math_contract_v2') or {}
-        mechanism_math_failures = validate_mechanism_math_contract(mechanism_math_contract)
+        measurement_program = mechanism_analysis.get('mechanism_conditioned_measurement_program') or {}
+        mechanism_math_failures = (
+            validate_mechanism_math_contract(mechanism_math_contract)
+            if isinstance(mechanism_math_contract, dict) and mechanism_math_contract
+            else []
+        )
         mechanism_math_v2_failures = validate_mechanism_math_contract_v2(mechanism_math_contract_v2) if isinstance(mechanism_math_contract_v2, dict) and mechanism_math_contract_v2 else []
+        declared_node_ids = {
+            str(node_id)
+            for component in ((measurement_program.get('implementation') or {}).get('components') or [])
+            if isinstance(component, dict)
+            for node_id in (component.get('knowledge_node_ids') or [])
+            if str(node_id).strip()
+        } if isinstance(measurement_program, dict) else set()
+        measurement_program_failures = validate_measurement_program(
+            measurement_program,
+            available_knowledge_node_ids=declared_node_ids,
+            require_web_executable=False,
+        ) if isinstance(measurement_program, dict) and measurement_program else []
         checks.append(check(
-            'mechanism_math_contract_present',
-            isinstance(mechanism_math_contract, dict) and bool(mechanism_math_contract),
-            'mechanism_analysis.mechanism_math_contract missing',
-        ))
-        checks.append(check(
-            'mechanism_math_contract_valid',
+            'legacy_mechanism_math_contract_valid_if_present',
             not mechanism_math_failures,
             f'mechanism_analysis.mechanism_math_contract invalid: {mechanism_math_failures}',
+        ))
+        checks.append(check(
+            'mechanism_conditioned_measurement_program_present',
+            isinstance(measurement_program, dict) and bool(measurement_program),
+            'mechanism_analysis.mechanism_conditioned_measurement_program missing',
         ))
         checks.append(check(
             'mechanism_math_contract_v2_valid_if_present',
             not mechanism_math_v2_failures,
             f'mechanism_analysis.mechanism_math_contract_v2 invalid: {mechanism_math_v2_failures}',
         ))
+        checks.append(check(
+            'mechanism_conditioned_measurement_program_valid',
+            not measurement_program_failures,
+            f'mechanism_analysis.mechanism_conditioned_measurement_program invalid: {measurement_program_failures}',
+        ))
         model_linkage_failures = validate_step6_model_linkage(mechanism_analysis, revision_strategy)
         checks.append(check(
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL',
             'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL' not in model_linkage_failures,
-            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, stochastic_projection, observable_estimator, or implementation_contract',
+            'BLOCK_STEP6_METRICS_NOT_LINKED_TO_MODEL: Step6 metrics must attribute evidence to economic_hypothesis, primary_mechanism_model, market_outcome_projection, observable_estimator, or implementation_contract',
         ))
         checks.append(check(
             'BLOCK_STEP6_RESEARCH_EQUATION_NOT_LINKED_TO_METRICS',
@@ -1125,6 +1251,24 @@ if __name__ == '__main__':
         ))
         factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
         factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}
+        canonical_spec = factor_spec.get('canonical_spec') if isinstance(factor_spec.get('canonical_spec'), dict) else {}
+        upstream_programs = [
+            factor_spec.get('mechanism_conditioned_measurement_program'),
+            canonical_spec.get('mechanism_conditioned_measurement_program'),
+        ]
+        upstream_programs = [
+            item for item in upstream_programs if isinstance(item, dict) and item
+        ]
+        checks.append(check(
+            'mechanism_conditioned_measurement_program_preserved_from_step2',
+            not upstream_programs
+            or (
+                isinstance(measurement_program, dict)
+                and bool(measurement_program)
+                and all(item == measurement_program for item in upstream_programs)
+            ),
+            'mechanism_analysis must preserve the exact Step2 measurement program when present',
+        ))
         formula_specific_derivation = mechanism_analysis.get('formula_specific_derivation') or {}
         formula_derivation_failures = validate_formula_specific_derivation(
             formula_specific_derivation,
@@ -1156,8 +1300,9 @@ if __name__ == '__main__':
             ))
         checks.append(check(
             'invalid_mechanism_math_cannot_promote',
-            decision != 'promote_official' or mechanism_math_contract.get('math_model_status') != 'invalid',
-            'official promotion is forbidden when mechanism_math_contract.math_model_status=invalid',
+            decision != 'promote_official'
+            or (mechanism_analysis.get('mechanism_math_summary') or {}).get('math_model_status') != 'invalid',
+            'official promotion is forbidden when the current mechanism math summary is invalid',
         ))
         checks.append(check(
             'unknown_or_contradicted_mechanism_cannot_promote',
@@ -1394,7 +1539,14 @@ if __name__ == '__main__':
         thresholds = (factor_business or {}).get('thresholds') if isinstance(factor_business, dict) else {}
         checks.append(check('long_side_sharpe_thresholds_present', isinstance(thresholds, dict) and 'candidate_min_sharpe' in thresholds and 'official_min_sharpe' in thresholds, 'Step6 must record long-side Sharpe thresholds'))
         checks.append(check('research_memo_math_discipline_present', isinstance(math_discipline, dict) and bool(math_discipline), 'math_discipline_review missing from research_memo'))
-        checks.append(check('math_random_object_present', nonempty_str(math_discipline.get('step1_random_object')), 'math discipline step1_random_object missing'))
+        checks.append(check(
+            'math_mathematical_object_present',
+            nonempty_str(
+                math_discipline.get('mathematical_object')
+                or math_discipline.get('step1_random_object')
+            ),
+            'math discipline mathematical_object missing',
+        ))
         checks.append(check('math_target_statistic_present', nonempty_str(math_discipline.get('target_statistic')), 'math discipline target_statistic missing'))
         checks.append(check('math_information_legality_present', nonempty_str(math_discipline.get('information_set_legality')), 'math discipline information_set_legality missing'))
         checks.append(check('math_spec_stability_present', isinstance(math_discipline.get('spec_stability'), dict) and bool(math_discipline.get('spec_stability')), 'math discipline spec_stability missing'))

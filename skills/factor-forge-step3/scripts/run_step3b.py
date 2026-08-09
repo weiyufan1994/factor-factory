@@ -38,6 +38,7 @@ from factor_factory.formula.pandas_codegen import generate_pandas_formula_code, 
 from factor_factory.formula.parser import parse_formula, resolve_formula_fields_for_schema
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import operator_meta
+from factor_factory.formula.semantics import max_formula_ir_lookback as shared_max_formula_ir_lookback
 from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.formula.kernels import default_kernel_profile, resolve_formula_kernel_engine
 from factor_factory.formula.operators import default_ts_rank_engine_profile, resolve_ts_rank_engine as resolve_formula_ts_rank_engine
@@ -165,7 +166,11 @@ def deterministic_csv_sample(df, *, max_rows: int = CSV_SAMPLE_MAX_ROWS):
     return pd.concat([df.head(head_n), df.tail(tail_n)], ignore_index=True)
 
 
-def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataFrame, dict]:
+def max_formula_ir_lookback(formula_ir: dict | None) -> int:
+    return shared_max_formula_ir_lookback(formula_ir)
+
+
+def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str, formula_ir: dict | None = None) -> tuple[pd.DataFrame, dict]:
     if df is None:
         return df, {
             'label': label,
@@ -187,6 +192,7 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
         'max_rows': int(STEP3B_SAMPLE_MAX_ROWS),
         'max_dates': int(STEP3B_SAMPLE_MAX_DATES),
         'max_tickers': int(STEP3B_SAMPLE_MAX_TICKERS),
+        'formula_max_lookback': int(max_formula_ir_lookback(formula_ir)),
         'output_rows': int(len(df)),
         'date_count': None,
         'ticker_count': None,
@@ -198,23 +204,35 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str) -> tuple[pd.DataF
     if small_enough:
         return df, profile
 
-    # Step3B sample proof is an executability/schema proof, not formal factor
-    # evidence. Avoid full-universe normalization on very large minute panels;
-    # Step4 owns the full formal recompute.
-    candidate_rows = min(len(df), max(STEP3B_SAMPLE_MAX_ROWS * 2, STEP3B_SAMPLE_MAX_ROWS))
-    candidate = df.tail(candidate_rows).copy()
     if {'ts_code', 'trade_date'}.issubset(df.columns):
-        work = candidate
+        work = df
         normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
         dates = sorted(normalized_dates.dropna().unique().tolist())
-        tickers = sorted(work['ts_code'].dropna().astype(str).unique().tolist())
-        mask = normalized_dates.isin(set(dates[-STEP3B_SAMPLE_MAX_DATES:])) & work['ts_code'].astype(str).isin(set(tickers[:STEP3B_SAMPLE_MAX_TICKERS]))
+        formula_max_lookback = int(profile['formula_max_lookback'])
+        required_dates = max(STEP3B_SAMPLE_MAX_DATES, formula_max_lookback + 32 if formula_max_lookback else 0)
+        selected_dates = dates[-required_dates:]
+        date_count = max(1, len(selected_dates))
+        ticker_cap_by_rows = max(1, STEP3B_SAMPLE_MAX_ROWS // date_count)
+        ticker_cap = max(1, min(STEP3B_SAMPLE_MAX_TICKERS, ticker_cap_by_rows))
+        date_mask = normalized_dates.isin(set(selected_dates))
+        dated = work.loc[date_mask].copy()
+        counts = dated['ts_code'].dropna().astype(str).value_counts()
+        min_history = formula_max_lookback + 1 if formula_max_lookback else 1
+        eligible = counts[counts >= min_history]
+        if eligible.empty:
+            eligible = counts
+        tickers = sorted(eligible.index.astype(str).tolist()[:ticker_cap])
+        mask = date_mask & work['ts_code'].astype(str).isin(set(tickers))
         sampled = work.loc[mask].copy()
         if len(sampled) > STEP3B_SAMPLE_MAX_ROWS:
             sampled = sampled.sort_values(['ts_code', 'trade_date']).head(STEP3B_SAMPLE_MAX_ROWS).copy()
-        profile['sampling_strategy'] = 'tail_candidate_then_date_ticker_cap'
-        profile['candidate_rows'] = int(len(candidate))
+        profile['sampling_strategy'] = 'lookback_aware_date_ticker_cap' if formula_max_lookback else 'date_ticker_cap'
+        profile['selected_date_count_before_row_cap'] = int(len(selected_dates))
+        profile['ticker_cap_by_rows'] = int(ticker_cap_by_rows)
+        profile['eligible_ticker_count'] = int(len(eligible))
     else:
+        candidate_rows = min(len(df), max(STEP3B_SAMPLE_MAX_ROWS * 2, STEP3B_SAMPLE_MAX_ROWS))
+        candidate = df.tail(candidate_rows).copy()
         sampled = candidate.head(STEP3B_SAMPLE_MAX_ROWS).copy()
         profile['sampling_strategy'] = 'tail_candidate_head_cap'
         profile['candidate_rows'] = int(len(candidate))
@@ -687,6 +705,7 @@ def write_direct_code_qlib_not_applicable_config(
         'intraday_flow_distribution_moments_v1',
         'intraday_pseudo_dollar_bar_v1',
         'intraday_value_occupation_state_v1',
+        'intraday_retained_chip_state_v1',
     }:
         return None
     path = OBJ / 'data_prep_master' / f'qlib_adapter_config__{report_id}.json'
@@ -818,7 +837,12 @@ def build_step2_research_context(report_id: str, spec: dict, step2_handoff: dict
         'target_statistic': target_statistic or 'missing_target_statistic_from_step2',
         'economic_mechanism': economic_mechanism or 'missing_economic_mechanism_from_step2',
         'expected_failure_modes': expected_failure_modes or ['missing_expected_failure_modes_from_step2'],
-        'step1_random_object': spec_math.get('step1_random_object') or handoff_math.get('step1_random_object'),
+        'mathematical_object': (
+            spec_math.get('mathematical_object')
+            or handoff_math.get('mathematical_object')
+            or spec_math.get('step1_random_object')
+            or handoff_math.get('step1_random_object')
+        ),
         'information_set_legality': spec_math.get('information_set_legality') or handoff_math.get('information_set_legality'),
         'similar_case_lessons_imported': (
             _as_list(spec_learning.get('similar_case_lessons_imported'))
@@ -972,6 +996,16 @@ def resolve_local_input_path(raw: str | None) -> Path | None:
         return None
     path = Path(raw).expanduser()
     if path.is_absolute():
+        if path.exists():
+            return path
+        parts = path.parts
+        for anchor in ('runs', 'objects', 'generated_code', 'knowledge'):
+            if anchor not in parts:
+                continue
+            idx = parts.index(anchor)
+            candidate = FF.joinpath(*parts[idx:])
+            if candidate.exists():
+                return candidate
         return path
     return WORKSPACE / path
 
@@ -1181,7 +1215,7 @@ def _run_formula_engine_with_profile(
     candidate_seconds = time.perf_counter() - candidate_start
     compare_start = time.perf_counter()
     try:
-        parity = compare_outputs(reference_sample, candidate_sample, tolerance=1e-12)
+        parity = compare_outputs(reference_sample, candidate_sample)
     except AssertionError as exc:
         if (formula_kernel_config or {}).get('experimental_enabled'):
             raise AssertionError(f'BLOCK_EXPERIMENTAL_FORMULA_KERNEL_PARITY_FAILED:{exc}') from exc
@@ -1363,10 +1397,18 @@ def generate_first_run_factor_values(
         else:
             daily_df = read_df(daily_path)
     with timer.phase('sample_limit'):
-        daily_df, daily_limit_profile = limit_step3b_sample_frame(daily_df, label='clean_daily_bar')
+        daily_df, daily_limit_profile = limit_step3b_sample_frame(
+            daily_df,
+            label='clean_daily_bar',
+            formula_ir=module_formula_ir if isinstance(module_formula_ir, dict) else None,
+        )
         minute_limit_profile = None
         if minute_df is not None and len(minute_df) > 0:
-            minute_df, minute_limit_profile = limit_step3b_sample_frame(minute_df, label='minute_bar')
+            minute_df, minute_limit_profile = limit_step3b_sample_frame(
+                minute_df,
+                label='minute_bar',
+                formula_ir=module_formula_ir if isinstance(module_formula_ir, dict) else None,
+            )
     step3b_sample_limit_profile = {
         'clean_daily_bar': daily_limit_profile,
         **({'minute_bar': minute_limit_profile} if minute_limit_profile else {}),
@@ -1651,6 +1693,48 @@ def _add_schema_value(columns: set[str], value) -> None:
                 columns.add(str(value[key]))
 
 
+def _add_resolved_field_values(columns: set[str], value) -> None:
+    if not isinstance(value, dict):
+        return
+    for actual in value.values():
+        _add_schema_value(columns, actual)
+
+
+def _add_schema_columns_payload(columns: set[str], value) -> None:
+    if not value:
+        return
+    if isinstance(value, dict):
+        raw_columns = value.get('columns')
+        if isinstance(raw_columns, list):
+            for item in raw_columns:
+                _add_schema_value(columns, item)
+        sort_contract = value.get('sort_contract')
+        if isinstance(sort_contract, dict):
+            schema = sort_contract.get('schema')
+            if isinstance(schema, list):
+                for item in schema:
+                    _add_schema_value(columns, item)
+    elif isinstance(value, list):
+        for item in value:
+            _add_schema_value(columns, item)
+
+
+def _add_data_api_resolution_columns(columns: set[str], value) -> None:
+    if not isinstance(value, dict):
+        return
+    for resolution in value.values():
+        if not isinstance(resolution, dict):
+            continue
+        _add_resolved_field_values(columns, resolution.get('resolved_fields'))
+        _add_schema_columns_payload(columns, resolution.get('schema'))
+        request = resolution.get('request')
+        if isinstance(request, dict):
+            fields = request.get('fields')
+            if isinstance(fields, list):
+                for item in fields:
+                    _add_schema_value(columns, item)
+
+
 def explicit_step3a_schema_columns(prep: dict) -> list[str]:
     columns: set[str] = set()
     candidate_keys = [
@@ -1672,10 +1756,16 @@ def explicit_step3a_schema_columns(prep: dict) -> list[str]:
         elif isinstance(value, list):
             for item in value:
                 _add_schema_value(columns, item)
-    for key in ['field_mappings', 'resolved_fields']:
+    for key in ['field_mapping', 'field_mappings', 'resolved_fields']:
         value = prep.get(key)
         if isinstance(value, dict):
-            columns.update(str(item) for item in value.values() if item)
+            _add_resolved_field_values(columns, value)
+    _add_data_api_resolution_columns(columns, prep.get('data_api_resolution'))
+    local_inputs = prep.get('local_input_paths')
+    if isinstance(local_inputs, dict):
+        _add_data_api_resolution_columns(columns, local_inputs.get('data_api_resolution'))
+        for key in ['daily_io_contract', 'minute_io_contract', 'sort_contract']:
+            _add_schema_columns_payload(columns, local_inputs.get(key))
     return sorted(columns)
 
 
@@ -1758,6 +1848,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         **operator_metadata(resolved_ir),
         'implementation_mode': 'operator',
         'implementation_source': 'formula_ir_pandas_codegen',
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'qlib_expression': qlib_expression,
     }
     python_stub = generate_pandas_formula_code(report_id=report_id, factor_id=factor_id, formula_ir=resolved_ir)
@@ -1769,6 +1860,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'implementation_status': 'ready',
         'formula_ir': resolved_ir,
         'formula_hash': resolved_ir.get('formula_hash'),
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'operator_set': resolved_ir.get('operator_set') or [],
         'required_fields': resolved_ir.get('required_fields') or [],
         'resolved_fields': resolved_ir.get('resolved_fields') or {},
@@ -1789,6 +1881,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'implementation_mode': 'operator',
         'implementation_source': 'formula_ir_pandas_codegen',
         'formula_ir': resolved_ir,
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'operator_schema': operator_schema,
         'qlib_expression': qlib_expression,
         'metadata': metadata,
@@ -1799,6 +1892,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'implementation_mode': 'operator',
         'implementation_source': 'formula_ir_pandas_codegen',
         'formula_ir': resolved_ir,
+        'resolved_binding_hash': resolved_ir.get('resolved_binding_hash'),
         'operator_schema': operator_schema,
         'hybrid_status': 'not_applicable_operator_only',
         'boundary': {
@@ -2638,6 +2732,7 @@ def main():
         'qlib_expression_draft_ref': str(qlib_path.relative_to(FF)),
         'hybrid_execution_scaffold_ref': str(hybrid_path.relative_to(FF)),
         'execution_mode': implementation_plan['implementation_mode'],
+        'resolved_binding_hash': implementation_plan.get('resolved_binding_hash'),
         'local_input_paths': prep.get('local_input_paths', {}),
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,

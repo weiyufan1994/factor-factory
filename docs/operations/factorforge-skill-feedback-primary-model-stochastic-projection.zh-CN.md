@@ -1,5 +1,12 @@
 # Factor Forge Ultimate 问题反馈：将“主机制模型 + 随机价格过程投影”纳入正式研究合同
 
+> **历史反馈，已被当前合同取代。** 新研究以
+> `docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md` 为准。
+> 本文提出的“所有价格因子统一做 stochastic projection”不再是 current-path
+> 要求，不得进入新 prompt、validator 或 Council binding。随机过程与量纲分析
+> 仅在所选经济机制确实需要时使用；市场结果桥接可直接是价值、现金流、支付、
+> 价格差或收益映射。
+
 Date: 2026-05-25
 
 Audience: Factor Forge Architect

@@ -60,7 +60,7 @@ FactorForge addresses this by enforcing a full evidence chain:
 Step1 ingests a report, paper, formula source, or manually supplied idea. It extracts the author's thesis and produces:
 
 - `alpha_idea_master__<report_id>.json`
-- initial random object / target statistic / information-set hints
+- initial mathematical object / target statistic / information-set hints
 - initial return-source hypothesis
 - related prior-case hints
 
@@ -280,7 +280,8 @@ The goal is not to say “the factor ran.” The goal is to answer:
 
 Step6 must answer:
 
-- `step1_random_object`: what random object is being studied;
+- `mathematical_object`: what object, value, state, functional, relation, or
+  parameter is being studied;
 - `target_statistic`: what statistic the factor claims to predict;
 - `information_set_legality`: whether future information is used;
 - `spec_stability`: whether the formula is stable;

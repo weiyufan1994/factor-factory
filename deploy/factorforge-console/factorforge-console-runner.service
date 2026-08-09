@@ -1,0 +1,38 @@
+[Unit]
+Description=Factor Forge isolated research runner
+After=network-online.target docker.service factorforge-console-network.service factorforge-console-proxy.service factorforge-console-model-broker.service
+Wants=network-online.target
+Requires=docker.service factorforge-console-network.service factorforge-console-proxy.service factorforge-console-model-broker.service
+
+[Service]
+Type=simple
+User=factorforge-runner
+Group=factorforge-console
+SupplementaryGroups=docker factorforge-secret-scan
+WorkingDirectory=/srv/factorforge/control
+RuntimeDirectory=factorforge-console-runner
+RuntimeDirectoryMode=0750
+Environment=HOME=/var/lib/factorforge-console/runner-home
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/factorforge-console/console.env
+ExecStartPre=/usr/bin/mkdir -p /var/lib/factorforge-console/data-api-runtime/catalogs
+ExecStartPre=/usr/bin/install -d -m 0750 /var/lib/factorforge-console/state/public
+ExecStartPre=/usr/bin/install -d -m 0770 /var/lib/factorforge-console/ledger
+ExecStartPre=/opt/factorforge-console/venv/bin/python -c "import cryptography, matplotlib, pyarrow, pyarrow.fs, scipy; assert cryptography.__version__ == '46.0.7'; assert matplotlib.__version__ == '3.10.8'; assert pyarrow.__version__ == '25.0.0'; assert scipy.__version__ == '1.16.3'"
+ExecStartPre=/opt/factorforge-console/venv/bin/python scripts/refresh_factorforge_console_catalog.py --destination /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --receipt /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.receipt.json
+ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_console.py --mode worker --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --ledger-root /var/lib/factorforge-console/ledger --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --data-api-pythonpath /srv/factorforge/data-api
+Restart=on-failure
+RestartSec=5
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/factorforge-console /srv/factorforge/control/.git
+
+[Install]
+WantedBy=multi-user.target

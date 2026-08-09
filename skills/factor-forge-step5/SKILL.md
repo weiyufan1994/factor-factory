@@ -10,10 +10,13 @@ description: Step 5 of the Factor Forge pipeline — evaluation, archival, and k
 Step 5 closes the loop.
 It takes the executed factor run, evaluates what happened, archives the result, and writes back reusable knowledge.
 
-Step 5 preserves the upstream `mechanism_math_contract` from Step 2. It may
-reference the contract in `math_discipline_review`, but it must not redo
+Step 5 preserves the exact upstream
+`mechanism_conditioned_measurement_program` from Step 2 and records a compact
+reference to its selected mathematical object, estimand, observation map and
+market-outcome projection in `math_discipline_review`. It must not redo
 mechanism inference or use mathematical explanation as a substitute for Step4/5
-long-side evidence, provenance, or prewrite gates.
+long-side evidence, provenance, or prewrite gates. Legacy
+`mechanism_math_contract` objects are carried only when already present.
 
 ## Research Discipline
 

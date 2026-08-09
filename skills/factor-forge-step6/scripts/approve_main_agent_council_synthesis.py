@@ -18,6 +18,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.formula.parser import parse_formula
 from factor_factory.artifact_identity import stable_hash
+from factor_factory.research_conjecture import (
+    research_protocol_paths,
+    validate_protocol_bundle,
+)
 from factor_factory.runtime_context import resolve_factorforge_context
 
 SYNTHESIS_VERSION = "factorforge_main_agent_council_synthesis_v1"
@@ -33,6 +37,7 @@ TOKEN_FALSIFICATION_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_FALSIFICATI
 TOKEN_KILL_CRITERIA_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_KILL_CRITERIA_MISSING"
 TOKEN_ORCHESTRATOR_MISMATCH = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_ORCHESTRATOR_MISMATCH"
 TOKEN_DIRECT_CODE_CONTRACT_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_DIRECT_CODE_CONTRACT_MISSING"
+TOKEN_ROUTE_SYNTHESIS_MISSING = "BLOCK_FACTORFORGE_RESEARCH_ROUTE_SYNTHESIS_MISSING"
 VALID_PRIMARY_FAILURE_SIGNATURES = {
     "cost_too_high",
     "long_side_negative",
@@ -49,6 +54,26 @@ REQUIRED_REVISION_FORBIDDEN_CHANGES = [
     "no_decile_trading",
     "no_shared_clean_data_mutation",
 ]
+VALID_REVISION_MATH_OBJECTS = {
+    "estimator_kernel",
+    "lag_window",
+    "state_variable",
+    "projection_operator",
+    "smoothing_regularization",
+    "stopping_rule",
+    "threshold_boundary",
+    "model_family_challenge",
+}
+VALID_REVISION_MODEL_LAYERS = {
+    "economic_hypothesis",
+    "primary_mechanism_model",
+    "market_outcome_projection",
+    "stochastic_projection",
+    "observable_estimator",
+    "implementation_contract",
+}
+VALID_IMPLEMENTATION_MODE_PREFERENCES = {"operator", "hybrid", "direct_code", "unknown"}
+VALID_OVERFIT_RISKS = {"low", "medium", "high", "unknown"}
 
 
 def utc_now() -> str:
@@ -175,6 +200,120 @@ def validate_synthesis(root: Path, report_id: str, synthesis_path: Path) -> tupl
     return synthesis, selected
 
 
+def validate_research_route_synthesis(
+    summary: dict[str, Any],
+    synthesis: dict[str, Any],
+    selected: dict[str, Any],
+) -> None:
+    routes = [
+        item
+        for item in summary.get("research_route_summary") or []
+        if isinstance(item, dict) and nonempty_str(item.get("route_id"))
+    ]
+    if not routes:
+        return
+    comparisons = [
+        item
+        for item in synthesis.get("route_comparison") or []
+        if isinstance(item, dict)
+    ]
+    expected_ids = {str(item["route_id"]) for item in routes}
+    compared_ids = {
+        str(item.get("route_id"))
+        for item in comparisons
+        if nonempty_str(item.get("route_id"))
+    }
+    reasons: list[str] = []
+    if compared_ids != expected_ids:
+        reasons.append(
+            "route_coverage_mismatch:"
+            + ",".join(sorted(expected_ids - compared_ids))
+        )
+    for idx, item in enumerate(comparisons):
+        if item.get("disposition") not in {
+            "selected",
+            "rejected",
+            "blocked",
+            "carry_forward",
+        }:
+            reasons.append(f"route_disposition_invalid:{idx}")
+        if not nonempty_str(item.get("reason")):
+            reasons.append(f"route_reason_missing:{idx}")
+        if not nonempty_str(item.get("exact_gap_or_closed_obligation")):
+            reasons.append(f"route_gap_missing:{idx}")
+    if not nonempty_str(synthesis.get("dissent_resolution")):
+        reasons.append("dissent_resolution_missing")
+    if synthesis.get("selection_rule") in {
+        "majority_vote",
+        "agent_count",
+        "consensus_only",
+    }:
+        reasons.append("majority_vote_forbidden")
+    source_route_ids = selected.get("source_route_ids")
+    if not isinstance(source_route_ids, list) or not source_route_ids:
+        reasons.append("selected_source_route_ids_missing")
+    elif not set(str(item) for item in source_route_ids).issubset(expected_ids):
+        reasons.append("selected_source_route_ids_invalid")
+    strict_source_binding = (
+        (summary.get("research_protocol_gate") or {}).get("status") == "valid"
+    )
+    if strict_source_binding:
+        source_result_hashes = selected.get("source_result_hashes")
+        expected_result_hashes = {
+            str(item.get("source_result_sha256"))
+            for item in routes
+            if str(item.get("route_id"))
+            in set(str(value) for value in source_route_ids or [])
+            and nonempty_str(item.get("source_result_sha256"))
+        }
+        if (
+            not isinstance(source_result_hashes, list)
+            or not source_result_hashes
+            or set(str(value) for value in source_result_hashes)
+            != expected_result_hashes
+        ):
+            reasons.append("selected_source_result_hashes_invalid")
+        law_index = [
+            item
+            for item in summary.get("candidate_law_index") or []
+            if isinstance(item, dict)
+        ]
+        selected_law = next(
+            (
+                item
+                for item in law_index
+                if item.get("law_id") == selected.get("law_id")
+                and item.get("route_id")
+                in set(str(value) for value in source_route_ids or [])
+                and item.get("source_result_sha256")
+                in set(str(value) for value in source_result_hashes or [])
+            ),
+            None,
+        )
+        if selected_law is None:
+            reasons.append("selected_law_not_bound_to_source_result")
+        elif selected.get("law_or_formula_hash") != selected_law.get("law_hash"):
+            reasons.append("selected_law_hash_mismatch")
+    if not isinstance(selected.get("open_proof_obligation_ids"), list):
+        reasons.append("open_proof_obligation_ids_missing")
+    null_routes = {
+        str(item["route_id"])
+        for item in routes
+        if item.get("route_family") == "null_alias_counterexample"
+    }
+    if null_routes and not null_routes.issubset(compared_ids):
+        reasons.append("null_alias_route_not_addressed")
+    if reasons:
+        block(
+            TOKEN_ROUTE_SYNTHESIS_MISSING,
+            {
+                "report_id": summary.get("report_id"),
+                "reasons": reasons,
+                "expected_route_ids": sorted(expected_ids),
+            },
+        )
+
+
 def child_formula_or_law(selected: dict[str, Any]) -> str:
     return (
         nonempty_str(selected.get("child_formula"))
@@ -276,10 +415,13 @@ def synthesis_revision_hypothesis(selected: dict[str, Any], implementation_mode:
     kill = selected.get("kill_criteria") if isinstance(selected.get("kill_criteria"), list) else []
     expression_change = nonempty_str(selected.get("formula_mutation_description")) or f"Apply selected Council synthesis law {selected.get('law_id')}"
     math_change = nonempty_str(selected.get("math_model_link")) or nonempty_str(selected.get("economic_mechanism_link"))
+    mechanism_target = nonempty_str(selected.get("economic_mechanism_link")) or "Refine the factor mechanism while preserving the parent economic direction."
+    if "mechanism" not in mechanism_target.lower():
+        mechanism_target = f"Mechanism challenge: {mechanism_target}"
     return {
         "hypothesis_id": safe_token(selected.get("law_id")),
         "hypothesis": nonempty_str(selected.get("why_selected")) or f"Test selected Council synthesis law {selected.get('law_id')}.",
-        "mechanism_target": nonempty_str(selected.get("economic_mechanism_link")) or "Refine the factor mechanism while preserving the parent economic direction.",
+        "mechanism_target": mechanism_target,
         "revision_model_layer": "observable_estimator",
         "revision_target_math_object": "estimator_kernel",
         "expression_change": expression_change,
@@ -294,6 +436,46 @@ def synthesis_revision_hypothesis(selected: dict[str, Any], implementation_mode:
         "why_not_portfolio_fix": "The failure is in the expression-level state estimator and math mechanism, so the revision must change Step3B factor construction rather than portfolio weights, long-short adoption, or decile trading.",
         "forbidden_changes": REQUIRED_REVISION_FORBIDDEN_CHANGES[:],
     }
+
+
+def revision_hypothesis_contract_ok(hypothesis: Any) -> bool:
+    if not isinstance(hypothesis, dict):
+        return False
+    forbidden_changes = set(hypothesis.get("forbidden_changes") or [])
+    required_strings = [
+        "hypothesis_id",
+        "hypothesis",
+        "mechanism_target",
+        "expression_change",
+        "math_change",
+        "why_not_portfolio_fix",
+    ]
+    if any(not nonempty_str(hypothesis.get(key)) for key in required_strings):
+        return False
+    required_lists = [
+        "expected_metric_effect",
+        "math_falsification_tests",
+        "expected_metric_change",
+        "falsification_tests",
+        "kill_criteria",
+    ]
+    if any(not nonempty_list(hypothesis.get(key)) for key in required_lists):
+        return False
+    if len(hypothesis.get("expected_metric_change") or []) < 2:
+        return False
+    if len(hypothesis.get("falsification_tests") or []) < 2:
+        return False
+    if len(hypothesis.get("kill_criteria") or []) < 2:
+        return False
+    if hypothesis.get("revision_model_layer") not in VALID_REVISION_MODEL_LAYERS:
+        return False
+    if hypothesis.get("revision_target_math_object") not in VALID_REVISION_MATH_OBJECTS:
+        return False
+    if hypothesis.get("implementation_mode_preference") not in VALID_IMPLEMENTATION_MODE_PREFERENCES:
+        return False
+    if hypothesis.get("risk_of_overfit") not in VALID_OVERFIT_RISKS:
+        return False
+    return set(REQUIRED_REVISION_FORBIDDEN_CHANGES).issubset(forbidden_changes)
 
 
 def build_revision_council_ref(root: Path, report_id: str, summary: dict[str, Any]) -> dict[str, Any]:
@@ -374,7 +556,11 @@ def approve_iteration(
     if primary_failure_signature not in VALID_PRIMARY_FAILURE_SIGNATURES:
         primary_failure_signature = "cost_too_high"
     revision_hypotheses = final.get("revision_hypotheses")
-    if not isinstance(revision_hypotheses, list) or not revision_hypotheses:
+    if (
+        not isinstance(revision_hypotheses, list)
+        or not revision_hypotheses
+        or not all(revision_hypothesis_contract_ok(item) for item in revision_hypotheses)
+    ):
         revision_hypotheses = [synthesis_revision_hypothesis(selected, implementation_mode)]
     final.update(
         {
@@ -534,12 +720,27 @@ def run_validate_step6(root: Path, report_id: str) -> dict[str, Any]:
     }
 
 
+def run_validate_final_research_protocol(
+    root: Path,
+    report_id: str,
+    iteration_path: Path,
+) -> dict[str, Any]:
+    report = validate_protocol_bundle(
+        root=root,
+        report_id=report_id,
+        stage="final",
+        iteration_path=iteration_path,
+    )
+    write_json(research_protocol_paths(root, report_id)["verifier"], report)
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Approve a main-agent Council synthesis as the executable Step3B revision bridge.")
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--factorforge-root", default=None)
     parser.add_argument("--synthesis-path", default=None)
-    parser.add_argument("--approval-source", default="current_main_agent_default_approval")
+    parser.add_argument("--approval-source", required=True)
     parser.add_argument("--skip-validate-step6", action="store_true")
     args = parser.parse_args()
 
@@ -550,6 +751,7 @@ def main() -> int:
     synthesis, selected = validate_synthesis(root, rid, synthesis_path)
     summary_path = council_dir(root, rid) / f"revision_council_summary__{rid}.json"
     summary = load_json(summary_path)
+    validate_research_route_synthesis(summary, synthesis, selected)
     iter_path = iteration_path(root, rid)
     if not iter_path.exists():
         block(TOKEN_ITERATION_MISSING, {"report_id": rid, "iteration_path": str(iter_path)})
@@ -598,7 +800,15 @@ def main() -> int:
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_recorded": True,
+        "approval_status": "pending_verification",
     }
+    protocol_required = (
+        (summary.get("research_protocol_gate") or {}).get("status") == "valid"
+        or research_protocol_paths(root, rid)["conjecture"].exists()
+    )
+    if protocol_required:
+        # The final verifier binds this exact approval payload to the synthesis hash.
+        write_json(approval_path(root, rid), approval)
     validate_result: dict[str, Any] | None = None
     if not args.skip_validate_step6:
         validate_result = run_validate_step6(root, rid)
@@ -611,9 +821,32 @@ def main() -> int:
             if brief_md_path:
                 restore_text_snapshot(brief_md_path, rollback_snapshot["brief_md"])
             approval["rolled_back_active_writes"] = True
+            approval["approval_status"] = "BLOCK"
             write_json(approval_path(root, rid), approval)
             print(json.dumps({"result": "BLOCK", "approval": approval}, ensure_ascii=False, indent=2))
             return int(validate_result["rc"] or 1)
+    if protocol_required:
+        protocol_result = run_validate_final_research_protocol(root, rid, iter_path)
+        approval["research_protocol_final"] = protocol_result
+        if protocol_result.get("verdict") != "PASS":
+            restore_text_snapshot(iter_path, rollback_snapshot["iteration"])
+            restore_text_snapshot(out_handoff, rollback_snapshot["handoff"])
+            if brief_json_path:
+                restore_text_snapshot(brief_json_path, rollback_snapshot["brief_json"])
+            if brief_md_path:
+                restore_text_snapshot(brief_md_path, rollback_snapshot["brief_md"])
+            approval["rolled_back_active_writes"] = True
+            approval["approval_status"] = "BLOCK"
+            write_json(approval_path(root, rid), approval)
+            print(
+                json.dumps(
+                    {"result": "BLOCK", "approval": approval},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
+    approval["approval_status"] = "APPROVED"
     write_json(approval_path(root, rid), approval)
     print(json.dumps({"result": "PASS", "approval": approval}, ensure_ascii=False, indent=2))
     return 0

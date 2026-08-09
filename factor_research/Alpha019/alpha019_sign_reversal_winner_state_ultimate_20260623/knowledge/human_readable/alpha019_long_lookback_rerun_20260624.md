@@ -127,4 +127,3 @@ Valid expression-level directions:
 2. Test whether the 250-day winner state has independent long-side value through ablation.
 3. Add hysteresis around the 7-day threshold so daily churn is reduced by the factor expression itself.
 4. Kill standalone promotion if revisions cannot lift long-side Sharpe and reduce drawdown without adding unjustified complexity.
-

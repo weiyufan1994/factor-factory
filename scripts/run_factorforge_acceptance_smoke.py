@@ -138,7 +138,13 @@ def relative_to_root(path: Path, factorforge_root: Path) -> str:
     return str(path.relative_to(factorforge_root))
 
 
-def make_fixture_csv(path: Path, *, include_future: bool = False, include_hybrid_fields: bool = True) -> None:
+def make_fixture_csv(
+    path: Path,
+    *,
+    include_future: bool = False,
+    include_hybrid_fields: bool = True,
+    vary_cross_section: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "ts_code",
@@ -158,15 +164,22 @@ def make_fixture_csv(path: Path, *, include_future: bool = False, include_hybrid
     rows: list[dict[str, Any]] = []
     for date_idx in range(1, 9):
         for code_idx, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
-            base = 10.0 + date_idx + code_idx
+            if vary_cross_section:
+                base = 10.0 + date_idx * 0.1
+                high_offset = 0.8 + 0.2 * ((code_idx + date_idx) % 3)
+                volume_offset = 100 * ((2 * code_idx + date_idx) % 3)
+            else:
+                base = 10.0 + date_idx + code_idx
+                high_offset = 0.8 + code_idx * 0.1
+                volume_offset = code_idx * 100
             row = {
                 "ts_code": code,
                 "trade_date": f"202601{date_idx:02d}",
                 "open": round(base, 4),
-                "high": round(base + 0.8 + code_idx * 0.1, 4),
+                "high": round(base + high_offset, 4),
                 "low": round(base - 0.5, 4),
                 "close": round(base + 0.2 * ((date_idx + code_idx) % 3), 4),
-                "vol": 1000 + date_idx * 10 + code_idx * 100,
+                "vol": 1000 + date_idx * 10 + volume_offset,
                 "amount": 10000 + date_idx * 100 + code_idx * 500,
                 "pct_chg": round(0.001 * (date_idx - code_idx), 6),
             }
@@ -286,6 +299,42 @@ def data_prep_payload(report_id: str, factor_id: str, fixture_csv: Path | None =
 def write_common_objects(factorforge_root: Path, report_id: str, spec: dict[str, Any], prep: dict[str, Any]) -> None:
     write_json(factorforge_root / "objects" / "factor_spec_master" / f"factor_spec_master__{report_id}.json", spec)
     write_json(factorforge_root / "objects" / "data_prep_master" / f"data_prep_master__{report_id}.json", prep)
+
+
+def write_no_state_resolution(
+    factorforge_root: Path,
+    *,
+    report_id: str,
+    factor_id: str,
+) -> Path:
+    from factor_factory.state_reuse import (
+        build_state_dependency_contract_from_data_prep,
+        resolve_state_dependencies,
+    )
+
+    state_root = factorforge_root / "objects" / "state_reuse" / report_id
+    contract_path = state_root / f"state_dependency_contract__{report_id}.json"
+    resolution_path = state_root / f"state_resolution__{report_id}.json"
+    contract = build_state_dependency_contract_from_data_prep(
+        {
+            "report_id": report_id,
+            "factor_id": factor_id,
+            "minute_derived_state_requirements": [],
+        },
+        producer="factorforge_acceptance_smoke",
+    )
+    write_json(contract_path, contract)
+    resolution = resolve_state_dependencies(
+        contract=contract,
+        catalog={},
+        report_id=report_id,
+        factor_id=factor_id,
+        research_id=f"{report_id.lower()}_research",
+        dependency_contract_path=str(contract_path),
+        catalog_source={"type": "no_state_required"},
+    )
+    write_json(resolution_path, resolution)
+    return resolution_path
 
 
 def build_operator_spec(report_id: str, factor_id: str, formula: str, *, run_id: str) -> dict[str, Any]:
@@ -653,7 +702,7 @@ def case_step3b_operator_alpha013(root: Path, summaries: Path) -> dict[str, Any]
     rid = "SMOKE_OPERATOR_ALPHA013"
     run_id = f"{rid}__run"
     fixture = root / "synthetic_inputs" / f"{rid}.csv"
-    make_fixture_csv(fixture)
+    make_fixture_csv(fixture, vary_cross_section=True)
     spec = build_operator_spec(
         rid,
         "Alpha013",
@@ -877,8 +926,16 @@ def case_step4_all_skipped(root: Path, summaries: Path) -> dict[str, Any]:
         "first_run_outputs": {"status": "pending", "no_first_run_reason": "acceptance_missing_factor_values"},
         "evaluation_plan": {"backends": [{"name": "self_quant_analyzer", "mode": "quick"}, {"name": "qlib_backtest", "mode": "default"}]},
     })
+    state_resolution_path = write_no_state_resolution(
+        root,
+        report_id=rid,
+        factor_id="Step4Skipped",
+    )
     proof = summaries / "proofs" / f"{case}.json"
-    cmd = ultimate_command(root, rid, "4", "4", proof)
+    cmd = ultimate_command(root, rid, "4", "4", proof) + [
+        "--state-resolution",
+        str(state_resolution_path),
+    ]
     started = time.time()
     run = run_capture(cmd, factorforge_root=root)
     validation_path = root / "objects" / "validation" / f"factor_run_validation_revision__{rid}.json"

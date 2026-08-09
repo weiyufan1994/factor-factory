@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKSPACE="${WORKSPACE:-/home/ubuntu/.openclaw/workspace/factorforge}"
+if [[ "${FACTORFORGE_ARCHIVED_MANUAL_ACK:-0}" != "1" ]]; then
+  echo "BLOCK_FACTORFORGE_ARCHIVED_MANUAL_SCRIPT: this historical worker is not a formal Factor Forge entrypoint" >&2
+  exit 64
+fi
+
+WORKSPACE="${WORKSPACE:?Set the explicit isolated VP V19 workspace}"
 V19_SCRIPT_S3="${V19_SCRIPT_S3:-s3://yufan-data-lake/factorforge/tmp/vp_v19_20260612/research_vp_v19_return_volume_eval.py}"
 V18_SCRIPT_S3="${V18_SCRIPT_S3:-s3://yufan-data-lake/factorforge/tmp/vp_v18_20260612/research_vp_v18_drift_persistence_eval.py}"
 BASELINE_SCRIPT_S3="${BASELINE_SCRIPT_S3:-s3://yufan-data-lake/factorforge/tmp/vp_p0_baseline_20260612/research_vp_p0_baseline_eval.py}"
@@ -16,7 +21,8 @@ SKIP_FLOW_BUILD="${SKIP_FLOW_BUILD:-0}"
 DAILY_CLEAN="${DAILY_CLEAN:-${WORKSPACE}/data/clean/daily_clean.parquet}"
 DAILY_S3="${DAILY_S3:-s3://yufan-data-lake/factorforge/datamart/clean_daily_bar/v1/daily_clean.parquet}"
 OUT_DIR="${OUT_DIR:-/tmp/factorforge_vp_v19_return_volume_full_20260612}"
-UPLOAD_S3="${UPLOAD_S3:-s3://yufan-data-lake/factorforge/tmp/vp_v19_20260612/full}"
+UPLOAD_S3="${UPLOAD_S3:-}"
+ALLOW_REMOTE_WRITE="${ALLOW_REMOTE_WRITE:-0}"
 MINUTE_MIN_PARTITIONS="${MINUTE_MIN_PARTITIONS:-2312}"
 MAX_DATES="${MAX_DATES:-}"
 AVAILABLE_MINUTE_ONLY="${AVAILABLE_MINUTE_ONLY:-0}"
@@ -26,6 +32,18 @@ SIGNALS="${SIGNALS:-}"
 SIZE_NEUTRAL_SIGNALS="${SIZE_NEUTRAL_SIGNALS:-}"
 SIZE_NEUTRAL_UNIVERSES="${SIZE_NEUTRAL_UNIVERSES:-}"
 WRITE_MERGED_PANEL="${WRITE_MERGED_PANEL:-0}"
+
+upload_artifacts() {
+  if [[ "${ALLOW_REMOTE_WRITE}" != "1" ]]; then
+    echo "[UPLOAD SKIPPED] ALLOW_REMOTE_WRITE is not 1"
+    return 0
+  fi
+  if [[ -z "${UPLOAD_S3}" ]]; then
+    echo "[ERROR] UPLOAD_S3 is required when ALLOW_REMOTE_WRITE=1" >&2
+    return 64
+  fi
+  aws s3 cp --recursive "${OUT_DIR}" "${UPLOAD_S3}"
+}
 
 mkdir -p "${WORKSPACE}/scripts" "${WORKSPACE}/data/clean" "${VP_ROOT}" "${INDEX_UNIVERSE_ROOT}" "${OUT_DIR}" "${FLOW_FEATURE_ROOT}"
 LOG_FILE="${OUT_DIR}/run.log"
@@ -82,8 +100,7 @@ if [[ "${SKIP_FLOW_BUILD}" != "1" ]]; then
   if [[ "${MINUTE_PARTITIONS}" -lt "${MINUTE_MIN_PARTITIONS}" ]]; then
     echo "[ERROR] minute cache insufficient for requested V19 run"
     find "${MINUTE_ROOT}" -mindepth 1 -maxdepth 1 -type d -name 'trade_date=*' 2>/dev/null | head -20 || true
-    echo "[UPLOAD] ${UPLOAD_S3}"
-    aws s3 cp --recursive "${OUT_DIR}" "${UPLOAD_S3}" || true
+    upload_artifacts || true
     exit 42
   fi
 else
@@ -149,7 +166,6 @@ set -e
 
 echo "[ARTIFACTS]"
 find "${OUT_DIR}" -maxdepth 2 -type f -print -exec ls -lh {} \;
-echo "[UPLOAD] ${UPLOAD_S3}"
-aws s3 cp --recursive "${OUT_DIR}" "${UPLOAD_S3}"
+upload_artifacts
 date -u +"[DONE] %Y-%m-%dT%H:%M:%SZ status=${STATUS}"
 exit "${STATUS}"

@@ -67,6 +67,42 @@ def main() -> None:
         raise SystemExit("expected at least four graph nodes covering multiple mechanisms")
     if manifest.get("edge_count", 0) < 10:
         raise SystemExit("expected at least ten graph edges")
+    first_artifact_bytes = {
+        path.name: path.read_bytes()
+        for path in (node_index, edge_index, manifest_path)
+    }
+    rebuild = run(
+        [
+            sys.executable,
+            "scripts/build_factor_knowledge_graph.py",
+            "--node-index",
+            str(node_index),
+            "--edge-index",
+            str(edge_index),
+            "--manifest",
+            str(manifest_path),
+        ]
+    )
+    rebuilt_manifest = json.loads(rebuild.stdout)
+    if manifest != rebuilt_manifest:
+        raise SystemExit("knowledge graph manifest is not deterministic")
+    if any(
+        first_artifact_bytes[path.name] != path.read_bytes()
+        for path in (node_index, edge_index, manifest_path)
+    ):
+        raise SystemExit("knowledge graph artifacts changed on identical rebuild")
+    if "created_at_utc" in manifest:
+        raise SystemExit("tracked graph manifest must not contain wall-clock time")
+    for field in ("taxonomy_path", "nodes_dir", "node_index", "edge_index"):
+        if Path(str(manifest.get(field) or "")).is_absolute():
+            raise SystemExit(f"manifest path is not portable: {field}")
+    for index_path in (node_index, edge_index):
+        for line in index_path.read_text(encoding="utf-8").splitlines():
+            source_path = json.loads(line).get("source_node_path")
+            if Path(str(source_path or "")).is_absolute():
+                raise SystemExit(
+                    f"knowledge graph row contains absolute source path: {source_path}"
+                )
 
     query = run([sys.executable, "scripts/query_factor_knowledge_graph.py", *query_paths, "--tag", "first_passage", "--text", "moneyflow", "--top-k", "3"])
     payload = json.loads(query.stdout)
@@ -187,6 +223,7 @@ def main() -> None:
         "step1_context_integration_found": True,
         "step2_context_integration_found": True,
         "step6_context_integration_found": True,
+        "deterministic_portable_artifacts": True,
     }, ensure_ascii=False, indent=2))
     tmp_dir.cleanup()
 

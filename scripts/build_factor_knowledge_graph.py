@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +39,6 @@ ALLOWED_NODE_TYPES = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -52,6 +48,31 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def portable_path(path: Path, *, fallback_root: Path | None = None) -> str:
+    resolved = path.expanduser().resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        pass
+    if fallback_root is not None:
+        try:
+            return resolved.relative_to(fallback_root.resolve()).as_posix()
+        except ValueError:
+            pass
+    return resolved.name
+
+
+def stable_payload_sha256(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def validate_taxonomy(node: dict[str, Any], taxonomy: dict[str, Any]) -> list[str]:
@@ -150,7 +171,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     for path in sorted(nodes_dir.glob("*.json")):
         node = load_json(path)
-        errors.extend(validate_node(path, node, taxonomy))
+        source_node_path = portable_path(
+            path,
+            fallback_root=nodes_dir.parent,
+        )
+        errors.extend(validate_node(Path(source_node_path), node, taxonomy))
         tags = flatten_tags(node)
         node_rows.append(
             {
@@ -165,7 +190,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "tags": tags,
                 "evidence": node.get("evidence") or {},
                 "source_paths": node.get("source_paths") or [],
-                "source_node_path": str(path),
+                "source_node_path": source_node_path,
                 "text": node_text(node),
             }
         )
@@ -176,7 +201,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "edge_type": relation.get("edge_type"),
                     "target": relation.get("target"),
                     "note": relation.get("note"),
-                    "source_node_path": str(path),
+                    "source_node_path": source_node_path,
                 }
             )
 
@@ -185,13 +210,34 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     write_jsonl(node_index, node_rows)
     write_jsonl(edge_index, edge_rows)
+    source_snapshot_sha256 = stable_payload_sha256(
+        {
+            "taxonomy": taxonomy,
+            "nodes": node_rows,
+            "edges": edge_rows,
+        }
+    )
     manifest = {
         "schema_version": "factor_knowledge_graph_manifest_v1",
-        "created_at_utc": utc_now(),
-        "taxonomy_path": str(taxonomy_path),
-        "nodes_dir": str(nodes_dir),
-        "node_index": str(node_index),
-        "edge_index": str(edge_index),
+        "generation_policy": "deterministic_content_only_no_wall_clock",
+        "source_snapshot_sha256": source_snapshot_sha256,
+        "path_semantics": "repository_or_artifact_root_relative",
+        "taxonomy_path": portable_path(
+            taxonomy_path,
+            fallback_root=manifest_path.parent,
+        ),
+        "nodes_dir": portable_path(
+            nodes_dir,
+            fallback_root=manifest_path.parent,
+        ),
+        "node_index": portable_path(
+            node_index,
+            fallback_root=manifest_path.parent,
+        ),
+        "edge_index": portable_path(
+            edge_index,
+            fallback_root=manifest_path.parent,
+        ),
         "node_count": len(node_rows),
         "edge_count": len(edge_rows),
         "node_types": dict(Counter(row["node_type"] for row in node_rows)),

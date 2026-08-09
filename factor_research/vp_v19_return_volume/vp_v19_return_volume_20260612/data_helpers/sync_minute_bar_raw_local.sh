@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-S3_PREFIX="${S3_PREFIX:-s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/}"
-S3_BUCKET="${S3_BUCKET:-yufan-data-lake}"
-LOCAL_ROOT="${LOCAL_ROOT:-/Users/humphrey/projects/factorforge-data-api-cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6}"
+if [[ "${FACTORFORGE_ARCHIVED_MANUAL_ACK:-0}" != "1" ]]; then
+  echo "BLOCK_FACTORFORGE_ARCHIVED_MANUAL_SCRIPT: set FACTORFORGE_ARCHIVED_MANUAL_ACK=1 and explicit source/cache paths" >&2
+  exit 64
+fi
+
+S3_PREFIX="${S3_PREFIX:?Set the explicit read-only S3_PREFIX for this archived helper}"
+S3_BUCKET="${S3_BUCKET:?Set the explicit read-only S3_BUCKET for this archived helper}"
+LOCAL_ROOT="${LOCAL_ROOT:?Set an isolated LOCAL_ROOT outside every factor workspace and shared clean-data root}"
 START_DATE="${START_DATE:-20160104}"
 END_DATE="${END_DATE:-20250711}"
 JOBS="${JOBS:-8}"

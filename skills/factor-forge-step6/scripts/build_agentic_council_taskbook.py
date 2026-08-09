@@ -21,13 +21,17 @@ from factor_factory.research_conjecture import (
     research_protocol_paths,
     validate_protocol_bundle,
 )
-from factor_factory.measurement_program import build_measurement_program_binding
+from factor_factory.measurement_program import (
+    build_measurement_program_binding,
+    validate_measurement_program,
+)
 
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
 RUNTIME_POLICY_VERSION = "factorforge_runtime_dispatch_policy_v1"
 RUNTIME_VALUES = {"codex", "openclaw", "manual_file", "unknown"}
 TOKEN_PACKET_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING"
+TOKEN_MEASUREMENT_PROGRAM_INVALID = "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -413,6 +417,43 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(1)
+
+    measurement_program = packet.get("mechanism_conditioned_measurement_program")
+    declared_node_ids = {
+        str(node_id)
+        for component in (
+            ((measurement_program or {}).get("implementation") or {}).get(
+                "components"
+            )
+            or []
+        )
+        if isinstance(component, dict)
+        for node_id in (component.get("knowledge_node_ids") or [])
+        if str(node_id).strip()
+    }
+    measurement_program_failures = validate_measurement_program(
+        measurement_program,
+        available_knowledge_node_ids=declared_node_ids,
+        require_web_executable=False,
+    )
+    measurement_program_binding = build_measurement_program_binding(
+        measurement_program
+    )
+    if measurement_program_failures or not measurement_program_binding:
+        print(
+            TOKEN_MEASUREMENT_PROGRAM_INVALID
+            + ": "
+            + json.dumps(
+                {
+                    "report_id": rid,
+                    "failures": measurement_program_failures
+                    or ["measurement_program_binding_missing"],
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
     failure_signature = (
         revision.get("primary_failure_signature")

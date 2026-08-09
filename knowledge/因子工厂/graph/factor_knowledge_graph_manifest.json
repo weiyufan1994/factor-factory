@@ -1,10 +1,10 @@
 {
-  "created_at_utc": "2026-08-07T22:57:43.571945Z",
   "edge_count": 60,
-  "edge_index": "/Users/humphrey/projects/factor-factory-console-v2-research-workbench/knowledge/因子工厂/graph/factor_knowledge_edges.jsonl",
+  "edge_index": "knowledge/因子工厂/graph/factor_knowledge_edges.jsonl",
   "errors": [],
+  "generation_policy": "deterministic_content_only_no_wall_clock",
   "node_count": 12,
-  "node_index": "/Users/humphrey/projects/factor-factory-console-v2-research-workbench/knowledge/因子工厂/graph/factor_knowledge_nodes.jsonl",
+  "node_index": "knowledge/因子工厂/graph/factor_knowledge_nodes.jsonl",
   "node_types": {
     "anti_pattern": 2,
     "factor": 1,
@@ -12,8 +12,10 @@
     "mechanism": 2,
     "methodology": 1
   },
-  "nodes_dir": "/Users/humphrey/projects/factor-factory-console-v2-research-workbench/knowledge/因子工厂/graph/nodes",
+  "nodes_dir": "knowledge/因子工厂/graph/nodes",
+  "path_semantics": "repository_or_artifact_root_relative",
   "schema_version": "factor_knowledge_graph_manifest_v1",
+  "source_snapshot_sha256": "e0f4f26257f59ca7d4e1a455787ceda23585c8a9e034f8473045ace07f0ae674",
   "tag_counts": {
     "after_cost_failure": 5,
     "alpha_combination_feature": 11,
@@ -216,5 +218,5 @@
     "worldquant_style:ts_operator": 9,
     "wrong_math_object": 2
   },
-  "taxonomy_path": "/Users/humphrey/projects/factor-factory-console-v2-research-workbench/knowledge/因子工厂/taxonomy/factor_taxonomy_v1.json"
+  "taxonomy_path": "knowledge/因子工厂/taxonomy/factor_taxonomy_v1.json"
 }

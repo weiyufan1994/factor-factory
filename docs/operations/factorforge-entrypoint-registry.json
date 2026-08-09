@@ -140,6 +140,7 @@
     "scripts/run_ts_rank_candidate_benchmark.py"
   ],
   "knowledge_and_retrieval_ops": [
+    "scripts/build_factor_knowledge_export_manifest.py",
     "scripts/build_factor_knowledge_graph.py",
     "scripts/build_factorforge_embedding_index.py",
     "scripts/build_factorforge_retrieval_index.py",

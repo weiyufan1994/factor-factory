@@ -41,6 +41,7 @@ from factor_factory.research_obligation_verifier import (
 )
 from factor_factory.research_proof import factor_proof_certificate_path
 from scripts.run_factorforge_factor_proof_smoke import valid_certificate
+from scripts.run_revision_council_smoke import valid_measurement_program
 
 
 REPORT_ID = "RESEARCH_PROTOCOL_SMOKE"
@@ -593,6 +594,7 @@ def main() -> int:
     obligations = valid_obligations(root)
     counterexamples = valid_counterexamples(root)
     iteration = valid_iteration()
+    measurement_program = valid_measurement_program()
     write_json(paths["state"], state)
     write_json(paths["conjecture"], conjecture)
     write_json(paths["approaches"], approaches)
@@ -630,6 +632,7 @@ def main() -> int:
                 "mechanism_analysis": {"mechanism_fit": "partial"},
             },
             "metrics": {"long_side_annual_return": 0.01},
+            "mechanism_conditioned_measurement_program": measurement_program,
             "forbidden_writeback_baseline": {
                 "contract_version": (
                     "factorforge_revision_council_forbidden_writeback_baseline_v1"
@@ -1036,17 +1039,47 @@ def main() -> int:
     }
     write_json(paths["conjecture"], conjecture)
 
-    write_json(
-        council_dir / f"revision_council_packet__{REPORT_ID}.json",
-        {
-            "report_id": REPORT_ID,
-            "research_memo": {
-                "revision_strategy": {"primary_failure_signature": "cost_too_high"},
-                "mechanism_analysis": {"mechanism_fit": "partial"},
-            },
-            "metrics": {"long_side_annual_return": 0.01},
+    taskbook_packet = {
+        "report_id": REPORT_ID,
+        "research_memo": {
+            "revision_strategy": {"primary_failure_signature": "cost_too_high"},
+            "mechanism_analysis": {"mechanism_fit": "partial"},
         },
+        "metrics": {"long_side_annual_return": 0.01},
+        "mechanism_conditioned_measurement_program": measurement_program,
+    }
+    taskbook_packet_path = (
+        council_dir / f"revision_council_packet__{REPORT_ID}.json"
     )
+    missing_measurement_packet = deepcopy(taskbook_packet)
+    missing_measurement_packet.pop(
+        "mechanism_conditioned_measurement_program", None
+    )
+    write_json(taskbook_packet_path, missing_measurement_packet)
+    missing_measurement_taskbook = run(
+        [
+            sys.executable,
+            "skills/factor-forge-step6/scripts/build_agentic_council_taskbook.py",
+            "--report-id",
+            REPORT_ID,
+            "--executor",
+            "dispatch_manifest",
+            "--research-protocol",
+            "required",
+        ],
+        root,
+    )
+    cases["formal_taskbook_requires_measurement_program"] = {
+        "ok": missing_measurement_taskbook.returncode != 0
+        and "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
+        in (
+            missing_measurement_taskbook.stdout
+            + missing_measurement_taskbook.stderr
+        ),
+        "stdout": missing_measurement_taskbook.stdout,
+        "stderr": missing_measurement_taskbook.stderr,
+    }
+    write_json(taskbook_packet_path, taskbook_packet)
     taskbook_proc = run(
         [
             sys.executable,

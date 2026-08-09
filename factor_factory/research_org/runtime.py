@@ -261,6 +261,11 @@ def build_research_org_session_prompt(
         / "tasks"
         / f"{invocation.task_id}.json"
     )
+    private_output_template: dict[str, Any] = {
+        "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+        "status": "PASS|BLOCK|NEEDS_DATA|NEEDS_CLARIFICATION",
+        "public_research_record": {},
+    }
     task_output_contract = ""
     if invocation.role_id == "knowledge_librarian":
         task_packet = strict_json_loads(
@@ -272,6 +277,7 @@ def build_research_org_session_prompt(
                 task_packet.get("output_contract") or ""
             )
     if invocation.role_id in PREFORMAL_ROLE_CHECK_IDS:
+        private_output_template["status"] = "PASS|BLOCK"
         check_ids = json.dumps(
             list(PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]),
             ensure_ascii=False,
@@ -310,31 +316,33 @@ def build_research_org_session_prompt(
             }
             for check_id in PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]
         ]
-        public_record_template = json.dumps(
-            {
-                "contract_version": ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
-                "executive_summary": "<EXACT_ALLOWED_EXECUTIVE_SUMMARY>",
-                "claims": check_template,
-                "artifact_refs": [
-                    {
-                        "path": "<AUTHORIZED_STAGED_WORKSPACE_PATH>",
-                        "sha256": "<SHA256_OF_FILE_BYTES>",
-                    }
-                ],
-                "handoff": {"status": "ready_for_host_review"},
-                "design_review": {
-                    "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
-                    "stage": "pre_formal_research_design",
-                    "evidence_basis": "pre_registered_design_only",
-                    "claim_scope": PREFORMAL_CLAIM_SCOPE,
-                    "empirical_factor_verdict": "NOT_ISSUED",
-                    "decision": (
-                        "CLEAR_FOR_FORMAL_EXECUTION|BLOCK_FORMAL_EXECUTION"
-                    ),
-                    "checks": check_template,
-                    "blockers": ["<BLOCKED_CHECK_ID_ONLY>"],
-                },
+        public_record_template_payload = {
+            "contract_version": ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
+            "executive_summary": "<EXACT_ALLOWED_EXECUTIVE_SUMMARY>",
+            "claims": check_template,
+            "artifact_refs": [
+                {
+                    "path": "<AUTHORIZED_STAGED_WORKSPACE_PATH>",
+                    "sha256": "<SHA256_OF_FILE_BYTES>",
+                }
+            ],
+            "handoff": {"status": "ready_for_host_review"},
+            "design_review": {
+                "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+                "stage": "pre_formal_research_design",
+                "evidence_basis": "pre_registered_design_only",
+                "claim_scope": PREFORMAL_CLAIM_SCOPE,
+                "empirical_factor_verdict": "NOT_ISSUED",
+                "decision": "CLEAR_FOR_FORMAL_EXECUTION|BLOCK_FORMAL_EXECUTION",
+                "checks": check_template,
+                "blockers": ["<BLOCKED_CHECK_ID_ONLY>"],
             },
+        }
+        private_output_template["public_research_record"] = (
+            public_record_template_payload
+        )
+        public_record_template = json.dumps(
+            public_record_template_payload,
             ensure_ascii=False,
             indent=2,
         )
@@ -393,12 +401,39 @@ the staged file bytes. Every `PASS` check must cite at least one such path;
 `evidence_refs=[]` is never a satisfied design check.
 """
         if invocation.role_id == "independent_council":
+            private_output_template["independence_attestation"] = {
+                "independence_satisfied": True,
+                "reviewed_role_ids": [
+                    "<COPY_EXACT_TASK_REQUIRED_REVIEW_ROLE_IDS_IN_ORDER>"
+                ],
+            }
+            private_output_template["formal_independent_verdict"] = {
+                "contract_version": PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
+                "stage": "pre_formal_research_design",
+                "claim_scope": PREFORMAL_CLAIM_SCOPE,
+                "decision": "CLEAR_FOR_FORMAL_EXECUTION|BLOCK_FORMAL_EXECUTION",
+                "reviewed_role_ids": [
+                    "<COPY_EXACT_TASK_REQUIRED_REVIEW_ROLE_IDS_IN_ORDER>"
+                ],
+                "blocking_findings": ["<BLOCKED_CHECK_ID_ONLY>"],
+                "empirical_factor_verdict": "NOT_ISSUED",
+            }
             role_contract_guidance += f"""
 Also include top-level `formal_independent_verdict` using contract
 `{PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION}`, the same pre-formal stage and
 claim_scope, decision, the exact task `required_review_role_ids`, the same blockers under
 `blocking_findings`, and empirical_factor_verdict `NOT_ISSUED`. This clears or
 blocks only formal execution; it is never factor ACCEPT/REJECT/PROMOTE.
+
+For this Council role, "top-level" means the private output envelope, not the
+public research record. The private output object has exactly these five keys:
+`contract_version`, `status`, `public_research_record`,
+`independence_attestation`, and `formal_independent_verdict`.
+`independence_attestation` and `formal_independent_verdict` are siblings of
+`public_research_record`; never place either one inside
+`public_research_record`. The outer JSON template above contains the complete
+controlled public record; use that single template without moving or adding
+fields.
 """
     elif (
         invocation.role_id == "knowledge_librarian"
@@ -550,6 +585,11 @@ path/file hash reference, and only then admits your result.
 """
     else:
         role_contract_guidance = ""
+    private_output_template_json = json.dumps(
+        private_output_template,
+        ensure_ascii=False,
+        indent=2,
+    )
     return f"""# Factor Forge isolated specialist session
 
 You are the `{invocation.role_id}` specialist for exactly one frozen Factor
@@ -602,11 +642,7 @@ relative-path draft, scratch file, or `.openclaw` workspace file.
 It must use this outer shape and no unknown top-level keys:
 
 ```json
-{{
-  "contract_version": "{PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION}",
-  "status": "PASS|BLOCK|NEEDS_DATA|NEEDS_CLARIFICATION",
-  "public_research_record": {{}}
-}}
+{private_output_template_json}
 ```
 
 The public record must satisfy the frozen task's `output_contract` and the

@@ -791,6 +791,55 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
     assert "`evidence_refs=[]` is never a satisfied design check" in prompt
     assert "file-byte SHA-256 from `runtime_context.json.files`" in prompt
     assert "Do not create a\nrelative-path draft" in prompt
+    outer_marker = (
+        "It must use this outer shape and no unknown top-level keys:\n\n```json\n"
+    )
+    quant_outer = json.loads(prompt.split(outer_marker, 1)[1].split("\n```", 1)[0])
+    assert quant_outer["status"] == "PASS|BLOCK"
+    assert quant_outer["public_research_record"]["design_review"]["checks"]
+
+    validation_invocation = next(
+        call for call in runner.calls if call.role_id == "validation_evidence"
+    )
+    validation_prompt = runtime_module.build_research_org_session_prompt(
+        validation_invocation
+    )
+    validation_outer = json.loads(
+        validation_prompt.split(outer_marker, 1)[1].split("\n```", 1)[0]
+    )
+    assert validation_outer["status"] == "PASS|BLOCK"
+    assert validation_outer["public_research_record"]["design_review"]["checks"]
+
+    council_invocation = next(
+        call for call in runner.calls if call.role_id == "independent_council"
+    )
+    council_prompt = runtime_module.build_research_org_session_prompt(
+        council_invocation
+    )
+    assert "The private output object has exactly these five keys" in council_prompt
+    assert (
+        "`independence_attestation` and `formal_independent_verdict` are siblings of"
+        in council_prompt
+    )
+    assert "never place either one inside\n`public_research_record`" in council_prompt
+    council_outer = json.loads(
+        council_prompt.split(outer_marker, 1)[1].split("\n```", 1)[0]
+    )
+    assert set(council_outer) == {
+        "contract_version",
+        "status",
+        "public_research_record",
+        "independence_attestation",
+        "formal_independent_verdict",
+    }
+    assert set(council_outer["public_research_record"]) == {
+        "contract_version",
+        "executive_summary",
+        "claims",
+        "artifact_refs",
+        "handoff",
+        "design_review",
+    }
 
     knowledge_invocation = next(
         call for call in runner.calls if call.role_id == "knowledge_librarian"

@@ -171,6 +171,12 @@ hash-bound public artifacts only when the exact file is also present in its
 staged runtime manifest. Staged visibility alone grants no evidence authority;
 the validator and context builder must compute the same dependency closure.
 
+For an Independent Council runtime result, `independence_attestation` and
+`formal_independent_verdict` are private-output envelope fields and exact
+siblings of `public_research_record`. Never nest either field inside the public
+record. The public record remains limited to its controlled design-review
+shape.
+
 This closure extends to adjacent channels. The outer Agent result envelope and
 its authority-bearing identity are exact-shape by independence class; Council attestation and formal verdict,
 every `artifact_refs[]` item, and each canonical Data Liaison request ref reject

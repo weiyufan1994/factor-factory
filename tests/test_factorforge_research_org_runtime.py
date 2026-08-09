@@ -344,6 +344,7 @@ class FakeSessionRunner:
         cancel_after_output_role: str | None = None,
         mutate_context_on_role: str | None = None,
         hardlink_output_role: str | None = None,
+        transitive_evidence_roles: set[str] | None = None,
     ) -> None:
         self.workspace = workspace
         self.fail_once_roles = set(fail_once_roles or set())
@@ -351,6 +352,7 @@ class FakeSessionRunner:
         self.cancel_after_output_role = cancel_after_output_role
         self.mutate_context_on_role = mutate_context_on_role
         self.hardlink_output_role = hardlink_output_role
+        self.transitive_evidence_roles = set(transitive_evidence_roles or set())
         self.calls: list[ResearchOrgSessionInvocation] = []
         self.cancelled_instances: list[str] = []
         self._counts: dict[str, int] = {}
@@ -383,6 +385,20 @@ class FakeSessionRunner:
                 }
                 for item in context["files"]
                 if item["path"].endswith("/factor_knowledge_summary.json")
+            )
+        elif invocation.role_id in self.transitive_evidence_roles:
+            context = json.loads(
+                (invocation.context_root / "runtime_context.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            evidence_ref = next(
+                {
+                    "path": item["path"],
+                    "sha256": item["sha256"],
+                }
+                for item in context["files"]
+                if item["path"] == "identity/web_research_director_record.json"
             )
         else:
             evidence_ref = {
@@ -643,7 +659,10 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
-    runner = FakeSessionRunner(workspace)
+    runner = FakeSessionRunner(
+        workspace,
+        transitive_evidence_roles={"validation_evidence"},
+    )
     first = run_research_organization_runtime(
         workspace=workspace,
         worktree=PROJECT_ROOT,
@@ -678,6 +697,60 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
         "transactional_runtime_unverified_sessions"
     )
     assert completed["formal_independence_verified"] is False
+    validation_result = json.loads(
+        (
+            workspace
+            / _task(workspace, "validation_evidence")["expected_result_path"]
+        ).read_text(encoding="utf-8")
+    )
+    assert validation_result["public_research_record"]["artifact_refs"][0][
+        "path"
+    ] == "identity/web_research_director_record.json"
+    validation_invocation = next(
+        call for call in runner.calls if call.role_id == "validation_evidence"
+    )
+    validation_context = json.loads(
+        (validation_invocation.context_root / "runtime_context.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    rogue_relative = "identity/staged_but_unadmitted.json"
+    rogue_path = workspace / rogue_relative
+    rogue_path.write_text("{}\n", encoding="utf-8")
+    rogue_ref = {
+        "path": rogue_relative,
+        "sha256": hashlib.sha256(rogue_path.read_bytes()).hexdigest(),
+    }
+    staged_only = copy.deepcopy(validation_result)
+    staged_only["public_research_record"]["artifact_refs"] = [rogue_ref]
+    for check in staged_only["public_research_record"]["claims"]:
+        check["evidence_refs"] = [rogue_relative]
+    for check in staged_only["public_research_record"]["design_review"]["checks"]:
+        check["evidence_refs"] = [rogue_relative]
+    staged_only = with_content_hash(
+        {
+            key: value
+            for key, value in staged_only.items()
+            if key != "result_sha256"
+        },
+        hash_field="result_sha256",
+    )
+    tasks, tasks_by_role = runtime_module._load_tasks(
+        workspace,
+        load_research_organization_plan(workspace),
+    )
+    assert tasks
+    staged_only_reasons = director_module.validate_agent_result(
+        staged_only,
+        task=tasks_by_role["validation_evidence"],
+        workspace=workspace,
+        staged_context_files=[*validation_context["files"], rogue_ref],
+        tasks_by_role=tasks_by_role,
+    )
+    assert any(
+        "design_review.evidence_scope" in reason
+        for reason in staged_only_reasons
+    )
     for role_id in ("quant_implementation", "validation_evidence", "independent_council"):
         invocation = next(call for call in runner.calls if call.role_id == role_id)
         context_manifest = json.loads(

@@ -370,8 +370,9 @@ artifact refs、固定 handoff 和 design review。`claims[]` 必须逐项等于
 `checks[]`；每项只能包含 `check_id`、`claim_type=DESIGN_REQUIREMENT`、
 `status=PASS|BLOCK`、受控 `finding_code`、受控 `falsifier_code` 和
 `evidence_refs`。`blockers[]` 必须精确等于 status=BLOCK 的 check IDs。引用若非
-task 冻结输入、task 自身或 admitted dependency result，或者没有对应
-hash-bound `artifact_refs`，必须 BLOCK。
+task 冻结输入、task 自身、admitted 直接/传递 dependency result，或这些
+dependency result 已哈希绑定的 public artifact，或者没有对应 hash-bound
+`artifact_refs`，必须 BLOCK。文件仅出现在 staged context 中不自动获得证据权限。
 
 v3 不提供自由文本 claim/finding/falsifier/blocker，因此 completed simulation、
 realized metric 或 promotion suitability 的自然语言改写没有可落盘通道；递归

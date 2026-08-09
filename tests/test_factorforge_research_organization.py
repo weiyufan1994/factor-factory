@@ -885,6 +885,36 @@ def test_bundle_rejects_rehashed_dispatch_and_task_structure_tampering(
         validate_research_organization_bundle(workspace=workspace)
 
 
+def test_bundle_contract_blocks_task_missing_role_id_without_key_error(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Intraday reversal",
+            hypothesis="Minute price-volume imbalance may reverse after a liquidity shock.",
+        ),
+    )
+    plan = load_research_organization_plan(workspace)
+    dispatch_path = workspace / plan["workspace_policy"]["dispatch_manifest_path"]
+    dispatch = json.loads(dispatch_path.read_text(encoding="utf-8"))
+    reference = dispatch["tasks"][-1]
+    task_path = workspace / reference["path"]
+    task = json.loads(task_path.read_text(encoding="utf-8"))
+    task.pop("role_id")
+    task = with_content_hash(task, hash_field="task_sha256")
+    task_path.write_text(json.dumps(task), encoding="utf-8")
+    reference["sha256"] = task["task_sha256"]
+    dispatch = with_content_hash(dispatch, hash_field="dispatch_sha256")
+    dispatch_path.write_text(json.dumps(dispatch), encoding="utf-8")
+
+    with pytest.raises(ResearchOrganizationError) as exc_info:
+        validate_research_organization_bundle(workspace=workspace)
+
+    assert "BLOCK_FACTORFORGE_RESEARCH_ORG_TASK_INVALID" in str(exc_info.value)
+
+
 def test_bundle_rejects_rehashed_task_input_substitution(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     write_research_organization_bundle(

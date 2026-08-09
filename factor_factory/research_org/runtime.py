@@ -65,6 +65,7 @@ from factor_factory.research_org.director import (
     cleanup_materialized_data_requests,
     load_research_organization_plan,
     materialize_data_liaison_requests,
+    transitive_dependency_roles,
     validate_agent_result,
     validate_research_organization_bundle,
 )
@@ -380,11 +381,13 @@ check names:
 {check_rubrics}
 ```
 
-Evidence paths are limited to the task's input artifacts, exact admitted
-dependency result paths, and hash-bound public artifact refs carried by those
-dependency results and listed in `runtime_context.json.files`. A dependency's
-Host-bound `identity/web_research_plan.json` is admissible when it appears by
-that route. A context path with no such authority chain is not evidence. Every
+Evidence paths are limited to the task's input artifacts, exact admitted direct
+or transitive dependency result paths, and hash-bound public artifact refs
+carried by those admitted dependency results and listed in
+`runtime_context.json.files`. A dependency's Host-bound
+`identity/web_research_plan.json`, final execution ledger, or Agent-authored
+Director source record is admissible only when it appears by that transitive
+route. Merely appearing in staged context does not make a path evidence. Every
 path cited by a check must appear once in `artifact_refs` with the SHA-256 of
 the staged file bytes. Every `PASS` check must cite at least one such path;
 `evidence_refs=[]` is never a satisfied design check.
@@ -912,23 +915,10 @@ def _context_source_paths(
         for reference in task.get("input_artifacts") or []
         if isinstance(reference, dict) and reference.get("path")
     )
-    dependency_roles = list(task.get("depends_on_roles") or [])
-    if task.get("role_id") == "independent_council":
-        dependency_roles = list(task.get("required_review_role_ids") or [])
-    dependency_closure: list[str] = []
-    pending = list(dependency_roles)
-    while pending:
-        role_id = str(pending.pop(0))
-        if role_id in dependency_closure:
-            continue
-        dependency_closure.append(role_id)
-        dependency_task = tasks_by_role.get(role_id)
-        if dependency_task is not None:
-            pending.extend(
-                str(item)
-                for item in dependency_task.get("depends_on_roles") or []
-            )
-    for role_id in dependency_closure:
+    for role_id in transitive_dependency_roles(
+        task=task,
+        tasks_by_role=tasks_by_role,
+    ):
         dependency = tasks_by_role.get(str(role_id))
         if dependency is not None:
             result_relative = str(dependency["expected_result_path"])
@@ -1624,6 +1614,10 @@ def _finalize_attempt(
                 workspace=workspace,
                 peer_session_ids=peer_session_ids,
                 staged_context_files=context.get("files") or [],
+                tasks_by_role={
+                    str(item["role_id"]): item
+                    for item in tasks
+                },
             )
             if result_reasons:
                 reasons.extend(result_reasons)

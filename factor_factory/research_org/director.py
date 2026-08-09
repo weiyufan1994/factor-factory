@@ -446,6 +446,32 @@ def _task_dependencies(role_id: str, role_ids: list[str]) -> list[str]:
     return []
 
 
+def transitive_dependency_roles(
+    *,
+    task: Mapping[str, Any],
+    tasks_by_role: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, ...]:
+    """Return the frozen direct and transitive role dependency order."""
+
+    roots = list(task.get("depends_on_roles") or [])
+    if task.get("role_id") == "independent_council":
+        roots = list(task.get("required_review_role_ids") or [])
+    closure: list[str] = []
+    pending = [str(item) for item in roots]
+    while pending:
+        role_id = pending.pop(0)
+        if not role_id or role_id in closure:
+            continue
+        closure.append(role_id)
+        dependency_task = tasks_by_role.get(role_id)
+        if dependency_task is not None:
+            pending.extend(
+                str(item)
+                for item in dependency_task.get("depends_on_roles") or []
+            )
+    return tuple(closure)
+
+
 def _execution_stage_contract(role_id: str) -> dict[str, Any]:
     objectives = {
         "research_director": (
@@ -1288,6 +1314,11 @@ def validate_research_organization_bundle(
     if seen_role_ids != set(expected_role_ids):
         reasons.append(f"{BLOCK_RESEARCH_ORG_TASK_INVALID}:dispatch.role_coverage")
     result_count = sum(result is not None for _task, result in task_results)
+    tasks_by_role: dict[str, Mapping[str, Any]] = {}
+    for task, _result in task_results:
+        task_role_id = task.get("role_id")
+        if isinstance(task_role_id, str) and task_role_id:
+            tasks_by_role[task_role_id] = task
     for task, result in task_results:
         if result is None:
             continue
@@ -1302,6 +1333,7 @@ def validate_research_organization_bundle(
                 task=task,
                 workspace=resolved,
                 peer_session_ids=peer_session_ids,
+                tasks_by_role=tasks_by_role,
             )
         )
     if reasons:
@@ -1723,6 +1755,7 @@ def _preformal_allowed_evidence_paths(
     *,
     workspace: Path,
     staged_context_files: Iterable[Mapping[str, Any]] | None = None,
+    tasks_by_role: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> set[str]:
     staged_hashes: dict[str, str] | None = None
     if staged_context_files is not None:
@@ -1755,11 +1788,11 @@ def _preformal_allowed_evidence_paths(
         )
         if staged(task_relative):
             allowed.add(task_relative)
-    dependency_roles = list(task.get("depends_on_roles") or [])
-    if task.get("role_id") == "independent_council":
-        dependency_roles = list(task.get("required_review_role_ids") or [])
-    for role_id in dependency_roles:
-        if isinstance(role_id, str) and role_id:
+    for role_id in transitive_dependency_roles(
+        task=task,
+        tasks_by_role=tasks_by_role or {},
+    ):
+        if role_id:
             result_relative = (
                 f"objects/research_organization/{report_id}/results/{role_id}.json"
             )
@@ -1841,6 +1874,7 @@ def _validate_preformal_design_review(
     task: Mapping[str, Any],
     workspace: Path,
     staged_context_files: Iterable[Mapping[str, Any]] | None = None,
+    tasks_by_role: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[str]:
     role_id = str(task.get("role_id") or "")
     expected_check_ids = PREFORMAL_ROLE_CHECK_IDS.get(role_id)
@@ -1906,6 +1940,7 @@ def _validate_preformal_design_review(
         task,
         workspace=workspace,
         staged_context_files=staged_context_files,
+        tasks_by_role=tasks_by_role,
     )
     artifact_paths = {
         str(item.get("path") or "")
@@ -2674,6 +2709,7 @@ def validate_agent_result(
     workspace: Path,
     peer_session_ids: Iterable[str] = (),
     staged_context_files: Iterable[Mapping[str, Any]] | None = None,
+    tasks_by_role: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     if not isinstance(result, dict):
@@ -2827,6 +2863,7 @@ def validate_agent_result(
                     task=task,
                     workspace=workspace,
                     staged_context_files=staged_context_files,
+                    tasks_by_role=tasks_by_role,
                 )
             )
             reasons.extend(
@@ -3032,11 +3069,23 @@ def _admit_agent_result_locked(
     destination: Path | None = None
     result_created = False
     try:
+        tasks_by_role: dict[str, Mapping[str, Any]] = {}
+        for reference in dispatch.get("tasks") or []:
+            if not isinstance(reference, Mapping):
+                continue
+            referenced_task = read_workspace_json(
+                resolved,
+                str(reference.get("path") or ""),
+            )
+            referenced_role_id = referenced_task.get("role_id")
+            if isinstance(referenced_role_id, str) and referenced_role_id:
+                tasks_by_role[referenced_role_id] = referenced_task
         reasons = validate_agent_result(
             candidate,
             task=task,
             workspace=resolved,
             peer_session_ids=peer_session_ids,
+            tasks_by_role=tasks_by_role,
         )
         candidate_session_id = str(candidate.get("session_id") or "")
         for peer_task, peer in peer_results:

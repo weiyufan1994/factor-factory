@@ -74,7 +74,7 @@ factor_factory/console/web_ui.py
 24. Independent Council 禁止 parent session，并要求独立 provider/session handle；
 25. Console 与 Ultimate 可投影或显式 require runtime assurance，默认不改变 legacy Ultimate 路径；
 26. production Web 主链先运行 signed Knowledge/Data/Domain intake，再由真实 Host Director session 生成绑定全部 dependency path/hash、plan、ledger 和私有 receipt 的 authoring record 后 admission；
-27. Host admission 后运行 Quant、pre-execution Validation 与 Independent Council，且 staged context 包含传递依赖结果及其哈希绑定 artifact refs；
+27. Host admission 后运行 Quant、pre-execution Validation 与 Independent Council，且 staging 与 evidence validator 使用同一传递依赖闭包：context 包含已 admission 传递依赖结果及其哈希绑定 artifact refs，但 staged 可见性本身不授予 evidence authority；
 28. organization runtime 未达到 `COMPLETE` 和 `formal_independence_verified=true` 时，不启动正式 materializer/Ultimate；
 29. production Ultimate 固定使用 `--research-org-runtime-mode formal-complete`，Ultimate 自身完成也不能绕过组织门；
 30. 公式/代码/标题缺少机制证据时停在 `NEEDS_CLARIFICATION`，不冒充领域路由或 factor verdict；

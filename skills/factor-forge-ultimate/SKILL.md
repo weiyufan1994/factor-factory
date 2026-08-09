@@ -165,6 +165,12 @@ are check IDs, and free-text claims/findings/falsifiers or extra fields are
 forbidden. Preregistered thresholds belong in the frozen Host plan or bound
 design artifact, not in this pre-formal verdict record.
 
+Evidence admission follows the frozen direct and transitive dependency graph.
+A pre-formal role may cite an admitted dependency result or that result's
+hash-bound public artifacts only when the exact file is also present in its
+staged runtime manifest. Staged visibility alone grants no evidence authority;
+the validator and context builder must compute the same dependency closure.
+
 This closure extends to adjacent channels. The outer Agent result envelope and
 its authority-bearing identity are exact-shape by independence class; Council attestation and formal verdict,
 every `artifact_refs[]` item, and each canonical Data Liaison request ref reject

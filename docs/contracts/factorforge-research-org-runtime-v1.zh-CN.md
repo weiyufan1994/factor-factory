@@ -144,8 +144,9 @@ design-only `claim_scope`。公开 record 是闭合的 controlled-check 结构�
 必须逐项等于有序 checks，finding/falsifier 只能使用合同 code，blockers 只能是
 被阻断的 check IDs，executive summary 只能使用固定语义。不存在可承载 completed
 simulation、realized metric 或 promotion suitability 改写的自由文本字段；旧的
-语义扫描仅作为纵深防御。Evidence refs 仍只能引用 frozen task/input 或已
-admission dependency 的 hash-bound 路径。
+语义扫描仅作为纵深防御。Evidence refs 仍只能引用 frozen task/input、已
+admission 的直接/传递 dependency result，或这些 result 已绑定且同时存在于
+staged manifest 的 hash-bound artifact；staged 可见性本身不构成 authority。
 
 关闭结构不只覆盖 v3 record 本身。`factorforge_agent_result_v1` 外层 envelope
 必须按 task independence class 使用精确字段集，内部 `identity` 也必须与 frozen

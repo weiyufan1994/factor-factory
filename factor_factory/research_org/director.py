@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
@@ -23,6 +25,7 @@ from factor_factory.research_org.contracts import (
     BLOCK_RESEARCH_ORG_TASK_INVALID,
     DISPATCH_MANIFEST_CONTRACT_VERSION,
     DOMAIN_PROPOSAL_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
     RESEARCH_ORG_PLAN_CONTRACT_VERSION,
     SHA256_RE,
     ResearchOrganizationError,
@@ -40,6 +43,7 @@ from factor_factory.research_org.contracts import (
 )
 from factor_factory.research_org.registry import (
     DOMAIN_ROLE_IDS,
+    agent_registry_policy_compatible,
     build_agent_registry_snapshot,
     format_scope,
     registry_role_map,
@@ -88,6 +92,21 @@ DATA_LIAISON_FORMAL_EXECUTION_CHECKS = (
     "coverage",
     "worker_read_smoke",
 )
+KNOWLEDGE_PRIOR_CONTRACT_VERSION = "factorforge_knowledge_prior_contract_v1"
+KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION = (
+    "factorforge_knowledge_retrieval_provenance_v1"
+)
+KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY = (
+    "Bound historical priors and falsifiers were retrieved for Host review; "
+    "no current-factor empirical evidence or verdict is issued."
+)
+KNOWLEDGE_PRIOR_CLAIM_TYPES = {
+    "MECHANISM_PRIOR",
+    "NEGATIVE_RESULT_PRIOR",
+    "FALSIFIER_PRIOR",
+    "IMPLEMENTATION_PRIOR",
+    "DATA_BOUNDARY_PRIOR",
+}
 PREFORMAL_CLEAR_DECISION = "CLEAR_FOR_FORMAL_EXECUTION"
 PREFORMAL_BLOCK_DECISION = "BLOCK_FORMAL_EXECUTION"
 PREFORMAL_ROLE_CHECK_IDS = {
@@ -184,8 +203,6 @@ _EMPIRICAL_VALUE_CLAIM_RE = re.compile(
     r"(?:accept|promote|reject|接受|晋级|拒绝))",
     re.IGNORECASE,
 )
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -743,7 +760,7 @@ def validate_research_organization_plan(
             reasons.append(f"{BLOCK_RESEARCH_ORG_ROUTE_INVALID}:plan_state_mismatch")
     registry = plan.get("agent_registry")
     reasons.extend(validate_agent_registry_snapshot(registry))
-    if registry != build_agent_registry_snapshot():
+    if not agent_registry_policy_compatible(registry):
         reasons.append(f"{BLOCK_RESEARCH_ORG_REGISTRY_INVALID}:policy_mismatch")
     input_snapshot_refs = plan.get("input_snapshot_refs")
     if not isinstance(input_snapshot_refs, list) or not input_snapshot_refs:
@@ -1381,6 +1398,323 @@ def _empirical_claim_reasons(value: Any, *, path: str = "public_research_record"
         reasons.append(
             f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:empirical_claim:{path}"
         )
+    return reasons
+
+
+def _task_knowledge_snapshot(
+    *,
+    task: Mapping[str, Any],
+    workspace: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    references = [
+        item
+        for item in task.get("input_artifacts") or []
+        if isinstance(item, Mapping)
+        and str(item.get("path") or "").endswith(
+            "/factor_knowledge_summary.json"
+        )
+    ]
+    if len(references) != 1:
+        return None, None, ["knowledge_prior_record.source_ref_count"]
+    reference = dict(references[0])
+    try:
+        relative = normalize_workspace_relative_path(
+            reference.get("path"),
+            workspace=workspace,
+            label="knowledge_librarian.source",
+        )
+        snapshot = read_workspace_json(workspace, relative)
+    except ResearchOrganizationError as exc:
+        return reference, None, [str(exc)]
+    if (
+        snapshot.get("contract_version") != INPUT_SNAPSHOT_CONTRACT_VERSION
+        or snapshot.get("snapshot_sha256") != reference.get("sha256")
+        or validate_content_hash(
+            snapshot,
+            hash_field="snapshot_sha256",
+            label="knowledge_librarian.snapshot",
+        )
+        or not isinstance(snapshot.get("captured_payload"), Mapping)
+    ):
+        return reference, None, ["knowledge_prior_record.source_binding"]
+    return reference, dict(snapshot["captured_payload"]), []
+
+
+def _knowledge_source_text(
+    node: Mapping[str, Any],
+    source_path: Any,
+) -> str | None:
+    if (
+        not isinstance(source_path, list)
+        or not 1 <= len(source_path) <= 5
+        or source_path[0]
+        not in {
+            "title",
+            "summary",
+            "mechanism",
+            "evidence",
+            "reuse_guidance",
+            "research_status",
+        }
+    ):
+        return None
+    current: Any = node
+    for segment in source_path:
+        if isinstance(current, Mapping):
+            if not isinstance(segment, str) or segment not in current:
+                return None
+            current = current[segment]
+        elif isinstance(current, list):
+            if (
+                type(segment) is not int
+                or segment < 0
+                or segment >= len(current)
+            ):
+                return None
+            current = current[segment]
+        else:
+            return None
+    return str(current) if _nonempty_public_text(current) else None
+
+
+def _knowledge_librarian_record_reasons(
+    *,
+    record: Mapping[str, Any],
+    task: Mapping[str, Any],
+    workspace: Path,
+) -> list[str]:
+    reasons: list[str] = []
+    expected_record_keys = {
+        "contract_version",
+        "executive_summary",
+        "knowledge_prior_contract",
+        "retrieval_provenance",
+        "claims",
+        "historical_metrics",
+        "artifact_refs",
+        "handoff",
+    }
+    if set(record) != expected_record_keys:
+        reasons.append("knowledge_prior_record.shape")
+    if record.get("executive_summary") != KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY:
+        reasons.append("knowledge_prior_record.executive_summary")
+
+    reference, summary, snapshot_reasons = _task_knowledge_snapshot(
+        task=task,
+        workspace=workspace,
+    )
+    reasons.extend(snapshot_reasons)
+    expected_source_ref: dict[str, str] | None = None
+    if reference is not None:
+        relative = str(reference.get("path") or "")
+        source_path = workspace / relative
+        if source_path.is_file() and not source_path.is_symlink():
+            expected_source_ref = {
+                "path": relative,
+                "sha256": sha256_file(source_path),
+            }
+    if expected_source_ref is None or record.get("artifact_refs") != [
+        expected_source_ref
+    ]:
+        reasons.append("knowledge_prior_record.artifact_refs")
+
+    if record.get("knowledge_prior_contract") != {
+        "contract_version": KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+        "authority": "historical_advisory_only",
+        "current_factor_empirical_verdict": "NOT_ISSUED",
+        "current_factor_performance_inference_allowed": False,
+        "historical_metrics_subject": "prior_artifacts_only",
+    }:
+        reasons.append("knowledge_prior_record.authority")
+
+    node_map: dict[str, dict[str, Any]] = {}
+    expected_query_hash = ""
+    expected_top_k: int | None = None
+    if summary is None:
+        reasons.append("knowledge_prior_record.source_payload")
+    else:
+        if (
+            summary.get("version") != "factorforge_web_knowledge_summary_v1"
+            or summary.get("schema_version") != "factor_knowledge_context_v1"
+            or not isinstance(summary.get("retrieval_provenance"), Mapping)
+            or not isinstance(summary.get("nodes"), list)
+        ):
+            reasons.append("knowledge_prior_record.source_payload")
+        source_provenance = summary.get("retrieval_provenance")
+        if isinstance(source_provenance, Mapping):
+            query = source_provenance.get("query")
+            query_hash = source_provenance.get("query_hash")
+            if (
+                not isinstance(query_hash, str)
+                or not SHA256_RE.fullmatch(query_hash)
+            ):
+                reasons.append("knowledge_prior_record.source_payload")
+            else:
+                expected_query_hash = query_hash
+            if (
+                not isinstance(query, Mapping)
+                or type(query.get("top_k")) is not int
+                or query["top_k"] <= 0
+            ):
+                reasons.append("knowledge_prior_record.source_payload")
+            else:
+                expected_top_k = int(query["top_k"])
+        for node in summary.get("nodes") or []:
+            if not isinstance(node, Mapping) or not _nonempty_public_text(
+                node.get("id")
+            ):
+                reasons.append("knowledge_prior_record.source_node")
+                continue
+            node_id = str(node["id"])
+            if node_id in node_map:
+                reasons.append("knowledge_prior_record.source_node_duplicate")
+                continue
+            node_map[node_id] = dict(node)
+        if (
+            type(summary.get("node_count")) is not int
+            or summary.get("node_count") != len(node_map)
+        ):
+            reasons.append("knowledge_prior_record.source_node_count")
+
+    expected_node_ids = list(node_map)
+    expected_cold_start = not expected_node_ids
+    provenance = record.get("retrieval_provenance")
+    expected_provenance = {
+        "contract_version": KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION,
+        "source_artifact_ref": expected_source_ref,
+        "cold_start": expected_cold_start,
+        "query_hash": expected_query_hash,
+        "top_k": expected_top_k,
+        "hit_count": len(expected_node_ids),
+        "retrieved_node_ids": expected_node_ids,
+    }
+    if provenance != expected_provenance:
+        reasons.append("knowledge_prior_record.retrieval_provenance")
+
+    claims = record.get("claims")
+    if not isinstance(claims, list) or (expected_node_ids and not claims):
+        reasons.append("knowledge_prior_record.claims")
+        claims = []
+    seen_claim_bindings: set[tuple[str, str, str]] = set()
+    expected_claim_keys = {
+        "claim_type",
+        "source_node_id",
+        "source_path",
+        "source_text",
+        "source_text_sha256",
+        "applicability_to_current_factor",
+        "current_factor_inference_allowed",
+        "evidence_ref",
+    }
+    for index, claim in enumerate(claims):
+        label = f"knowledge_prior_record.claims[{index}]"
+        if not isinstance(claim, Mapping) or set(claim) != expected_claim_keys:
+            reasons.append(f"{label}.shape")
+            continue
+        if claim.get("claim_type") not in KNOWLEDGE_PRIOR_CLAIM_TYPES:
+            reasons.append(f"{label}.claim_type")
+        source_node_id = str(claim.get("source_node_id") or "")
+        claim_binding = (
+            str(claim.get("claim_type") or ""),
+            source_node_id,
+            json.dumps(
+                claim.get("source_path"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        if claim_binding in seen_claim_bindings:
+            reasons.append(f"{label}.duplicate_binding")
+        else:
+            seen_claim_bindings.add(claim_binding)
+        node = node_map.get(source_node_id)
+        source_text = (
+            _knowledge_source_text(node, claim.get("source_path"))
+            if node is not None
+            else None
+        )
+        if node is None:
+            reasons.append(f"{label}.source_node_id")
+        if source_text is None or claim.get("source_text") != source_text:
+            reasons.append(f"{label}.source_text")
+        expected_text_hash = (
+            hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            if source_text is not None
+            else None
+        )
+        if claim.get("source_text_sha256") != expected_text_hash:
+            reasons.append(f"{label}.source_text_sha256")
+        if claim.get("applicability_to_current_factor") != "advisory_only":
+            reasons.append(f"{label}.applicability_to_current_factor")
+        if claim.get("current_factor_inference_allowed") is not False:
+            reasons.append(f"{label}.current_factor_inference_allowed")
+        if (
+            expected_source_ref is None
+            or claim.get("evidence_ref") != expected_source_ref["path"]
+        ):
+            reasons.append(f"{label}.evidence_ref")
+
+    historical_metrics = record.get("historical_metrics")
+    if not isinstance(historical_metrics, list):
+        reasons.append("knowledge_prior_record.historical_metrics")
+        historical_metrics = []
+    expected_metric_keys = {
+        "source_node_id",
+        "source_path",
+        "metric_value",
+        "source_subject",
+        "evidence_ref",
+        "current_factor_inference_allowed",
+    }
+    for index, metric in enumerate(historical_metrics):
+        label = f"knowledge_prior_record.historical_metrics[{index}]"
+        if not isinstance(metric, Mapping) or set(metric) != expected_metric_keys:
+            reasons.append(f"{label}.shape")
+            continue
+        source_node_id = str(metric.get("source_node_id") or "")
+        node = node_map.get(source_node_id)
+        source_path = metric.get("source_path")
+        source_value: Any = None
+        if (
+            node is not None
+            and isinstance(source_path, list)
+            and len(source_path) == 3
+            and source_path[:2] == ["evidence", "key_metrics"]
+            and isinstance(source_path[2], str)
+        ):
+            evidence = node.get("evidence")
+            key_metrics = (
+                evidence.get("key_metrics")
+                if isinstance(evidence, Mapping)
+                else None
+            )
+            if isinstance(key_metrics, Mapping):
+                source_value = key_metrics.get(source_path[2])
+        if (
+            isinstance(source_value, bool)
+            or not isinstance(source_value, (int, float))
+            or not math.isfinite(float(source_value))
+            or metric.get("metric_value") != source_value
+        ):
+            reasons.append(f"{label}.source_binding")
+        if metric.get("source_subject") != "prior_artifact":
+            reasons.append(f"{label}.source_subject")
+        if (
+            expected_source_ref is None
+            or metric.get("evidence_ref") != expected_source_ref["path"]
+        ):
+            reasons.append(f"{label}.evidence_ref")
+        if metric.get("current_factor_inference_allowed") is not False:
+            reasons.append(f"{label}.current_factor_inference_allowed")
+
+    if record.get("handoff") != {
+        "status": "ready_for_host_review",
+        "authority": "advisory_only",
+        "estimand_selected": False,
+        "current_factor_empirical_verdict": "NOT_ISSUED",
+    }:
+        reasons.append("knowledge_prior_record.handoff")
     return reasons
 
 
@@ -2470,7 +2804,22 @@ def validate_agent_result(
                     reasons.append(
                         f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:public_research_record.{key}"
                     )
-            reasons.extend(_empirical_claim_reasons(record))
+            strict_knowledge_record = bool(
+                task.get("role_id") == "knowledge_librarian"
+                and task.get("output_contract")
+                == KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION
+            )
+            if strict_knowledge_record:
+                reasons.extend(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:{item}"
+                    for item in _knowledge_librarian_record_reasons(
+                        record=record,
+                        task=task,
+                        workspace=workspace,
+                    )
+                )
+            else:
+                reasons.extend(_empirical_claim_reasons(record))
             reasons.extend(
                 _validate_preformal_design_review(
                     result=result,

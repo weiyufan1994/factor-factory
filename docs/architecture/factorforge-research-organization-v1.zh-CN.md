@@ -316,7 +316,13 @@ outer result envelope
       public_derivation_summary
 ```
 
-非领域角色使用 `factorforge_role_research_record_v1` 作为 envelope 内部 payload。
+非领域角色通常使用 `factorforge_role_research_record_v1` 作为 envelope 内部
+payload。新建的 Knowledge Librarian task 例外使用
+`factorforge_knowledge_prior_record_v1`：其 claim 原文、历史数值和 retrieval
+provenance 都必须由 Host 绑定到冻结的 knowledge snapshot，不能由 Agent 自述；
+已经冻结为旧通用 contract 的 task 只保留 resume/cancel 兼容。兼容口只接受
+Knowledge output contract 这一处差异的精确 hash-bound legacy registry；其他
+policy drift 仍然 BLOCK。
 
 基础 bundle validator 会检查 contract version、content hash、task/identity/role binding、result status、producer mode、session ID、插件最低字段、artifact path/hash、private reasoning key，并在 collection 中检查隔离会话复用。Result envelope、pre-formal v3 record、Council attestation/formal verdict、artifact ref、canonical data-request ref 与 Data Liaison pre-formal base-reuse PASS contract 已按 exact shape 关闭 unknown fields；普通 domain plugin 的全部深层对象仍只执行合同化语义检查，并非全树 JSON Schema closure。它本身不证明 session 真实性。Phase 2 formal runtime validator 另行验证 adapter/Host signatures、provider handle uniqueness、staged-context binding、dependency ordering 和 Council independence；当前仍未实现完整 filesystem-diff/blindness proof。
 

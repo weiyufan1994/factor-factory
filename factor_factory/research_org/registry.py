@@ -7,6 +7,7 @@ from factor_factory.research_org.contracts import (
     AGENT_REGISTRY_CONTRACT_VERSION,
     BLOCK_RESEARCH_ORG_REGISTRY_INVALID,
     DOMAIN_PROPOSAL_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
     ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
     SAFE_ID_RE,
     validate_content_hash,
@@ -127,7 +128,7 @@ DEFAULT_ROLES: tuple[AgentRoleDefinition, ...] = (
         activation_rules=("always",),
         required_skills=("factor-forge-ultimate",),
         input_contracts=("factorforge_agent_task_v1", "factorforge_knowledge_reference_contract_v1"),
-        output_contract=ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
+        output_contract=KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
         read_scopes=("identity/**", "knowledge/**", "reports/**"),
         write_scopes=("objects/research_organization/{report_id}/results/{role_id}.json",),
         model_policy="retrieval_precision_first",
@@ -220,6 +221,23 @@ def build_agent_registry_snapshot() -> dict[str, Any]:
         "roles": [role.to_dict() for role in DEFAULT_ROLES],
     }
     return with_content_hash(payload, hash_field="registry_sha256")
+
+
+def agent_registry_policy_compatible(snapshot: Any) -> bool:
+    """Accept current policy or the single frozen Knowledge v1 migration."""
+
+    current = build_agent_registry_snapshot()
+    if snapshot == current:
+        return True
+    legacy = build_agent_registry_snapshot()
+    knowledge_role = next(
+        role
+        for role in legacy["roles"]
+        if role["role_id"] == "knowledge_librarian"
+    )
+    knowledge_role["output_contract"] = ROLE_RESEARCH_RECORD_CONTRACT_VERSION
+    legacy = with_content_hash(legacy, hash_field="registry_sha256")
+    return snapshot == legacy
 
 
 def registry_role_map(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:

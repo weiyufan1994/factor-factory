@@ -37,6 +37,9 @@ from factor_factory.research_org.director import (
     DATA_LIAISON_FORMAL_EXECUTION_CHECKS,
     DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION,
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION,
     PREFORMAL_CLAIM_SCOPE,
     PREFORMAL_CLEAR_DECISION,
     PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
@@ -69,7 +72,39 @@ def _workspace(tmp_path: Path) -> Path:
     identity = workspace / "identity"
     (identity / "web_research_request.json").write_text("{}\n", encoding="utf-8")
     (identity / "web_research_authoring_contract.json").write_text("{}\n", encoding="utf-8")
-    (identity / "factor_knowledge_summary.json").write_text("{}\n", encoding="utf-8")
+    (identity / "factor_knowledge_summary.json").write_text(
+        json.dumps(
+            {
+                "version": "factorforge_web_knowledge_summary_v1",
+                "schema_version": "factor_knowledge_context_v1",
+                "retrieval_provenance": {
+                    "query": {"text": "historical prior", "top_k": 1},
+                    "query_hash": "a" * 64,
+                },
+                "node_count": 1,
+                "edge_count": 0,
+                "nodes": [
+                    {
+                        "id": "node::historical_prior",
+                        "title": "Historical prior",
+                        "summary": "A prior mechanism supplies an advisory falsifier.",
+                        "mechanism": {},
+                        "evidence": {
+                            "falsification": "The future mechanism signature is absent.",
+                            "key_metrics": {"annual_return": -0.193},
+                        },
+                        "reuse_guidance": [],
+                        "research_status": ["candidate"],
+                    }
+                ],
+                "related_edges": [],
+                "cold_start_reason": "",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (identity / "data_catalog_summary.json").write_text("{}\n", encoding="utf-8")
     return workspace
 
@@ -241,7 +276,67 @@ def _result(
     session_id: str = "agent_session_1",
     workspace: Path | None = None,
 ) -> dict:
-    if task["role_id"] == "data_liaison":
+    if task["role_id"] == "knowledge_librarian":
+        if workspace is None:
+            raise AssertionError("knowledge_librarian test result requires workspace")
+        knowledge_path = next(
+            item["path"]
+            for item in task["input_artifacts"]
+            if item["path"].endswith("/factor_knowledge_summary.json")
+        )
+        knowledge_ref = {
+            "path": knowledge_path,
+            "sha256": hashlib.sha256(
+                (workspace / knowledge_path).read_bytes()
+            ).hexdigest(),
+        }
+        public_record = {
+            "contract_version": task["output_contract"],
+            "executive_summary": KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+            "knowledge_prior_contract": {
+                "contract_version": KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+                "authority": "historical_advisory_only",
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+                "current_factor_performance_inference_allowed": False,
+                "historical_metrics_subject": "prior_artifacts_only",
+            },
+            "retrieval_provenance": {
+                "contract_version": (
+                    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION
+                ),
+                "source_artifact_ref": dict(knowledge_ref),
+                "cold_start": False,
+                "query_hash": "a" * 64,
+                "top_k": 1,
+                "hit_count": 1,
+                "retrieved_node_ids": ["node::historical_prior"],
+            },
+            "claims": [
+                {
+                    "claim_type": "MECHANISM_PRIOR",
+                    "source_node_id": "node::historical_prior",
+                    "source_path": ["summary"],
+                    "source_text": (
+                        "A prior mechanism supplies an advisory falsifier."
+                    ),
+                    "source_text_sha256": hashlib.sha256(
+                        b"A prior mechanism supplies an advisory falsifier."
+                    ).hexdigest(),
+                    "applicability_to_current_factor": "advisory_only",
+                    "current_factor_inference_allowed": False,
+                    "evidence_ref": knowledge_path,
+                }
+            ],
+            "historical_metrics": [],
+            "artifact_refs": [knowledge_ref],
+            "handoff": {
+                "status": "ready_for_host_review",
+                "authority": "advisory_only",
+                "estimand_selected": False,
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+            },
+        }
+    elif task["role_id"] == "data_liaison":
         public_record = {
             "contract_version": task["output_contract"],
             "identity": {
@@ -860,6 +955,264 @@ def test_bundle_rejects_unbound_task_and_result_files(tmp_path: Path) -> None:
         validate_research_organization_bundle(workspace=workspace)
     assert "task_directory" in str(exc.value)
     assert "result_directory" in str(exc.value)
+
+
+def test_knowledge_librarian_may_report_source_bound_historical_prior_metrics(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Intraday reversal",
+            hypothesis="Minute price-volume imbalance may reverse after a liquidity shock.",
+        ),
+    )
+    task = _task(workspace, "knowledge_librarian")
+    result = _result(
+        task,
+        session_id="source_bound_historical_prior",
+        workspace=workspace,
+    )
+    knowledge_path = result["public_research_record"]["artifact_refs"][0]["path"]
+    result["public_research_record"]["historical_metrics"] = [
+        {
+            "source_node_id": "node::historical_prior",
+            "source_path": ["evidence", "key_metrics", "annual_return"],
+            "metric_value": -0.193,
+            "source_subject": "prior_artifact",
+            "evidence_ref": knowledge_path,
+            "current_factor_inference_allowed": False,
+        }
+    ]
+    result = with_content_hash(result, hash_field="result_sha256")
+
+    assert validate_agent_result(
+        result,
+        task=task,
+        workspace=workspace,
+    ) == []
+
+    for free_text_id in (
+        "The current factor has Sharpe 2.4 and is profitable.",
+        "current_factor_sharpe_2_4",
+    ):
+        hidden_claim = copy.deepcopy(result)
+        hidden_claim["public_research_record"]["claims"][0][
+            "claim_id"
+        ] = free_text_id
+        hidden_claim = with_content_hash(
+            hidden_claim,
+            hash_field="result_sha256",
+        )
+        hidden_reasons = validate_agent_result(
+            hidden_claim,
+            task=task,
+            workspace=workspace,
+        )
+        assert any(
+            "knowledge_prior_record.claims[0].shape" in reason
+            for reason in hidden_reasons
+        )
+
+    historical_prose = copy.deepcopy(result)
+    historical_prose["public_research_record"]["claims"][0]["source_text"] = (
+        "The admitted historical source recorded a Sharpe ratio of 2.4."
+    )
+    historical_prose["public_research_record"]["claims"][0][
+        "source_text_sha256"
+    ] = hashlib.sha256(
+        b"The admitted historical source recorded a Sharpe ratio of 2.4."
+    ).hexdigest()
+    historical_prose = with_content_hash(
+        historical_prose,
+        hash_field="result_sha256",
+    )
+    historical_reasons = validate_agent_result(
+        historical_prose,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("knowledge_prior_record.claims[0].source_text" in reason for reason in historical_reasons)
+
+    current_factor_prose = copy.deepcopy(result)
+    current_factor_prose["public_research_record"]["claims"][0]["source_text"] = (
+        "The current factor has a Sharpe ratio of 2.4."
+    )
+    current_factor_prose["public_research_record"]["claims"][0][
+        "source_text_sha256"
+    ] = hashlib.sha256(
+        b"The current factor has a Sharpe ratio of 2.4."
+    ).hexdigest()
+    current_factor_prose = with_content_hash(
+        current_factor_prose,
+        hash_field="result_sha256",
+    )
+    current_reasons = validate_agent_result(
+        current_factor_prose,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("knowledge_prior_record.claims[0].source_text" in reason for reason in current_reasons)
+
+    current_factor_prose["public_research_record"]["claims"][0]["source_text"] = (
+        "This factor is profitable."
+    )
+    current_factor_prose["public_research_record"]["claims"][0][
+        "source_text_sha256"
+    ] = hashlib.sha256(b"This factor is profitable.").hexdigest()
+    current_factor_prose = with_content_hash(
+        current_factor_prose,
+        hash_field="result_sha256",
+    )
+    minimal_current_reasons = validate_agent_result(
+        current_factor_prose,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("knowledge_prior_record.claims[0].source_text" in reason for reason in minimal_current_reasons)
+
+    weakened_authority = copy.deepcopy(result)
+    weakened_authority["public_research_record"]["historical_metrics"][0][
+        "current_factor_inference_allowed"
+    ] = True
+    weakened_authority = with_content_hash(
+        weakened_authority,
+        hash_field="result_sha256",
+    )
+    authority_reasons = validate_agent_result(
+        weakened_authority,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("current_factor_inference_allowed" in reason for reason in authority_reasons)
+
+    invented_provenance = copy.deepcopy(result)
+    invented_provenance["public_research_record"]["retrieval_provenance"].update(
+        {
+            "query_hash": "f" * 64,
+            "retrieved_node_ids": ["node::invented"],
+        }
+    )
+    invented_provenance["public_research_record"]["historical_metrics"][0].update(
+        {
+            "source_node_id": "node::invented",
+            "metric_value": 999.0,
+        }
+    )
+    invented_provenance = with_content_hash(
+        invented_provenance,
+        hash_field="result_sha256",
+    )
+    provenance_reasons = validate_agent_result(
+        invented_provenance,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("retrieval_provenance" in reason for reason in provenance_reasons)
+    assert any("historical_metrics[0].source_binding" in reason for reason in provenance_reasons)
+
+    current_alias_metric = copy.deepcopy(result)
+    current_alias_metric["public_research_record"]["historical_metrics"][0].update(
+        {
+            "source_path": [
+                "evidence",
+                "key_metrics",
+                "current_factor_sharpe",
+            ],
+            "metric_value": 2.4,
+        }
+    )
+    current_alias_metric = with_content_hash(
+        current_alias_metric,
+        hash_field="result_sha256",
+    )
+    alias_reasons = validate_agent_result(
+        current_alias_metric,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("historical_metrics[0].source_binding" in reason for reason in alias_reasons)
+
+    unbound_source = copy.deepcopy(result)
+    task_content_hash = next(
+        item["sha256"]
+        for item in task["input_artifacts"]
+        if item["path"] == knowledge_path
+    )
+    unbound_source["public_research_record"]["artifact_refs"][0][
+        "sha256"
+    ] = task_content_hash
+    unbound_source["public_research_record"]["retrieval_provenance"][
+        "source_artifact_ref"
+    ]["sha256"] = task_content_hash
+    unbound_source = with_content_hash(
+        unbound_source,
+        hash_field="result_sha256",
+    )
+    source_reasons = validate_agent_result(
+        unbound_source,
+        task=task,
+        workspace=workspace,
+    )
+    assert any("knowledge_prior_record.artifact_refs" in reason for reason in source_reasons)
+
+
+def test_knowledge_librarian_blocks_malformed_frozen_retrieval_provenance(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    write_research_organization_bundle(
+        workspace=workspace,
+        request=_request(
+            title="Intraday reversal",
+            hypothesis=(
+                "Minute price-volume imbalance may reverse after a liquidity shock."
+            ),
+        ),
+    )
+    task = _task(workspace, "knowledge_librarian")
+    knowledge_reference = next(
+        item
+        for item in task["input_artifacts"]
+        if item["path"].endswith("/factor_knowledge_summary.json")
+    )
+    knowledge_path = workspace / knowledge_reference["path"]
+    snapshot = json.loads(knowledge_path.read_text(encoding="utf-8"))
+    snapshot["captured_payload"]["retrieval_provenance"] = {
+        "query": {"text": "historical prior"}
+    }
+    snapshot = with_content_hash(snapshot, hash_field="snapshot_sha256")
+    knowledge_path.write_text(
+        json.dumps(snapshot, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    task = copy.deepcopy(task)
+    next(
+        item
+        for item in task["input_artifacts"]
+        if item["path"] == knowledge_reference["path"]
+    )["sha256"] = snapshot["snapshot_sha256"]
+    task = with_content_hash(task, hash_field="task_sha256")
+    result = _result(
+        task,
+        session_id="malformed_frozen_provenance",
+        workspace=workspace,
+    )
+    result["public_research_record"]["retrieval_provenance"].update(
+        {"query_hash": "", "top_k": None}
+    )
+    result = with_content_hash(result, hash_field="result_sha256")
+
+    reasons = validate_agent_result(
+        result,
+        task=task,
+        workspace=workspace,
+    )
+    assert any(
+        "knowledge_prior_record.source_payload" in reason
+        for reason in reasons
+    )
 
 
 def test_agent_result_blocks_private_reasoning_and_false_independence(tmp_path: Path) -> None:
@@ -1661,6 +2014,7 @@ def test_host_result_cannot_reuse_an_already_admitted_specialist_session(
             result=_result(
                 _task(workspace, role_id),
                 session_id=f"support_session_{index}",
+                workspace=workspace,
             ),
         )
 

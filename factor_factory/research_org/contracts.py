@@ -20,6 +20,9 @@ AGENT_TASK_CONTRACT_VERSION = "factorforge_agent_task_v1"
 AGENT_RESULT_CONTRACT_VERSION = "factorforge_agent_result_v1"
 DOMAIN_PROPOSAL_CONTRACT_VERSION = "factorforge_domain_research_proposal_v1"
 ROLE_RESEARCH_RECORD_CONTRACT_VERSION = "factorforge_role_research_record_v1"
+KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION = (
+    "factorforge_knowledge_prior_record_v1"
+)
 DISPATCH_MANIFEST_CONTRACT_VERSION = "factorforge_research_org_dispatch_v1"
 RUNTIME_STATE_CONTRACT_VERSION = "factorforge_research_org_runtime_state_v1"
 RUNTIME_EVENT_CONTRACT_VERSION = "factorforge_research_org_runtime_event_v1"

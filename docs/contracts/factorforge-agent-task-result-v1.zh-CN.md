@@ -386,7 +386,8 @@ realized metric 或 promotion suitability 的自然语言改写没有可落盘�
 |---|---|
 | Fundamental / Price-Volume domain Agent | `factorforge_domain_research_proposal_v1` |
 | Data Liaison | `factorforge_domain_research_proposal_v1`（专用字段集） |
-| Director / Knowledge / Implementation / Evidence / Council | `factorforge_role_research_record_v1` |
+| Knowledge Librarian（新任务） | `factorforge_knowledge_prior_record_v1` |
+| Director / Implementation / Evidence / Council | `factorforge_role_research_record_v1` |
 | Event / Macro | planned，当前不生成 active task |
 
 无论 inner payload 是哪一种，外层始终是 `factorforge_agent_result_v1`。
@@ -613,6 +614,38 @@ factorforge_role_research_record_v1
 
 它仍位于 `factorforge_agent_result_v1.public_research_record`，不另建顶层 result contract。
 
+### 12.1 Knowledge Prior Record
+
+新建的 Knowledge Librarian task 使用：
+
+```text
+factorforge_knowledge_prior_record_v1
+```
+
+该 record 是历史先验的来源绑定投影，不是 Agent 对当前因子的自由文本评价。Host
+从 task 冻结的 `factor_knowledge_summary.json` snapshot 中重建 retrieval
+provenance，并要求：
+
+1. `retrieval_provenance` 必须含 64 位 query hash 和正整数 top-k；它们连同
+   cold-start、hit count 和有序 node IDs 必须逐项等于 captured payload；
+2. `claims[]` 不存在 Agent 自写 ID 或 statement；每条只选择受控 claim type，并给出
+   source node、JSON path、该 path 的原文及 UTF-8 SHA-256；
+3. Host 必须从 captured payload 解析该 path，原文或 hash 不相等即 BLOCK；
+4. 数值只能放在 `historical_metrics[]`，path 必须是
+   `evidence.key_metrics.<key>`，值必须精确等于历史 node 中的数值，subject 固定为
+   `prior_artifact`；
+5. authority、executive summary、handoff 和 current-factor inference 均为关闭的
+   常量；Knowledge Librarian 不能由历史 prior 推导当前因子的收益、指标或结论；
+6. `artifact_refs` 使用 staged runtime context 的文件字节 SHA-256，而 task
+   `input_artifacts` 中的 snapshot content hash 只用于 Host 验证输入 wrapper。
+
+Registry 升级后创建的新 task 必须使用上述 contract。只有与当前 policy 完全一致
+且仅把 Knowledge output contract 恢复为旧值的单一 hash-bound legacy registry
+snapshot 可进入迁移口。已经冻结为
+`factorforge_role_research_record_v1` 的旧 Knowledge task 继续按旧通用 record
+校验，仅用于 resume/cancel 兼容；不得在旧 task 中混入新 shape，也不得据此创建
+新的正式 task。
+
 ## 13. Result Validation
 
 当前 validator 检查：
@@ -624,7 +657,7 @@ factorforge_role_research_record_v1
 5. result status 与 producer mode；
 6. 非空 `session_id`；
 7. inner payload contract version 必须等于 task 的 `output_contract`；
-8. domain/data-liaison/role-record 的最低字段；
+8. domain/data-liaison/role-record/knowledge-prior-record 的字段、来源绑定与权限边界；
 9. private reasoning key 的递归阻断；
 10. `artifact_refs` 的 exact shape、workspace-relative path、ordinary-file 和 SHA-256；
 11. outer envelope、authority-bearing identity、Council independence attestation/formal verdict 和 canonical data-request ref 的 exact shape，以及 fallback overclaim；

@@ -896,6 +896,11 @@ def _admit_director_intake(service, workspace: Path) -> tuple[dict, list[dict[st
         admit_agent_result,
     )
     from factor_factory.research_org.contracts import with_content_hash
+    from factor_factory.research_org.director import (
+        KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+        KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+        KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION,
+    )
 
     director_task = service._research_org_task(workspace, "research_director")
     reviewed_results: list[dict[str, str]] = []
@@ -921,6 +926,74 @@ def _admit_director_intake(service, workspace: Path) -> tuple[dict, list[dict[st
                 "permissions_boundary": {"data_materialization": False},
                 "uncertainties": [],
                 "handoff": {"status": "ready_for_host_review"},
+            }
+        elif role_id == "knowledge_librarian":
+            knowledge_path = next(
+                item["path"]
+                for item in task["input_artifacts"]
+                if item["path"].endswith("/factor_knowledge_summary.json")
+            )
+            knowledge_ref = {
+                "path": knowledge_path,
+                "sha256": hashlib.sha256(
+                    (workspace / knowledge_path).read_bytes()
+                ).hexdigest(),
+            }
+            knowledge_snapshot = json.loads(
+                (workspace / knowledge_path).read_text(encoding="utf-8")
+            )
+            knowledge_summary = knowledge_snapshot["captured_payload"]
+            source_provenance = knowledge_summary["retrieval_provenance"]
+            source_nodes = knowledge_summary["nodes"]
+            source_node_ids = [node["id"] for node in source_nodes]
+            claims = []
+            if source_nodes:
+                source_node = source_nodes[0]
+                source_text = source_node["evidence"]["falsification"]
+                claims.append(
+                    {
+                        "claim_type": "FALSIFIER_PRIOR",
+                        "source_node_id": source_node["id"],
+                        "source_path": ["evidence", "falsification"],
+                        "source_text": source_text,
+                        "source_text_sha256": hashlib.sha256(
+                            source_text.encode("utf-8")
+                        ).hexdigest(),
+                        "applicability_to_current_factor": "advisory_only",
+                        "current_factor_inference_allowed": False,
+                        "evidence_ref": knowledge_path,
+                    }
+                )
+            record = {
+                "contract_version": task["output_contract"],
+                "executive_summary": KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+                "knowledge_prior_contract": {
+                    "contract_version": KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+                    "authority": "historical_advisory_only",
+                    "current_factor_empirical_verdict": "NOT_ISSUED",
+                    "current_factor_performance_inference_allowed": False,
+                    "historical_metrics_subject": "prior_artifacts_only",
+                },
+                "retrieval_provenance": {
+                    "contract_version": (
+                        KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION
+                    ),
+                    "source_artifact_ref": dict(knowledge_ref),
+                    "cold_start": not source_node_ids,
+                    "query_hash": source_provenance["query_hash"],
+                    "top_k": source_provenance["query"]["top_k"],
+                    "hit_count": len(source_node_ids),
+                    "retrieved_node_ids": source_node_ids,
+                },
+                "claims": claims,
+                "historical_metrics": [],
+                "artifact_refs": [knowledge_ref],
+                "handoff": {
+                    "status": "ready_for_host_review",
+                    "authority": "advisory_only",
+                    "estimand_selected": False,
+                    "current_factor_empirical_verdict": "NOT_ISSUED",
+                },
             }
         elif task["output_contract"] == "factorforge_domain_research_proposal_v1":
             record = {

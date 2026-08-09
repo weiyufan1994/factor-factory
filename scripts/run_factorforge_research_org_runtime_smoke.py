@@ -29,6 +29,9 @@ from factor_factory.research_org.contracts import (
 )
 from factor_factory.research_org.director import (
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION,
     PREFORMAL_CLAIM_SCOPE,
     PREFORMAL_CLEAR_DECISION,
     PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
@@ -56,6 +59,55 @@ def public_record(
     evidence_ref: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     role_id = str(task["role_id"])
+    if role_id == "knowledge_librarian":
+        if evidence_ref is None:
+            raise RuntimeError("knowledge smoke requires a bound source artifact")
+        return {
+            "contract_version": task["output_contract"],
+            "executive_summary": KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+            "knowledge_prior_contract": {
+                "contract_version": KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+                "authority": "historical_advisory_only",
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+                "current_factor_performance_inference_allowed": False,
+                "historical_metrics_subject": "prior_artifacts_only",
+            },
+            "retrieval_provenance": {
+                "contract_version": (
+                    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION
+                ),
+                "source_artifact_ref": dict(evidence_ref),
+                "cold_start": False,
+                "query_hash": "a" * 64,
+                "top_k": 1,
+                "hit_count": 1,
+                "retrieved_node_ids": ["node::smoke_prior"],
+            },
+            "claims": [
+                {
+                    "claim_type": "MECHANISM_PRIOR",
+                    "source_node_id": "node::smoke_prior",
+                    "source_path": ["summary"],
+                    "source_text": (
+                        "A prior mechanism supplies an advisory falsifier."
+                    ),
+                    "source_text_sha256": hashlib.sha256(
+                        b"A prior mechanism supplies an advisory falsifier."
+                    ).hexdigest(),
+                    "applicability_to_current_factor": "advisory_only",
+                    "current_factor_inference_allowed": False,
+                    "evidence_ref": evidence_ref["path"],
+                }
+            ],
+            "historical_metrics": [],
+            "artifact_refs": [dict(evidence_ref)],
+            "handoff": {
+                "status": "ready_for_host_review",
+                "authority": "advisory_only",
+                "estimand_selected": False,
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+            },
+        }
     if role_id == "data_liaison":
         return {
             "contract_version": task["output_contract"],
@@ -171,11 +223,26 @@ class SignedContractSmokeRunner:
             / f"objects/research_organization/{REPORT_ID}/tasks/{invocation.task_id}.json"
         )
         task = json.loads(task_path.read_text(encoding="utf-8"))
-        task_relative = task_path.relative_to(invocation.context_root).as_posix()
-        evidence_ref = {
-            "path": task_relative,
-            "sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
-        }
+        if invocation.role_id == "knowledge_librarian":
+            context = json.loads(
+                (invocation.context_root / "runtime_context.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            evidence_ref = next(
+                {
+                    "path": item["path"],
+                    "sha256": item["sha256"],
+                }
+                for item in context["files"]
+                if item["path"].endswith("/factor_knowledge_summary.json")
+            )
+        else:
+            task_relative = task_path.relative_to(invocation.context_root).as_posix()
+            evidence_ref = {
+                "path": task_relative,
+                "sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+            }
         private_output: dict[str, Any] = {
             "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
             "status": "PASS",
@@ -317,7 +384,35 @@ def main() -> int:
     for name, payload in (
         ("web_research_request.json", request),
         ("web_research_authoring_contract.json", {"status": "contract_smoke"}),
-        ("factor_knowledge_summary.json", {"cold_start": True}),
+        (
+            "factor_knowledge_summary.json",
+            {
+                "version": "factorforge_web_knowledge_summary_v1",
+                "schema_version": "factor_knowledge_context_v1",
+                "retrieval_provenance": {
+                    "query": {"text": "smoke prior", "top_k": 1},
+                    "query_hash": "a" * 64,
+                },
+                "node_count": 1,
+                "edge_count": 0,
+                "nodes": [
+                    {
+                        "id": "node::smoke_prior",
+                        "title": "Smoke prior",
+                        "summary": "A prior mechanism supplies an advisory falsifier.",
+                        "mechanism": {},
+                        "evidence": {
+                            "falsification": "The future mechanism signature is absent.",
+                            "key_metrics": {"annual_return": -0.193},
+                        },
+                        "reuse_guidance": [],
+                        "research_status": ["candidate"],
+                    }
+                ],
+                "related_edges": [],
+                "cold_start_reason": "",
+            },
+        ),
         ("data_catalog_summary.json", {"datasets": []}),
     ):
         (identity / name).write_text(

@@ -90,6 +90,21 @@ The current v1 plan sets `single_agent_fallback=false`; therefore no current
 specialist task may use fallback mode. A later contract may enable it only by
 making that permission explicit in the frozen task.
 
+New Knowledge Librarian tasks use `factorforge_knowledge_prior_record_v1`, not
+the generic role record. Historical claims must copy exact text from an
+admitted node/path in the frozen `factor_knowledge_summary.json`; historical
+metrics must bind exactly to `evidence.key_metrics.<key>`. The Host reconstructs
+query hash, top-k, cold-start state and ordered node IDs from the captured
+payload. Agent-authored retrieval provenance, free claim prose, metric aliases,
+or inference about the current factor must BLOCK. Keep file-byte artifact hashes
+distinct from task snapshot content hashes. A task already frozen with the old
+generic record remains resumable/cancellable only and must not be silently
+migrated to the new shape. This migration accepts only the exact hash-bound
+legacy registry whose sole policy difference is that old Knowledge output
+contract; any other registry drift remains BLOCK. Claims have neither a free
+ID nor a statement field, and captured provenance must contain a 64-hex query
+hash plus a positive integer top-k.
+
 A valid plan and dispatch manifest prove routing and workspace governance only.
 They do not prove that multiple Agents executed, that Council independence was
 satisfied, or that the factor passed research. Claim those stronger states only

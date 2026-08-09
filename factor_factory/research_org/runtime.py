@@ -21,6 +21,7 @@ from factor_factory.research_org.contracts import (
     BLOCK_RESEARCH_ORG_RUNTIME_MISSING,
     BLOCK_RESEARCH_ORG_SESSION_FAILED,
     BLOCK_RESEARCH_ORG_SESSION_RECEIPT_INVALID,
+    KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
     PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
     ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
     RUNTIME_ATTEMPT_CONTRACT_VERSION,
@@ -46,6 +47,10 @@ from factor_factory.research_org.director import (
     DATA_LIAISON_FORMAL_EXECUTION_CHECKS,
     DATA_LIAISON_PREFORMAL_RESOLUTION_CONTRACT_VERSION,
     DATA_REQUEST_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_CLAIM_TYPES,
+    KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION,
     PREFORMAL_BLOCK_DECISION,
     PREFORMAL_CLAIM_SCOPE,
     PREFORMAL_CLEAR_DECISION,
@@ -255,6 +260,16 @@ def build_research_org_session_prompt(
         / "tasks"
         / f"{invocation.task_id}.json"
     )
+    task_output_contract = ""
+    if invocation.role_id == "knowledge_librarian":
+        task_packet = strict_json_loads(
+            task_path.read_bytes(),
+            label="research_org_session_task",
+        )
+        if isinstance(task_packet, Mapping):
+            task_output_contract = str(
+                task_packet.get("output_contract") or ""
+            )
     if invocation.role_id in PREFORMAL_ROLE_CHECK_IDS:
         check_ids = json.dumps(
             list(PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]),
@@ -382,6 +397,117 @@ claim_scope, decision, the exact task `required_review_role_ids`, the same block
 `blocking_findings`, and empirical_factor_verdict `NOT_ISSUED`. This clears or
 blocks only formal execution; it is never factor ACCEPT/REJECT/PROMOTE.
 """
+    elif (
+        invocation.role_id == "knowledge_librarian"
+        and task_output_contract == KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION
+    ):
+        knowledge_template = json.dumps(
+            {
+                "contract_version": KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
+                "executive_summary": KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+                "knowledge_prior_contract": {
+                    "contract_version": KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+                    "authority": "historical_advisory_only",
+                    "current_factor_empirical_verdict": "NOT_ISSUED",
+                    "current_factor_performance_inference_allowed": False,
+                    "historical_metrics_subject": "prior_artifacts_only",
+                },
+                "retrieval_provenance": {
+                    "contract_version": (
+                        KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION
+                    ),
+                    "source_artifact_ref": {
+                        "path": "<FACTOR_KNOWLEDGE_SUMMARY_PATH>",
+                        "sha256": "<FILE_BYTE_SHA256_FROM_RUNTIME_CONTEXT>",
+                    },
+                    "cold_start": False,
+                    "query_hash": "<64_LOWERCASE_HEX_QUERY_HASH>",
+                    "top_k": 5,
+                    "hit_count": 1,
+                    "retrieved_node_ids": ["<SOURCE_NODE_ID>"],
+                },
+                "claims": [
+                    {
+                        "claim_type": "<ALLOWED_CLAIM_TYPE>",
+                        "source_node_id": "<SOURCE_NODE_ID>",
+                        "source_path": ["evidence", "falsification"],
+                        "source_text": "<EXACT_TEXT_AT_SOURCE_PATH>",
+                        "source_text_sha256": "<SHA256_OF_EXACT_SOURCE_TEXT>",
+                        "applicability_to_current_factor": "advisory_only",
+                        "current_factor_inference_allowed": False,
+                        "evidence_ref": "<FACTOR_KNOWLEDGE_SUMMARY_PATH>",
+                    }
+                ],
+                "historical_metrics": [
+                    {
+                        "source_node_id": "<SOURCE_NODE_ID>",
+                        "source_path": [
+                            "evidence",
+                            "key_metrics",
+                            "<METRIC_KEY>",
+                        ],
+                        "metric_value": 0.0,
+                        "source_subject": "prior_artifact",
+                        "evidence_ref": "<FACTOR_KNOWLEDGE_SUMMARY_PATH>",
+                        "current_factor_inference_allowed": False,
+                    }
+                ],
+                "artifact_refs": [
+                    {
+                        "path": "<FACTOR_KNOWLEDGE_SUMMARY_PATH>",
+                        "sha256": "<FILE_BYTE_SHA256_FROM_RUNTIME_CONTEXT>",
+                    }
+                ],
+                "handoff": {
+                    "status": "ready_for_host_review",
+                    "authority": "advisory_only",
+                    "estimand_selected": False,
+                    "current_factor_empirical_verdict": "NOT_ISSUED",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        claim_types = json.dumps(
+            sorted(KNOWLEDGE_PRIOR_CLAIM_TYPES),
+            ensure_ascii=False,
+        )
+        role_contract_guidance = f"""
+This role retrieves historical advisory evidence; it does not evaluate the
+current factor. Use exactly the public-record shape below. The executive
+summary, authority contract and handoff values are literal constants. Copy the
+sole `factor_knowledge_summary.json` path and its file-byte SHA-256 from
+`runtime_context.json.files` into both source/artifact refs.
+
+Allowed `claim_type` values are {claim_types}. Select only the semantic class;
+there is no Agent-authored claim identifier or statement field. Every claim
+must copy `source_text` exactly from the selected retrieved node at the JSON
+`source_path` and hash those exact UTF-8 text bytes. The Host resolves the path
+inside the captured summary and rejects any mismatch. Put every numeric
+historical metric only in `historical_metrics`: `source_path` must be exactly
+`["evidence","key_metrics","<key>"]`, and `metric_value` must equal that
+source number. Its subject is fixed to `prior_artifact`, its node must be one of
+the Host-derived retrieved nodes, and current-factor inference is always false.
+Copy `query_hash`, `top_k`, ordered node ids and cold-start state exactly from
+the captured knowledge payload; the Host does not accept Agent-invented
+retrieval provenance. Use empty claim/metric lists for a cold start. This keeps
+historical evidence usable without creating any model-authored current-factor
+performance claim. Estimator selection and empirical verdict remain with their
+declared downstream owners.
+
+```json
+{knowledge_template}
+```
+"""
+    elif invocation.role_id == "knowledge_librarian":
+        role_contract_guidance = """
+This is a frozen legacy Knowledge Librarian task using
+`factorforge_role_research_record_v1`. Follow that task's generic output
+contract exactly. Do not use the newer `factorforge_knowledge_prior_record_v1`
+shape, and do not issue a current-factor empirical result or verdict. This
+legacy path exists only so an already-created runtime remains resumable and
+cancellable after the registry upgrade.
+"""
     elif invocation.role_id == "data_liaison":
         formal_checks = json.dumps(
             list(DATA_LIAISON_FORMAL_EXECUTION_CHECKS),
@@ -403,6 +529,11 @@ and `generated_data_requests=[]`. Each reuse hit has exactly `dataset_id`,
 snapshot-bound base dataset whose deterministic Host information-policy
 attestation passes, and rejects derived datamarts/states on this route. Free
 text cannot establish PIT legality.
+Copy `catalog_snapshot_ref.path` and `catalog_snapshot_ref.sha256` literally
+from the matching `task.input_artifacts` entry. That SHA is the declared
+`json_content` hash; do not substitute the file-byte SHA from
+`runtime_context.json.files`, the inner source-catalog hash, or a recomputed
+hash. This rule is specific to `catalog_snapshot_ref`.
 For PASS, `permissions_boundary` must be exactly catalog read-only true and
 catalog/data writes plus pipeline execution false.
 
@@ -462,6 +593,9 @@ Write exactly one UTF-8 JSON object to:
 
 {invocation.private_output_path}
 
+Write the final object directly to that exact absolute path. Do not create a
+relative-path draft, scratch file, or `.openclaw` workspace file.
+
 It must use this outer shape and no unknown top-level keys:
 
 ```json
@@ -482,6 +616,13 @@ Expose only reproducible definitions, decisive derivation steps, assumptions,
 evidence references, uncertainties, and falsifiers. The Host will bind the
 task/session identity, compute the result hash, validate the record, and decide
 whether it is admitted.
+
+Hash semantics are deliberately distinct. For every
+`public_research_record.artifact_refs` entry, copy the matching path and
+file-byte SHA-256 from `runtime_context.json.files`; do not copy the task
+packet's `json_content` hash. A role-specific contract may separately require
+a task input-artifact content hash, such as Data Liaison's
+`catalog_snapshot_ref`; follow that role-specific rule for that field only.
 
 {role_contract_guidance}
 """

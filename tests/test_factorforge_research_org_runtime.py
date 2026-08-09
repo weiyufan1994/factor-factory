@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -26,12 +27,17 @@ from factor_factory.research_org import (
 )
 from factor_factory.research_org.contracts import (
     BLOCK_RESEARCH_ORG_SESSION_RECEIPT_INVALID,
+    KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION,
     PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+    ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
     with_content_hash,
 )
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
 from factor_factory.research_org.director import (
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+    KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION,
     PREFORMAL_CLAIM_SCOPE,
     PREFORMAL_CLEAR_DECISION,
     PREFORMAL_COUNCIL_VERDICT_CONTRACT_VERSION,
@@ -77,7 +83,39 @@ def _workspace(tmp_path: Path) -> Path:
     (identity / "web_research_authoring_contract.json").write_text(
         "{}\n", encoding="utf-8"
     )
-    (identity / "factor_knowledge_summary.json").write_text("{}\n", encoding="utf-8")
+    (identity / "factor_knowledge_summary.json").write_text(
+        json.dumps(
+            {
+                "version": "factorforge_web_knowledge_summary_v1",
+                "schema_version": "factor_knowledge_context_v1",
+                "retrieval_provenance": {
+                    "query": {"text": "runtime prior", "top_k": 1},
+                    "query_hash": "a" * 64,
+                },
+                "node_count": 1,
+                "edge_count": 0,
+                "nodes": [
+                    {
+                        "id": "node::runtime_prior",
+                        "title": "Runtime prior",
+                        "summary": "A prior mechanism supplies an advisory falsifier.",
+                        "mechanism": {},
+                        "evidence": {
+                            "falsification": "The future mechanism signature is absent.",
+                            "key_metrics": {"annual_return": -0.193},
+                        },
+                        "reuse_guidance": [],
+                        "research_status": ["candidate"],
+                    }
+                ],
+                "related_edges": [],
+                "cold_start_reason": "",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (identity / "data_catalog_summary.json").write_text("{}\n", encoding="utf-8")
     write_research_organization_bundle(
         workspace=workspace,
@@ -124,6 +162,58 @@ def _domain_record(
     evidence_ref: dict[str, str] | None = None,
 ) -> dict:
     role_id = task["role_id"]
+    if (
+        role_id == "knowledge_librarian"
+        and task["output_contract"]
+        == KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION
+    ):
+        assert evidence_ref is not None
+        return {
+            "contract_version": task["output_contract"],
+            "executive_summary": KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY,
+            "knowledge_prior_contract": {
+                "contract_version": KNOWLEDGE_PRIOR_CONTRACT_VERSION,
+                "authority": "historical_advisory_only",
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+                "current_factor_performance_inference_allowed": False,
+                "historical_metrics_subject": "prior_artifacts_only",
+            },
+            "retrieval_provenance": {
+                "contract_version": (
+                    KNOWLEDGE_RETRIEVAL_PROVENANCE_CONTRACT_VERSION
+                ),
+                "source_artifact_ref": dict(evidence_ref),
+                "cold_start": False,
+                "query_hash": "a" * 64,
+                "top_k": 1,
+                "hit_count": 1,
+                "retrieved_node_ids": ["node::runtime_prior"],
+            },
+            "claims": [
+                {
+                    "claim_type": "MECHANISM_PRIOR",
+                    "source_node_id": "node::runtime_prior",
+                    "source_path": ["summary"],
+                    "source_text": (
+                        "A prior mechanism supplies an advisory falsifier."
+                    ),
+                    "source_text_sha256": hashlib.sha256(
+                        b"A prior mechanism supplies an advisory falsifier."
+                    ).hexdigest(),
+                    "applicability_to_current_factor": "advisory_only",
+                    "current_factor_inference_allowed": False,
+                    "evidence_ref": evidence_ref["path"],
+                }
+            ],
+            "historical_metrics": [],
+            "artifact_refs": [dict(evidence_ref)],
+            "handoff": {
+                "status": "ready_for_host_review",
+                "authority": "advisory_only",
+                "estimand_selected": False,
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+            },
+        }
     if role_id == "data_liaison":
         return {
             "contract_version": task["output_contract"],
@@ -280,10 +370,25 @@ class FakeSessionRunner:
         )
         staged_task_path = invocation.context_root / task_relative
         task = json.loads(staged_task_path.read_text(encoding="utf-8"))
-        evidence_ref = {
-            "path": task_relative,
-            "sha256": hashlib.sha256(staged_task_path.read_bytes()).hexdigest(),
-        }
+        if invocation.role_id == "knowledge_librarian":
+            context = json.loads(
+                (invocation.context_root / "runtime_context.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            evidence_ref = next(
+                {
+                    "path": item["path"],
+                    "sha256": item["sha256"],
+                }
+                for item in context["files"]
+                if item["path"].endswith("/factor_knowledge_summary.json")
+            )
+        else:
+            evidence_ref = {
+                "path": task_relative,
+                "sha256": hashlib.sha256(staged_task_path.read_bytes()).hexdigest(),
+            }
         if self.cancel_on_role == invocation.role_id:
             request_research_organization_cancel(
                 workspace=self.workspace,
@@ -611,10 +716,122 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
     )
     assert "a return beginning before entry is BLOCK" in prompt
     assert "`evidence_refs=[]` is never a satisfied design check" in prompt
+    assert "file-byte SHA-256 from `runtime_context.json.files`" in prompt
+    assert "Do not create a\nrelative-path draft" in prompt
+
+    knowledge_invocation = next(
+        call for call in runner.calls if call.role_id == "knowledge_librarian"
+    )
+    knowledge_prompt = runtime_module.build_research_org_session_prompt(
+        knowledge_invocation
+    )
+    assert KNOWLEDGE_PRIOR_EXECUTIVE_SUMMARY in knowledge_prompt
+    assert "Put every numeric\nhistorical metric only in `historical_metrics`" in (
+        knowledge_prompt
+    )
+    assert '"historical_metrics_subject": "prior_artifacts_only"' in knowledge_prompt
+
+    liaison_invocation = next(
+        call for call in runner.calls if call.role_id == "data_liaison"
+    )
+    liaison_prompt = runtime_module.build_research_org_session_prompt(
+        liaison_invocation
+    )
+    assert (
+        "Copy `catalog_snapshot_ref.path` and `catalog_snapshot_ref.sha256` literally"
+        in liaison_prompt
+    )
+    assert "This rule is specific to `catalog_snapshot_ref`" in liaison_prompt
     assert validate_research_organization_runtime(
         workspace=workspace,
         require_complete=True,
     )["verdict"] == "PASS"
+
+
+def test_frozen_legacy_knowledge_task_remains_resumable_and_cancellable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_registry = copy.deepcopy(
+        director_module.build_agent_registry_snapshot()
+    )
+    knowledge_role = next(
+        role
+        for role in legacy_registry["roles"]
+        if role["role_id"] == "knowledge_librarian"
+    )
+    knowledge_role["output_contract"] = ROLE_RESEARCH_RECORD_CONTRACT_VERSION
+    legacy_registry = with_content_hash(
+        legacy_registry,
+        hash_field="registry_sha256",
+    )
+    with monkeypatch.context() as legacy_patch:
+        legacy_patch.setattr(
+            director_module,
+            "build_agent_registry_snapshot",
+            lambda: copy.deepcopy(legacy_registry),
+        )
+        workspace = _workspace(tmp_path)
+    current_knowledge_role = next(
+        role
+        for role in director_module.build_agent_registry_snapshot()["roles"]
+        if role["role_id"] == "knowledge_librarian"
+    )
+    assert current_knowledge_role["output_contract"] == (
+        KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION
+    )
+    task = _task(workspace, "knowledge_librarian")
+    assert task["output_contract"] == ROLE_RESEARCH_RECORD_CONTRACT_VERSION
+    private_root = tmp_path / "private-runtime"
+    runner = FakeSessionRunner(workspace)
+    first = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=private_root,
+        runner=runner,
+        allow_unverified_test_runner=True,
+        max_concurrency=3,
+        max_attempts=2,
+        timeout_seconds=60,
+    )
+    assert first["lifecycle"] == "WAITING_HOST_RESULT"
+    result = json.loads(
+        (workspace / task["expected_result_path"]).read_text(encoding="utf-8")
+    )
+    assert result["public_research_record"]["contract_version"] == (
+        ROLE_RESEARCH_RECORD_CONTRACT_VERSION
+    )
+    assert director_module.validate_agent_result(
+        result,
+        task=task,
+        workspace=workspace,
+    ) == []
+    knowledge_invocation = next(
+        call for call in runner.calls if call.role_id == "knowledge_librarian"
+    )
+    prompt = runtime_module.build_research_org_session_prompt(
+        knowledge_invocation
+    )
+    assert "frozen legacy Knowledge Librarian task" in prompt
+    assert KNOWLEDGE_PRIOR_RECORD_CONTRACT_VERSION in prompt
+
+    request_research_organization_cancel(
+        workspace=workspace,
+        requested_by="legacy_compatibility_test",
+        reason="verify frozen runtime remains cancellable after upgrade",
+        private_root=private_root,
+    )
+    resumed = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=private_root,
+        runner=runner,
+        allow_unverified_test_runner=True,
+        max_concurrency=3,
+        max_attempts=2,
+        timeout_seconds=60,
+    )
+    assert resumed["lifecycle"] == "CANCELLED"
 
 
 def test_preformal_evidence_accepts_host_bound_dependency_artifact(

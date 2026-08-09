@@ -1384,24 +1384,102 @@ def _empirical_claim_reasons(value: Any, *, path: str = "public_research_record"
     return reasons
 
 
-def _preformal_allowed_evidence_paths(task: Mapping[str, Any]) -> set[str]:
+def _preformal_allowed_evidence_paths(
+    task: Mapping[str, Any],
+    *,
+    workspace: Path,
+    staged_context_files: Iterable[Mapping[str, Any]] | None = None,
+) -> set[str]:
+    staged_hashes: dict[str, str] | None = None
+    if staged_context_files is not None:
+        staged_hashes = {
+            str(item.get("path") or ""): str(item.get("sha256") or "")
+            for item in staged_context_files
+            if isinstance(item, Mapping)
+            and _nonempty_public_text(item.get("path"))
+            and SHA256_RE.fullmatch(str(item.get("sha256") or ""))
+        }
+
+    def staged(path: str, *, sha256: str | None = None) -> bool:
+        if staged_hashes is None:
+            return True
+        observed = staged_hashes.get(path)
+        return observed is not None and (sha256 is None or observed == sha256)
+
     allowed = {
         str(item.get("path") or "")
         for item in task.get("input_artifacts") or []
         if isinstance(item, Mapping) and _nonempty_public_text(item.get("path"))
+        and staged(str(item.get("path") or ""))
     }
     identity = task.get("identity") if isinstance(task.get("identity"), Mapping) else {}
     report_id = str(identity.get("report_id") or "")
     task_id = str(task.get("task_id") or "")
     if report_id and task_id:
-        allowed.add(
+        task_relative = (
             f"objects/research_organization/{report_id}/tasks/{task_id}.json"
         )
-    for role_id in task.get("depends_on_roles") or []:
+        if staged(task_relative):
+            allowed.add(task_relative)
+    dependency_roles = list(task.get("depends_on_roles") or [])
+    if task.get("role_id") == "independent_council":
+        dependency_roles = list(task.get("required_review_role_ids") or [])
+    for role_id in dependency_roles:
         if isinstance(role_id, str) and role_id:
-            allowed.add(
+            result_relative = (
                 f"objects/research_organization/{report_id}/results/{role_id}.json"
             )
+            result_path = workspace / result_relative
+            if not result_path.is_file() or result_path.is_symlink():
+                continue
+            try:
+                dependency_result = read_workspace_json(workspace, result_relative)
+            except ResearchOrganizationError:
+                continue
+            if (
+                dependency_result.get("role_id") != role_id
+                or dependency_result.get("status") != "PASS"
+                or validate_content_hash(
+                    dependency_result,
+                    hash_field="result_sha256",
+                    label="dependency_result",
+                )
+            ):
+                continue
+            if staged(result_relative, sha256=sha256_file(result_path)):
+                allowed.add(result_relative)
+            record = dependency_result.get("public_research_record")
+            if not isinstance(record, Mapping):
+                continue
+            references: list[Any] = list(record.get("artifact_refs") or [])
+            catalog_resolution = record.get("catalog_resolution")
+            if isinstance(catalog_resolution, Mapping):
+                references.extend(
+                    catalog_resolution.get("generated_data_requests") or []
+                )
+            for reference in references:
+                if (
+                    not isinstance(reference, Mapping)
+                    or set(reference) != {"path", "sha256"}
+                    or not SHA256_RE.fullmatch(str(reference.get("sha256") or ""))
+                ):
+                    continue
+                try:
+                    relative = normalize_workspace_relative_path(
+                        reference.get("path"),
+                        workspace=workspace,
+                        label="dependency_artifact_ref",
+                    )
+                except ResearchOrganizationError:
+                    continue
+                path = workspace / relative
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and sha256_file(path) == reference.get("sha256")
+                    and staged(relative, sha256=str(reference.get("sha256")))
+                ):
+                    allowed.add(relative)
     return allowed
 
 
@@ -1427,6 +1505,8 @@ def _validate_preformal_design_review(
     result: Mapping[str, Any],
     record: Mapping[str, Any],
     task: Mapping[str, Any],
+    workspace: Path,
+    staged_context_files: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     role_id = str(task.get("role_id") or "")
     expected_check_ids = PREFORMAL_ROLE_CHECK_IDS.get(role_id)
@@ -1488,7 +1568,11 @@ def _validate_preformal_design_review(
     observed_ids: list[str] = []
     observed_statuses: list[str] = []
     controlled_checks: list[Mapping[str, Any]] = []
-    allowed_paths = _preformal_allowed_evidence_paths(task)
+    allowed_paths = _preformal_allowed_evidence_paths(
+        task,
+        workspace=workspace,
+        staged_context_files=staged_context_files,
+    )
     artifact_paths = {
         str(item.get("path") or "")
         for item in record.get("artifact_refs") or []
@@ -1532,12 +1616,16 @@ def _validate_preformal_design_review(
                 f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.falsifier_code:{check_id}"
             )
         evidence_refs = check.get("evidence_refs")
-        if not isinstance(evidence_refs, list) or any(
-            not isinstance(item, str)
-            or not item
-            or item not in allowed_paths
-            or item not in artifact_paths
-            for item in evidence_refs or []
+        if (
+            not isinstance(evidence_refs, list)
+            or (status == "PASS" and not evidence_refs)
+            or any(
+                not isinstance(item, str)
+                or not item
+                or item not in allowed_paths
+                or item not in artifact_paths
+                for item in evidence_refs or []
+            )
         ):
             reasons.append(
                 f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:design_review.evidence_scope:{check_id}"
@@ -2251,6 +2339,7 @@ def validate_agent_result(
     task: Mapping[str, Any],
     workspace: Path,
     peer_session_ids: Iterable[str] = (),
+    staged_context_files: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     if not isinstance(result, dict):
@@ -2387,6 +2476,8 @@ def validate_agent_result(
                     result=result,
                     record=record,
                     task=task,
+                    workspace=workspace,
+                    staged_context_files=staged_context_files,
                 )
             )
             reasons.extend(

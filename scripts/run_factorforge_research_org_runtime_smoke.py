@@ -50,7 +50,11 @@ from scripts.run_factorforge_ultimate import (
 REPORT_ID = "ORG_RUNTIME_SMOKE_REPORT"
 
 
-def public_record(task: dict[str, Any]) -> dict[str, Any]:
+def public_record(
+    task: dict[str, Any],
+    *,
+    evidence_ref: dict[str, str] | None = None,
+) -> dict[str, Any]:
     role_id = str(task["role_id"])
     if role_id == "data_liaison":
         return {
@@ -114,6 +118,7 @@ def public_record(task: dict[str, Any]) -> dict[str, Any]:
         "handoff": {"status": "ready_for_host_review"},
     }
     if role_id in PREFORMAL_ROLE_CHECK_IDS:
+        evidence_refs = [evidence_ref["path"]] if evidence_ref else []
         checks = [
             {
                 "check_id": check_id,
@@ -121,7 +126,7 @@ def public_record(task: dict[str, Any]) -> dict[str, Any]:
                 "status": "PASS",
                 "finding_code": PREFORMAL_FINDING_CODES["PASS"],
                 "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
-                "evidence_refs": [],
+                "evidence_refs": evidence_refs,
             }
             for check_id in PREFORMAL_ROLE_CHECK_IDS[role_id]
         ]
@@ -129,6 +134,7 @@ def public_record(task: dict[str, Any]) -> dict[str, Any]:
             PREFORMAL_CLEAR_DECISION
         ]
         record["claims"] = [dict(check) for check in checks]
+        record["artifact_refs"] = [dict(evidence_ref)] if evidence_ref else []
         record["design_review"] = {
             "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
             "stage": "pre_formal_research_design",
@@ -165,10 +171,18 @@ class SignedContractSmokeRunner:
             / f"objects/research_organization/{REPORT_ID}/tasks/{invocation.task_id}.json"
         )
         task = json.loads(task_path.read_text(encoding="utf-8"))
+        task_relative = task_path.relative_to(invocation.context_root).as_posix()
+        evidence_ref = {
+            "path": task_relative,
+            "sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+        }
         private_output: dict[str, Any] = {
             "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
             "status": "PASS",
-            "public_research_record": public_record(task),
+            "public_research_record": public_record(
+                task,
+                evidence_ref=evidence_ref,
+            ),
         }
         if invocation.role_id == "independent_council":
             private_output["independence_attestation"] = {

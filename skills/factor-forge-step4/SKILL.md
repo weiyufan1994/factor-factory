@@ -153,6 +153,9 @@ For `factorforge_web_evaluation_contract_v2`, the stricter executable timing
 overrides that legacy diagnostic alignment: a signal formed after close t is
 entered at close t+1 and exited at close t+2. The label must be computed as
 `close.shift(-2) / close.shift(-1) - 1`; `pct_chg` is not an allowed substitute.
+The evaluation contract must also carry
+`position_exit_policy=close_t_plus_2` and the exact
+`payoff_label_expression`; Step4 blocks if either binding is missing or changed.
 The shared evaluation context must use
 `factorforge_shared_evaluation_context_v2` and preserve this exact policy for
 every backend and Council revision metric.

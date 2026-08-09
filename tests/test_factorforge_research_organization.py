@@ -216,7 +216,11 @@ def _task(workspace: Path, role_id: str) -> dict:
     return json.loads((workspace / reference["path"]).read_text(encoding="utf-8"))
 
 
-def _preformal_checks(task: dict) -> list[dict]:
+def _preformal_checks(
+    task: dict,
+    *,
+    evidence_refs: list[str] | None = None,
+) -> list[dict]:
     return [
         {
             "check_id": check_id,
@@ -224,13 +228,19 @@ def _preformal_checks(task: dict) -> list[dict]:
             "status": "PASS",
             "finding_code": PREFORMAL_FINDING_CODES["PASS"],
             "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
-            "evidence_refs": [],
+            "evidence_refs": list(evidence_refs or []),
         }
         for check_id in PREFORMAL_ROLE_CHECK_IDS[task["role_id"]]
     ]
 
 
-def _result(task: dict, *, producer_mode: str = "real_agent", session_id: str = "agent_session_1") -> dict:
+def _result(
+    task: dict,
+    *,
+    producer_mode: str = "real_agent",
+    session_id: str = "agent_session_1",
+    workspace: Path | None = None,
+) -> dict:
     if task["role_id"] == "data_liaison":
         public_record = {
             "contract_version": task["output_contract"],
@@ -297,11 +307,27 @@ def _result(task: dict, *, producer_mode: str = "real_agent", session_id: str = 
             "handoff": {"status": "ready_for_host_review"},
         }
         if task["role_id"] in PREFORMAL_ROLE_CHECK_IDS:
-            checks = _preformal_checks(task)
+            artifact_refs: list[dict[str, str]] = []
+            evidence_refs: list[str] = []
+            if workspace is not None:
+                task_relative = (
+                    "objects/research_organization/"
+                    f"{task['identity']['report_id']}/tasks/{task['task_id']}.json"
+                )
+                task_path = workspace / task_relative
+                artifact_refs = [
+                    {
+                        "path": task_relative,
+                        "sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+                    }
+                ]
+                evidence_refs = [task_relative]
+            checks = _preformal_checks(task, evidence_refs=evidence_refs)
             public_record["executive_summary"] = PREFORMAL_EXECUTIVE_SUMMARIES[
                 PREFORMAL_CLEAR_DECISION
             ]
             public_record["claims"] = [dict(check) for check in checks]
+            public_record["artifact_refs"] = artifact_refs
             public_record["design_review"] = {
                 "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
                 "stage": "pre_formal_research_design",
@@ -1485,6 +1511,7 @@ def test_host_admission_enforces_dependencies_and_can_complete_ordered_bundle(
             else _result(
                 task,
                 session_id=f"ordered_session_{index}_{role_id}",
+                workspace=workspace,
             )
         )
         outcome = admit_agent_result(

@@ -22,6 +22,7 @@ from factor_factory.research_org.contracts import (
     BLOCK_RESEARCH_ORG_SESSION_FAILED,
     BLOCK_RESEARCH_ORG_SESSION_RECEIPT_INVALID,
     PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+    ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
     RUNTIME_ATTEMPT_CONTRACT_VERSION,
     RUNTIME_CONTEXT_CONTRACT_VERSION,
     RUNTIME_EVENT_CONTRACT_VERSION,
@@ -109,6 +110,75 @@ _SECRET_PATTERN = re.compile(
     r"(?i)(?:aws_secret_access_key|aws_session_token|api[_-]?key|"
     r"authorization\s*:\s*bearer|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
 )
+
+PREFORMAL_CHECK_RUBRICS = {
+    "estimator_semantics": (
+        "PASS only when the frozen plan distinguishes the observable factor-value "
+        "estimator from evaluation metrics and states the estimand, signal orientation, "
+        "and traded payoff without contradiction."
+    ),
+    "timing_and_information_set": (
+        "PASS only when signal cutoff, field availability, entry, exit, label window, "
+        "and holding period are explicit and mutually executable; a return beginning "
+        "before entry is BLOCK."
+    ),
+    "operator_or_direct_code_route": (
+        "PASS only when exactly one executable implementation route is selected and its "
+        "operators or direct-code boundary implement the frozen factor law."
+    ),
+    "parity_and_invariants": (
+        "PASS only when deterministic parity checks, limiting cases, invariants, and "
+        "component mappings can distinguish implementation drift from the model."
+    ),
+    "data_contract_alignment": (
+        "PASS only when every required input is present in the admitted catalog or a "
+        "precise data request exists, with point-in-time and coverage obligations stated."
+    ),
+    "is_oos_and_trial_budget": (
+        "PASS only when IS/OOS boundaries, purge/embargo, trial budget, and multiple-testing "
+        "policy are frozen before empirical execution."
+    ),
+    "metric_and_threshold_preregistration": (
+        "PASS only when the applicable metrics, directions, thresholds, and terminal "
+        "success/reject/block rules are preregistered without using realized outcomes."
+    ),
+    "cost_turnover_and_long_side": (
+        "PASS only when cost, turnover, capacity, long-side payoff, and NAV construction "
+        "are specified on the same executable return path."
+    ),
+    "ablations_and_falsifiers": (
+        "PASS only when component ablations, null/alternative models, regime checks, and "
+        "mechanism-specific falsifiers can reject aliases and unsupported complexity."
+    ),
+    "proof_and_provenance": (
+        "PASS only when planned artifacts, hashes, raw evidence, replay obligations, and "
+        "authority boundaries can support a later formal proof certificate."
+    ),
+    "economic_mechanism": (
+        "PASS only when the payer/receiver, persistent constraint, profit transfer, and "
+        "failure boundary jointly imply the proposed return direction."
+    ),
+    "math_measurement_identity": (
+        "PASS only when the selected mathematical object, observation map, estimator, "
+        "estimand, and traded quantity are one coherent measurement identity."
+    ),
+    "data_and_timing_legality": (
+        "PASS only when catalog provenance, legal information time, signal formation, "
+        "execution, exit, and label semantics are mutually consistent."
+    ),
+    "implementation_and_parity": (
+        "PASS only when the chosen route implements the frozen object and has deterministic "
+        "parity, invariance, and component-level checks."
+    ),
+    "validation_and_falsification": (
+        "PASS only when the frozen evidence design can test the preferred mechanism against "
+        "its null and alternatives after costs without post-OOS tuning."
+    ),
+    "independence_and_scope": (
+        "PASS only when all required admitted roles were reviewed in this independent "
+        "session and the decision is limited to pre-formal execution readiness."
+    ),
+}
 
 
 def utc_now() -> str:
@@ -203,6 +273,55 @@ def build_research_org_session_prompt(
             PREFORMAL_EXECUTIVE_SUMMARIES,
             ensure_ascii=False,
         )
+        check_rubrics = json.dumps(
+            {
+                check_id: PREFORMAL_CHECK_RUBRICS[check_id]
+                for check_id in PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        check_template = [
+            {
+                "check_id": check_id,
+                "claim_type": "DESIGN_REQUIREMENT",
+                "status": "PASS|BLOCK",
+                "finding_code": (
+                    "DESIGN_CHECK_SATISFIED|DESIGN_CHECK_UNSATISFIED"
+                ),
+                "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
+                "evidence_refs": ["<AUTHORIZED_STAGED_WORKSPACE_PATH>"],
+            }
+            for check_id in PREFORMAL_ROLE_CHECK_IDS[invocation.role_id]
+        ]
+        public_record_template = json.dumps(
+            {
+                "contract_version": ROLE_RESEARCH_RECORD_CONTRACT_VERSION,
+                "executive_summary": "<EXACT_ALLOWED_EXECUTIVE_SUMMARY>",
+                "claims": check_template,
+                "artifact_refs": [
+                    {
+                        "path": "<AUTHORIZED_STAGED_WORKSPACE_PATH>",
+                        "sha256": "<SHA256_OF_FILE_BYTES>",
+                    }
+                ],
+                "handoff": {"status": "ready_for_host_review"},
+                "design_review": {
+                    "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
+                    "stage": "pre_formal_research_design",
+                    "evidence_basis": "pre_registered_design_only",
+                    "claim_scope": PREFORMAL_CLAIM_SCOPE,
+                    "empirical_factor_verdict": "NOT_ISSUED",
+                    "decision": (
+                        "CLEAR_FOR_FORMAL_EXECUTION|BLOCK_FORMAL_EXECUTION"
+                    ),
+                    "checks": check_template,
+                    "blockers": ["<BLOCKED_CHECK_ID_ONLY>"],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
         role_contract_guidance = f"""
 For this `{invocation.role_id}` role, `public_research_record.design_review`
 is mandatory. It must use contract
@@ -227,6 +346,33 @@ passes and `blockers=[]`; otherwise use `{PREFORMAL_BLOCK_DECISION}` and outer
 status `BLOCK`. Do not report realized Sharpe, IC/ICIR, returns, drawdown,
 historical-simulation outcomes, promotion suitability, backtest proof, or an
 empirical factor verdict.
+
+The outer `public_research_record.contract_version` is exactly
+`{ROLE_RESEARCH_RECORD_CONTRACT_VERSION}`; only the nested
+`design_review.contract_version` is
+`{PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION}`. The nested review must include the
+`decision` key. Follow this exact shape, replacing placeholders without adding
+or removing keys:
+
+```json
+{public_record_template}
+```
+
+Apply these check rubrics to the frozen design rather than guessing from the
+check names:
+
+```json
+{check_rubrics}
+```
+
+Evidence paths are limited to the task's input artifacts, exact admitted
+dependency result paths, and hash-bound public artifact refs carried by those
+dependency results and listed in `runtime_context.json.files`. A dependency's
+Host-bound `identity/web_research_plan.json` is admissible when it appears by
+that route. A context path with no such authority chain is not evidence. Every
+path cited by a check must appear once in `artifact_refs` with the SHA-256 of
+the staged file bytes. Every `PASS` check must cite at least one such path;
+`evidence_refs=[]` is never a satisfied design check.
 """
         if invocation.role_id == "independent_council":
             role_contract_guidance += f"""
@@ -1336,6 +1482,7 @@ def _finalize_attempt(
                 task=task,
                 workspace=workspace,
                 peer_session_ids=peer_session_ids,
+                staged_context_files=context.get("files") or [],
             )
             if result_reasons:
                 reasons.extend(result_reasons)

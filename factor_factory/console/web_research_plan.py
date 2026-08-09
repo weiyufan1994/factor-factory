@@ -83,6 +83,22 @@ AUTHORING_DYNAMIC_REQUEST_FIELDS = frozenset(
     }
 )
 PLACEHOLDER = "RESEARCHER_MUST_REPLACE"
+WEB_PAYOFF_CONTRACT_VERSION = "factorforge_web_payoff_contract_v1"
+WEB_PAYOFF_BINDING_VERSION = "factorforge_web_payoff_binding_v1"
+WEB_MARKET_OUTCOME_CONTRACT_VERSION = (
+    "factorforge_web_market_outcome_contract_v1"
+)
+WEB_MECHANISM_TARGET_CONTRACT_VERSION = (
+    "factorforge_web_mechanism_target_contract_v1"
+)
+PILOT_PAYOFF_LABEL_EXPRESSION = "close.shift(-2) / close.shift(-1) - 1"
+PILOT_PAYOFF_SYMBOL = "Y_WEB_PAYOFF"
+PILOT_MECHANISM_TARGET_SYMBOL = "M_WEB_TARGET"
+PILOT_LEGAL_INFORMATION_SYMBOL = "F_WEB_LEGAL"
+PILOT_FACTOR_ESTIMATOR_SYMBOL = "X_WEB_FACTOR"
+PILOT_MARKET_OUTCOME_LHS = (
+    "E[Y_WEB_PAYOFF | F_WEB_LEGAL, X_WEB_FACTOR]"
+)
 
 BLOCK_PLAN_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_INVALID"
 BLOCK_PLAN_IDENTITY_INVALID = "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_IDENTITY_INVALID"
@@ -128,6 +144,14 @@ WEB_FORMULA_OPERATORS = frozenset(
     )
 )
 
+EVALUATION_METRIC_ESTIMATOR_PATTERN = re.compile(
+    r"(?:\brank[ _-]*ic(?:ir)?\b|\bicir\b|\bfama[ _-]*macbeth\b|"
+    r"\bsharpe(?:[ _-]*ratio)?\b|\bmax(?:imum)?[ _-]*drawdown\b|"
+    r"\b(?:decile|quintile)[ _-]*(?:return|nav|spread)\b|"
+    r"\b(?:long[ _-]*side|annual(?:ized)?)[ _-]*return\b)",
+    re.IGNORECASE,
+)
+
 
 class WebResearchPlanError(ValueError):
     def __init__(self, token: str, reasons: Iterable[str]) -> None:
@@ -152,6 +176,74 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def pilot_payoff_contract() -> dict[str, str]:
+    return {
+        "contract_version": WEB_PAYOFF_CONTRACT_VERSION,
+        "signal_cutoff": "close_t",
+        "entry": "close_t_plus_1",
+        "exit": "close_t_plus_2",
+        "return_window": "close_t_plus_1_to_close_t_plus_2",
+        "label_expression": PILOT_PAYOFF_LABEL_EXPRESSION,
+    }
+
+
+def pilot_payoff_binding() -> dict[str, str]:
+    return {
+        "binding_version": WEB_PAYOFF_BINDING_VERSION,
+        "contract_ref": "evidence_policy.payoff_contract",
+        "contract_sha256": stable_json_hash(pilot_payoff_contract()),
+        "payoff_symbol": PILOT_PAYOFF_SYMBOL,
+        "authority": "host_contract_only",
+    }
+
+
+def pilot_market_outcome_contract() -> dict[str, Any]:
+    return {
+        "contract_version": WEB_MARKET_OUTCOME_CONTRACT_VERSION,
+        "dependent_variable": PILOT_PAYOFF_SYMBOL,
+        "payoff_binding": pilot_payoff_binding(),
+        "projection_statistic": "conditional_expectation",
+        "legal_information_symbol": PILOT_LEGAL_INFORMATION_SYMBOL,
+        "factor_estimator_symbol": PILOT_FACTOR_ESTIMATOR_SYMBOL,
+        "required_equation_lhs": PILOT_MARKET_OUTCOME_LHS,
+        "information_cutoff": "close_t",
+        "authority": "host_contract_only",
+        "free_text_equation_role": "auditable_derivation_not_payoff_authority",
+    }
+
+
+def pilot_mechanism_target_contract() -> dict[str, Any]:
+    return {
+        "contract_version": WEB_MECHANISM_TARGET_CONTRACT_VERSION,
+        "target_role": "mechanism_specific_estimand_not_trade_payoff",
+        "target_symbol": PILOT_MECHANISM_TARGET_SYMBOL,
+        "required_target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+        "legal_information_cutoff": "close_t",
+        "formal_payoff_projection_field": "market_outcome_equation",
+        "formal_payoff_symbol": PILOT_PAYOFF_SYMBOL,
+        "payoff_binding": pilot_payoff_binding(),
+        "authority": "host_contract_only",
+    }
+
+
+def _market_outcome_equation_has_bound_lhs(value: Any) -> bool:
+    text = str(value or "")
+    if "=" not in text:
+        return False
+    lhs, rhs = text.split("=", 1)
+    if not rhs.strip():
+        return False
+    return " ".join(lhs.split()) == PILOT_MARKET_OUTCOME_LHS
+
+
+def _contains_unbound_payoff_notation(value: Any) -> bool:
+    text = str(value or "")
+    return bool(
+        re.search(r"close\s*(?:\.shift\s*\(|\[|_)", text, re.IGNORECASE)
+        or re.search(r"\br\s*(?:_|\{|\[)", text, re.IGNORECASE)
+    )
 
 
 def _conversation_messages(
@@ -927,6 +1019,16 @@ def build_authoring_contract(
             "required_relation": "is_start <= is_end < oos_start <= oos_end",
             "recommended_valid_example": _recommended_evidence_window(request),
         },
+        "payoff_timing_contract": {
+            **pilot_payoff_contract(),
+            "immutable_for_web_pilot": True,
+            "factor_estimator_role": "observable_factor_value_not_evaluation_metric",
+            "required_math_binding": pilot_payoff_binding(),
+            "required_market_outcome_contract": pilot_market_outcome_contract(),
+            "required_mechanism_target_contract": (
+                pilot_mechanism_target_contract()
+            ),
+        },
         "preflight_contract": {
             "must_pass_before_completion": True,
             "formal_research_started": False,
@@ -961,6 +1063,26 @@ def build_plan_template(
         str(item) for item in (formula_ir.get("operator_set") or [])
     ]
     submitted_input_contract = build_submitted_input_contract(request, formula_seed)
+    measurement_program = measurement_program_template(
+        placeholder=PLACEHOLDER,
+        implementation_route="operator",
+    )
+    model_selection = measurement_program.get("model_selection")
+    if isinstance(model_selection, dict):
+        for candidate in model_selection.get("candidate_models") or []:
+            if isinstance(candidate, dict):
+                candidate["payoff_binding"] = pilot_payoff_binding()
+                candidate["market_outcome_contract"] = (
+                    pilot_market_outcome_contract()
+                )
+                candidate["mechanism_target_contract"] = (
+                    pilot_mechanism_target_contract()
+                )
+    market_projection = measurement_program.get("market_outcome_projection")
+    if isinstance(market_projection, dict):
+        market_projection["market_outcome_contract"] = (
+            pilot_market_outcome_contract()
+        )
     return {
         "version": PLAN_VERSION,
         "identity": identity,
@@ -1040,6 +1162,9 @@ def build_plan_template(
             "factor_estimator": _placeholder(),
             "target_functional": _placeholder(),
             "market_outcome_equation": _placeholder(),
+            "payoff_binding": pilot_payoff_binding(),
+            "market_outcome_contract": pilot_market_outcome_contract(),
+            "mechanism_target_contract": pilot_mechanism_target_contract(),
             "traded_quantity": _placeholder(),
             "information_set": _placeholder(),
             "why_suitable": _placeholder(),
@@ -1061,10 +1186,7 @@ def build_plan_template(
                 {"metric": "rank_ic", "direction": _placeholder()},
             ],
         },
-        "measurement_program": measurement_program_template(
-            placeholder=PLACEHOLDER,
-            implementation_route="operator",
-        ),
+        "measurement_program": measurement_program,
         "hypotheses": [
             {
                 "hypothesis_id": "preferred_mechanism",
@@ -1105,6 +1227,7 @@ def build_plan_template(
             ),
             "signal_timestamp_policy": "after_close_t",
             "position_entry_policy": "close_t_plus_1",
+            "payoff_contract": pilot_payoff_contract(),
             "transaction_cost_bps": float(
                 request.get("transaction_cost_bps", PILOT_TRANSACTION_COST_BPS)
             ),
@@ -1241,9 +1364,29 @@ not regenerate or overwrite the plan, Step1/2/protocol inputs, or formal
 evidence. Resume only by authoring the exact artifact named by the current
 Ultimate pause.
 
-The Pilot evaluation contract is fixed to daily rebalance, T+1 close return and
-signals formed after the market close, with turnover multiplied by 30 bps. Do
-not relabel these semantics. {resume_note}
+The Pilot evaluation contract is fixed to daily rebalance and signals formed
+after close t. The position is entered at close t+1 and exited at close t+2;
+the executable label is `close.shift(-2) / close.shift(-1) - 1`. The close-t
+to close-t+1 return begins before entry and is not a formal payoff label. Keep
+`mathematical_mechanism.factor_estimator` as the observable factor-value
+estimator; RankIC, decile return and Fama-MacBeth are evaluation metrics, not
+the factor estimator. Turnover is multiplied by 30 bps. Do not relabel these
+semantics. Preserve the exact Host-filled `evidence_policy.payoff_contract`.
+Preserve the exact `payoff_binding`, `market_outcome_contract`, and
+`mechanism_target_contract` under `mathematical_mechanism` and every candidate
+model, plus the terminal projection's market-outcome contract. The target
+functional must remain the exact Host symbol `M_WEB_TARGET`, never a return or
+trade payoff. Define that symbol through `mathematical_object` and
+`mechanism_equation_or_functional`; DCF value gaps, latent states, causal
+objects, spectral objects, and forecast cash-flow functionals remain valid
+mechanisms. Put the trade-payoff projection only in a market-outcome equation
+whose exact left side is
+`E[Y_WEB_PAYOFF | F_WEB_LEGAL, X_WEB_FACTOR]`. Here `F_WEB_LEGAL` means only
+information legally available through close t and `X_WEB_FACTOR` means the
+observable factor estimator frozen at that cutoff. Never place another return
+or price-ratio outcome on the left side, use a future value in the conditioning
+set, rewrite the payoff with direct close/return notation, or append
+`Y_WEB_PAYOFF` as an unused term. {resume_note}
 
 Write the exact factor law in `research_object.formula_or_law` using the existing
 Factor Forge Formula IR operators and fields present in `clean_daily_bar`.
@@ -2367,6 +2510,34 @@ def validate_plan(
         ("limiting_cases", 3),
     ):
         _require_string_list(reasons, math, field, "mathematical_mechanism", minimum=minimum)
+    if EVALUATION_METRIC_ESTIMATOR_PATTERN.search(
+        str(math.get("factor_estimator") or "")
+    ):
+        reasons.append("mathematical_mechanism.factor_estimator_is_evaluation_metric")
+    if math.get("payoff_binding") != pilot_payoff_binding():
+        reasons.append("mathematical_mechanism.payoff_binding")
+    if math.get("market_outcome_contract") != pilot_market_outcome_contract():
+        reasons.append("mathematical_mechanism.market_outcome_contract")
+    if math.get("mechanism_target_contract") != pilot_mechanism_target_contract():
+        reasons.append("mathematical_mechanism.mechanism_target_contract")
+    if math.get("target_functional") != PILOT_MECHANISM_TARGET_SYMBOL:
+        reasons.append(
+            "mathematical_mechanism.target_functional.target_binding"
+        )
+    if not _market_outcome_equation_has_bound_lhs(
+        math.get("market_outcome_equation")
+    ):
+        reasons.append(
+            "mathematical_mechanism.market_outcome_equation.dependent_variable"
+        )
+    if _contains_unbound_payoff_notation(math.get("market_outcome_equation")):
+        reasons.append(
+            "mathematical_mechanism.market_outcome_equation.unbound_payoff_notation"
+        )
+    if _contains_unbound_payoff_notation(math.get("target_functional")):
+        reasons.append(
+            "mathematical_mechanism.target_functional.unbound_payoff_notation"
+        )
     component_map = _dict_list(math.get("component_map"))
     if not component_map:
         reasons.append("mathematical_mechanism.component_map")
@@ -2467,6 +2638,56 @@ def validate_plan(
                         )
         model_selection = measurement_program.get("model_selection")
         if isinstance(model_selection, dict):
+            for index, candidate in enumerate(
+                model_selection.get("candidate_models") or []
+            ):
+                if not isinstance(candidate, Mapping):
+                    continue
+                if candidate.get("payoff_binding") != pilot_payoff_binding():
+                    reasons.append(
+                        "measurement_program.model_selection.candidate_models"
+                        f"[{index}].payoff_binding"
+                    )
+                if (
+                    candidate.get("market_outcome_contract")
+                    != pilot_market_outcome_contract()
+                ):
+                    reasons.append(
+                        "measurement_program.model_selection.candidate_models"
+                        f"[{index}].market_outcome_contract"
+                    )
+                if (
+                    candidate.get("mechanism_target_contract")
+                    != pilot_mechanism_target_contract()
+                ):
+                    reasons.append(
+                        "measurement_program.model_selection.candidate_models"
+                        f"[{index}].mechanism_target_contract"
+                    )
+                if (
+                    candidate.get("target_functional")
+                    != PILOT_MECHANISM_TARGET_SYMBOL
+                ):
+                    reasons.append(
+                        "measurement_program.model_selection.candidate_models"
+                        f"[{index}].target_functional.target_binding"
+                    )
+                if not _market_outcome_equation_has_bound_lhs(
+                    candidate.get("market_outcome_projection")
+                ):
+                    reasons.append(
+                        "measurement_program.model_selection.candidate_models"
+                        f"[{index}].market_outcome_projection.dependent_variable"
+                    )
+                if _contains_unbound_payoff_notation(
+                    candidate.get("target_functional")
+                ) or _contains_unbound_payoff_notation(
+                    candidate.get("market_outcome_projection")
+                ):
+                    reasons.append(
+                        "measurement_program.model_selection.candidate_models"
+                        f"[{index}].unbound_payoff_notation"
+                    )
             selected_models = [
                 item
                 for item in model_selection.get("candidate_models") or []
@@ -2486,6 +2707,14 @@ def validate_plan(
                 )
         market_projection = measurement_program.get("market_outcome_projection")
         if isinstance(market_projection, dict):
+            if (
+                market_projection.get("market_outcome_contract")
+                != pilot_market_outcome_contract()
+            ):
+                reasons.append(
+                    "measurement_program.market_outcome_projection."
+                    "market_outcome_contract"
+                )
             if str(market_projection.get("projection_equation_or_map") or "") != str(
                 math.get("market_outcome_equation") or ""
             ):
@@ -2613,6 +2842,8 @@ def validate_plan(
         reasons.append("evidence_policy.signal_timestamp_policy_unsupported")
     if evidence.get("position_entry_policy") != "close_t_plus_1":
         reasons.append("evidence_policy.position_entry_policy_unsupported")
+    if evidence.get("payoff_contract") != pilot_payoff_contract():
+        reasons.append("evidence_policy.payoff_contract_unsupported")
     try:
         request_cost_bps = float(request.get("transaction_cost_bps"))
         plan_cost_bps = float(evidence.get("transaction_cost_bps"))
@@ -2907,6 +3138,8 @@ def build_web_evaluation_contract(plan: dict[str, Any]) -> dict[str, Any]:
         "rebalance_frequency": research["rebalance_frequency"],
         "signal_timestamp_policy": evidence["signal_timestamp_policy"],
         "position_entry_policy": evidence["position_entry_policy"],
+        "position_exit_policy": evidence["payoff_contract"]["exit"],
+        "payoff_label_expression": evidence["payoff_contract"]["label_expression"],
         "availability_lags": data_plan["availability_lags"],
         "missing_data_policy": data_plan["missing_data_policy"],
         "forward_horizon": evidence["forward_horizon"],
@@ -2917,7 +3150,7 @@ def build_web_evaluation_contract(plan: dict[str, Any]) -> dict[str, Any]:
             "exit_price_field": "close",
             "execution_lag_sessions": 1,
             "holding_period_sessions": 1,
-            "return_window": "close_t_plus_1_to_close_t_plus_2",
+            "return_window": evidence["payoff_contract"]["return_window"],
         },
         "transaction_cost_bps": evidence["transaction_cost_bps"],
         "cost_model_id": evidence["cost_model_id"],
@@ -3231,6 +3464,9 @@ def build_protocol_payloads(
             "observation_equation": math["observation_equation"],
             "factor_estimator": math["factor_estimator"],
             "market_outcome_equation": math["market_outcome_equation"],
+            "payoff_binding": math["payoff_binding"],
+            "market_outcome_contract": math["market_outcome_contract"],
+            "mechanism_target_contract": math["mechanism_target_contract"],
             "traded_quantity": math["traded_quantity"],
             "information_set": math["information_set"],
             "alternative_models": math["alternative_models"],

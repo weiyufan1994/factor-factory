@@ -269,6 +269,8 @@ def test_web_evaluation_contract_must_match_step4_semantics():
         "rebalance_frequency": "daily",
         "signal_timestamp_policy": "after_close_t",
         "position_entry_policy": "close_t_plus_1",
+        "position_exit_policy": "close_t_plus_2",
+        "payoff_label_expression": "close.shift(-2) / close.shift(-1) - 1",
         "availability_lags": ["t open is available after the opening auction"],
         "missing_data_policy": "drop and audit missing rows",
         "forward_horizon": "1d",
@@ -294,6 +296,15 @@ def test_web_evaluation_contract_must_match_step4_semantics():
     fsm["evaluation_contract"] = {**contract, "transaction_cost_bps": 10.0}
     with pytest.raises(SystemExit, match="WEB_EVALUATION_CONTRACT_UNSUPPORTED"):
         run_step4.validate_web_evaluation_contract(fsm)
+    for field in ("position_exit_policy", "payoff_label_expression"):
+        missing = dict(contract)
+        missing.pop(field)
+        fsm["evaluation_contract"] = missing
+        with pytest.raises(
+            SystemExit,
+            match="WEB_EVALUATION_CONTRACT_UNSUPPORTED",
+        ):
+            run_step4.validate_web_evaluation_contract(fsm)
 
 
 def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
@@ -333,6 +344,8 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
     daily_df.to_parquet(daily_path, index=False)
     contract = {
         "version": "factorforge_web_evaluation_contract_v2",
+        "position_exit_policy": "close_t_plus_2",
+        "payoff_label_expression": "close.shift(-2) / close.shift(-1) - 1",
         "label_policy": {
             "horizon": "one_trading_day_after_execution",
             "return_type": "simple",
@@ -434,6 +447,8 @@ def test_web_shared_evaluation_excludes_suspended_security_label_path(
         effective_target_window={"start": "20260102", "end": "20260107"},
         evaluation_contract={
             "version": "factorforge_web_evaluation_contract_v2",
+            "position_exit_policy": "close_t_plus_2",
+            "payoff_label_expression": "close.shift(-2) / close.shift(-1) - 1",
             "label_policy": label_policy,
             "proof_control_columns": [],
         },

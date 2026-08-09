@@ -5735,6 +5735,8 @@ def _project_evaluation_contract(factor_spec: dict[str, Any]) -> dict[str, Any]:
         "forward_horizon",
         "signal_timestamp_policy",
         "position_entry_policy",
+        "position_exit_policy",
+        "payoff_label_expression",
         "rebalance_frequency",
         "transaction_cost_bps",
         "cost_model_id",

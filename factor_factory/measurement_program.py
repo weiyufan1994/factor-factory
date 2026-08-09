@@ -82,6 +82,7 @@ PUBLIC_MEASUREMENT_SECTION_FIELDS = {
     "market_outcome_projection": frozenset(
         {
             "role",
+            "market_outcome_contract",
             "projection_kind",
             "source_math_object",
             "traded_quantity",
@@ -131,6 +132,9 @@ PUBLIC_MODEL_CANDIDATE_FIELDS = frozenset(
     {
         "candidate_id",
         "candidate_role",
+        "payoff_binding",
+        "market_outcome_contract",
+        "mechanism_target_contract",
         "model_family",
         "mathematical_object",
         "mechanism_equation_or_functional",

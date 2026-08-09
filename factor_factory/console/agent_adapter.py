@@ -578,6 +578,23 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 5. Never use fixtures, deterministic fallback, local mock, smoke evidence or dry-run output as formal research proof. A missing dataset must produce a precise BLOCK/data request, not invented evidence.
 6. On resume, write only the exact named research memo permitted by the current pause. The host owns Council dispatch, synthesis, evidence interpretation, and every formal wrapper invocation. Do not use the unimplemented `real_agent`/`remote_api` wrapper adapters.
 7. Keep preferred, null and alternative hypotheses distinct. Record economic payer, mathematical object, legal information set, falsifiers, component ablations, costs, long-side economics, IS/OOS boundary and proof-certificate status.
+   In the Web v2 pilot, a signal formed after close t is entered at close t+1
+   and exited at close t+2, so the executable label is
+   `close.shift(-2) / close.shift(-1) - 1`. The close-t to close-t+1 return
+   begins before entry and may be a diagnostic only; it must never be the
+   target functional, market-outcome equation, traded quantity or formal label.
+   `mathematical_mechanism.factor_estimator` is the observable factor-value
+   estimator, not RankIC, decile return, Fama-MacBeth or another evaluation
+   metric. Preserve every Host-filled payoff, target, and market-outcome
+   contract. Keep `target_functional` exactly `M_WEB_TARGET`; define its
+   mechanism-specific meaning in `mathematical_object` and
+   `mechanism_equation_or_functional`, never as a trade payoff. Write every
+   market-outcome equation with the exact left-hand form
+   `E[Y_WEB_PAYOFF | F_WEB_LEGAL, X_WEB_FACTOR] = ...`; these conditions mean
+   legal information through close t and the frozen observable factor value.
+   Never put another payoff on the left, condition on a future value, redefine
+   the payoff with direct close/return notation, or append the correct symbol as
+   an unused term.
 8. A process exit code or wrapper PASS is not a factor verdict. Finish only with formal ACCEPT, REJECT, BLOCK, or an honest REVIEW_REQUIRED pause.
 9. Do not create a revision child or record human approval unless an existing artifact under `identity/` explicitly authorizes this resume. Automated action must never be labeled human approval.
 10. Before finishing, verify the workspace manifest and inspect Git status. Any write outside the active workspace is a blocking failure.

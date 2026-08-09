@@ -52,6 +52,14 @@ from scripts.run_factorforge_ultimate import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_preformal_check_rubrics_cover_every_controlled_check() -> None:
+    assert set(runtime_module.PREFORMAL_CHECK_RUBRICS) == {
+        check_id
+        for check_ids in PREFORMAL_ROLE_CHECK_IDS.values()
+        for check_id in check_ids
+    }
+
+
 def _workspace(tmp_path: Path) -> Path:
     runtime = tmp_path / "factorforge"
     workspace = runtime / "factor_research" / "RUNTIME_FACTOR" / "runtime_research"
@@ -110,7 +118,11 @@ def _task(workspace: Path, role_id: str) -> dict:
     return json.loads((workspace / reference["path"]).read_text(encoding="utf-8"))
 
 
-def _domain_record(task: dict) -> dict:
+def _domain_record(
+    task: dict,
+    *,
+    evidence_ref: dict[str, str] | None = None,
+) -> dict:
     role_id = task["role_id"]
     if role_id == "data_liaison":
         return {
@@ -172,6 +184,7 @@ def _domain_record(task: dict) -> dict:
         "handoff": {"status": "ready_for_host_review"},
     }
     if role_id in PREFORMAL_ROLE_CHECK_IDS:
+        evidence_refs = [evidence_ref["path"]] if evidence_ref else []
         checks = [
             {
                 "check_id": check_id,
@@ -179,7 +192,7 @@ def _domain_record(task: dict) -> dict:
                 "status": "PASS",
                 "finding_code": PREFORMAL_FINDING_CODES["PASS"],
                 "falsifier_code": PREFORMAL_FALSIFIER_CODES[check_id],
-                "evidence_refs": [],
+                "evidence_refs": evidence_refs,
             }
             for check_id in PREFORMAL_ROLE_CHECK_IDS[role_id]
         ]
@@ -187,6 +200,7 @@ def _domain_record(task: dict) -> dict:
             PREFORMAL_CLEAR_DECISION
         ]
         record["claims"] = [dict(check) for check in checks]
+        record["artifact_refs"] = [dict(evidence_ref)] if evidence_ref else []
         record["design_review"] = {
             "contract_version": PREFORMAL_DESIGN_REVIEW_CONTRACT_VERSION,
             "stage": "pre_formal_research_design",
@@ -200,11 +214,18 @@ def _domain_record(task: dict) -> dict:
     return record
 
 
-def _private_output(task: dict) -> dict:
+def _private_output(
+    task: dict,
+    *,
+    evidence_ref: dict[str, str] | None = None,
+) -> dict:
     payload = {
         "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
         "status": "PASS",
-        "public_research_record": _domain_record(task),
+        "public_research_record": _domain_record(
+            task,
+            evidence_ref=evidence_ref,
+        ),
     }
     if task["role_id"] == "independent_council":
         payload["independence_attestation"] = {
@@ -253,12 +274,16 @@ class FakeSessionRunner:
             self.calls.append(invocation)
             count = self._counts.get(invocation.role_id, 0) + 1
             self._counts[invocation.role_id] = count
-        task = json.loads(
-            (
-                invocation.context_root
-                / f"objects/research_organization/RUNTIME_REPORT/tasks/{invocation.task_id}.json"
-            ).read_text(encoding="utf-8")
+        task_relative = (
+            "objects/research_organization/RUNTIME_REPORT/tasks/"
+            f"{invocation.task_id}.json"
         )
+        staged_task_path = invocation.context_root / task_relative
+        task = json.loads(staged_task_path.read_text(encoding="utf-8"))
+        evidence_ref = {
+            "path": task_relative,
+            "sha256": hashlib.sha256(staged_task_path.read_bytes()).hexdigest(),
+        }
         if self.cancel_on_role == invocation.role_id:
             request_research_organization_cancel(
                 workspace=self.workspace,
@@ -277,7 +302,10 @@ class FakeSessionRunner:
         if invocation.role_id in self.fail_once_roles and count == 1:
             return self._outcome(invocation, returncode=1)
         invocation.private_output_path.write_text(
-            json.dumps(_private_output(task), ensure_ascii=False),
+            json.dumps(
+                _private_output(task, evidence_ref=evidence_ref),
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         if self.hardlink_output_role == invocation.role_id:
@@ -457,9 +485,27 @@ def _admit_host_director(workspace: Path) -> None:
         "path": source_relative,
         "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
     }
-    record["artifact_refs"] = [
-        source_ref
-    ]
+    plan_relative = "identity/web_research_plan.json"
+    plan_path = workspace / plan_relative
+    plan_path.write_text(
+        json.dumps(
+            {
+                "mathematical_mechanism": {
+                    "factor_estimator": "Signed pressure factor value at close t.",
+                    "target_functional": "close t+1 to close t+2 return",
+                    "information_set": "Bars available through close t only.",
+                }
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    plan_ref = {
+        "path": plan_relative,
+        "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+    }
+    record["artifact_refs"] = [source_ref, plan_ref]
     record["director_synthesis"] = {
         "contract_version": DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
         "stage": "pre_formal_research_design",
@@ -550,10 +596,120 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
             / "results"
             / "research_director.json"
         ).is_file()
+    quant_invocation = next(
+        call for call in runner.calls if call.role_id == "quant_implementation"
+    )
+    assert (
+        quant_invocation.context_root / "identity" / "web_research_plan.json"
+    ).is_file()
+    prompt = runtime_module.build_research_org_session_prompt(quant_invocation)
+    assert '"contract_version": "factorforge_role_research_record_v1"' in prompt
+    assert '"contract_version": "factorforge_preformal_design_review_v3"' in prompt
+    assert (
+        '"decision": "CLEAR_FOR_FORMAL_EXECUTION|BLOCK_FORMAL_EXECUTION"'
+        in prompt
+    )
+    assert "a return beginning before entry is BLOCK" in prompt
+    assert "`evidence_refs=[]` is never a satisfied design check" in prompt
     assert validate_research_organization_runtime(
         workspace=workspace,
         require_complete=True,
     )["verdict"] == "PASS"
+
+
+def test_preformal_evidence_accepts_host_bound_dependency_artifact(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    runner = FakeSessionRunner(workspace)
+    first = run_research_organization_runtime(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        private_root=tmp_path / "private-runtime",
+        runner=runner,
+        allow_unverified_test_runner=True,
+        max_concurrency=3,
+        max_attempts=2,
+        timeout_seconds=60,
+    )
+    assert first["lifecycle"] == "WAITING_HOST_RESULT"
+    _admit_host_director(workspace)
+
+    task = _task(workspace, "quant_implementation")
+    record = _domain_record(task)
+    plan_relative = "identity/web_research_plan.json"
+    plan_ref = {
+        "path": plan_relative,
+        "sha256": hashlib.sha256((workspace / plan_relative).read_bytes()).hexdigest(),
+    }
+    record["artifact_refs"] = [plan_ref]
+    for check in record["claims"]:
+        check["evidence_refs"] = [plan_relative]
+    for check in record["design_review"]["checks"]:
+        check["evidence_refs"] = [plan_relative]
+    result = with_content_hash(
+        {
+            "contract_version": AGENT_RESULT_CONTRACT_VERSION,
+            "task_ref": {
+                "task_id": task["task_id"],
+                "sha256": task["task_sha256"],
+            },
+            "identity": task["identity"],
+            "role_id": task["role_id"],
+            "status": "PASS",
+            "producer_mode": "real_agent",
+            "session_id": "quant_dependency_artifact_session",
+            "public_research_record": record,
+        },
+        hash_field="result_sha256",
+    )
+    plan_bytes = (workspace / plan_relative).read_bytes()
+    staged_context_files = [
+        {
+            "path": plan_relative,
+            "sha256": hashlib.sha256(plan_bytes).hexdigest(),
+            "size_bytes": len(plan_bytes),
+        }
+    ]
+
+    assert director_module.validate_agent_result(
+        result,
+        task=task,
+        workspace=workspace,
+        staged_context_files=staged_context_files,
+    ) == []
+    unstaged_reasons = director_module.validate_agent_result(
+        result,
+        task=task,
+        workspace=workspace,
+        staged_context_files=[],
+    )
+    assert any("design_review.evidence_scope" in reason for reason in unstaged_reasons)
+
+    evidence_free = json.loads(json.dumps(result))
+    evidence_free["public_research_record"]["artifact_refs"] = []
+    for check in evidence_free["public_research_record"]["claims"]:
+        check["evidence_refs"] = []
+    for check in evidence_free["public_research_record"]["design_review"]["checks"]:
+        check["evidence_refs"] = []
+    evidence_free = with_content_hash(
+        {
+            key: value
+            for key, value in evidence_free.items()
+            if key != "result_sha256"
+        },
+        hash_field="result_sha256",
+    )
+    evidence_free_reasons = director_module.validate_agent_result(
+        evidence_free,
+        task=task,
+        workspace=workspace,
+        staged_context_files=[],
+    )
+    assert any(
+        "design_review.evidence_scope" in reason
+        for reason in evidence_free_reasons
+    )
 
 
 def test_host_materializes_liaison_request_and_stages_it_transitively(

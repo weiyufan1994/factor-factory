@@ -24,11 +24,20 @@ from factor_factory.console.conversation_ledger import (
 
 from factor_factory.console.web_research_plan import (
     BLOCK_PLAN_INVALID,
+    EVALUATION_METRIC_ESTIMATOR_PATTERN,
+    PILOT_MARKET_OUTCOME_LHS,
+    PILOT_MECHANISM_TARGET_SYMBOL,
+    PILOT_PAYOFF_LABEL_EXPRESSION,
+    PILOT_PAYOFF_SYMBOL,
     PLACEHOLDER,
     WebResearchPlanError,
     authoring_request_binding_hash,
     build_authoring_contract,
+    pilot_mechanism_target_contract,
     required_web_resume_start_step,
+    pilot_market_outcome_contract,
+    pilot_payoff_binding,
+    pilot_payoff_contract,
     resolve_workspace_approved_catalog,
     sha256_file,
     summarize_catalogs,
@@ -46,6 +55,17 @@ from factor_factory.research_workspace import build_workspace_manifest, write_wo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_factor_estimator_metric_guard_preserves_legitimate_observables() -> None:
+    assert EVALUATION_METRIC_ESTIMATOR_PATTERN.search("RankIC of the factor")
+    assert EVALUATION_METRIC_ESTIMATOR_PATTERN.search("decile return spread")
+    assert not EVALUATION_METRIC_ESTIMATOR_PATTERN.search(
+        "turnover pressure factor value"
+    )
+    assert not EVALUATION_METRIC_ESTIMATOR_PATTERN.search(
+        "net asset value gap estimator"
+    )
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -530,10 +550,10 @@ def _fill_plan(workspace: Path) -> dict:
             "mechanism_equation_or_functional": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
             "observation_equation": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
             "factor_estimator": "negative opening gap computed from t open and t-1 close",
-            "target_functional": "E[r_i,t+1 | F_open,t, temporary_pressure_i,t]",
-            "market_outcome_equation": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+            "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+            "market_outcome_equation": f"{PILOT_MARKET_OUTCOME_LHS} = -beta * temporary_pressure_i,t - cost_i,t",
             "traded_quantity": "next-horizon after-cost equity return distribution",
-            "information_set": "previous close and completed day-t market data available by close; position is formed at close t",
+            "information_set": "previous close and completed day-t market data available through close t; signal is frozen after close t, entry is close t+1 and exit is close t+2",
             "why_suitable": "the decomposition separates permanent overnight news from temporary opening demand pressure",
             "why_alternatives_are_less_suitable": ["unconditional reversal has no opening-specific state or participant deadline"],
             "alternative_models": ["unconditional reversal", "systematic overnight risk premium"],
@@ -588,11 +608,14 @@ def _fill_plan(workspace: Path) -> dict:
                 {
                     "candidate_id": "preferred_mechanism",
                     "candidate_role": "primary",
+                    "payoff_binding": pilot_payoff_binding(),
+                    "market_outcome_contract": pilot_market_outcome_contract(),
+                    "mechanism_target_contract": pilot_mechanism_target_contract(),
                     "model_family": "latent temporary price impact with overnight information arrival",
                     "mathematical_object": "unabsorbed opening demand pressure net of permanent information",
                     "mechanism_equation_or_functional": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t; temporary_pressure_i,t+1 = rho * temporary_pressure_i,t + eta_i,t+1 with abs(rho) < 1",
-                    "target_functional": "E[r_i,t+1 | F_open,t, temporary_pressure_i,t]",
-                    "market_outcome_projection": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+                    "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+                    "market_outcome_projection": f"{PILOT_MARKET_OUTCOME_LHS} = -beta * temporary_pressure_i,t - cost_i,t",
                     "observation_mapping": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
                     "economic_implication": "temporary opening impact predicts subsequent repair",
                     "identifiability_condition": "temporary impact is separable from permanent news and ordinary reversal",
@@ -602,11 +625,14 @@ def _fill_plan(workspace: Path) -> dict:
                 {
                     "candidate_id": "alternative_mechanism",
                     "candidate_role": "mechanism_alternative",
+                    "payoff_binding": pilot_payoff_binding(),
+                    "market_outcome_contract": pilot_market_outcome_contract(),
+                    "mechanism_target_contract": pilot_mechanism_target_contract(),
                     "model_family": "permanent overnight information diffusion",
                     "mathematical_object": "fundamental news innovation",
                     "mechanism_equation_or_functional": "fundamental_value_i,t = fundamental_value_i,t-1 + permanent_news_i,t and gap_i,t measures that permanent innovation",
-                    "target_functional": "continuation payoff conditional on permanent overnight news",
-                    "market_outcome_projection": "r_i,t+1 = beta_news * permanent_news_i,t - cost_i,t + eta_i,t+1",
+                    "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+                    "market_outcome_projection": f"{PILOT_MARKET_OUTCOME_LHS} = beta_news * permanent_news_i,t - cost_i,t",
                     "observation_mapping": "map legally observed news and opening displacement into a permanent-news estimator",
                     "economic_implication": "opening gap predicts continuation rather than repair",
                     "identifiability_condition": "news controls explain the gap and continuation",
@@ -616,11 +642,14 @@ def _fill_plan(workspace: Path) -> dict:
                 {
                     "candidate_id": "null_alias",
                     "candidate_role": "null_alias",
+                    "payoff_binding": pilot_payoff_binding(),
+                    "market_outcome_contract": pilot_market_outcome_contract(),
+                    "mechanism_target_contract": pilot_mechanism_target_contract(),
                     "model_family": "ordinary reversal and liquidity alias model",
                     "mathematical_object": "observable short-horizon reversal and liquidity controls",
                     "mechanism_equation_or_functional": "gap_i,t = gamma * reversal_i,t + delta * liquidity_i,t + residual_i,t with E[payoff_i,t+1 given residual_i,t] = 0",
-                    "target_functional": "incremental payoff after reversal and liquidity aliases",
-                    "market_outcome_projection": "E[r_i,t+1 | residual_i,t] = 0 after costs",
+                    "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+                    "market_outcome_projection": f"{PILOT_MARKET_OUTCOME_LHS} = 0 after costs under the null",
                     "observation_mapping": "project the opening displacement on legal-time reversal and liquidity controls",
                     "economic_implication": "the opening-specific state adds no information after alias controls",
                     "identifiability_condition": "alias controls span the same conditional-return variation",
@@ -638,7 +667,7 @@ def _fill_plan(workspace: Path) -> dict:
             "source_math_object": "unabsorbed opening demand pressure net of permanent information",
             "traded_quantity": "next-horizon after-cost equity return distribution",
             "affected_payoff_or_distribution_terms": ["conditional drift", "conditional left-tail probability"],
-            "projection_equation_or_map": "r_i,t+1 = -beta * temporary_pressure_i,t - cost_i,t + eta_i,t+1",
+            "projection_equation_or_map": f"{PILOT_MARKET_OUTCOME_LHS} = -beta * temporary_pressure_i,t - cost_i,t",
             "link_to_observation_equation": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
             "falsifier": "the conditional return distribution is unchanged after temporary-pressure conditioning",
         }
@@ -659,7 +688,7 @@ def _fill_plan(workspace: Path) -> dict:
     )
     plan["measurement_program"]["observation_and_estimation"].update(
         {
-            "estimand": "E[r_i,t+1 | F_open,t, temporary_pressure_i,t]",
+            "estimand": PILOT_MECHANISM_TARGET_SYMBOL,
             "observation_map": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
             "estimator": "negative opening gap computed from t open and t-1 close",
             "identification_assumptions": [
@@ -872,6 +901,37 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
     assert contract["evidence_window_contract"]["required_relation"] == (
         "is_start <= is_end < oos_start <= oos_end"
     )
+    assert contract["payoff_timing_contract"] == {
+        **pilot_payoff_contract(),
+        "immutable_for_web_pilot": True,
+        "factor_estimator_role": "observable_factor_value_not_evaluation_metric",
+        "required_math_binding": pilot_payoff_binding(),
+        "required_market_outcome_contract": pilot_market_outcome_contract(),
+        "required_mechanism_target_contract": pilot_mechanism_target_contract(),
+    }
+    assert plan["evidence_policy"]["payoff_contract"] == pilot_payoff_contract()
+    assert plan["mathematical_mechanism"]["payoff_binding"] == (
+        pilot_payoff_binding()
+    )
+    assert plan["mathematical_mechanism"]["market_outcome_contract"] == (
+        pilot_market_outcome_contract()
+    )
+    assert plan["mathematical_mechanism"]["mechanism_target_contract"] == (
+        pilot_mechanism_target_contract()
+    )
+    assert all(
+        candidate["payoff_binding"] == pilot_payoff_binding()
+        and candidate["market_outcome_contract"]
+        == pilot_market_outcome_contract()
+        and candidate["mechanism_target_contract"]
+        == pilot_mechanism_target_contract()
+        for candidate in plan["measurement_program"]["model_selection"][
+            "candidate_models"
+        ]
+    )
+    assert plan["measurement_program"]["market_outcome_projection"][
+        "market_outcome_contract"
+    ] == pilot_market_outcome_contract()
     guide = (workspace / "identity" / "web_research_runtime.md").read_text(
         encoding="utf-8"
     )
@@ -882,6 +942,9 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
     assert "only datasets the Web" in guide
     assert "do not recompute, shorten or hand-copy the" in guide
     assert "contract hash" in guide
+    assert "close.shift(-2) / close.shift(-1) - 1" in guide
+    assert "`Y_WEB_PAYOFF`" in guide
+    assert "RankIC, decile return and Fama-MacBeth are evaluation metrics" in guide
 
     try:
         validate_plan(plan, workspace=workspace)
@@ -1030,9 +1093,10 @@ def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
             "mechanism_equation_or_functional": "V_t=FCF_next,t/(WACC_t-g_t); gap_t=V_t/P_t-1",
             "observation_equation": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
             "factor_estimator": "forecast_fcf/(wacc-terminal_growth)/close-1",
-            "target_functional": "after-cost convergence payoff conditional on the legal-time DCF gap",
-            "market_outcome_equation": "V_t=FCF_next,t/(WACC_t-g_t); alpha_t=V_t/P_t-1",
+            "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+            "market_outcome_equation": f"{PILOT_MARKET_OUTCOME_LHS} = convergence_map(alpha_t) - cost_t, with alpha_t=V_t/P_t-1 and V_t=FCF_next,t/(WACC_t-g_t)",
             "traded_quantity": "after-cost valuation-gap convergence return",
+            "information_set": "legally published cash-flow and discount-rate inputs plus market data available through close t; signal is frozen after close t, entry is close t+1 and exit is close t+2",
             "why_suitable": "cash-flow timing and discount rates define intrinsic value directly",
             "why_alternatives_are_less_suitable": [
                 "a generic stochastic price process does not identify intrinsic value"
@@ -1082,6 +1146,7 @@ def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
             "model_family": "discounted cash-flow valuation",
             "mathematical_object": "present value of legal-time forecast free cash flows",
             "mechanism_equation_or_functional": "V_t=FCF_next,t/(WACC_t-g_t)",
+            "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
         }
     )
     models[1].update(
@@ -1089,8 +1154,8 @@ def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
             "model_family": "residual-income valuation",
             "mathematical_object": "book value plus discounted abnormal earnings",
             "mechanism_equation_or_functional": "V_t=B_t+sum_k RI_t+k/(1+r_t)^k",
-            "target_functional": "residual-income intrinsic-value-to-price gap",
-            "market_outcome_projection": "positive residual-income gaps predict controlled convergence payoff",
+            "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+            "market_outcome_projection": f"{PILOT_MARKET_OUTCOME_LHS} = positive_convergence_map(residual_income_gap_t) - cost_t",
             "observation_mapping": "map legal-time book value, earnings forecasts and discount rates into residual income value",
         }
     )
@@ -1099,8 +1164,8 @@ def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
             "model_family": "null accounting and style alias model",
             "mathematical_object": "known accounting, size and value aliases",
             "mechanism_equation_or_functional": "dcf_gap_t=gamma*known_aliases_t+residual_t",
-            "target_functional": "incremental payoff after known accounting and style aliases",
-            "market_outcome_projection": "the null predicts zero residual after-cost convergence payoff",
+            "target_functional": PILOT_MECHANISM_TARGET_SYMBOL,
+            "market_outcome_projection": f"{PILOT_MARKET_OUTCOME_LHS} = 0 under the null after costs",
             "observation_mapping": "project the legal-time DCF gap on accounting and style controls",
         }
     )
@@ -1119,14 +1184,14 @@ def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
                 "valuation gap",
                 "convergence payoff",
             ],
-            "projection_equation_or_map": "V_t=FCF_next,t/(WACC_t-g_t); alpha_t=V_t/P_t-1",
+            "projection_equation_or_map": f"{PILOT_MARKET_OUTCOME_LHS} = convergence_map(alpha_t) - cost_t, with alpha_t=V_t/P_t-1 and V_t=FCF_next,t/(WACC_t-g_t)",
             "link_to_observation_equation": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
             "falsifier": "the valuation gap has no controlled after-cost convergence payoff",
         }
     )
     program["observation_and_estimation"].update(
         {
-            "estimand": "after-cost convergence payoff conditional on the legal-time DCF gap",
+            "estimand": PILOT_MECHANISM_TARGET_SYMBOL,
             "observation_map": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
             "estimator": "forecast_fcf/(wacc-terminal_growth)/close-1",
             "identification_assumptions": [
@@ -1609,6 +1674,8 @@ def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_pa
         "rebalance_frequency": "daily",
         "signal_timestamp_policy": "after_close_t",
         "position_entry_policy": "close_t_plus_1",
+        "position_exit_policy": "close_t_plus_2",
+        "payoff_label_expression": PILOT_PAYOFF_LABEL_EXPRESSION,
         "availability_lags": plan["data_plan"]["availability_lags"],
         "missing_data_policy": plan["data_plan"]["missing_data_policy"],
         "forward_horizon": "1d",
@@ -1755,6 +1822,184 @@ def test_coordinated_knowledge_index_provenance_tamper_blocks(tmp_path):
             ),
             "evidence_policy.transaction_cost_bps_request_mismatch",
         ),
+        (
+            lambda plan: plan["evidence_policy"]["payoff_contract"].update(
+                {"exit": "close_t_plus_1"}
+            ),
+            "evidence_policy.payoff_contract_unsupported",
+        ),
+        (
+            lambda plan: plan["evidence_policy"]["payoff_contract"].update(
+                {"label_expression": "close.shift(-1) / close - 1"}
+            ),
+            "evidence_policy.payoff_contract_unsupported",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"factor_estimator": "RankIC of the candidate factor"}
+            ),
+            "mathematical_mechanism.factor_estimator_is_evaluation_metric",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "E[r_i,t+1 | F_t, pressure_i,t]"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "E[P_{i,t+1}/P_{i,t}-1 | F_t,x]"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "E[future_return_t_plus_1 | F_t,x]"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "expected future returns conditional on X_WEB_FACTOR"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "expected_forward_return_t_plus_1"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "after_cost_payoffs_t_plus_1"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "E[P_{i,t+h}/P_{i,t}-1 | F_t], h>0"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"target_functional": "lead(P_i_t, 1) / P_i_t - 1"}
+            ),
+            "mathematical_mechanism.target_functional.target_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"market_outcome_equation": "E[r_i,t+1 | F_t, pressure_i,t]"}
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"market_outcome_equation": "E[Y_WEB_PAYOFF] = beta*x"}
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {
+                    "market_outcome_equation": (
+                        "E[Y_WEB_PAYOFF |     ] = beta*x"
+                    )
+                }
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {
+                    "market_outcome_equation": (
+                        "E[Y_WEB_PAYOFF | future_return_t_plus_1] = beta*x"
+                    )
+                }
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {"market_outcome_equation": "E[Y_WEB_PAYOFF | P_{i,t+2}] = beta*x"}
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {
+                    "market_outcome_equation": (
+                        "E[close[t+1] / close[t] - 1 | F_t] = beta*x; "
+                        "unused_reference=0*(close.shift(-2) / "
+                        "close.shift(-1) - 1)"
+                    )
+                }
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {
+                    "market_outcome_equation": (
+                        "E[P_{i,t+1}/P_{i,t}-1 | F_t,x] = "
+                        "beta*x + 0*Y_WEB_PAYOFF"
+                    )
+                }
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"].update(
+                {
+                    "market_outcome_equation": (
+                        "E[future_return_t_plus_1 | F_t,x] = "
+                        "beta*x + 0*Y_WEB_PAYOFF"
+                    )
+                }
+            ),
+            "mathematical_mechanism.market_outcome_equation.dependent_variable",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"]["payoff_binding"].update(
+                {"contract_sha256": "0" * 64}
+            ),
+            "mathematical_mechanism.payoff_binding",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"][
+                "market_outcome_contract"
+            ].update({"dependent_variable": "future_return_t_plus_1"}),
+            "mathematical_mechanism.market_outcome_contract",
+        ),
+        (
+            lambda plan: plan["mathematical_mechanism"][
+                "mechanism_target_contract"
+            ].update({"target_role": "trade_payoff"}),
+            "mathematical_mechanism.mechanism_target_contract",
+        ),
+        (
+            lambda plan: plan["measurement_program"]["model_selection"][
+                "candidate_models"
+            ][0]["payoff_binding"].update({"contract_sha256": "0" * 64}),
+            "measurement_program.model_selection.candidate_models[0].payoff_binding",
+        ),
+        (
+            lambda plan: plan["measurement_program"]["model_selection"][
+                "candidate_models"
+            ][0]["market_outcome_contract"].update(
+                {"dependent_variable": "future_return_t_plus_1"}
+            ),
+            "measurement_program.model_selection.candidate_models[0].market_outcome_contract",
+        ),
+        (
+            lambda plan: plan["measurement_program"]["model_selection"][
+                "candidate_models"
+            ][0]["mechanism_target_contract"].update(
+                {"target_role": "trade_payoff"}
+            ),
+            "measurement_program.model_selection.candidate_models[0].mechanism_target_contract",
+        ),
     ],
 )
 def test_plan_rejects_evaluation_contract_mismatch(
@@ -1777,6 +2022,29 @@ def test_plan_rejects_evaluation_contract_mismatch(
         validate_plan(plan, workspace=workspace)
 
     assert expected_reason in failure.value.reasons
+
+
+def test_payoff_symbol_is_bound_to_host_contract() -> None:
+    assert PILOT_PAYOFF_SYMBOL == "Y_WEB_PAYOFF"
+    binding = pilot_payoff_binding()
+    assert binding["contract_ref"] == "evidence_policy.payoff_contract"
+    assert binding["contract_sha256"] == stable_json_hash(pilot_payoff_contract())
+    outcome = pilot_market_outcome_contract()
+    assert outcome["dependent_variable"] == PILOT_PAYOFF_SYMBOL
+    assert outcome["payoff_binding"] == binding
+    assert outcome["required_equation_lhs"] == PILOT_MARKET_OUTCOME_LHS
+    assert outcome["legal_information_symbol"] == "F_WEB_LEGAL"
+    assert outcome["factor_estimator_symbol"] == "X_WEB_FACTOR"
+    assert outcome["authority"] == "host_contract_only"
+    target = pilot_mechanism_target_contract()
+    assert target["target_role"] == (
+        "mechanism_specific_estimand_not_trade_payoff"
+    )
+    assert target["target_symbol"] == PILOT_MECHANISM_TARGET_SYMBOL
+    assert target["required_target_functional"] == (
+        PILOT_MECHANISM_TARGET_SYMBOL
+    )
+    assert target["formal_payoff_symbol"] == PILOT_PAYOFF_SYMBOL
 
 
 def test_configured_catalog_hash_mismatch_blocks_before_step1_write(tmp_path):

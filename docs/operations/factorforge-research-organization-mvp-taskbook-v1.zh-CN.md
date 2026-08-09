@@ -695,5 +695,7 @@ Phase 3 将 signed organization runtime 接入 production Web 主链，验收顺
 15. result outer envelope、authority-bearing identity、Council attestation/formal verdict、artifact refs 与 canonical data-request refs 必须 exact-shape；相邻字段不能成为 pre-formal verdict 的自由文本旁路。
 16. v2 Data Liaison pre-formal base-reuse PASS 必须通过 canonical closed-contract gate；derived state 冒充 base、catalog hash 错绑、缺 formal checks、字段/覆盖越界、legacy/空 catalog 伪造 reuse 和未获 Host 结构化 attestation 的任意 policy 文本均须 BLOCK。
 17. catalog admission projection 不得复用可能跨越 24 小时 freshness 边界的 health cache；已缓存健康后以过期时点签发必须 BLOCK。
+18. pre-formal controlled check 的 `PASS` 必须至少引用一个非空 evidence path；该路径必须同时存在于本次 signed staged context、当前 role 的 authority chain 和 exact-SHA `artifact_refs`，空列表不得通过 vacuous truth 绕过。
+19. Web Pilot payoff timing 必须由 Host-filled `factorforge_web_payoff_contract_v1` 冻结为 close t 后成信号、close t+1 入场、close t+2 出场，以及 `close.shift(-2) / close.shift(-1) - 1` 标签；math、每个候选模型与终端市场投影都必须携带 exact `factorforge_web_market_outcome_contract_v1`，其 dependent variable 只能是经 exact-ref、exact-hash `factorforge_web_payoff_binding_v1` 绑定的 `Y_WEB_PAYOFF`；自由文本方程左侧必须精确为 `E[Y_WEB_PAYOFF | F_WEB_LEGAL, X_WEB_FACTOR]`，其中信息集冻结到 close t、因子值不是评价指标；`target_functional` 由 `factorforge_web_mechanism_target_contract_v1` 精确绑定为 `M_WEB_TARGET`，具体 DCF、随机过程、因果、频谱或其他机制含义只能在数学对象和机制方程中定义，不能把任意收益文本变成第二个可执行 target。
 
 Phase 3 仍不实现：同任务 plan revision/current pointer、Data delivery automatic resume、attachment quarantine、complete-dispatch directory rename 和 production factor golden-run acceptance。它们不能被本轮代码/合同 closure 冒充。

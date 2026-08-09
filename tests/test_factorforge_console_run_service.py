@@ -1506,6 +1506,16 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
     assert '"path": "objects/research_organization/' in prompt
     assert '"result_path"' not in prompt
     assert '"execution_ledger_ref"' not in prompt
+    assert "close.shift(-2) / close.shift(-1) - 1" in prompt
+    assert (
+        "`mathematical_mechanism.factor_estimator` is the observable factor-value"
+        in prompt
+    )
+    assert "`E[Y_WEB_PAYOFF | F_WEB_LEGAL, X_WEB_FACTOR] = ...`" in prompt
+    assert "Keep `target_functional` exactly `M_WEB_TARGET`" in prompt
+    assert "Never put another payoff" in prompt
+    assert "condition on a future value" in prompt
+    assert "the payoff with direct close/return notation" in prompt
     assert prompt.index('"role_id": "price_volume_researcher"') < prompt.index(
         '"role_id": "knowledge_librarian"'
     ) < prompt.index('"role_id": "data_liaison"')

@@ -159,6 +159,8 @@ def validate_web_evaluation_contract(fsm: dict[str, Any]) -> None:
         'rebalance_frequency': 'daily',
         'signal_timestamp_policy': 'after_close_t',
         'position_entry_policy': 'close_t_plus_1',
+        'position_exit_policy': 'close_t_plus_2',
+        'payoff_label_expression': 'close.shift(-2) / close.shift(-1) - 1',
         'forward_horizon': '1d',
         'label_policy': {
             'horizon': 'one_trading_day_after_execution',

@@ -4901,7 +4901,11 @@ class ResearchRunService:
         }
         if (
             questionnaire_formula != formula
-            or questionnaire_fields != set(fields)
+            or not _questionnaire_fields_match_authoritative(
+                questionnaire_fields,
+                fields,
+                factor_spec,
+            )
             or questionnaire_operators != set(operators)
         ):
             raise RuntimeError(
@@ -5657,6 +5661,50 @@ def _read_private_resume_archive(
 
 def _normalized_operator_name(value: Any) -> str:
     return str(value or "").strip().lower().removesuffix("()")
+
+
+def _questionnaire_fields_match_authoritative(
+    questionnaire_fields: set[str],
+    authoritative_fields: list[str],
+    factor_spec: dict[str, Any],
+) -> bool:
+    canonical = (
+        factor_spec.get("canonical_spec")
+        if isinstance(factor_spec.get("canonical_spec"), dict)
+        else factor_spec
+    )
+    formula_ir = (
+        canonical.get("formula_ir")
+        if isinstance(canonical.get("formula_ir"), dict)
+        else {}
+    )
+    raw_aliases = (
+        formula_ir.get("field_aliases")
+        if isinstance(formula_ir.get("field_aliases"), dict)
+        else {}
+    )
+    required = {
+        str(item).strip().lower()
+        for item in authoritative_fields
+        if str(item).strip()
+    }
+    alias_targets: dict[str, set[str]] = {}
+    for field in required:
+        aliases = raw_aliases.get(field)
+        candidates = [field, *(aliases if isinstance(aliases, list) else [])]
+        for candidate in candidates:
+            alias = str(candidate).strip().lower()
+            if alias:
+                alias_targets.setdefault(alias, set()).add(field)
+
+    projected: set[str] = set()
+    for raw_field in questionnaire_fields:
+        alias = str(raw_field).strip().lower()
+        targets = alias_targets.get(alias, set())
+        if len(targets) != 1:
+            return False
+        projected.update(targets)
+    return projected == required
 
 
 def _mechanism_formula_facts(factor_spec: dict[str, Any]) -> dict[str, Any]:

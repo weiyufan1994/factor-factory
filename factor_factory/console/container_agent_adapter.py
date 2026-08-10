@@ -180,6 +180,17 @@ def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
     inline_parts = prefix.split("`")
     if len(inline_parts) % 2 == 0:
         return False
+    decoder = json.JSONDecoder()
+    for inline_part in inline_parts[1::2]:
+        for index, character in enumerate(inline_part):
+            if character != "{":
+                continue
+            try:
+                value, _parsed_end = decoder.raw_decode(inline_part, index)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return False
     if any(
         character in "{}[]"
         for part in inline_parts[::2]
@@ -191,12 +202,28 @@ def _is_bounded_plain_resume_prefix(prefix: str) -> bool:
     for line in lines:
         prose = re.sub(r"^(?:[-*]|[0-9]{1,2}[.)])\s+", "", line)
         prose = re.sub(r"^#{1,6}\s+", "", prose)
-        if (
-            len(prose) >= 4
-            and prose[:2] in {"**", "__"}
-            and prose[-2:] == prose[:2]
-        ):
-            prose = prose[2:-2].strip()
+        if prose.startswith(("**", "__")):
+            marker = prose[:2]
+            closing = prose.find(marker, len(marker))
+            if closing < 0:
+                return False
+            label = prose[len(marker) : closing]
+            suffix = prose[closing + len(marker) :]
+            if (
+                not label
+                or label != label.strip()
+                or not label[0].isalpha()
+                or "`" in label
+                or any(item in label for item in ("**", "__"))
+                or (suffix and not suffix[0].isspace())
+                or any(
+                    item in part
+                    for part in suffix.split("`")[::2]
+                    for item in ("**", "__")
+                )
+            ):
+                return False
+            prose = (label + suffix).strip()
         if not prose or not prose[0].isalpha() or prose.startswith(("[", "]")):
             return False
         try:

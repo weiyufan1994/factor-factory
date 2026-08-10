@@ -35,6 +35,7 @@ from factor_factory.mechanism_math.main_agent_memo import (
     PUBLIC_MEMO_QA_FIELDS,
     REQUIRED_METRIC_SIGNATURE_FIELDS,
     memo_public_schema_failures,
+    public_observed_metric_value_is_valid,
 )
 from factor_factory.research_conjecture import validate_protocol_bundle
 from factor_factory.research_proof import validate_factor_proof_certificate
@@ -2033,8 +2034,7 @@ def _public_evidence_copy(value: Any) -> dict[str, Any]:
         for key in sorted(PUBLIC_MEMO_OBSERVED_METRIC_FIELDS)
         if isinstance(observed, dict)
         and key in observed
-        and not isinstance(observed[key], bool)
-        and isinstance(observed[key], (int, float))
+        and public_observed_metric_value_is_valid(key, observed[key])
     }
     return evidence
 

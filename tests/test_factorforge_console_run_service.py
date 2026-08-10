@@ -2293,6 +2293,9 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
 
     from factor_factory.console.agent_adapter import AgentRunResult, build_agent_prompt
     from factor_factory.console.models import ResearchJob
+    from factor_factory.mechanism_math.main_agent_memo import (
+        memo_public_schema_failures,
+    )
 
     source, _store, service = _service(tmp_path, _PausedAdapter())
     workspace = source / "factor_research" / "FACTOR" / "research"
@@ -2507,7 +2510,18 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert set(answer_form["expected_metric_signature"]) == expected_signature_keys
     assert answer_form["formula_component_map"][0]["economic_state"] == ""
     assert "stochastic_process" in contract["allowed_model_families"]
-    assert answer_form["evidence_comparison"]["observed_metrics"]
+    public_metrics = answer_form["evidence_comparison"]["observed_metrics"]
+    assert public_metrics["rank_ic_ir"] == -0.1225
+    assert public_metrics["pearson_ic_ir"] == 0.1257
+    assert public_metrics["trading_cogs_annual"] == 0.6596
+    assert public_metrics["coverage_row_count"] == 8034990
+    assert answer_form["evidence_comparison"]["observed_metric_conflict_keys"] == []
+    assert "backend_metrics" not in public_metrics
+    assert all(
+        not isinstance(value, (dict, list))
+        for value in public_metrics.values()
+    )
+    assert memo_public_schema_failures(answer_form) == []
 
     prompt = build_agent_prompt(
         job,
@@ -2788,6 +2802,24 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
         )
 
     memo["producer"] = "current_main_agent"
+    _write_json(memo_path, memo)
+    memo["evidence_comparison"].pop("observed_metric_conflict_keys")
+    _write_json(memo_path, memo)
+    with pytest.raises(
+        RuntimeError,
+        match="evidence_comparison.observed_metric_conflict_keys",
+    ):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+    memo["evidence_comparison"]["observed_metric_conflict_keys"] = []
     _write_json(memo_path, memo)
     memo["formula_component_map"].append(
         {

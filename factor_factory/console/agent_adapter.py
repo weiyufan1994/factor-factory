@@ -1099,6 +1099,11 @@ def _build_resume_prompt_fact_lock(
     observed_metrics = (
         evidence.get("observed_metrics") if isinstance(evidence, dict) else None
     )
+    observed_metric_conflict_keys = (
+        evidence.get("observed_metric_conflict_keys")
+        if isinstance(evidence, dict)
+        else None
+    )
     if (
         not isinstance(formula, str)
         or not formula.strip()
@@ -1125,6 +1130,13 @@ def _build_resume_prompt_fact_lock(
         )
         or not isinstance(observed_metrics, dict)
         or not observed_metrics
+        or not isinstance(observed_metric_conflict_keys, list)
+        or any(
+            not isinstance(key, str) or not key
+            for key in observed_metric_conflict_keys
+        )
+        or observed_metric_conflict_keys
+        != sorted(set(observed_metric_conflict_keys))
     ):
         raise _resume_prompt_error("resume fact lock is invalid")
     fact_lock = {
@@ -1144,6 +1156,7 @@ def _build_resume_prompt_fact_lock(
         ],
         "formula_features": formula_features,
         "observed_metrics": observed_metrics,
+        "observed_metric_conflict_keys": observed_metric_conflict_keys,
         "operator_presence_flags": {
             field: operator_claims[field]
             for field in RESUME_MEMO_OPERATOR_FLAG_FIELDS
@@ -1302,7 +1315,7 @@ subject to formal validation."""
         immutable_step = """2. Do not copy machine-owned values into the patch. Use the
    Host-pinned fact lock for reasoning and cite exact metric keys and values
    only where needed in research prose. The Host alone reconstructs identity,
-   source refs, formula syntax, observed metrics, component
+   source refs, formula syntax, observed metrics and their conflict disclosures, component
    IDs/subexpressions/operators, and formula/operator-presence flags from the
    answer form."""
         budget_instruction = f"""Keep the research patch below {RESUME_MEMO_AGENT_PATCH_TARGET_BYTES:,} UTF-8 bytes
@@ -1329,7 +1342,7 @@ written memo; any omission or change blocks formal validation."""
    and `identity/web_execution_ledger.md`; do not probe other paths, create
    sibling temporary files, or retry a failed write more than once."""
         immutable_step = """2. Preserve `resume_attempt_id`, identity, source refs,
-   formula syntax, observed metrics, component IDs/subexpressions/operators,
+   formula syntax, observed metrics and their conflict disclosures, component IDs/subexpressions/operators,
    and formula/operator-presence flags exactly. The answer form is the sole
    source of truth for every immutable value. Preserve `source_refs` as its
    exact string-valued JSON object; never replace it with provenance objects or

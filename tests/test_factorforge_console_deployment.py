@@ -157,6 +157,7 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "matplotlib==3.10.8" in host_requirements
     assert "pyarrow==25.0.0" in host_requirements
+    assert "pypdf==6.10.1" in host_requirements
     assert "scipy==1.16.3" in host_requirements
     assert "cryptography==46.0.7" in host_requirements
     assert 'cryptography>=46,<47' in pyproject
@@ -164,10 +165,11 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     assert 'scipy>=1.16; python_version >= \'3.11\'' in pyproject
     assert (
         "ExecStartPre=/opt/factorforge-console/venv/bin/python -c "
-        '"import cryptography, matplotlib, pyarrow, pyarrow.fs, scipy; '
+        '"import cryptography, matplotlib, pyarrow, pyarrow.fs, pypdf, scipy; '
         "assert cryptography.__version__ == '46.0.7'; "
         "assert matplotlib.__version__ == '3.10.8'; "
         "assert pyarrow.__version__ == '25.0.0'; "
+        "assert pypdf.__version__ == '6.10.1'; "
         "assert scipy.__version__ == '1.16.3'\""
     ) in runner_unit
 

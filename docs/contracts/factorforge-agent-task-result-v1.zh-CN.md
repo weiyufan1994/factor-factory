@@ -562,6 +562,7 @@ public_research_record
 knowledge_use
 data_dependencies
 uncertainties
+artifact_refs
 handoff
 math_model_search
 measurement_proposal

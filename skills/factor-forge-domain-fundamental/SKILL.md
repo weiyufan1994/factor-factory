@@ -80,6 +80,12 @@ validates and atomically admits it to
 measurement program and may not modify Step artifacts, data, code, knowledge,
 or another Agent's result.
 
+Bind every cited staged input in top-level proposal `artifact_refs`. Each item
+has exactly two keys, `path` and `sha256`, copied from the matching
+`runtime_context.json.files` entry. Do not copy context-only metadata such as
+`size_bytes`. Every optional role-memory candidate may cite only these exact
+two-key references.
+
 Set `producer_mode=real_agent` only for an actual isolated Agent session with
 its real unique `session_id`. Current v1 tasks set
 `single_agent_fallback_allowed=false`; the main/Host session therefore must not

@@ -1256,6 +1256,39 @@ def test_agent_result_blocks_private_reasoning_and_false_independence(tmp_path: 
     domain_task = _task(workspace, "price_volume_researcher")
     valid_domain = _result(domain_task)
     assert validate_agent_result(valid_domain, task=domain_task, workspace=workspace) == []
+    missing_artifact_refs = copy.deepcopy(valid_domain)
+    del missing_artifact_refs["public_research_record"]["artifact_refs"]
+    missing_artifact_refs = with_content_hash(
+        missing_artifact_refs,
+        hash_field="result_sha256",
+    )
+    missing_artifact_reasons = validate_agent_result(
+        missing_artifact_refs,
+        task=domain_task,
+        workspace=workspace,
+    )
+    assert any(
+        "public_research_record.artifact_refs" in reason
+        for reason in missing_artifact_reasons
+    )
+    for malformed_references in (None, {}, ""):
+        malformed_artifact_refs = copy.deepcopy(valid_domain)
+        malformed_artifact_refs["public_research_record"]["artifact_refs"] = (
+            malformed_references
+        )
+        malformed_artifact_refs = with_content_hash(
+            malformed_artifact_refs,
+            hash_field="result_sha256",
+        )
+        malformed_artifact_reasons = validate_agent_result(
+            malformed_artifact_refs,
+            task=domain_task,
+            workspace=workspace,
+        )
+        assert any(
+            "public_research_record.artifact_refs" in reason
+            for reason in malformed_artifact_reasons
+        )
     reused_domain_reasons = validate_agent_result(
         valid_domain,
         task=domain_task,

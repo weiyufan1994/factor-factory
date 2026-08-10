@@ -3555,6 +3555,48 @@ def test_resume_classifier_distinguishes_all_known_resume_states(tmp_path):
         classify({"status": "PAUSED"})
 
 
+def test_resume_questionnaire_accepts_only_ir_bound_field_aliases():
+    from factor_factory.console.run_service import (
+        _questionnaire_fields_match_authoritative,
+    )
+
+    factor_spec = {
+        "canonical_spec": {
+            "formula_ir": {
+                "required_fields": ["close", "returns", "volume"],
+                "field_aliases": {
+                    "close": ["close"],
+                    "returns": ["returns", "return", "pct_chg"],
+                    "volume": ["volume", "vol"],
+                },
+            }
+        }
+    }
+    production_questionnaire_fields = {
+        "close",
+        "pct_chg",
+        "returns",
+        "vol",
+        "volume",
+    }
+
+    assert _questionnaire_fields_match_authoritative(
+        production_questionnaire_fields,
+        ["close", "returns", "volume"],
+        factor_spec,
+    )
+    assert not _questionnaire_fields_match_authoritative(
+        production_questionnaire_fields | {"amount"},
+        ["close", "returns", "volume"],
+        factor_spec,
+    )
+    assert not _questionnaire_fields_match_authoritative(
+        {"pct_chg", "vol"},
+        ["close", "returns", "volume"],
+        factor_spec,
+    )
+
+
 def test_host_formal_checkpoint_resume_does_not_call_research_agent(
     tmp_path,
     monkeypatch,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -173,6 +175,7 @@ PUBLIC_MEMO_FORMULA_COMPONENT_INTERPRETATION_FIELDS = frozenset(
 PUBLIC_MEMO_EVIDENCE_FIELDS = frozenset(
     {
         "observed_metrics",
+        "observed_metric_conflict_keys",
         "mechanism_supported",
         "contradictions",
         "revision_implications",
@@ -191,13 +194,60 @@ PUBLIC_MEMO_SOURCE_REF_FIELDS = frozenset(
 )
 PUBLIC_MEMO_OBSERVED_METRIC_FIELDS = frozenset(
     {
+        "metric_period",
         "rank_ic_mean",
+        "rank_ic_std",
+        "rank_ic_ir",
+        "rank_icir",
+        "pearson_ic_mean",
+        "pearson_ic_std",
+        "pearson_ic_ir",
+        "fama_macbeth",
+        "fama_macbeth_beta",
+        "fama_macbeth_premium",
+        "fama_macbeth_risk_premium",
+        "fama_macbeth_t_stat",
+        "fama_macbeth_tstat",
+        "fama_macbeth_p_value",
+        "long_side_return_daily",
         "long_side_annual_return",
+        "long_side_annual_volatility",
+        "long_side_sharpe",
         "cost_adjusted_annual_return",
+        "cost_adjusted_return_daily",
+        "cost_adjusted_long_side_sharpe",
+        "cost_adjusted_long_side_max_drawdown",
+        "cost_adjusted_long_side_recovery_days",
         "long_side_max_drawdown",
+        "long_side_recovery_days",
         "long_side_turnover_mean_daily",
         "turnover_mean",
         "daily_turnover",
+        "trading_cogs_daily",
+        "trading_cogs_annual",
+        "transaction_cost",
+        "long_short_spread_mean",
+        "long_short_spread_std",
+        "long_short_spread_ir",
+        "monotonicity",
+        "monotonicity_score",
+        "monotonicity_diagnostic",
+        "decile_monotonicity",
+        "quintile_monotonicity",
+        "coverage_ratio",
+        "coverage_rate",
+        "valid_observation_ratio",
+        "coverage_row_count",
+        "coverage_date_count",
+        "coverage_ticker_count",
+        "coverage_period_count",
+        "group_member_count_min",
+        "group_member_count_median",
+        "group_member_count_max",
+        "long_end_return",
+        "long_end_annual_return",
+        "top_decile_mean_return",
+        "bottom_decile_mean_return",
         "group_top_decile_mean_return",
         "group_bottom_decile_mean_return",
         "group_g9_mean_return",
@@ -205,9 +255,61 @@ PUBLIC_MEMO_OBSERVED_METRIC_FIELDS = frozenset(
         "g9_mean_return",
         "g10_mean_return",
         *{f"group_{index}_mean_return" for index in range(1, 11)},
+        *{f"decile_{index}_mean_return" for index in range(1, 11)},
+        *{f"quintile_{index}_mean_return" for index in range(1, 6)},
+        *{f"quantile_{index}_mean_return" for index in range(1, 11)},
         *{f"g{index}" for index in range(1, 11)},
     }
 )
+PUBLIC_MEMO_OBSERVED_STRING_METRIC_FIELDS = frozenset(
+    {"metric_period", "monotonicity_diagnostic"}
+)
+
+
+def _is_public_observed_metric_key(key: str) -> bool:
+    return key in PUBLIC_MEMO_OBSERVED_METRIC_FIELDS
+
+
+def public_observed_metric_value_is_valid(key: str, value: Any) -> bool:
+    if value is None:
+        return True
+    if key in PUBLIC_MEMO_OBSERVED_STRING_METRIC_FIELDS:
+        return isinstance(value, str)
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value.bit_length() <= 1024
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def project_public_observed_metrics(value: Any) -> dict[str, Any]:
+    """Keep only scalar Host metrics accepted by the public memo contract."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): item
+        for key, item in sorted(value.items())
+        if _is_public_observed_metric_key(str(key))
+        and public_observed_metric_value_is_valid(str(key), item)
+    }
+
+
+def project_public_observed_metric_conflict_keys(value: Any) -> list[str]:
+    """Expose disputed metric names without publishing backend payloads."""
+    if not isinstance(value, dict):
+        return []
+    conflicts: set[str] = set()
+    recorded = value.get("backend_metric_conflicts")
+    if isinstance(recorded, dict):
+        conflicts.update(str(key) for key in recorded)
+    conflicts.update(
+        str(key)
+        for key, item in value.items()
+        if isinstance(item, dict) and item.get("status") == "backend_conflict"
+    )
+    return sorted(key for key in conflicts if _is_public_observed_metric_key(key))
+
+
 PUBLIC_MEMO_OPERATOR_CONSISTENCY_FIELDS = frozenset(
     {
         "claims_correlation_or_covariance",
@@ -591,6 +693,248 @@ def _information_name_has_future_semantics(name: str) -> bool:
     ) is not None
 
 
+def _state_rhs_is_trusted(
+    rhs: str,
+    *,
+    observable_names: set[str],
+    operator_names: set[str],
+) -> bool:
+    try:
+        if len(rhs.encode("utf-8")) > 4_096:
+            return False
+        tree = ast.parse(rhs.strip(), mode="eval")
+        nodes = list(ast.walk(tree))
+    except (
+        MemoryError,
+        OverflowError,
+        RecursionError,
+        SyntaxError,
+        UnicodeError,
+        ValueError,
+    ):
+        return False
+    if len(nodes) > 512:
+        return False
+
+    safe_functions = {
+        "abs",
+        "clip",
+        "exp",
+        "kurtosis",
+        "log",
+        "log1p",
+        "max",
+        "mean",
+        "min",
+        "normalize",
+        "pow",
+        "rank",
+        "signed_log1p",
+        "skew",
+        "sqrt",
+        "standardize",
+        "std",
+        "sum",
+        "var",
+        "winsorize",
+        "zscore",
+    }
+    allowed_functions = safe_functions | {
+        str(operator).strip().lower()
+        for operator in operator_names
+        if str(operator).strip()
+    }
+    allowed_dependencies = set(observable_names)
+
+    allowed_node_types = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.BoolOp,
+        ast.Compare,
+        ast.IfExp,
+        ast.Call,
+        ast.Name,
+        ast.Constant,
+        ast.Load,
+        ast.keyword,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        ast.UAdd,
+        ast.USub,
+        ast.Not,
+        ast.And,
+        ast.Or,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+    )
+    if any(not isinstance(node, allowed_node_types) for node in nodes):
+        return False
+
+    function_node_ids: set[int] = set()
+    temporal_keyword_names = {
+        "lag",
+        "offset",
+        "period",
+        "periods",
+        "shift",
+        "window",
+    }
+    safe_keyword_names = temporal_keyword_names | {
+        "axis",
+        "ddof",
+        "keepdims",
+        "limits",
+        "lower",
+        "min_periods",
+        "standardize",
+        "upper",
+    }
+    temporal_function_tokens = (
+        "change",
+        "delay",
+        "delta",
+        "diff",
+        "difference",
+        "lag",
+        "shift",
+    )
+    for call in (node for node in nodes if isinstance(node, ast.Call)):
+        if not isinstance(call.func, ast.Name):
+            return False
+        function = call.func.id
+        function_node_ids.add(id(call.func))
+        if (
+            re.fullmatch(r"[a-z][a-z0-9_]*", function) is None
+            or function not in allowed_functions
+            or _information_name_has_future_semantics(function)
+            or any(
+                token in function
+                for token in ("bidirectional", "centered", "noncausal", "two_sided")
+            )
+        ):
+            return False
+        if any(keyword.arg is None for keyword in call.keywords):
+            return False
+        for keyword in call.keywords:
+            if (
+                keyword.arg is None
+                or re.fullmatch(r"[a-z][a-z0-9_]*", keyword.arg) is None
+                or keyword.arg not in safe_keyword_names
+                or _information_name_has_future_semantics(keyword.arg)
+                or any(
+                    token in keyword.arg
+                    for token in ("bidirectional", "center", "noncausal", "two_sided")
+                )
+            ):
+                return False
+            if keyword.arg in temporal_keyword_names and (
+                not isinstance(keyword.value, ast.Constant)
+                or isinstance(keyword.value.value, bool)
+                or not isinstance(keyword.value.value, int)
+                or keyword.value.value < 0
+            ):
+                return False
+        if any(token in function for token in temporal_function_tokens):
+            if len(call.args) == 2 and not call.keywords:
+                offset = call.args[1]
+            elif (
+                len(call.args) == 1
+                and len(call.keywords) == 1
+                and call.keywords[0].arg in temporal_keyword_names
+            ):
+                offset = call.keywords[0].value
+            else:
+                return False
+            if (
+                not isinstance(offset, ast.Constant)
+                or isinstance(offset.value, bool)
+                or not isinstance(offset.value, int)
+                or offset.value < 0
+            ):
+                return False
+
+    data_dependencies: set[str] = set()
+    for node in (node for node in nodes if isinstance(node, ast.Name)):
+        if id(node) in function_node_ids:
+            continue
+        if (
+            re.fullmatch(r"[a-z][a-z0-9_]*", node.id) is None
+            or _information_name_has_future_semantics(node.id)
+            or node.id not in allowed_dependencies
+        ):
+            return False
+        data_dependencies.add(node.id)
+
+    for node in (node for node in nodes if isinstance(node, ast.Constant)):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            return False
+        if isinstance(node.value, float) and not math.isfinite(node.value):
+            return False
+    return bool(data_dependencies & allowed_dependencies)
+
+
+def _declared_current_state_names(
+    memo: dict[str, Any],
+    observable_names: set[str],
+    operator_names: set[str] | None = None,
+) -> set[str]:
+    math_payload = (
+        memo.get("math_hypothesis")
+        if isinstance(memo.get("math_hypothesis"), dict)
+        else {}
+    )
+    equation = str(
+        math_payload.get("mechanism_equation_or_functional")
+        or math_payload.get("process_or_distribution")
+        or ""
+    ).lower()
+    equation = equation.replace("−", "-").replace("→", "->")
+    states: set[str] = set()
+    assignment = re.compile(
+        r"(?P<name>[a-z][a-z0-9_]*)_\{(?P<index>[^{}]+)\}\s*="
+    )
+    allowed_operators = {
+        str(operator).strip().lower()
+        for operator in operator_names or set()
+        if str(operator).strip()
+    }
+    for match in assignment.finditer(equation):
+        name = match.group("name")
+        index_parts = [part.strip() for part in match.group("index").split(",")]
+        if (
+            _information_name_has_future_semantics(name)
+            or index_parts.count("t") != 1
+            or any(
+                re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", item) is None
+                for item in index_parts
+            )
+        ):
+            continue
+        end = equation.find(";", match.end())
+        rhs = equation[match.end() : end if end >= 0 else len(equation)]
+        if (
+            not rhs.strip()
+            or not _state_rhs_is_trusted(
+                rhs,
+                observable_names=observable_names,
+                operator_names=allowed_operators,
+            )
+        ):
+            continue
+        states.add(name)
+    return states
+
+
 def _first_top_level_expectation_body(value: str) -> str | None:
     square_depth = 0
     for index, character in enumerate(value):
@@ -861,23 +1205,33 @@ def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
     refs = memo.get("evidence_comparison")
     if isinstance(refs, dict):
         observed = refs.get("observed_metrics")
-        failures.extend(
-            _unexpected_fields(
-                observed,
-                PUBLIC_MEMO_OBSERVED_METRIC_FIELDS,
-                "evidence_comparison.observed_metrics",
-            )
-        )
         if isinstance(observed, dict):
             for key, value in observed.items():
-                if value is not None and (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                ):
+                if not _is_public_observed_metric_key(str(key)):
+                    failures.append(
+                        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_UNEXPECTED_FIELD:"
+                        f"evidence_comparison.observed_metrics.{key}"
+                    )
+                elif not public_observed_metric_value_is_valid(str(key), value):
                     failures.append(
                         "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
                         f"evidence_comparison.observed_metrics.{key}"
                     )
+        conflict_keys = refs.get("observed_metric_conflict_keys")
+        if conflict_keys is not None and (
+            not isinstance(conflict_keys, list)
+            or any(
+                not isinstance(key, str)
+                or not _is_public_observed_metric_key(key)
+                for key in conflict_keys
+            )
+            or len(conflict_keys) != len(set(conflict_keys))
+            or conflict_keys != sorted(conflict_keys)
+        ):
+            failures.append(
+                "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+                "evidence_comparison.observed_metric_conflict_keys"
+            )
         if "mechanism_supported" in refs and not isinstance(
             refs.get("mechanism_supported"), str
         ):
@@ -2066,8 +2420,16 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     understanding = memo.get("formula_understanding") if isinstance(memo.get("formula_understanding"), dict) else {}
     trusted_understanding = build_formula_understanding(factor_spec or {})
     operators = _operator_set(factor_spec or {}, understanding)
+    trusted_operators = _operator_set(factor_spec or {}, trusted_understanding)
     fields = _field_set(factor_spec or {}, understanding)
     trusted_information_fields = _field_set(factor_spec or {}, trusted_understanding)
+    trusted_information_fields.update(
+        _declared_current_state_names(
+            memo,
+            trusted_information_fields,
+            trusted_operators,
+        )
+    )
     formula_terms = formula_specific_qa_terms(
         formula_text,
         operators=operators,

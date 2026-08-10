@@ -655,14 +655,23 @@ def test_current_main_agent_memo_rejects_unknown_public_schema_fields() -> None:
     assert _public_evidence_copy(
         {
             "observed_metrics": {
+                "metric_period": "2016-01-01/2025-07-11",
                 "rank_ic_mean": 0.01,
                 "cost_adjusted_annual_return": 0.05,
+                "monotonicity_diagnostic": "top_group_not_above_bottom_group",
             },
+            "observed_metric_conflict_keys": ["rank_ic_mean"],
             "mechanism_supported": "partial",
         }
-    )["observed_metrics"] == {
+    ) == {
+        "observed_metric_conflict_keys": ["rank_ic_mean"],
+        "mechanism_supported": "partial",
+        "observed_metrics": {
+            "metric_period": "2016-01-01/2025-07-11",
+            "monotonicity_diagnostic": "top_group_not_above_bottom_group",
         "cost_adjusted_annual_return": 0.05,
         "rank_ic_mean": 0.01,
+        },
     }
 
 

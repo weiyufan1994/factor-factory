@@ -5,10 +5,14 @@ import copy
 from factor_factory.mechanism_math.classifier import build_mechanism_math_contract_v2
 from factor_factory.mechanism_math.main_agent_memo import (
     _claims_correlation_or_covariance_from_text,
+    _declared_current_state_names,
     _has_explicit_forward_price_payoff,
     _has_explicit_named_return_payoff,
     _require_open_answer,
     formula_specific_qa_terms,
+    memo_public_schema_failures,
+    project_public_observed_metric_conflict_keys,
+    project_public_observed_metrics,
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
@@ -227,6 +231,172 @@ def test_explicit_forward_price_payoff_is_a_legal_target_functional():
         "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, observed_state_{i,t}]",
         allowed_information_names={"observed_state"},
     )
+    assert _has_explicit_forward_price_payoff(
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, C_{i,t}]="
+        "-lambda*C_{i,t}; entry t+1 close, exit t+2 close",
+        allowed_information_names={"c"},
+    )
+
+
+def test_declared_current_state_requires_observable_nonanticipative_definition():
+    current = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": (
+                "C_{i,t}=rolling_kurtosis(close,5)+rolling_skew(volume,5)"
+            )
+        }
+    }
+    future_shift = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=close.shift(-1)"
+        }
+    }
+    future_name = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=future_return+close"
+        }
+    }
+    unobservable = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=unobserved_state"
+        }
+    }
+    mixed_unobservable = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": (
+                "C_{i,t}=rolling_kurtosis(close,5)+unobserved_state"
+            )
+        }
+    }
+    negative_lag = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=lag(close,-1)"
+        }
+    }
+    prefixed_negative_lag = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=ts_delay(close,-1)"
+        }
+    }
+    symbolic_negative_lags = [
+        {
+            "math_hypothesis": {
+                "mechanism_equation_or_functional": equation
+            }
+        }
+        for equation in (
+            "C_{i,t}=ts_delay(close,-k)",
+            "C_{i,t}=rolling_shift(close,-h)",
+            "C_{i,t}=lag(close,-n)",
+            "C_{i,t}=ts_delay(log(close),-k)",
+            "C_{i,t}=close.shift(periods=-1)",
+            "C_{i,t}=ts_delay(close,5,-1)",
+            "C_{i,t}=ts_delay(close,5,periods=-1)",
+            "C_{i,t}=ts_delay(close,5,k)",
+            "C_{i,t}=ts_delay(close,periods=-1==5)",
+            "C_{i,t}=close(",
+            "C_{i,t}=close+\u672a\u6765\u6536\u76ca",
+            "C_{i,t}=delta(close,-1)",
+            "C_{i,t}=diff(close,-1)",
+            "C_{i,t}=mean(close,window=5,center=1)",
+            "C_{i,t}=rank(close,future_return=1)",
+            "C_{i,t}=tsdelay(close,-1)",
+            "C_{i,t}=close+\ud800",
+            "C_{i,t}=close+returns",
+        )
+    ]
+    unproven_symbolic_lag = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=ts_delay(close,k)"
+        }
+    }
+    explicit_past_lag = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=ts_delay(log(close),5)"
+        }
+    }
+    undeclared_operator = {
+        "math_hypothesis": {
+            "mechanism_equation_or_functional": "C_{i,t}=rolling_oracle(close,5)"
+        }
+    }
+
+    assert _declared_current_state_names(
+        current,
+        {"close", "volume"},
+        {"rolling_kurtosis", "rolling_skew"},
+    ) == {"c"}
+    assert _declared_current_state_names(future_shift, {"close"}) == set()
+    assert _declared_current_state_names(future_name, {"close"}) == set()
+    assert _declared_current_state_names(unobservable, {"close"}) == set()
+    assert _declared_current_state_names(mixed_unobservable, {"close"}) == set()
+    assert _declared_current_state_names(negative_lag, {"close"}) == set()
+    assert _declared_current_state_names(
+        prefixed_negative_lag,
+        {"close"},
+        {"ts_delay"},
+    ) == set()
+    for symbolic_negative_lag in symbolic_negative_lags:
+        assert _declared_current_state_names(
+            symbolic_negative_lag,
+            {"close"},
+            {"lag", "rolling_shift", "ts_delay"},
+        ) == set()
+    assert _declared_current_state_names(
+        unproven_symbolic_lag,
+        {"close"},
+        {"ts_delay"},
+    ) == set()
+    assert _declared_current_state_names(
+        explicit_past_lag,
+        {"close"},
+        {"ts_delay"},
+    ) == {"c"}
+    assert _declared_current_state_names(
+        {
+            "math_hypothesis": {
+                "mechanism_equation_or_functional": "C_{i,t}=delta(close,5)"
+            }
+        },
+        {"close"},
+        {"delta"},
+    ) == {"c"}
+    assert _declared_current_state_names(
+        {
+            "math_hypothesis": {
+                "mechanism_equation_or_functional": "C_{i,t}=close+returns"
+            }
+        },
+        {"close", "returns"},
+        set(),
+    ) == {"c"}
+    for equation, operators in (
+        ("C_{i,t}=ts_delay(close,lag=5)", {"ts_delay"}),
+        ("C_{i,t}=delta(close,window=5)", {"delta"}),
+    ):
+        assert _declared_current_state_names(
+            {
+                "math_hypothesis": {
+                    "mechanism_equation_or_functional": equation
+                }
+            },
+            {"close"},
+            operators,
+        ) == {"c"}
+    assert _declared_current_state_names(
+        {
+            "math_hypothesis": {
+                "mechanism_equation_or_functional": "C_{i,t}=" + "+" * 6_000 + "close"
+            }
+        },
+        {"close"},
+        set(),
+    ) == set()
+    assert _declared_current_state_names(
+        undeclared_operator,
+        {"close"},
+        {"rolling_kurtosis"},
+    ) == set()
 
 
 def test_explicit_price_payoff_requires_future_net_return_and_expectation():
@@ -400,6 +570,162 @@ def test_main_agent_validator_accepts_explicit_forward_price_payoff_target():
         }
     )
     assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_TARGET_FUNCTIONAL_INVALID" not in failures
+
+
+def test_memo_authored_operator_cannot_expand_trusted_state_functions():
+    signature = {
+        "rank_ic": "expected rank IC direction compared with observed evidence",
+        "long_side": "expected long-side return compared with observed evidence",
+        "cost_adjusted": "expected net return compared with observed evidence",
+        "monotonicity": "expected ordering compared with observed evidence",
+        "turnover": "expected turnover compared with observed evidence",
+    }
+    payoff = "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, C_{i,t}]"
+    failures = validate_main_agent_mechanism_memo(
+        {
+            "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+            "formula_understanding": {
+                "formula_features": {
+                    "fields": ["close"],
+                    "operators": ["rolling_oracle"],
+                }
+            },
+            "math_hypothesis": {
+                "mechanism_equation_or_functional": (
+                    "C_{i,t}=rolling_oracle(close,5)"
+                ),
+                "target_functional": payoff,
+                "market_outcome_projection": payoff,
+                "expected_metric_signature": signature,
+            },
+            "expected_metric_signature": dict(signature),
+        },
+        {
+            "canonical_spec": {
+                "formula_text": "rank(close)",
+                "required_inputs": ["close"],
+                "operators": ["rank"],
+            }
+        },
+    )
+
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+
+def test_symbolic_negative_lag_cannot_define_trusted_current_state():
+    signature = {
+        "rank_ic": "expected rank IC direction compared with observed evidence",
+        "long_side": "expected long-side return compared with observed evidence",
+        "cost_adjusted": "expected net return compared with observed evidence",
+        "monotonicity": "expected ordering compared with observed evidence",
+        "turnover": "expected turnover compared with observed evidence",
+    }
+    payoff = "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, C_{i,t}]"
+    for equation in (
+        "C_{i,t}=ts_delay(close,-k)",
+        "C_{i,t}=ts_delay(close,5,-1)",
+        "C_{i,t}=ts_delay(close,5,periods=-1)",
+        "C_{i,t}=ts_delay(close,5,k)",
+        "C_{i,t}=ts_delay(close,periods=-1==5)",
+        "C_{i,t}=close(",
+        "C_{i,t}=close+\u672a\u6765\u6536\u76ca",
+        "C_{i,t}=delta(close,-1)",
+        "C_{i,t}=diff(close,-1)",
+        "C_{i,t}=mean(close,window=5,center=1)",
+        "C_{i,t}=rank(close,future_return=1)",
+        "C_{i,t}=tsdelay(close,-1)",
+        "C_{i,t}=close+\ud800",
+        "C_{i,t}=close+returns",
+    ):
+        failures = validate_main_agent_mechanism_memo(
+            {
+                "contract_version": "factorforge_main_agent_mechanism_memo_v1",
+                "math_hypothesis": {
+                    "mechanism_equation_or_functional": equation,
+                    "target_functional": payoff,
+                    "market_outcome_projection": payoff,
+                    "expected_metric_signature": signature,
+                },
+                "expected_metric_signature": dict(signature),
+            },
+            {
+                "canonical_spec": {
+                    "formula_text": "ts_delay(close,1)",
+                    "required_inputs": ["close"],
+                    "operators": [
+                        "delta",
+                        "diff",
+                        "mean",
+                        "rank",
+                        "ts_delay",
+                        "tsdelay",
+                    ],
+                }
+            },
+        )
+
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+
+def test_public_metric_projection_accepts_formal_scalars_and_drops_backend_objects():
+    source_metrics = {
+        "metric_period": "2016-01-01/2025-07-11",
+        "rank_ic_mean": 0.0069,
+        "rank_ic_ir": 0.128,
+        "pearson_ic_ir": 0.091,
+        "long_side_annual_volatility": 0.26,
+        "long_side_sharpe": -0.17,
+        "long_side_recovery_days": 3474,
+        "trading_cogs_annual": 0.515,
+        "cost_adjusted_long_side_sharpe": -2.36,
+        "long_short_spread_mean": 0.00059,
+        "monotonicity_diagnostic": "top_group_not_above_bottom_group",
+        "coverage_ratio": None,
+        "coverage_row_count": 8_034_990,
+        "group_member_count_median": 500.0,
+        "backend_metrics": [{"backend": "self_quant"}],
+        "backend_metric_conflicts": {"rank_ic_mean": {"status": "conflict"}},
+        "rank_ic_std": {"status": "backend_conflict"},
+        "pearson_ic_std": float("nan"),
+        "pearson_ic_mean": float("inf"),
+        "coverage_unapproved": 1.0,
+        "group_unapproved": 2.0,
+        "unapproved_metric": 1.0,
+    }
+    observed = project_public_observed_metrics(source_metrics)
+    conflict_keys = project_public_observed_metric_conflict_keys(source_metrics)
+
+    assert observed["metric_period"] == "2016-01-01/2025-07-11"
+    assert observed["monotonicity_diagnostic"] == "top_group_not_above_bottom_group"
+    assert observed["coverage_ratio"] is None
+    assert observed["rank_ic_ir"] == 0.128
+    assert "backend_metrics" not in observed
+    assert "backend_metric_conflicts" not in observed
+    assert "rank_ic_std" not in observed
+    assert "pearson_ic_std" not in observed
+    assert "pearson_ic_mean" not in observed
+    assert "coverage_unapproved" not in observed
+    assert "group_unapproved" not in observed
+    assert "unapproved_metric" not in observed
+    assert conflict_keys == ["rank_ic_mean", "rank_ic_std"]
+    assert memo_public_schema_failures(
+        {
+            "evidence_comparison": {
+                "observed_metrics": observed,
+                "observed_metric_conflict_keys": conflict_keys,
+            }
+        }
+    ) == []
+    assert memo_public_schema_failures(
+        {
+            "evidence_comparison": {
+                "observed_metrics": {"rank_ic_mean": float("nan")}
+            }
+        }
+    ) == [
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:"
+        "evidence_comparison.observed_metrics.rank_ic_mean"
+    ]
 
 
 def test_named_return_target_requires_the_same_structured_contract():

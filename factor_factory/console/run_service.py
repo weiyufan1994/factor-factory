@@ -102,6 +102,8 @@ from factor_factory.mechanism_math.main_agent_memo import (
     CONTRACT_VERSION,
     MAX_MECHANISM_MEMO_REVISIONS,
     REQUIRED_QA_FIELDS,
+    project_public_observed_metric_conflict_keys,
+    project_public_observed_metrics,
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.formula_specific import BASELINE_MODEL_FAMILIES
@@ -4920,6 +4922,14 @@ class ResearchRunService:
             factor_case,
             evaluation,
         )
+        memo_metric_facts = project_public_observed_metrics(metric_facts)
+        memo_metric_conflict_keys = project_public_observed_metric_conflict_keys(
+            metric_facts
+        )
+        if not memo_metric_facts:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: public mechanism metric facts are missing"
+            )
         for key, value in questionnaire_metric_facts.items():
             if (
                 key in metric_facts
@@ -5061,7 +5071,8 @@ class ResearchRunService:
             "expected_metric_signature": dict(metric_signature_form),
             "falsification_tests": [],
             "evidence_comparison": {
-                "observed_metrics": metric_facts,
+                "observed_metrics": memo_metric_facts,
+                "observed_metric_conflict_keys": memo_metric_conflict_keys,
                 "mechanism_supported": "",
                 "contradictions": [],
                 "revision_implications": [],
@@ -5366,6 +5377,27 @@ class ResearchRunService:
         )
         if stable_json_hash(observed) != stable_json_hash(expected_observed):
             failures.append("immutable_field_changed:evidence_comparison.observed_metrics")
+        observed_conflicts = (
+            memo.get("evidence_comparison", {}).get(
+                "observed_metric_conflict_keys"
+            )
+            if isinstance(memo.get("evidence_comparison"), dict)
+            else None
+        )
+        expected_observed_conflicts = (
+            answer_form.get("evidence_comparison", {}).get(
+                "observed_metric_conflict_keys"
+            )
+            if isinstance(answer_form.get("evidence_comparison"), dict)
+            else None
+        )
+        if stable_json_hash(observed_conflicts) != stable_json_hash(
+            expected_observed_conflicts
+        ):
+            failures.append(
+                "immutable_field_changed:"
+                "evidence_comparison.observed_metric_conflict_keys"
+            )
         memo_components = memo.get("formula_component_map") or []
         form_components = answer_form.get("formula_component_map") or []
         if (

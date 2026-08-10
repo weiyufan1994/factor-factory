@@ -166,6 +166,7 @@ def _resume_answer_form():
         },
         "evidence_comparison": {
             "observed_metrics": {"rank_ic_mean": -0.0078},
+            "observed_metric_conflict_keys": [],
             "mechanism_supported": "",
             "contradictions": [],
             "revision_implications": [],

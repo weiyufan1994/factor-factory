@@ -26,6 +26,36 @@ def _load_run_step3b():
     return module
 
 
+def test_hybrid_codegen_embeds_json_scalars_as_valid_python_literals():
+    run_step3b = _load_run_step3b()
+    formula_ir = {
+        "formula_ir_version": "factorforge_formula_ir_v1",
+        "source_dialect_contract": {
+            "formal_execution_eligible": True,
+            "migration_required": False,
+            "optional_note": None,
+        },
+    }
+    source = run_step3b.generate_hybrid_code(
+        report_id="HYBRID_LITERAL_CONTRACT",
+        factor_id="HYBRID_LITERAL_CONTRACT",
+        formula_ir=formula_ir,
+        custom_block={
+            "function_name": "apply_custom_block",
+            "source_code": (
+                "def apply_custom_block(operator_df, daily_df):\n"
+                "    return operator_df.rename(columns={'operator_value': 'factor_value'})"
+            ),
+        },
+        boundary={},
+        contract={"hybrid_contract_version": "v1"},
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<hybrid_codegen>", "exec"), namespace)
+
+    assert namespace["FORMULA_IR"] == formula_ir
+
+
 def test_direct_code_derived_state_writes_qlib_not_applicable_config(tmp_path):
     run_step3b = _load_run_step3b()
     old_obj = run_step3b.OBJ

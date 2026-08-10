@@ -2240,6 +2240,37 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         resume_task=task,
     )
 
+    emphasized_label_prefix = (
+        "All six authorized inputs were reviewed.\n\n"
+        "**Analysis summary:**\n"
+        "- **Formula (locked):** `-1 * cs_zscore(formula_state)`.\n"
+        "- **Observed evidence:** The pinned metrics were checked.\n\n"
+    )
+    adapter._stage_resume_terminal_delivery(
+        phase_view("emphasized-label-prefix"),
+        terminal_text=emphasized_label_prefix + valid_delivery,
+        resume_task=task,
+    )
+
+    production_length_emphasized_prefix = (
+        "All six authorized inputs were reviewed.\n\n"
+        "**Analysis summary:**\n"
+        "- **Formula (locked):** `-1 * cs_zscore(formula_state)`.\n"
+        "- **Observed evidence:** "
+        + ("Each pinned metric and identity field was checked. " * 31)
+        + "\n\n"
+    )
+    assert (
+        1_600
+        < len(production_length_emphasized_prefix.encode("utf-8"))
+        < 2_048
+    )
+    adapter._stage_resume_terminal_delivery(
+        phase_view("production-length-emphasized-prefix"),
+        terminal_text=production_length_emphasized_prefix + valid_delivery,
+        resume_task=task,
+    )
+
     runtime_length_prefix = (
         "All authorized inputs were reviewed. "
         + ("Each pinned metric and identity field was checked. " * 25)
@@ -2270,6 +2301,11 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
         ("incomplete-array-prefix", 'Self-check ["wrapper",'),
         ("labelled-array-prefix", 'Self-check ["prior"]'),
         ("unclosed-inline-code-prefix", "Self-check `formula_state_{i,t}"),
+        ("unclosed-emphasis-prefix", "- **Formula (locked): summary\n"),
+        ("empty-emphasis-prefix", "- ****summary\n"),
+        ("spaced-emphasis-prefix", "- **Formula ** prose\n"),
+        ("trailing-emphasis-prefix", "- **Formula:** prose __\n"),
+        ("inline-code-closing-emphasis-prefix", "- **Formula `x**` prose\n"),
     ):
         with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
             adapter._stage_resume_terminal_delivery(
@@ -2277,6 +2313,13 @@ def test_resume_terminal_delivery_is_host_staged_and_bounded(tmp_path):
                 terminal_text=prefix + valid_delivery,
                 resume_task=task,
             )
+
+    with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
+        adapter._stage_resume_terminal_delivery(
+            phase_view("inline-code-json-object-prefix"),
+            terminal_text=f"Prior `{valid_delivery}`\n" + valid_delivery,
+            resume_task=task,
+        )
 
     with pytest.raises(RuntimeError, match="delivery is invalid JSON"):
         adapter._stage_resume_terminal_delivery(

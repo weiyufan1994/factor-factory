@@ -21,10 +21,12 @@ from factor_factory.console.run_service import (
     _allowed_agent_write_paths,
     _capture_resume_restore_state,
     _configure_host_formal_python_environment,
+    _public_error_message,
     _read_agent_resume_artifact_json,
     _restore_resume_workspace,
     _validate_agent_write_boundary as _validate_agent_write_boundary_impl,
     _validate_host_conversation_ledger_binding,
+    _web_terminal_error,
     _workspace_evidence_tree,
     _workspace_file_snapshot,
 )
@@ -1588,6 +1590,99 @@ def test_completed_ultimate_cannot_bypass_required_formal_research_organization(
         },
         require_formal_organization=True,
     ) == "COMPLETED"
+
+
+def test_formal_step_block_is_not_misclassified_as_research_org_incomplete():
+    summary = SimpleNamespace(
+        blockers=(
+            "BLOCK_FACTORFORGE_CONSOLE_EXPLICIT_BLOCKED_EVIDENCE:wrapper_report:status",
+        ),
+        current_stage="blocked",
+    )
+
+    error_code, error_message = _web_terminal_error(
+        execution_status="BLOCKED",
+        summary=summary,
+        require_formal_organization=True,
+        organization_runtime_verified=True,
+    )
+
+    assert error_code == "BLOCK_FACTORFORGE_CONSOLE_HOST_FORMAL_EXECUTION_FAILED"
+    assert "研究组织已通过核验" in error_message
+
+
+def test_formal_step_block_redacts_denied_values_from_public_error_message():
+    secret = "temporary-session-token-for-formal-block"
+    summary = SimpleNamespace(
+        blockers=(f"BLOCK_FORMAL_STEP_FAILED:token={secret}",),
+        current_stage="blocked",
+    )
+
+    _error_code, error_message = _web_terminal_error(
+        execution_status="BLOCKED",
+        summary=summary,
+        require_formal_organization=True,
+        organization_runtime_verified=True,
+        denied_values=(secret,),
+    )
+
+    assert secret not in error_message
+    assert "[redacted]" in error_message
+    assert len(error_message) <= 1200
+
+
+def test_public_error_redacts_secret_crossing_final_length_boundary():
+    secret = "cross-boundary-credential-value-1234567890"
+    raw_message = "x" * (1200 - len(secret) // 2) + secret + " trailing detail"
+
+    public_message = _public_error_message(
+        raw_message,
+        denied_values=(secret,),
+    )
+
+    assert secret not in public_message
+    assert secret[: len(secret) // 2] not in public_message
+    assert len(public_message) <= 1200
+
+
+def test_public_error_applies_final_limit_after_repeated_secret_redaction():
+    secret = "shortkey"
+    raw_message = (f"detail-{secret} " * 200).strip()
+
+    public_message = _public_error_message(
+        raw_message,
+        denied_values=(secret,),
+    )
+
+    assert secret not in public_message
+    assert len(public_message) <= 1200
+
+
+def test_missing_required_research_org_keeps_research_org_blocker():
+    summary = SimpleNamespace(blockers=(), current_stage="blocked")
+
+    error_code, _error_message = _web_terminal_error(
+        execution_status="BLOCKED",
+        summary=summary,
+        require_formal_organization=True,
+        organization_runtime_verified=False,
+    )
+
+    assert error_code == "BLOCK_FACTORFORGE_CONSOLE_RESEARCH_ORG_RUNTIME_INCOMPLETE"
+
+
+def test_legacy_formal_block_does_not_claim_research_org_verification():
+    summary = SimpleNamespace(blockers=(), current_stage="blocked")
+
+    error_code, error_message = _web_terminal_error(
+        execution_status="BLOCKED",
+        summary=summary,
+        require_formal_organization=False,
+        organization_runtime_verified=False,
+    )
+
+    assert error_code == "BLOCK_FACTORFORGE_CONSOLE_HOST_FORMAL_EXECUTION_FAILED"
+    assert "研究组织已通过核验" not in error_message
 
 
 def test_production_console_blocks_when_specialist_runtime_is_missing(tmp_path):

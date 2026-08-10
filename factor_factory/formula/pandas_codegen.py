@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-import json
+import pprint
 from typing import Any
 
 
 CODEGEN_VERSION = 'factorforge_pandas_formula_codegen_v1'
 
 
+def render_python_literal(value: Any) -> str:
+    """Render structured contracts as deterministic, importable Python literals."""
+    return pprint.pformat(value, sort_dicts=True, width=100)
+
+
 def generate_pandas_formula_code(*, report_id: str, factor_id: str, formula_ir: dict[str, Any]) -> str:
-    formula_ir_literal = json.dumps(formula_ir, ensure_ascii=False, sort_keys=True, indent=2)
+    formula_ir_literal = render_python_literal(formula_ir)
     return f'''from __future__ import annotations
 
 import pandas as pd

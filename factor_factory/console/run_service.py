@@ -2299,30 +2299,13 @@ class ResearchRunService:
                 "provenance": "host_pinned_agent_runtime",
             }
             finished = utc_now() if execution_status in {"COMPLETED", "BLOCKED", "FAILED", "CANCELLED"} else ""
-            error_code = ""
-            error_message = ""
-            if execution_status == "FAILED":
-                error_code = BLOCK_FORMAL_EVIDENCE_MISSING
-                error_message = "研究代理返回后未形成可核验的正式终态或暂停态。"
-            elif execution_status == "BLOCKED" and require_formal_organization:
-                error_code = BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE
-                error_message = (
-                    "Ultimate 已返回，但签名 specialist runtime、Host Director admission "
-                    "或 Independent Council 未形成完整正式证明。"
-                )
-            elif (
-                execution_status == "REVIEW_REQUIRED"
-                and summary.current_stage
-                in {
-                    "awaiting_main_agent_council_synthesis",
-                    "awaiting_next_derivation",
-                }
-            ):
-                error_code = EXPLICIT_HUMAN_DECISION_REQUIRED
-                error_message = (
-                    "Council 已完成证据审议，但下一步需要显式数学推导或主代理综合，"
-                    "普通续跑不能代替该决定。"
-                )
+            error_code, error_message = _web_terminal_error(
+                execution_status=execution_status,
+                summary=summary,
+                require_formal_organization=require_formal_organization,
+                organization_runtime_verified=organization_runtime_verified,
+                denied_values=denied_values,
+            )
             if (
                 isinstance(memory_binding, dict)
                 and execution_status == "COMPLETED"
@@ -6683,6 +6666,55 @@ def _web_execution_status(
     return "FAILED"
 
 
+def _web_terminal_error(
+    *,
+    execution_status: str,
+    summary: UltimateRunSummary,
+    require_formal_organization: bool,
+    organization_runtime_verified: bool,
+    denied_values: tuple[str, ...] = (),
+) -> tuple[str, str]:
+    def public(code: str, message: str) -> tuple[str, str]:
+        return code, _public_error_message(message, denied_values=denied_values)
+
+    if execution_status == "FAILED":
+        return public(
+            BLOCK_FORMAL_EVIDENCE_MISSING,
+            "研究代理返回后未形成可核验的正式终态或暂停态。",
+        )
+    if execution_status == "BLOCKED":
+        if require_formal_organization and not organization_runtime_verified:
+            return public(
+                BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE,
+                "Ultimate 已返回，但签名 specialist runtime、Host Director admission "
+                "或 Independent Council 未形成完整正式证明。",
+            )
+        evidence = next(
+            (str(item) for item in summary.blockers if str(item).strip()),
+            "",
+        )
+        detail = f" 证据分类：{evidence}。" if evidence else ""
+        organization_prefix = (
+            "研究组织已通过核验，但"
+            if require_formal_organization and organization_runtime_verified
+            else ""
+        )
+        return public(
+            BLOCK_HOST_FORMAL_EXECUTION_FAILED,
+            f"{organization_prefix}Ultimate 正式执行在后续步骤被阻断。{detail}",
+        )
+    if execution_status == "REVIEW_REQUIRED" and summary.current_stage in {
+        "awaiting_main_agent_council_synthesis",
+        "awaiting_next_derivation",
+    }:
+        return public(
+            EXPLICIT_HUMAN_DECISION_REQUIRED,
+            "Council 已完成证据审议，但下一步需要显式数学推导或主代理综合，"
+            "普通续跑不能代替该决定。",
+        )
+    return "", ""
+
+
 def _normalize_protocol(value: str) -> str:
     normalized = str(value or "UNKNOWN").upper()
     return {
@@ -6752,7 +6784,7 @@ def _public_error_message(
     *,
     denied_values: tuple[str, ...] = (),
 ) -> str:
-    text = str(message).replace("\n", " ")[:1200]
+    text = str(message).replace("\n", " ")
     text = re.sub(
         r"(?i)(?:file://\S+|s3://\S+|/(?:Users|home|srv|private|tmp|var/lib|root|etc|opt)/\S+)",
         "[internal-path]",
@@ -6764,7 +6796,7 @@ def _public_error_message(
         text,
     )
     text = _redact_public_text(text, denied_values)
-    return text
+    return text[:1200]
 
 
 def _adapter_denied_values(

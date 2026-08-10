@@ -31,6 +31,41 @@ def _pre_close_formula_ir():
     )
 
 
+def test_pandas_codegen_embeds_json_scalars_as_valid_python_literals():
+    formula_ir = _pre_close_formula_ir()
+    formula_ir["source_dialect_contract"] = {
+        "formal_execution_eligible": True,
+        "migration_required": False,
+        "optional_note": None,
+    }
+
+    source = generate_pandas_formula_code(
+        report_id="PYTHON_LITERAL_CONTRACT",
+        factor_id="PYTHON_LITERAL_CONTRACT",
+        formula_ir=formula_ir,
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<pandas_codegen>", "exec"), namespace)
+
+    assert namespace["FORMULA_IR"] == formula_ir
+
+    reordered_formula_ir = {
+        key: formula_ir[key]
+        for key in reversed(tuple(formula_ir))
+    }
+    reordered_formula_ir["source_dialect_contract"] = {
+        key: formula_ir["source_dialect_contract"][key]
+        for key in reversed(tuple(formula_ir["source_dialect_contract"]))
+    }
+    reordered_source = generate_pandas_formula_code(
+        report_id="PYTHON_LITERAL_CONTRACT",
+        factor_id="PYTHON_LITERAL_CONTRACT",
+        formula_ir=reordered_formula_ir,
+    )
+
+    assert reordered_source == source
+
+
 def test_operator_parity_fixture_adds_schema_valid_resolved_fields(tmp_path):
     formula_ir = _pre_close_formula_ir()
     implementation = tmp_path / "factor_impl.py"

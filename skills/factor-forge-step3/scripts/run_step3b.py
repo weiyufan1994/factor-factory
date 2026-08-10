@@ -34,7 +34,11 @@ from factor_factory.factor_families.registry import (
     has_family_plugin_declaration,
     resolve_family_plugin,
 )
-from factor_factory.formula.pandas_codegen import generate_pandas_formula_code, operator_metadata
+from factor_factory.formula.pandas_codegen import (
+    generate_pandas_formula_code,
+    operator_metadata,
+    render_python_literal,
+)
 from factor_factory.formula.parser import parse_formula, resolve_formula_fields_for_schema
 from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import operator_meta
@@ -2003,7 +2007,7 @@ def _validate_hybrid_hashes(contract: dict, resolved_ir: dict) -> None:
 
 
 def generate_hybrid_code(*, report_id: str, factor_id: str, formula_ir: dict, custom_block: dict, boundary: dict, contract: dict) -> str:
-    formula_ir_literal = json.dumps(formula_ir, ensure_ascii=False, sort_keys=True, indent=2)
+    formula_ir_literal = render_python_literal(formula_ir)
     source = _block_source(custom_block).rstrip()
     function_name = custom_block.get('function_name') or 'apply_custom_block'
     return f'''from __future__ import annotations

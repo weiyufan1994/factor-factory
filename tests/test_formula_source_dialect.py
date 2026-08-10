@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from factor_factory.formula.evaluator import evaluate_formula_frame, evaluate_formula_ir
+from factor_factory.formula.pandas_codegen import generate_pandas_formula_code
 from factor_factory.formula.polars_evaluator import polars_dependency_available
 from factor_factory.formula.parser import parse_formula, resolve_formula_fields_for_schema
 from factor_factory.formula.qlib_codegen import to_qlib_expression
@@ -125,6 +126,29 @@ def test_host_resolution_preregisters_semantics_without_claiming_source_truth() 
     )
     assert contract["formal_execution_eligible"] is True
     assert valid_source_formula_contract(contract)
+
+
+def test_source_dialect_formula_ir_is_importable_after_pandas_codegen() -> None:
+    contract = resolve_source_formula_for_host(SOURCE_FORMULA)
+    formula_ir = parse_formula(
+        contract["canonical_formula"],
+        available_columns=["close", "volume", "pct_chg"],
+        source_dialect_contract=contract,
+        raise_on_error=True,
+    )
+    source = generate_pandas_formula_code(
+        report_id="NEGATIVE_PRICE_VOLUME_SKEW_KURTOSIS",
+        factor_id="NEGATIVE_PRICE_VOLUME_SKEW_KURTOSIS",
+        formula_ir=formula_ir,
+    )
+    namespace: dict[str, object] = {}
+
+    exec(compile(source, "<source_dialect_codegen>", "exec"), namespace)
+
+    assert namespace["FORMULA_IR"] == formula_ir
+    assert namespace["FORMULA_IR"]["source_dialect_contract"][
+        "formal_execution_eligible"
+    ] is True
 
 
 def test_partial_source_formula_requires_only_relevant_semantic_choices() -> None:

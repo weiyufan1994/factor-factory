@@ -717,10 +717,13 @@ whether it is admitted.
 
 Hash semantics are deliberately distinct. For every
 `public_research_record.artifact_refs` entry, copy the matching path and
-file-byte SHA-256 from `runtime_context.json.files`; do not copy the task
-packet's `json_content` hash. A role-specific contract may separately require
-a task input-artifact content hash, such as Data Liaison's
-`catalog_snapshot_ref`; follow that role-specific rule for that field only.
+file-byte SHA-256 from `runtime_context.json.files`. Each artifact reference
+object has exactly two keys, `path` and `sha256`. The context manifest also
+contains staging metadata such as `size_bytes`; never copy that metadata into
+an artifact reference. Do not copy the task packet's `json_content` hash. A
+role-specific contract may separately require a task input-artifact content
+hash, such as Data Liaison's `catalog_snapshot_ref`; follow that role-specific
+rule for that field only.
 
 
 {role_contract_guidance}

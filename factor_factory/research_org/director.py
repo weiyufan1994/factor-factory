@@ -3097,6 +3097,7 @@ def validate_agent_result(
                 "knowledge_use",
                 "data_dependencies",
                 "uncertainties",
+                "artifact_refs",
                 "handoff",
             )
             if task.get("role_id") == "data_liaison":
@@ -3119,6 +3120,14 @@ def validate_agent_result(
                     reasons.append(
                         f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:public_research_record.{key}"
                     )
+            if (
+                task.get("role_id") != "data_liaison"
+                and "artifact_refs" in record
+                and not isinstance(record.get("artifact_refs"), list)
+            ):
+                reasons.append(
+                    f"{BLOCK_RESEARCH_ORG_RESULT_INVALID}:public_research_record.artifact_refs"
+                )
             expected_domain = next(
                 (
                     domain

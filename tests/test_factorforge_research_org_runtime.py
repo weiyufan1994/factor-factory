@@ -60,6 +60,27 @@ from scripts.run_factorforge_ultimate import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize(
+    "skill_name",
+    ("factor-forge-domain-price-volume", "factor-forge-domain-fundamental"),
+)
+def test_domain_skill_examples_use_strict_artifact_references(
+    skill_name: str,
+) -> None:
+    example_path = (
+        PROJECT_ROOT
+        / "skills"
+        / skill_name
+        / "references"
+        / "domain-research-proposal-v1.example.json"
+    )
+    payload = json.loads(example_path.read_text(encoding="utf-8"))
+    references = payload["public_research_record"]["artifact_refs"]
+
+    assert references
+    assert all(set(reference) == {"path", "sha256"} for reference in references)
+
+
 def test_preformal_check_rubrics_cover_every_controlled_check() -> None:
     assert set(runtime_module.PREFORMAL_CHECK_RUBRICS) == {
         check_id
@@ -828,6 +849,8 @@ def test_runtime_dispatches_distinct_sessions_and_resumes_after_host_result(
     assert "a return beginning before entry is BLOCK" in prompt
     assert "`evidence_refs=[]` is never a satisfied design check" in prompt
     assert "file-byte SHA-256 from `runtime_context.json.files`" in prompt
+    assert "Each artifact reference\nobject has exactly two keys" in prompt
+    assert "never copy that metadata" in prompt
     assert "Do not create a\nrelative-path draft" in prompt
     outer_marker = (
         "It must use this outer shape and no unknown top-level keys:\n\n```json\n"

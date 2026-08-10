@@ -153,6 +153,12 @@
     "uncertainties": [
       "Forecast and terminal-value identification remain empirical obligations."
     ],
+    "artifact_refs": [
+      {
+        "path": "<authorized-staged-workspace-path>",
+        "sha256": "<file-byte-sha256-from-runtime-context>"
+      }
+    ],
     "handoff": {
       "director_action": "review_and_freeze_or_reject",
       "data_liaison_required": true,

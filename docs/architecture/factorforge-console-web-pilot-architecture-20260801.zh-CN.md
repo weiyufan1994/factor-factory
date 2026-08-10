@@ -141,7 +141,7 @@ DeepSeek 在 Pilot 威胁模型中是受信任的数据处理方，但不是凭�
 
 执行分成互不替代的 Agent authoring 与 Host formal execution：
 
-1. Agent 把网页输入当作 `natural_language_hypothesis`，只读取 Host 从完整 catalog 投影出的 Web v1 可执行数据集摘要，并填写受约束的 Formula IR 研究计划；不得把摘要省略项解释为数据缺失，不得伪造研报来源或自定义 Python。完整 catalog 只在 Host formal 阶段校验和消费。
+1. Agent 把网页中的研究描述、可选公式/代码和可选 PDF 研报当作同一份 `natural_language_hypothesis` 输入，只读取 Host 从完整 catalog 投影出的 Web v1 可执行数据集摘要，并填写受约束的 Formula IR 研究计划。PDF 原件先进入 Host 私有附件账本，再按 SHA-256 复制到当前 factor workspace，使用隔离子进程生成带页码标记的只读文本；该流程只验证文件完整性，不验证作者、券商或外部真实性。Agent 不得把摘要省略项解释为数据缺失，不得伪造研报来源或自定义 Python。完整 catalog 只在 Host formal 阶段校验和消费。
 2. fresh turn 只允许写计划和短 execution ledger；计划中的 `identity` 与 `authoring_contract` 是 Host 预填绑定，Agent 必须原样保留，preflight 对引用错误返回精确期望值。Agent 容器和 Host formal 均禁止写 Python bytecode，preflight 使用 `python3 -B`；`__pycache__` 仍视为 workspace 外污染而不是白名单例外。普通 resume turn 只允许写短 ledger 与当前正式 pause 明确点名的 memo。上一代 `web_agent_completion.json` 仅为兼容性可选写入，Host 不读取其自报状态，也不把它作为 authoring 必需门槛。唯一例外是已由上一代完整 attestation 绑定的 `agentic_dispatch_manifest`：Runner 为每个 required route 启动独立 Agent、独立 session、最小只读 engine/workspace view 和 Host 私有输出目录。每个 Agent 只能看到自己的 task packet，不能看到 engine/validator 源码、其他 route 或其结果；Host 等全部结果通过 secret、identity 和正式 Council validator 后，先写同目录 staging，再以一次目录 rename 原子发布 dispatch 预先声明的完整 `agent_results/`。任一步失败都会清理 staging、保持正式结果目录不存在并保留 `RUNNING` lifecycle，不能把部分结果认作合法 Council。任何 Step1-6、Council 合并/总结、runtime proof 或其他路径写入立即 BLOCK。
 3. Agent 退出后，Host 对 workspace 做前后哈希差异校验，再由 Host 独立运行 materializer 与唯一正式入口 `scripts/run_factorforge_ultimate.py`。
 4. Host 在正式执行前另行 AssumeRole 取得新的短期 data-read lease，只通过子进程环境传给 materializer/Ultimate，立即删除 lease 文件，并把新凭据并入任务脱敏 registry；EC2 host role 本身不获得 S3 读取权。
@@ -161,7 +161,7 @@ Council 首轮 `PAUSED/awaiting_agent_results` 是合法中间态，不是终点
 
 任务详情固定投影为四个用户工作面，且不把控制面日志伪装成研究内容：
 
-1. `Chatbox` 按顺序保存经济假设、研报摘录、公式/算子、代码文本和研究方向。每次 Agent 运行只消费 Host 生成的限长、带 SHA-256 的不可变 conversation snapshot；用户代码永不因此获得执行权限。
+1. `Chatbox` 按顺序保存经济假设、上传研报、研报摘录、公式/算子、代码文本和研究方向。首次表单只要求用户描述研究问题；公式、代码和 PDF 都是可选补充，第三方算子的语义选择、来源散列和实现证明由 Host 在回测前自动冻结，不能转嫁给用户。Host 的预注册研究口径必须显式标记为“未核验第三方原义”，也不能被后续绩效结果改写。每次 Agent 运行只消费 Host 生成的限长、带 SHA-256 的不可变 conversation snapshot；用户代码永不因此获得执行权限。
 2. `Research Notebook` 只选择与当前 `report_id/factor_id/research_id` 全部一致、`producer=current_main_agent`、`agent_role=main_agent` 且 revision 最大的正式 mechanism memo，展示经济假设、模型选择、估计量映射、证据更新和证伪路线。没有合格 memo 时必须标记为 deterministic fallback；不得展示或声称保存模型私有原始思维链。
 3. `Math` 从同一 memo 投影定义、方程、推导步骤、假设与证伪条件。LaTeX 只在 Host 上转换为 MathML，并删除 annotation、事件、样式和 URI 属性；解析失败时转义显示原文，不加载外部 CDN 或执行用户内容。
 4. `回测中心` 只读取当前 report 的正式 Step4 指标、NAV/分组/IC 时序和 CSV，并统一投影为 `factorforge_console_backtest_evidence_v2`。年度/月度收益、gross/net 回撤几何和 turnover 分布只能从对应正式时序确定性派生，每个源文件记录 artifact id、SHA-256 和字节数；不得由年化、final NAV 等汇总标量补画时序。

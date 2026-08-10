@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import ipaddress
+import json
 import re
 import threading
 import time
 from dataclasses import dataclass, field
+from email import policy
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable
@@ -29,6 +32,10 @@ from factor_factory.console.models import (
 )
 from factor_factory.console.model_broker import DEEPSEEK_V4_FLASH_MODEL
 from factor_factory.console.readers import read_miner_campaign
+from factor_factory.console.report_upload import (
+    BLOCK_PDF_UPLOAD_INVALID,
+    ResearchAttachmentUpload,
+)
 from factor_factory.console.run_service import (
     BLOCK_RESUME_TRUST_INVALID,
     ResearchQueueService,
@@ -44,8 +51,7 @@ from factor_factory.formula.parser import parse_formula
 from factor_factory.formula.source_dialects import (
     BLOCK_SOURCE_SEMANTICS_UNRESOLVED,
     SourceFormulaDialectError,
-    resolve_source_formula,
-    uses_source_dialect,
+    resolve_source_formula_for_host,
 )
 
 
@@ -271,6 +277,10 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                     message.to_dict()
                     for message in application.store.list_messages(api_job_id)
                 ]
+                payload["attachments"] = [
+                    attachment.to_dict(public=True)
+                    for attachment in application.store.list_attachments(api_job_id)
+                ]
                 self._send_json(200, payload)
                 return
             if path.startswith("/artifact/"):
@@ -287,9 +297,23 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             if session is None:
                 return
             try:
-                fields = self._read_form()
+                if path == "/research":
+                    fields, attachments = self._read_research_form()
+                else:
+                    fields = self._read_form()
+                    attachments = []
             except ValueError as exc:
-                self._send_html(400, render_not_found(str(exc)))
+                if path == "/research":
+                    self._send_html(
+                        400,
+                        render_research_dashboard(
+                            application.store.list_jobs(),
+                            application.auth.csrf_token(session),
+                            form_error=_research_request_error(exc),
+                        ),
+                    )
+                else:
+                    self._send_html(400, render_not_found(str(exc)))
                 return
             if not application.auth.verify_csrf(session, _field(fields, "csrf")):
                 self._send_json(403, {"error": "csrf_invalid"})
@@ -303,7 +327,11 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 self.end_headers()
                 return
             if path == "/research":
-                self._create_research(fields, application.auth.csrf_token(session))
+                self._create_research(
+                    fields,
+                    application.auth.csrf_token(session),
+                    attachments,
+                )
                 return
             message_job_id = _research_message_job_id(path)
             if message_job_id:
@@ -367,14 +395,15 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
             self,
             fields: dict[str, list[str]],
             csrf_token: str,
+            attachments: list[ResearchAttachmentUpload],
         ) -> None:
             try:
                 _validate_research_form_dates(fields)
                 initial_messages, primary_kind, primary_content = (
-                    _initial_research_messages(fields)
+                    _initial_research_messages(fields, attachments=attachments)
                 )
                 request = ResearchRequest(
-                    title=_field(fields, "title"),
+                    title=_research_title(fields, attachments=attachments),
                     hypothesis=primary_content,
                     input_kind=primary_kind,
                     factor_id_hint=_field(fields, "factor_id_hint"),
@@ -390,6 +419,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 job = application.service.submit(
                     request,
                     initial_messages=initial_messages,
+                    initial_attachments=attachments,
                 )
             except (ValueError, OverflowError, SourceFormulaDialectError) as exc:
                 self._send_html(
@@ -506,10 +536,71 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 length = int(raw_length)
             except ValueError as exc:
                 raise ValueError("invalid request length") from exc
-            if length < 0 or length > application.config.max_request_bytes:
+            if length < 0 or length > min(application.config.max_request_bytes, 65_536):
                 raise ValueError("request is too large")
             payload = self.rfile.read(length).decode("utf-8", errors="strict")
             return parse_qs(payload, keep_blank_values=True, max_num_fields=40)
+
+        def _read_research_form(
+            self,
+        ) -> tuple[dict[str, list[str]], list[ResearchAttachmentUpload]]:
+            content_type = self.headers.get("Content-Type", "")
+            if content_type.startswith("application/x-www-form-urlencoded"):
+                return self._read_form(), []
+            if not content_type.lower().startswith("multipart/form-data"):
+                raise ValueError("only form submissions are accepted")
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError as exc:
+                raise ValueError("invalid request length") from exc
+            if length <= 0 or length > application.config.max_request_bytes:
+                raise ValueError("request is too large")
+            raw = self.rfile.read(length)
+            header = (
+                f"Content-Type: {content_type}\r\n"
+                "MIME-Version: 1.0\r\n\r\n"
+            ).encode("utf-8")
+            message = BytesParser(policy=policy.default).parsebytes(header + raw)
+            if not message.is_multipart():
+                raise ValueError("invalid multipart form")
+            fields: dict[str, list[str]] = {}
+            attachments: list[ResearchAttachmentUpload] = []
+            parts = list(message.iter_parts())
+            if len(parts) > 40:
+                raise ValueError("too many form fields")
+            for part in parts:
+                if part.get_content_disposition() != "form-data" or part.is_multipart():
+                    raise ValueError("invalid multipart field")
+                name = str(
+                    part.get_param("name", header="content-disposition") or ""
+                ).strip()
+                if not name:
+                    raise ValueError("invalid multipart field name")
+                payload = part.get_payload(decode=True) or b""
+                filename = part.get_filename()
+                if filename is not None:
+                    if name == "report_pdf" and not filename and not payload:
+                        continue
+                    if name != "report_pdf" or not filename:
+                        raise ValueError("only one PDF report attachment is accepted")
+                    attachments.append(
+                        ResearchAttachmentUpload(
+                            original_filename=filename,
+                            media_type=part.get_content_type(),
+                            data=payload,
+                        )
+                    )
+                    continue
+                if len(payload) > 25_000:
+                    raise ValueError("form field is too large")
+                try:
+                    value = payload.decode(part.get_content_charset() or "utf-8")
+                except (LookupError, UnicodeDecodeError) as exc:
+                    raise ValueError("form field is not valid UTF-8") from exc
+                fields.setdefault(name, []).append(value)
+            if len(attachments) > 1:
+                raise ValueError("only one PDF report attachment is accepted")
+            return fields, attachments
 
         def _authenticated(self) -> bool:
             token = application.auth.session_from_cookie(self.headers.get("Cookie"))
@@ -611,6 +702,8 @@ def _validate_research_form_dates(fields: dict[str, list[str]]) -> None:
 
 def _initial_research_messages(
     fields: dict[str, list[str]],
+    *,
+    attachments: list[ResearchAttachmentUpload] | None = None,
 ) -> tuple[list[tuple[str, str]], str, str]:
     inputs = [
         ("hypothesis", _raw_field(fields, "economic_hypothesis").strip()),
@@ -619,6 +712,20 @@ def _initial_research_messages(
         ("code", _raw_field(fields, "code_input").strip()),
     ]
     messages = [(kind, content) for kind, content in inputs if content]
+    uploads = list(attachments or [])
+    if uploads:
+        upload = uploads[0]
+        messages.append(
+            (
+                "report",
+                (
+                    f"已上传 PDF 研报《{upload.original_filename}》，"
+                    f"文件 SHA-256 为 {upload.sha256}。请读取 factor workspace 内"
+                    "由 Host 校验的原始 PDF 和带页码提取文本，并将其作为用户提供的"
+                    "研究材料；不得据此虚构作者、券商或外部真实性。"
+                ),
+            )
+        )
     if not messages:
         legacy_content = _raw_field(fields, "hypothesis").strip()
         legacy_kind = _field(fields, "content_kind", "hypothesis")
@@ -629,28 +736,7 @@ def _initial_research_messages(
 
     formula = next((content for kind, content in messages if kind == "formula"), "")
     if formula:
-        choices = {
-            "kurtosis_convention": _field(fields, "kurtosis_convention"),
-            "skew_convention": _field(fields, "skew_convention"),
-            "max_sum_convention": _field(fields, "max_sum_convention"),
-            "zscore_ddof": _field(fields, "zscore_ddof"),
-        }
-        semantic_authority = {
-            "kind": _field(fields, "semantic_authority_kind"),
-            "reference": _field(fields, "semantic_authority_reference"),
-            "rationale": _raw_field(fields, "semantic_authority_rationale").strip(),
-            "source_excerpt": _raw_field(fields, "semantic_source_excerpt").strip(),
-            "source_excerpt_sha256": _field(fields, "semantic_source_excerpt_sha256"),
-            "override_reason": _raw_field(fields, "semantic_override_reason").strip(),
-            "implementation_choices_not_performance_selected": (
-                _field(fields, "semantic_choices_not_performance_selected") == "true"
-            ),
-        }
-        source_contract = resolve_source_formula(
-            formula,
-            choices if uses_source_dialect(formula) else None,
-            semantic_authority if uses_source_dialect(formula) else None,
-        )
+        source_contract = resolve_source_formula_for_host(formula)
         formula_ir = parse_formula(
             source_contract["canonical_formula"],
             raise_on_error=False,
@@ -683,6 +769,33 @@ def _initial_research_messages(
     return messages, primary_kind, primary_content
 
 
+def _research_title(
+    fields: dict[str, list[str]],
+    *,
+    attachments: list[ResearchAttachmentUpload] | None = None,
+) -> str:
+    explicit = _field(fields, "title").strip()
+    if explicit:
+        return explicit
+    for field_name in ("economic_hypothesis", "report_input", "hypothesis"):
+        content = _raw_field(fields, field_name).strip()
+        if content:
+            first_line = " ".join(content.splitlines()[0].split())
+            return first_line[:80]
+    uploads = list(attachments or [])
+    if uploads:
+        return Path(uploads[0].original_filename).stem[:80] or "上传研报因子研究"
+    formula = _raw_field(fields, "formula_input").strip()
+    if formula:
+        digest = hashlib.sha256(formula.encode("utf-8")).hexdigest()[:8]
+        return f"公式因子研究 {digest.upper()}"
+    code = _raw_field(fields, "code_input").strip()
+    if code:
+        digest = hashlib.sha256(code.encode("utf-8")).hexdigest()[:8]
+        return f"代码因子研究 {digest.upper()}"
+    raise ValueError("hypothesis is required")
+
+
 def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
     names = (
         "title",
@@ -694,17 +807,6 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
         "report_input",
         "formula_input",
         "code_input",
-        "kurtosis_convention",
-        "skew_convention",
-        "max_sum_convention",
-        "zscore_ddof",
-        "semantic_authority_kind",
-        "semantic_authority_reference",
-        "semantic_authority_rationale",
-        "semantic_source_excerpt",
-        "semantic_source_excerpt_sha256",
-        "semantic_override_reason",
-        "semantic_choices_not_performance_selected",
         "universe",
         "sample_start",
         "sample_end",
@@ -715,36 +817,9 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
 def _research_request_error(error: Exception) -> str:
     message = str(error)
     if message.startswith(BLOCK_SOURCE_SEMANTICS_UNRESOLVED):
-        reasons = error.reasons if isinstance(error, SourceFormulaDialectError) else ()
-        prompts: list[str] = []
-        choice_labels = {
-            "kurtosis_convention": "峰度",
-            "skew_convention": "偏度",
-            "max_sum_convention": "区间求和",
-            "zscore_ddof": "截面标准差",
-        }
-        missing_choices = [
-            label
-            for field, label in choice_labels.items()
-            if any(reason.startswith(f"{field} must be one of ") for reason in reasons)
-        ]
-        if missing_choices:
-            prompts.append("请选择" + "、".join(missing_choices) + "口径")
-        if any("semantic_authority.kind" in reason for reason in reasons):
-            prompts.append("请选择具体源证据或显式用户研究覆盖作为语义权威")
-        if any("semantic_authority.reference" in reason for reason in reasons):
-            prompts.append("填写可定位的语义权威引用")
-        if any("semantic_authority.rationale" in reason for reason in reasons):
-            prompts.append("填写采用这些实现口径的理由")
-        if any("source_excerpt" in reason for reason in reasons):
-            prompts.append("具体源证据模式必须填写可定位的原文摘录；哈希不能替代摘录")
-        if any("override_reason" in reason for reason in reasons):
-            prompts.append("显式用户研究覆盖模式必须填写覆盖原因")
-        if any("not_performance_selected" in reason for reason in reasons):
-            prompts.append("确认实现口径未依据回测或绩效结果选择")
-        detail = "；".join(dict.fromkeys(prompts))
-        return "该第三方公式的源语义权威尚未满足正式合同要求。" + (
-            detail + "。" if detail else "请补全语义口径与来源依据后再提交。"
+        return (
+            "系统未能在回测前冻结该公式的实现口径。"
+            "这不是需要用户填写的字段，请保留输入并由研究服务修复。"
         )
     if message.startswith("formula preflight failed:"):
         return "公式当前无法进入可信 Formula IR：" + message.split(":", 1)[1].strip()
@@ -757,6 +832,8 @@ def _research_request_error(error: Exception) -> str:
         "invalid sample_end": "样本结束日期无效。",
         "sample_start must be before sample_end": "样本开始日期必须早于结束日期。",
     }
+    if message.startswith(BLOCK_PDF_UPLOAD_INVALID):
+        return "PDF 研报无效。请上传不超过 20 MB、文件头有效且扩展名为 .pdf 的文件。"
     return translated.get(message, "研究请求不符合当前 Pilot 合同，请检查输入后重试。")
 
 

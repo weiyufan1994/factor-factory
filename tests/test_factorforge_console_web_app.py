@@ -42,12 +42,56 @@ def _source_authority_form_fields() -> dict[str, str]:
     }
 
 
+def _multipart_body(
+    fields: dict[str, str],
+    *,
+    filename: str,
+    media_type: str,
+    file_data: bytes,
+) -> tuple[bytes, str]:
+    boundary = "factorforge-test-boundary-7d246c"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                value.encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+    chunks.extend(
+        [
+            f"--{boundary}\r\n".encode(),
+            (
+                'Content-Disposition: form-data; name="report_pdf"; '
+                f'filename="{filename}"\r\n'
+            ).encode(),
+            f"Content-Type: {media_type}\r\n\r\n".encode(),
+            file_data,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ]
+    )
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
 class _FakeService:
     def __init__(self, store):
         self.store = store
 
-    def submit(self, request, *, initial_messages=None):
-        return self.store.create_job(request, initial_messages=initial_messages)
+    def submit(
+        self,
+        request,
+        *,
+        initial_messages=None,
+        initial_attachments=None,
+    ):
+        return self.store.create_job(
+            request,
+            initial_messages=initial_messages,
+            initial_attachments=initial_attachments,
+        )
 
     def request_resume(self, job_id):
         return self.store.request_resume(job_id)
@@ -236,6 +280,10 @@ def test_invite_login_and_security_headers(research_console):
     assert "Content-Security-Policy" in opener.open(f"{base_url}/", timeout=3).headers
     assert "服务器路径" not in html
     assert 'name="source_url"' not in html
+    assert 'enctype="multipart/form-data"' in html
+    assert 'name="report_pdf"' in html
+    assert "第三方公式语义" not in html
+    assert 'name="semantic_authority_kind"' not in html
 
 
 def test_production_health_fails_when_trusted_calendar_is_missing(
@@ -369,11 +417,6 @@ def test_submit_formula_with_chinese_title_and_generated_factor_id(research_cons
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
-            "kurtosis_convention": "excess_unbiased",
-            "skew_convention": "inner_window_extrema",
-            "max_sum_convention": "contiguous_subwindow",
-            "zscore_ddof": "0",
-            **_source_authority_form_fields(),
         }
     ).encode("utf-8")
 
@@ -388,9 +431,8 @@ def test_submit_formula_with_chinese_title_and_generated_factor_id(research_cons
     assert "负价量偏度峰度复合因子" in detail
     assert "公式语义合同" in detail
     assert "无偏 Fisher 超额峰度" in detail
-    assert "具体源证据" in detail
-    assert "已核实所提交证据中的算子含义" in detail
-    assert "未验证外部来源真实性，仅校验提交摘录完整性" in detail
+    assert "系统预注册研究口径" in detail
+    assert "未宣称第三方原义" in detail
     assert "rolling_excess_kurtosis" in detail
     assert '"contract_version"' not in detail
     job = app.store.list_jobs()[0]
@@ -400,7 +442,10 @@ def test_submit_formula_with_chinese_title_and_generated_factor_id(research_cons
     messages = app.store.list_messages(job.job_id)
     assert [item.content_kind for item in messages] == ["formula", "formula_contract"]
     contract = json.loads(messages[1].content)
-    assert contract["semantic_authority"]["reference"] == "source-report.pdf#page=7"
+    assert contract["semantic_authority"]["kind"] == (
+        "host_preregistered_research_convention"
+    )
+    assert contract["semantic_authority"]["source_truth_claimed"] is False
     assert contract["semantic_authority"]["implementation_choices_not_performance_selected"] is True
     assert contract["implementation_variant_set"]["implemented_variant_count"] == 16
     assert contract["implementation_variant_set"]["exhaustive_source_truth"] is False
@@ -563,7 +608,7 @@ def test_user_cannot_spoof_legacy_initial_formula_contract_namespace(
     assert messages[0].idempotency_key.startswith("initial:")
 
 
-def test_source_formula_with_raw_enum_choices_but_no_authority_blocks_before_job_creation(
+def test_source_formula_is_auto_frozen_without_user_semantic_fields(
     research_console,
 ):
     base_url, app = research_console
@@ -590,26 +635,29 @@ def test_source_formula_with_raw_enum_choices_but_no_authority_blocks_before_job
         }
     ).encode("utf-8")
 
-    with pytest.raises(HTTPError) as failure:
-        opener.open(
-            Request(f"{base_url}/research", data=payload, method="POST"),
-            timeout=3,
-        )
+    response = opener.open(
+        Request(f"{base_url}/research", data=payload, method="POST"),
+        timeout=3,
+    )
 
-    assert failure.value.code == 400
-    body = failure.value.read().decode("utf-8")
-    assert "源语义权威尚未满足正式合同要求" in body
-    assert "请选择具体源证据或显式用户研究覆盖作为语义权威" in body
-    assert "确认实现口径未依据回测或绩效结果选择" in body
-    assert app.store.list_jobs() == []
+    assert response.status == 200
+    job = app.store.list_jobs()[0]
+    contract = json.loads(app.store.list_messages(job.job_id)[1].content)
+    assert contract["semantic_choices"] == {
+        "kurtosis_convention": "excess_unbiased",
+        "skew_convention": "inner_window_extrema",
+        "max_sum_convention": "contiguous_subwindow",
+        "zscore_ddof": "0",
+    }
+    assert contract["semantic_authority"]["kind"] == (
+        "host_preregistered_research_convention"
+    )
 
 
-def test_source_evidence_mode_requires_actual_excerpt(research_console):
+def test_client_semantic_fields_cannot_override_host_policy(research_console):
     base_url, app = research_console
     opener, html = _login_opener(base_url)
     formula = "-1 * NORMALIZE(TS_KURTOSIS(CLOSE,5),STANDARDIZE=1)"
-    authority_fields = _source_authority_form_fields()
-    authority_fields["semantic_source_excerpt"] = ""
     payload = urlencode(
         {
             "csrf": _csrf(html),
@@ -620,25 +668,27 @@ def test_source_evidence_mode_requires_actual_excerpt(research_console):
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
-            "kurtosis_convention": "excess_unbiased",
+            "kurtosis_convention": "pearson_unbiased",
             "skew_convention": "inner_window_extrema",
             "max_sum_convention": "contiguous_subwindow",
             "zscore_ddof": "0",
-            **authority_fields,
+            "semantic_authority_kind": "specific_source_evidence",
+            "semantic_source_excerpt": "",
         }
     ).encode("utf-8")
 
-    with pytest.raises(HTTPError) as failure:
-        opener.open(
-            Request(f"{base_url}/research", data=payload, method="POST"),
-            timeout=3,
-        )
+    response = opener.open(
+        Request(f"{base_url}/research", data=payload, method="POST"),
+        timeout=3,
+    )
 
-    assert failure.value.code == 400
-    body = failure.value.read().decode("utf-8")
-    assert "具体源证据模式必须填写可定位的原文摘录；哈希不能替代摘录" in body
-    assert 'value="source-report.pdf#page=7"' in body
-    assert app.store.list_jobs() == []
+    assert response.status == 200
+    job = app.store.list_jobs()[0]
+    contract = json.loads(app.store.list_messages(job.job_id)[1].content)
+    assert contract["semantic_choices"]["kurtosis_convention"] == "excess_unbiased"
+    assert contract["semantic_authority"]["kind"] == (
+        "host_preregistered_research_convention"
+    )
 
 
 def test_submit_combines_hypothesis_report_formula_and_code_atomically(research_console):
@@ -679,6 +729,137 @@ def test_submit_combines_hypothesis_report_formula_and_code_atomically(research_
     ]
     assert job.request.input_kind == "hypothesis"
     assert job.request.hypothesis == "受约束买方在开盘支付即时性成本。"
+
+
+def test_submit_pdf_report_stores_private_attachment_and_derives_title(
+    research_console,
+):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    pdf = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "step1"
+        / "kakushadze_101_formulas.pdf"
+    ).read_bytes()
+    payload, content_type = _multipart_body(
+        {
+            "csrf": _csrf(html),
+            "title": "",
+            "economic_hypothesis": "",
+            "formula_input": "",
+            "code_input": "",
+            "universe": "a_share_all",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+            "model": "deepseek-v4-flash",
+        },
+        filename="minute-factor-report.pdf",
+        media_type="application/pdf",
+        file_data=pdf,
+    )
+
+    response = opener.open(
+        Request(
+            f"{base_url}/research",
+            data=payload,
+            headers={"Content-Type": content_type},
+            method="POST",
+        ),
+        timeout=3,
+    )
+
+    assert response.status == 200
+    job = app.store.list_jobs()[0]
+    assert job.request.title == "minute-factor-report"
+    assert job.request.input_kind == "report"
+    attachments = app.store.list_attachments(job.job_id)
+    assert len(attachments) == 1
+    assert attachments[0].original_filename == "minute-factor-report.pdf"
+    assert attachments[0].sha256 == hashlib.sha256(pdf).hexdigest()
+    assert app.store.read_attachment(attachments[0]) == pdf
+    messages = app.store.list_messages(job.job_id)
+    assert [message.content_kind for message in messages] == ["report"]
+    assert attachments[0].sha256 in messages[0].content
+
+    api = json.loads(
+        opener.open(f"{base_url}/api/research/{job.job_id}", timeout=3)
+        .read()
+        .decode("utf-8")
+    )
+    assert api["attachments"][0]["original_filename"] == "minute-factor-report.pdf"
+    assert "relative_path" not in api["attachments"][0]
+    stored_path = app.store.state_root / attachments[0].relative_path
+    stored_path.write_bytes(pdf + b"tampered")
+    with pytest.raises(ValueError, match="integrity check failed"):
+        app.store.read_attachment(attachments[0])
+
+
+def test_multipart_submission_accepts_an_unselected_pdf_input(research_console):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    payload, content_type = _multipart_body(
+        {
+            "csrf": _csrf(html),
+            "title": "Hypothesis without report",
+            "economic_hypothesis": "A constrained buyer pays an immediacy premium.",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+        },
+        filename="",
+        media_type="application/octet-stream",
+        file_data=b"",
+    )
+
+    response = opener.open(
+        Request(
+            f"{base_url}/research",
+            data=payload,
+            headers={"Content-Type": content_type},
+            method="POST",
+        ),
+        timeout=3,
+    )
+
+    assert response.status == 200
+    job = app.store.list_jobs()[0]
+    assert job.request.title == "Hypothesis without report"
+    assert app.store.list_attachments(job.job_id) == []
+
+
+def test_invalid_pdf_signature_is_rejected_without_creating_a_job(research_console):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    payload, content_type = _multipart_body(
+        {
+            "csrf": _csrf(html),
+            "title": "Invalid upload",
+            "economic_hypothesis": "Read the uploaded report.",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+        },
+        filename="not-a-report.pdf",
+        media_type="application/pdf",
+        file_data=b"not actually a PDF",
+    )
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(
+                f"{base_url}/research",
+                data=payload,
+                headers={"Content-Type": content_type},
+                method="POST",
+            ),
+            timeout=3,
+        )
+
+    assert failure.value.code == 400
+    body = failure.value.read().decode("utf-8")
+    assert "PDF 研报无效" in body
+    assert app.store.list_jobs() == []
 
 
 def test_invalid_research_form_returns_html_and_preserves_input(research_console):
@@ -724,11 +905,10 @@ def test_invalid_research_form_returns_html_and_preserves_input(research_console
     assert 'value="保留这个研究名称"' in body
     assert ">  A &lt; B\n</textarea>" in body
     assert 'id="formula-input"' in body
-    assert "第三方公式语义" in body
-    assert 'name="semantic_authority_kind"' in body
-    assert 'id="semantic-source-excerpt"' in body
-    assert 'id="semantic-override-reason"' in body
-    assert 'name="semantic_choices_not_performance_selected"' in body
+    assert "第三方公式语义" not in body
+    assert 'name="semantic_authority_kind"' not in body
+    assert 'id="report-pdf"' in body
+    assert "算子口径由系统在回测前自动冻结" in body
     assert "location.reload()" not in body
     assert [job.job_id for job in app.store.list_jobs()] == [active.job_id]
 

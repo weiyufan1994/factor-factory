@@ -19,6 +19,7 @@ dependencies = [
 console = [
   "cryptography>=46,<47",
   "latex2mathml==3.81.0",
+  "pypdf==6.10.1",
 ]
 step4 = [
   "matplotlib>=3.10",

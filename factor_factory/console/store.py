@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from factor_factory.console.models import ResearchJob, ResearchMessage, ResearchRequest
+from factor_factory.console.report_upload import (
+    ResearchAttachment,
+    ResearchAttachmentUpload,
+    read_verified_file,
+    write_bytes_atomic,
+)
 from factor_factory.research_workspace import safe_identity
 
 
@@ -56,6 +62,12 @@ class ResearchJobStore:
         except OSError:
             pass
         self.path = self.state_root / "console.sqlite3"
+        self.upload_root = self.state_root / "uploads"
+        self.upload_root.mkdir(parents=True, exist_ok=True, mode=0o770)
+        try:
+            self.upload_root.chmod(0o770)
+        except OSError:
+            pass
         self._create_shared_database_file()
         self._lock = threading.RLock()
         self._initialize()
@@ -146,6 +158,19 @@ class ResearchJobStore:
                 );
                 CREATE INDEX IF NOT EXISTS research_messages_job_sequence
                     ON research_messages(job_id, sequence_no);
+                CREATE TABLE IF NOT EXISTS research_attachments (
+                    attachment_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES research_jobs(job_id),
+                    original_filename TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    relative_path TEXT NOT NULL UNIQUE,
+                    created_at_utc TEXT NOT NULL,
+                    UNIQUE(job_id, sha256)
+                );
+                CREATE INDEX IF NOT EXISTS research_attachments_job
+                    ON research_attachments(job_id, attachment_id);
                 CREATE TABLE IF NOT EXISTS auth_sessions (
                     token_sha256 TEXT PRIMARY KEY,
                     created_at_utc TEXT NOT NULL,
@@ -232,6 +257,7 @@ class ResearchJobStore:
         request: ResearchRequest,
         *,
         initial_messages: list[tuple[str, str]] | None = None,
+        initial_attachments: list[ResearchAttachmentUpload] | None = None,
     ) -> ResearchJob:
         now = utc_now()
         suffix = uuid.uuid4().hex[:10]
@@ -260,23 +286,115 @@ class ResearchJobStore:
             raise ValueError("initial research messages must not be empty")
         if (request.input_kind, request.hypothesis.strip()) not in normalized_messages:
             raise ValueError("initial research messages must include the canonical request input")
-        with self._lock, self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._insert_job(connection, job)
-            for index, (content_kind, content) in enumerate(normalized_messages, start=1):
-                self._insert_message(
+        uploads = list(initial_attachments or [])
+        if len(uploads) > 1 or any(
+            not isinstance(upload, ResearchAttachmentUpload) for upload in uploads
+        ):
+            raise ValueError("a research task accepts at most one validated PDF attachment")
+        attachments = self._stage_attachments(job.job_id, uploads, created_at_utc=now)
+        try:
+            with self._lock, self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._insert_job(connection, job)
+                for attachment in attachments:
+                    self._insert_attachment(connection, attachment)
+                for index, (content_kind, content) in enumerate(normalized_messages, start=1):
+                    self._insert_message(
+                        connection,
+                        job_id=job.job_id,
+                        role="user",
+                        content_kind=content_kind,
+                        content=content,
+                        model=request.model,
+                        idempotency_key=f"initial:{job.job_id}:{index}",
+                        created_at_utc=now,
+                    )
+                self._insert_event(
                     connection,
-                    job_id=job.job_id,
-                    role="user",
-                    content_kind=content_kind,
-                    content=content,
-                    model=request.model,
-                    idempotency_key=f"initial:{job.job_id}:{index}",
-                    created_at_utc=now,
+                    job.job_id,
+                    "JOB_CREATED",
+                    "研究任务已进入队列",
+                    {"attachment_count": len(attachments)},
                 )
-            self._insert_event(connection, job.job_id, "JOB_CREATED", "研究任务已进入队列", {})
-            connection.execute("COMMIT")
+                connection.execute("COMMIT")
+        except Exception:
+            self._remove_staged_attachments(attachments)
+            raise
         return job
+
+    def _stage_attachments(
+        self,
+        job_id: str,
+        uploads: list[ResearchAttachmentUpload],
+        *,
+        created_at_utc: str,
+    ) -> list[ResearchAttachment]:
+        attachments: list[ResearchAttachment] = []
+        try:
+            for upload in uploads:
+                attachment_id = f"att_{uuid.uuid4().hex[:16]}"
+                relative_path = f"uploads/{job_id}/{attachment_id}.pdf"
+                path = self.state_root / relative_path
+                attachment = ResearchAttachment(
+                    attachment_id=attachment_id,
+                    job_id=job_id,
+                    original_filename=upload.original_filename,
+                    media_type=upload.media_type,
+                    size_bytes=upload.size_bytes,
+                    sha256=upload.sha256,
+                    relative_path=relative_path,
+                    created_at_utc=created_at_utc,
+                )
+                attachments.append(attachment)
+                write_bytes_atomic(path, upload.data, root=self.state_root)
+                path.parent.chmod(0o770)
+                path.chmod(0o640)
+        except Exception:
+            self._remove_staged_attachments(attachments)
+            raise
+        return attachments
+
+    def _remove_staged_attachments(
+        self,
+        attachments: list[ResearchAttachment],
+    ) -> None:
+        job_directories: set[Path] = set()
+        for attachment in attachments:
+            path = self.state_root / attachment.relative_path
+            job_directories.add(path.parent)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        for directory in job_directories:
+            try:
+                directory.rmdir()
+            except (FileNotFoundError, OSError):
+                pass
+
+    @staticmethod
+    def _insert_attachment(
+        connection: sqlite3.Connection,
+        attachment: ResearchAttachment,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO research_attachments (
+                attachment_id, job_id, original_filename, media_type,
+                size_bytes, sha256, relative_path, created_at_utc
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                attachment.attachment_id,
+                attachment.job_id,
+                attachment.original_filename,
+                attachment.media_type,
+                attachment.size_bytes,
+                attachment.sha256,
+                attachment.relative_path,
+                attachment.created_at_utc,
+            ),
+        )
 
     def _insert_job(self, connection: sqlite3.Connection, job: ResearchJob) -> None:
         connection.execute(
@@ -329,6 +447,27 @@ class ResearchJobStore:
                 "SELECT * FROM research_jobs ORDER BY created_at_utc DESC LIMIT ?", (safe_limit,)
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
+
+    def list_attachments(self, job_id: str) -> list[ResearchAttachment]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM research_attachments
+                WHERE job_id=? ORDER BY attachment_id
+                """,
+                (job_id,),
+            ).fetchall()
+        return [self._row_to_attachment(row) for row in rows]
+
+    def read_attachment(self, attachment: ResearchAttachment) -> bytes:
+        if not isinstance(attachment, ResearchAttachment):
+            raise ValueError("attachment metadata is required")
+        return read_verified_file(
+            self.state_root / attachment.relative_path,
+            root=self.state_root,
+            expected_size=attachment.size_bytes,
+            expected_sha256=attachment.sha256,
+        )
 
     def claim_next_job(self) -> ResearchJob | None:
         now = utc_now()
@@ -690,5 +829,18 @@ class ResearchJobStore:
             content=str(row["content"]),
             model=str(row["model"]),
             idempotency_key=str(row["idempotency_key"]),
+            created_at_utc=str(row["created_at_utc"]),
+        )
+
+    @staticmethod
+    def _row_to_attachment(row: sqlite3.Row) -> ResearchAttachment:
+        return ResearchAttachment(
+            attachment_id=str(row["attachment_id"]),
+            job_id=str(row["job_id"]),
+            original_filename=str(row["original_filename"]),
+            media_type=str(row["media_type"]),
+            size_bytes=int(row["size_bytes"]),
+            sha256=str(row["sha256"]),
+            relative_path=str(row["relative_path"]),
             created_at_utc=str(row["created_at_utc"]),
         )

@@ -505,6 +505,18 @@ def build_agent_prompt(
         workspace / "identity" / "research_organization_plan.json",
         workspace / "identity" / "web_research_plan.json",
     ]
+    uploaded_report_text = workspace / "reports" / "uploaded_source_report_text.md"
+    uploaded_report_manifest = (
+        workspace / "identity" / "uploaded_source_report_manifest.json"
+    )
+    uploaded_report_available = (
+        uploaded_report_text.is_file()
+        and not uploaded_report_text.is_symlink()
+        and uploaded_report_manifest.is_file()
+        and not uploaded_report_manifest.is_symlink()
+    )
+    if uploaded_report_available:
+        packet_files.extend([uploaded_report_manifest, uploaded_report_text])
     director_projection = _host_director_record_prompt_template(
         workspace,
         report_id=job.report_id,
@@ -525,6 +537,19 @@ def build_agent_prompt(
         json.dumps(director_template, ensure_ascii=False, indent=2)
         if director_template is not None
         else "Unavailable until the frozen Director task and intake results exist."
+    )
+    source_material = (
+        "user-authored context plus a Host-verified, user-uploaded PDF and its "
+        "page-aware text; external authorship and authenticity remain unverified"
+        if uploaded_report_available
+        else "user-authored natural-language research context; external URL ingestion is disabled"
+    )
+    source_instruction = (
+        "Treat the uploaded PDF and its page-aware extraction as user-supplied research "
+        "material. Cite page markers when relying on it, but never invent its author, "
+        "broker, publication status, or authenticity."
+        if uploaded_report_available
+        else "Treat this as a natural_language_hypothesis, never as a broker report and never invent attribution."
     )
     return f"""# Factor Forge Web Research Task
 
@@ -558,7 +583,7 @@ source of truth. Do not read whole skill files or validator/wrapper source.
 - formal sample: {job.request.sample_start} through {job.request.sample_end}
 - forward horizon: {job.request.forward_horizon}
 - transaction cost assumption: {job.request.transaction_cost_bps} bps
-- source material: user-authored natural-language hypothesis only; external URL ingestion is disabled
+- source material: {source_material}
 
 ## Read-only Data API inputs
 
@@ -571,7 +596,7 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 
 ## Mandatory execution contract
 
-1. Treat this as a natural_language_hypothesis, never as a broker report and never invent attribution.
+1. {source_instruction}
 2. All factor-specific code, notes, raw model responses, metrics, Council packets, knowledge and results must stay under the exact active factor workspace above.
 3. Do not write to another factor_research directory, repo-root knowledge, repo-root data, shared clean data, another worktree, or any cloud dataset. The task-local catalog summary is descriptive only; the agent has no Data API, catalog-file, S3, or raw-data access.
 4. Do not run `run_factorforge_ultimate_loop.py`, the materializer, Step scripts, or `scripts/run_factorforge_ultimate.py`. Fill the task-local web research plan with a Formula IR-compatible factor law, but preserve its Host-filled `identity` and `authoring_contract` objects exactly; never recompute or hand-copy the contract hash. On resume write only the artifact required by the named pause. Do not author or execute custom Python. On a fresh run, execute only the authoring preflight command printed in `web_research_runtime.md`, correct named plan fields until it returns PASS, and then exit. The host exclusively materializes and runs formal Step3 through Step6 after your process exits.

@@ -62,7 +62,7 @@ class ConsoleConfig:
     container_tmpfs_size: str = "8g"
     max_concurrent_jobs: int = 1
     agent_timeout_seconds: int = 3_300
-    max_request_bytes: int = 65_536
+    max_request_bytes: int = 21 * 1024 * 1024
     auth_disabled: bool = False
 
     def __post_init__(self) -> None:

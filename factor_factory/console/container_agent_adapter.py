@@ -2935,7 +2935,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     "identity/web_agent_resume_contract.json",
                     "identity/web_main_agent_mechanism_answer_form.json",
                     "identity/web_resume_authorization.json",
+                    "identity/uploaded_source_report_manifest.json",
                     "reports/user_hypothesis.md",
+                    "reports/uploaded_source_report.pdf",
+                    "reports/uploaded_source_report_text.md",
                 ]
             )
         protected_relatives.extend(protected_workspace_relatives)

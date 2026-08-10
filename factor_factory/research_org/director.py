@@ -685,6 +685,11 @@ def build_research_organization_bundle(
                     "identity/data_catalog_summary.json",
                     report_id=report_id,
                 ),
+                _input_snapshot(
+                    resolved,
+                    "identity/uploaded_source_report_manifest.json",
+                    report_id=report_id,
+                ),
             )
             if item is not None
         ],
@@ -1239,6 +1244,10 @@ def validate_research_organization_bundle(
         ),
         f"{input_root_relative}/data_catalog_summary.json": (
             "identity/data_catalog_summary.json",
+            "file_bytes",
+        ),
+        f"{input_root_relative}/uploaded_source_report_manifest.json": (
+            "identity/uploaded_source_report_manifest.json",
             "file_bytes",
         ),
     }

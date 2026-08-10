@@ -48,8 +48,42 @@ SEMANTIC_CHOICE_OPERATORS = {
     "zscore_ddof": frozenset({"normalize"}),
 }
 SEMANTIC_AUTHORITY_KINDS = frozenset(
-    {"specific_source_evidence", "explicit_user_research_override"}
+    {
+        "specific_source_evidence",
+        "explicit_user_research_override",
+        "host_preregistered_research_convention",
+    }
 )
+HOST_SEMANTIC_POLICY_VERSION = "factorforge_host_source_semantics_v1"
+HOST_SEMANTIC_POLICY_REFERENCE = (
+    "factorforge://formula-source-semantics/"
+    f"{HOST_SEMANTIC_POLICY_VERSION}#policy=default"
+)
+HOST_SEMANTIC_POLICY_RATIONALE = (
+    "Factor Forge freezes a preregistered implementation convention before any "
+    "backtest or performance evidence is available. The convention makes the "
+    "submitted formula executable without claiming that it reproduces the "
+    "third-party source's unresolved operator meanings."
+)
+HOST_SEMANTIC_DEFAULT_CHOICES = {
+    "kurtosis_convention": "excess_unbiased",
+    "skew_convention": "inner_window_extrema",
+    "max_sum_convention": "contiguous_subwindow",
+    "zscore_ddof": "0",
+}
+HOST_SEMANTIC_POLICY_SHA256 = hashlib.sha256(
+    json.dumps(
+        {
+            "version": HOST_SEMANTIC_POLICY_VERSION,
+            "reference": HOST_SEMANTIC_POLICY_REFERENCE,
+            "rationale": HOST_SEMANTIC_POLICY_RATIONALE,
+            "default_choices": HOST_SEMANTIC_DEFAULT_CHOICES,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -329,8 +363,9 @@ def normalize_semantic_authority(
     failures: list[str] = []
     if kind not in SEMANTIC_AUTHORITY_KINDS:
         failures.append(
-            "semantic_authority.kind must be specific_source_evidence or "
-            "explicit_user_research_override"
+            "semantic_authority.kind must be specific_source_evidence, "
+            "explicit_user_research_override, or "
+            "host_preregistered_research_convention"
         )
     if not reference:
         failures.append("semantic_authority.reference is required")
@@ -407,6 +442,32 @@ def normalize_semantic_authority(
                 "explicit_user_research_override"
             )
         normalized["override_reason"] = override_reason
+    elif kind == "host_preregistered_research_convention":
+        policy_version = str(authority.get("policy_version") or "").strip()
+        policy_sha256 = str(authority.get("policy_sha256") or "").strip().lower()
+        if reference != HOST_SEMANTIC_POLICY_REFERENCE:
+            failures.append(
+                "semantic_authority.reference does not match the registered Host policy"
+            )
+        if rationale != HOST_SEMANTIC_POLICY_RATIONALE:
+            failures.append(
+                "semantic_authority.rationale does not match the registered Host policy"
+            )
+        if policy_version != HOST_SEMANTIC_POLICY_VERSION:
+            failures.append(
+                "semantic_authority.policy_version does not match the registered Host policy"
+            )
+        if policy_sha256 != HOST_SEMANTIC_POLICY_SHA256:
+            failures.append(
+                "semantic_authority.policy_sha256 does not match the registered Host policy"
+            )
+        normalized.update(
+            {
+                "policy_version": policy_version,
+                "policy_sha256": policy_sha256,
+                "source_truth_claimed": False,
+            }
+        )
 
     if failures:
         raise SourceFormulaDialectError(
@@ -550,11 +611,17 @@ def resolve_source_formula(
         "semantic_authority": authority,
         "detected_source_operators": detected,
         "implementation_choices_frozen": True,
-        "source_meaning_status": (
-            "verified_from_auditable_specific_source_evidence"
-            if authority["kind"] == "specific_source_evidence"
-            else "not_verified_explicit_user_research_override"
-        ),
+        "source_meaning_status": {
+            "specific_source_evidence": (
+                "verified_from_auditable_specific_source_evidence"
+            ),
+            "explicit_user_research_override": (
+                "not_verified_explicit_user_research_override"
+            ),
+            "host_preregistered_research_convention": (
+                "not_verified_host_preregistered_research_convention"
+            ),
+        }[authority["kind"]],
         "source_meaning_verified": authority["kind"] == "specific_source_evidence",
         "source_authenticity_verified": bool(
             authority["kind"] == "specific_source_evidence"
@@ -563,7 +630,7 @@ def resolve_source_formula(
         "source_verification_scope": (
             authority["evidence_object"]["verification_scope"]
             if authority["kind"] == "specific_source_evidence"
-            else "explicit_user_research_override"
+            else authority["kind"]
         ),
         "formal_execution_eligible": True,
         "implementation_variant_set": {
@@ -595,6 +662,30 @@ def resolve_source_formula(
         json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
     return contract
+
+
+def resolve_source_formula_for_host(formula_text: str) -> dict[str, Any]:
+    """Resolve a web submission with a frozen, non-performance-selected policy."""
+    raw_formula = str(formula_text or "").strip()
+    detected = set(detected_source_operators(raw_formula))
+    choices = {
+        key: value
+        for key, value in HOST_SEMANTIC_DEFAULT_CHOICES.items()
+        if SEMANTIC_CHOICE_OPERATORS[key].intersection(detected)
+    }
+    authority = {
+        "kind": "host_preregistered_research_convention",
+        "reference": HOST_SEMANTIC_POLICY_REFERENCE,
+        "rationale": HOST_SEMANTIC_POLICY_RATIONALE,
+        "policy_version": HOST_SEMANTIC_POLICY_VERSION,
+        "policy_sha256": HOST_SEMANTIC_POLICY_SHA256,
+        "implementation_choices_not_performance_selected": True,
+    }
+    return resolve_source_formula(
+        raw_formula,
+        choices if detected else None,
+        authority if detected else None,
+    )
 
 
 def _legacy_source_formula_contract(

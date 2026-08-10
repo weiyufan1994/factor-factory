@@ -22,6 +22,7 @@ from factor_factory.formula.source_dialects import (
     migrate_legacy_source_formula_contract,
     recognize_legacy_source_formula_contract,
     resolve_source_formula,
+    resolve_source_formula_for_host,
     valid_source_formula_contract,
 )
 
@@ -108,6 +109,22 @@ def test_source_formula_requires_explicit_semantic_resolution() -> None:
         resolve_source_formula(SOURCE_FORMULA, None)
 
     assert exc.value.token == BLOCK_SOURCE_SEMANTICS_UNRESOLVED
+
+
+def test_host_resolution_preregisters_semantics_without_claiming_source_truth() -> None:
+    contract = resolve_source_formula_for_host(SOURCE_FORMULA)
+
+    assert contract["semantic_choices"] == _choices()
+    assert contract["semantic_authority"]["kind"] == (
+        "host_preregistered_research_convention"
+    )
+    assert contract["semantic_authority"]["source_truth_claimed"] is False
+    assert contract["source_meaning_verified"] is False
+    assert contract["source_meaning_status"] == (
+        "not_verified_host_preregistered_research_convention"
+    )
+    assert contract["formal_execution_eligible"] is True
+    assert valid_source_formula_contract(contract)
 
 
 def test_partial_source_formula_requires_only_relevant_semantic_choices() -> None:

@@ -18,7 +18,7 @@ EnvironmentFile=/etc/factorforge-console/console.env
 ExecStartPre=/usr/bin/mkdir -p /var/lib/factorforge-console/data-api-runtime/catalogs
 ExecStartPre=/usr/bin/install -d -m 0750 /var/lib/factorforge-console/state/public
 ExecStartPre=/usr/bin/install -d -m 0770 /var/lib/factorforge-console/ledger
-ExecStartPre=/opt/factorforge-console/venv/bin/python -c "import cryptography, matplotlib, pyarrow, pyarrow.fs, scipy; assert cryptography.__version__ == '46.0.7'; assert matplotlib.__version__ == '3.10.8'; assert pyarrow.__version__ == '25.0.0'; assert scipy.__version__ == '1.16.3'"
+ExecStartPre=/opt/factorforge-console/venv/bin/python -c "import cryptography, matplotlib, pyarrow, pyarrow.fs, pypdf, scipy; assert cryptography.__version__ == '46.0.7'; assert matplotlib.__version__ == '3.10.8'; assert pyarrow.__version__ == '25.0.0'; assert pypdf.__version__ == '6.10.1'; assert scipy.__version__ == '1.16.3'"
 ExecStartPre=/opt/factorforge-console/venv/bin/python scripts/refresh_factorforge_console_catalog.py --destination /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.json --receipt /var/lib/factorforge-console/data-api-runtime/catalogs/data_catalog.receipt.json
 ExecStart=/opt/factorforge-console/venv/bin/python scripts/run_factorforge_console.py --mode worker --source-repo /srv/factorforge/control --state-root /var/lib/factorforge-console/state --ledger-root /var/lib/factorforge-console/ledger --worktree-root /var/lib/factorforge-console/runs --base-ref HEAD --data-api-pythonpath /srv/factorforge/data-api
 Restart=on-failure

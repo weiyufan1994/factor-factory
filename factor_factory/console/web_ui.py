@@ -8,7 +8,6 @@ from typing import Any
 from factor_factory.console.math_render import render_equation_statement
 from factor_factory.console.models import PILOT_MODEL, ResearchJob, ResearchMessage
 from factor_factory.formula.source_dialects import (
-    uses_source_dialect,
     valid_source_formula_contract,
 )
 
@@ -172,10 +171,6 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
         submitted.get("economic_hypothesis", "")
         or (legacy_content if legacy_kind == "hypothesis" else "")
     )
-    report_input = escape(
-        submitted.get("report_input", "")
-        or (legacy_content if legacy_kind == "report" else "")
-    )
     raw_formula_input = submitted.get("formula_input", "") or (
         legacy_content if legacy_kind == "formula" else ""
     )
@@ -184,109 +179,33 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
         submitted.get("code_input", "")
         or (legacy_content if legacy_kind == "code" else "")
     )
-    semantic_authority_kind = submitted.get("semantic_authority_kind", "")
-    semantic_authority_reference = escape(
-        submitted.get("semantic_authority_reference", "")
-    )
-    semantic_authority_rationale = escape(
-        submitted.get("semantic_authority_rationale", "")
-    )
-    semantic_source_excerpt = escape(submitted.get("semantic_source_excerpt", ""))
-    semantic_source_excerpt_sha256 = escape(
-        submitted.get("semantic_source_excerpt_sha256", "")
-    )
-    semantic_override_reason = escape(submitted.get("semantic_override_reason", ""))
-    semantic_attestation_checked = (
-        " checked"
-        if submitted.get("semantic_choices_not_performance_selected", "") == "true"
-        else ""
-    )
-
-    def semantic_selected(field: str, value: str) -> str:
-        return " selected" if submitted.get(field, "") == value else ""
-
-    def authority_checked(value: str) -> str:
-        return " checked" if semantic_authority_kind == value else ""
-
-    semantic_hidden = "" if uses_source_dialect(raw_formula_input) else " hidden"
-
     return f"""
-    <form method="post" action="/research" class="research-form">
+    <form method="post" action="/research" enctype="multipart/form-data" class="research-form">
       <input type="hidden" name="csrf" value="{escape(csrf_token)}">
-      <div class="field span-2"><label for="title">研究名称</label><input id="title" name="title" maxlength="160" value="{title}" placeholder="例如：隔夜消息扩散与开盘确认" required></div>
-      <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" value="{factor_id_hint}" placeholder="由系统生成也可以"></div>
-      <div class="field"><label for="model">研究模型</label><select id="model" name="model"><option value="{escape(PILOT_MODEL)}">DeepSeek V4 Flash</option></select></div>
-      <div class="field span-2"><label for="economic-hypothesis">经济假设</label><textarea id="economic-hypothesis" name="economic_hypothesis" rows="5" maxlength="20000" placeholder="现象、参与者、付款方、信息形成时间、持久性边界与可证伪条件">{economic_hypothesis}</textarea></div>
-      <div class="field span-2"><label for="formula-input">公式 / 算子</label><textarea id="formula-input" name="formula_input" rows="4" maxlength="20000" placeholder="可与经济假设、研报和代码同时提交">{formula_input}</textarea></div>
-      <div class="field span-2"><label for="report-input">研报摘录</label><textarea id="report-input" name="report_input" rows="4" maxlength="20000">{report_input}</textarea></div>
-      <div class="field span-2"><label for="code-input">代码 / 伪代码</label><textarea id="code-input" name="code_input" rows="5" maxlength="20000" placeholder="作为测量程序与研究对象；宿主不会直接执行未审计代码">{code_input}</textarea></div>
-      <fieldset id="semantic-resolution" class="semantic-resolution span-2"{semantic_hidden}>
-        <legend>第三方公式语义</legend>
-        <div class="field" data-semantic-operators="TS_KURTOSIS"><label for="kurtosis-convention">峰度</label><select id="kurtosis-convention" name="kurtosis_convention"><option value="">请选择</option><option value="excess_unbiased"{semantic_selected('kurtosis_convention', 'excess_unbiased')}>无偏 Fisher 超额峰度</option><option value="pearson_unbiased"{semantic_selected('kurtosis_convention', 'pearson_unbiased')}>无偏 Pearson 峰度</option></select></div>
-        <div class="field" data-semantic-operators="TS_MAX_SKEW TS_MIN_SKEW"><label for="skew-convention">MAX/MIN SKEW</label><select id="skew-convention" name="skew_convention"><option value="">请选择</option><option value="inner_window_extrema"{semantic_selected('skew_convention', 'inner_window_extrema')}>内层滚动偏度的极值</option><option value="order_statistic_subset"{semantic_selected('skew_convention', 'order_statistic_subset')}>最大/最小 k 个值的偏度</option></select></div>
-        <div class="field" data-semantic-operators="TS_MAX_SUM"><label for="max-sum-convention">MAX SUM</label><select id="max-sum-convention" name="max_sum_convention"><option value="">请选择</option><option value="contiguous_subwindow"{semantic_selected('max_sum_convention', 'contiguous_subwindow')}>连续 k 期和的最大值</option><option value="topk_values"{semantic_selected('max_sum_convention', 'topk_values')}>最大 k 个值之和</option></select></div>
-        <div class="field" data-semantic-operators="NORMALIZE"><label for="zscore-ddof">截面标准差</label><select id="zscore-ddof" name="zscore_ddof"><option value="">请选择</option><option value="0"{semantic_selected('zscore_ddof', '0')}>总体标准差 ddof=0</option><option value="1"{semantic_selected('zscore_ddof', '1')}>样本标准差 ddof=1</option></select></div>
-        <div class="field span-2"><span class="field-label">语义权威</span><div class="authority-mode" role="radiogroup" aria-label="语义权威"><label class="authority-option"><input type="radio" name="semantic_authority_kind" value="specific_source_evidence"{authority_checked('specific_source_evidence')}><span>具体源证据</span></label><label class="authority-option"><input type="radio" name="semantic_authority_kind" value="explicit_user_research_override"{authority_checked('explicit_user_research_override')}><span>用户研究覆盖</span></label></div></div>
-        <div class="field"><label for="semantic-authority-reference">权威引用</label><input id="semantic-authority-reference" name="semantic_authority_reference" maxlength="2000" value="{semantic_authority_reference}" placeholder="例如 source-report.pdf#page=7"></div>
-        <div class="field"><label for="semantic-authority-rationale">实现口径理由</label><textarea class="compact-textarea" id="semantic-authority-rationale" name="semantic_authority_rationale" rows="3" maxlength="4000">{semantic_authority_rationale}</textarea></div>
-        <div class="authority-panel span-2" data-authority-kind="specific_source_evidence" hidden><div class="field"><label for="semantic-source-excerpt">原文摘录</label><textarea class="compact-textarea" id="semantic-source-excerpt" name="semantic_source_excerpt" rows="3" maxlength="8000">{semantic_source_excerpt}</textarea></div><div class="field"><label for="semantic-source-excerpt-sha256">摘录 SHA-256（可选）</label><input id="semantic-source-excerpt-sha256" name="semantic_source_excerpt_sha256" maxlength="64" pattern="[A-Fa-f0-9]{{64}}" value="{semantic_source_excerpt_sha256}" placeholder="填写时必须与摘录一致"></div></div>
-        <div class="authority-panel span-2" data-authority-kind="explicit_user_research_override" hidden><div class="field span-2"><label for="semantic-override-reason">用户研究覆盖原因</label><textarea class="compact-textarea" id="semantic-override-reason" name="semantic_override_reason" rows="3" maxlength="4000">{semantic_override_reason}</textarea></div></div>
-        <label class="semantic-attestation span-2"><input type="checkbox" name="semantic_choices_not_performance_selected" value="true"{semantic_attestation_checked}><span>确认上述实现口径未依据回测结果、收益表现或其他绩效指标选择</span></label>
-      </fieldset>
-      <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
-      <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘后形成信号 → 下一交易日收盘成交 → 再下一交易日收盘退出（Pilot 固定）</div></div>
-      <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="{sample_start}" required></div>
-      <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="{sample_end}" required></div>
-      <div class="field"><label>交易成本模型</label><input type="hidden" name="transaction_cost_bps" value="30"><div class="fixed-contract">换手 × 30 bps（Pilot 固定）</div></div>
-      <div class="form-actions span-2"><p>提交后异步运行 Ultimate；每个因子分配独立 Git worktree，Data API 只读。</p><button class="button primary" type="submit">开始研究</button></div>
+      <div class="field span-2"><label for="title">研究名称（可选）</label><input id="title" name="title" maxlength="160" value="{title}" placeholder="留空时由系统根据输入生成"></div>
+      <div class="field span-2 primary-input"><label for="economic-hypothesis">你想研究什么</label><textarea id="economic-hypothesis" name="economic_hypothesis" rows="8" maxlength="20000" placeholder="直接描述经济假设、市场现象、已有结论或疑问。可以混合粘贴研报摘录；Factor Forge 会整理成研究对象。">{economic_hypothesis}</textarea></div>
+      <div class="field span-2 upload-field"><label for="report-pdf">上传研报（可选）</label><input id="report-pdf" name="report_pdf" type="file" accept="application/pdf,.pdf"><span class="field-help">PDF 不超过 20 MB。系统保留原件并提取带页码文本，不要求你手工填写引用或 SHA。</span></div>
+      <details class="research-options span-2">
+        <summary>已有公式或代码</summary>
+        <div class="details-grid">
+          <div class="field span-2"><label for="formula-input">公式 / 算子（可选）</label><textarea id="formula-input" name="formula_input" rows="4" maxlength="20000" placeholder="可与上面的研究描述和 PDF 同时提交；算子口径由系统在回测前自动冻结。">{formula_input}</textarea></div>
+          <div class="field span-2"><label for="code-input">代码 / 伪代码（可选）</label><textarea id="code-input" name="code_input" rows="5" maxlength="20000" placeholder="作为待审计的测量程序，不会直接在宿主机执行。">{code_input}</textarea></div>
+        </div>
+      </details>
+      <details class="research-options span-2">
+        <summary>研究设置</summary>
+        <div class="details-grid">
+          <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" value="{factor_id_hint}" placeholder="留空时由系统生成"></div>
+          <div class="field"><label for="model">研究模型</label><select id="model" name="model"><option value="{escape(PILOT_MODEL)}">DeepSeek V4 Flash</option></select></div>
+          <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
+          <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘 t 形成信号，t+1 收盘成交，t+2 收盘退出</div></div>
+          <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="{sample_start}" required></div>
+          <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="{sample_end}" required></div>
+          <div class="field"><label>交易成本模型</label><input type="hidden" name="transaction_cost_bps" value="30"><div class="fixed-contract">换手 × 30 bps（Pilot 固定）</div></div>
+        </div>
+      </details>
+      <div class="form-actions span-2"><p>其余实现口径、来源审计、worktree 和 Data API 读取由系统处理。</p><button class="button primary" type="submit">开始研究</button></div>
     </form>
-    <script>
-    (() => {{
-      const formula = document.getElementById('formula-input');
-      const semanticResolution = document.getElementById('semantic-resolution');
-      const choiceRows = semanticResolution.querySelectorAll('[data-semantic-operators]');
-      const modes = document.querySelectorAll('input[name="semantic_authority_kind"]');
-      const panels = document.querySelectorAll('[data-authority-kind]');
-      const sourceOperators = ['NORMALIZE', 'S_LOG_LP', 'S_LOG_1P', 'TS_KURTOSIS', 'TS_MAX_SKEW', 'TS_MIN_SKEW', 'TS_MAX_SUM'];
-      const formulaOperators = () => new Set(
-        (formula.value.toUpperCase().match(/\\b[A-Z_][A-Z0-9_]*(?=\\s*\\()/g) || [])
-      );
-      const syncAuthorityMode = () => {{
-        const selected = document.querySelector('input[name="semantic_authority_kind"]:checked');
-        panels.forEach((panel) => {{
-          const active = Boolean(selected && panel.dataset.authorityKind === selected.value);
-          panel.hidden = !active;
-          panel.querySelectorAll('input, textarea').forEach((control) => {{ control.disabled = !active; }});
-        }});
-      }};
-      const syncSemanticResolution = () => {{
-        const detected = formulaOperators();
-        const active = sourceOperators.some((operator) => detected.has(operator));
-        semanticResolution.hidden = !active;
-        choiceRows.forEach((row) => {{
-          const relevant = row.dataset.semanticOperators.split(' ').some((operator) => detected.has(operator));
-          row.hidden = !relevant;
-          row.querySelectorAll('select').forEach((control) => {{ control.disabled = !relevant; }});
-        }});
-        semanticResolution.querySelectorAll(':scope > .field:not([data-semantic-operators]), :scope > .semantic-attestation').forEach((row) => {{
-          row.querySelectorAll('input, textarea').forEach((control) => {{
-            control.disabled = !active;
-          }});
-        }});
-        if (active) {{
-          syncAuthorityMode();
-        }} else {{
-          panels.forEach((panel) => {{
-            panel.hidden = true;
-            panel.querySelectorAll('input, textarea').forEach((control) => {{ control.disabled = true; }});
-          }});
-        }}
-      }};
-      modes.forEach((mode) => mode.addEventListener('change', syncAuthorityMode));
-      formula.addEventListener('input', syncSemanticResolution);
-      syncSemanticResolution();
-    }})();
-    </script>
     """
 
 
@@ -562,6 +481,8 @@ def _source_semantics_message(
         source_meaning_label = "已核实所提交证据中的算子含义"
     elif authority_kind == "explicit_user_research_override":
         source_meaning_label = "未由来源核实，采用显式用户研究覆盖"
+    elif authority_kind == "host_preregistered_research_convention":
+        source_meaning_label = "未宣称第三方原义；采用回测前冻结的系统研究口径"
     else:
         source_meaning_label = "尚未核实，需补充 v2 语义权威"
     if contract.get("source_authenticity_verified") is True:
@@ -577,6 +498,7 @@ def _source_semantics_message(
                 {
                     "specific_source_evidence": "具体源证据",
                     "explicit_user_research_override": "显式用户研究覆盖",
+                    "host_preregistered_research_convention": "系统预注册研究口径",
                 }.get(authority_kind, authority_kind or "未绑定")
             )
             + "</dd></div>",
@@ -1684,7 +1606,7 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .job-table { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--surface); }.job-table-head,.job-row { display:grid; grid-template-columns:minmax(280px,2fr) minmax(150px,1fr) 120px 135px 150px; align-items:center; gap:12px; padding:11px 14px; }.job-table-head { background:#e9edec; color:var(--muted); font-size:12px; font-weight:700; }.job-row { min-height:68px; text-decoration:none; border-top:1px solid var(--line); }.job-row:hover { background:#f7faf8; }.job-main { display:grid; gap:3px; }.job-main strong { font-size:15px; }.job-main span,.job-row time,.job-stage { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .status-badge { display:inline-flex; min-height:26px; align-items:center; padding:3px 8px; border:1px solid var(--line); border-radius:999px; white-space:nowrap; font-size:12px; font-weight:700; }.status-researching,.status-verifying,.status-allocating { color:var(--blue); background:var(--blue-soft); border-color:#bad4df; }.status-completed { color:var(--green); background:var(--green-soft); border-color:#b9d8c7; }.status-blocked,.status-failed { color:var(--red); background:var(--red-soft); border-color:#e7bdb7; }.status-review_required,.status-queued { color:var(--amber); background:var(--amber-soft); border-color:#e6d09f; }
 .verdict-accept{color:var(--green)}.verdict-reject,.verdict-block{color:var(--red)}.verdict-iterate,.verdict-partial{color:var(--amber)}
-.research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label,.field-label { font-weight:700; }.field input,.field textarea,.field select,.fixed-contract { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.fixed-contract { background:#f3f6f5; color:var(--muted); }.field textarea { resize:vertical; min-height:160px; }.field textarea.compact-textarea { min-height:92px; }.span-2 { grid-column:span 2; }.semantic-resolution { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; margin:0; padding:14px; border:1px solid var(--line); }.semantic-resolution[hidden],.authority-panel[hidden],[data-semantic-operators][hidden] { display:none!important; }.semantic-resolution legend { padding:0 6px; color:var(--muted); font-weight:700; }.authority-mode { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); border:1px solid #aeb8bc; border-radius:4px; overflow:hidden; }.authority-option { min-height:40px; display:flex; align-items:center; gap:8px; padding:8px 10px; background:#fff; cursor:pointer; }.authority-option+ .authority-option { border-left:1px solid #aeb8bc; }.authority-option:has(input:checked) { color:var(--green); background:var(--green-soft); font-weight:700; }.authority-option input { width:auto; margin:0; accent-color:var(--green); }.authority-panel { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; }.semantic-attestation { min-height:42px; display:flex; align-items:flex-start; gap:9px; padding:10px; border:1px solid var(--line); background:#f3f6f5; font-weight:700; }.semantic-attestation input { flex:none; margin-top:4px; accent-color:var(--green); }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
+.research-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 18px; padding:20px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }.field { display:grid; gap:6px; }.field label,.field-label { font-weight:700; }.field input,.field textarea,.field select,.fixed-contract { width:100%; border:1px solid #aeb8bc; border-radius:4px; padding:9px 10px; background:#fff; color:var(--ink); }.field input[type=file] { padding:8px; background:#f7f9f8; }.fixed-contract { min-height:42px; background:#f3f6f5; color:var(--muted); }.field textarea { resize:vertical; min-height:130px; }.primary-input textarea { min-height:210px; }.field-help { color:var(--muted); font-size:12px; }.span-2 { grid-column:span 2; }.research-options { border:1px solid var(--line); border-radius:4px; background:#f7f9f8; }.research-options summary { padding:11px 13px; cursor:pointer; font-weight:700; }.research-options[open] summary { border-bottom:1px solid var(--line); }.details-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 18px; padding:14px; }.form-actions { display:flex; align-items:center; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; }.form-actions p { margin:0; color:var(--muted); }
 .organization-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; }.organization-summary>div { min-width:0; padding:12px; border-right:1px solid var(--line); }.organization-summary>div:last-child { border-right:0; }.organization-summary span,.organization-role span { display:block; color:var(--muted); font-size:11px; }.organization-summary strong,.organization-role strong { display:block; margin-top:4px; overflow-wrap:anywhere; }.organization-roles { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); border-top:0; background:#fff; }.organization-role { min-width:0; min-height:72px; padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }.organization-role.deferred { background:#f3f6f5; color:var(--muted); }
 .breadcrumbs { display:flex; gap:8px; color:var(--muted); margin-bottom:22px; }.breadcrumbs a { color:var(--blue); }.detail-heading { align-items:flex-start; }.detail-heading>div { width:100%; min-width:0; max-width:900px; }.idea-summary { max-width:900px; white-space:pre-line; overflow-wrap:anywhere; color:#3d4a50; font-size:15px; }.identity-band { margin-top:22px; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); background:#fff; border-radius:6px; }.identity-band div { padding:13px 15px; border-right:1px solid var(--line); display:grid; gap:2px; }.identity-band div:last-child{border-right:0}.identity-band span { color:var(--muted); font-size:12px; }.identity-band strong { overflow-wrap:anywhere; }
 .stage-list { list-style:none; margin:12px 0 0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:6px; overflow:hidden; }.stage { min-height:70px; padding:13px; display:flex; gap:10px; align-items:flex-start; background:#fff; border-right:1px solid var(--line); }.stage:last-child{border-right:0}.stage-dot { width:9px; height:9px; border-radius:50%; margin-top:6px; background:#aab3b6; flex:none; }.stage>div { display:grid; }.stage span:last-child { color:var(--muted); font-size:12px; }.stage-done .stage-dot,.stage-pass .stage-dot{background:var(--green)}.stage-active .stage-dot{background:var(--blue)}.stage-blocked .stage-dot{background:var(--red)}
@@ -1707,5 +1629,5 @@ button,input,select,textarea { font:inherit; letter-spacing:0; }
 .empty-state { padding:32px; border:1px dashed #aeb8bc; background:#fff; text-align:center; border-radius:6px; }.empty-state h3{margin:0 0 4px}.empty-state p{margin:0;color:var(--muted)}
 .login-shell { min-height:100vh; display:grid; place-items:center; padding:24px; background:#e9edec; }.login-panel { width:min(420px,100%); padding:30px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 12px 36px rgba(24,33,38,.12); }.login-panel h1 { margin:4px 0; font-size:28px; }.login-panel .muted { margin:0 0 24px; }.login-form { display:grid; gap:9px; }.login-form label { font-weight:700; }.login-form input { padding:10px; border:1px solid #aeb8bc; border-radius:4px; }.login-form button { margin-top:8px; min-height:40px; border:0; border-radius:4px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }.form-error { padding:9px 10px; color:var(--red); background:var(--red-soft); border:1px solid #e7bdb7; }.dashboard-error { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-top:18px; border-radius:4px; }.dashboard-error div { display:grid; gap:2px; }.dashboard-error a { flex:none; color:var(--red); font-weight:700; }
 @media (max-width:900px){.workspace{padding:22px 16px 52px}.topbar{padding:0 16px}.status-strip{grid-template-columns:repeat(2,1fr)}.job-table-head{display:none}.job-row{grid-template-columns:1fr auto}.job-stage,.job-verdict,.job-row time{grid-column:1}.identity-band{grid-template-columns:repeat(2,1fr)}.identity-band div{border-bottom:1px solid var(--line)}.stage-list{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.metric-grid{grid-template-columns:repeat(2,1fr)}.decision-head{grid-template-columns:repeat(2,1fr)}.chart-grid,.council-routes,.model-comparison{grid-template-columns:1fr}.math-definitions{grid-template-columns:1fr}.math-contract-equation{grid-template-columns:1fr;gap:6px}.organization-summary{grid-template-columns:repeat(2,1fr)}.organization-roles{grid-template-columns:repeat(2,1fr)}}
-@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form,.semantic-resolution,.authority-panel{grid-template-columns:1fr}.span-2{grid-column:span 1}.authority-mode{grid-template-columns:1fr}.authority-option+ .authority-option{border-left:0;border-top:1px solid #aeb8bc}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.semantic-contract-grid{grid-template-columns:1fr}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}.organization-summary,.organization-roles{grid-template-columns:1fr}.organization-summary>div{border-right:0;border-bottom:1px solid var(--line)}}
+@media (max-width:600px){.topbar-title{display:none}.page-heading,.detail-heading,.section-heading{align-items:flex-start;flex-direction:column}.dashboard-error{align-items:flex-start;flex-direction:column}.research-form,.details-grid{grid-template-columns:1fr}.span-2{grid-column:span 1}.form-actions{align-items:stretch;flex-direction:column}.identity-band{grid-template-columns:1fr}.identity-band div{border-right:0}.metric-grid{grid-template-columns:1fr}.definition-list>div,.structured-record>div{grid-template-columns:1fr}.event-list li{grid-template-columns:1fr}.decision-head{grid-template-columns:1fr}.status-strip{grid-template-columns:1fr}.status-stat{border-right:0;border-bottom:1px solid var(--line)}.message-composer{grid-template-columns:1fr}.message-composer .composer-input{grid-column:1;grid-row:auto}.composer-actions{grid-column:1;align-items:stretch;flex-direction:column}.composer-actions span{margin-right:0}.chat-message{width:100%}.semantic-contract-grid{grid-template-columns:1fr}.notebook-step{grid-template-columns:38px minmax(0,1fr)}.equation-block{padding-right:42px}.workspace-nav{top:58px}.organization-summary,.organization-roles{grid-template-columns:1fr}.organization-summary>div{border-right:0;border-bottom:1px solid var(--line)}}
 """

@@ -37,6 +37,12 @@ from factor_factory.console.catalog_health import (
     require_catalogs_healthy,
 )
 from factor_factory.console.config import ConsoleConfig
+from factor_factory.console.report_upload import (
+    BLOCK_PDF_EXTRACTION_FAILED,
+    ResearchAttachmentUpload,
+    extract_pdf_markdown_isolated,
+    write_bytes_atomic,
+)
 from factor_factory.console.conversation_ledger import (
     BLOCK_CONVERSATION_LEDGER_INVALID,
     CONVERSATION_LEDGER_MAX_MESSAGES,
@@ -917,6 +923,7 @@ class ResearchQueueService:
         request: ResearchRequest,
         *,
         initial_messages: list[tuple[str, str]] | None = None,
+        initial_attachments: list[ResearchAttachmentUpload] | None = None,
     ) -> ResearchJob:
         validate_pilot_evaluation_request(request)
         if request.source_url:
@@ -927,7 +934,11 @@ class ResearchQueueService:
             require_catalogs_healthy(self.config)
         if not self.healthcheck():
             raise RuntimeError("BLOCK_FACTORFORGE_CONSOLE_RUNNER_UNAVAILABLE")
-        return self.store.create_job(request, initial_messages=initial_messages)
+        return self.store.create_job(
+            request,
+            initial_messages=initial_messages,
+            initial_attachments=initial_attachments,
+        )
 
     def request_resume(self, job_id: str) -> ResearchJob:
         job = self.store.get_job(job_id)
@@ -1015,6 +1026,7 @@ class ResearchRunService:
         request: ResearchRequest,
         *,
         initial_messages: list[tuple[str, str]] | None = None,
+        initial_attachments: list[ResearchAttachmentUpload] | None = None,
     ) -> ResearchJob:
         validate_pilot_evaluation_request(request)
         if request.source_url:
@@ -1022,7 +1034,11 @@ class ResearchRunService:
                 "source URL ingestion is disabled until the read-only fetch broker is available"
             )
         require_catalogs_healthy(self.config)
-        job = self.store.create_job(request, initial_messages=initial_messages)
+        job = self.store.create_job(
+            request,
+            initial_messages=initial_messages,
+            initial_attachments=initial_attachments,
+        )
         self._wake.set()
         return job
 
@@ -4405,6 +4421,11 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: fresh request cannot carry resume trust"
             )
+        uploaded_report = self._materialize_uploaded_report(
+            job,
+            workspace,
+            preserve_plan=preserve_plan,
+        )
         conversation_reference, planned_checkpoints = plan_conversation_checkpoints(
             workspace,
             job_id=job.job_id,
@@ -4423,6 +4444,9 @@ class ResearchRunService:
             "allocation_manifest_sha256": _sha256(allocation.manifest_path),
             "submitted_at_utc": job.created_at_utc,
             "source_type": "natural_language_hypothesis",
+            "source_materials": (
+                [uploaded_report] if uploaded_report is not None else []
+            ),
             "conversation_snapshot": conversation_snapshot,
             "conversation_snapshot_sha256": conversation_snapshot["sha256"],
             CONVERSATION_LEDGER_REFERENCE_FIELD: conversation_reference,
@@ -4470,6 +4494,19 @@ class ResearchRunService:
             "",
             job.request.hypothesis,
         ]
+        if uploaded_report is not None:
+            source_lines.extend(
+                [
+                    "",
+                    "## Uploaded report",
+                    "",
+                    f"- Original filename: {uploaded_report['original_filename']}",
+                    f"- PDF: `{uploaded_report['workspace_pdf_path']}`",
+                    f"- Page-aware text: `{uploaded_report['extracted_text_path']}`",
+                    f"- SHA-256: `{uploaded_report['sha256']}`",
+                    "- Attribution status: user supplied; external authenticity not asserted",
+                ]
+            )
         if job.request.source_url:
             source_lines.extend(["", "## User Reference", "", job.request.source_url])
         try:
@@ -4520,6 +4557,113 @@ class ResearchRunService:
                         f"{BLOCK_RESUME_TRUST_INVALID}: resume request rollback failed"
                     ) from rollback_exc
             raise
+
+    def _materialize_uploaded_report(
+        self,
+        job: ResearchJob,
+        workspace: Path,
+        *,
+        preserve_plan: bool,
+    ) -> dict[str, Any] | None:
+        attachments = self.store.list_attachments(job.job_id)
+        if not attachments:
+            return None
+        if len(attachments) != 1:
+            raise RuntimeError(
+                f"{BLOCK_PDF_EXTRACTION_FAILED}: expected exactly one report attachment"
+            )
+        attachment = attachments[0]
+        pdf_relative = "reports/uploaded_source_report.pdf"
+        text_relative = "reports/uploaded_source_report_text.md"
+        manifest_relative = "identity/uploaded_source_report_manifest.json"
+        pdf_path = workspace / pdf_relative
+        text_path = workspace / text_relative
+        manifest_path = workspace / manifest_relative
+
+        def read_existing_manifest(*, block_token: str) -> dict[str, Any]:
+            for path in (pdf_path, text_path, manifest_path):
+                if path.is_symlink() or not path.is_file():
+                    raise RuntimeError(
+                        f"{block_token}: uploaded report artifact is unsafe"
+                    )
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{block_token}: uploaded report manifest is invalid"
+                ) from exc
+            if (
+                not isinstance(payload, dict)
+                or payload.get("contract_version")
+                != "factorforge_console_uploaded_report_v1"
+                or payload.get("attachment_id") != attachment.attachment_id
+                or payload.get("original_filename") != attachment.original_filename
+                or payload.get("media_type") != attachment.media_type
+                or payload.get("size_bytes") != attachment.size_bytes
+                or payload.get("sha256") != attachment.sha256
+                or payload.get("workspace_pdf_path") != pdf_relative
+                or payload.get("workspace_pdf_sha256") != attachment.sha256
+                or _sha256(pdf_path) != attachment.sha256
+                or pdf_path.stat().st_size != attachment.size_bytes
+                or payload.get("extracted_text_path") != text_relative
+                or payload.get("extracted_text_sha256") != _sha256(text_path)
+                or payload.get("source_authenticity_verified") is not False
+                or payload.get("source_attribution") != "user_supplied_unverified"
+            ):
+                raise RuntimeError(
+                    f"{block_token}: uploaded report provenance changed"
+                )
+            return payload
+
+        if preserve_plan:
+            manifest = read_existing_manifest(block_token=BLOCK_RESUME_TRUST_INVALID)
+        else:
+            existing = [
+                path.exists() or path.is_symlink()
+                for path in (pdf_path, text_path, manifest_path)
+            ]
+            if any(existing):
+                if not all(existing):
+                    raise RuntimeError(
+                        f"{BLOCK_PDF_EXTRACTION_FAILED}: partial report output exists"
+                    )
+                manifest = read_existing_manifest(
+                    block_token=BLOCK_PDF_EXTRACTION_FAILED
+                )
+            else:
+                data = self.store.read_attachment(attachment)
+                write_bytes_atomic(pdf_path, data, root=workspace)
+                extraction = extract_pdf_markdown_isolated(
+                    pdf_path,
+                    original_filename=attachment.original_filename,
+                )
+                write_text_atomic(
+                    text_path,
+                    str(extraction.pop("markdown")),
+                    root=workspace,
+                )
+                manifest = {
+                    "contract_version": "factorforge_console_uploaded_report_v1",
+                    "attachment_id": attachment.attachment_id,
+                    "original_filename": attachment.original_filename,
+                    "media_type": attachment.media_type,
+                    "size_bytes": attachment.size_bytes,
+                    "sha256": attachment.sha256,
+                    "workspace_pdf_path": pdf_relative,
+                    "workspace_pdf_sha256": _sha256(pdf_path),
+                    "extracted_text_path": text_relative,
+                    "extracted_text_sha256": _sha256(text_path),
+                    "extraction": extraction,
+                    "source_authenticity_verified": False,
+                    "source_attribution": "user_supplied_unverified",
+                }
+                _write_json_atomic(manifest_path, manifest, root=workspace)
+
+        return {
+            **manifest,
+            "manifest_path": manifest_relative,
+            "manifest_sha256": _sha256(manifest_path),
+        }
 
     def _write_resume_authorization(self, job: ResearchJob, workspace: Path) -> None:
         payload = {

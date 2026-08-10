@@ -1218,6 +1218,98 @@ def test_resume_request_artifact_failure_restores_parent_conversation_state(
     } == checkpoints_before
 
 
+def test_uploaded_pdf_is_materialized_page_aware_and_bound_to_research_inputs(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.agent_adapter as agent_adapter
+    from factor_factory.console.report_upload import ResearchAttachmentUpload
+
+    _source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+    pdf_path = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "step1"
+        / "kakushadze_101_formulas.pdf"
+    )
+    upload = ResearchAttachmentUpload(
+        original_filename="101-formulas.pdf",
+        media_type="application/pdf",
+        data=pdf_path.read_bytes(),
+    )
+    job = service.submit(
+        _request("Uploaded report materialization"),
+        initial_attachments=[upload],
+    )
+    allocation = service.allocator.allocate(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        implementation_mode="operator",
+    )
+
+    service._write_request_artifacts(job, allocation)
+
+    workspace = allocation.workspace_path
+    copied_pdf = workspace / "reports" / "uploaded_source_report.pdf"
+    extracted = workspace / "reports" / "uploaded_source_report_text.md"
+    manifest_path = workspace / "identity" / "uploaded_source_report_manifest.json"
+    request = json.loads(
+        (workspace / "identity" / "web_research_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert copied_pdf.read_bytes() == pdf_path.read_bytes()
+    assert "<!-- factorforge-pdf-page: 1 -->" in extracted.read_text(encoding="utf-8")
+    assert manifest["sha256"] == upload.sha256
+    assert manifest["extraction"]["page_count"] == 22
+    assert request["source_materials"][0]["manifest_sha256"] == _file_sha256(
+        manifest_path
+    )
+    organization = json.loads(
+        (workspace / "identity" / "research_organization_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert any(
+        item["path"].endswith("/uploaded_source_report_manifest.json")
+        for item in organization["input_snapshot_refs"]
+    )
+    monkeypatch.setattr(
+        agent_adapter,
+        "_host_director_record_prompt_template",
+        lambda *_args, **_kwargs: None,
+    )
+    prompt = agent_adapter.build_agent_prompt(
+        job,
+        worktree=allocation.worktree_path,
+        workspace=workspace,
+        config=service.config,
+        resume=False,
+    )
+    assert str(extracted) in prompt
+    assert "page-aware text" in prompt
+
+    first_manifest_sha256 = _file_sha256(manifest_path)
+    retried = service._materialize_uploaded_report(
+        job,
+        workspace,
+        preserve_plan=False,
+    )
+    assert retried is not None
+    assert retried["manifest_sha256"] == first_manifest_sha256
+    assert copied_pdf.read_bytes() == pdf_path.read_bytes()
+
+    extracted.unlink()
+    with pytest.raises(RuntimeError, match="partial report output exists"):
+        service._materialize_uploaded_report(
+            job,
+            workspace,
+            preserve_plan=False,
+        )
+
+
 def test_host_conversation_binding_requires_real_parent_attestation(
     tmp_path,
     monkeypatch,

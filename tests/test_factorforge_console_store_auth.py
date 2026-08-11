@@ -4609,6 +4609,80 @@ def test_data_api_checkout_rejects_package_path_symlinks(tmp_path, symlink_relat
         adapter._data_api_package_root()
 
 
+def test_data_api_private_git_view_excludes_promisor_metadata(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    package = checkout / "factor_factory/data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "data api"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    promisor = checkout / ".git/objects/pack/root-only.promisor"
+    promisor.write_text("must not be copied\n", encoding="utf-8")
+    promisor.chmod(0o000)
+
+    state_root = tmp_path / "state"
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=state_root,
+            worktree_root=tmp_path / "runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commit,
+            auth_disabled=True,
+        )
+    )
+    assert adapter._data_api_package_root() == package.resolve()
+    assert not tuple((state_root / "data-api-git-views").rglob("*.promisor"))
+
+    invalid_promisor = checkout / ".git/objects/pack/not-a-file.promisor"
+    invalid_promisor.mkdir()
+    invalid_adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=tmp_path / "invalid-state",
+            worktree_root=tmp_path / "invalid-runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commit,
+            auth_disabled=True,
+        )
+    )
+    with pytest.raises(RuntimeError, match="object source is unsafe"):
+        invalid_adapter._prepare_data_api_git_view(
+            checkout=checkout.resolve(),
+            expected_commit=commit,
+        )
+
+
 def test_data_api_private_git_views_are_prebounded_and_retained(tmp_path, monkeypatch):
     import subprocess
     import factor_factory.console.container_agent_adapter as adapter_module

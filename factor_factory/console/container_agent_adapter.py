@@ -3631,7 +3631,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
             for name in child_directories:
                 entry_count += 1
                 metadata = (directory_path / name).lstat()
-                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                if (
+                    name.endswith(".promisor")
+                    or stat.S_ISLNK(metadata.st_mode)
+                    or not stat.S_ISDIR(metadata.st_mode)
+                ):
                     raise RuntimeError(
                         f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is unsafe"
                     )
@@ -3642,6 +3646,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     raise RuntimeError(
                         f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is unsafe"
                     )
+                if name.endswith(".promisor"):
+                    continue
                 total_bytes += metadata.st_size
             if (
                 entry_count > DATA_API_GIT_OBJECT_MAX_ENTRIES
@@ -3650,6 +3656,23 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is too large"
                 )
+
+    @staticmethod
+    def _ignore_data_api_promisor_files(
+        directory: str,
+        names: list[str],
+    ) -> set[str]:
+        ignored: set[str] = set()
+        for name in names:
+            if not name.endswith(".promisor"):
+                continue
+            metadata = (Path(directory) / name).lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git promisor metadata is unsafe"
+                )
+            ignored.add(name)
+        return ignored
 
     @staticmethod
     def _prune_data_api_git_views(*, view_root: Path, current: Path) -> None:
@@ -3747,6 +3770,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git indirection is forbidden"
                 )
+        if any((git_dir / "objects").rglob("*.promisor")):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git promisor metadata is forbidden"
+            )
         actual_format = self._run_host_git(
             ["git", f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
             timeout=30,
@@ -3894,6 +3921,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     source_objects,
                     temporary / "objects",
                     symlinks=True,
+                    ignore=self._ignore_data_api_promisor_files,
                 )
                 self._seal_data_api_git_object_copy(temporary / "objects")
                 (temporary / "refs").mkdir(mode=0o700)

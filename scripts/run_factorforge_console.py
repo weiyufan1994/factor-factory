@@ -165,7 +165,10 @@ def main() -> None:
             raise SystemExit("shared_gateway execution is restricted to loopback auth-disabled development")
         adapter = OpenClawResearchAgentAdapter(config)
     else:
-        adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+        adapter = ContainerizedOpenClawResearchAgentAdapter(
+            config,
+            trusted_engine_commit=pinned_commit,
+        )
     agent_runtime = adapter.validate_ready()
     service = ResearchRunService(
         config=config,

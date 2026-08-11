@@ -743,6 +743,7 @@ class _CouncilPauseThenLeaseFailureAdapter:
         self.state_root = state_root
         self._paused = _PausedAdapter()
         self.council_ingress_completed = False
+        self.council_receipt_engine_commit: str | None = None
 
     def run(
         self,
@@ -857,11 +858,51 @@ class _CouncilPauseThenLeaseFailureAdapter:
             / job.job_id
             / "council_ingress_test.json"
         )
-        _write_json(result_path, {"returncode": 0})
+        agent_id = f"agent-{job.job_id}"
+        session_key = f"session-{job.job_id}"
+        _write_json(
+            result_path,
+            {
+                "version": "factorforge_console_council_ingress_v1",
+                "job_id": job.job_id,
+                "factor_id": job.factor_id,
+                "research_id": job.research_id,
+                "report_id": job.report_id,
+                "agent_id": agent_id,
+                "session_key_sha256": hashlib.sha256(
+                    session_key.encode("utf-8")
+                ).hexdigest(),
+                "independent_agent_count": len(tasks),
+                "required_agent_count": len(tasks),
+                "resume": True,
+                "research_base_commit": job.base_commit,
+                "engine_commit": (
+                    self.council_receipt_engine_commit or job.base_commit
+                ),
+                "returncode": 0,
+                "error_code": "",
+                "runs": [
+                    {
+                        "task_id": task.task_id,
+                        "agent_role": task.agent_role,
+                        "expected_agent_identifier": (
+                            task.expected_agent_identifier
+                        ),
+                        "expected_result_path": task.expected_result_path,
+                        "returncode": 0,
+                        "error_code": "",
+                        "imported_result_sha256": _file_sha256(
+                            workspace / task.expected_result_path
+                        ),
+                    }
+                    for task in tasks
+                ],
+            },
+        )
         return AgentRunResult(
             returncode=0,
-            agent_id=f"agent-{job.job_id}",
-            session_key=f"session-{job.job_id}",
+            agent_id=agent_id,
+            session_key=session_key,
             started_at_utc="2026-08-02T00:00:00Z",
             finished_at_utc="2026-08-02T00:01:00Z",
             stdout_tail="council imported",
@@ -2753,6 +2794,8 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
             ).hexdigest(),
             "resume": True,
             "resume_attempt_id": resume_task.attempt_id,
+            "research_base_commit": job.base_commit,
+            "engine_commit": service._expected_base_commit,
             "returncode": 0,
         },
     )
@@ -2845,6 +2888,36 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
         )
     memo["formula_component_map"].pop()
     _write_json(memo_path, memo)
+    bound_agent_run = json.loads(result_path.read_text(encoding="utf-8"))
+    agent_run = dict(bound_agent_run)
+    agent_run["engine_commit"] = "d" * 40
+    _write_json(result_path, agent_run)
+    with pytest.raises(RuntimeError, match="agent_run_receipt_binding_invalid"):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+    agent_run = dict(bound_agent_run)
+    agent_run["research_base_commit"] = "e" * 40
+    _write_json(result_path, agent_run)
+    with pytest.raises(RuntimeError, match="agent_run_receipt_binding_invalid"):
+        service._validate_agent_resume_artifact(
+            job,
+            workspace,
+            resume_trust={
+                "start_step": "6",
+                "ultimate_proof_sha256": _file_sha256(proof_path),
+            },
+            resume_task=resume_task,
+            agent_result=agent_result,
+        )
+    _write_json(result_path, bound_agent_run)
     validation = service._validate_agent_resume_artifact(
         job,
         workspace,
@@ -3453,6 +3526,74 @@ def test_post_council_runtime_failure_restores_parent_tree_and_result_root(tmp_p
         service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
     )
     assert lifecycle["status"] == "RESUMABLE"
+
+
+def test_council_receipt_with_untrusted_engine_is_rejected_as_non_resumable(tmp_path):
+    from factor_factory.console.run_service import BLOCK_RESUME_TRUST_INVALID
+
+    adapter = _CouncilPauseThenLeaseFailureAdapter(tmp_path / "state")
+    adapter.council_receipt_engine_commit = "f" * 40
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("Council receipt engine mismatch"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert adapter.council_ingress_completed is True
+    assert blocked.error_code == BLOCK_RESUME_TRUST_INVALID
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "NON_RESUMABLE"
+    assert (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "security"
+        / "non_resumable.json"
+    ).is_file()
+
+
+def test_private_receipt_digest_binds_the_exact_validated_read(tmp_path):
+    from factor_factory.console.run_service import (
+        BLOCK_RESUME_TRUST_INVALID,
+        _copy_immutable_regular_file,
+        _read_private_regular_file_once,
+    )
+
+    state_root = tmp_path / "state"
+    receipt = state_root / "jobs/job_receipt/agent_run.json"
+    receipt.parent.mkdir(parents=True)
+    original = b'{"engine_commit":"trusted","returncode":0}\n'
+    replacement = b'{"engine_commit":"replaced","returncode":0}\n'
+    receipt.write_bytes(original)
+
+    read_bytes, digest, receipt_id = _read_private_regular_file_once(
+        state_root,
+        receipt,
+        block_token=BLOCK_RESUME_TRUST_INVALID,
+        label="receipt regression probe",
+    )
+    assert read_bytes == original
+    assert digest == hashlib.sha256(original).hexdigest()
+    assert receipt_id == "jobs/job_receipt/agent_run.json"
+
+    receipt.write_bytes(replacement)
+    destination = state_root / "attestations/job_receipt/agent_receipt.json"
+    destination.parent.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="changed during snapshot"):
+        _copy_immutable_regular_file(
+            receipt,
+            destination,
+            root=state_root,
+            expected_sha256=digest,
+            block_token=BLOCK_RESUME_TRUST_INVALID,
+            label="agent run receipt",
+        )
+    assert not destination.exists()
 
 
 def test_possible_orphaned_resume_writer_is_non_resumable(tmp_path):

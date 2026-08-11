@@ -205,6 +205,12 @@ class ValidatedAgentResumeArtifacts:
     prior_output_archive_sha256: str = ""
 
 
+@dataclass(frozen=True)
+class ValidatedAgentReceipt:
+    receipt_id: str
+    receipt_sha256: str
+
+
 MECHANISM_METRIC_KEYS = frozenset(
     {
         "metric_period",
@@ -1670,6 +1676,7 @@ class ResearchRunService:
         resume_route: ResumeRoute | None = None
         resume_task: AgentResumeTask | None = None
         validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None
+        validated_agent_receipt: ValidatedAgentReceipt | None = None
         resume_restore_state: ResumeRestoreState | None = None
         resume_parent_restored = False
         private_completion_status: str | None = None
@@ -2007,6 +2014,21 @@ class ResearchRunService:
                     resume_task=resume_task,
                     agent_result=agent_result,
                 )
+                validated_agent_receipt = ValidatedAgentReceipt(
+                    receipt_id=validated_resume_artifacts.agent_run_receipt_id,
+                    receipt_sha256=validated_resume_artifacts.agent_run_receipt_sha256,
+                )
+            elif (
+                resume
+                and resume_route is not None
+                and resume_route.kind == RESUME_KIND_COUNCIL_INGRESS
+            ):
+                validated_agent_receipt = self._validate_council_ingress_receipt(
+                    current_job,
+                    workspace,
+                    tasks=council_ingress_tasks,
+                    agent_result=agent_result,
+                )
 
             if organization_runtime_required:
                 self._admit_host_research_director_result(
@@ -2210,6 +2232,7 @@ class ResearchRunService:
                 formal_execution=formal_execution,
                 resume_task=resume_task,
                 validated_resume_artifacts=validated_resume_artifacts,
+                validated_agent_receipt=validated_agent_receipt,
                 researcher_memory_outcome=researcher_memory_attested_outcome,
             )
             researcher_memory_outcome: dict[str, Any] | None = None
@@ -3841,6 +3864,7 @@ class ResearchRunService:
         researcher_memory_outcome: dict[str, Any],
         resume_task: AgentResumeTask | None = None,
         validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
+        validated_agent_receipt: ValidatedAgentReceipt | None = None,
     ) -> str:
         workspace_root = workspace.resolve(strict=True)
         state_root = self.config.state_root.resolve(strict=True)
@@ -3935,6 +3959,22 @@ class ResearchRunService:
             if validated_resume_artifacts is not None
             else None
         )
+        if validated_agent_receipt is not None:
+            if (
+                validated_agent_receipt.receipt_id
+                != agent_result_relative.as_posix()
+                or (
+                    expected_agent_receipt_sha256 is not None
+                    and expected_agent_receipt_sha256
+                    != validated_agent_receipt.receipt_sha256
+                )
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: validated agent receipt identity changed"
+                )
+            expected_agent_receipt_sha256 = (
+                validated_agent_receipt.receipt_sha256
+            )
         agent_receipt_snapshot_sha256 = _copy_immutable_regular_file(
             agent_result_path,
             agent_receipt_snapshot_path,
@@ -5212,6 +5252,104 @@ class ResearchRunService:
             prior_output_archive_id=prior_output_archive_id,
         )
 
+    def _validate_council_ingress_receipt(
+        self,
+        job: ResearchJob,
+        workspace: Path,
+        *,
+        tasks: tuple[CouncilIngressTask, ...],
+        agent_result: AgentRunResult,
+    ) -> ValidatedAgentReceipt:
+        state_root = self.config.state_root.resolve(strict=True)
+        raw_path = Path(agent_result.result_path).expanduser()
+        try:
+            receipt_bytes, receipt_sha256, receipt_id = (
+                _read_private_regular_file_once(
+                    state_root,
+                    raw_path,
+                    block_token=BLOCK_RESUME_TRUST_INVALID,
+                    label="Council ingress receipt",
+                )
+            )
+            receipt_relative = Path(receipt_id)
+            receipt_path = state_root / receipt_relative
+            receipt = json.loads(receipt_bytes.decode("utf-8"))
+        except (
+            FileNotFoundError,
+            OSError,
+            RuntimeError,
+            UnicodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress receipt is invalid"
+            ) from exc
+        if (
+            not receipt_path.is_file()
+            or receipt_path.is_symlink()
+            or receipt_relative.parts[:2] != ("jobs", job.job_id)
+            or not isinstance(receipt, dict)
+            or receipt.get("version") != "factorforge_console_council_ingress_v1"
+            or receipt.get("job_id") != job.job_id
+            or receipt.get("factor_id") != job.factor_id
+            or receipt.get("research_id") != job.research_id
+            or receipt.get("report_id") != job.report_id
+            or receipt.get("agent_id") != agent_result.agent_id
+            or receipt.get("session_key_sha256")
+            != hashlib.sha256(agent_result.session_key.encode("utf-8")).hexdigest()
+            or receipt.get("resume") is not True
+            or receipt.get("research_base_commit") != job.base_commit
+            or receipt.get("engine_commit") != self._expected_base_commit
+            or receipt.get("independent_agent_count") != len(tasks)
+            or receipt.get("required_agent_count") != len(tasks)
+            or receipt.get("returncode") != 0
+            or receipt.get("error_code") != ""
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress receipt binding is invalid"
+            )
+        runs = receipt.get("runs")
+        if not isinstance(runs, list) or len(runs) != len(tasks):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress run set is invalid"
+            )
+        runs_by_task: dict[str, dict[str, Any]] = {}
+        for run in runs:
+            if not isinstance(run, dict):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress run is invalid"
+                )
+            task_id = str(run.get("task_id") or "")
+            if not task_id or task_id in runs_by_task:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress run identity is invalid"
+                )
+            runs_by_task[task_id] = run
+        for task in tasks:
+            run = runs_by_task.get(task.task_id)
+            result_path = _read_regular_workspace_file(
+                workspace,
+                task.expected_result_path,
+            )
+            if (
+                run is None
+                or run.get("agent_role") != task.agent_role
+                or run.get("expected_agent_identifier")
+                != task.expected_agent_identifier
+                or run.get("expected_result_path") != task.expected_result_path
+                or run.get("returncode") != 0
+                or run.get("error_code") != ""
+                or run.get("imported_result_sha256") != _sha256(result_path)
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress run binding is invalid"
+                )
+        return ValidatedAgentReceipt(
+            receipt_id=receipt_relative.as_posix(),
+            receipt_sha256=receipt_sha256,
+        )
+
     def _validate_agent_resume_artifact(
         self,
         job: ResearchJob,
@@ -5334,37 +5472,50 @@ class ResearchRunService:
         state_root = self.config.state_root.resolve(strict=True)
         agent_result_path: Path | None = None
         agent_result_relative: Path | None = None
+        agent_result_sha256 = ""
         agent_result_raw = Path(agent_result.result_path).expanduser()
-        if agent_result_raw.is_symlink():
-            failures.append("agent_run_receipt_unsafe")
+        try:
+            receipt_bytes, agent_result_sha256, receipt_id = (
+                _read_private_regular_file_once(
+                    state_root,
+                    agent_result_raw,
+                    block_token=BLOCK_AGENT_RESUME_ARTIFACT_INVALID,
+                    label="agent run receipt",
+                )
+            )
+            agent_result_relative = Path(receipt_id)
+            agent_result_path = state_root / agent_result_relative
+            agent_run = json.loads(receipt_bytes.decode("utf-8"))
+        except (
+            FileNotFoundError,
+            OSError,
+            RuntimeError,
+            UnicodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            failures.append("agent_run_receipt_invalid")
         else:
-            try:
-                agent_result_path = agent_result_raw.resolve(strict=True)
-                agent_result_relative = agent_result_path.relative_to(state_root)
-                agent_run = json.loads(agent_result_path.read_text(encoding="utf-8"))
-            except (FileNotFoundError, OSError, RuntimeError, ValueError, json.JSONDecodeError):
-                failures.append("agent_run_receipt_invalid")
-            else:
-                if (
-                    not agent_result_path.is_file()
-                    or agent_result_path.is_symlink()
-                    or agent_result_relative.parts[:2] != ("jobs", job.job_id)
-                    or not isinstance(agent_run, dict)
-                    or agent_run.get("version") != "factorforge_console_agent_run_v1"
-                    or agent_run.get("job_id") != job.job_id
-                    or agent_run.get("factor_id") != job.factor_id
-                    or agent_run.get("research_id") != job.research_id
-                    or agent_run.get("report_id") != job.report_id
-                    or agent_run.get("agent_id") != agent_result.agent_id
-                    or agent_run.get("resume") is not True
-                    or agent_run.get("resume_attempt_id") != resume_task.attempt_id
-                    or agent_run.get("returncode") != 0
-                    or agent_run.get("session_key_sha256")
-                    != hashlib.sha256(
-                        agent_result.session_key.encode("utf-8")
-                    ).hexdigest()
-                ):
-                    failures.append("agent_run_receipt_binding_invalid")
+            if (
+                agent_result_relative.parts[:2] != ("jobs", job.job_id)
+                or not isinstance(agent_run, dict)
+                or agent_run.get("version") != "factorforge_console_agent_run_v1"
+                or agent_run.get("job_id") != job.job_id
+                or agent_run.get("factor_id") != job.factor_id
+                or agent_run.get("research_id") != job.research_id
+                or agent_run.get("report_id") != job.report_id
+                or agent_run.get("agent_id") != agent_result.agent_id
+                or agent_run.get("resume") is not True
+                or agent_run.get("resume_attempt_id") != resume_task.attempt_id
+                or agent_run.get("research_base_commit") != job.base_commit
+                or agent_run.get("engine_commit") != self._expected_base_commit
+                or agent_run.get("returncode") != 0
+                or agent_run.get("session_key_sha256")
+                != hashlib.sha256(
+                    agent_result.session_key.encode("utf-8")
+                ).hexdigest()
+            ):
+                failures.append("agent_run_receipt_binding_invalid")
         observed = (
             memo.get("evidence_comparison", {}).get("observed_metrics")
             if isinstance(memo.get("evidence_comparison"), dict)
@@ -5479,7 +5630,7 @@ class ResearchRunService:
                 for relative in validated_workspace_relatives
             ),
             agent_run_receipt_id=agent_result_relative.as_posix(),
-            agent_run_receipt_sha256=_sha256(agent_result_path),
+            agent_run_receipt_sha256=agent_result_sha256,
             prior_output_archive_id=resume_task.prior_output_archive_id,
             prior_output_archive_sha256=prior_output_archive_sha256,
         )
@@ -6996,6 +7147,85 @@ def _open_private_parent_fd(
         raise RuntimeError(f"{block_token}: {label} parent is unsafe") from exc
     finally:
         os.close(descriptor)
+
+
+def _read_private_regular_file_once(
+    root: Path,
+    path: Path,
+    *,
+    block_token: str,
+    label: str,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> tuple[bytes, str, str]:
+    root_path = root.resolve(strict=True)
+    candidate = path if path.is_absolute() else root_path / path
+    try:
+        relative = candidate.relative_to(root_path)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{block_token}: {label} path escapes private state"
+        ) from exc
+    if (
+        relative == Path(".")
+        or not relative.parts
+        or ".." in relative.parts
+    ):
+        raise RuntimeError(f"{block_token}: {label} path is unsafe")
+    try:
+        with _open_private_parent_fd(
+            root_path,
+            candidate,
+            block_token=block_token,
+            label=label,
+        ) as (parent_descriptor, name):
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
+            )
+            try:
+                before = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_uid != os.geteuid()
+                    or before.st_nlink != 1
+                    or before.st_size <= 0
+                    or before.st_size > max_bytes
+                ):
+                    raise RuntimeError(
+                        f"{block_token}: {label} is not a bounded private file"
+                    )
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                after = os.fstat(descriptor)
+                path_after = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            finally:
+                os.close(descriptor)
+    except OSError as exc:
+        raise RuntimeError(f"{block_token}: {label} is unsafe") from exc
+    if (
+        before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_dev != path_after.st_dev
+        or before.st_ino != path_after.st_ino
+        or before.st_size != after.st_size
+        or before.st_size != path_after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_mtime_ns != path_after.st_mtime_ns
+    ):
+        raise RuntimeError(f"{block_token}: {label} changed during read")
+    content = b"".join(chunks)
+    return content, hashlib.sha256(content).hexdigest(), relative.as_posix()
 
 
 def _copy_immutable_regular_file(

@@ -4277,6 +4277,454 @@ def test_container_git_view_disables_and_rejects_replace_refs(tmp_path):
         )
 
 
+def test_trusted_git_uses_only_exact_command_scoped_safe_directory(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "foreign-owned-checkout"
+    source.mkdir()
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=source,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, stdout="trusted\n", stderr="")
+
+    monkeypatch.setenv("GIT_REPLACE_REF_BASE", "refs/evil/")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/tmp/untrusted-git-config")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert adapter._run_host_git(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        timeout=30,
+        label="safe directory regression probe",
+    ) == "trusted\n"
+    command = captured["command"]
+    process_env = captured["env"]
+    assert command[:5] == [
+        "git",
+        "--no-replace-objects",
+        "--no-pager",
+        "-c",
+        f"safe.directory={source.resolve()}",
+    ]
+    assert "GIT_REPLACE_REF_BASE" not in process_env
+    assert process_env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert process_env["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_data_api_git_validation_ignores_executable_local_config(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    package = checkout / "factor_factory/data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (checkout / ".gitattributes").write_text(
+        "payload.txt filter=local_exec\n",
+        encoding="utf-8",
+    )
+    payload = checkout / "payload.txt"
+    payload.write_text("payload\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "data api"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    marker = tmp_path / "local-config-executed"
+    executable = tmp_path / "local-config-command.sh"
+    executable.write_text(
+        "#!/bin/sh\n"
+        f"printf 'executed\\n' >> '{marker}'\n"
+        "cat\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    subprocess.run(
+        ["git", "config", "core.fsmonitor", str(executable)],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "filter.local_exec.clean", str(executable)],
+        cwd=checkout,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    assert marker.is_file()
+    marker.unlink()
+    payload.write_text("payload\n", encoding="utf-8")
+
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commit,
+            auth_disabled=True,
+        )
+    )
+    assert adapter._data_api_package_root() == package.resolve()
+    assert not marker.exists()
+
+
+def test_data_api_checkout_rejects_ignored_package_files(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    package = checkout / "factor_factory/data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (checkout / ".gitignore").write_text(
+        "factor_factory/data_api/ignored_exec.py\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "data api"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    ignored = package / "ignored_exec.py"
+    ignored.write_text("raise RuntimeError('must not load')\n", encoding="utf-8")
+    ignored.chmod(0o700)
+
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commit,
+            auth_disabled=True,
+        )
+    )
+    with pytest.raises(RuntimeError, match="not the pinned clean commit"):
+        adapter._data_api_package_root()
+
+
+def test_data_api_checkout_rejects_gitlinks(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    checkout.mkdir()
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=checkout,
+        check=True,
+    )
+    empty_tree = subprocess.run(
+        ["git", "mktree"],
+        cwd=checkout,
+        input="",
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    nested_commit = subprocess.run(
+        ["git", "commit-tree", empty_tree, "-m", "nested"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    subprocess.run(
+        [
+            "git",
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{nested_commit},factor_factory",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "gitlink data api"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    package = checkout / "factor_factory/data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commit,
+            auth_disabled=True,
+        )
+    )
+    with pytest.raises(RuntimeError, match="Data API checkout cannot be verified"):
+        adapter._data_api_package_root()
+
+
+@pytest.mark.parametrize("symlink_relative", ["factor_factory", "factor_factory/data_api"])
+def test_data_api_checkout_rejects_package_path_symlinks(tmp_path, symlink_relative):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    package = checkout / "factor_factory/data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "data api"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    symlink_path = checkout / symlink_relative
+    moved_path = checkout / ".git" / f"moved-{symlink_relative.replace('/', '-')}"
+    symlink_path.rename(moved_path)
+    symlink_path.symlink_to(moved_path, target_is_directory=True)
+
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commit,
+            auth_disabled=True,
+        )
+    )
+    with pytest.raises(RuntimeError, match="Data API package root is invalid"):
+        adapter._data_api_package_root()
+
+
+def test_data_api_private_git_views_are_prebounded_and_retained(tmp_path, monkeypatch):
+    import subprocess
+    import factor_factory.console.container_agent_adapter as adapter_module
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    checkout = tmp_path / "data-api"
+    package = checkout / "factor_factory/data_api"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 0\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=checkout,
+        check=True,
+    )
+    commits: list[str] = []
+    for version in range(3):
+        (package / "__init__.py").write_text(
+            f"VALUE = {version}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"data api {version}"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+        )
+        commits.append(
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=checkout,
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+        )
+
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commits[-1],
+            auth_disabled=True,
+        )
+    )
+    for commit in commits:
+        adapter._prepare_data_api_git_view(
+            checkout=checkout.resolve(),
+            expected_commit=commit,
+        )
+    checkout_view_root = next(
+        (tmp_path / "state" / "data-api-git-views").iterdir()
+    )
+    retained = tuple(checkout_view_root.glob("*.git"))
+    assert len(retained) == adapter_module.DATA_API_GIT_VIEW_RETENTION
+    assert {path.stem for path in retained} == set(commits[-2:])
+
+    interrupted_state = tmp_path / "interrupted-state"
+    interrupted_adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=interrupted_state,
+            worktree_root=tmp_path / "interrupted-runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commits[-1],
+            auth_disabled=True,
+        )
+    )
+    checkout_identity = hashlib.sha256(
+        str(checkout.resolve()).encode("utf-8")
+    ).hexdigest()
+    interrupted_view_root = (
+        interrupted_state / "data-api-git-views" / checkout_identity
+    )
+    interrupted_view_root.mkdir(parents=True, mode=0o700)
+    interrupted_view_root.chmod(0o700)
+    interrupted = interrupted_view_root / f".{commits[-1]}-{'a' * 32}.tmp"
+    interrupted.mkdir(mode=0o700)
+    (interrupted / "partial-object").write_bytes(b"partial")
+    interrupted_adapter._prepare_data_api_git_view(
+        checkout=checkout.resolve(),
+        expected_commit=commits[-1],
+    )
+    assert not interrupted.exists()
+
+    second_state = tmp_path / "bounded-state"
+    bounded_adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=checkout,
+            state_root=second_state,
+            worktree_root=tmp_path / "bounded-runs",
+            data_api_pythonpath=checkout,
+            data_api_commit=commits[-1],
+            auth_disabled=True,
+        )
+    )
+    monkeypatch.setattr(adapter_module, "DATA_API_GIT_OBJECT_MAX_BYTES", 1)
+    with pytest.raises(RuntimeError, match="object source is too large"):
+        bounded_adapter._prepare_data_api_git_view(
+            checkout=checkout.resolve(),
+            expected_commit=commits[-1],
+        )
+
+
 def test_container_resume_engine_identity_separates_research_and_framework_commits(
     tmp_path,
 ):

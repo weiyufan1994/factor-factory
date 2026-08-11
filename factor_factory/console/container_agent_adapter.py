@@ -113,6 +113,9 @@ REQUIRED_COMPACTION_POLICY = {
 REQUIRED_PROXY_URL = "http://172.29.0.1:3128"
 REQUIRED_MODEL_BROKER_URL = "http://172.29.0.1:8781"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
+DATA_API_GIT_OBJECT_MAX_ENTRIES = 250_000
+DATA_API_GIT_OBJECT_MAX_BYTES = 2 * 1024 * 1024 * 1024
+DATA_API_GIT_VIEW_RETENTION = 2
 
 
 def _docker_container_not_found(
@@ -3526,6 +3529,414 @@ class ContainerizedOpenClawResearchAgentAdapter:
             )
 
     @staticmethod
+    def _data_api_git_config(*, object_format: str) -> bytes:
+        if object_format == "sha1":
+            extension = ""
+            repository_format_version = 0
+        elif object_format == "sha256":
+            extension = "\n[extensions]\n\tobjectFormat = sha256\n"
+            repository_format_version = 1
+        else:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object format is invalid"
+            )
+        return (
+            "[core]\n"
+            f"\trepositoryFormatVersion = {repository_format_version}\n"
+            "\tfileMode = true\n"
+            "\tbare = false\n"
+            "\tlogAllRefUpdates = false\n"
+            "\thooksPath = /dev/null\n"
+            "\tfsmonitor = false\n"
+            f"{extension}"
+        ).encode("ascii")
+
+    @staticmethod
+    def _seal_data_api_git_object_copy(root: Path) -> None:
+        root_metadata = root.lstat()
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid != os.geteuid()
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object copy is unsafe"
+            )
+        entry_count = 0
+        total_bytes = 0
+        for directory, child_directories, filenames in os.walk(
+            root,
+            followlinks=False,
+        ):
+            directory_path = Path(directory)
+            directory_metadata = directory_path.lstat()
+            if (
+                not stat.S_ISDIR(directory_metadata.st_mode)
+                or directory_metadata.st_uid != os.geteuid()
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object copy is unsafe"
+                )
+            for name in child_directories:
+                entry_count += 1
+                candidate = directory_path / name
+                metadata = candidate.lstat()
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object copy is unsafe"
+                    )
+            for name in filenames:
+                entry_count += 1
+                candidate = directory_path / name
+                metadata = candidate.lstat()
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or metadata.st_nlink != 1
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object copy is unsafe"
+                    )
+                total_bytes += metadata.st_size
+                candidate.chmod(0o600)
+            if (
+                entry_count > DATA_API_GIT_OBJECT_MAX_ENTRIES
+                or total_bytes > DATA_API_GIT_OBJECT_MAX_BYTES
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object copy is too large"
+                )
+            directory_path.chmod(0o700)
+
+    @staticmethod
+    def _validate_data_api_git_object_source(root: Path) -> None:
+        root_metadata = root.lstat()
+        if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is unsafe"
+            )
+        entry_count = 0
+        total_bytes = 0
+        for directory, child_directories, filenames in os.walk(
+            root,
+            followlinks=False,
+        ):
+            directory_path = Path(directory)
+            directory_metadata = directory_path.lstat()
+            if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(
+                directory_metadata.st_mode
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is unsafe"
+                )
+            for name in child_directories:
+                entry_count += 1
+                metadata = (directory_path / name).lstat()
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is unsafe"
+                    )
+            for name in filenames:
+                entry_count += 1
+                metadata = (directory_path / name).lstat()
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is unsafe"
+                    )
+                total_bytes += metadata.st_size
+            if (
+                entry_count > DATA_API_GIT_OBJECT_MAX_ENTRIES
+                or total_bytes > DATA_API_GIT_OBJECT_MAX_BYTES
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git object source is too large"
+                )
+
+    @staticmethod
+    def _prune_data_api_git_views(*, view_root: Path, current: Path) -> None:
+        prior_views: list[tuple[int, Path]] = []
+        for candidate in view_root.iterdir():
+            if candidate == current:
+                continue
+            if candidate.name.startswith("."):
+                if re.fullmatch(
+                    r"\.(?:[0-9a-f]{40}|[0-9a-f]{64})-[0-9a-f]{32}\.tmp",
+                    candidate.name,
+                ) is None:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git view inventory is unsafe"
+                    )
+                metadata = candidate.lstat()
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or not stat.S_ISDIR(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git view inventory is unsafe"
+                    )
+                shutil.rmtree(candidate)
+                continue
+            if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\.git", candidate.name) is None:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git view inventory is unsafe"
+                )
+            metadata = candidate.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git view inventory is unsafe"
+                )
+            prior_views.append((metadata.st_mtime_ns, candidate))
+        prior_views.sort(key=lambda item: item[0], reverse=True)
+        for _mtime, obsolete in prior_views[DATA_API_GIT_VIEW_RETENTION - 1 :]:
+            shutil.rmtree(obsolete)
+
+    def _validate_data_api_git_view(
+        self,
+        *,
+        git_dir: Path,
+        checkout: Path,
+        expected_commit: str,
+    ) -> None:
+        object_format = "sha1" if len(expected_commit) == 40 else "sha256"
+        expected_config = self._data_api_git_config(object_format=object_format)
+        try:
+            checkout_metadata = checkout.lstat()
+            root_metadata = git_dir.lstat()
+            config_metadata = (git_dir / "config").lstat()
+            head_metadata = (git_dir / "HEAD").lstat()
+            objects_metadata = (git_dir / "objects").lstat()
+            config = (git_dir / "config").read_bytes()
+            head = (git_dir / "HEAD").read_text(encoding="ascii")
+        except (FileNotFoundError, OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git view is invalid"
+            ) from exc
+        if (
+            not stat.S_ISDIR(checkout_metadata.st_mode)
+            or stat.S_ISLNK(checkout_metadata.st_mode)
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid != os.geteuid()
+            or root_metadata.st_mode & 0o077
+            or not stat.S_ISDIR(objects_metadata.st_mode)
+            or objects_metadata.st_uid != os.geteuid()
+            or objects_metadata.st_mode & 0o077
+            or not stat.S_ISREG(config_metadata.st_mode)
+            or config_metadata.st_uid != os.geteuid()
+            or config_metadata.st_nlink != 1
+            or config_metadata.st_mode & 0o077
+            or not stat.S_ISREG(head_metadata.st_mode)
+            or head_metadata.st_uid != os.geteuid()
+            or head_metadata.st_nlink != 1
+            or head_metadata.st_mode & 0o077
+            or config != expected_config
+            or head != f"{expected_commit}\n"
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git view is unsafe"
+            )
+        for forbidden in (
+            git_dir / "objects" / "info" / "alternates",
+            git_dir / "objects" / "info" / "http-alternates",
+            git_dir / "refs" / "replace",
+        ):
+            if forbidden.exists() or forbidden.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git indirection is forbidden"
+                )
+        actual_format = self._run_host_git(
+            ["git", f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
+            timeout=30,
+            label="Data API private Git object format",
+        ).strip()
+        if actual_format != object_format:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git object format mismatch"
+            )
+        resolved_commit = self._run_host_git(
+            ["git", f"--git-dir={git_dir}", "rev-parse", "HEAD^{commit}"],
+            timeout=30,
+            label="Data API private Git commit validation",
+        ).strip().lower()
+        if resolved_commit != expected_commit:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API private Git commit mismatch"
+            )
+        inventory = self._run_host_git(
+            [
+                "git",
+                f"--git-dir={git_dir}",
+                "ls-tree",
+                "-rz",
+                "--full-tree",
+                expected_commit,
+            ],
+            timeout=30,
+            label="Data API private Git tree inventory",
+        )
+        expected_object_id_length = 40 if object_format == "sha1" else 64
+        for record in inventory.split("\0"):
+            if not record:
+                continue
+            try:
+                metadata, relative = record.split("\t", 1)
+                mode, object_type, object_id = metadata.split(" ", 2)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git tree is invalid"
+                ) from exc
+            if (
+                mode == "160000"
+                or object_type == "commit"
+                or mode not in {"100644", "100755", "120000"}
+                or object_type != "blob"
+                or re.fullmatch(
+                    rf"[0-9a-f]{{{expected_object_id_length}}}",
+                    object_id,
+                )
+                is None
+                or Path(relative).is_absolute()
+                or ".." in Path(relative).parts
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git tree contains an unsafe entry"
+                )
+            if mode == "120000" and (
+                relative in {"factor_factory", "factor_factory/data_api"}
+                or relative.startswith("factor_factory/data_api/")
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API package symlinks are forbidden"
+                )
+
+    def _prepare_data_api_git_view(
+        self,
+        *,
+        checkout: Path,
+        expected_commit: str,
+    ) -> Path:
+        commit = expected_commit.strip().lower()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API commit is invalid"
+            )
+        object_format = "sha1" if len(commit) == 40 else "sha256"
+        source_git_dir = checkout / ".git"
+        source_objects = source_git_dir / "objects"
+        try:
+            source_git_metadata = source_git_dir.lstat()
+            source_objects_metadata = source_objects.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git metadata is unavailable"
+            ) from exc
+        if (
+            not stat.S_ISDIR(source_git_metadata.st_mode)
+            or stat.S_ISLNK(source_git_metadata.st_mode)
+            or not stat.S_ISDIR(source_objects_metadata.st_mode)
+            or stat.S_ISLNK(source_objects_metadata.st_mode)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git metadata is unsafe"
+            )
+
+        checkout_identity = hashlib.sha256(str(checkout).encode("utf-8")).hexdigest()
+        views_root = self.config.state_root / "data-api-git-views"
+        view_root = views_root / checkout_identity
+        git_dir = view_root / f"{commit}.git"
+        with workspace_transaction_lock(
+            self.config.state_root,
+            checkout,
+            error_code=BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        ):
+            if git_dir.exists() or git_dir.is_symlink():
+                self._validate_data_api_git_view(
+                    git_dir=git_dir,
+                    checkout=checkout,
+                    expected_commit=commit,
+                )
+                self._prune_data_api_git_views(
+                    view_root=view_root,
+                    current=git_dir,
+                )
+                return git_dir
+            try:
+                for root in (views_root, view_root):
+                    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    root_metadata = root.lstat()
+                    if (
+                        stat.S_ISLNK(root_metadata.st_mode)
+                        or not stat.S_ISDIR(root_metadata.st_mode)
+                        or root_metadata.st_uid != os.geteuid()
+                    ):
+                        raise RuntimeError(
+                            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git view root is unsafe"
+                        )
+                    root.chmod(0o700)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API Git view root is unavailable"
+                ) from exc
+
+            self._prune_data_api_git_views(
+                view_root=view_root,
+                current=git_dir,
+            )
+
+            temporary = view_root / f".{commit}-{uuid.uuid4().hex}.tmp"
+            try:
+                self._validate_data_api_git_object_source(source_objects)
+                temporary.mkdir(mode=0o700)
+                shutil.copytree(
+                    source_objects,
+                    temporary / "objects",
+                    symlinks=True,
+                )
+                self._seal_data_api_git_object_copy(temporary / "objects")
+                (temporary / "refs").mkdir(mode=0o700)
+                config_path = temporary / "config"
+                config_path.write_bytes(
+                    self._data_api_git_config(object_format=object_format)
+                )
+                config_path.chmod(0o600)
+                head_path = temporary / "HEAD"
+                head_path.write_text(f"{commit}\n", encoding="ascii")
+                head_path.chmod(0o600)
+                self._validate_data_api_git_view(
+                    git_dir=temporary,
+                    checkout=checkout,
+                    expected_commit=commit,
+                )
+                self._run_host_git(
+                    ["git", "read-tree", commit],
+                    timeout=30,
+                    label="Data API private Git index",
+                    env={
+                        "GIT_DIR": str(temporary),
+                        "GIT_WORK_TREE": str(checkout),
+                        "GIT_OPTIONAL_LOCKS": "0",
+                    },
+                )
+                (temporary / "index").chmod(0o600)
+                temporary.replace(git_dir)
+            except Exception:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise
+            self._validate_data_api_git_view(
+                git_dir=git_dir,
+                checkout=checkout,
+                expected_commit=commit,
+            )
+            self._prune_data_api_git_views(
+                view_root=view_root,
+                current=git_dir,
+            )
+            return git_dir
+
+    @staticmethod
     def _run_host_git(
         command: list[str],
         *,
@@ -3561,7 +3972,24 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "GIT_CONFIG_SYSTEM": os.devnull,
             }
         )
-        safe_command = ["git", "--no-replace-objects", *command[1:]]
+        safe_directories: list[str] = []
+        if env and env.get("GIT_WORK_TREE"):
+            safe_directories.append(
+                str(Path(env["GIT_WORK_TREE"]).expanduser().resolve(strict=True))
+            )
+        for index, argument in enumerate(command[:-1]):
+            if argument == "-C":
+                safe_directories.append(
+                    str(Path(command[index + 1]).expanduser().resolve(strict=True))
+                )
+        safe_command = ["git", "--no-replace-objects", "--no-pager"]
+        for safe_directory in dict.fromkeys(safe_directories):
+            if any(token in safe_directory for token in ("\x00", "\n", "\r")):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} safe directory is invalid"
+                )
+            safe_command.extend(["-c", f"safe.directory={safe_directory}"])
+        safe_command.extend(command[1:])
         try:
             proc = subprocess.run(
                 safe_command,
@@ -3868,50 +4296,78 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API package root is missing"
             )
-        package_root = configured / "factor_factory" / "data_api"
+        checkout = configured.resolve(strict=True)
+        factor_factory_root = checkout / "factor_factory"
+        package_root = factor_factory_root / "data_api"
+        initializer = package_root / "__init__.py"
         try:
+            checkout_metadata = checkout.lstat()
+            factor_factory_metadata = factor_factory_root.lstat()
+            package_metadata = package_root.lstat()
+            initializer_metadata = initializer.lstat()
             resolved = package_root.resolve(strict=True)
-            resolved.relative_to(configured.resolve(strict=True))
+            resolved.relative_to(checkout)
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API package root is invalid"
             ) from exc
-        if resolved.is_symlink() or not resolved.is_dir() or not (resolved / "__init__.py").is_file():
+        if (
+            stat.S_ISLNK(checkout_metadata.st_mode)
+            or not stat.S_ISDIR(checkout_metadata.st_mode)
+            or stat.S_ISLNK(factor_factory_metadata.st_mode)
+            or not stat.S_ISDIR(factor_factory_metadata.st_mode)
+            or stat.S_ISLNK(package_metadata.st_mode)
+            or not stat.S_ISDIR(package_metadata.st_mode)
+            or stat.S_ISLNK(initializer_metadata.st_mode)
+            or not stat.S_ISREG(initializer_metadata.st_mode)
+            or resolved != package_root
+        ):
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API package root is invalid"
             )
         if self.config.data_api_commit:
-            checkout = configured.resolve(strict=True)
             try:
-                head = self._run_host_git(
-                    ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-                    timeout=30,
-                    label="Data API commit validation",
-                ).strip().lower()
-                top = Path(
+                with workspace_transaction_lock(
+                    self.config.state_root,
+                    checkout,
+                    error_code=BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+                ):
+                    git_dir = self._prepare_data_api_git_view(
+                        checkout=checkout,
+                        expected_commit=self.config.data_api_commit,
+                    )
                     self._run_host_git(
-                        ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
+                        ["git", "read-tree", self.config.data_api_commit],
                         timeout=30,
-                        label="Data API checkout validation",
-                    ).strip()
-                ).resolve(strict=True)
-                dirty = self._run_host_git(
-                    [
-                        "git",
-                        "-C",
-                        str(checkout),
-                        "status",
-                        "--porcelain=v1",
-                        "--untracked-files=all",
-                    ],
-                    timeout=30,
-                    label="Data API cleanliness validation",
-                )
+                        label="Data API private Git index refresh",
+                        env={
+                            "GIT_DIR": str(git_dir),
+                            "GIT_WORK_TREE": str(checkout),
+                            "GIT_OPTIONAL_LOCKS": "0",
+                        },
+                    )
+                    dirty = self._run_host_git(
+                        [
+                            "git",
+                            "status",
+                            "--porcelain=v1",
+                            "--untracked-files=all",
+                            "--ignored=matching",
+                            "--ignore-submodules=all",
+                        ],
+                        timeout=30,
+                        label="Data API cleanliness validation",
+                        env={
+                            "GIT_DIR": str(git_dir),
+                            "GIT_WORK_TREE": str(checkout),
+                            "GIT_OPTIONAL_LOCKS": "0",
+                        },
+                    )
             except (OSError, RuntimeError, ValueError) as exc:
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API checkout cannot be verified"
                 ) from exc
-            if top != checkout or head != self.config.data_api_commit or dirty.strip():
+            if dirty.strip():
                 raise RuntimeError(
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: Data API checkout is not the pinned clean commit"
                 )

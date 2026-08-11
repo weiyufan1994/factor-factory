@@ -1034,6 +1034,67 @@ def test_container_resume_phase_does_not_mount_initial_agent_home(tmp_path):
     ) not in joined
 
 
+def test_container_resume_mounts_current_engine_at_original_logical_paths(tmp_path):
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "old-research-worktree"
+    workspace = source / "factor_research" / "FACTOR" / "research"
+    workspace.mkdir(parents=True)
+    engine_root = tmp_path / "trusted-engine-worktree"
+    (engine_root / workspace.relative_to(source)).mkdir(parents=True)
+    workspace_view = tmp_path / "phase-workspace-view"
+    workspace_view.mkdir()
+    runtime_root = tmp_path / "runtime"
+    home = runtime_root / "home"
+    agent_dir = runtime_root / "agent"
+    git_dir = runtime_root / "engine.git"
+    for path in (runtime_root, home, agent_dir, git_dir):
+        path.mkdir(exist_ok=True)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        ConsoleConfig(
+            source_repo=source,
+            state_root=tmp_path / "state",
+            worktree_root=tmp_path / "runs",
+            auth_disabled=True,
+        )
+    )
+
+    command = adapter._container_prefix(
+        container_name="resume-engine-alias-test",
+        job_id="job_1234567890",
+        worktree=source,
+        workspace=workspace,
+        runtime_root=runtime_root,
+        home=home,
+        git_dir=git_dir,
+        aws_env_file=None,
+        profile_config_readonly=None,
+        auth_store_path=None,
+        worktree_mount_source=engine_root,
+        workspace_readonly=True,
+        workspace_mount_source=workspace_view,
+        runtime_root_readonly=True,
+        writable_runtime_paths=(home, agent_dir),
+    )
+    joined = " ".join(command)
+
+    assert f"src={engine_root},dst={source},readonly" in joined
+    assert f"src={workspace_view},dst={workspace},readonly" in joined
+    assert f"src={runtime_root},dst={runtime_root},readonly" in joined
+    assert f"src={home},dst={home}" in joined
+    assert f"src={agent_dir},dst={agent_dir}" in joined
+    assert f"GIT_WORK_TREE={source}" in command
+    assert f"PYTHONPATH={source}" in command
+    assert str(engine_root) not in [
+        item.split("=", 1)[1]
+        for item in command
+        if item.startswith(("GIT_WORK_TREE=", "PYTHONPATH="))
+    ]
+
+
 def test_container_resume_uses_facts_only_workspace_view(tmp_path, monkeypatch):
     import factor_factory.console.container_agent_adapter as adapter_module
     from dataclasses import replace
@@ -3869,10 +3930,36 @@ def test_container_council_ingress_isolates_routes_before_host_import(
         request=_request(),
         base_commit="a" * 40,
     )
-    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    trusted_engine_commit = "b" * 40
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        config,
+        trusted_engine_commit=trusted_engine_commit,
+    )
     git_view = config.state_root / "jobs" / job.job_id / "container-agent" / "engine.git"
     git_view.mkdir(parents=True)
+    trusted_engine_root = tmp_path / "trusted-engine-root"
+    trusted_engine_root.mkdir()
     monkeypatch.setattr(adapter, "_prepare_git_view", lambda **_: git_view)
+    monkeypatch.setattr(
+        adapter,
+        "_prepare_engine_worktree_view",
+        lambda **_: trusted_engine_root,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_load_verified_council_validator",
+        lambda **_: (lambda *_args, **_kwargs: []),
+    )
+    engine_validation_roots: list[Path] = []
+
+    def validate_engine_worktree_view(**kwargs):
+        engine_validation_roots.append(kwargs["engine_root"])
+
+    monkeypatch.setattr(
+        adapter,
+        "_validate_engine_worktree_view",
+        validate_engine_worktree_view,
+    )
     monkeypatch.setattr(adapter, "_initialize_credential_material_state", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(adapter, "credential_material_state", lambda _job_id: "not_issued")
     monkeypatch.setattr(
@@ -3883,10 +3970,16 @@ def test_container_council_ingress_isolates_routes_before_host_import(
     monkeypatch.setattr(adapter, "_cleanup_aws_environment", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(adapter, "_run_runtime", lambda *_args, **_kwargs: "{}")
     monkeypatch.setattr(adapter, "_validate_agent_binding", lambda *_args, **_kwargs: None)
+    validator_worktrees: list[Path] = []
+
+    def validate_private_council_result(**kwargs):
+        validator_worktrees.append(kwargs["worktree"])
+        return []
+
     monkeypatch.setattr(
         adapter_module,
         "_validate_private_council_result",
-        lambda **_kwargs: [],
+        validate_private_council_result,
     )
     original_write_text_atomic = adapter_module.write_text_atomic
     staged_write_count = 0
@@ -3996,6 +4089,11 @@ def test_container_council_ingress_isolates_routes_before_host_import(
     assert (workspace / "identity" / "web_agent_resume.md").is_file()
     assert Path(result.result_path).is_relative_to(config.state_root)
     assert not Path(result.result_path).is_relative_to(workspace)
+    assert validator_worktrees == [trusted_engine_root, trusted_engine_root]
+    assert engine_validation_roots == [trusted_engine_root] * 4
+    receipt = json.loads(Path(result.result_path).read_text(encoding="utf-8"))
+    assert receipt["research_base_commit"] == job.base_commit
+    assert receipt["engine_commit"] == trusted_engine_commit
 
 
 def test_container_agent_git_view_is_shallow_exact_and_reusable(tmp_path):
@@ -4047,6 +4145,469 @@ def test_container_agent_git_view_is_shallow_exact_and_reusable(tmp_path):
         capture_output=True,
     ).stdout.strip() == commit
     assert (first / "shallow").is_file()
+
+
+def test_container_git_view_disables_and_rejects_replace_refs(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init"], cwd=source, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=source,
+        check=True,
+    )
+    (source / "engine.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "engine.py"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "old engine"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    (source / "engine.py").write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "engine.py"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "trusted engine"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    trusted_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    trusted_tree = subprocess.run(
+        ["git", "rev-parse", f"{trusted_commit}^{{tree}}"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    old_tree = subprocess.run(
+        ["git", "rev-parse", f"{old_commit}^{{tree}}"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert trusted_tree != old_tree
+
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    runtime_root = config.state_root / "jobs/job_replace/container-agent"
+    runtime_root.mkdir(parents=True)
+    git_dir = adapter._prepare_git_view(
+        runtime_root=runtime_root,
+        worktree=source,
+        base_commit=trusted_commit,
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            "fetch",
+            "--depth=1",
+            source.as_uri(),
+            old_commit,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            "replace",
+            trusted_commit,
+            old_commit,
+        ],
+        check=True,
+    )
+    direct_tree = subprocess.run(
+        ["git", f"--git-dir={git_dir}", "rev-parse", f"{trusted_commit}^{{tree}}"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    protected_tree = adapter._run_host_git(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            "rev-parse",
+            f"{trusted_commit}^{{tree}}",
+        ],
+        timeout=30,
+        label="replace regression probe",
+    ).strip()
+    assert direct_tree == old_tree
+    assert protected_tree == trusted_tree
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        adapter._validate_git_view(
+            git_dir=git_dir,
+            worktree=source,
+            base_commit=trusted_commit,
+        )
+
+
+def test_container_resume_engine_identity_separates_research_and_framework_commits(
+    tmp_path,
+):
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+    from factor_factory.console.models import ResearchJob
+
+    source = tmp_path / "source"
+    research_worktree = tmp_path / "research-worktree"
+    source.mkdir()
+    research_worktree.mkdir()
+    research_commit = "a" * 40
+    engine_commit = "b" * 40
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        config,
+        trusted_engine_commit=engine_commit,
+    )
+    job = ResearchJob(
+        job_id="job_engine_identity",
+        factor_id="FACTOR",
+        research_id="research",
+        report_id="REPORT",
+        request=_request(),
+        base_commit=research_commit,
+    )
+
+    assert adapter._engine_identity(
+        job=job,
+        worktree=research_worktree,
+        resume=False,
+    ) == (research_worktree, research_commit)
+    assert adapter._engine_identity(
+        job=job,
+        worktree=research_worktree,
+        resume=True,
+    ) == (source.resolve(), engine_commit)
+
+    production_config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "production-state",
+        worktree_root=tmp_path / "production-runs",
+        invite_password="invite-value-123456789",
+        cookie_secret="cookie-value-that-is-distinct-and-long-enough",
+        agent_container_image=f"sha256:{'c' * 64}",
+    )
+    unpinned = ContainerizedOpenClawResearchAgentAdapter(production_config)
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        unpinned._engine_identity(
+            job=job,
+            worktree=research_worktree,
+            resume=True,
+        )
+
+
+def test_container_resume_engine_worktree_is_exact_and_rejects_pollution(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init"], cwd=source, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "console@example.invalid"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Console Test"],
+        cwd=source,
+        check=True,
+    )
+    (source / ".gitignore").write_text("factor_research/**\n", encoding="utf-8")
+    (source / "engine.py").write_text("ENGINE_VERSION = 1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", ".gitignore", "engine.py"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "old engine"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    (source / "engine.py").write_text("ENGINE_VERSION = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "engine.py"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "current engine"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    engine_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    assert engine_commit != old_commit
+
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        config,
+        trusted_engine_commit=engine_commit,
+    )
+    runtime_root = config.state_root / "jobs/job_engine/container-agent-phases/resume_test"
+    runtime_root.mkdir(parents=True)
+    git_dir = adapter._prepare_git_view(
+        runtime_root=runtime_root,
+        worktree=source,
+        base_commit=engine_commit,
+    )
+    workspace_relative = Path("factor_research/FACTOR/research")
+    engine_root = adapter._prepare_engine_worktree_view(
+        runtime_root=runtime_root,
+        git_dir=git_dir,
+        engine_commit=engine_commit,
+        workspace_relative=workspace_relative,
+    )
+
+    assert (engine_root / "engine.py").read_text(encoding="utf-8") == (
+        "ENGINE_VERSION = 2\n"
+    )
+    assert list((engine_root / workspace_relative).iterdir()) == []
+    assert subprocess.run(
+        ["git", f"--git-dir={git_dir}", "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip() == engine_commit
+    assert engine_root.stat().st_mode & 0o222 == 0
+
+    engine_file = engine_root / "engine.py"
+    engine_file.chmod(0o600)
+    engine_file.write_text("ENGINE_VERSION = 999\n", encoding="utf-8")
+    engine_file.chmod(0o400)
+    subprocess.run(
+        ["git", "update-index", "--assume-unchanged", "engine.py"],
+        env={
+            **os.environ,
+            "GIT_DIR": str(git_dir),
+            "GIT_WORK_TREE": str(engine_root),
+        },
+        check=True,
+    )
+    with pytest.raises(RuntimeError, match="file content changed"):
+        adapter._prepare_engine_worktree_view(
+            runtime_root=runtime_root,
+            git_dir=git_dir,
+            engine_commit=engine_commit,
+            workspace_relative=workspace_relative,
+        )
+    engine_file.chmod(0o600)
+    engine_file.write_text("ENGINE_VERSION = 2\n", encoding="utf-8")
+    engine_file.chmod(0o400)
+    adapter._prepare_engine_worktree_view(
+        runtime_root=runtime_root,
+        git_dir=git_dir,
+        engine_commit=engine_commit,
+        workspace_relative=workspace_relative,
+    )
+
+    factor_research_root = engine_root / "factor_research"
+    factor_research_root.chmod(0o700)
+    ignored_injection = factor_research_root / "OTHER/ignored-injection.py"
+    ignored_injection.parent.mkdir(parents=True)
+    ignored_injection.write_text(
+        "raise RuntimeError('must not execute')\n",
+        encoding="utf-8",
+    )
+    ignored_injection.chmod(0o400)
+    ignored_injection.parent.chmod(0o500)
+    factor_research_root.chmod(0o500)
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        adapter._prepare_engine_worktree_view(
+            runtime_root=runtime_root,
+            git_dir=git_dir,
+            engine_commit=engine_commit,
+            workspace_relative=workspace_relative,
+        )
+
+
+def test_trusted_validator_callables_execute_verified_blob_bytes(tmp_path):
+    import subprocess
+
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        BLOCK_AGENT_RUNTIME_UNAVAILABLE,
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = Path(__file__).resolve().parents[1]
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(
+        config,
+        trusted_engine_commit=commit,
+    )
+    runtime_root = config.state_root / "jobs/job_validator/container-agent"
+    runtime_root.mkdir(parents=True)
+    git_dir = adapter._prepare_git_view(
+        runtime_root=runtime_root,
+        worktree=source,
+        base_commit=commit,
+    )
+    workspace_relative = Path("_test_factor_research/FACTOR/research")
+    engine_root = adapter._prepare_engine_worktree_view(
+        runtime_root=runtime_root,
+        git_dir=git_dir,
+        engine_commit=commit,
+        workspace_relative=workspace_relative,
+    )
+    mechanism_validator = adapter._load_verified_main_agent_validator(
+        engine_root=engine_root,
+        git_dir=git_dir,
+        engine_commit=commit,
+    )
+    council_validator = adapter._load_verified_council_validator(
+        engine_root=engine_root,
+        git_dir=git_dir,
+        engine_commit=commit,
+        workspace=engine_root / workspace_relative,
+    )
+    mechanism_failures = mechanism_validator({}, {})
+    council_failures = council_validator(
+        {},
+        expected_task={},
+        expected_report_id="REPORT",
+    )
+    assert mechanism_failures
+    assert council_failures
+
+    mechanism_path = (
+        engine_root / "factor_factory/mechanism_math/main_agent_memo.py"
+    )
+    mechanism_path.chmod(0o600)
+    mechanism_path.write_text(
+        "def validate_main_agent_mechanism_memo(*_args, **_kwargs):\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    mechanism_path.chmod(0o400)
+    council_path = (
+        engine_root
+        / "skills/factor-forge-step6/scripts/validate_agentic_council_result.py"
+    )
+    council_path.chmod(0o600)
+    council_path.write_text(
+        "def validate_agentic_result(*_args, **_kwargs):\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    council_path.chmod(0o500)
+
+    assert mechanism_validator({}, {}) == mechanism_failures
+    assert council_validator(
+        {},
+        expected_task={},
+        expected_report_id="REPORT",
+    ) == council_failures
+    with pytest.raises(RuntimeError, match=BLOCK_AGENT_RUNTIME_UNAVAILABLE):
+        adapter._validate_engine_worktree_view(
+            engine_root=engine_root,
+            git_dir=git_dir,
+            engine_commit=commit,
+            workspace_relative=workspace_relative,
+        )
+
+
+def test_container_rejects_invalid_trusted_engine_commit(tmp_path):
+    from factor_factory.console.config import ConsoleConfig
+    from factor_factory.console.container_agent_adapter import (
+        ContainerizedOpenClawResearchAgentAdapter,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    config = ConsoleConfig(
+        source_repo=source,
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "runs",
+        auth_disabled=True,
+    )
+    sha256_commit = "d" * 64
+    assert ContainerizedOpenClawResearchAgentAdapter(
+        config,
+        trusted_engine_commit=sha256_commit,
+    ).trusted_engine_commit == sha256_commit
+    with pytest.raises(ValueError, match="exact Git object ID"):
+        ContainerizedOpenClawResearchAgentAdapter(
+            config,
+            trusted_engine_commit="main",
+        )
 
 
 def test_data_api_checkout_must_match_pinned_clean_commit(tmp_path):

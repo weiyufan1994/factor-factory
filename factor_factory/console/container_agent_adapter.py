@@ -12,13 +12,14 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import uuid
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from factor_factory.console.agent_adapter import (
@@ -285,8 +286,17 @@ class _ResumeWorkspaceView:
 class ContainerizedOpenClawResearchAgentAdapter:
     """Run one OpenClaw local agent in one disposable container per factor task."""
 
-    def __init__(self, config: ConsoleConfig) -> None:
+    def __init__(
+        self,
+        config: ConsoleConfig,
+        *,
+        trusted_engine_commit: str = "",
+    ) -> None:
         self.config = config
+        commit = trusted_engine_commit.strip().lower()
+        if commit and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None:
+            raise ValueError("trusted engine commit must be an exact Git object ID")
+        self.trusted_engine_commit = commit
         self._active: set[str] = set()
         self._lock = threading.Lock()
         self._research_org_credential_lock = threading.Lock()
@@ -483,11 +493,30 @@ class ContainerizedOpenClawResearchAgentAdapter:
             if resume_workspace_view is None
             else ()
         )
+        engine_source, engine_commit = self._engine_identity(
+            job=job,
+            worktree=worktree,
+            resume=resume,
+        )
         git_dir = self._prepare_git_view(
             runtime_root=runtime_root,
-            worktree=worktree,
-            base_commit=job.base_commit,
+            worktree=engine_source,
+            base_commit=engine_commit,
         )
+        engine_worktree = worktree
+        if resume and self.trusted_engine_commit:
+            engine_worktree = self._prepare_engine_worktree_view(
+                runtime_root=runtime_root,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
+            self._validate_engine_worktree_view(
+                engine_root=engine_worktree,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
         auth_store = agent_dir / "openclaw-agent.sqlite"
         validate_auth_database(
             auth_store,
@@ -514,10 +543,17 @@ class ContainerizedOpenClawResearchAgentAdapter:
             workspace_mount_source=(
                 resume_workspace_view.root if resume_workspace_view is not None else None
             ),
+            worktree_mount_source=(
+                engine_worktree if engine_worktree != worktree else None
+            ),
             protected_workspace_relatives=(
                 tuple(relative for relative, _digest in resume_workspace_view.read_only_file_sha256)
                 if resume_workspace_view is not None
                 else fresh_research_org_inputs
+            ),
+            runtime_root_readonly=bool(resume and self.trusted_engine_commit),
+            writable_runtime_paths=(
+                (home, agent_dir) if resume and self.trusted_engine_commit else ()
             ),
         )
         model = _pinned_container_model(job.request.model or self.config.openclaw_model)
@@ -539,6 +575,13 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--json",
         ]
         self._run_runtime(add_command, timeout=120, label="container agent initialization", allow_exists=True)
+        if resume and self.trusted_engine_commit:
+            self._validate_engine_worktree_view(
+                engine_root=engine_worktree,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
         self._validate_agent_binding(
             profile_config,
             agent_id,
@@ -575,6 +618,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     if resume_workspace_view is not None
                     else None
                 ),
+                worktree_mount_source=(
+                    engine_worktree if engine_worktree != worktree else None
+                ),
                 protected_workspace_relatives=(
                     tuple(
                         relative
@@ -582,6 +628,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     )
                     if resume_workspace_view is not None
                     else fresh_research_org_inputs
+                ),
+                runtime_root_readonly=bool(resume and self.trusted_engine_commit),
+                writable_runtime_paths=(
+                    (home, agent_dir) if resume and self.trusted_engine_commit else ()
                 ),
             )
             command = [
@@ -613,9 +663,16 @@ class ContainerizedOpenClawResearchAgentAdapter:
             with self._lock:
                 self._active.add(container_name)
             try:
+                if resume and self.trusted_engine_commit:
+                    self._validate_engine_worktree_view(
+                        engine_root=engine_worktree,
+                        git_dir=git_dir,
+                        engine_commit=engine_commit,
+                        workspace_relative=workspace.relative_to(worktree),
+                    )
                 proc = subprocess.run(
                     command,
-                    cwd=worktree,
+                    cwd=engine_worktree,
                     text=True,
                     capture_output=True,
                     timeout=self.config.agent_timeout_seconds + 90,
@@ -648,6 +705,14 @@ class ContainerizedOpenClawResearchAgentAdapter:
             # Keep the exact denied-value registry until the runner has
             # validated and published the task's public evidence set.
             self._cleanup_aws_environment(aws_env_file, None)
+
+        if resume and self.trusted_engine_commit:
+            self._validate_engine_worktree_view(
+                engine_root=engine_worktree,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
 
         try:
             validate_auth_database(
@@ -689,8 +754,15 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     resume_workspace_view,
                     workspace=workspace,
                     extra_secret_values=credential_values,
-                    worktree=worktree,
+                    worktree=engine_worktree,
                     report_id=job.report_id,
+                    engine_git_dir=(git_dir if self.trusted_engine_commit else None),
+                    engine_commit=(engine_commit if self.trusted_engine_commit else None),
+                    engine_workspace_relative=(
+                        workspace.relative_to(worktree)
+                        if self.trusted_engine_commit
+                        else None
+                    ),
                 )
             except RuntimeError as exc:
                 if str(exc).startswith(BLOCK_AGENT_ORPHANED_WRITER):
@@ -719,6 +791,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "session_key_sha256": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
             "resume": resume,
             "resume_attempt_id": resume_task.attempt_id if resume_task is not None else "",
+            "research_base_commit": job.base_commit,
+            "engine_commit": engine_commit,
             "started_at_utc": started,
             "finished_at_utc": finished,
             "returncode": returncode,
@@ -778,6 +852,32 @@ class ContainerizedOpenClawResearchAgentAdapter:
         )
         council_run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
         council_run_root.chmod(0o700)
+        engine_source, engine_commit = self._engine_identity(
+            job=job,
+            worktree=worktree,
+            resume=True,
+        )
+        engine_validation_root = worktree
+        council_git_dir: Path | None = None
+        council_validator: Callable[..., list[str]] | None = None
+        if self.trusted_engine_commit:
+            council_git_dir = self._prepare_git_view(
+                runtime_root=council_run_root,
+                worktree=engine_source,
+                base_commit=engine_commit,
+            )
+            engine_validation_root = self._prepare_engine_worktree_view(
+                runtime_root=council_run_root,
+                git_dir=council_git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
+            council_validator = self._load_verified_council_validator(
+                engine_root=engine_validation_root,
+                git_dir=council_git_dir,
+                engine_commit=engine_commit,
+                workspace=workspace,
+            )
         model = _pinned_container_model(job.request.model or self.config.openclaw_model)
         per_task_timeout = max(
             180,
@@ -1062,13 +1162,28 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     raise RuntimeError(
                         f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result identity mismatch"
                     )
+                if council_git_dir is not None:
+                    self._validate_engine_worktree_view(
+                        engine_root=engine_validation_root,
+                        git_dir=council_git_dir,
+                        engine_commit=engine_commit,
+                        workspace_relative=workspace.relative_to(worktree),
+                    )
                 validation_reasons = _validate_private_council_result(
-                    worktree=worktree,
+                    worktree=engine_validation_root,
                     workspace=workspace,
                     report_id=job.report_id,
                     task=task,
                     payload=result_payload,
+                    validator=council_validator,
                 )
+                if council_git_dir is not None:
+                    self._validate_engine_worktree_view(
+                        engine_root=engine_validation_root,
+                        git_dir=council_git_dir,
+                        engine_commit=engine_commit,
+                        workspace_relative=workspace.relative_to(worktree),
+                    )
                 if validation_reasons:
                     raise RuntimeError(
                         f"{BLOCK_AGENT_RUNTIME_FAILED}: Council agent result failed formal validation"
@@ -1107,9 +1222,14 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "research_id": job.research_id,
             "report_id": job.report_id,
             "agent_id": primary_agent_id,
+            "session_key_sha256": hashlib.sha256(
+                primary_session_key.encode("utf-8")
+            ).hexdigest(),
             "independent_agent_count": len(runs),
             "required_agent_count": len(tasks),
             "resume": True,
+            "research_base_commit": job.base_commit,
+            "engine_commit": engine_commit,
             "started_at_utc": started,
             "finished_at_utc": finished,
             "returncode": returncode,
@@ -2177,6 +2297,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
         extra_secret_values: tuple[str, ...] = (),
         worktree: Path | None = None,
         report_id: str | None = None,
+        engine_git_dir: Path | None = None,
+        engine_commit: str | None = None,
+        engine_workspace_relative: Path | None = None,
     ) -> None:
         root = workspace
         if not root.is_absolute() or root.is_symlink() or not root.is_dir():
@@ -2249,6 +2372,9 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 view,
                 worktree=worktree,
                 report_id=report_id,
+                engine_git_dir=engine_git_dir,
+                engine_commit=engine_commit,
+                engine_workspace_relative=engine_workspace_relative,
             )
 
         if (
@@ -2272,52 +2398,131 @@ class ContainerizedOpenClawResearchAgentAdapter:
         *,
         worktree: Path,
         report_id: str,
+        engine_git_dir: Path | None = None,
+        engine_commit: str | None = None,
+        engine_workspace_relative: Path | None = None,
     ) -> None:
-        validator = (
-            worktree
-            / "skills/factor-forge-step6/scripts/validate_main_agent_mechanism_memo.py"
+        engine_identity = (
+            engine_git_dir,
+            engine_commit,
+            engine_workspace_relative,
         )
-        try:
-            validator.resolve(strict=True).relative_to(worktree.resolve(strict=True))
-        except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: pinned resume validator is unavailable"
-            ) from exc
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(validator),
-                "--report-id",
-                report_id,
-            ],
-            cwd=worktree,
-            env={
-                "FACTORFORGE_ROOT": str(view.root),
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTHONPATH": str(worktree),
-                "PYTHONUNBUFFERED": "1",
-            },
-            text=True,
-            capture_output=True,
-            timeout=120,
-        )
-        if (
-            proc.returncode != 0
-            or len(proc.stdout.encode("utf-8")) > 256 * 1024
-            or len(proc.stderr.encode("utf-8")) > 256 * 1024
-        ):
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator rejected the memo:"
-                f"{redact_secrets(proc.stderr)[-2_000:]}"
+        if any(item is not None for item in engine_identity):
+            if any(item is None for item in engine_identity):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pinned resume validator identity is incomplete"
+                )
+            assert engine_git_dir is not None
+            assert engine_commit is not None
+            assert engine_workspace_relative is not None
+            self._validate_engine_worktree_view(
+                engine_root=worktree,
+                git_dir=engine_git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=engine_workspace_relative,
             )
-        try:
-            payload = json.loads(proc.stdout)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator receipt is invalid"
-            ) from exc
+        if engine_git_dir is not None:
+            assert engine_commit is not None
+            assert engine_workspace_relative is not None
+            validator_callable = self._load_verified_main_agent_validator(
+                engine_root=worktree,
+                git_dir=engine_git_dir,
+                engine_commit=engine_commit,
+            )
+            memo_relative = (
+                "objects/research_iteration_master/"
+                f"main_agent_mechanism_memo__{report_id}.json"
+            )
+            spec_relative = (
+                "objects/factor_spec_master/"
+                f"factor_spec_master__{report_id}.json"
+            )
+            try:
+                memo = json.loads(
+                    _read_stable_workspace_file_bytes(
+                        view.root,
+                        memo_relative,
+                        max_bytes=2 * 1024 * 1024,
+                    ).decode("utf-8")
+                )
+                spec_path = view.root / spec_relative
+                spec = (
+                    json.loads(
+                        _read_stable_workspace_file_bytes(
+                            view.root,
+                            spec_relative,
+                            max_bytes=2 * 1024 * 1024,
+                        ).decode("utf-8")
+                    )
+                    if spec_path.is_file() and not spec_path.is_symlink()
+                    else {}
+                )
+                failures = validator_callable(memo, spec)
+            except (OSError, RuntimeError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator rejected the memo"
+                ) from exc
+            payload = {
+                "report_id": report_id,
+                "result": "PASS" if not failures else "BLOCK",
+                "failures": [str(reason) for reason in failures],
+            }
+            self._validate_engine_worktree_view(
+                engine_root=worktree,
+                git_dir=engine_git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=engine_workspace_relative,
+            )
+        else:
+            if not self.config.auth_disabled:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pinned resume validator identity is required"
+                )
+            validator = (
+                worktree
+                / "skills/factor-forge-step6/scripts/validate_main_agent_mechanism_memo.py"
+            )
+            try:
+                validator.resolve(strict=True).relative_to(worktree.resolve(strict=True))
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pinned resume validator is unavailable"
+                ) from exc
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(validator),
+                    "--report-id",
+                    report_id,
+                ],
+                cwd=worktree,
+                env={
+                    "FACTORFORGE_ROOT": str(view.root),
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONPATH": str(worktree),
+                    "PYTHONUNBUFFERED": "1",
+                },
+                text=True,
+                capture_output=True,
+                timeout=120,
+            )
+            if (
+                proc.returncode != 0
+                or len(proc.stdout.encode("utf-8")) > 256 * 1024
+                or len(proc.stderr.encode("utf-8")) > 256 * 1024
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator rejected the memo:"
+                    f"{redact_secrets(proc.stderr)[-2_000:]}"
+                )
+            try:
+                payload = json.loads(proc.stdout)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: Host resume validator receipt is invalid"
+                ) from exc
         if (
             not isinstance(payload, dict)
             or payload.get("result") != "PASS"
@@ -2651,10 +2856,563 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: model broker client token is unavailable"
             ) from exc
 
+    def _engine_identity(
+        self,
+        *,
+        job: ResearchJob,
+        worktree: Path,
+        resume: bool,
+    ) -> tuple[Path, str]:
+        if not resume:
+            return worktree, job.base_commit
+        if self.trusted_engine_commit:
+            try:
+                source_repo = self.config.source_repo.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source is unavailable"
+                ) from exc
+            return source_repo, self.trusted_engine_commit
+        if not self.config.auth_disabled:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: resume requires a trusted engine commit"
+            )
+        return worktree, job.base_commit
+
+    def _prepare_engine_worktree_view(
+        self,
+        *,
+        runtime_root: Path,
+        git_dir: Path,
+        engine_commit: str,
+        workspace_relative: Path,
+    ) -> Path:
+        if (
+            workspace_relative.is_absolute()
+            or workspace_relative == Path(".")
+            or ".." in workspace_relative.parts
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: engine workspace mountpoint is unsafe"
+            )
+        engine_root = runtime_root / "engine-worktree"
+        if engine_root.exists() or engine_root.is_symlink():
+            self._validate_engine_worktree_view(
+                engine_root=engine_root,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace_relative,
+            )
+            return engine_root
+
+        temporary = runtime_root / f".engine-worktree-{uuid.uuid4().hex}"
+        try:
+            temporary.mkdir(mode=0o700)
+            self._run_host_git(
+                [
+                    "git",
+                    f"--git-dir={git_dir}",
+                    "checkout-index",
+                    "--all",
+                    "--force",
+                    f"--prefix={temporary}{os.sep}",
+                ],
+                timeout=120,
+                label="trusted engine worktree export",
+                env={
+                    "GIT_WORK_TREE": str(temporary),
+                    "GIT_OPTIONAL_LOCKS": "0",
+                },
+            )
+            mountpoint = temporary
+            for component in workspace_relative.parts:
+                mountpoint = mountpoint / component
+                if mountpoint.is_symlink() or (
+                    mountpoint.exists() and not mountpoint.is_dir()
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: "
+                        "engine workspace mountpoint collides with tracked content"
+                    )
+                mountpoint.mkdir(exist_ok=True)
+            if any(mountpoint.iterdir()):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: "
+                    "engine workspace mountpoint is not empty"
+                )
+            for path in sorted(temporary.rglob("*"), reverse=True):
+                if path.is_symlink():
+                    continue
+                metadata = path.stat()
+                if path.is_dir():
+                    path.chmod(0o500)
+                elif stat.S_ISREG(metadata.st_mode):
+                    path.chmod(0o500 if metadata.st_mode & 0o111 else 0o400)
+                else:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine contains a special file"
+                    )
+            temporary.chmod(0o500)
+            temporary.replace(engine_root)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        self._validate_engine_worktree_view(
+            engine_root=engine_root,
+            git_dir=git_dir,
+            engine_commit=engine_commit,
+            workspace_relative=workspace_relative,
+        )
+        return engine_root
+
+    def _validate_engine_worktree_view(
+        self,
+        *,
+        engine_root: Path,
+        git_dir: Path,
+        engine_commit: str,
+        workspace_relative: Path,
+    ) -> None:
+        root_metadata = engine_root.lstat() if engine_root.exists() else None
+        if (
+            root_metadata is None
+            or engine_root.is_symlink()
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid != os.getuid()
+            or root_metadata.st_mode & 0o222
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine worktree is unsafe"
+            )
+        mountpoint = engine_root
+        for component in workspace_relative.parts:
+            mountpoint = mountpoint / component
+            if mountpoint.is_symlink() or not mountpoint.is_dir():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: engine workspace mountpoint is unsafe"
+                )
+        if any(mountpoint.iterdir()):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: engine workspace mountpoint is not empty"
+            )
+        object_format = self._run_host_git(
+            [
+                "git",
+                f"--git-dir={git_dir}",
+                "rev-parse",
+                "--show-object-format",
+            ],
+            timeout=30,
+            label="trusted engine object format",
+        ).strip()
+        expected_length = {"sha1": 40, "sha256": 64}.get(object_format)
+        if expected_length is None or len(engine_commit) != expected_length:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine object format mismatch"
+            )
+        tree_output = self._run_host_git(
+            [
+                "git",
+                f"--git-dir={git_dir}",
+                "ls-tree",
+                "-rz",
+                "--full-tree",
+                engine_commit,
+            ],
+            timeout=30,
+            label="trusted engine commit inventory",
+        )
+        expected_files: dict[str, tuple[str, str]] = {}
+        for record in tree_output.split("\0"):
+            if not record:
+                continue
+            try:
+                metadata, relative = record.split("\t", 1)
+                mode, object_type, object_id = metadata.split(" ", 2)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine inventory is invalid"
+                ) from exc
+            relative_path = Path(relative)
+            if (
+                object_type != "blob"
+                or mode not in {"100644", "100755", "120000"}
+                or relative_path.is_absolute()
+                or relative_path == Path(".")
+                or ".." in relative_path.parts
+                or relative_path.as_posix() != relative
+                or relative in expected_files
+                or re.fullmatch(
+                    rf"[0-9a-f]{{{expected_length}}}",
+                    object_id,
+                )
+                is None
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine inventory is invalid"
+                )
+            expected_files[relative] = (mode, object_id)
+
+        actual_files: set[str] = set()
+        for directory, child_directories, filenames in os.walk(
+            engine_root,
+            followlinks=False,
+        ):
+            directory_path = Path(directory)
+            directory_metadata = directory_path.lstat()
+            if (
+                not stat.S_ISDIR(directory_metadata.st_mode)
+                or directory_metadata.st_uid != os.getuid()
+                or directory_metadata.st_mode & 0o222
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine directory is unsafe"
+                )
+            for name in list(child_directories):
+                candidate = directory_path / name
+                if candidate.is_symlink():
+                    actual_files.add(candidate.relative_to(engine_root).as_posix())
+                    child_directories.remove(name)
+            for name in filenames:
+                candidate = directory_path / name
+                actual_files.add(candidate.relative_to(engine_root).as_posix())
+        if actual_files != set(expected_files):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine file inventory changed"
+            )
+        for relative, (expected_mode, expected_object_id) in expected_files.items():
+            candidate = engine_root / relative
+            metadata = candidate.lstat()
+            if metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine file is unsafe"
+                )
+            if expected_mode == "120000":
+                if not stat.S_ISLNK(metadata.st_mode):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine file mode changed"
+                    )
+                content = os.fsencode(os.readlink(candidate))
+            else:
+                expected_executable = expected_mode == "100755"
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or bool(metadata.st_mode & 0o111) != expected_executable
+                    or metadata.st_mode & 0o222
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine file mode changed"
+                    )
+                descriptor = os.open(
+                    candidate,
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    before = os.fstat(descriptor)
+                    chunks: list[bytes] = []
+                    while True:
+                        chunk = os.read(descriptor, 1024 * 1024)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    after = os.fstat(descriptor)
+                finally:
+                    os.close(descriptor)
+                if (
+                    before.st_ino != after.st_ino
+                    or before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine file changed during validation"
+                    )
+                content = b"".join(chunks)
+            digest = hashlib.new(object_format)
+            digest.update(f"blob {len(content)}\0".encode("ascii"))
+            digest.update(content)
+            if digest.hexdigest() != expected_object_id:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine file content changed"
+                )
+        self._validate_git_view(
+            git_dir=git_dir,
+            worktree=engine_root,
+            base_commit=engine_commit,
+        )
+
+    def _read_verified_engine_blob(
+        self,
+        *,
+        engine_root: Path,
+        git_dir: Path,
+        engine_commit: str,
+        relative: Path,
+    ) -> bytes:
+        if (
+            relative.is_absolute()
+            or relative == Path(".")
+            or ".." in relative.parts
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source path is unsafe"
+            )
+        object_format = self._run_host_git(
+            [
+                "git",
+                f"--git-dir={git_dir}",
+                "rev-parse",
+                "--show-object-format",
+            ],
+            timeout=30,
+            label="trusted engine source object format",
+        ).strip()
+        expected_length = {"sha1": 40, "sha256": 64}.get(object_format)
+        if expected_length is None or len(engine_commit) != expected_length:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source object format mismatch"
+            )
+        tree_output = self._run_host_git(
+            [
+                "git",
+                f"--git-dir={git_dir}",
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                engine_commit,
+                "--",
+                f":(literal){relative.as_posix()}",
+            ],
+            timeout=30,
+            label="trusted engine source identity",
+        )
+        records = [record for record in tree_output.split("\0") if record]
+        if len(records) != 1:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source is missing"
+            )
+        try:
+            metadata_text, observed_relative = records[0].split("\t", 1)
+            mode, object_type, object_id = metadata_text.split(" ", 2)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source identity is invalid"
+            ) from exc
+        if (
+            observed_relative != relative.as_posix()
+            or object_type != "blob"
+            or mode not in {"100644", "100755"}
+            or re.fullmatch(rf"[0-9a-f]{{{expected_length}}}", object_id) is None
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source identity is invalid"
+            )
+
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(engine_root, directory_flags)
+        try:
+            for part in relative.parts[:-1]:
+                next_descriptor = os.open(
+                    part,
+                    directory_flags,
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+            source_descriptor = os.open(
+                relative.parts[-1],
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptor,
+            )
+            try:
+                before = os.fstat(source_descriptor)
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(source_descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                after = os.fstat(source_descriptor)
+                path_after = os.stat(
+                    relative.parts[-1],
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+            finally:
+                os.close(source_descriptor)
+        except OSError as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source changed during read"
+            ) from exc
+        finally:
+            os.close(descriptor)
+        content = b"".join(chunks)
+        expected_executable = mode == "100755"
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or before.st_nlink != 1
+            or bool(before.st_mode & 0o111) != expected_executable
+            or before.st_mode & 0o222
+            or before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_dev != path_after.st_dev
+            or before.st_ino != path_after.st_ino
+            or before.st_size != after.st_size
+            or before.st_size != path_after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_mtime_ns != path_after.st_mtime_ns
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source changed during read"
+            )
+        digest = hashlib.new(object_format)
+        digest.update(f"blob {len(content)}\0".encode("ascii"))
+        digest.update(content)
+        if digest.hexdigest() != object_id:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted engine source content changed"
+            )
+        return content
+
+    def _load_verified_main_agent_validator(
+        self,
+        *,
+        engine_root: Path,
+        git_dir: Path,
+        engine_commit: str,
+    ) -> Callable[[dict[str, Any], dict[str, Any]], list[str]]:
+        formula_source = self._read_verified_engine_blob(
+            engine_root=engine_root,
+            git_dir=git_dir,
+            engine_commit=engine_commit,
+            relative=Path("factor_factory/mechanism_math/formula_specific.py"),
+        )
+        memo_source = self._read_verified_engine_blob(
+            engine_root=engine_root,
+            git_dir=git_dir,
+            engine_commit=engine_commit,
+            relative=Path("factor_factory/mechanism_math/main_agent_memo.py"),
+        )
+        package_name = f"_factorforge_trusted_mechanism_{uuid.uuid4().hex}"
+        package = types.ModuleType(package_name)
+        package.__path__ = []  # type: ignore[attr-defined]
+        formula_name = f"{package_name}.formula_specific"
+        memo_name = f"{package_name}.main_agent_memo"
+        formula_module = types.ModuleType(formula_name)
+        formula_module.__package__ = package_name
+        formula_module.__file__ = "<trusted-engine>/formula_specific.py"
+        memo_module = types.ModuleType(memo_name)
+        memo_module.__package__ = package_name
+        memo_module.__file__ = "<trusted-engine>/main_agent_memo.py"
+        sys.modules[package_name] = package
+        sys.modules[formula_name] = formula_module
+        sys.modules[memo_name] = memo_module
+        try:
+            exec(
+                compile(
+                    formula_source,
+                    formula_module.__file__,
+                    "exec",
+                    dont_inherit=True,
+                ),
+                formula_module.__dict__,
+            )
+            exec(
+                compile(
+                    memo_source,
+                    memo_module.__file__,
+                    "exec",
+                    dont_inherit=True,
+                ),
+                memo_module.__dict__,
+            )
+            validator = getattr(
+                memo_module,
+                "validate_main_agent_mechanism_memo",
+                None,
+            )
+            if not callable(validator):
+                raise RuntimeError("trusted validator callable is missing")
+            return validator
+        except Exception as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted mechanism validator is invalid"
+            ) from exc
+        finally:
+            sys.modules.pop(memo_name, None)
+            sys.modules.pop(formula_name, None)
+            sys.modules.pop(package_name, None)
+
+    def _load_verified_council_validator(
+        self,
+        *,
+        engine_root: Path,
+        git_dir: Path,
+        engine_commit: str,
+        workspace: Path,
+    ) -> Callable[..., list[str]]:
+        source = self._read_verified_engine_blob(
+            engine_root=engine_root,
+            git_dir=git_dir,
+            engine_commit=engine_commit,
+            relative=Path(
+                "skills/factor-forge-step6/scripts/"
+                "validate_agentic_council_result.py"
+            ),
+        )
+        module_name = f"_factorforge_trusted_council_{uuid.uuid4().hex}"
+        module = types.ModuleType(module_name)
+        module.__file__ = (
+            "/__factorforge_trusted__/skills/factor-forge-step6/scripts/"
+            "validate_agentic_council_result.py"
+        )
+        original_sys_path = list(sys.path)
+        try:
+            exec(
+                compile(
+                    source,
+                    module.__file__,
+                    "exec",
+                    dont_inherit=True,
+                ),
+                module.__dict__,
+            )
+            validator = getattr(module, "validate_agentic_result", None)
+            if not callable(validator):
+                raise RuntimeError("trusted Council validator callable is missing")
+            module.FF = workspace
+            module.OBJ = workspace / "objects"
+            return validator
+        except Exception as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted Council validator is invalid"
+            ) from exc
+        finally:
+            sys.path[:] = original_sys_path
+
     def _prepare_git_view(self, *, runtime_root: Path, worktree: Path, base_commit: str) -> Path:
         commit = base_commit.strip().lower()
-        if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: task base commit is invalid")
+        object_format = self._run_host_git(
+            ["git", "-C", str(worktree), "rev-parse", "--show-object-format"],
+            timeout=30,
+            label="task Git object format",
+        ).strip()
+        expected_length = {"sha1": 40, "sha256": 64}.get(object_format)
+        if expected_length is None or len(commit) != expected_length:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: task Git object format mismatch"
+            )
         git_dir = runtime_root / "engine.git"
         if git_dir.exists():
             if git_dir.is_symlink() or not git_dir.is_dir():
@@ -2666,8 +3424,12 @@ class ContainerizedOpenClawResearchAgentAdapter:
 
         temporary = runtime_root / f".engine.git-{uuid.uuid4().hex}"
         try:
+            init_command = ["git", "init", "--bare"]
+            if object_format == "sha256":
+                init_command.append("--object-format=sha256")
+            init_command.append(str(temporary))
             self._run_host_git(
-                ["git", "init", "--bare", str(temporary)],
+                init_command,
                 timeout=30,
                 label="per-task Git view initialization",
             )
@@ -2714,6 +3476,40 @@ class ContainerizedOpenClawResearchAgentAdapter:
         return git_dir
 
     def _validate_git_view(self, *, git_dir: Path, worktree: Path, base_commit: str) -> None:
+        if git_dir.is_symlink() or not git_dir.is_dir():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: per-task Git view is unsafe"
+            )
+        alternates = git_dir / "objects" / "info" / "alternates"
+        if alternates.exists() or alternates.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: per-task Git alternates are forbidden"
+            )
+        replacement_refs = self._run_host_git(
+            [
+                "git",
+                f"--git-dir={git_dir}",
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/replace",
+            ],
+            timeout=30,
+            label="per-task Git replacement refs",
+        )
+        if replacement_refs.strip():
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: per-task Git replacement refs are forbidden"
+            )
+        object_format = self._run_host_git(
+            ["git", f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
+            timeout=30,
+            label="per-task Git view object format",
+        ).strip()
+        expected_length = {"sha1": 40, "sha256": 64}.get(object_format)
+        if expected_length is None or len(base_commit) != expected_length:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: per-task Git view object format mismatch"
+            )
         output = self._run_host_git(
             ["git", "rev-parse", "HEAD"],
             timeout=30,
@@ -2737,12 +3533,38 @@ class ContainerizedOpenClawResearchAgentAdapter:
         label: str,
         env: dict[str, str] | None = None,
     ) -> str:
-        process_env = os.environ.copy()
+        if not command or command[0] != "git":
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} command is invalid"
+            )
+        allowed_overrides = {
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_OPTIONAL_LOCKS",
+        }
+        if env and set(env) - allowed_overrides:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {label} environment is invalid"
+            )
+        process_env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
         if env:
             process_env.update(env)
+        process_env.update(
+            {
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+            }
+        )
+        safe_command = ["git", "--no-replace-objects", *command[1:]]
         try:
             proc = subprocess.run(
-                command,
+                safe_command,
                 text=True,
                 capture_output=True,
                 timeout=timeout,
@@ -5373,6 +6195,7 @@ def _validate_private_council_result(
     report_id: str,
     task: CouncilIngressTask,
     payload: dict[str, Any],
+    validator: Callable[..., list[str]] | None = None,
 ) -> list[str]:
     manifest_path = (
         workspace
@@ -5393,24 +6216,27 @@ def _validate_private_council_result(
     )
     if not isinstance(expected_task, dict):
         return ["Council task is absent from dispatch manifest"]
-    validator_path = (
-        worktree
-        / "skills"
-        / "factor-forge-step6"
-        / "scripts"
-        / "validate_agentic_council_result.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        f"factorforge_console_council_validator_{uuid.uuid4().hex}",
-        validator_path,
-    )
-    if spec is None or spec.loader is None:
-        return ["Council result validator is unavailable"]
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    module.FF = workspace
-    module.OBJ = workspace / "objects"
-    reasons = module.validate_agentic_result(
+    active_validator = validator
+    if active_validator is None:
+        validator_path = (
+            worktree
+            / "skills"
+            / "factor-forge-step6"
+            / "scripts"
+            / "validate_agentic_council_result.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            f"factorforge_console_council_validator_{uuid.uuid4().hex}",
+            validator_path,
+        )
+        if spec is None or spec.loader is None:
+            return ["Council result validator is unavailable"]
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.FF = workspace
+        module.OBJ = workspace / "objects"
+        active_validator = module.validate_agentic_result
+    reasons = active_validator(
         payload,
         expected_task=expected_task,
         expected_report_id=report_id,

@@ -17,6 +17,11 @@ from factor_factory.console.models import (
     PILOT_COST_MODEL_ID,
     PILOT_FORWARD_HORIZON,
     PILOT_TRANSACTION_COST_BPS,
+    RESEARCH_REQUEST_VERSION_V2,
+)
+from factor_factory.console.trial_budget import (
+    request_trial_budget,
+    trial_budget_binding_reasons,
 )
 from factor_factory.console.conversation_ledger import (
     BLOCK_CONVERSATION_LEDGER_INVALID,
@@ -1161,6 +1166,7 @@ def build_plan_template(
         placeholder=PLACEHOLDER,
         implementation_route="operator",
     )
+    trial_budget = request_trial_budget(request)
     model_selection = measurement_program.get("model_selection")
     if isinstance(model_selection, dict):
         for candidate in model_selection.get("candidate_models") or []:
@@ -1314,7 +1320,7 @@ def build_plan_template(
             "oos_end": str(request.get("sample_end") or _placeholder()),
             "purge_days": 5,
             "embargo_days": 5,
-            "trial_budget": 20,
+            "trial_budget": trial_budget,
             "multiple_testing_policy": "BH_FDR",
             "forward_horizon": str(
                 request.get("forward_horizon") or PILOT_FORWARD_HORIZON
@@ -1394,6 +1400,13 @@ def build_runtime_guide(
         if resume_start_step
         else "This is the first run. The host will begin formal execution at Step 3 after plan authoring."
     )
+    trial_budget_instruction = ""
+    if request.get("contract_version") == RESEARCH_REQUEST_VERSION_V2:
+        trial_budget_instruction = f"""
+This request uses the authority-bearing v2 trial budget `{request_trial_budget(request)}`.
+Keep `evidence_policy.trial_budget` equal to that value. The single base candidate
+plus the exact final `registered_diagnostic_trials` list must not exceed it.
+"""
     return f"""# Factor Forge Web Runtime Packet
 
 This packet is the compact execution projection of Factor Forge Ultimate. The
@@ -1442,6 +1455,7 @@ the literal `component_id` `full_formula`. Every entry has exactly the six
 contract fields, `affects_acceptance=false`, a unique trial ID, a Formula
 IR-parseable law, and remains within the frozen trial budget. Do not leave the
 diagnostic list empty when non-full-formula components exist.
+{trial_budget_instruction}
 The authority order is economic hypothesis -> selected mathematical mechanism
 -> measurement program -> data/operator/code implementation -> empirical
 falsification. Compare a preferred model, a mechanism-distinct alternative and a
@@ -2010,6 +2024,13 @@ def write_web_research_packet(
             BLOCK_PLAN_IDENTITY_INVALID,
             ["request.job_id"],
         )
+    try:
+        request_trial_budget(request)
+    except ValueError as exc:
+        raise WebResearchPlanError(
+            BLOCK_PLAN_IDENTITY_INVALID,
+            [str(exc)],
+        ) from exc
     identity = workspace / "identity"
     if CONVERSATION_LEDGER_REFERENCE_FIELD not in request:
         if preserve_existing_plan:
@@ -2297,6 +2318,9 @@ def validate_plan(
     request = json.loads(request_path.read_text(encoding="utf-8"))
     if not isinstance(request, dict):
         raise WebResearchPlanError(BLOCK_PLAN_IDENTITY_INVALID, ["web research request invalid"])
+    reasons.extend(
+        trial_budget_binding_reasons(request=request, plan=plan)
+    )
     conversation_messages = _conversation_messages(request)
     if CONVERSATION_LEDGER_REFERENCE_FIELD in request:
         try:
@@ -3034,15 +3058,6 @@ def validate_plan(
                 for item in search_policy.get("registered_diagnostic_trials") or []
                 if isinstance(item, dict)
             ]
-            evidence_budget = (
-                plan.get("evidence_policy", {}).get("trial_budget")
-                if isinstance(plan.get("evidence_policy"), dict)
-                else 0
-            )
-            if 1 + len(diagnostics) > int(evidence_budget or 0):
-                reasons.append(
-                    "measurement_program.search_policy.diagnostics_exceed_trial_budget"
-                )
             trial_ids = [str(item.get("trial_id") or "") for item in diagnostics]
             if len(trial_ids) != len(set(trial_ids)):
                 reasons.append(
@@ -4173,15 +4188,43 @@ def _validate_materialized_child_web_research(
     }
     if materialization.get("child_web_research_plan") != expected_report_binding:
         reasons.append("child_materialization.child_web_research_plan")
-    try:
-        proof_preregistration = validate_web_factor_proof_preregistration_structural(
-            root,
-            plan,
-            oos_release_token_hash=str(allocation.get("sealed_token_sha256") or ""),
+    receipt = resolved.get("authority", {}).get("receipt")
+    proof_ref = (
+        receipt.get("frozen_artifact_refs", {}).get(
+            "web_factor_proof_preregistration"
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        reasons.append(f"factor_proof_preregistration:{exc}")
-        proof_preregistration = {}
+        if isinstance(receipt, dict)
+        else None
+    )
+    proof_preregistration = {}
+    if not isinstance(proof_ref, dict):
+        reasons.append("factor_proof_preregistration:child authority missing")
+    else:
+        proof_path = (root / str(proof_ref.get("path") or "")).resolve(
+            strict=False
+        )
+        if (
+            (proof_path != root and root not in proof_path.parents)
+            or not proof_path.is_file()
+            or proof_path.is_symlink()
+            or proof_ref.get("sha256") != sha256_file(proof_path)
+        ):
+            reasons.append("factor_proof_preregistration:child authority mismatch")
+        else:
+            try:
+                proof_preregistration = json.loads(
+                    proof_path.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                reasons.append(
+                    "factor_proof_preregistration:child authority invalid JSON"
+                )
+                proof_preregistration = {}
+            if not isinstance(proof_preregistration, dict):
+                reasons.append(
+                    "factor_proof_preregistration:child authority invalid shape"
+                )
+                proof_preregistration = {}
     if reasons:
         raise WebResearchPlanError(BLOCK_PLAN_IMPLEMENTATION_INVALID, reasons)
     return {

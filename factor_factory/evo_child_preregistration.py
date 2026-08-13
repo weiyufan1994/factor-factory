@@ -2228,42 +2228,33 @@ def _readback_reasons(
         if isinstance(envelope, Mapping)
         else None
     )
-    allocation = authorization.get("allocation")
-    allocation = allocation if isinstance(allocation, Mapping) else {}
     if not isinstance(raw_plan, Mapping):
         reasons.append(_token("child_web_plan_readback"))
     else:
-        from factor_factory.console.web_factor_proof import (
-            validate_web_factor_proof_preregistration,
-            validate_web_factor_proof_preregistration_structural,
-        )
-
         try:
-            if current_authority:
-                proof = validate_web_factor_proof_preregistration(
-                    root,
-                    dict(raw_plan),
-                    oos_release_token_hash=str(
-                        allocation.get("sealed_token_sha256") or ""
-                    ),
-                    incident_trust_root=incident_trust_root,
-                    incident_installation_id=incident_installation_id,
-                    _incident_guard=_incident_guard,
-                )
-            else:
-                proof = validate_web_factor_proof_preregistration_structural(
-                    root,
-                    dict(raw_plan),
-                    oos_release_token_hash=str(
-                        allocation.get("sealed_token_sha256") or ""
-                    ),
-                )
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            projected = _project_child_web_factor_proof_targets(
+                root=root,
+                raw_plan=raw_plan,
+                ledger=targets["search_trial_ledger"][1],
+                metric_spec=targets["metric_verifier_spec"][1],
+                threshold=targets["threshold_registration"][1],
+                authorization=authorization,
+                incident_trust_root=incident_trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=_incident_guard,
+                current_authority=current_authority,
+            )
+        except (EvoChildPreregistrationError, OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             reasons.append(
                 _token(f"child_web_proof_readback:{type(exc).__name__}:{exc}")
             )
         else:
-            if proof.get("status") != "PASS":
+            if any(
+                name not in targets
+                or targets[name][0] != path
+                or targets[name][1] != payload
+                for name, (path, payload) in projected.items()
+            ):
                 reasons.append(_token("child_web_proof_readback"))
     try:
         replayed_authoring = _validated_agent_authoring(

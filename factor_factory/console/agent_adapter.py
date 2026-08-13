@@ -610,6 +610,7 @@ source of truth. Do not read whole skill files or validator/wrapper source.
 - formal sample: {job.request.sample_start} through {job.request.sample_end}
 - forward horizon: {job.request.forward_horizon}
 - transaction cost assumption: {job.request.transaction_cost_bps} bps
+- frozen trial budget: {job.request.trial_budget} total registered trials, including the base candidate
 - source material: {source_material}
 
 ## Read-only Data API inputs
@@ -644,6 +645,9 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
    Formula IR laws, and keep `1 + len(registered_diagnostic_trials)` within
    `evidence_policy.trial_budget`. An empty diagnostic list is invalid whenever
    a non-full-formula component exists.
+   For an authority-bearing v2 request, its submitted budget must equal
+   `evidence_policy.trial_budget`; the Host deterministically counts the one base
+   candidate plus the exact final diagnostic list.
    In the Web v2 pilot, a signal formed after close t is entered at close t+1
    and exited at close t+2, so the executable label is
    `close.shift(-2) / close.shift(-1) - 1`. The close-t to close-t+1 return

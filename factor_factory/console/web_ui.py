@@ -8,6 +8,7 @@ from typing import Any
 from factor_factory.console.math_render import render_equation_statement
 from factor_factory.console.models import (
     PILOT_MODEL,
+    PILOT_TRIAL_BUDGET,
     RESEARCH_SCOPE_FULL_FORMAL,
     RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
     ResearchJob,
@@ -172,6 +173,9 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
     factor_id_hint = escape(submitted.get("factor_id_hint", ""))
     sample_start = escape(submitted.get("sample_start", "2016-01-01"))
     sample_end = escape(submitted.get("sample_end", "2025-07-11"))
+    trial_budget = escape(
+        submitted.get("trial_budget", str(PILOT_TRIAL_BUDGET))
+    )
     research_scope = submitted.get(
         "research_scope", RESEARCH_SCOPE_FULL_FORMAL
     )
@@ -221,6 +225,7 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
           <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="{sample_start}" required></div>
           <div class="field"><label for="sample-end">样本结束</label><input id="sample-end" name="sample_end" type="date" value="{sample_end}" required></div>
           <div class="field"><label>交易成本模型</label><input type="hidden" name="transaction_cost_bps" value="30"><div class="fixed-contract">换手 × 30 bps（Pilot 固定）</div></div>
+          <div class="field"><label for="trial-budget">试验预算</label><input id="trial-budget" name="trial_budget" type="number" min="1" max="{PILOT_TRIAL_BUDGET}" step="1" value="{trial_budget}" required><span class="field-help">包含 1 个原始候选及所有预注册诊断；提交后冻结。</span></div>
         </div>
       </details>
       <div class="form-actions span-2"><p>其余实现口径、来源审计、worktree 和 Data API 读取由系统处理。</p><button class="button primary" type="submit">开始研究</button></div>
@@ -255,6 +260,7 @@ def _identity_band(job: ResearchJob) -> str:
       <div><span>股票池</span><strong>{escape(job.request.universe)}</strong></div>
       <div><span>收益期</span><strong>{escape(job.request.forward_horizon)}</strong></div>
       <div><span>交易成本</span><strong>{job.request.transaction_cost_bps:g} bps</strong></div>
+      <div><span>试验预算</span><strong>{job.request.trial_budget}</strong></div>
       <div><span>模型 / 隔离</span><strong>{escape(job.request.model or PILOT_MODEL)} · {'独立 worktree' if job.workspace_path else '等待分配'}</strong></div>
     </section>
     """

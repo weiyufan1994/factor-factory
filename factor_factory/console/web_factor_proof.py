@@ -12,6 +12,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from factor_factory.console.trial_budget import trial_budget_binding_reasons
 from factor_factory.data_access.paths import resolve_local_tushare_paths
 from factor_factory.data_access.step4 import (
     build_forward_return_frame,
@@ -694,6 +695,90 @@ def _canonical_payload_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _web_trial_budget_replay_reasons(
+    *,
+    workspace_root: Path,
+    plan: dict[str, Any],
+    observed_registered_trial_count: int,
+) -> list[str]:
+    request_path = workspace_root / "identity" / "web_research_request.json"
+    if not request_path.is_file() or request_path.is_symlink():
+        # Legacy standalone proof fixtures predate the authority-bearing
+        # request. Their plan budget remains the only frozen boundary.
+        return trial_budget_binding_reasons(
+            request={},
+            plan=plan,
+            observed_registered_trial_count=observed_registered_trial_count,
+        )
+    try:
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ["request.invalid_json"]
+    if not isinstance(request, dict):
+        return ["request.invalid_shape"]
+    return trial_budget_binding_reasons(
+        request=request,
+        plan=plan,
+        observed_registered_trial_count=observed_registered_trial_count,
+    )
+
+
+def _expected_web_search_trial_projection(
+    plan: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    preferred = next(
+        (row for row in plan.get("hypotheses") or [] if row.get("kind") == "preferred"),
+        None,
+    )
+    if not isinstance(preferred, dict):
+        raise ValueError(f"{BLOCK_PREREGISTRATION}: preferred hypothesis missing")
+    research_object = plan.get("research_object")
+    if not isinstance(research_object, dict):
+        raise ValueError(f"{BLOCK_PREREGISTRATION}: research object invalid")
+    trials = [
+        {
+            "trial_id": "web_intake_candidate_001",
+            "status": "REGISTERED_NOT_EVALUATED",
+            "hypothesis_id": preferred["hypothesis_id"],
+            "formula_sha256": _stable_hash(research_object["formula_or_law"]),
+        }
+    ]
+    measurement_program = plan.get("measurement_program")
+    search_policy = (
+        measurement_program.get("search_policy")
+        if isinstance(measurement_program, dict)
+        and isinstance(measurement_program.get("search_policy"), dict)
+        else {}
+    )
+    for item in search_policy.get("registered_diagnostic_trials") or []:
+        trials.append(
+            {
+                "trial_id": item["trial_id"],
+                "status": "REGISTERED_DIAGNOSTIC_NOT_EVALUATED",
+                "hypothesis_id": preferred["hypothesis_id"],
+                "formula_sha256": _stable_hash(item["formula_or_law"]),
+                "role": item["role"],
+                "component_id": item["component_id"],
+                "affects_acceptance": False,
+                "multiple_testing_family": item["multiple_testing_family"],
+            }
+        )
+    evidence = plan.get("evidence_policy") or {}
+    candidate_space = {
+        "formula_or_law": research_object["formula_or_law"],
+        "hypotheses": plan.get("hypotheses"),
+        "trial_budget": evidence.get("trial_budget"),
+        "multiple_testing_policy": evidence.get(
+            "multiple_testing_policy", "UNSPECIFIED_LEGACY"
+        ),
+        "quarantined_sensitivities": search_policy.get(
+            "quarantined_sensitivities"
+        )
+        or [],
+    }
+    return trials, candidate_space, preferred
+
+
 def project_web_factor_proof_preregistration_from_frozen_controls(
     *,
     workspace_root: Path,
@@ -711,9 +796,11 @@ def project_web_factor_proof_preregistration_from_frozen_controls(
     """Project a Web proof preregistration without writing or replacing controls.
 
     EVO child preregistration owns the atomic publication transaction.  This
-    pure helper proves that its already-frozen ledger/spec/threshold are the
-    exact Web-plan projection, then returns only the additional component
-    controls and closed preregistration receipt that transaction must publish.
+    pure helper proves that its already-frozen ledger/spec/threshold are
+    internally bound, then returns only the additional component controls and
+    closed preregistration receipt that transaction must publish.  Initial Web
+    intake identity is checked by prepare/structural replay; EVO child identity
+    and transfer trials are checked by the child-specific validators.
     """
 
     root = Path(workspace_root).expanduser().resolve(strict=True)
@@ -776,6 +863,8 @@ def project_web_factor_proof_preregistration_from_frozen_controls(
         or search_trial_ledger.get("report_id") != report_id
         or search_trial_ledger.get("factor_id")
         != plan.get("identity", {}).get("factor_id")
+        or isinstance(search_trial_ledger.get("trial_count"), bool)
+        or not isinstance(search_trial_ledger.get("trial_count"), int)
         or search_trial_ledger.get("trial_count")
         != len(search_trial_ledger.get("trials") or [])
         or search_trial_ledger.get("trial_set_sha256")
@@ -955,50 +1044,23 @@ def _prepare_web_factor_proof_guarded(
         workspace_root=root,
         calendar=calendar,
     )
-    preferred = next(
-        row for row in plan["hypotheses"] if row.get("kind") == "preferred"
+    trials, candidate_space, preferred = _expected_web_search_trial_projection(plan)
+    trial_budget_reasons = _web_trial_budget_replay_reasons(
+        workspace_root=root,
+        plan=plan,
+        observed_registered_trial_count=len(trials),
     )
-    trial = {
-        "trial_id": "web_intake_candidate_001",
-        "status": "REGISTERED_NOT_EVALUATED",
-        "hypothesis_id": preferred["hypothesis_id"],
-        "formula_sha256": _stable_hash(plan["research_object"]["formula_or_law"]),
-    }
-    diagnostic_trials = []
-    measurement_program = plan.get("measurement_program")
-    search_policy = (
-        measurement_program.get("search_policy")
-        if isinstance(measurement_program, dict)
-        and isinstance(measurement_program.get("search_policy"), dict)
-        else {}
-    )
-    for item in search_policy.get("registered_diagnostic_trials") or []:
-        diagnostic_trials.append(
-            {
-                "trial_id": item["trial_id"],
-                "status": "REGISTERED_DIAGNOSTIC_NOT_EVALUATED",
-                "hypothesis_id": preferred["hypothesis_id"],
-                "formula_sha256": _stable_hash(item["formula_or_law"]),
-                "role": item["role"],
-                "component_id": item["component_id"],
-                "affects_acceptance": False,
-                "multiple_testing_family": item["multiple_testing_family"],
-            }
+    if trial_budget_reasons:
+        raise ValueError(
+            f"{BLOCK_PREREGISTRATION}: trial budget binding invalid:"
+            + ";".join(trial_budget_reasons)
         )
     write_search_trial_ledger(
         paths["search_ledger"],
         report_id=report_id,
         factor_id=factor_id,
-        trials=[trial, *diagnostic_trials],
-        candidate_space={
-            "formula_or_law": plan["research_object"]["formula_or_law"],
-            "hypotheses": plan["hypotheses"],
-            "trial_budget": plan["evidence_policy"]["trial_budget"],
-            "multiple_testing_policy": plan["evidence_policy"].get(
-                "multiple_testing_policy", "UNSPECIFIED_LEGACY"
-            ),
-            "quarantined_sensitivities": search_policy.get("quarantined_sensitivities") or [],
-        },
+        trials=trials,
+        candidate_space=candidate_space,
         selected_hypothesis=preferred,
     )
     component_preregistrations = []
@@ -1177,6 +1239,32 @@ def validate_web_factor_proof_preregistration_structural(
     receipt = _read_json(paths["preregistration"])
     spec = _read_json(paths["spec"])
     threshold = _read_json(paths["threshold"])
+    search_ledger = _read_json(paths["search_ledger"])
+    trial_budget_reasons = _web_trial_budget_replay_reasons(
+        workspace_root=root,
+        plan=plan,
+        observed_registered_trial_count=search_ledger.get("trial_count"),
+    )
+    if trial_budget_reasons:
+        raise ValueError(
+            f"{BLOCK_PREREGISTRATION}: trial budget binding invalid:"
+            + ";".join(trial_budget_reasons)
+        )
+    expected_trials, expected_candidate_space, expected_preferred = (
+        _expected_web_search_trial_projection(plan)
+    )
+    if (
+        search_ledger.get("trials") != expected_trials
+        or search_ledger.get("trial_set_sha256") != stable_hash(expected_trials)
+        or search_ledger.get("candidate_space_sha256")
+        != stable_hash(expected_candidate_space)
+        or search_ledger.get("selected_hypothesis_sha256")
+        != stable_hash(expected_preferred)
+    ):
+        raise ValueError(
+            f"{BLOCK_PREREGISTRATION}: preregistration binding mismatch:"
+            "search ledger projection mismatch"
+        )
     expected_identity = {
         "report_id": report_id,
         "factor_id": plan["identity"]["factor_id"],

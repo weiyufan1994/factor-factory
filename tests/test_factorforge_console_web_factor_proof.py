@@ -195,6 +195,55 @@ def test_web_factor_proof_blocks_any_oos_label_calendar_mismatch(
         finalize_web_factor_proof(workspace_root=root, plan=plan)
 
 
+@pytest.mark.parametrize(
+    ("trial_budget", "expected_reason"),
+    [
+        (1, "search_trial_ledger.trial_budget_exceeded"),
+        (2, "search_trial_ledger.registered_trial_count_mismatch"),
+    ],
+)
+def test_web_factor_proof_replay_rejects_ledger_not_projected_from_v2_plan(
+    tmp_path: Path,
+    trial_budget: int,
+    expected_reason: str,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    calendar = _trusted_calendar_snapshot()
+    plan, _selected = _plan(calendar["dates"])
+    plan["measurement_program"] = {
+        "search_policy": {"registered_diagnostic_trials": []}
+    }
+    plan["evidence_policy"]["trial_budget"] = trial_budget
+    (root / "identity").mkdir()
+    (root / "identity" / "web_research_request.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "factorforge_console_research_request_v2",
+                "trial_budget": trial_budget,
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepare_web_factor_proof(workspace_root=root, plan=plan)
+    ledger_path = web_factor_proof_paths(root, "WEB_PROOF_TEST")["search_ledger"]
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["trials"].append(
+        {
+            "trial_id": "unregistered_trial",
+            "status": "REGISTERED_DIAGNOSTIC_NOT_EVALUATED",
+        }
+    )
+    ledger["trial_count"] = 2
+    ledger["trial_set_sha256"] = web_factor_proof.stable_hash(ledger["trials"])
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=expected_reason):
+        web_factor_proof.validate_web_factor_proof_preregistration_structural(
+            root, plan
+        )
+
+
 def test_web_factor_proof_blocks_missing_evo_child_authority_before_panel_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

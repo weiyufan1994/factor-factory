@@ -378,6 +378,7 @@ def test_submit_research_and_api_hide_private_paths(research_console):
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "7",
             "source_url": "",
         }
     ).encode("utf-8")
@@ -389,10 +390,85 @@ def test_submit_research_and_api_hide_private_paths(research_console):
     assert "等待分配" in detail
 
     job = app.store.list_jobs()[0]
+    assert job.request.trial_budget == 7
+    assert job.request.to_dict()["contract_version"] == (
+        "factorforge_console_research_request_v2"
+    )
+    assert job.request.to_dict()["trial_budget"] == 7
     api = opener.open(f"{base_url}/api/research/{job.job_id}", timeout=3).read().decode("utf-8")
     assert "worktree_path" not in api
     assert "workspace_path" not in api
     assert "agent_session_key" not in api
+
+
+@pytest.mark.parametrize("trial_budget", ["", " 7", "７", "1.0", "100", "0", "21"])
+def test_submit_research_rejects_malformed_or_out_of_range_trial_budget(
+    research_console,
+    trial_budget,
+):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    payload = urlencode(
+        {
+            "csrf": _csrf(html),
+            "title": "Invalid trial budget",
+            "hypothesis": "This request must not be queued.",
+            "universe": "a_share_all",
+            "sample_start": "2016-01-01",
+            "sample_end": "2025-07-11",
+            "forward_horizon": "1d",
+            "transaction_cost_bps": "30",
+            "trial_budget": trial_budget,
+        }
+    ).encode("utf-8")
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(f"{base_url}/research", data=payload, method="POST"),
+            timeout=3,
+        )
+
+    assert failure.value.code == 400
+    assert "试验预算必须是 1 到 20 之间的整数" in (
+        failure.value.read().decode("utf-8")
+    )
+    assert app.store.list_jobs() == []
+
+
+@pytest.mark.parametrize("budget_fields", [[], [("trial_budget", "7"), ("trial_budget", "8")]])
+def test_submit_research_requires_exactly_one_trial_budget_field(
+    research_console,
+    budget_fields,
+):
+    base_url, app = research_console
+    opener, html = _login_opener(base_url)
+    fields = [
+        ("csrf", _csrf(html)),
+        ("title", "Trial budget cardinality"),
+        ("hypothesis", "This request must not be queued."),
+        ("universe", "a_share_all"),
+        ("sample_start", "2016-01-01"),
+        ("sample_end", "2025-07-11"),
+        ("forward_horizon", "1d"),
+        ("transaction_cost_bps", "30"),
+        *budget_fields,
+    ]
+
+    with pytest.raises(HTTPError) as failure:
+        opener.open(
+            Request(
+                f"{base_url}/research",
+                data=urlencode(fields).encode("utf-8"),
+                method="POST",
+            ),
+            timeout=3,
+        )
+
+    assert failure.value.code == 400
+    assert "试验预算必须是 1 到 20 之间的整数" in (
+        failure.value.read().decode("utf-8")
+    )
+    assert app.store.list_jobs() == []
 
 
 def test_job_api_endpoints_project_nested_evo_host_private_state(research_console):
@@ -501,6 +577,7 @@ def test_submit_formula_with_chinese_title_and_generated_factor_id(research_cons
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "20",
         }
     ).encode("utf-8")
 
@@ -553,6 +630,7 @@ def test_submit_partial_source_formula_requires_only_used_ambiguities(
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "20",
             "kurtosis_convention": "excess_unbiased",
             "skew_convention": "inner_window_extrema",
             **_source_authority_form_fields(),
@@ -712,6 +790,7 @@ def test_source_formula_is_auto_frozen_without_user_semantic_fields(
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "20",
             "kurtosis_convention": "excess_unbiased",
             "skew_convention": "inner_window_extrema",
             "max_sum_convention": "contiguous_subwindow",
@@ -752,6 +831,7 @@ def test_client_semantic_fields_cannot_override_host_policy(research_console):
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "20",
             "kurtosis_convention": "pearson_unbiased",
             "skew_convention": "inner_window_extrema",
             "max_sum_convention": "contiguous_subwindow",
@@ -793,6 +873,7 @@ def test_submit_combines_hypothesis_report_formula_and_code_atomically(research_
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "20",
         }
     ).encode("utf-8")
 
@@ -838,6 +919,7 @@ def test_submit_pdf_report_stores_private_attachment_and_derives_title(
             "sample_end": "2025-07-11",
             "forward_horizon": "1d",
             "transaction_cost_bps": "30",
+            "trial_budget": "20",
             "model": "deepseek-v4-flash",
         },
         filename="minute-factor-report.pdf",
@@ -889,8 +971,9 @@ def test_multipart_submission_accepts_an_unselected_pdf_input(research_console):
             "csrf": _csrf(html),
             "title": "Hypothesis without report",
             "economic_hypothesis": "A constrained buyer pays an immediacy premium.",
-            "sample_start": "2016-01-01",
-            "sample_end": "2025-07-11",
+                "sample_start": "2016-01-01",
+                "sample_end": "2025-07-11",
+                "trial_budget": "20",
         },
         filename="",
         media_type="application/octet-stream",
@@ -1150,8 +1233,9 @@ def test_chatbox_persists_messages_and_api_hides_control_events(research_console
             "universe": "a_share_all",
             "sample_start": "2016-01-01",
             "sample_end": "2025-07-11",
-            "forward_horizon": "1d",
-            "transaction_cost_bps": "30",
+                "forward_horizon": "1d",
+                "transaction_cost_bps": "30",
+                "trial_budget": "20",
         }
     ).encode("utf-8")
     response = opener.open(

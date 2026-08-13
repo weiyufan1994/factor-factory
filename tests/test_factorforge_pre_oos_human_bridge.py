@@ -1970,6 +1970,16 @@ def test_found_ready_ticket_binds_exact_addendum_trials_and_all_child_controls(
     assert controls["expected_execution_tests_sha256"] == stable_json_hash(
         addendum["execution_tests"]
     )
+    ledger = json.loads(
+        child_control_paths(tmp_path, CHILD_ID)["search_trial_ledger"].read_text(
+            encoding="utf-8"
+        )
+    )
+    child_plan = json.loads(
+        child_web_research_plan_path(tmp_path, CHILD_ID).read_text(encoding="utf-8")
+    )["web_research_plan"]
+    assert ledger["trial_count"] == 1 + len(addendum["execution_tests"])
+    assert ledger["trial_count"] <= child_plan["evidence_policy"]["trial_budget"]
     strict_prereg = validate_evo_child_preregistration_receipt(
         workspace_root=tmp_path,
         parent_report_id=REPORT_ID,
@@ -2508,3 +2518,17 @@ def test_cold_ready_ticket_requires_zero_evo_transfer_trials(tmp_path: Path) -> 
     assert ticket is not None
     assert ticket["bindings"]["execution_addendum_ref"] is None
     assert ticket["bindings"]["child_controls"]["expected_execution_test_count"] == 0
+    ledger = json.loads(
+        child_control_paths(tmp_path, CHILD_ID)["search_trial_ledger"].read_text(
+            encoding="utf-8"
+        )
+    )
+    child_plan = json.loads(
+        child_web_research_plan_path(tmp_path, CHILD_ID).read_text(encoding="utf-8")
+    )["web_research_plan"]
+    assert all(
+        item.get("trial_kind") != "EVO_TRANSFER_DIAGNOSTIC"
+        for item in ledger["trials"]
+    )
+    assert ledger["trial_count"] == 1
+    assert ledger["trial_count"] <= child_plan["evidence_policy"]["trial_budget"]

@@ -472,6 +472,8 @@ def test_research_request_rejects_dns_resolution_to_private_address(monkeypatch)
 
 def test_research_request_scope_is_explicit_only_for_design_only_and_legacy_hash_stable():
     from factor_factory.console.models import (
+        RESEARCH_REQUEST_VERSION,
+        RESEARCH_REQUEST_VERSION_V2,
         RESEARCH_SCOPE_FULL_FORMAL,
         RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
         ResearchRequest,
@@ -493,11 +495,30 @@ def test_research_request_scope_is_explicit_only_for_design_only_and_legacy_hash
         "source_url": "",
     }
     legacy_hash = stable_json_hash(legacy_payload)
+    assert legacy_hash == (
+        "554c254dde2e86effa49b248d66cae4af0a3da4482ca5f5f7841b93221795b91"
+    )
     restored = ResearchRequest.from_dict(legacy_payload)
+    missing_version = ResearchRequest.from_dict(
+        {key: value for key, value in legacy_payload.items() if key != "contract_version"}
+    )
 
     assert restored.research_scope == RESEARCH_SCOPE_FULL_FORMAL
+    assert restored.request_contract_version == RESEARCH_REQUEST_VERSION
+    assert missing_version.request_contract_version == RESEARCH_REQUEST_VERSION
     assert restored.to_dict() == legacy_payload
     assert stable_json_hash(restored.to_dict()) == legacy_hash
+
+    authority_bearing = ResearchRequest(
+        title="budgeted factor",
+        hypothesis="signed request with a frozen trial budget",
+        trial_budget=7,
+    )
+    v2_payload = authority_bearing.to_dict()
+    assert v2_payload["contract_version"] == RESEARCH_REQUEST_VERSION_V2
+    assert v2_payload["trial_budget"] == 7
+    assert ResearchRequest.from_dict(v2_payload).to_dict() == v2_payload
+    assert stable_json_hash(v2_payload) != legacy_hash
 
     design_only = ResearchRequest(
         title="design factor",
@@ -508,6 +529,56 @@ def test_research_request_scope_is_explicit_only_for_design_only_and_legacy_hash
         design_only.to_dict()["research_scope"]
         == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
     )
+
+
+@pytest.mark.parametrize("trial_budget", [True, 0, 21, "7", [], {}])
+def test_research_request_v2_rejects_non_exact_or_out_of_range_trial_budget(
+    trial_budget,
+):
+    from factor_factory.console.models import ResearchRequest
+
+    with pytest.raises(ValueError, match="trial_budget"):
+        ResearchRequest(
+            title="budgeted factor",
+            hypothesis="test",
+            trial_budget=trial_budget,
+        )
+
+
+@pytest.mark.parametrize(
+    "unknown_version",
+    ["factorforge_console_research_request_v3", "", None, False, 0, [], {}],
+)
+def test_research_request_contract_versions_fail_closed(unknown_version) -> None:
+    from factor_factory.console.models import ResearchRequest
+
+    base = {
+        "title": "budgeted factor",
+        "hypothesis": "test",
+    }
+    with pytest.raises(ValueError, match="must not carry"):
+        ResearchRequest.from_dict(
+            {
+                "contract_version": "factorforge_console_research_request_v1",
+                "trial_budget": 7,
+                **base,
+            }
+        )
+    with pytest.raises(ValueError, match="require trial_budget"):
+        ResearchRequest.from_dict(
+            {
+                "contract_version": "factorforge_console_research_request_v2",
+                **base,
+            }
+        )
+    with pytest.raises(ValueError, match="contract_version"):
+        ResearchRequest.from_dict(
+            {
+                "contract_version": unknown_version,
+                "trial_budget": 7,
+                **base,
+            }
+        )
 
 
 def test_job_store_uses_external_sqlite_and_serial_claiming(tmp_path):

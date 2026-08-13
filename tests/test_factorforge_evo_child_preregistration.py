@@ -680,6 +680,83 @@ def test_cold_branch_projects_zero_transfer_trials(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("mutation", ["tamper", "extra"])
+def test_frozen_child_ledger_rejects_tampered_or_extra_transfer_trials(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _semantic_inputs(root)
+    authorization = _authorization(root, found=True)
+    ledger = prereg._project_evo_child_search_trial_ledger(
+        workspace_root=root,
+        parent_report_id=PARENT,
+        child_report_id=CHILD,
+        base_search_trial_ledger=_base_ledger(),
+        execution_addendum=authorization["execution_addendum"],
+    )
+    if mutation == "tamper":
+        ledger["trials"][-1]["implementation_mode"] = "TAMPERED"
+    else:
+        extra = copy.deepcopy(ledger["trials"][-1])
+        extra["trial_id"] = "transfer_test_extra_002"
+        ledger["trials"].append(extra)
+    ledger["trial_count"] = len(ledger["trials"])
+    ledger["trial_set_sha256"] = stable_json_hash(ledger["trials"])
+
+    reasons = validate_frozen_child_execution_ledger(
+        workspace_root=root,
+        parent_report_id=PARENT,
+        child_report_id=CHILD,
+        search_trial_ledger=ledger,
+        execution_addendum=authorization["execution_addendum"],
+    )
+
+    assert any("ledger_evo_trial_projection" in reason for reason in reasons)
+
+
+def test_child_trial_budget_blocks_base_plus_transfer_overbudget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    state, conjecture, approaches, base, metric_spec, _threshold_payload, auth = (
+        _full_fixture(root, monkeypatch)
+    )
+    state["budget_used"] = {"trials_used": 1, "trial_budget": 1}
+    conjecture["evidence_policy"]["trials_used"] = 1
+    conjecture["evidence_policy"]["trial_budget"] = 1
+    ledger = prereg._project_evo_child_search_trial_ledger(
+        workspace_root=root,
+        parent_report_id=PARENT,
+        child_report_id=CHILD,
+        base_search_trial_ledger=base,
+        execution_addendum=auth["execution_addendum"],
+    )
+    identities = prereg.project_evo_child_search_identities(conjecture)
+    ledger["candidate_space_sha256"] = identities["candidate_space_sha256"]
+    ledger["selected_hypothesis_sha256"] = identities[
+        "selected_hypothesis_sha256"
+    ]
+    threshold = _threshold(ledger, metric_spec, auth)
+
+    reasons = prereg._validate_inputs(
+        root=root,
+        parent_report_id=PARENT,
+        child_report_id=CHILD,
+        state=state,
+        conjecture=conjecture,
+        approaches=approaches,
+        ledger=ledger,
+        metric_spec=metric_spec,
+        threshold=threshold,
+        authorization=auth,
+    )
+
+    assert any("trial_budget_binding" in reason for reason in reasons)
+
+
 def test_base_ledger_cannot_self_authorize_evo_trial(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()

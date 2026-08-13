@@ -45,9 +45,11 @@ VALID_COUNCIL_STATUSES = {
 TASK_CONTRACT_VERSION = "factorforge_console_task_v1"
 RESULT_CONTRACT_VERSION = "factorforge_console_result_v1"
 RESEARCH_REQUEST_VERSION = "factorforge_console_research_request_v1"
+RESEARCH_REQUEST_VERSION_V2 = "factorforge_console_research_request_v2"
 PILOT_FORWARD_HORIZON = "1d"
 PILOT_TRANSACTION_COST_BPS = 30.0
 PILOT_COST_MODEL_ID = "factorforge_step4_turnover_30bps_v1"
+PILOT_TRIAL_BUDGET = 20
 PILOT_UNIVERSE = "a_share_all"
 PILOT_MODEL = "deepseek-v4-flash"
 RESEARCH_SCOPE_FULL_FORMAL = "full_formal"
@@ -479,9 +481,11 @@ class ResearchRequest:
     sample_end: str = "2025-07-11"
     forward_horizon: str = "1d"
     transaction_cost_bps: float = PILOT_TRANSACTION_COST_BPS
+    trial_budget: int = PILOT_TRIAL_BUDGET
     model: str = ""
     source_url: str = ""
     research_scope: str = RESEARCH_SCOPE_FULL_FORMAL
+    request_contract_version: str = RESEARCH_REQUEST_VERSION_V2
 
     def __post_init__(self) -> None:
         if not self.title.strip():
@@ -500,24 +504,61 @@ class ResearchRequest:
             raise ValueError(
                 f"invalid research_scope: {self.research_scope!r}"
             )
+        if not isinstance(self.request_contract_version, str) or self.request_contract_version not in {
+            RESEARCH_REQUEST_VERSION,
+            RESEARCH_REQUEST_VERSION_V2,
+        }:
+            raise ValueError(
+                f"unsupported research request contract: "
+                f"{self.request_contract_version!r}"
+            )
         validate_public_source_url(self.source_url)
         if not 0 <= float(self.transaction_cost_bps) <= 200:
             raise ValueError("transaction_cost_bps must be between 0 and 200")
+        if (
+            isinstance(self.trial_budget, bool)
+            or not isinstance(self.trial_budget, int)
+            or not 1 <= self.trial_budget <= PILOT_TRIAL_BUDGET
+        ):
+            raise ValueError(
+                f"trial_budget must be an integer between 1 and "
+                f"{PILOT_TRIAL_BUDGET}"
+            )
+        if (
+            self.request_contract_version == RESEARCH_REQUEST_VERSION
+            and self.trial_budget != PILOT_TRIAL_BUDGET
+        ):
+            raise ValueError("v1 research requests use the legacy trial budget")
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        # Keep the historical full-formal wire representation byte-for-byte
-        # compatible for persisted request/conversation hash replay.  The new
-        # field is emitted only for the non-default scope that needs an
-        # explicit authority boundary.
+        version = payload.pop("request_contract_version")
+        # Keep historical default wire representations byte-for-byte compatible
+        # for persisted request/conversation hash replay.  New non-default
+        # controls are emitted only when they carry an explicit authority
+        # boundary.
         if self.research_scope == RESEARCH_SCOPE_FULL_FORMAL:
             payload.pop("research_scope", None)
-        return {"contract_version": RESEARCH_REQUEST_VERSION, **payload}
+        if version == RESEARCH_REQUEST_VERSION:
+            payload.pop("trial_budget", None)
+        return {"contract_version": version, **payload}
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ResearchRequest":
-        version = str(payload.get("contract_version") or RESEARCH_REQUEST_VERSION)
-        _require_contract(version, RESEARCH_REQUEST_VERSION)
+        version_value = (
+            payload["contract_version"]
+            if "contract_version" in payload
+            else RESEARCH_REQUEST_VERSION
+        )
+        if not isinstance(version_value, str):
+            raise ValueError("unsupported research request contract_version")
+        version = version_value
+        if version not in {RESEARCH_REQUEST_VERSION, RESEARCH_REQUEST_VERSION_V2}:
+            raise ValueError("unsupported research request contract_version")
+        if version == RESEARCH_REQUEST_VERSION and "trial_budget" in payload:
+            raise ValueError("v1 research requests must not carry trial_budget")
+        if version == RESEARCH_REQUEST_VERSION_V2 and "trial_budget" not in payload:
+            raise ValueError("v2 research requests require trial_budget")
         return cls(
             title=str(payload.get("title") or ""),
             hypothesis=str(payload.get("hypothesis") or ""),
@@ -530,11 +571,13 @@ class ResearchRequest:
             transaction_cost_bps=float(
                 payload.get("transaction_cost_bps", PILOT_TRANSACTION_COST_BPS)
             ),
+            trial_budget=payload.get("trial_budget", PILOT_TRIAL_BUDGET),
             model=str(payload.get("model") or ""),
             source_url=str(payload.get("source_url") or ""),
             research_scope=str(
                 payload.get("research_scope") or RESEARCH_SCOPE_FULL_FORMAL
             ),
+            request_contract_version=version,
         )
 
 

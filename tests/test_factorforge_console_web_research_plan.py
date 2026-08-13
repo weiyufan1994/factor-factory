@@ -911,6 +911,116 @@ def _fill_plan(workspace: Path) -> dict:
     return plan
 
 
+def test_v2_request_trial_budget_is_frozen_into_plan_and_validated(tmp_path):
+    workspace = _workspace(tmp_path)
+    request = _request()
+    request.update(
+        {
+            "contract_version": "factorforge_console_research_request_v2",
+            "trial_budget": 7,
+        }
+    )
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=request,
+        catalogs=[_write_catalog(tmp_path)],
+    )
+    plan = _fill_plan(workspace)
+
+    assert plan["evidence_policy"]["trial_budget"] == 7
+    validate_plan(plan, workspace=workspace)
+
+    mismatched = json.loads(json.dumps(plan))
+    mismatched["evidence_policy"]["trial_budget"] = 20
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        validate_plan(mismatched, workspace=workspace)
+    assert "evidence_policy.trial_budget_request_mismatch" in exc_info.value.reasons
+
+
+@pytest.mark.parametrize(
+    "malicious_budget", [True, 7.0, "7", [], {}, None, 0, 21]
+)
+def test_plan_evidence_trial_budget_malicious_types_block_without_crash(
+    tmp_path,
+    malicious_budget,
+):
+    workspace = _workspace(tmp_path)
+    request = _request()
+    request.update(
+        {
+            "contract_version": "factorforge_console_research_request_v2",
+            "trial_budget": 7,
+        }
+    )
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=request,
+        catalogs=[_write_catalog(tmp_path)],
+    )
+    plan = _fill_plan(workspace)
+    plan["evidence_policy"]["trial_budget"] = malicious_budget
+
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        validate_plan(plan, workspace=workspace)
+
+    assert "evidence_policy.trial_budget" in exc_info.value.reasons
+
+
+def test_v1_plan_preserves_legacy_nondefault_budget_without_new_equality(tmp_path):
+    workspace = _workspace(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[_write_catalog(tmp_path)],
+    )
+    plan = _fill_plan(workspace)
+    plan["evidence_policy"]["trial_budget"] = 7
+
+    validate_plan(plan, workspace=workspace)
+
+
+def test_v2_registered_trial_count_cannot_exceed_request_budget(tmp_path):
+    workspace = _workspace(tmp_path)
+    request = _request()
+    request.update(
+        {
+            "contract_version": "factorforge_console_research_request_v2",
+            "trial_budget": 7,
+        }
+    )
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=request,
+        catalogs=[_write_catalog(tmp_path)],
+    )
+    plan = _fill_plan(workspace)
+    plan["measurement_program"]["search_policy"][
+        "registered_diagnostic_trials"
+    ] = [
+        {
+            "trial_id": f"diag_alias_{index}",
+            "role": "alias_diagnostic",
+            "component_id": "full_formula",
+            "formula_or_law": "-(open / pre_close - 1.0)",
+            "affects_acceptance": False,
+            "multiple_testing_family": "alias_diagnostics",
+        }
+        for index in range(7)
+    ]
+
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        validate_plan(plan, workspace=workspace)
+
+    assert (
+        "measurement_program.search_policy.diagnostics_exceed_trial_budget"
+        in exc_info.value.reasons
+    )
+
+
 def test_web_packet_rejects_invalid_job_identity_before_writing(tmp_path):
     workspace = _workspace(tmp_path)
     request = _request()

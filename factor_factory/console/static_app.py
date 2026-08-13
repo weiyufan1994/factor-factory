@@ -26,6 +26,7 @@ from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.discovery import discover_miner_campaigns
 from factor_factory.console.models import (
     PILOT_UNIVERSE,
+    RESEARCH_REQUEST_VERSION_V2,
     ResearchRequest,
     USER_MESSAGE_CONTENT_KINDS,
     validate_pilot_evaluation_request,
@@ -402,6 +403,16 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                 initial_messages, primary_kind, primary_content = (
                     _initial_research_messages(fields, attachments=attachments)
                 )
+                trial_budget_values = fields.get("trial_budget")
+                if not isinstance(trial_budget_values, list) or len(trial_budget_values) != 1:
+                    raise ValueError(
+                        "trial_budget must be an integer between 1 and 20"
+                    )
+                trial_budget_text = trial_budget_values[0]
+                if re.fullmatch(r"[0-9]{1,2}", trial_budget_text) is None:
+                    raise ValueError(
+                        "trial_budget must be an integer between 1 and 20"
+                    )
                 request = ResearchRequest(
                     title=_research_title(fields, attachments=attachments),
                     hypothesis=primary_content,
@@ -412,6 +423,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                     sample_end=_field(fields, "sample_end", "2025-07-11"),
                     forward_horizon=_field(fields, "forward_horizon", "1d"),
                     transaction_cost_bps=float(_field(fields, "transaction_cost_bps", "30")),
+                    trial_budget=int(trial_budget_text),
                     model=_field(fields, "model", DEEPSEEK_V4_FLASH_MODEL),
                     source_url=_field(fields, "source_url"),
                     research_scope=_field(
@@ -419,6 +431,7 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                         "research_scope",
                         "full_formal",
                     ),
+                    request_contract_version=RESEARCH_REQUEST_VERSION_V2,
                 )
                 _validate_request_choices(request)
                 job = application.service.submit(
@@ -816,6 +829,7 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
         "universe",
         "sample_start",
         "sample_end",
+        "trial_budget",
     )
     return {name: _raw_field(fields, name) for name in names}
 
@@ -837,6 +851,7 @@ def _research_request_error(error: Exception) -> str:
         "invalid sample_start": "样本开始日期无效。",
         "invalid sample_end": "样本结束日期无效。",
         "sample_start must be before sample_end": "样本开始日期必须早于结束日期。",
+        "trial_budget must be an integer between 1 and 20": "试验预算必须是 1 到 20 之间的整数。",
     }
     if message.startswith(BLOCK_PDF_UPLOAD_INVALID):
         return "PDF 研报无效。请上传不超过 20 MB、文件头有效且扩展名为 .pdf 的文件。"

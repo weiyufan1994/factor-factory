@@ -74,6 +74,10 @@ from factor_factory.console.workspace_transaction import (
 )
 from factor_factory.research_org.contracts import sha256_file, stable_json_hash
 from factor_factory.research_org.runtime import (
+    RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+    RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH,
+    RESEARCH_ORG_CONTAINER_TASK_PATH,
+    RESEARCH_ORG_CONTAINER_WORKSPACE,
     ResearchOrgSessionInvocation,
     ResearchOrgSessionOutcome,
     build_research_org_session_prompt,
@@ -84,6 +88,7 @@ from factor_factory.revision_council.pre_oos_outcome import (
 )
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
+REQUIRED_COLD_SEARCH_CONTAINER_TOOLS = ["read", "write"]
 RESEARCH_ORG_HIDDEN_WORKTREE_ROOTS = (
     "archive",
     "data",
@@ -1983,6 +1988,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: required role skill is missing"
                 )
 
+        cold_search_session = (
+            invocation.role_id == "knowledge_librarian"
+            and invocation.task_id.startswith("evo_v2_memory_search_")
+        )
+
         home = private_root / "home"
         agent_dir = private_root / "agent"
         profile_dir = home / f".openclaw-{self.config.openclaw_profile}"
@@ -1993,9 +2003,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
         profile_config = profile_dir / "openclaw.json"
         shutil.copy2(self.config.openclaw_profile_template, profile_config)
         profile_config.chmod(0o600)
+        if cold_search_session:
+            profile_payload = json.loads(
+                profile_config.read_text(encoding="utf-8")
+            )
+            profile_payload["agents"]["defaults"]["repoRoot"] = str(
+                RESEARCH_ORG_CONTAINER_WORKSPACE
+            )
+            profile_payload["tools"]["allow"] = (
+                REQUIRED_COLD_SEARCH_CONTAINER_TOOLS
+            )
+            profile_config.write_text(
+                json.dumps(profile_payload, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            profile_config.chmod(0o600)
         _validate_profile_policy(
             json.loads(profile_config.read_text(encoding="utf-8")),
             expected_model_broker_url=self.config.container_model_broker_url,
+            expected_tools=(
+                REQUIRED_COLD_SEARCH_CONTAINER_TOOLS
+                if cold_search_session
+                else REQUIRED_CONTAINER_TOOLS
+            ),
+            expected_repo_root=(
+                str(RESEARCH_ORG_CONTAINER_WORKSPACE)
+                if cold_search_session
+                else None
+            ),
         )
         auth_store = agent_dir / "openclaw-agent.sqlite"
         assert self.config.openclaw_auth_seed_db is not None
@@ -2025,12 +2060,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
         )
         session_key = f"agent:{agent_id}:{job_id}:{invocation.session_id}"
         container_name = invocation.runtime_instance_id
+        container_view_root: Path | None = None
+        agent_workspace = worktree
         prompt_path = private_root / "research_org_task.md"
+        container_prompt_path = prompt_path
+        if cold_search_session:
+            container_view_root = private_root / "container_view"
+            container_view_root.mkdir(mode=0o700)
+            for mountpoint in ("context", "output"):
+                (container_view_root / mountpoint).mkdir(mode=0o700)
+            prompt_path = container_view_root / "task.md"
+            container_prompt_path = RESEARCH_ORG_CONTAINER_TASK_PATH
+            agent_workspace = RESEARCH_ORG_CONTAINER_WORKSPACE
+        prompt = (
+            build_research_org_session_prompt(
+                invocation,
+                container_context_root=RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+                container_private_output_path=(
+                    RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH
+                ),
+            )
+            if cold_search_session
+            else build_research_org_session_prompt(invocation)
+        )
         prompt_path.write_text(
-            build_research_org_session_prompt(invocation),
+            prompt,
             encoding="utf-8",
         )
-        prompt_path.chmod(0o600)
+        prompt_path.chmod(0o400 if cold_search_session else 0o600)
 
         def container_prefix(
             *,
@@ -2067,6 +2124,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "--label",
                 f"factorforge.research-org.role={invocation.role_id}",
             ]
+            if cold_search_session:
+                assert container_view_root is not None
+                command[-1:-1] = [
+                    "--mount",
+                    _mount(
+                        container_view_root,
+                        readonly=True,
+                        target=RESEARCH_ORG_CONTAINER_WORKSPACE,
+                    ),
+                    "--mount",
+                    _mount(
+                        context_root,
+                        readonly=True,
+                        target=RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+                    ),
+                    "--mount",
+                    _mount(
+                        invocation.private_output_path.parent,
+                        readonly=False,
+                        target=(
+                            RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH.parent
+                        ),
+                    ),
+                ]
+                workdir_index = command.index("--workdir")
+                command[workdir_index + 1] = str(
+                    RESEARCH_ORG_CONTAINER_WORKSPACE
+                )
             return command
 
         add_command = [
@@ -2078,7 +2163,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "add",
             agent_id,
             "--workspace",
-            str(worktree),
+            str(agent_workspace),
             "--agent-dir",
             str(agent_dir),
             "--model",
@@ -2095,9 +2180,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self._validate_agent_binding(
             profile_config,
             agent_id,
-            worktree,
+            agent_workspace,
             agent_dir,
             model,
+            expected_tools=(
+                REQUIRED_COLD_SEARCH_CONTAINER_TOOLS
+                if cold_search_session
+                else REQUIRED_CONTAINER_TOOLS
+            ),
+            expected_repo_root=(
+                str(RESEARCH_ORG_CONTAINER_WORKSPACE)
+                if cold_search_session
+                else None
+            ),
         )
         command = [
             *container_prefix(
@@ -2114,7 +2209,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--session-key",
             session_key,
             "--message-file",
-            str(prompt_path),
+            str(container_prompt_path),
             "--thinking",
             self.config.openclaw_thinking,
             "--timeout",
@@ -5763,6 +5858,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         model: str,
         *,
         expected_tools: list[str] = REQUIRED_CONTAINER_TOOLS,
+        expected_repo_root: str | None = None,
     ) -> None:
         try:
             payload = json.loads(profile_config.read_text(encoding="utf-8"))
@@ -5772,6 +5868,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             payload,
             expected_model_broker_url=self.config.container_model_broker_url,
             expected_tools=expected_tools,
+            expected_repo_root=expected_repo_root,
         )
         agents = ((payload.get("agents") or {}).get("list") or []) if isinstance(payload, dict) else []
         match = next((item for item in agents if str(item.get("id") or "") == agent_id), None)
@@ -5786,7 +5883,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
         expected = {"workspace": worktree, "agentDir": agent_dir}
         for key, path in expected.items():
             actual = str(match.get(key) or "")
-            if not actual or Path(actual).resolve() != path.resolve():
+            if not actual:
+                raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent {key} binding mismatch")
+            exact_container_workspace = (
+                key == "workspace"
+                and path == RESEARCH_ORG_CONTAINER_WORKSPACE
+            )
+            path_mismatch = (
+                actual != path.as_posix()
+                if exact_container_workspace
+                else Path(actual).resolve() != path.resolve()
+            )
+            if path_mismatch:
                 raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent {key} binding mismatch")
         if str(match.get("model") or "") != model:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent model binding mismatch")
@@ -8045,6 +8153,7 @@ def _validate_profile_policy(
     *,
     expected_model_broker_url: str = REQUIRED_MODEL_BROKER_URL,
     expected_tools: list[str] = REQUIRED_CONTAINER_TOOLS,
+    expected_repo_root: str | None = None,
 ) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile is not an object")
@@ -8055,6 +8164,13 @@ def _validate_profile_policy(
     if defaults.get("skipBootstrap") is not True or defaults.get("skills") != []:
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile must skip bootstrap and global skills"
+        )
+    if (
+        expected_repo_root is not None
+        and defaults.get("repoRoot") != expected_repo_root
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container repo root is invalid"
         )
     compaction = defaults.get("compaction") or {}
     if any(compaction.get(key) != value for key, value in REQUIRED_COMPACTION_POLICY.items()):

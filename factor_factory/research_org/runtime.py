@@ -114,6 +114,16 @@ _SECRET_PATTERN = re.compile(
     r"(?i)(?:aws_secret_access_key|aws_session_token|api[_-]?key|"
     r"authorization\s*:\s*bearer|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
 )
+RESEARCH_ORG_CONTAINER_WORKSPACE = Path("/factorforge/research-org")
+RESEARCH_ORG_CONTAINER_CONTEXT_ROOT = (
+    RESEARCH_ORG_CONTAINER_WORKSPACE / "context"
+)
+RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH = (
+    RESEARCH_ORG_CONTAINER_WORKSPACE / "output" / "agent_result.json"
+)
+RESEARCH_ORG_CONTAINER_TASK_PATH = (
+    RESEARCH_ORG_CONTAINER_WORKSPACE / "task.md"
+)
 
 PREFORMAL_CHECK_RUBRICS = {
     "estimator_semantics": (
@@ -253,6 +263,9 @@ class ResearchOrgSessionRunner(Protocol):
 
 def build_research_org_session_prompt(
     invocation: ResearchOrgSessionInvocation,
+    *,
+    container_context_root: Path | None = None,
+    container_private_output_path: Path | None = None,
 ) -> str:
     if invocation.role_id == "evo_child_independent_reviewer":
         from factor_factory.console.evo_child_assurance import (
@@ -270,16 +283,26 @@ def build_research_org_session_prompt(
         invocation.context_root
         / "identity/evo_v2_cold_start_search_request.json"
     )
-    if (
-        invocation.role_id == "knowledge_librarian"
-        and evo_search_request.is_file()
-        and not evo_search_request.is_symlink()
+    if invocation.role_id == "knowledge_librarian" and (
+        invocation.task_id.startswith("evo_v2_memory_search_")
+        or evo_search_request.exists()
+        or evo_search_request.is_symlink()
     ):
         from factor_factory.knowledge_context import (
             build_evo_v2_cold_start_search_prompt,
         )
 
-        return build_evo_v2_cold_start_search_prompt(invocation)
+        return build_evo_v2_cold_start_search_prompt(
+            invocation,
+            container_context_root=(
+                container_context_root
+                or RESEARCH_ORG_CONTAINER_CONTEXT_ROOT
+            ),
+            container_private_output_path=(
+                container_private_output_path
+                or RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH
+            ),
+        )
     if invocation.role_id == "researcher_memory_reviewer":
         from factor_factory.researcher_memory_review import (
             build_researcher_memory_review_prompt,

@@ -10,9 +10,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from factor_factory.research_org.contracts import (
+    MAX_CONTRACT_JSON_BYTES,
+    ResearchOrganizationError,
     SAFE_ID_RE,
     SHA256_RE,
+    read_workspace_bytes,
     stable_json_hash,
+    strict_json_loads,
     with_content_hash,
 )
 
@@ -627,6 +631,74 @@ def _evo_v2_cold_search_request_reasons(
     return list(dict.fromkeys(reasons))
 
 
+def _assert_evo_v2_cold_search_index_readback(
+    *,
+    context_root: Path,
+    request: Mapping[str, Any],
+) -> None:
+    indexes = request.get("checked_indexes")
+    if not isinstance(indexes, list) or len(indexes) != 2:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            "cold_start_search_index_readback"
+        )
+    try:
+        observed_ids: set[str] = set()
+        for item in indexes:
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"index_id", "path", "sha256"}
+            ):
+                raise ValueError("invalid index binding")
+            index_id = item.get("index_id")
+            relative = item.get("path")
+            expected_sha256 = item.get("sha256")
+            if (
+                not isinstance(index_id, str)
+                or not SAFE_ID_RE.fullmatch(index_id)
+                or not isinstance(relative, str)
+                or Path(relative).is_absolute()
+                or ".." in Path(relative).parts
+                or not isinstance(expected_sha256, str)
+                or not SHA256_RE.fullmatch(expected_sha256)
+            ):
+                raise ValueError("invalid index binding")
+            observed_ids.add(index_id)
+            observed = read_workspace_bytes(context_root, relative)
+            if hashlib.sha256(observed).hexdigest() != expected_sha256:
+                raise ValueError("index hash mismatch")
+        if observed_ids != _EVO_V2_COLD_START_INDEX_IDS:
+            raise ValueError("invalid index scope")
+    except (OSError, ResearchOrganizationError, ValueError) as exc:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            "cold_start_search_index_readback"
+        ) from exc
+
+
+def _evo_v2_cold_search_invocation_reasons(
+    *,
+    request: Any,
+    invocation: Any,
+) -> list[str]:
+    if not isinstance(request, Mapping):
+        return ["cold_start_search_invocation_binding"]
+    reasons: list[str] = []
+    if request.get("task_id") != invocation.task_id:
+        reasons.append("cold_start_search_task_binding")
+    if request.get("retrieval_session_id") != invocation.session_id:
+        reasons.append("cold_start_search_session_binding")
+    if request.get("runtime_instance_id") != invocation.runtime_instance_id:
+        reasons.append("cold_start_search_runtime_binding")
+    if (
+        request.get("request_sha256") != invocation.task_sha256
+        or request.get("request_sha256")
+        != invocation.context_manifest_sha256
+    ):
+        reasons.append("cold_start_search_task_hash_binding")
+    return reasons
+
+
 def _evo_v2_cold_search_output_reasons(
     output: Any,
     *,
@@ -729,7 +801,7 @@ def prepare_evo_v2_cold_start_search_session(
         reasons.append("cold_start_search_identity")
     if re.fullmatch(r"job_[a-f0-9]{10}", host_job_id) is None:
         reasons.append("cold_start_search_host_job_id")
-    resolved_indexes: list[dict[str, Any]] = []
+    resolved_index_snapshots: list[tuple[dict[str, Any], bytes]] = []
     observed_ids: set[str] = set()
     for item in checked_indexes:
         if not isinstance(item, Mapping) or set(item) != {
@@ -752,8 +824,11 @@ def prepare_evo_v2_cold_start_search_session(
             "path": relative,
             "sha256": str(item.get("sha256") or ""),
         }
-        resolved_indexes.append(resolved)
+        resolved_index_snapshots.append((resolved, raw))
         observed_ids.add(resolved["index_id"])
+    resolved_indexes = [
+        resolved for resolved, _raw in resolved_index_snapshots
+    ]
     if observed_ids != _EVO_V2_COLD_START_INDEX_IDS or len(resolved_indexes) != 2:
         reasons.append("cold_start_search_index_scope")
     if reasons:
@@ -773,8 +848,7 @@ def prepare_evo_v2_cold_start_search_session(
     session_root = _ensure_private_directory(session_root_parent, session_id)
     context_root = _ensure_private_directory(session_root, "context")
     _ensure_private_directory(session_root, "output")
-    for item in resolved_indexes:
-        raw = read_workspace_bytes(workspace, item["path"])
+    for item, raw in resolved_index_snapshots:
         _private_write_bytes(context_root, item["path"], raw)
     request = with_content_hash(
         {
@@ -858,7 +932,12 @@ def prepare_evo_v2_cold_start_search_session(
     return invocation, request, session_root_parent
 
 
-def build_evo_v2_cold_start_search_prompt(invocation: Any) -> str:
+def build_evo_v2_cold_start_search_prompt(
+    invocation: Any,
+    *,
+    container_context_root: Path,
+    container_private_output_path: Path,
+) -> str:
     """Return the closed-output prompt for the isolated zero-hit verifier.
 
     The generic research-organization prompt expects a normal task packet.  An
@@ -871,27 +950,105 @@ def build_evo_v2_cold_start_search_prompt(invocation: Any) -> str:
 
     from factor_factory.research_org.runtime import (
         PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+        RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+        RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH,
     )
+    if (
+        container_context_root != RESEARCH_ORG_CONTAINER_CONTEXT_ROOT
+        or container_private_output_path
+        != RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH
+    ):
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            "cold_start_search_container_paths"
+        )
 
-    request_path = (
-        invocation.context_root
+    try:
+        request = strict_json_loads(
+            read_workspace_bytes(
+                invocation.context_root,
+                "identity/evo_v2_cold_start_search_request.json",
+                max_bytes=MAX_CONTRACT_JSON_BYTES,
+            ),
+            label="evo_v2_cold_start_search_request",
+        )
+    except (OSError, ResearchOrganizationError, ValueError, UnicodeError) as exc:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            "cold_start_search_request_readback"
+        ) from exc
+    mechanism_fingerprint = (
+        request.get("mechanism_fingerprint")
+        if isinstance(request, Mapping)
+        and isinstance(request.get("mechanism_fingerprint"), Mapping)
+        else {}
+    )
+    request_reasons = _evo_v2_cold_search_request_reasons(
+        request,
+        artifact_identity=invocation.identity,
+        mechanism_fingerprint=mechanism_fingerprint,
+    )
+    request_reasons.extend(
+        _evo_v2_cold_search_invocation_reasons(
+            request=request,
+            invocation=invocation,
+        )
+    )
+    if request_reasons:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            f"{'|'.join(dict.fromkeys(request_reasons))}"
+        )
+    _assert_evo_v2_cold_search_index_readback(
+        context_root=invocation.context_root,
+        request=request,
+    )
+    zero_hit_output = {
+        "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+        "status": "PASS",
+        "public_research_record": {
+            "contract_version": EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION,
+            "artifact_identity": request["artifact_identity"],
+            "executor_role_id": EVO_V2_COLD_START_SEARCH_ROLE_ID,
+            "query_sha256": request["query"]["query_sha256"],
+            "checked_indexes": request["checked_indexes"],
+            "admissible_hits": [],
+            "admissible_hit_count": 0,
+            "memory_state": "COLD_START_NO_ADMISSIBLE_MEMORY",
+        },
+    }
+    zero_hit_output_json = json.dumps(
+        zero_hit_output,
+        allow_nan=False,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    container_request_path = (
+        container_context_root
         / "identity/evo_v2_cold_start_search_request.json"
     )
     return f"""# Factor Forge EVO V2 mechanism-first memory search
 
 You are a disposable Knowledge Librarian session. Read the frozen request at
-`{request_path}` and every hash-bound index snapshot named by `checked_indexes`.
+`{container_request_path}` and every hash-bound index snapshot named by
+`checked_indexes` under `{container_context_root}`.
 Search by the mechanism fingerprint, not by historical performance or a market
 regime label. Historical episodes are context only and cannot authorize the
 current factor.
 
 Write exactly one private-output JSON object to
-`{invocation.private_output_path}`. Use contract version
-`{PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION}` for the outer object and
-`{EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION}` for the public record. The
-public record must contain exactly: `contract_version`, `artifact_identity`,
-`executor_role_id`, `query_sha256`, `checked_indexes`, `admissible_hits`,
-`admissible_hit_count`, and `memory_state`.
+`{container_private_output_path}`. For a true zero hit, the complete output must
+match this exact JSON object (JSON whitespace and key order may differ; no field
+may be added, removed, or renamed):
+
+```json
+{zero_hit_output_json}
+```
+
+The outer object must contain exactly `contract_version`, `status`, and
+`public_research_record`. The record key is literally `public_research_record`;
+`public_record` is a forbidden alias and will be rejected.
 
 You may return PASS only when `admissible_hits=[]`, `admissible_hit_count=0`,
 and `memory_state=COLD_START_NO_ADMISSIBLE_MEMORY`. Copy identity, query hash,
@@ -931,15 +1088,45 @@ def complete_evo_v2_cold_start_search_session(
         raise KnowledgeRetrievalError(
             f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: search_runtime_outcome"
         )
-    request_path = (
-        invocation.context_root
-        / "identity/evo_v2_cold_start_search_request.json"
+    try:
+        request = strict_json_loads(
+            read_workspace_bytes(
+                invocation.context_root,
+                "identity/evo_v2_cold_start_search_request.json",
+                max_bytes=MAX_CONTRACT_JSON_BYTES,
+            ),
+            label="evo_v2_cold_start_search_request",
+        )
+    except (OSError, ResearchOrganizationError, ValueError, UnicodeError) as exc:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            "cold_start_search_request_readback"
+        ) from exc
+    mechanism_fingerprint = (
+        request.get("mechanism_fingerprint")
+        if isinstance(request, Mapping)
+        and isinstance(request.get("mechanism_fingerprint"), Mapping)
+        else {}
     )
-    request = json.loads(request_path.read_text(encoding="utf-8"))
     request_reasons = _evo_v2_cold_search_request_reasons(
         request,
         artifact_identity=invocation.identity,
-        mechanism_fingerprint=request.get("mechanism_fingerprint") or {},
+        mechanism_fingerprint=mechanism_fingerprint,
+    )
+    request_reasons.extend(
+        _evo_v2_cold_search_invocation_reasons(
+            request=request,
+            invocation=invocation,
+        )
+    )
+    if request_reasons:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            f"{'|'.join(request_reasons)}"
+        )
+    _assert_evo_v2_cold_search_index_readback(
+        context_root=invocation.context_root,
+        request=request,
     )
     output, output_bytes = _read_private_review_output(
         invocation.private_output_path

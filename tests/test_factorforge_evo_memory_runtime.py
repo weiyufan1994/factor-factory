@@ -82,6 +82,40 @@ if args[0] in {{"stop", "rm"}}:
 if args[0] != "run":
     raise SystemExit(65)
 
+mounts = []
+for index, item in enumerate(args[:-1]):
+    if item != "--mount":
+        continue
+    fields = {{}}
+    for field in args[index + 1].split(","):
+        if "=" in field:
+            key, value = field.split("=", 1)
+            fields[key] = value
+    if fields.get("src") and fields.get("dst"):
+        mounts.append((Path(fields["dst"]), Path(fields["src"])))
+
+def host_path(container_path):
+    candidate = Path(container_path)
+    matches = []
+    for target, source in mounts:
+        try:
+            relative = candidate.relative_to(target)
+        except ValueError:
+            continue
+        matches.append((len(target.parts), source / relative))
+    if not matches:
+        print(f"container path is not mounted: {{candidate}}", file=sys.stderr)
+        raise SystemExit(67)
+    return max(matches, key=lambda item: item[0])[1]
+
+container_workdir = Path(args[args.index("--workdir") + 1])
+if (
+    container_workdir != Path("/factorforge/research-org")
+    or not host_path(container_workdir).is_dir()
+):
+    print("deterministic container workdir binding mismatch", file=sys.stderr)
+    raise SystemExit(68)
+
 mode_path = STATE / "mode"
 mode = mode_path.read_text(encoding="utf-8").strip() if mode_path.exists() else "success"
 if "agents" in args and "add" in args:
@@ -104,28 +138,51 @@ if "agents" in args and "add" in args:
     print("{{}}")
     raise SystemExit(0)
 if "agent" in args and "--message-file" in args:
-    prompt = Path(args[args.index("--message-file") + 1]).read_text(encoding="utf-8")
+    profile_name = args[args.index("--profile") + 1]
+    profile = json.loads(
+        host_path(
+            Path(next(
+                item.split("=", 1)[1]
+                for item in args
+                if item.startswith("HOME=")
+            )) / f".openclaw-{{profile_name}}" / "openclaw.json"
+        ).read_text(encoding="utf-8")
+    )
+    with (STATE / "agent_profiles.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(profile, sort_keys=True) + "\\n")
+    prompt = host_path(
+        args[args.index("--message-file") + 1]
+    ).read_text(encoding="utf-8")
+    (STATE / "agent_prompt.md").write_text(prompt, encoding="utf-8")
     request_match = re.search(r"frozen request at\\s*`([^`]+)`", prompt)
     output_match = re.search(r"private-output JSON object to\\s*`([^`]+)`", prompt)
-    if request_match is None or output_match is None:
+    template_match = re.search(r"```json\\s*(.*?)\\s*```", prompt, re.DOTALL)
+    if request_match is None or output_match is None or template_match is None:
         print("deterministic prompt binding missing", file=sys.stderr)
         raise SystemExit(10)
-    request = json.loads(Path(request_match.group(1)).read_text(encoding="utf-8"))
-    output = {{
-        "contract_version": "factorforge_agent_private_output_v1",
-        "status": "PASS",
-        "public_research_record": {{
-            "contract_version": "factorforge_researcher_memory_evo_v2_cold_start_search_agent_record_v1",
-            "artifact_identity": request["artifact_identity"],
-            "executor_role_id": "knowledge_librarian",
-            "query_sha256": request["query"]["query_sha256"],
-            "checked_indexes": request["checked_indexes"],
-            "admissible_hits": [],
-            "admissible_hit_count": 0,
-            "memory_state": "COLD_START_NO_ADMISSIBLE_MEMORY",
-        }},
-    }}
-    Path(output_match.group(1)).write_text(
+    request = json.loads(
+        host_path(request_match.group(1)).read_text(encoding="utf-8")
+    )
+    for item in request["checked_indexes"]:
+        index_path = host_path(
+            Path("/factorforge/research-org/context") / item["path"]
+        )
+        index_bytes = index_path.read_bytes()
+        import hashlib
+        if hashlib.sha256(index_bytes).hexdigest() != item["sha256"]:
+            print("deterministic index binding mismatch", file=sys.stderr)
+            raise SystemExit(12)
+    output = json.loads(template_match.group(1))
+    record = output.get("public_research_record")
+    if (
+        not isinstance(record, dict)
+        or record.get("artifact_identity") != request["artifact_identity"]
+        or record.get("query_sha256") != request["query"]["query_sha256"]
+        or record.get("checked_indexes") != request["checked_indexes"]
+    ):
+        print("deterministic prompt template binding mismatch", file=sys.stderr)
+        raise SystemExit(11)
+    host_path(output_match.group(1)).write_text(
         json.dumps(output, indent=2, sort_keys=True) + "\\n",
         encoding="utf-8",
     )
@@ -182,6 +239,8 @@ class _ZeroHitRunner:
     def __init__(self, trust_store: object):
         self.trust_store = trust_store
         self.prompts: list[str] = []
+        self.requests: list[dict] = []
+        self.invocations: list[object] = []
 
     def run_research_org_session(self, invocation):
         request = json.loads(
@@ -190,6 +249,8 @@ class _ZeroHitRunner:
                 / "identity/evo_v2_cold_start_search_request.json"
             ).read_text(encoding="utf-8")
         )
+        self.requests.append(request)
+        self.invocations.append(invocation)
         self.prompts.append(build_research_org_session_prompt(invocation))
         output = {
             "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
@@ -274,8 +335,33 @@ def test_pre_result_memory_gate_pauses_then_accepts_only_signed_zero_hit(
     assert ready["stage"] == "COLD_START_VERIFIED_READY"
     assert ready["formal_execution_allowed"] is True
     assert ready["bindings"]["cold_start_search_receipt_ref"] is not None
-    assert "mechanism-first memory search" in runner.prompts[0]
-    assert "generic" not in runner.prompts[0]
+    prompt = runner.prompts[0]
+    assert "mechanism-first memory search" in prompt
+    assert "generic" not in prompt
+    assert "`public_record` is a forbidden alias" in prompt
+    assert "/factorforge/research-org/context" in prompt
+    assert "/factorforge/research-org/output/agent_result.json" in prompt
+    host_invocation = runner.invocations[0]
+    assert str(host_invocation.worktree) not in prompt
+    assert str(host_invocation.workspace) not in prompt
+    assert str(host_invocation.private_attempt_root) not in prompt
+    assert str(host_invocation.context_root) not in prompt
+    template_match = re.search(r"```json\n(.*?)\n```", prompt, re.DOTALL)
+    assert template_match is not None
+    assert json.loads(template_match.group(1)) == {
+        "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+        "status": "PASS",
+        "public_research_record": {
+            "contract_version": EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION,
+            "artifact_identity": runner.requests[0]["artifact_identity"],
+            "executor_role_id": "knowledge_librarian",
+            "query_sha256": runner.requests[0]["query"]["query_sha256"],
+            "checked_indexes": runner.requests[0]["checked_indexes"],
+            "admissible_hits": [],
+            "admissible_hit_count": 0,
+            "memory_state": "COLD_START_NO_ADMISSIBLE_MEMORY",
+        },
+    }
     loaded_state = load_evo_v2_memory_round_state(
         workspace=workspace,
         state_root=state_root,
@@ -333,6 +419,20 @@ def test_cold_search_real_adapter_prelaunch_failure_retries_new_generation(
     token_file.chmod(0o600)
     secret_root = tmp_path / "secret-scan"
     secret_root.mkdir(mode=0o700)
+    adversarial_profile_template = tmp_path / "openclaw-host-repo-root.json"
+    adversarial_profile = json.loads(
+        (
+            PROJECT_ROOT
+            / "deploy/factorforge-console/openclaw.json.example"
+        ).read_text(encoding="utf-8")
+    )
+    adversarial_profile["agents"]["defaults"]["repoRoot"] = str(
+        PROJECT_ROOT
+    )
+    adversarial_profile_template.write_text(
+        json.dumps(adversarial_profile, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     config = ConsoleConfig(
         source_repo=PROJECT_ROOT,
         state_root=state_root,
@@ -341,9 +441,7 @@ def test_cold_search_real_adapter_prelaunch_failure_retries_new_generation(
             tmp_path / "openclaw-auth.sqlite",
             key=broker_token,
         ),
-        openclaw_profile_template=(
-            PROJECT_ROOT / "deploy/factorforge-console/openclaw.json.example"
-        ),
+        openclaw_profile_template=adversarial_profile_template,
         model_broker_client_token_file=token_file,
         model_broker_secret_scan_root=secret_root,
         container_runtime=str(runtime),
@@ -398,6 +496,64 @@ def test_cold_search_real_adapter_prelaunch_failure_retries_new_generation(
         "factorforge.console.job=job_123abc4567" in call
         for call in run_calls
     )
+    add_calls = [call for call in run_calls if "agents" in call and "add" in call]
+    agent_calls = [
+        call
+        for call in run_calls
+        if "agent" in call and "--message-file" in call
+    ]
+    assert add_calls and agent_calls
+    assert all(
+        call[call.index("--workspace") + 1] == "/factorforge/research-org"
+        for call in add_calls
+    )
+    assert all(
+        call[call.index("--workdir") + 1] == "/factorforge/research-org"
+        for call in [*add_calls, *agent_calls]
+    )
+    profiles = [
+        json.loads(line)
+        for line in (runtime_state / "agent_profiles.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert profiles
+    assert all(profile["tools"]["allow"] == ["read", "write"] for profile in profiles)
+    assert all(
+        profile["tools"]["fs"]["workspaceOnly"] is True
+        for profile in profiles
+    )
+    assert all(
+        profile["agents"]["defaults"]["repoRoot"]
+        == "/factorforge/research-org"
+        for profile in profiles
+    )
+    agent_prompt = (runtime_state / "agent_prompt.md").read_text(
+        encoding="utf-8"
+    )
+    assert str(PROJECT_ROOT) not in agent_prompt
+    assert str(state_root) not in agent_prompt
+    assert all(
+        call[call.index("--message-file") + 1]
+        == "/factorforge/research-org/task.md"
+        for call in agent_calls
+    )
+    for call in agent_calls:
+        mount_specs = [
+            call[index + 1]
+            for index, item in enumerate(call[:-1])
+            if item == "--mount"
+        ]
+        assert any(
+            "dst=/factorforge/research-org/context" in spec
+            and spec.endswith(",readonly")
+            for spec in mount_specs
+        )
+        assert any(
+            "dst=/factorforge/research-org/output" in spec
+            and not spec.endswith(",readonly")
+            for spec in mount_specs
+        )
     receipt = json.loads(
         (
             workspace

@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,9 @@ from factor_factory.research_org.contracts import (
 )
 from factor_factory.research_org.runtime import (
     PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+    ResearchOrgSessionInvocation,
     ResearchOrgSessionOutcome,
+    build_research_org_session_prompt,
 )
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
 from factor_factory.researcher_memory import (
@@ -455,13 +458,13 @@ def test_evo_review_uses_canonical_session_id_and_bound_host_routing(
         )
 
 
-def _completed_cold_start_search(
+def _prepared_cold_start_search(
     *,
     tmp_path: Path,
     workspace: Path,
     transfer: dict,
     trust_store: object,
-) -> tuple[dict, dict]:
+) -> tuple[ResearchOrgSessionInvocation, dict, Path]:
     role_index_ref = _write_json_ref(
         workspace,
         "support/role_memory_index_snapshot.json",
@@ -484,10 +487,31 @@ def _completed_cold_start_search(
         mechanism_fingerprint=transfer["mechanism_fingerprint"],
         checked_indexes=[role_index_ref, factor_index_ref],
     )
+    return invocation, request, _search_root
+
+
+def _completed_cold_start_search(
+    *,
+    tmp_path: Path,
+    workspace: Path,
+    transfer: dict,
+    trust_store: object,
+    public_record_key: str = "public_research_record",
+    tamper_index_before_completion: bool = False,
+    completion_task_sha256: str | None = None,
+) -> tuple[dict, dict]:
+    invocation, request, _search_root = _prepared_cold_start_search(
+        tmp_path=tmp_path,
+        workspace=workspace,
+        transfer=transfer,
+        trust_store=trust_store,
+    )
+    if tamper_index_before_completion:
+        build_research_org_session_prompt(invocation)
     search_output = {
         "contract_version": PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
         "status": "PASS",
-        "public_research_record": {
+        public_record_key: {
             "contract_version": EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION,
             "artifact_identity": transfer["artifact_identity"],
             "executor_role_id": "knowledge_librarian",
@@ -531,13 +555,181 @@ def _completed_cold_start_search(
         provider_session_handle_sha256="1" * 64,
         adapter_receipt=adapter_receipt,
     )
+    if tamper_index_before_completion:
+        first_index = request["checked_indexes"][0]
+        (invocation.context_root / first_index["path"]).write_bytes(
+            b"tampered after runner\n"
+        )
     receipt = complete_evo_v2_cold_start_search_session(
-        invocation=invocation,
+        invocation=(
+            replace(invocation, task_sha256=completion_task_sha256)
+            if completion_task_sha256 is not None
+            else invocation
+        ),
         outcome=outcome,
         state_root=tmp_path,
         installation_id=trust_store.installation_id,
     )
     return receipt, request
+
+
+def test_cold_search_completion_rejects_public_record_alias(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "cold_start_alias_workspace"
+    transfer = _as_cold_start(_build_bundle(workspace))[
+        "experience_transfer_bundle"
+    ]
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+
+    with pytest.raises(
+        KnowledgeRetrievalError,
+        match="cold_start_search_output_fields",
+    ):
+        _completed_cold_start_search(
+            tmp_path=tmp_path,
+            workspace=workspace,
+            transfer=transfer,
+            trust_store=trust_store,
+            public_record_key="public_record",
+        )
+
+
+def test_cold_search_prompt_rejects_tampered_request_hash(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "cold_start_prompt_tamper_workspace"
+    transfer = _as_cold_start(_build_bundle(workspace))[
+        "experience_transfer_bundle"
+    ]
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+    invocation, request, _search_root = _prepared_cold_start_search(
+        tmp_path=tmp_path,
+        workspace=workspace,
+        transfer=transfer,
+        trust_store=trust_store,
+    )
+    tampered = copy.deepcopy(request)
+    tampered["policy"]["regime_shortcut_allowed"] = True
+    (
+        invocation.context_root
+        / "identity/evo_v2_cold_start_search_request.json"
+    ).write_bytes(_json_bytes(tampered))
+
+    with pytest.raises(KnowledgeRetrievalError, match="request_sha256"):
+        build_research_org_session_prompt(invocation)
+
+
+def test_cold_search_prompt_rejects_tampered_staged_index(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "cold_start_prompt_index_tamper_workspace"
+    transfer = _as_cold_start(_build_bundle(workspace))[
+        "experience_transfer_bundle"
+    ]
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+    invocation, request, _search_root = _prepared_cold_start_search(
+        tmp_path=tmp_path,
+        workspace=workspace,
+        transfer=transfer,
+        trust_store=trust_store,
+    )
+    first_index = request["checked_indexes"][0]
+    (invocation.context_root / first_index["path"]).write_bytes(
+        b"tampered before prompt\n"
+    )
+
+    with pytest.raises(
+        KnowledgeRetrievalError,
+        match="cold_start_search_index_readback",
+    ):
+        build_research_org_session_prompt(invocation)
+
+
+def test_cold_search_prompt_rejects_invocation_task_hash_drift(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "cold_start_prompt_hash_drift_workspace"
+    transfer = _as_cold_start(_build_bundle(workspace))[
+        "experience_transfer_bundle"
+    ]
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+    invocation, _request, _search_root = _prepared_cold_start_search(
+        tmp_path=tmp_path,
+        workspace=workspace,
+        transfer=transfer,
+        trust_store=trust_store,
+    )
+
+    with pytest.raises(
+        KnowledgeRetrievalError,
+        match="cold_start_search_task_hash_binding",
+    ):
+        build_research_org_session_prompt(
+            replace(invocation, task_sha256="f" * 64)
+        )
+
+
+def test_cold_search_completion_rejects_post_runner_index_tamper(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "cold_start_completion_index_tamper_workspace"
+    transfer = _as_cold_start(_build_bundle(workspace))[
+        "experience_transfer_bundle"
+    ]
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+
+    with pytest.raises(
+        KnowledgeRetrievalError,
+        match="cold_start_search_index_readback",
+    ):
+        _completed_cold_start_search(
+            tmp_path=tmp_path,
+            workspace=workspace,
+            transfer=transfer,
+            trust_store=trust_store,
+            tamper_index_before_completion=True,
+        )
+
+
+def test_cold_search_completion_rejects_invocation_task_hash_drift(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "cold_start_completion_hash_drift_workspace"
+    transfer = _as_cold_start(_build_bundle(workspace))[
+        "experience_transfer_bundle"
+    ]
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+
+    with pytest.raises(
+        KnowledgeRetrievalError,
+        match="cold_start_search_task_hash_binding",
+    ):
+        _completed_cold_start_search(
+            tmp_path=tmp_path,
+            workspace=workspace,
+            transfer=transfer,
+            trust_store=trust_store,
+            completion_task_sha256="f" * 64,
+        )
 
 
 def _materialized_admission(tmp_path: Path) -> tuple[Path, dict, dict, object]:
